@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{ kind_icons[kind] }} {{ kind|capitalize }}s — N&D World{% endblock %}
+{% block content %}
+<div class="list-header">
+  <h1>{{ kind_icons[kind] }} {{ kind|upper }}S</h1>
+  <div class="list-actions">
+    <form action="/kind/{{ kind }}" method="get" class="filter-form">
+      <input name="q" placeholder="Filter…" value="{{ q }}"/>
+      <button type="submit">⌕</button>
+    </form>
+    <a href="/new?kind={{ kind }}" class="btn-new">+ New {{ kind }}</a>
+  </div>
+</div>
+
+{% if entities %}
+<div class="card-grid">
+  {% for e in entities %}
+  <a href="/entity/{{ e.id }}" class="entity-card kind-{{ e.kind }}">
+    {% if e.image_url %}<img src="{{ e.image_url }}" alt="{{ e.name }}"/>{% endif %}
+    <div class="entity-card-body">
+      {% if e.subtype %}<span class="entity-sub">{{ e.subtype }}</span>{% endif %}
+      <h3>{{ e.name }}</h3>
+      {% if e.summary %}<p>{{ e.summary }}</p>{% endif %}
+      {% if e.tags %}
+      <div class="tags">{% for t in e.tags.split(',') %}<span class="tag">{{ t.strip() }}</span>{% endfor %}</div>
+      {% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty">
+  <p>No {{ kind }}s yet{% if q %} matching "{{ q }}"{% endif %}.</p>
+  <a href="/new?kind={{ kind }}" class="btn-new">Create the first one</a>
+</div>
+{% endif %}
+{% endblock %}

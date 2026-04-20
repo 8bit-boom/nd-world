@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>{% block title %}Neon & Dragons — World{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body>
+<nav class="topbar">
+  <a class="logo" href="/">N&amp;D <span>WORLD</span></a>
+  <form class="search-form" action="/search" method="get">
+    <input name="q" placeholder="Search world…" value="{{ request.query_params.get('q','') }}"/>
+    <button type="submit">⌕</button>
+  </form>
+  <div class="nav-kinds">
+    {% for k in kinds %}
+    <a href="/kind/{{ k }}" class="nav-kind {% if request.url.path == '/kind/'+k %}active{% endif %}">
+      {{ kind_icons[k] }} {{ k|capitalize }}
+    </a>
+    {% endfor %}
+    <a href="/new" class="btn-new">+ New</a>
+  </div>
+</nav>
+<main>
+  {% block content %}{% endblock %}
+</main>
+<footer>Neon &amp; Dragons World — self-hosted</footer>
+</body>
+</html>

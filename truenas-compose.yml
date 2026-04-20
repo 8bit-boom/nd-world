@@ -1,0 +1,12 @@
+version: "3.9"
+# Replace YOUR_REPO_NAME below with your GitHub repo name (e.g. nd-world)
+services:
+  world:
+    image: ghcr.io/8bit-boom/nd-world:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8000"
+    volumes:
+      - /mnt/tank/nd-world:/data
+    environment:
+      DB_PATH: /data/world.db

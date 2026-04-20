@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Neon & Dragons — World{% endblock %}
+{% block content %}
+<section class="hero">
+  <h1>WORLD<br><span>DATABASE</span></h1>
+  <p class="hero-sub">Neon &amp; Dragons worldbuilding codex</p>
+</section>
+
+<section class="dashboard">
+  {% for k in kinds %}
+  <a href="/kind/{{ k }}" class="dash-card kind-{{ k }}">
+    <span class="dash-icon">{{ kind_icons[k] }}</span>
+    <span class="dash-count">{{ counts[k] }}</span>
+    <span class="dash-label">{{ k|capitalize }}s</span>
+  </a>
+  {% endfor %}
+</section>
+
+{% if recent %}
+<section class="recent">
+  <h2>// RECENTLY UPDATED</h2>
+  <div class="card-grid">
+    {% for e in recent %}
+    <a href="/entity/{{ e.id }}" class="entity-card kind-{{ e.kind }}">
+      {% if e.image_url %}<img src="{{ e.image_url }}" alt="{{ e.name }}"/>{% endif %}
+      <div class="entity-card-body">
+        <span class="entity-kind">{{ kind_icons[e.kind] }} {{ e.kind }}</span>
+        {% if e.subtype %}<span class="entity-sub">{{ e.subtype }}</span>{% endif %}
+        <h3>{{ e.name }}</h3>
+        {% if e.summary %}<p>{{ e.summary }}</p>{% endif %}
+        {% if e.tags %}
+        <div class="tags">{% for t in e.tags.split(',') %}<span class="tag">{{ t.strip() }}</span>{% endfor %}</div>
+        {% endif %}
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  world:
+    build: .
+    image: nd-world:latest
+    container_name: nd-world
+    restart: unless-stopped
+    ports:
+      - "8080:8000"         # change 8080 to any free port on TrueNAS
+    volumes:
+      - nd-world-data:/data # persistent SQLite database
+    environment:
+      DB_PATH: /data/world.db
+
+volumes:
+  nd-world-data:
+    driver: local

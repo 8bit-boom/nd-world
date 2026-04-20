@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}{% if entity %}Edit {{ entity.name }}{% else %}New {{ kind|capitalize }}{% endif %} — N&D World{% endblock %}
+{% block content %}
+<div class="form-page">
+  <h1>{% if entity %}EDIT ENTRY{% else %}NEW ENTRY{% endif %}</h1>
+  <form class="entity-form" action="{% if entity %}/entity/{{ entity.id }}/edit{% else %}/new{% endif %}" method="post">
+    <div class="form-row two-col">
+      <div class="form-group">
+        <label>Type</label>
+        <select name="kind" id="kind-select" onchange="updateSubtypes()">
+          {% for k in kinds %}
+          <option value="{{ k }}" {% if (entity and entity.kind==k) or (not entity and kind==k) %}selected{% endif %}>{{ kind_icons[k] }} {{ k|capitalize }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Subtype</label>
+        <select name="subtype" id="subtype-select">
+          <option value="">— none —</option>
+          {% for k, subs in subtypes.items() %}
+            {% for s in subs %}
+            <option value="{{ s }}"
+              data-kind="{{ k }}"
+              {% if entity and entity.subtype==s %}selected{% endif %}>
+              {{ s }}
+            </option>
+            {% endfor %}
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Name *</label>
+      <input name="name" required value="{{ entity.name if entity else '' }}" placeholder="Entity name"/>
+    </div>
+
+    <div class="form-group">
+      <label>Summary <small>(one-liner)</small></label>
+      <input name="summary" value="{{ entity.summary if entity else '' }}" placeholder="Short description"/>
+    </div>
+
+    <div class="form-group">
+      <label>Image URL</label>
+      <input name="image_url" value="{{ entity.image_url if entity else '' }}" placeholder="https://…"/>
+    </div>
+
+    <div class="form-group">
+      <label>Tags <small>(comma-separated)</small></label>
+      <input name="tags" value="{{ entity.tags if entity else '' }}" placeholder="yellow, corp, nox, …"/>
+    </div>
+
+    <div class="form-group">
+      <label>Notes <small>(Markdown supported)</small></label>
+      <textarea name="body" rows="16" placeholder="# History&#10;…">{{ entity.body if entity else '' }}</textarea>
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn-save">Save</button>
+      {% if entity %}
+      <a href="/entity/{{ entity.id }}" class="btn-cancel">Cancel</a>
+      {% else %}
+      <a href="/" class="btn-cancel">Cancel</a>
+      {% endif %}
+    </div>
+  </form>
+</div>
+
+<script>
+const subtypesData = {{ subtypes | tojson }};
+function updateSubtypes() {
+  const kind = document.getElementById('kind-select').value;
+  const sel = document.getElementById('subtype-select');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">— none —</option>';
+  (subtypesData[kind] || []).forEach(s => {
+    const o = document.createElement('option');
+    o.value = s; o.textContent = s;
+    if (s === current) o.selected = true;
+    sel.appendChild(o);
+  });
+}
+updateSubtypes();
+</script>
+{% endblock %}

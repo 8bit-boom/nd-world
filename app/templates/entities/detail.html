@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}{{ entity.name }} — N&D World{% endblock %}
+{% block content %}
+<article class="detail kind-{{ entity.kind }}">
+  <header class="detail-header">
+    {% if entity.image_url %}
+    <img class="detail-img" src="{{ entity.image_url }}" alt="{{ entity.name }}"/>
+    {% endif %}
+    <div class="detail-meta">
+      <span class="entity-kind">{{ kind_icons[entity.kind] }} {{ entity.kind }}</span>
+      {% if entity.subtype %}<span class="entity-sub">{{ entity.subtype }}</span>{% endif %}
+      <h1>{{ entity.name }}</h1>
+      {% if entity.summary %}<p class="detail-summary">{{ entity.summary }}</p>{% endif %}
+      {% if entity.tags %}
+      <div class="tags">{% for t in entity.tags.split(',') %}<span class="tag">{{ t.strip() }}</span>{% endfor %}</div>
+      {% endif %}
+      <div class="detail-date">Updated: {{ entity.updated_at.strftime('%Y-%m-%d %H:%M') }}</div>
+    </div>
+    <div class="detail-actions">
+      <a href="/entity/{{ entity.id }}/edit" class="btn-edit">Edit</a>
+      <form action="/entity/{{ entity.id }}/delete" method="post" onsubmit="return confirm('Delete {{ entity.name }}?')">
+        <button class="btn-delete" type="submit">Delete</button>
+      </form>
+    </div>
+  </header>
+
+  {% if entity.body %}
+  <div class="detail-body prose">
+    {{ entity.body | md | safe }}
+  </div>
+  {% endif %}
+
+  <section class="relations">
+    <h2>// CONNECTIONS</h2>
+    {% if entity.related %}
+    <div class="card-grid small">
+      {% for r in entity.related %}
+      <div class="entity-card kind-{{ r.kind }} rel-card">
+        <a href="/entity/{{ r.id }}" class="rel-link">
+          <span class="entity-kind">{{ kind_icons[r.kind] }}</span>
+          <span>{{ r.name }}</span>
+          {% if r.subtype %}<span class="entity-sub">{{ r.subtype }}</span>{% endif %}
+        </a>
+        <form action="/entity/{{ entity.id }}/unlink/{{ r.id }}" method="post">
+          <button class="btn-unlink" type="submit" title="Remove link">✕</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-small">No connections yet.</p>
+    {% endif %}
+
+    <details class="add-link-panel">
+      <summary>+ Add connection</summary>
+      <div class="add-link-body">
+        <input id="link-filter" placeholder="Filter entities…" oninput="filterLinks(this.value)"/>
+        <div id="link-list">
+          {% for e in all_entities %}
+          <form action="/entity/{{ entity.id }}/link/{{ e.id }}" method="post" class="link-item" data-name="{{ e.name|lower }}">
+            <span>{{ kind_icons[e.kind] }} {{ e.name }}{% if e.subtype %} <em>{{ e.subtype }}</em>{% endif %}</span>
+            <button type="submit">Link</button>
+          </form>
+          {% endfor %}
+        </div>
+      </div>
+    </details>
+  </section>
+</article>
+
+<script>
+function filterLinks(q) {
+  document.querySelectorAll('#link-list .link-item').forEach(el => {
+    el.style.display = el.dataset.name.includes(q.toLowerCase()) ? '' : 'none';
+  });
+}
+</script>
+{% endblock %}

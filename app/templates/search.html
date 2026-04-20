@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Search — N&D World{% endblock %}
+{% block content %}
+<div class="list-header">
+  <h1>// SEARCH</h1>
+  <form action="/search" method="get" class="filter-form">
+    <input name="q" value="{{ q }}" placeholder="Search world…" autofocus/>
+    <button type="submit">⌕</button>
+  </form>
+</div>
+{% if q %}
+  {% if results %}
+  <p class="result-count">{{ results|length }} result(s) for "<strong>{{ q }}</strong>"</p>
+  <div class="card-grid">
+    {% for e in results %}
+    <a href="/entity/{{ e.id }}" class="entity-card kind-{{ e.kind }}">
+      <div class="entity-card-body">
+        <span class="entity-kind">{{ kind_icons[e.kind] }} {{ e.kind }}</span>
+        {% if e.subtype %}<span class="entity-sub">{{ e.subtype }}</span>{% endif %}
+        <h3>{{ e.name }}</h3>
+        {% if e.summary %}<p>{{ e.summary }}</p>{% endif %}
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty"><p>No results for "{{ q }}".</p></div>
+  {% endif %}
+{% endif %}
+{% endblock %}
