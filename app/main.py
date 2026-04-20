@@ -216,14 +216,25 @@ def search(request: Request, q: str = "", db: Session = Depends(get_db)):
 
 # ── Import API (used by import script) ───────────────────────────────────────
 
+ENTITY_COLS = {"kind", "subtype", "name", "tags", "summary", "body", "image_url"}
+
 @app.post("/api/import")
 def api_import(payload: dict, db: Session = Depends(get_db)):
     created = 0
     for item in payload.get("entities", []):
         existing = db.query(Entity).filter(Entity.name == item["name"], Entity.kind == item["kind"]).first()
         if not existing:
-            e = Entity(**{k: v for k, v in item.items() if k in Entity.__table__.columns.keys()})
+            e = Entity(**{k: v for k, v in item.items() if k in ENTITY_COLS})
             db.add(e)
             created += 1
+        elif item.get("image_url") and not existing.image_url:
+            existing.image_url = item["image_url"]
     db.commit()
     return {"created": created}
+
+@app.post("/api/upload-image")
+async def api_upload_image(file: UploadFile = File(...)):
+    uploaded = save_upload(file)
+    if not uploaded:
+        raise HTTPException(400, "Unsupported file type")
+    return {"url": uploaded}

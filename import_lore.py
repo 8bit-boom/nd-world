@@ -11,6 +11,7 @@ import argparse
 import re
 import sys
 import json
+import uuid
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -55,6 +56,46 @@ def slug_to_name(stem: str) -> str:
     name = name.replace("-", " ").replace("_", " ")
     name = re.sub(r"&amp;", "&", name)
     return name.strip().title()
+
+IMAGE_EXTS = {".webp", ".png", ".jpg", ".jpeg", ".gif"}
+
+def find_image(md_path: Path) -> Path | None:
+    for ext in IMAGE_EXTS:
+        img = md_path.with_suffix(ext)
+        if img.exists():
+            return img
+    # also check ![avatar](filename) reference in file
+    try:
+        text = md_path.read_text(encoding="utf-8", errors="ignore")
+        m = re.search(r"!\[.*?\]\(([^)]+)\)", text)
+        if m:
+            ref = md_path.parent / m.group(1)
+            if ref.exists():
+                return ref
+    except Exception:
+        pass
+    return None
+
+def upload_image(host: str, img_path: Path) -> str | None:
+    url = f"{host.rstrip('/')}/api/upload-image"
+    boundary = "----FormBoundary" + uuid.uuid4().hex
+    data = img_path.read_bytes()
+    mime = "image/webp" if img_path.suffix == ".webp" else "image/jpeg"
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{img_path.name}"\r\n'
+        f"Content-Type: {mime}\r\n\r\n"
+    ).encode() + data + f"\r\n--{boundary}--\r\n".encode()
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read()).get("url")
+    except Exception:
+        return None
 
 def parse_md(path: Path) -> dict:
     text = path.read_text(encoding="utf-8", errors="ignore")
@@ -140,31 +181,40 @@ def collect_entities() -> list[dict]:
             if forced_subtype:
                 parsed["subtype"] = forced_subtype
             parsed["kind"] = kind
+            parsed["_image_path"] = find_image(md)  # local path, uploaded separately
             entities.append(parsed)
 
     return entities
 
 # ── Import ────────────────────────────────────────────────────────────────────
 
-def post_import(host: str, entities: list[dict]) -> int:
+def post_batch(host: str, batch: list[dict]) -> int:
     url = f"{host.rstrip('/')}/api/import"
-    payload = json.dumps({"entities": entities}).encode()
+    payload = json.dumps({"entities": batch}).encode()
     req = urllib.request.Request(
         url,
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read())
-            return result.get("created", 0)
-    except urllib.error.HTTPError as e:
-        print(f"HTTP {e.code}: {e.read().decode()}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Connection error: {e}")
-        sys.exit(1)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read()).get("created", 0)
+
+def post_import(host: str, entities: list[dict], batch_size: int = 10) -> int:
+    total = 0
+    for i in range(0, len(entities), batch_size):
+        batch = entities[i:i + batch_size]
+        try:
+            created = post_batch(host, batch)
+            total += created
+            print(f"  [{i + len(batch)}/{len(entities)}] +{created}", flush=True)
+        except urllib.error.HTTPError as e:
+            print(f"  HTTP {e.code}: {e.read().decode()}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"  Error on batch {i//batch_size + 1}: {e}")
+            sys.exit(1)
+    return total
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -188,9 +238,20 @@ def main():
         print("\n[dry-run] Not importing.")
         return
 
-    print(f"\nImporting to {args.host} …")
+    print(f"\nUploading images to {args.host} …")
+    imgs_uploaded = 0
+    for e in entities:
+        img_path = e.pop("_image_path", None)
+        if img_path:
+            url = upload_image(args.host, img_path)
+            if url:
+                e["image_url"] = url
+                imgs_uploaded += 1
+    print(f"  {imgs_uploaded} images uploaded")
+
+    print(f"Importing entities …")
     created = post_import(args.host, entities)
-    print(f"Done — {created} new entries created (duplicates skipped).")
+    print(f"Done — {created} new entries created, images linked to existing entries.")
 
 if __name__ == "__main__":
     main()
