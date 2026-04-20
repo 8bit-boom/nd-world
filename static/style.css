@@ -16,6 +16,8 @@
   --kind-organization: #ff2d78;
   --kind-creature: #ff6b00;
   --kind-event: #ffe600;
+  --kind-item: #ff9f1c;
+  --kind-feat: #39ff14;
   --kind-note: #b44fff;
 }
 
@@ -157,7 +159,7 @@ footer {
 .dash-count { font-size: 2rem; font-weight: bold; line-height: 1.2; }
 .dash-label { font-size: .75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: .1em; }
 
-{% for k, col in [('character','--kind-character'),('location','--kind-location'),('organization','--kind-organization'),('creature','--kind-creature'),('event','--kind-event'),('note','--kind-note')] %}
+{% for k, col in [('character','--kind-character'),('location','--kind-location'),('organization','--kind-organization'),('creature','--kind-creature'),('event','--kind-event'),('item','--kind-item'),('feat','--kind-feat'),('note','--kind-note')] %}
 .kind-{{ k }} .dash-count, .dash-card.kind-{{ k }} .dash-count { color: var({{ col }}); }
 .dash-card.kind-{{ k }}:hover { border-color: var({{ col }}); }
 {% endfor %}
@@ -196,7 +198,7 @@ footer {
   border: 1px solid var(--border);
 }
 
-{% for k, col in [('character','--kind-character'),('location','--kind-location'),('organization','--kind-organization'),('creature','--kind-creature'),('event','--kind-event'),('note','--kind-note')] %}
+{% for k, col in [('character','--kind-character'),('location','--kind-location'),('organization','--kind-organization'),('creature','--kind-creature'),('event','--kind-event'),('item','--kind-item'),('feat','--kind-feat'),('note','--kind-note')] %}
 .entity-card.kind-{{ k }} { border-left: 3px solid var({{ col }}); }
 .entity-card.kind-{{ k }}:hover { border-color: var({{ col }}); }
 {% endfor %}

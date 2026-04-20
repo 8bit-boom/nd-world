@@ -20,6 +20,9 @@ from pathlib import Path
 
 BASE = Path(__file__).parent.parent  # NeonDragonsPortable root
 
+EQUIPMENT_BASE = BASE.parent / "equipment" if (BASE.parent / "equipment").exists() else BASE / "../equipment"
+CC_BASE = BASE.parent / "character creation" if (BASE.parent / "character creation").exists() else BASE / "../character creation"
+
 LORE_MAPPINGS = [
     ("lore/characters",               "character",    None),
     ("lore/creatures/abominations",   "creature",     "abomination"),
@@ -44,9 +47,51 @@ LORE_MAPPINGS = [
     ("lore/locations/countries",      "location",     "country"),
     ("lore/locations/void locations", "location",     "void station"),
     ("lore/locations",                "location",     None),
-    ("lore/events",                   "event",        None),
+    ("lore/events/corpo wars",         "event",        "corporate war"),
+    ("lore/events/world events",       "event",        "political"),
+    ("lore/events",                    "event",        None),
     ("lore/diseases",                 "note",         "lore"),
     ("lore/necro viruses",            "note",         "lore"),
+]
+
+# Equipment: resolved against project root (parent of NeonDragonsWorld)
+EQUIPMENT_MAPPINGS = [
+    ("armor",           "item", "armor"),
+    ("augments",        "item", "augment"),
+    ("base of operations", "item", "item"),
+    ("bio augmentation","item", "bio-augmentation"),
+    ("drone",           "item", "drone"),
+    ("husks",           "item", "husk"),
+    ("items",           "item", "item"),
+    ("metals",          "item", "metal"),
+    ("oddities",        "item", "oddity"),
+    ("vehicles",        "item", "vehicle"),
+    ("weapons/handguns","item", "weapon"),
+    ("weapons/rifles",  "item", "weapon"),
+    ("weapons/shotguns","item", "weapon"),
+    ("weapons/sniper rifles", "item", "weapon"),
+    ("weapons/heavy",   "item", "weapon"),
+    ("weapons/melee",   "item", "weapon"),
+    ("weapons/exotic",  "item", "weapon"),
+]
+
+FEAT_MAPPINGS = [
+    ("common feats/origin",   "feat", "origin feat"),
+    ("common feats/rank 1",   "feat", "common feat"),
+    ("common feats/rank 2",   "feat", "common feat"),
+    ("common feats/rank 3",   "feat", "common feat"),
+    ("professions/profession feats/charlatan",  "feat", "profession feat"),
+    ("professions/profession feats/cyberdoc",   "feat", "profession feat"),
+    ("professions/profession feats/hacker",     "feat", "profession feat"),
+    ("professions/profession feats/merc",       "feat", "profession feat"),
+    ("professions/profession feats/psyonic",    "feat", "profession feat"),
+    ("professions/profession feats/ronin",      "feat", "profession feat"),
+    ("professions/profession feats/scoundrel",  "feat", "profession feat"),
+    ("professions/profession feats/sentinel",   "feat", "profession feat"),
+    ("professions/profession feats/techie",     "feat", "profession feat"),
+    ("professions/profession feats/warlock",    "feat", "profession feat"),
+    ("professions/profession special abilities","feat", "profession ability"),
+    ("professions/psy powers",                  "feat", "psy power"),
 ]
 
 # ── Parser ────────────────────────────────────────────────────────────────────
@@ -161,28 +206,49 @@ def parse_md(path: Path) -> dict:
 
 # ── Collect ───────────────────────────────────────────────────────────────────
 
+def scan_folder(folder: Path, kind: str, forced_subtype: str, seen: set, entities: list):
+    if not folder.exists():
+        return
+    for md in sorted(folder.glob("*.md")):
+        if md in seen:
+            continue
+        seen.add(md)
+        try:
+            parsed = parse_md(md)
+        except Exception as e:
+            print(f"  SKIP {md.name}: {e}")
+            continue
+        if forced_subtype:
+            parsed["subtype"] = forced_subtype
+        parsed["kind"] = kind
+        parsed["_image_path"] = find_image(md)
+        entities.append(parsed)
+
 def collect_entities() -> list[dict]:
     seen_paths = set()
     entities = []
 
     for rel_dir, kind, forced_subtype in LORE_MAPPINGS:
-        folder = BASE / rel_dir
-        if not folder.exists():
-            continue
-        for md in sorted(folder.glob("*.md")):
-            if md in seen_paths:
-                continue
-            seen_paths.add(md)
-            try:
-                parsed = parse_md(md)
-            except Exception as e:
-                print(f"  SKIP {md.name}: {e}")
-                continue
-            if forced_subtype:
-                parsed["subtype"] = forced_subtype
-            parsed["kind"] = kind
-            parsed["_image_path"] = find_image(md)  # local path, uploaded separately
-            entities.append(parsed)
+        scan_folder(BASE / rel_dir, kind, forced_subtype, seen_paths, entities)
+
+    proj_root = BASE.parent
+    for rel_dir, kind, forced_subtype in EQUIPMENT_MAPPINGS:
+        scan_folder(proj_root / "equipment" / rel_dir, kind, forced_subtype, seen_paths, entities)
+
+    for rel_dir, kind, forced_subtype in FEAT_MAPPINGS:
+        folder = proj_root / "character creation" / rel_dir
+        # profession feats have one more level of subdirs per profession
+        if folder.exists() and any(folder.iterdir()):
+            # check if it has sub-profession folders
+            has_subdirs = any(f.is_dir() for f in folder.iterdir())
+            if has_subdirs:
+                for subdir in sorted(folder.iterdir()):
+                    if subdir.is_dir():
+                        scan_folder(subdir, kind, forced_subtype, seen_paths, entities)
+            else:
+                scan_folder(folder, kind, forced_subtype, seen_paths, entities)
+        else:
+            scan_folder(folder, kind, forced_subtype, seen_paths, entities)
 
     return entities
 

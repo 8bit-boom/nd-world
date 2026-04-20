@@ -20,13 +20,15 @@ app = FastAPI(title="Neon & Dragons World")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 
-KINDS = ["character", "location", "organization", "creature", "event", "note"]
+KINDS = ["character", "location", "organization", "creature", "event", "item", "feat", "note"]
 SUBTYPES = {
     "character": ["NPC", "PC", "villain", "ally", "neutral"],
     "location": ["district", "city", "country", "void station", "moon", "ruin", "corp facility"],
     "organization": ["megacorp", "syndicate", "government", "cult", "secret society", "gang", "AI entity"],
     "creature": ["mutant", "animal", "abomination", "corp-enhanced", "ice creature", "undead"],
     "event": ["corporate war", "outbreak", "disaster", "political", "yellow corruption", "discovery"],
+    "item": ["weapon", "armor", "augment", "bio-augmentation", "drone", "husk", "vehicle", "oddity", "metal", "item"],
+    "feat": ["common feat", "origin feat", "profession feat", "profession ability", "psy power", "race feat"],
     "note": ["lore", "session note", "rumor", "prophecy", "theory"],
 }
 KIND_ICONS = {
@@ -35,6 +37,8 @@ KIND_ICONS = {
     "organization": "🏢",
     "creature": "☠",
     "event": "⚡",
+    "item": "⚙",
+    "feat": "✦",
     "note": "📄",
 }
 
