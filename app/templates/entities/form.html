@@ -3,7 +3,7 @@
 {% block content %}
 <div class="form-page">
   <h1>{% if entity %}EDIT ENTRY{% else %}NEW ENTRY{% endif %}</h1>
-  <form class="entity-form" action="{% if entity %}/entity/{{ entity.id }}/edit{% else %}/new{% endif %}" method="post">
+  <form class="entity-form" action="{% if entity %}/entity/{{ entity.id }}/edit{% else %}/new{% endif %}" method="post" enctype="multipart/form-data">
     <div class="form-row two-col">
       <div class="form-group">
         <label>Type</label>
@@ -41,8 +41,17 @@
     </div>
 
     <div class="form-group">
-      <label>Image URL</label>
-      <input name="image_url" value="{{ entity.image_url if entity else '' }}" placeholder="https://…"/>
+      <label>Image <small>(upload file or paste URL)</small></label>
+      {% if entity and entity.image_url %}
+      <div class="current-image">
+        <img src="{{ entity.image_url }}" alt="current"/>
+        <span>Current image — upload a new one to replace</span>
+      </div>
+      {% endif %}
+      <input type="file" name="image_file" accept="image/*" id="img-file" onchange="previewImage(this)"/>
+      <div id="img-preview" style="display:none"><img id="img-preview-img" src="" alt="preview"/></div>
+      <label style="margin-top:.5rem">Or paste URL</label>
+      <input name="image_url" value="{{ entity.image_url if entity and entity.image_url and not entity.image_url.startswith('/uploads/') else '' }}" placeholder="https://…"/>
     </div>
 
     <div class="form-group">
@@ -67,6 +76,14 @@
 </div>
 
 <script>
+function previewImage(input) {
+  const preview = document.getElementById('img-preview');
+  const img = document.getElementById('img-preview-img');
+  if (input.files && input.files[0]) {
+    img.src = URL.createObjectURL(input.files[0]);
+    preview.style.display = 'block';
+  }
+}
 const subtypesData = {{ subtypes | tojson }};
 function updateSubtypes() {
   const kind = document.getElementById('kind-select').value;

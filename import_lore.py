@@ -1,0 +1,196 @@
+"""
+Neon & Dragons — Lore Importer
+Reads markdown files from the project and POSTs them to the running TrueNAS app.
+
+Usage:
+    python import_lore.py
+    python import_lore.py --host http://192.168.1.216:8087 --dry-run
+"""
+
+import argparse
+import re
+import sys
+import json
+import urllib.request
+import urllib.error
+from pathlib import Path
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+BASE = Path(__file__).parent.parent  # NeonDragonsPortable root
+
+LORE_MAPPINGS = [
+    ("lore/characters",               "character",    None),
+    ("lore/creatures/abominations",   "creature",     "abomination"),
+    ("lore/creatures/animals",        "creature",     "animal"),
+    ("lore/creatures/corp-enhanced",  "creature",     "corp-enhanced"),
+    ("lore/creatures/ice creatures",  "creature",     "ice creature"),
+    ("lore/creatures/mutants",        "creature",     "mutant"),
+    ("lore/creatures/plants",         "creature",     "animal"),
+    ("lore/creatures/thugs",          "creature",     "mutant"),
+    ("lore/creatures/undead",         "creature",     "undead"),
+    ("lore/creatures",                "creature",     None),
+    ("lore/organisations/mega corps", "organization", "megacorp"),
+    ("lore/organisations/criminal syndicates", "organization", "syndicate"),
+    ("lore/organisations/governments","organization", "government"),
+    ("lore/organisations/religious",  "organization", "cult"),
+    ("lore/organisations/secret societies", "organization", "secret society"),
+    ("lore/organisations/ai entities","organization", "AI entity"),
+    ("lore/organisations/outsiders",  "organization", "gang"),
+    ("lore/organisations/music bands","organization", "gang"),
+    ("lore/organisations",            "organization", None),
+    ("lore/locations/cities",         "location",     "city"),
+    ("lore/locations/countries",      "location",     "country"),
+    ("lore/locations/void locations", "location",     "void station"),
+    ("lore/locations",                "location",     None),
+    ("lore/events",                   "event",        None),
+    ("lore/diseases",                 "note",         "lore"),
+    ("lore/necro viruses",            "note",         "lore"),
+]
+
+# ── Parser ────────────────────────────────────────────────────────────────────
+
+def slug_to_name(stem: str) -> str:
+    name = re.sub(r"_\d+$", "", stem)          # remove trailing _ID
+    name = name.replace("-", " ").replace("_", " ")
+    name = re.sub(r"&amp;", "&", name)
+    return name.strip().title()
+
+def parse_md(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    lines = text.splitlines()
+
+    # Extract H1 name
+    name = None
+    for ln in lines:
+        m = re.match(r"^#\s+(.+)", ln)
+        if m:
+            name = m.group(1).strip()
+            break
+    if not name:
+        name = slug_to_name(path.stem)
+
+    # Extract **Type:** and **Tags:**
+    subtype = None
+    tags = []
+    for ln in lines[:20]:
+        m = re.match(r"\*\*Type:\*\*\s*(.+)", ln)
+        if m:
+            subtype = m.group(1).strip()
+        m = re.match(r"\*\*Tags:\*\*\s*(.+)", ln)
+        if m:
+            raw = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", m.group(1))
+            tags = [t.strip() for t in re.split(r"[,;]", raw) if t.strip()]
+
+    # Extract ## Entry section as summary
+    summary = ""
+    in_entry = False
+    entry_lines = []
+    for ln in lines:
+        if re.match(r"^##\s+Entry", ln, re.IGNORECASE):
+            in_entry = True
+            continue
+        if in_entry:
+            if re.match(r"^##", ln):
+                break
+            if ln.strip() and not ln.startswith("---"):
+                entry_lines.append(ln.strip())
+    if entry_lines:
+        raw_summary = " ".join(entry_lines)
+        raw_summary = re.sub(r"\*\*([^*]+)\*\*", r"\1", raw_summary)
+        raw_summary = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", raw_summary)
+        summary = raw_summary[:300]
+
+    # Clean body: strip image lines, resolve internal links to plain text
+    body_lines = []
+    for ln in lines:
+        if re.match(r"^!\[", ln):          # skip image embeds
+            continue
+        ln = re.sub(r"\[([^\]]+)\]\([^)]+\.md[^)]*\)", r"\1", ln)  # md links → text
+        body_lines.append(ln)
+    body = "\n".join(body_lines).strip()
+
+    return {
+        "name": name,
+        "subtype": subtype,
+        "tags": ", ".join(tags) if tags else None,
+        "summary": summary or None,
+        "body": body or None,
+    }
+
+# ── Collect ───────────────────────────────────────────────────────────────────
+
+def collect_entities() -> list[dict]:
+    seen_paths = set()
+    entities = []
+
+    for rel_dir, kind, forced_subtype in LORE_MAPPINGS:
+        folder = BASE / rel_dir
+        if not folder.exists():
+            continue
+        for md in sorted(folder.glob("*.md")):
+            if md in seen_paths:
+                continue
+            seen_paths.add(md)
+            try:
+                parsed = parse_md(md)
+            except Exception as e:
+                print(f"  SKIP {md.name}: {e}")
+                continue
+            if forced_subtype:
+                parsed["subtype"] = forced_subtype
+            parsed["kind"] = kind
+            entities.append(parsed)
+
+    return entities
+
+# ── Import ────────────────────────────────────────────────────────────────────
+
+def post_import(host: str, entities: list[dict]) -> int:
+    url = f"{host.rstrip('/')}/api/import"
+    payload = json.dumps({"entities": entities}).encode()
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+            return result.get("created", 0)
+    except urllib.error.HTTPError as e:
+        print(f"HTTP {e.code}: {e.read().decode()}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Connection error: {e}")
+        sys.exit(1)
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="http://192.168.1.216:8087", help="App base URL")
+    parser.add_argument("--dry-run", action="store_true", help="Parse only, don't import")
+    args = parser.parse_args()
+
+    print("Scanning lore files…")
+    entities = collect_entities()
+    print(f"Found {len(entities)} entries\n")
+
+    by_kind: dict[str, int] = {}
+    for e in entities:
+        by_kind[e["kind"]] = by_kind.get(e["kind"], 0) + 1
+    for kind, count in sorted(by_kind.items()):
+        print(f"  {kind:15s} {count}")
+
+    if args.dry_run:
+        print("\n[dry-run] Not importing.")
+        return
+
+    print(f"\nImporting to {args.host} …")
+    created = post_import(args.host, entities)
+    print(f"Done — {created} new entries created (duplicates skipped).")
+
+if __name__ == "__main__":
+    main()

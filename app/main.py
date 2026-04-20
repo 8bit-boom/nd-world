@@ -1,17 +1,20 @@
-from fastapi import FastAPI, Request, Depends, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, Request, Depends, Form, HTTPException, UploadFile, File
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 import markdown2
 import os
+import uuid
+import shutil
 from pathlib import Path
 
 from .database import init_db, get_db
 from .models import Entity, entity_links
 
 BASE_DIR = Path(__file__).parent.parent  # NeonDragonsWorld/
+UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
 
 app = FastAPI(title="Neon & Dragons World")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -35,19 +38,43 @@ KIND_ICONS = {
     "note": "📄",
 }
 
+ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
+
 @app.on_event("startup")
 def startup():
     init_db()
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 def render_md(text: str) -> str:
     if not text:
         return ""
     return markdown2.markdown(text, extras=["fenced-code-blocks", "tables", "strike"])
 
+def save_upload(file: UploadFile) -> str | None:
+    if not file or not file.filename:
+        return None
+    ext = Path(file.filename).suffix.lower()
+    if ext not in ALLOWED_EXTS:
+        return None
+    filename = f"{uuid.uuid4().hex}{ext}"
+    dest = UPLOADS_DIR / filename
+    with dest.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+    return f"/uploads/{filename}"
+
 templates.env.globals["kinds"] = KINDS
 templates.env.globals["subtypes"] = SUBTYPES
 templates.env.globals["kind_icons"] = KIND_ICONS
 templates.env.filters["md"] = render_md
+
+# ── Uploaded images ───────────────────────────────────────────────────────────
+
+@app.get("/uploads/{filename}")
+def serve_upload(filename: str):
+    path = UPLOADS_DIR / filename
+    if not path.exists():
+        raise HTTPException(404)
+    return FileResponse(path)
 
 # ── Home ──────────────────────────────────────────────────────────────────────
 
@@ -84,19 +111,21 @@ def new_form(request: Request, kind: str = "character"):
     return templates.TemplateResponse("entities/form.html", {"request": request, "entity": None, "kind": kind})
 
 @app.post("/new")
-def create(
+async def create(
     request: Request,
     kind: str = Form(...),
     subtype: str = Form(""),
     name: str = Form(...),
     tags: str = Form(""),
     image_url: str = Form(""),
+    image_file: UploadFile = File(None),
     summary: str = Form(""),
     body: str = Form(""),
     db: Session = Depends(get_db),
 ):
+    final_image = save_upload(image_file) or (image_url.strip() or None)
     e = Entity(kind=kind, subtype=subtype or None, name=name, tags=tags or None,
-               image_url=image_url or None, summary=summary or None, body=body or None)
+               image_url=final_image, summary=summary or None, body=body or None)
     db.add(e)
     db.commit()
     db.refresh(e)
@@ -112,13 +141,14 @@ def edit_form(request: Request, entity_id: int, db: Session = Depends(get_db)):
     return templates.TemplateResponse("entities/form.html", {"request": request, "entity": entity, "kind": entity.kind})
 
 @app.post("/entity/{entity_id}/edit")
-def update(
+async def update(
     entity_id: int,
     kind: str = Form(...),
     subtype: str = Form(""),
     name: str = Form(...),
     tags: str = Form(""),
     image_url: str = Form(""),
+    image_file: UploadFile = File(None),
     summary: str = Form(""),
     body: str = Form(""),
     db: Session = Depends(get_db),
@@ -126,11 +156,12 @@ def update(
     entity = db.get(Entity, entity_id)
     if not entity:
         raise HTTPException(404)
+    uploaded = save_upload(image_file)
     entity.kind = kind
     entity.subtype = subtype or None
     entity.name = name
     entity.tags = tags or None
-    entity.image_url = image_url or None
+    entity.image_url = uploaded or (image_url.strip() or None)
     entity.summary = summary or None
     entity.body = body or None
     db.commit()
@@ -182,3 +213,17 @@ def search(request: Request, q: str = "", db: Session = Depends(get_db)):
             or_(Entity.name.ilike(f"%{q}%"), Entity.tags.ilike(f"%{q}%"), Entity.summary.ilike(f"%{q}%"))
         ).order_by(Entity.kind, Entity.name).all()
     return templates.TemplateResponse("search.html", {"request": request, "results": results, "q": q})
+
+# ── Import API (used by import script) ───────────────────────────────────────
+
+@app.post("/api/import")
+def api_import(payload: dict, db: Session = Depends(get_db)):
+    created = 0
+    for item in payload.get("entities", []):
+        existing = db.query(Entity).filter(Entity.name == item["name"], Entity.kind == item["kind"]).first()
+        if not existing:
+            e = Entity(**{k: v for k, v in item.items() if k in Entity.__table__.columns.keys()})
+            db.add(e)
+            created += 1
+    db.commit()
+    return {"created": created}

@@ -1,12 +1,23 @@
 version: "3.9"
-# Replace YOUR_REPO_NAME below with your GitHub repo name (e.g. nd-world)
 services:
   world:
     image: ghcr.io/8bit-boom/nd-world:latest
     restart: unless-stopped
     ports:
-      - "8080:8000"
+      - "8087:8000"
     volumes:
-      - /mnt/tank/nd-world:/data
+      - /mnt/DeadPool/apps/nd-world:/data
     environment:
       DB_PATH: /data/world.db
+    labels:
+      net.ix-portals.nd-world.scheme: "http"
+      net.ix-portals.nd-world.port: "8087"
+      net.ix-portals.nd-world.path: "/"
+      net.ix-portals.nd-world.host: ""
+
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 300 --cleanup
