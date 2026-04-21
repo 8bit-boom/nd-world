@@ -1,0 +1,12 @@
+<a href="/entity/{{ e.id }}" class="entity-card kind-{{ e.kind }}">
+  {% if e.image_url %}<img src="{{ e.image_url }}" alt="{{ e.name }}"/>{% endif %}
+  <div class="entity-card-body">
+    <span class="entity-kind">{{ kind_icons[e.kind] }} {{ e.kind }}</span>
+    {% if e.subtype %}<span class="entity-sub">{{ e.subtype }}</span>{% endif %}
+    <h3>{{ e.name }}</h3>
+    {% if e.summary %}<p>{{ e.summary }}</p>{% endif %}
+    {% if e.tags %}
+    <div class="tags">{% for t in e.tags.split(',') %}<span class="tag">{{ t.strip() }}</span>{% endfor %}</div>
+    {% endif %}
+  </div>
+</a>

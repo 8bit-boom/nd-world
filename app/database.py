@@ -19,6 +19,9 @@ def _migrate():
         if "world_id" not in cols:
             conn.execute(text("ALTER TABLE entities ADD COLUMN world_id INTEGER NOT NULL DEFAULT 1"))
             conn.commit()
+        if "folder" not in cols:
+            conn.execute(text("ALTER TABLE entities ADD COLUMN folder VARCHAR(256)"))
+            conn.commit()
 
 def _seed():
     db = SessionLocal()

@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
+import re
 import markdown2
 import os
 import uuid
@@ -36,7 +37,7 @@ KIND_ICONS = {
     "creature": "☠", "event": "⚡", "item": "⚙", "feat": "✦", "note": "📄",
 }
 ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
-ENTITY_COLS = {"kind", "subtype", "name", "tags", "summary", "body", "image_url", "world_id"}
+ENTITY_COLS = {"kind", "subtype", "folder", "name", "tags", "summary", "body", "image_url", "world_id"}
 
 @app.on_event("startup")
 def startup():
@@ -141,16 +142,36 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
 # ── List ──────────────────────────────────────────────────────────────────────
 
 @app.get("/kind/{kind}", response_class=HTMLResponse)
-def list_entities(request: Request, kind: str, q: str = "", db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def list_entities(request: Request, kind: str, q: str = "", folder: str = "",
+                  db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world = get_active_world(db, active_world)
     query = db.query(Entity).filter(Entity.kind == kind, Entity.world_id == world.id)
     if q:
-        query = query.filter(or_(Entity.name.ilike(f"%{q}%"), Entity.tags.ilike(f"%{q}%"), Entity.summary.ilike(f"%{q}%")))
-    entities = query.order_by(Entity.name).all()
+        query = query.filter(or_(
+            Entity.name.ilike(f"%{q}%"), Entity.tags.ilike(f"%{q}%"),
+            Entity.summary.ilike(f"%{q}%"), Entity.body.ilike(f"%{q}%"),
+        ))
+    if folder:
+        query = query.filter(Entity.folder == folder)
+    entities = query.order_by(Entity.folder.nulls_last(), Entity.name).all()
+
+    # Build folder list for sidebar
+    folder_rows = (db.query(Entity.folder)
+                   .filter(Entity.kind == kind, Entity.world_id == world.id, Entity.folder.isnot(None))
+                   .distinct().order_by(Entity.folder).all())
+    folders = [r[0] for r in folder_rows]
+
+    # Group by folder for display
+    grouped: dict[str, list] = {}
+    for e in entities:
+        key = e.folder or ""
+        grouped.setdefault(key, []).append(e)
+
     worlds = db.query(World).order_by(World.id).all()
     return templates.TemplateResponse("entities/list.html", {
-        "request": request, "kind": kind, "entities": entities, "q": q,
-        "world": world, "worlds": worlds,
+        "request": request, "kind": kind, "entities": entities,
+        "grouped": grouped, "folders": folders, "active_folder": folder,
+        "q": q, "world": world, "worlds": worlds,
     })
 
 # ── Detail ────────────────────────────────────────────────────────────────────
@@ -183,14 +204,15 @@ def new_form(request: Request, kind: str = "character", db: Session = Depends(ge
 async def create(
     request: Request,
     kind: str = Form(...), subtype: str = Form(""), name: str = Form(...),
-    tags: str = Form(""), image_url: str = Form(""), image_file: UploadFile = File(None),
-    summary: str = Form(""), body: str = Form(""),
+    folder: str = Form(""), tags: str = Form(""), image_url: str = Form(""),
+    image_file: UploadFile = File(None), summary: str = Form(""), body: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     world = get_active_world(db, active_world)
     final_image = save_upload(image_file) or (image_url.strip() or None)
     e = Entity(world_id=world.id, kind=kind, subtype=subtype or None, name=name,
-               tags=tags or None, image_url=final_image, summary=summary or None, body=body or None)
+               folder=folder.strip() or None, tags=tags or None,
+               image_url=final_image, summary=summary or None, body=body or None)
     db.add(e)
     db.commit()
     db.refresh(e)
@@ -214,8 +236,8 @@ def edit_form(request: Request, entity_id: int, db: Session = Depends(get_db), a
 async def update(
     entity_id: int,
     kind: str = Form(...), subtype: str = Form(""), name: str = Form(...),
-    tags: str = Form(""), image_url: str = Form(""), image_file: UploadFile = File(None),
-    summary: str = Form(""), body: str = Form(""),
+    folder: str = Form(""), tags: str = Form(""), image_url: str = Form(""),
+    image_file: UploadFile = File(None), summary: str = Form(""), body: str = Form(""),
     db: Session = Depends(get_db),
 ):
     entity = db.get(Entity, entity_id)
@@ -224,6 +246,7 @@ async def update(
     uploaded = save_upload(image_file)
     entity.kind = kind
     entity.subtype = subtype or None
+    entity.folder = folder.strip() or None
     entity.name = name
     entity.tags = tags or None
     entity.image_url = uploaded or (image_url.strip() or None)
@@ -270,18 +293,52 @@ def unlink(entity_id: int, target_id: int, db: Session = Depends(get_db)):
 
 # ── Search ────────────────────────────────────────────────────────────────────
 
+def _snippet(text: str, q: str, window: int = 120) -> str:
+    if not text or not q:
+        return ""
+    low = text.lower()
+    idx = low.find(q.lower())
+    if idx == -1:
+        return ""
+    start = max(0, idx - window // 2)
+    end = min(len(text), idx + window // 2)
+    snippet = ("…" if start > 0 else "") + text[start:end].strip() + ("…" if end < len(text) else "")
+    # bold the match
+    pattern = re.compile(re.escape(q), re.IGNORECASE)
+    return pattern.sub(lambda m: f"<mark>{m.group()}</mark>", snippet)
+
 @app.get("/search", response_class=HTMLResponse)
-def search(request: Request, q: str = "", db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def search(request: Request, q: str = "", kind: str = "",
+           db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world = get_active_world(db, active_world)
     results = []
+    grouped: dict[str, list] = {}
+    snippets: dict[int, str] = {}
+
     if q:
-        results = db.query(Entity).filter(
+        query = db.query(Entity).filter(
             Entity.world_id == world.id,
-            or_(Entity.name.ilike(f"%{q}%"), Entity.tags.ilike(f"%{q}%"), Entity.summary.ilike(f"%{q}%"))
-        ).order_by(Entity.kind, Entity.name).all()
+            or_(
+                Entity.name.ilike(f"%{q}%"),
+                Entity.tags.ilike(f"%{q}%"),
+                Entity.summary.ilike(f"%{q}%"),
+                Entity.body.ilike(f"%{q}%"),
+            )
+        )
+        if kind:
+            query = query.filter(Entity.kind == kind)
+        results = query.order_by(Entity.kind, Entity.name).all()
+
+        for e in results:
+            grouped.setdefault(e.kind, []).append(e)
+            # build snippet from body if name/summary didn't match
+            if q.lower() not in (e.name or "").lower() and q.lower() not in (e.summary or "").lower():
+                snippets[e.id] = _snippet(e.body or "", q)
+
     worlds = db.query(World).order_by(World.id).all()
     return templates.TemplateResponse("search.html", {
-        "request": request, "results": results, "q": q,
+        "request": request, "results": results, "grouped": grouped,
+        "snippets": snippets, "q": q, "kind_filter": kind,
         "world": world, "worlds": worlds,
     })
 

@@ -442,6 +442,97 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
 }
 .btn-cancel:hover { border-color: var(--text-dim); color: var(--text); text-decoration: none; }
 
+/* ── List layout with folder sidebar ── */
+.list-layout { display: flex; gap: 1.5rem; align-items: flex-start; }
+.folder-sidebar {
+  min-width: 180px;
+  width: 180px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  flex-shrink: 0;
+  position: sticky;
+  top: 4rem;
+}
+.folder-header { padding: .5rem .8rem; font-size: .7rem; color: var(--text-dim); letter-spacing: .1em; border-bottom: 1px solid var(--border); }
+.folder-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: .4rem .8rem;
+  font-size: .8rem;
+  color: var(--text);
+  text-decoration: none;
+  border-left: 3px solid transparent;
+  gap: .4rem;
+}
+.folder-item:hover { background: var(--bg3); color: var(--neon); text-decoration: none; }
+.folder-item.active { border-left-color: var(--neon); color: var(--neon); background: var(--bg3); }
+.folder-count { font-size: .7rem; color: var(--text-dim); margin-left: auto; }
+.list-main { flex: 1; min-width: 0; }
+
+/* ── Folder groups ── */
+.folder-group { margin-bottom: 1.2rem; }
+.folder-group-title {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .4rem .6rem;
+  font-size: .82rem;
+  color: var(--text-dim);
+  letter-spacing: .08em;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: .8rem;
+}
+.folder-group-title::-webkit-details-marker { display: none; }
+.folder-group-title:hover { color: var(--neon); }
+.folder-group[open] .folder-group-title { color: var(--neon); }
+
+/* ── Search ── */
+.search-full-form { display: flex; gap: .4rem; flex: 1; flex-wrap: wrap; }
+.search-full-form input[type="text"], .search-full-form input:not([type]) {
+  flex: 1; min-width: 200px;
+  background: var(--bg2); border: 1px solid var(--border);
+  color: var(--text); padding: .45rem .7rem;
+  font-family: var(--font); font-size: .88rem; border-radius: 2px; outline: none;
+}
+.search-full-form input:focus { border-color: var(--neon); }
+.search-full-form select {
+  background: var(--bg2); border: 1px solid var(--border);
+  color: var(--text); padding: .45rem .6rem;
+  font-family: var(--font); font-size: .85rem; border-radius: 2px; outline: none; cursor: pointer;
+}
+.search-full-form select:focus { border-color: var(--neon); }
+.search-full-form button {
+  background: var(--neon); color: #000; border: none;
+  padding: .45rem 1.2rem; font-family: var(--font); font-weight: bold;
+  font-size: .88rem; cursor: pointer; border-radius: 2px;
+}
+.search-results { display: flex; flex-direction: column; gap: 1rem; }
+.search-result-list { display: flex; flex-direction: column; gap: .4rem; padding-bottom: .8rem; }
+.search-result-item {
+  display: flex; gap: .8rem; align-items: flex-start;
+  padding: .7rem .9rem;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 4px; text-decoration: none;
+  transition: border-color .15s;
+}
+.search-result-item:hover { text-decoration: none; }
+{% for k, col in [('character','--kind-character'),('location','--kind-location'),('organization','--kind-organization'),('creature','--kind-creature'),('event','--kind-event'),('item','--kind-item'),('feat','--kind-feat'),('note','--kind-note')] %}
+.search-result-item.kind-{{ k }} { border-left: 3px solid var({{ col }}); }
+.search-result-item.kind-{{ k }}:hover { border-color: var({{ col }}); }
+{% endfor %}
+.search-thumb { width: 48px; height: 48px; object-fit: cover; border-radius: 3px; flex-shrink: 0; }
+.search-result-body { flex: 1; min-width: 0; }
+.search-result-title { font-size: .95rem; color: var(--text); margin-bottom: .2rem; display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+.search-result-body p { font-size: .8rem; color: var(--text-dim); margin: .2rem 0; }
+.search-snippet { font-size: .78rem; color: var(--text-dim); font-style: italic; border-left: 2px solid var(--border); padding-left: .5rem; margin-top: .3rem; }
+.search-snippet mark { background: transparent; color: var(--yellow); font-style: normal; }
+
 /* ── World switcher ── */
 .world-switcher { position: relative; }
 .world-btn {

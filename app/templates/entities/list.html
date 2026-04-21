@@ -1,37 +1,75 @@
 {% extends "base.html" %}
-{% block title %}{{ kind_icons[kind] }} {{ kind|capitalize }}s — N&D World{% endblock %}
+{% block title %}{{ kind_icons[kind] }} {{ kind|capitalize }}s — {{ world.name }}{% endblock %}
 {% block content %}
 <div class="list-header">
   <h1>{{ kind_icons[kind] }} {{ kind|upper }}S</h1>
   <div class="list-actions">
     <form action="/kind/{{ kind }}" method="get" class="filter-form">
       <input name="q" placeholder="Filter…" value="{{ q }}"/>
+      {% if active_folder %}<input type="hidden" name="folder" value="{{ active_folder }}"/>{% endif %}
       <button type="submit">⌕</button>
     </form>
     <a href="/new?kind={{ kind }}" class="btn-new">+ New {{ kind }}</a>
   </div>
 </div>
 
-{% if entities %}
-<div class="card-grid">
-  {% for e in entities %}
-  <a href="/entity/{{ e.id }}" class="entity-card kind-{{ e.kind }}">
-    {% if e.image_url %}<img src="{{ e.image_url }}" alt="{{ e.name }}"/>{% endif %}
-    <div class="entity-card-body">
-      {% if e.subtype %}<span class="entity-sub">{{ e.subtype }}</span>{% endif %}
-      <h3>{{ e.name }}</h3>
-      {% if e.summary %}<p>{{ e.summary }}</p>{% endif %}
-      {% if e.tags %}
-      <div class="tags">{% for t in e.tags.split(',') %}<span class="tag">{{ t.strip() }}</span>{% endfor %}</div>
+<div class="list-layout">
+  <!-- Folder sidebar -->
+  {% if folders %}
+  <aside class="folder-sidebar">
+    <div class="folder-header">// FOLDERS</div>
+    <a href="/kind/{{ kind }}{% if q %}?q={{ q }}{% endif %}"
+       class="folder-item {% if not active_folder %}active{% endif %}">
+      📁 All ({{ entities|length }})
+    </a>
+    {% for f in folders %}
+    <a href="/kind/{{ kind }}?folder={{ f|urlencode }}{% if q %}&q={{ q }}{% endif %}"
+       class="folder-item {% if active_folder == f %}active{% endif %}">
+      📂 {{ f }}
+      <span class="folder-count">{{ grouped.get(f, [])|length }}</span>
+    </a>
+    {% endfor %}
+    {% if grouped.get('') %}
+    <a href="/kind/{{ kind }}?folder={% if q %}?q={{ q }}{% endif %}"
+       class="folder-item {% if active_folder == '' and active_folder is not none %}active{% endif %}">
+      📄 Unfiled <span class="folder-count">{{ grouped.get('', [])|length }}</span>
+    </a>
+    {% endif %}
+  </aside>
+  {% endif %}
+
+  <!-- Entities -->
+  <div class="list-main">
+    {% if entities %}
+      {% if active_folder or not folders %}
+      <!-- Flat view when filtered to a folder -->
+      <div class="card-grid">
+        {% for e in entities %}
+        {% include "entities/_card.html" %}
+        {% endfor %}
+      </div>
+      {% else %}
+      <!-- Grouped by folder -->
+        {% for folder_name, items in grouped.items() %}
+        <details class="folder-group" open>
+          <summary class="folder-group-title">
+            {% if folder_name %}📂 {{ folder_name }}{% else %}📄 Unfiled{% endif %}
+            <span class="folder-count">{{ items|length }}</span>
+          </summary>
+          <div class="card-grid">
+            {% for e in items %}
+            {% include "entities/_card.html" %}
+            {% endfor %}
+          </div>
+        </details>
+        {% endfor %}
       {% endif %}
+    {% else %}
+    <div class="empty">
+      <p>No {{ kind }}s yet{% if q %} matching "{{ q }}"{% endif %}{% if active_folder %} in "{{ active_folder }}"{% endif %}.</p>
+      <a href="/new?kind={{ kind }}" class="btn-new">Create the first one</a>
     </div>
-  </a>
-  {% endfor %}
+    {% endif %}
+  </div>
 </div>
-{% else %}
-<div class="empty">
-  <p>No {{ kind }}s yet{% if q %} matching "{{ q }}"{% endif %}.</p>
-  <a href="/new?kind={{ kind }}" class="btn-new">Create the first one</a>
-</div>
-{% endif %}
 {% endblock %}

@@ -1,26 +1,56 @@
 {% extends "base.html" %}
-{% block title %}Search — N&D World{% endblock %}
+{% block title %}Search — {{ world.name }}{% endblock %}
 {% block content %}
 <div class="list-header">
   <h1>// SEARCH</h1>
-  <form action="/search" method="get" class="filter-form">
-    <input name="q" value="{{ q }}" placeholder="Search world…" autofocus/>
-    <button type="submit">⌕</button>
+  <form action="/search" method="get" class="search-full-form">
+    <input name="q" value="{{ q }}" placeholder="Search everything…" autofocus/>
+    <select name="kind">
+      <option value="">All types</option>
+      {% for k in kinds %}
+      <option value="{{ k }}" {% if kind_filter == k %}selected{% endif %}>{{ kind_icons[k] }} {{ k|capitalize }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Search</button>
   </form>
 </div>
+
 {% if q %}
-  {% if results %}
-  <p class="result-count">{{ results|length }} result(s) for "<strong>{{ q }}</strong>"</p>
-  <div class="card-grid">
-    {% for e in results %}
-    <a href="/entity/{{ e.id }}" class="entity-card kind-{{ e.kind }}">
-      <div class="entity-card-body">
-        <span class="entity-kind">{{ kind_icons[e.kind] }} {{ e.kind }}</span>
-        {% if e.subtype %}<span class="entity-sub">{{ e.subtype }}</span>{% endif %}
-        <h3>{{ e.name }}</h3>
-        {% if e.summary %}<p>{{ e.summary }}</p>{% endif %}
+  <p class="result-count">
+    {{ results|length }} result(s) for "<strong>{{ q }}</strong>"
+    {% if kind_filter %} in {{ kind_filter }}s{% endif %}
+  </p>
+
+  {% if grouped %}
+  <div class="search-results">
+    {% for kind, items in grouped.items() %}
+    <details class="folder-group" open>
+      <summary class="folder-group-title">
+        {{ kind_icons[kind] }} {{ kind|capitalize }}s
+        <span class="folder-count">{{ items|length }}</span>
+      </summary>
+      <div class="search-result-list">
+        {% for e in items %}
+        <a href="/entity/{{ e.id }}" class="search-result-item kind-{{ e.kind }}">
+          {% if e.image_url %}<img src="{{ e.image_url }}" alt="{{ e.name }}" class="search-thumb"/>{% endif %}
+          <div class="search-result-body">
+            <div class="search-result-title">
+              {{ e.name }}
+              {% if e.subtype %}<span class="entity-sub">{{ e.subtype }}</span>{% endif %}
+              {% if e.folder %}<span class="entity-sub">📂 {{ e.folder }}</span>{% endif %}
+            </div>
+            {% if e.summary %}<p>{{ e.summary }}</p>{% endif %}
+            {% if snippets.get(e.id) %}
+            <p class="search-snippet">{{ snippets[e.id] | safe }}</p>
+            {% endif %}
+            {% if e.tags %}
+            <div class="tags">{% for t in e.tags.split(',') %}<span class="tag">{{ t.strip() }}</span>{% endfor %}</div>
+            {% endif %}
+          </div>
+        </a>
+        {% endfor %}
       </div>
-    </a>
+    </details>
     {% endfor %}
   </div>
   {% else %}

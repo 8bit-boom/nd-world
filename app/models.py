@@ -31,6 +31,7 @@ class Entity(Base):
     kind = Column(String(32), nullable=False, index=True)
     subtype = Column(String(64), nullable=True)
     name = Column(String(256), nullable=False)
+    folder = Column(String(256), nullable=True, index=True)
     tags = Column(String(512), nullable=True)
     image_url = Column(String(512), nullable=True)
     summary = Column(String(512), nullable=True)
