@@ -121,11 +121,13 @@ def find_image(md_path: Path) -> Path | None:
         pass
     return None
 
-def upload_image(host: str, img_path: Path) -> str | None:
+def upload_image(host: str, img_path: Path, verbose: bool = False) -> str | None:
     url = f"{host.rstrip('/')}/api/upload-image"
     boundary = "----FormBoundary" + uuid.uuid4().hex
     data = img_path.read_bytes()
-    mime = "image/webp" if img_path.suffix == ".webp" else "image/jpeg"
+    ext = img_path.suffix.lower()
+    mime_map = {".webp": "image/webp", ".png": "image/png", ".gif": "image/gif", ".svg": "image/svg+xml"}
+    mime = mime_map.get(ext, "image/jpeg")
     body = (
         f"--{boundary}\r\n"
         f'Content-Disposition: form-data; name="file"; filename="{img_path.name}"\r\n'
@@ -137,9 +139,18 @@ def upload_image(host: str, img_path: Path) -> str | None:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read()).get("url")
-    except Exception:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read()).get("url")
+            if verbose:
+                print(f"    OK  {img_path.name} → {result}")
+            return result
+    except urllib.error.HTTPError as e:
+        if verbose:
+            print(f"    ERR {img_path.name}: HTTP {e.code} {e.read().decode()[:80]}")
+        return None
+    except Exception as e:
+        if verbose:
+            print(f"    ERR {img_path.name}: {e}")
         return None
 
 def parse_md(path: Path) -> dict:
@@ -231,12 +242,11 @@ def collect_entities() -> list[dict]:
     for rel_dir, kind, forced_subtype in LORE_MAPPINGS:
         scan_folder(BASE / rel_dir, kind, forced_subtype, seen_paths, entities)
 
-    proj_root = BASE.parent
     for rel_dir, kind, forced_subtype in EQUIPMENT_MAPPINGS:
-        scan_folder(proj_root / "equipment" / rel_dir, kind, forced_subtype, seen_paths, entities)
+        scan_folder(BASE / "equipment" / rel_dir, kind, forced_subtype, seen_paths, entities)
 
     for rel_dir, kind, forced_subtype in FEAT_MAPPINGS:
-        folder = proj_root / "character creation" / rel_dir
+        folder = BASE / "character creation" / rel_dir
         # profession feats have one more level of subdirs per profession
         if folder.exists() and any(folder.iterdir()):
             # check if it has sub-profession folders
@@ -288,6 +298,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="http://192.168.1.216:8087", help="App base URL")
     parser.add_argument("--dry-run", action="store_true", help="Parse only, don't import")
+    parser.add_argument("--images-only", action="store_true", help="Only upload images and patch existing entities")
+    parser.add_argument("--verbose-images", action="store_true", help="Print each image upload result")
     args = parser.parse_args()
 
     print("Scanning lore files…")
@@ -304,16 +316,27 @@ def main():
         print("\n[dry-run] Not importing.")
         return
 
+    verbose = args.verbose_images
     print(f"\nUploading images to {args.host} …")
     imgs_uploaded = 0
+    imgs_failed = 0
     for e in entities:
         img_path = e.pop("_image_path", None)
         if img_path:
-            url = upload_image(args.host, img_path)
+            url = upload_image(args.host, img_path, verbose=verbose)
             if url:
                 e["image_url"] = url
                 imgs_uploaded += 1
-    print(f"  {imgs_uploaded} images uploaded")
+            else:
+                imgs_failed += 1
+    print(f"  {imgs_uploaded} uploaded, {imgs_failed} failed")
+    if imgs_failed and not verbose:
+        print("  (run with --verbose-images to see failures)")
+
+    if args.images_only:
+        # Only send entities that have an image to patch
+        entities = [e for e in entities if e.get("image_url")]
+        print(f"  Patching {len(entities)} entities with images …")
 
     print(f"Importing entities …")
     created = post_import(args.host, entities)

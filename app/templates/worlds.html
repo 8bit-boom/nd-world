@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Worlds — N&D World{% endblock %}
+{% block content %}
+<div class="list-header">
+  <h1>🌐 WORLDS</h1>
+</div>
+
+<div class="worlds-grid">
+  {% for w in worlds %}
+  <div class="world-card {% if current and current.id == w.id %}active{% endif %}" style="--w-accent: {{ w.accent }}">
+    <div class="world-card-accent"></div>
+    <div class="world-card-body">
+      <h2><a href="/worlds/switch/{{ w.slug }}">{{ w.name }}</a></h2>
+      {% if w.description %}<p>{{ w.description }}</p>{% endif %}
+      <div class="world-card-footer">
+        <span class="entity-sub">{{ w.entities|length }} entries</span>
+        <div class="world-actions">
+          <a href="/worlds/switch/{{ w.slug }}" class="btn-edit" style="font-size:.75rem">Switch</a>
+          {% if worlds|length > 1 %}
+          <form action="/worlds/{{ w.id }}/delete" method="post"
+                onsubmit="return confirm('Delete world {{ w.name }} and ALL its entries?')">
+            <button class="btn-delete" type="submit" style="font-size:.75rem">Delete</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+
+  <!-- Create new world -->
+  <div class="world-card new-world-card">
+    <div class="world-card-body">
+      <h2>+ New World</h2>
+      <form class="entity-form" action="/worlds/new" method="post">
+        <div class="form-group">
+          <label>Name</label>
+          <input name="name" required placeholder="My Campaign"/>
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <input name="description" placeholder="Short description…"/>
+        </div>
+        <div class="form-group">
+          <label>Accent color</label>
+          <input type="color" name="accent" value="#b44fff" style="height:2rem;padding:.1rem"/>
+        </div>
+        <button class="btn-save" type="submit">Create</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

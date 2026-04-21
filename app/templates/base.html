@@ -3,12 +3,30 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>{% block title %}Neon & Dragons — World{% endblock %}</title>
+  <title>{% block title %}{{ world.name if world else 'N&D World' }} — World{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css"/>
+  {% if world %}<style>:root { --neon: {{ world.accent }}; }</style>{% endif %}
 </head>
 <body>
 <nav class="topbar">
   <a class="logo" href="/">N&amp;D <span>WORLD</span></a>
+
+  <!-- World switcher -->
+  <div class="world-switcher">
+    <button class="world-btn" onclick="this.parentElement.classList.toggle('open')">
+      🌐 {{ world.name if world else 'Select World' }} ▾
+    </button>
+    <div class="world-dropdown">
+      {% for w in worlds %}
+      <a href="/worlds/switch/{{ w.slug }}" class="world-option {% if world and world.id == w.id %}active{% endif %}"
+         style="--w-accent: {{ w.accent }}">
+        {{ w.name }}
+      </a>
+      {% endfor %}
+      <a href="/worlds" class="world-option manage">⚙ Manage worlds</a>
+    </div>
+  </div>
+
   <form class="search-form" action="/search" method="get">
     <input name="q" placeholder="Search world…" value="{{ request.query_params.get('q','') }}"/>
     <button type="submit">⌕</button>
@@ -25,6 +43,13 @@
 <main>
   {% block content %}{% endblock %}
 </main>
-<footer>Neon &amp; Dragons World — self-hosted</footer>
+<footer>{{ world.name if world else 'N&D World' }} — self-hosted</footer>
+<script>
+document.addEventListener('click', e => {
+  if (!e.target.closest('.world-switcher')) {
+    document.querySelectorAll('.world-switcher').forEach(el => el.classList.remove('open'));
+  }
+});
+</script>
 </body>
 </html>

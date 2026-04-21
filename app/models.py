@@ -11,20 +11,34 @@ entity_links = Table(
     Column("target_id", Integer, ForeignKey("entities.id"), primary_key=True),
 )
 
+class World(Base):
+    __tablename__ = "worlds"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(256), nullable=False)
+    slug = Column(String(64), unique=True, nullable=False)
+    description = Column(String(512), nullable=True)
+    accent = Column(String(16), default="#00f0ff")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    entities = relationship("Entity", back_populates="world", cascade="all, delete-orphan")
+
 class Entity(Base):
     __tablename__ = "entities"
 
     id = Column(Integer, primary_key=True, index=True)
-    kind = Column(String(32), nullable=False, index=True)   # character, location, org, creature, event, note
-    subtype = Column(String(64), nullable=True)             # e.g. megacorp, district, mutant
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, default=1, index=True)
+    kind = Column(String(32), nullable=False, index=True)
+    subtype = Column(String(64), nullable=True)
     name = Column(String(256), nullable=False)
-    tags = Column(String(512), nullable=True)               # comma-separated
+    tags = Column(String(512), nullable=True)
     image_url = Column(String(512), nullable=True)
     summary = Column(String(512), nullable=True)
-    body = Column(Text, nullable=True)                      # markdown
+    body = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    world = relationship("World", back_populates="entities")
     related = relationship(
         "Entity",
         secondary=entity_links,

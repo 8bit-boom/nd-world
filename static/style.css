@@ -442,6 +442,67 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
 }
 .btn-cancel:hover { border-color: var(--text-dim); color: var(--text); text-decoration: none; }
 
+/* ── World switcher ── */
+.world-switcher { position: relative; }
+.world-btn {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--neon);
+  padding: .3rem .8rem;
+  cursor: pointer;
+  font-family: var(--font);
+  font-size: .78rem;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.world-btn:hover { border-color: var(--neon); }
+.world-dropdown {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  min-width: 180px;
+  z-index: 200;
+  overflow: hidden;
+}
+.world-switcher.open .world-dropdown { display: block; }
+.world-option {
+  display: block;
+  padding: .5rem .9rem;
+  font-size: .82rem;
+  color: var(--text);
+  text-decoration: none;
+  border-left: 3px solid transparent;
+}
+.world-option:hover { background: var(--bg3); color: var(--neon); text-decoration: none; }
+.world-option.active { border-left-color: var(--w-accent, var(--neon)); color: var(--w-accent, var(--neon)); }
+.world-option.manage { color: var(--text-dim); border-top: 1px solid var(--border); margin-top: .2rem; }
+
+/* ── Worlds page ── */
+.worlds-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
+.world-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  transition: border-color .2s;
+}
+.world-card.active { border-color: var(--w-accent, var(--neon)); }
+.world-card:hover { border-color: var(--w-accent, var(--neon)); }
+.world-card-accent { height: 4px; background: var(--w-accent, var(--neon)); }
+.world-card-body { padding: 1rem; }
+.world-card-body h2 { font-size: 1.1rem; margin-bottom: .4rem; }
+.world-card-body h2 a { color: var(--text); text-decoration: none; }
+.world-card-body h2 a:hover { color: var(--w-accent, var(--neon)); }
+.world-card-body p { color: var(--text-dim); font-size: .82rem; margin-bottom: .8rem; }
+.world-card-footer { display: flex; align-items: center; justify-content: space-between; margin-top: .8rem; }
+.world-actions { display: flex; gap: .4rem; align-items: center; }
+.new-world-card { border-style: dashed; }
+.new-world-card .world-card-body h2 { color: var(--text-dim); }
+
 /* ── Image upload ── */
 .current-image {
   display: flex;
