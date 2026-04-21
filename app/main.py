@@ -302,8 +302,13 @@ def api_import(payload: dict, db: Session = Depends(get_db)):
             e = Entity(**{k: v for k, v in item.items() if k in ENTITY_COLS})
             db.add(e)
             created += 1
-        elif item.get("image_url") and not existing.image_url:
-            existing.image_url = item["image_url"]
+        else:
+            if item.get("image_url") and not existing.image_url:
+                existing.image_url = item["image_url"]
+            if item.get("body"):
+                existing.body = item["body"]
+            if item.get("summary"):
+                existing.summary = item["summary"]
     db.commit()
     return {"created": created}
 

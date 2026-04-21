@@ -40,9 +40,20 @@ CHARACTER_TYPE_MAP = {
     "ally": "ally", "companion": "ally",
 }
 
+def resolve_mentions(text: str) -> str:
+    """Replace [type:id|Name] → Name, [type:id] → (removed)."""
+    if not text:
+        return text
+    # [type:id|Display Name] → Display Name
+    text = re.sub(r"\[[\w]+:\d+\|([^\]]+)\]", r"\1", text)
+    # [type:id] → remove entirely
+    text = re.sub(r"\[[\w]+:\d+\]", "", text)
+    return text
+
 def strip_html(text: str) -> str:
     if not text:
         return ""
+    text = resolve_mentions(text)
     text = re.sub(r"<[^>]+>", " ", text)
     text = html.unescape(text)
     return re.sub(r"\s+", " ", text).strip()
@@ -71,6 +82,7 @@ def parse_kanka_json(path: Path, kind: str, forced_subtype: str | None) -> dict 
     # Body: convert entry HTML to simple markdown-ish text
     body = entry_html if entry_html.strip() else None
     if body:
+        body = resolve_mentions(body)
         # Convert basic HTML to markdown
         body = re.sub(r"<h[1-3][^>]*>", "\n## ", body)
         body = re.sub(r"</h[1-3]>", "\n", body)
