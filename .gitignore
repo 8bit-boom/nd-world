@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+fix_*.py
+python
+# .github/ was intentionally removed — workflows need to be tracked
