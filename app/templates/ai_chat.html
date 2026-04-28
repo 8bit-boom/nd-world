@@ -170,6 +170,16 @@
 }
 #ai-send:disabled { opacity: .45; cursor: not-allowed; }
 
+.model-row { display:flex; align-items:center; gap:.4rem; padding:.2rem 0; font-size:.8rem; }
+.model-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+.model-dot--loaded { background:#4f4; }
+.model-dot--unloaded { background:#444; }
+.model-label { flex:1; cursor:pointer; color:var(--text-dim); transition:color .12s; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-family:inherit; background:none; border:none; text-align:left; padding:0; }
+.model-label:hover, .model-label.active { color:var(--neon); }
+.model-pull-btn { font-size:.7rem; background:transparent; border:1px solid #333; color:#666; border-radius:3px; padding:.1rem .3rem; cursor:pointer; white-space:nowrap; transition:border-color .12s,color .12s; font-family:inherit; flex-shrink:0; }
+.model-pull-btn:hover { border-color:var(--neon); color:var(--neon); }
+.model-pull-btn:disabled { opacity:.4; cursor:default; }
+
 .save-note-btn {
   display: inline-block;
   margin-top: .4rem;
@@ -213,6 +223,11 @@
     </div>
 
     <div style="border-top:1px solid var(--border);padding-top:.75rem">
+      <div class="ai-section-label">Model</div>
+      <div id="model-list" style="font-size:.78rem;color:var(--text-dim)">⏳ Loading…</div>
+    </div>
+
+    <div style="border-top:1px solid var(--border);padding-top:.75rem">
       <div class="ai-section-label">World lore</div>
       <div id="ctx-status" style="font-size:.78rem;color:var(--text-dim)">○ Ready</div>
     </div>
@@ -241,6 +256,94 @@
 <script>
 const WORLD_SYSTEM = {{ world_system | tojson }};
 let history = [];
+let activeModel = "";
+
+async function loadModels() {
+  const list = document.getElementById('model-list');
+  try {
+    const r = await fetch('/api/ai/models');
+    const d = await r.json();
+    if (!activeModel) activeModel = d.default;
+    list.innerHTML = '';
+    for (const m of d.models) {
+      const row = document.createElement('div');
+      row.className = 'model-row';
+
+      const dot = document.createElement('span');
+      dot.className = 'model-dot ' + (m.loaded ? 'model-dot--loaded' : 'model-dot--unloaded');
+      dot.id = 'dot-' + btoa(m.id).replace(/=/g,'');
+
+      const label = document.createElement('button');
+      label.className = 'model-label' + (m.id === activeModel ? ' active' : '');
+      label.textContent = m.label;
+      label.title = m.id;
+      label.onclick = () => selectModel(m.id, label);
+
+      row.appendChild(dot);
+      row.appendChild(label);
+
+      if (!m.loaded) {
+        const btn = document.createElement('button');
+        btn.className = 'model-pull-btn';
+        btn.textContent = '⬇ Pull';
+        btn.id = 'pull-' + btoa(m.id).replace(/=/g,'');
+        btn.onclick = () => pullModel(m.id, btn, dot);
+        row.appendChild(btn);
+      }
+
+      list.appendChild(row);
+    }
+  } catch(e) {
+    list.textContent = '✗ Unavailable';
+  }
+}
+
+function selectModel(id, labelEl) {
+  activeModel = id;
+  document.querySelectorAll('.model-label').forEach(l => l.classList.remove('active'));
+  labelEl.classList.add('active');
+}
+
+async function pullModel(modelId, btn, dot) {
+  btn.disabled = true;
+  btn.textContent = '⏳ 0%';
+  try {
+    const res = await fetch('/api/ai/pull', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_id: modelId })
+    });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for (const p of parts) {
+        if (!p.startsWith('data: ')) continue;
+        const payload = p.slice(6);
+        if (payload === '[DONE]') break;
+        try {
+          const obj = JSON.parse(payload);
+          if (obj.total && obj.completed) {
+            btn.textContent = '⏳ ' + Math.round(obj.completed / obj.total * 100) + '%';
+          } else if (obj.status) {
+            btn.textContent = obj.status.slice(0, 12);
+          }
+        } catch(_) {}
+      }
+    }
+    dot.className = 'model-dot model-dot--loaded';
+    btn.remove();
+  } catch(e) {
+    btn.textContent = '✗ Failed';
+    btn.disabled = false;
+  }
+}
+loadModels();
 
 function mdToHtml(text) {
   let h = text
@@ -349,7 +452,7 @@ async function sendMessage() {
     const res = await fetch('/api/ai/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: messagesWithCtx, system: WORLD_SYSTEM })
+      body: JSON.stringify({ messages: messagesWithCtx, system: WORLD_SYSTEM, model: activeModel })
     });
     if (!res.ok) throw new Error('Server error ' + res.status);
 

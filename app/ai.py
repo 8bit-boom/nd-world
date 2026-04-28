@@ -6,6 +6,30 @@ from collections.abc import AsyncGenerator
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:26b")
 
+KNOWN_MODELS = [
+    {"id": "gemma4:26b", "label": "Gemma 4 26B (default)"},
+    {
+        "id": "hf.co/noctrex/gemma-4-26B-A4B-it-MXFP4_MOE-GGUF:gemma-4-26B-A4B-it-MXFP4_MOE.gguf",
+        "label": "Gemma 4 26B MXFP4",
+    },
+    {
+        "id": "hf.co/noctrex/Qwen3.6-35B-A3B-MXFP4_MOE-GGUF:Qwen3.6-35B-A3B-MXFP4_MOE.gguf",
+        "label": "Qwen 3.6 35B MXFP4",
+    },
+    {
+        "id": "hf.co/unsloth/GLM-4.6V-Flash-GGUF:GLM-4.6V-Flash-UD-Q4_K_XL.gguf",
+        "label": "GLM 4.6V Flash",
+    },
+    {
+        "id": "hf.co/mistralai/Ministral-3-14B-Reasoning-2512-GGUF:Ministral-3-14B-Reasoning-2512-Q4_K_M.gguf",
+        "label": "Ministral 3B Reasoning",
+    },
+    {
+        "id": "hf.co/unsloth/NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-GGUF:NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-UD-IQ4_NL_XL.gguf",
+        "label": "Nemotron 30B Reasoning",
+    },
+]
+
 _SYSTEM = (
     "You are a creative fantasy world-building assistant. "
     "Write vivid, immersive lore. Be concise but evocative. "
@@ -13,7 +37,8 @@ _SYSTEM = (
 )
 
 
-async def generate_chat(messages: list[dict], system: str = "") -> str:
+async def generate_chat(messages: list[dict], system: str = "", model: str = "") -> str:
+    m = model or OLLAMA_MODEL
     full = []
     if system:
         full.append({"role": "system", "content": system})
@@ -22,7 +47,7 @@ async def generate_chat(messages: list[dict], system: str = "") -> str:
         async with httpx.AsyncClient(timeout=300.0) as client:
             r = await client.post(
                 f"{OLLAMA_URL}/api/chat",
-                json={"model": OLLAMA_MODEL, "messages": full, "stream": False},
+                json={"model": m, "messages": full, "stream": False},
             )
             r.raise_for_status()
             msg = r.json()["message"]
@@ -31,14 +56,15 @@ async def generate_chat(messages: list[dict], system: str = "") -> str:
         return f"[AI unavailable: {type(exc).__name__}: {exc}]"
 
 
-async def stream_chat(messages: list[dict], system: str = "") -> AsyncGenerator[str, None]:
+async def stream_chat(messages: list[dict], system: str = "", model: str = "") -> AsyncGenerator[str, None]:
+    m = model or OLLAMA_MODEL
     full = [{"role": "system", "content": system}] if system else []
     full.extend(messages)
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
             async with client.stream(
                 "POST", f"{OLLAMA_URL}/api/chat",
-                json={"model": OLLAMA_MODEL, "messages": full, "stream": True},
+                json={"model": m, "messages": full, "stream": True},
             ) as r:
                 r.raise_for_status()
                 async for line in r.aiter_lines():

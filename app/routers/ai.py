@@ -1,4 +1,5 @@
 import json as _json
+import httpx
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse as _SR
 from pydantic import BaseModel
@@ -16,12 +17,13 @@ class ChatMessage(BaseModel):
 class ChatBody(BaseModel):
     messages: List[ChatMessage]
     system: str = ""
+    model: str = ""
 
 
 @router.post("/chat")
 async def ai_chat(body: ChatBody):
     msgs = [{"role": m.role, "content": m.content} for m in body.messages]
-    return {"result": await _ai.generate_chat(msgs, body.system)}
+    return {"result": await _ai.generate_chat(msgs, body.system, body.model)}
 
 
 @router.post("/stream")
@@ -29,8 +31,51 @@ async def ai_stream(body: ChatBody):
     msgs = [{"role": m.role, "content": m.content} for m in body.messages]
 
     async def _gen():
-        async for token in _ai.stream_chat(msgs, body.system):
+        async for token in _ai.stream_chat(msgs, body.system, body.model):
             yield f"data: {_json.dumps({'token': token})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return _SR(
+        _gen(),
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/models")
+async def ai_models():
+    loaded = []
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{_ai.OLLAMA_URL}/api/tags")
+            loaded = [m["name"] for m in r.json().get("models", [])]
+    except Exception:
+        pass
+    result = [
+        {**m, "loaded": any(m["id"] in l or l in m["id"] for l in loaded)}
+        for m in _ai.KNOWN_MODELS
+    ]
+    return {"models": result, "default": _ai.OLLAMA_MODEL}
+
+
+class PullBody(BaseModel):
+    model_id: str
+
+
+@router.post("/pull")
+async def ai_pull(body: PullBody):
+    async def _gen():
+        try:
+            async with httpx.AsyncClient(timeout=3600.0) as client:
+                async with client.stream(
+                    "POST", f"{_ai.OLLAMA_URL}/api/pull",
+                    json={"name": body.model_id, "stream": True},
+                ) as r:
+                    async for line in r.aiter_lines():
+                        if line:
+                            yield f"data: {line}\n\n"
+        except Exception as exc:
+            yield f"data: {_json.dumps({'error': str(exc)})}\n\n"
         yield "data: [DONE]\n\n"
 
     return _SR(
