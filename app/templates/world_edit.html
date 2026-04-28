@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Edit World — {{ edit_world.name }}{% endblock %}
+{% block content %}
+<div class="form-page">
+  <h1>✏ Edit World</h1>
+  <form method="post" action="/worlds/{{ edit_world.id }}/edit" class="entity-form">
+    <div class="form-group">
+      <label>Name *</label>
+      <input name="name" required value="{{ edit_world.name }}" autocomplete="off"/>
+    </div>
+    <div class="form-group">
+      <label>Description</label>
+      <input name="description" value="{{ edit_world.description or '' }}" placeholder="Short description"/>
+    </div>
+    <div class="form-group">
+      <label>Accent colour</label>
+      <div style="display:flex;align-items:center;gap:.75rem">
+        <input type="color" name="accent" id="accent-pick" value="{{ edit_world.accent or '#00f0ff' }}" style="width:48px;height:36px;border:none;background:none;cursor:pointer" oninput="document.getElementById('accent-prev').style.background=this.value"/>
+        <div id="accent-prev" style="width:80px;height:24px;border-radius:4px;background:{{ edit_world.accent or '#00f0ff' }}"></div>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Save changes</button>
+      <a href="/worlds" class="btn-cancel">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

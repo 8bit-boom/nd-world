@@ -5,10 +5,18 @@
   <h1>🌐 WORLDS</h1>
 </div>
 
+{% if request.query_params.get('imported') %}
+<div class="import-notice">
+  Import complete — {{ request.query_params.get('imported') }} created,
+  {{ request.query_params.get('updated') }} updated.
+</div>
+{% endif %}
+
 <div class="worlds-grid">
   {% for w in worlds %}
-  <div class="world-card {% if current and current.id == w.id %}active{% endif %}" style="--w-accent: {{ w.accent }}">
+  <div class="world-card {% if current and current.id == w.id %}active{% endif %}" style="--w-accent: {{ w.accent }};position:relative">
     <div class="world-card-accent"></div>
+    <a href="/worlds/{{ w.id }}/edit" class="world-edit-btn" title="Edit world" onclick="event.stopPropagation()">✏</a>
     <div class="world-card-body">
       <h2><a href="/worlds/switch/{{ w.slug }}">{{ w.name }}</a></h2>
       {% if w.description %}<p>{{ w.description }}</p>{% endif %}
@@ -16,6 +24,7 @@
         <span class="entity-sub">{{ w.entities|length }} entries</span>
         <div class="world-actions">
           <a href="/worlds/switch/{{ w.slug }}" class="btn-edit" style="font-size:.75rem">Switch</a>
+          <a href="/worlds/{{ w.id }}/export" class="btn-export" title="Export world to JSON">⬇ Export</a>
           {% if worlds|length > 1 %}
           <form action="/worlds/{{ w.id }}/delete" method="post"
                 onsubmit="return confirm('Delete world {{ w.name }} and ALL its entries?')">
@@ -24,6 +33,13 @@
           {% endif %}
         </div>
       </div>
+      <details class="import-panel">
+        <summary>⬆ Import from JSON</summary>
+        <form action="/worlds/{{ w.id }}/import" method="post" enctype="multipart/form-data" class="import-form">
+          <input type="file" name="file" accept=".json" required/>
+          <button type="submit" class="btn-save" style="font-size:.8rem">Import</button>
+        </form>
+      </details>
     </div>
   </div>
   {% endfor %}
@@ -50,4 +66,8 @@
     </div>
   </div>
 </div>
+<style>
+.world-edit-btn { position:absolute; top:.5rem; right:.5rem; font-size:.8rem; color:#666; text-decoration:none; padding:.2rem .4rem; border-radius:3px; border:1px solid transparent; transition:color .12s,border-color .12s; z-index:1; }
+.world-edit-btn:hover { color:var(--neon); border-color:var(--neon); }
+</style>
 {% endblock %}

@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>{{ world.name }} — World Book</title>
+  <link rel="stylesheet" href="./assets/style.css"/>
+  <style>:root { --neon: {{ world.accent }}; }</style>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0d0d0d;
+      color: #e0e0e0;
+      display: flex;
+      min-height: 100vh;
+    }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 220px;
+      min-height: 100vh;
+      background: #111;
+      border-right: 1px solid #222;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      padding: 1rem .5rem;
+      flex-shrink: 0;
+    }
+
+    #search-wrap {
+      margin-bottom: .75rem;
+    }
+    #search {
+      width: 100%;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 4px;
+      padding: .4rem .6rem;
+      color: #e0e0e0;
+      font-size: .85rem;
+    }
+    #search:focus { outline: 1px solid {{ world.accent }}; }
+
+    .toc-world {
+      font-weight: 700;
+      font-size: .9rem;
+      color: {{ world.accent }};
+      padding: .3rem .5rem .6rem;
+      border-bottom: 1px solid #222;
+      margin-bottom: .4rem;
+      word-break: break-word;
+    }
+
+    .toc-link {
+      display: block;
+      padding: .35rem .5rem;
+      color: #bbb;
+      text-decoration: none;
+      border-radius: 4px;
+      font-size: .82rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: background .15s, color .15s;
+    }
+    .toc-link:hover {
+      background: #1e1e1e;
+      color: {{ world.accent }};
+    }
+
+    /* ── Main content ── */
+    #main-content {
+      flex: 1;
+      padding: 2rem;
+      max-width: 960px;
+    }
+
+    #world-header {
+      margin-bottom: 2rem;
+      padding-bottom: 1rem;
+      border-bottom: 2px solid {{ world.accent }};
+    }
+    #world-header h1 {
+      margin: 0 0 .4rem;
+      font-size: 2rem;
+      color: {{ world.accent }};
+    }
+    #world-header p {
+      margin: .25rem 0;
+      color: #aaa;
+    }
+    .export-meta {
+      font-size: .78rem;
+      color: #555 !important;
+    }
+
+    /* ── Sections ── */
+    .kind-section {
+      margin-bottom: 2.5rem;
+    }
+    .kind-section h2 {
+      font-size: 1.3rem;
+      margin: 0 0 1rem;
+      padding-left: .6rem;
+      border-left: 3px solid {{ world.accent }};
+      color: #f0f0f0;
+    }
+    .count {
+      font-size: .85rem;
+      color: #777;
+      font-weight: 400;
+    }
+
+    /* ── Entity card ── */
+    .entity-card {
+      background: #161616;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      overflow: hidden;
+    }
+    .entity-card::after {
+      content: '';
+      display: table;
+      clear: both;
+    }
+
+    .ent-img {
+      float: right;
+      margin: 0 0 .5rem 1rem;
+      border-radius: 4px;
+      max-width: 200px;
+      max-height: 200px;
+      object-fit: cover;
+    }
+
+    .entity-card h3 {
+      margin: 0 0 .25rem;
+      font-size: 1.05rem;
+      color: #f5f5f5;
+    }
+    .ent-sub {
+      font-size: .78rem;
+      color: {{ world.accent }};
+      margin-bottom: .35rem;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .ent-summary {
+      margin: .3rem 0;
+      color: #bbb;
+      font-size: .9rem;
+    }
+    .ent-body {
+      margin: .5rem 0;
+      font-size: .88rem;
+      color: #ccc;
+      line-height: 1.6;
+      word-break: break-word;
+    }
+    .ent-body p { margin: .3rem 0; }
+    .ent-body h1, .ent-body h2, .ent-body h3 { color: #f0f0f0; margin: .6rem 0 .2rem; }
+    .ent-body ul, .ent-body ol { margin: .3rem 0; padding-left: 1.4rem; }
+    .ent-body li { margin-bottom: .15rem; }
+    .ent-body strong { color: #e8e8e8; }
+    .ent-body em { color: #bbb; }
+    .ent-body hr { border: none; border-top: 1px solid #2a2a2a; margin: .5rem 0; }
+    .ent-body table { border-collapse: collapse; width: 100%; margin: .4rem 0; font-size: .83rem; }
+    .ent-body th, .ent-body td { border: 1px solid #2a2a2a; padding: .25rem .5rem; }
+    .ent-body th { background: #1a1a1a; color: #ddd; }
+    .ent-body tr:nth-child(even) td { background: #161616; }
+    .ent-body code { background: #1a1a1a; padding: .1em .3em; border-radius: 3px; font-size: .82em; }
+    .ent-tags {
+      margin-top: .5rem;
+    }
+    .tag {
+      display: inline-block;
+      background: #222;
+      border-radius: 3px;
+      padding: 2px 6px;
+      font-size: .75rem;
+      margin-right: .3rem;
+      margin-bottom: .2rem;
+      color: #aaa;
+    }
+
+    a { color: {{ world.accent }}; }
+
+    /* ── Map rows ── */
+    .map-row {
+      padding: .5rem .75rem;
+      background: #161616;
+      border: 1px solid #2a2a2a;
+      border-radius: 4px;
+      margin-bottom: .5rem;
+      font-size: .9rem;
+    }
+
+    /* ── Board table ── */
+    .board-section {
+      margin-bottom: 1.5rem;
+    }
+    .board-section h3 {
+      margin: 0 0 .4rem;
+      color: #e0e0e0;
+    }
+    .board-section > p {
+      color: #aaa;
+      font-size: .88rem;
+      margin: .25rem 0 .6rem;
+    }
+
+    .board-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .85rem;
+      margin-bottom: .75rem;
+    }
+    .board-table th {
+      background: #1a1a1a;
+      color: #999;
+      padding: .4rem .6rem;
+      text-align: left;
+      border-bottom: 1px solid #2a2a2a;
+    }
+    .board-table td {
+      padding: .4rem .6rem;
+      border-bottom: 1px solid #1e1e1e;
+      vertical-align: top;
+    }
+    .board-table tr:nth-child(even) td {
+      background: #1a1a1a;
+    }
+    .board-table tr:nth-child(odd) td {
+      background: #141414;
+    }
+
+    .edge-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .4rem;
+      margin-top: .5rem;
+    }
+    .edge-item {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 3px;
+      padding: .2rem .5rem;
+      font-size: .78rem;
+      color: #ccc;
+    }
+
+    /* ── Rules ── */
+    .rules-body {
+      font-size: .9rem;
+      line-height: 1.65;
+      color: #ccc;
+    }
+    .rules-body h1, .rules-body h2, .rules-body h3 {
+      color: #f0f0f0;
+    }
+    .rules-body h2 {
+      border-left: 3px solid {{ world.accent }};
+      padding-left: .6rem;
+    }
+    .rules-body table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: .75rem 0;
+    }
+    .rules-body th, .rules-body td {
+      border: 1px solid #2a2a2a;
+      padding: .3rem .6rem;
+    }
+    .rules-body th { background: #1a1a1a; }
+    .rules-body tr:nth-child(even) td { background: #161616; }
+    .rules-body code {
+      background: #1a1a1a;
+      padding: .1em .35em;
+      border-radius: 3px;
+      font-size: .85em;
+    }
+
+    /* ── Footer ── */
+    footer {
+      color: #444;
+      font-size: .78rem;
+      padding: 2rem 2rem 1rem;
+      border-top: 1px solid #1a1a1a;
+      margin-top: 2rem;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 700px) {
+      #sidebar { display: none; }
+      #main-content { padding: 1rem; }
+    }
+  </style>
+</head>
+<body>
+
+<div id="sidebar">
+  <div id="search-wrap">
+    <input id="search" type="search" placeholder="Search…" oninput="doSearch(this.value)"/>
+  </div>
+  <div id="toc">
+    <div class="toc-world">{{ world.name }}</div>
+    {% for k in kinds %}{% if entities_by_kind.get(k) %}
+    <a class="toc-link" href="#kind-{{ k }}">{{ kind_icons[k] }} {{ k|capitalize }} ({{ entities_by_kind[k]|length }})</a>
+    {% endif %}{% endfor %}
+    {% if maps %}<a class="toc-link" href="#maps">🗺 Maps ({{ maps|length }})</a>{% endif %}
+    {% if boards %}<a class="toc-link" href="#boards">📌 Boards ({{ boards|length }})</a>{% endif %}
+    {% if rules_html %}<a class="toc-link" href="#rules">📖 Rules</a>{% endif %}
+  </div>
+</div>
+
+<main id="main-content">
+  <div id="world-header">
+    <h1>{{ world.name }}</h1>
+    {% if world.description %}<p>{{ world.description }}</p>{% endif %}
+    <p class="export-meta">Exported {{ export_date }}</p>
+  </div>
+
+  {% for k in kinds %}{% if entities_by_kind.get(k) %}
+  <section id="kind-{{ k }}" class="kind-section">
+    <h2>{{ kind_icons[k] }} {{ k|capitalize }} <span class="count">({{ entities_by_kind[k]|length }})</span></h2>
+    {% for ent in entities_by_kind[k] %}
+    <div class="entity-card" data-name="{{ ent.name|lower }}">
+      {% if ent.image_rel %}<img class="ent-img" src="{{ ent.image_rel }}" width="200" alt="{{ ent.name }}"/>{% endif %}
+      <h3 id="entity-{{ ent.id }}">{{ ent.name }}</h3>
+      {% if ent.subtype %}<div class="ent-sub">{{ ent.subtype }}</div>{% endif %}
+      {% if ent.summary %}<div class="ent-summary">{{ ent.summary }}</div>{% endif %}
+      {% if ent.body_html %}<div class="prose">{{ ent.body_html|safe }}</div>{% endif %}
+      {% if ent.tags %}<div class="ent-tags">{% for t in ent.tags.split(',') if t.strip() %}<span class="tag">{{ t.strip() }}</span>{% endfor %}</div>{% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}{% endfor %}
+
+  {% if maps %}
+  <section id="maps" class="kind-section">
+    <h2>🗺 Maps</h2>
+    {% for m in maps %}
+    <div class="map-row"><strong>{{ m.name }}</strong> — {{ m.markers }} marker{{ 's' if m.markers != 1 else '' }}</div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  {% if boards %}
+  <section id="boards" class="kind-section">
+    <h2>📌 Investigation Boards</h2>
+    {% for b in boards %}
+    <div class="board-section">
+      <h3>{{ b.name }}</h3>
+      {% if b.description %}<p>{{ b.description }}</p>{% endif %}
+      {% if b.nodes %}
+      <table class="board-table">
+        <thead><tr><th>Type</th><th>Title</th><th>Notes</th></tr></thead>
+        <tbody>
+        {% for n in b.nodes %}
+        <tr>
+          <td>{{ n.get('type', '') }}</td>
+          <td>{{ n.get('title', '') }}</td>
+          <td>{{ n.get('body', '') }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+      {% if b.edges %}
+      <div class="edge-list">
+        {% for e in b.edges %}
+        <span class="edge-item">{{ e.get('from', '') }} → {{ e.get('to', '') }}{% if e.get('label') %} <em>({{ e.label }})</em>{% endif %}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  {% if rules_html %}
+  <section id="rules" class="kind-section">
+    <h2>📖 Rules</h2>
+    <div class="rules-body prose">{{ rules_html|safe }}</div>
+  </section>
+  {% endif %}
+
+  <footer>{{ world.name }} — World Book generated {{ export_date }}</footer>
+</main>
+
+<script>
+function doSearch(v) {
+  v = v.toLowerCase();
+  document.querySelectorAll('.entity-card').forEach(function(c) {
+    c.style.display = (!v || c.dataset.name.includes(v)) ? '' : 'none';
+  });
+  document.querySelectorAll('.kind-section').forEach(function(s) {
+    var cards = s.querySelectorAll('.entity-card');
+    if (cards.length > 0) {
+      s.style.display = Array.from(cards).every(function(c) { return c.style.display === 'none'; }) ? 'none' : '';
+    }
+  });
+}
+</script>
+
+</body>
+</html>

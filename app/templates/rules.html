@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Rules — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div style="display:flex;gap:0;min-height:80vh">
+
+  <!-- Sidebar TOC -->
+  <div id="rules-toc-wrap" style="width:230px;flex-shrink:0;position:sticky;top:60px;height:calc(100vh - 60px);overflow-y:auto;background:var(--bg2,#111);border-right:1px solid #222;padding:1rem .5rem">
+    <div style="margin-bottom:.6rem">
+      <input id="rules-search" type="search" placeholder="Search rules…" oninput="rulesSearch(this.value)"
+        style="width:100%;background:#1a1a1a;border:1px solid #333;border-radius:4px;padding:.35rem .5rem;color:#e0e0e0;font-size:.82rem"/>
+    </div>
+    <div style="font-size:.7rem;color:#555;margin-bottom:.4rem;text-transform:uppercase;letter-spacing:.05em">Contents</div>
+    {% for entry in toc %}
+    <a href="#{{ entry.id }}" class="toc-entry toc-h{{ entry.level }}" onclick="clearSearch()">{{ entry.text }}</a>
+    {% endfor %}
+  </div>
+
+  <!-- Rules content -->
+  <div style="flex:1;padding:2rem;max-width:860px">
+    <h1>📖 Core Rules</h1>
+    <div class="rules-body prose">{{ content|safe }}</div>
+  </div>
+
+</div>
+
+<style>
+.toc-entry { display:block; padding:.28rem .5rem; color:#aaa; text-decoration:none; border-radius:3px; font-size:.8rem; line-height:1.3; transition:background .12s,color .12s; }
+.toc-entry:hover { background:#1e1e1e; color:var(--neon); }
+.toc-h2 { font-weight:600; margin-top:.3rem; }
+.toc-h3 { padding-left:1rem; font-size:.76rem; color:#777; }
+.rules-body h2 { border-left:3px solid var(--neon); padding-left:.6rem; margin-top:2rem; }
+.rules-body h3 { margin-top:1.4rem; color:#e0e0e0; }
+.rules-body mark { background:#ffee00; color:#000; border-radius:2px; padding:0 2px; }
+.rules-body table { border-collapse:collapse; width:100%; margin:.6rem 0; }
+.rules-body th, .rules-body td { border:1px solid #2a2a2a; padding:.3rem .6rem; font-size:.88rem; }
+.rules-body th { background:#1a1a1a; }
+.rules-body tr:nth-child(even) td { background:#161616; }
+.rules-body code { background:#1a1a1a; padding:.1em .35em; border-radius:3px; font-size:.85em; }
+.rules-body blockquote { border-left:3px solid #333; margin:.5rem 0; padding:.3rem .8rem; color:#999; }
+</style>
+
+<script>
+function rulesSearch(v) {
+  clearMarks();
+  if (!v) return;
+  const body = document.querySelector('.rules-body');
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  const matches = [];
+  let node;
+  while ((node = walker.nextNode())) {
+    const idx = node.textContent.toLowerCase().indexOf(v.toLowerCase());
+    if (idx >= 0) matches.push({node, idx, len: v.length});
+  }
+  matches.reverse().forEach(({node, idx, len}) => {
+    const span = document.createElement('mark');
+    span.textContent = node.textContent.slice(idx, idx + len);
+    const after = node.splitText(idx);
+    after.splitText(len);
+    after.parentNode.replaceChild(span, after);
+  });
+  const first = body.querySelector('mark');
+  if (first) first.scrollIntoView({behavior:'smooth', block:'center'});
+}
+function clearMarks() {
+  document.querySelectorAll('.rules-body mark').forEach(m => {
+    m.replaceWith(document.createTextNode(m.textContent));
+  });
+}
+function clearSearch() { document.getElementById('rules-search').value = ''; clearMarks(); }
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    const inp = document.getElementById('rules-search');
+    if (inp) { e.preventDefault(); inp.focus(); inp.select(); }
+  }
+});
+</script>
+{% endblock %}

@@ -6,70 +6,307 @@
   <div class="list-actions">
     <form action="/kind/{{ kind }}" method="get" class="filter-form">
       <input name="q" placeholder="Filter…" value="{{ q }}"/>
-      {% if active_folder %}<input type="hidden" name="folder" value="{{ active_folder }}"/>{% endif %}
+      {% if active_folder is not none %}<input type="hidden" name="folder" value="{{ active_folder }}"/>{% endif %}
       <button type="submit">⌕</button>
     </form>
+    {% if active_folder is not none %}
+    <div class="view-toggle">
+      <a href="?{% if active_folder is not none %}folder={{ active_folder|urlencode }}&{% endif %}{% if q %}q={{ q }}&{% endif %}view=grid"
+         class="view-btn {% if view == 'grid' %}active{% endif %}" title="Card view">⊞</a>
+      <a href="?{% if active_folder is not none %}folder={{ active_folder|urlencode }}&{% endif %}{% if q %}q={{ q }}&{% endif %}view=table"
+         class="view-btn {% if view == 'table' %}active{% endif %}" title="Table view">≡</a>
+    </div>
+    {% endif %}
     <a href="/new?kind={{ kind }}" class="btn-new">+ New {{ kind }}</a>
   </div>
 </div>
 
+{% if active_folder %}
+<nav class="breadcrumb">
+  <a href="/kind/{{ kind }}{% if q %}?q={{ q }}{% endif %}">{{ kind|capitalize }}s</a>
+  {% set ns = namespace(path='') %}
+  {% for part in active_folder.split('/') %}
+    {% if loop.first %}{% set ns.path = part %}{% else %}{% set ns.path = ns.path + '/' + part %}{% endif %}
+    <span class="bc-sep">›</span>
+    {% if loop.last %}
+    <span class="bc-current">{{ part }}</span>
+    {% else %}
+    <a href="/kind/{{ kind }}?folder={{ ns.path|urlencode }}{% if q %}&q={{ q }}{% endif %}">{{ part }}</a>
+    {% endif %}
+  {% endfor %}
+</nav>
+{% endif %}
+
 <div class="list-layout">
-  <!-- Folder sidebar -->
   {% if folders %}
   <aside class="folder-sidebar">
-    <div class="folder-header">// FOLDERS</div>
+    <div class="folder-header">📂 FOLDERS</div>
     <a href="/kind/{{ kind }}{% if q %}?q={{ q }}{% endif %}"
-       class="folder-item {% if not active_folder %}active{% endif %}">
-      📁 All ({{ entities|length }})
+       class="folder-item {% if active_folder is none %}active{% endif %}">
+      All <span class="folder-count">{{ total_count }}</span>
     </a>
-    {% for f in folders %}
-    <a href="/kind/{{ kind }}?folder={{ f|urlencode }}{% if q %}&q={{ q }}{% endif %}"
-       class="folder-item {% if active_folder == f %}active{% endif %}">
-      📂 {{ f }}
-      <span class="folder-count">{{ grouped.get(f, [])|length }}</span>
-    </a>
-    {% endfor %}
-    {% if grouped.get('') %}
-    <a href="/kind/{{ kind }}?folder={% if q %}?q={{ q }}{% endif %}"
-       class="folder-item {% if active_folder == '' and active_folder is not none %}active{% endif %}">
-      📄 Unfiled <span class="folder-count">{{ grouped.get('', [])|length }}</span>
+    <ul class="folder-tree" id="folder-tree"></ul>
+    {% if folder_counts.get('') %}
+    <a href="/kind/{{ kind }}?folder={% if q %}&q={{ q }}{% endif %}"
+       class="folder-item {% if active_folder == '' %}active{% endif %}">
+      Unfiled <span class="folder-count">{{ folder_counts.get('', 0) }}</span>
     </a>
     {% endif %}
   </aside>
   {% endif %}
 
-  <!-- Entities -->
   <div class="list-main">
-    {% if entities %}
-      {% if active_folder or not folders %}
-      <!-- Flat view when filtered to a folder -->
-      <div class="card-grid">
-        {% for e in entities %}
-        {% include "entities/_card.html" %}
-        {% endfor %}
-      </div>
-      {% else %}
-      <!-- Grouped by folder -->
-        {% for folder_name, items in grouped.items() %}
-        <details class="folder-group" open>
-          <summary class="folder-group-title">
-            {% if folder_name %}📂 {{ folder_name }}{% else %}📄 Unfiled{% endif %}
-            <span class="folder-count">{{ items|length }}</span>
-          </summary>
-          <div class="card-grid">
-            {% for e in items %}
-            {% include "entities/_card.html" %}
-            {% endfor %}
+    {# Subfolder cards — JS fills this when inside a folder that has children #}
+    <div id="subfolder-strip" class="subfolder-strip"></div>
+
+    {% if active_folder is none and folders %}
+    {# Root view: JS renders top-level folder cards #}
+    <div id="root-folders" class="root-folders-grid"></div>
+    {% if grouped.get('') %}
+    <div class="folder-section-label">📄 Unfiled</div>
+    <div class="card-grid" style="margin-top:.8rem">
+      {% for e in grouped.get('', []) %}{% include "entities/_card.html" %}{% endfor %}
+    </div>
+    {% endif %}
+
+    {% elif entities %}
+
+    {% if view == 'table' %}
+
+    {# ── Macro: renders one table (stat or text) for a list of entities ── #}
+    {% macro render_table(rows) %}
+    {% if table_cols %}
+    <table class="stat-table">
+      <thead><tr>
+        <th class="col-name">Name</th>
+        {% for col in table_cols %}<th>{{ col }}</th>{% endfor %}
+      </tr></thead>
+      <tbody>
+      {% for e in rows %}
+      {% set st = entity_stats.get(e.id, {}) %}
+      <tr class="kind-{{ e.kind }}{% if not st %} no-stats{% endif %}">
+        <td class="col-name">
+          {% if e.image_url %}<img class="tbl-thumb" src="{{ e.image_url }}" alt=""/>{% endif %}
+          <div class="col-name-text">
+            <a href="/entity/{{ e.id }}">{{ e.name }}</a>
+            {% if e.subtype %}<span class="entity-sub">{{ e.subtype }}</span>{% endif %}
           </div>
-        </details>
+        </td>
+        {% for col in table_cols %}
+        {% set val = st.get(col, '') %}
+        <td class="{% if col == 'Special conditions' %}col-special{% endif %}">{{ val if val else '—' }}</td>
         {% endfor %}
-      {% endif %}
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <table class="stat-table">
+      <thead><tr>
+        <th class="col-name">Name</th>
+        {% if char_feat_folder %}
+        <th style="width:70px">Rank</th>
+        {% elif kind == 'feat' %}
+        <th style="width:130px">Subtype</th>
+        {% endif %}
+        <th>Description</th>
+      </tr></thead>
+      <tbody>
+      {% for e in rows %}
+      {% set st = entity_stats.get(e.id, {}) %}
+      <tr class="kind-{{ e.kind }}">
+        <td class="col-name">
+          {% if e.image_url %}<img class="tbl-thumb" src="{{ e.image_url }}" alt=""/>{% endif %}
+          <div class="col-name-text"><a href="/entity/{{ e.id }}">{{ e.name }}</a></div>
+        </td>
+        {% if char_feat_folder %}
+        <td class="col-rank">{{ st.get('Rank', '—') }}</td>
+        {% elif kind == 'feat' %}
+        <td class="col-type">{{ e.subtype or '—' }}</td>
+        {% endif %}
+        <td>{{ e.summary or (e.body | entry_text | truncate(200, True, '…')) or '—' }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% endmacro %}
+
+    {% if is_parent_folder %}
+    {# ── Grouped sections: one table per immediate subfolder ── #}
+    {% for group_path, group_rows in subfolder_groups %}
+    {% set label = group_path.split('/')[-1] %}
+    <div class="group-section">
+      <div class="group-header">
+        <span class="group-label">📁 {{ label }}</span>
+        <span class="group-count">{{ group_rows | length }}</span>
+        <a class="group-link" href="/kind/{{ kind }}?folder={{ group_path | urlencode }}{% if q %}&q={{ q }}{% endif %}">open folder →</a>
+      </div>
+      {{ render_table(group_rows) }}
+    </div>
+    {% endfor %}
+
+    {% else %}
+    {# ── Single table (leaf folder) ── #}
+    {{ render_table(entities) }}
+    {% endif %}
+
+    {% else %}
+    {# ── Card grid view ── #}
+    <div class="card-grid">
+      {% for e in entities %}{% include "entities/_card.html" %}{% endfor %}
+    </div>
+    {% endif %}
+
     {% else %}
     <div class="empty">
-      <p>No {{ kind }}s yet{% if q %} matching "{{ q }}"{% endif %}{% if active_folder %} in "{{ active_folder }}"{% endif %}.</p>
+      <p>No {{ kind }}s{% if q %} matching "{{ q }}"{% endif %}{% if active_folder %} in "{{ active_folder }}"{% endif %}.</p>
       <a href="/new?kind={{ kind }}" class="btn-new">Create the first one</a>
     </div>
     {% endif %}
   </div>
 </div>
+
+<style>
+.folder-rename-tog { font-size:.7rem; background:none; border:none; color:#555; cursor:pointer; padding:.1rem .3rem; border-radius:3px; flex-shrink:0; }
+.folder-rename-tog:hover { color:var(--neon); }
+</style>
+<script>
+const FOLDERS = {{ folders | tojson }};
+const COUNTS  = {{ folder_counts | tojson }};
+const ACTIVE  = {{ active_folder | tojson }};
+const KIND    = {{ kind | tojson }};
+const Q       = {{ q | tojson }};
+
+function folderUrl(fullPath) {
+  let url = `/kind/${KIND}?folder=${encodeURIComponent(fullPath)}`;
+  if (Q) url += `&q=${encodeURIComponent(Q)}`;
+  return url;
+}
+
+function recursiveCount(path) {
+  const prefix = path + '/';
+  let n = COUNTS[path] || 0;
+  for (const [k, v] of Object.entries(COUNTS)) {
+    if (k.startsWith(prefix)) n += v;
+  }
+  return n;
+}
+
+// Sidebar: flat list of top-level folders with recursive counts
+function renderSidebar() {
+  const tree = document.getElementById('folder-tree');
+  if (!tree) return;
+  const seen = new Set();
+  const topLevel = [];
+  for (const f of FOLDERS) {
+    const top = f.split('/')[0];
+    if (!seen.has(top)) { seen.add(top); topLevel.push(top); }
+  }
+  topLevel.sort();
+  for (const name of topLevel) {
+    const count = recursiveCount(name);
+    const isActive = ACTIVE === name || (ACTIVE !== null && ACTIVE.startsWith(name + '/'));
+    const li = document.createElement('li');
+    li.style.cssText = 'display:flex;flex-direction:column;gap:0';
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:.2rem';
+    const a = document.createElement('a');
+    a.href = folderUrl(name);
+    a.className = 'folder-item' + (isActive ? ' active' : '');
+    a.style.flex = '1';
+    const icon = document.createElement('span');
+    icon.className = 'fi-icon';
+    icon.textContent = '📁';
+    const label = document.createElement('span');
+    label.className = 'fi-name';
+    label.textContent = name;
+    a.appendChild(icon);
+    a.appendChild(label);
+    if (count) {
+      const badge = document.createElement('span');
+      badge.className = 'folder-count';
+      badge.textContent = count;
+      a.appendChild(badge);
+    }
+    row.appendChild(a);
+    // Rename toggle button
+    const togBtn = document.createElement('button');
+    togBtn.className = 'folder-rename-tog';
+    togBtn.title = 'Rename folder';
+    togBtn.textContent = '✏';
+    togBtn.onclick = function(e) {
+      e.preventDefault();
+      const wrap = li.querySelector('.folder-rename-wrap');
+      if (wrap) wrap.style.display = wrap.style.display === 'none' ? '' : 'none';
+    };
+    row.appendChild(togBtn);
+    li.appendChild(row);
+    // Rename form
+    const wrap = document.createElement('div');
+    wrap.className = 'folder-rename-wrap';
+    wrap.style.display = 'none';
+    wrap.innerHTML = `<form method="post" action="/folders/rename" style="display:flex;flex-wrap:wrap;gap:2px;margin:.2rem 0 .2rem .5rem;align-items:center">
+      <input type="hidden" name="kind" value="${KIND}"/>
+      <input type="hidden" name="old_path" value="${name}"/>
+      <input name="new_path" value="${name}" style="font-size:.75rem;width:140px;background:#1a1a1a;border:1px solid #333;border-radius:3px;padding:2px 5px;color:#e0e0e0" autocomplete="off"/>
+      <button type="submit" style="font-size:.72rem;background:var(--neon);color:#000;border:none;border-radius:3px;padding:2px 6px;cursor:pointer">OK</button>
+    </form>`;
+    li.appendChild(wrap);
+    tree.appendChild(li);
+  }
+}
+
+// Subfolder strip: direct children of ACTIVE folder
+function renderSubfolderStrip() {
+  const strip = document.getElementById('subfolder-strip');
+  if (!strip || ACTIVE === null) return;
+  const prefix = ACTIVE + '/';
+  const seen = new Set();
+  const children = [];
+  for (const f of FOLDERS) {
+    if (!f.startsWith(prefix)) continue;
+    const top = f.slice(prefix.length).split('/')[0];
+    if (!top || seen.has(top)) continue;
+    seen.add(top);
+    children.push(prefix + top);
+  }
+  if (!children.length) return;
+  children.sort();
+  for (const fullPath of children) {
+    const name = fullPath.split('/').pop();
+    const count = recursiveCount(fullPath);
+    const a = document.createElement('a');
+    a.href = folderUrl(fullPath);
+    a.className = 'subfolder-card';
+    a.innerHTML = `<span class="sf-icon">📁</span><span class="sf-name">${name}</span>${count ? `<span class="sf-count">${count}</span>` : ''}`;
+    strip.appendChild(a);
+  }
+}
+
+// Root view: folder card grid
+function renderRootFolders() {
+  const container = document.getElementById('root-folders');
+  if (!container || ACTIVE !== null) return;
+  const seen = new Set();
+  const topLevel = [];
+  for (const f of FOLDERS) {
+    const top = f.split('/')[0];
+    if (!seen.has(top)) { seen.add(top); topLevel.push(top); }
+  }
+  topLevel.sort();
+  for (const name of topLevel) {
+    const count = recursiveCount(name);
+    const a = document.createElement('a');
+    a.href = folderUrl(name);
+    a.className = 'root-folder-card';
+    a.innerHTML = `<span class="rf-icon">📁</span><span class="rf-name">${name}</span><span class="rf-count">${count} items</span>`;
+    container.appendChild(a);
+  }
+}
+
+renderSidebar();
+renderSubfolderStrip();
+renderRootFolders();
+</script>
 {% endblock %}

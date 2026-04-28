@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>{{ board.name }} — Board Export</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #0e0e0e;
+  color: #ccc;
+  font-family: 'Courier New', monospace;
+  min-height: 100vh;
+}
+#export-bar {
+  display: flex; align-items: center; gap: .7rem;
+  padding: .4rem .8rem;
+  background: rgba(0,0,0,.9);
+  border-bottom: 1px solid rgba(255,255,255,.1);
+  position: sticky; top: 0; z-index: 100;
+}
+#export-bar h1 { font-size: .95rem; color: #00f0ff; }
+#export-bar .meta { font-size: .75rem; opacity: .55; }
+#export-bar a { font-size: .78rem; color: #00f0ff; text-decoration: none; border: 1px solid rgba(0,240,255,.3); padding: .15rem .5rem; border-radius: 3px; }
+#export-bar a:hover { background: rgba(0,240,255,.08); }
+#board-canvas {
+  position: relative;
+  width: {{ canvas_w }}px;
+  height: {{ canvas_h }}px;
+  margin: 0;
+  overflow: visible;
+}
+.node-card {
+  position: absolute;
+  width: 160px;
+  border-radius: 4px;
+  box-shadow: 3px 5px 18px rgba(0,0,0,.7);
+  font-family: 'Courier New', monospace;
+  font-size: .75rem;
+  overflow: hidden;
+}
+.card-hdr {
+  padding: .3rem .5rem;
+  font-weight: bold;
+  font-size: .8rem;
+  border-bottom: 1px solid rgba(255,255,255,.12);
+  display: flex; align-items: center; gap: .3rem;
+}
+.card-body-text {
+  padding: .3rem .5rem;
+  font-size: .73rem;
+  opacity: .8;
+  word-break: break-word;
+  max-height: 80px;
+  overflow: hidden;
+  line-height: 1.4;
+}
+.card-tags-row {
+  padding: .2rem .4rem .3rem;
+  border-top: 1px solid rgba(255,255,255,.08);
+  display: flex; flex-wrap: wrap; gap: .12rem;
+}
+.card-tag-chip {
+  font-size: .62rem; padding: .03rem .28rem; border-radius: 8px;
+  background: rgba(0,240,255,.12); border: 1px solid rgba(0,240,255,.25); color: #00f0ff;
+}
+.group-frame {
+  position: absolute;
+  border: 1.5px dashed rgba(255,255,255,.25);
+  border-radius: 6px;
+  pointer-events: none;
+}
+.group-label {
+  position: absolute;
+  top: -18px; left: 4px;
+  font-size: .7rem; opacity: .7;
+  padding: .03rem .35rem;
+  background: rgba(0,0,0,.6);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+#edge-svg {
+  position: absolute;
+  top: 0; left: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+</style>
+</head>
+<body>
+<div id="export-bar">
+  <h1>{{ board.name }}</h1>
+  {% if board.description %}<span class="meta">{{ board.description }}</span>{% endif %}
+  <span class="meta" style="margin-left:auto">Exported {{ export_date }}</span>
+  <a href="/boards/{{ board.slug }}">← Live Board</a>
+</div>
+
+<div style="overflow:auto;min-height:calc(100vh - 40px);background:#0e0e0e;padding:1rem">
+<div id="board-canvas">
+
+  <!-- SVG edge layer -->
+  <svg id="edge-svg" width="{{ canvas_w }}" height="{{ canvas_h }}">
+    <defs>
+      <marker id="mk-leads_to"     markerWidth="10" markerHeight="7" refX="9"  refY="3.5" orient="auto">               <polygon points="0 0,10 3.5,0 7" fill="#f0c040"/></marker>
+      <marker id="mk-causes"       markerWidth="10" markerHeight="7" refX="9"  refY="3.5" orient="auto">               <polygon points="0 0,10 3.5,0 7" fill="#ff8844"/></marker>
+      <marker id="mk-leads_to-rev" markerWidth="10" markerHeight="7" refX="1"  refY="3.5" orient="auto-start-reverse"><polygon points="0 0,10 3.5,0 7" fill="#f0c040"/></marker>
+      <marker id="mk-causes-rev"   markerWidth="10" markerHeight="7" refX="1"  refY="3.5" orient="auto-start-reverse"><polygon points="0 0,10 3.5,0 7" fill="#ff8844"/></marker>
+    </defs>
+
+    {% set edge_kind_color = {
+      'link': '#ff4444',
+      'supports': '#44cc66',
+      'refutes': '#ff3333',
+      'leads_to': '#f0c040',
+      'causes': '#ff8844',
+      'same_as': '#44cccc'
+    } %}
+    {% set edge_kind_arrow = ['leads_to', 'causes'] %}
+    {% set edge_kind_dash = {
+      'refutes': '10 6',
+      'same_as': '3 5'
+    } %}
+
+    {# Build node lookup dict #}
+    {% set node_map = {} %}
+    {% for n in nodes %}{% if node_map.update({n.id: n}) %}{% endif %}{% endfor %}
+
+    {# Count parallel edges per pair for offset calculation #}
+    {% for e in edges %}
+      {% set from_node = node_map.get(e.from) %}
+      {% set to_node   = node_map.get(e.to) %}
+      {% if from_node and to_node %}
+        {# ax,ay = card center (x+80, y+40) #}
+        {% set ax = from_node.x + 80 %}
+        {% set ay = from_node.y + 40 %}
+        {% set bx = to_node.x + 80 %}
+        {% set by = to_node.y + 40 %}
+        {% set dx = (bx - ax) * 0.45 %}
+        {% set kind = e.kind if e.kind else 'link' %}
+        {% set col  = edge_kind_color.get(kind, '#ff4444') %}
+        {% set col  = e.color if e.color and e.color != '#ff4444' else col %}
+        {% set sw   = 4 if kind == 'causes' else 2 %}
+        {% set dash = edge_kind_dash.get(kind, '') %}
+        <path
+          d="M{{ ax }} {{ ay }} C{{ ax + dx }} {{ ay }} {{ bx - dx }} {{ by }} {{ bx }} {{ by }}"
+          fill="none"
+          stroke="{{ col }}"
+          stroke-width="{{ sw }}"
+          stroke-linecap="round"
+          opacity="0.85"
+          {% if dash %}stroke-dasharray="{{ dash }}"{% endif %}
+          {% if kind in edge_kind_arrow %}
+            {% set dir = e.direction if e.direction else 'fwd' %}
+            {% if dir == 'fwd' or dir == 'both' %}marker-end="url(#mk-{{ kind }})"{% endif %}
+            {% if dir == 'rev' or dir == 'both' %}marker-start="url(#mk-{{ kind }}-rev)"{% endif %}
+          {% endif %}
+        />
+        {% if e.label %}
+          <text
+            x="{{ (ax + bx) / 2 }}"
+            y="{{ (ay + by) / 2 - 12 }}"
+            text-anchor="middle"
+            dominant-baseline="middle"
+            font-size="11"
+            font-family="monospace"
+            fill="{{ col }}"
+          >{{ e.label }}</text>
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+  </svg>
+
+  <!-- Group frames -->
+  {% for g in groups %}
+  <div class="group-frame" style="left:{{ g.x }}px;top:{{ g.y }}px;width:{{ g.w }}px;height:{{ g.h }}px;border-color:{{ g.color if g.color else 'rgba(255,255,255,.25)' }}">
+    <span class="group-label">{{ g.label if g.label else 'Group' }}</span>
+  </div>
+  {% endfor %}
+
+  <!-- Node cards -->
+  {% set type_cfg = {
+    'person':   {'icon': '👤', 'hdr': '#4a1e2a', 'border': '#c0394a'},
+    'location': {'icon': '📍', 'hdr': '#1a2e4a', 'border': '#2a7abd'},
+    'event':    {'icon': '⚡', 'hdr': '#1e3a1e', 'border': '#3a9a3a'},
+    'clue':     {'icon': '🔍', 'hdr': '#3a3010', 'border': '#c0a020'},
+    'faction':  {'icon': '🏛', 'hdr': '#2a1a4a', 'border': '#7a3acd'},
+    'note':     {'icon': '📝', 'hdr': '#2a2a2a', 'border': '#888888'}
+  } %}
+
+  {% for n in nodes %}
+    {% set cfg = type_cfg.get(n.type, type_cfg['note']) %}
+    <div class="node-card" style="left:{{ n.x }}px;top:{{ n.y }}px;background:{{ n.color if n.color else '#1e1e2e' }};border-left:3px solid {{ cfg.border }}">
+      <div class="card-hdr" style="background:{{ cfg.hdr }}">
+        <span>{{ cfg.icon }}</span>
+        <span style="flex:1;word-break:break-word;line-height:1.25{% if n.status == 'dismissed' %};text-decoration:line-through;opacity:.55{% endif %}">{{ n.title if n.title else 'Untitled' }}</span>
+        {% if n.status and n.status != 'unknown' %}
+          <span style="font-size:.65rem;background:rgba(0,0,0,.5);border-radius:2px;padding:0 3px;{% if n.status == 'verified' %}color:#44cc66{% elif n.status == 'suspect' %}color:#ff4444{% elif n.status == 'confirmed_false' %}color:#ff2222{% else %}color:#888{% endif %}">
+            {% if n.status == 'verified' %}✔{% elif n.status == 'suspect' %}?{% elif n.status == 'dismissed' %}—{% elif n.status == 'confirmed_false' %}✗{% endif %}
+          </span>
+        {% endif %}
+      </div>
+      {% if n.body %}
+      <div class="card-body-text">{{ n.body[:200] }}</div>
+      {% endif %}
+      {% if n.tags %}
+      <div class="card-tags-row">
+        {% for tag in n.tags %}<span class="card-tag-chip">{{ tag }}</span>{% endfor %}
+      </div>
+      {% endif %}
+    </div>
+  {% endfor %}
+
+</div>
+</div>
+</body>
+</html>

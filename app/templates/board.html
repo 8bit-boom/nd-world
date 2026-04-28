@@ -1,0 +1,1432 @@
+{% extends "base.html" %}
+{% block title %}{{ board.name }} — Board{% endblock %}
+{% block content %}
+<div id="brd-wrap">
+
+  <!-- Toolbar -->
+  <div id="brd-bar">
+    <a href="/boards" class="tb">← Boards</a>
+    <span class="tb-title">{{ board.name }}</span>
+    <span id="dirty-dot" style="display:none;color:#ff8844;font-size:.8rem" title="Unsaved">●</span>
+    <div class="tb-sep"></div>
+
+    <span class="tb-lbl">Add</span>
+    <button class="tb nb" onclick="addNode('person')"   title="Person"  >👤</button>
+    <button class="tb nb" onclick="addNode('location')" title="Location">📍</button>
+    <button class="tb nb" onclick="addNode('event')"    title="Event"   >⚡</button>
+    <button class="tb nb" onclick="addNode('clue')"     title="Clue"    >🔍</button>
+    <button class="tb nb" onclick="addNode('faction')"  title="Faction" >🏛</button>
+    <button class="tb nb" onclick="addNode('note')"     title="Note"    >📝</button>
+    <div class="tb-sep"></div>
+
+    <button class="tb on" id="btn-select"  onclick="setMode('select')"  title="Select · Esc">↖ Select</button>
+    <button class="tb"    id="btn-connect" onclick="setMode('connect')" title="Connect · W">🔗 Connect</button>
+    <div class="tb-sep"></div>
+
+    <button class="tb" id="btn-undo" onclick="undo()" title="Undo · Ctrl+Z" disabled>↩</button>
+    <button class="tb" id="btn-redo" onclick="redo()" title="Redo · Ctrl+Shift+Z" disabled>↪</button>
+    <div class="tb-sep"></div>
+
+    <button class="tb" onclick="autoLayout()" title="Auto-layout (force-directed)">⊹ Layout</button>
+    <button class="tb" onclick="groupFromSel()" title="New Group from Selection">⬚ Group</button>
+    <div class="tb-sep"></div>
+
+    <span class="tb-lbl">Sel</span>
+    <button class="tb" onclick="batchColor()" title="Set colour for selection">🎨</button>
+    <button class="tb" onclick="batchStatus()" title="Set status for selection">◈ Status</button>
+    <button class="tb" onclick="alignSel('left')"   title="Align left">◧</button>
+    <button class="tb" onclick="alignSel('cx')"     title="Align centre X">◎</button>
+    <button class="tb" onclick="alignSel('right')"  title="Align right">◨</button>
+    <button class="tb" onclick="alignSel('top')"    title="Align top">⊤</button>
+    <button class="tb" onclick="alignSel('cy')"     title="Align middle">⊜</button>
+    <button class="tb" onclick="alignSel('bottom')" title="Align bottom">⊥</button>
+    <button class="tb" onclick="distSel('h')"       title="Distribute H">↔</button>
+    <button class="tb" onclick="distSel('v')"       title="Distribute V">↕</button>
+    <div class="tb-sep"></div>
+
+    <label class="tb-check"><input type="checkbox" id="cb-pins" checked onchange="render()"/> Pins</label>
+    <label class="tb-check"><input type="checkbox" id="cb-labels" checked onchange="redrawEdges()"/> Labels</label>
+    <label class="tb-check"><input type="checkbox" id="cb-snap" /> Snap</label>
+    <div class="tb-sep"></div>
+
+    <button class="tb" onclick="doZoom(1.2)">＋</button>
+    <button class="tb" onclick="fitAll()" title="Fit · F">⊡ Fit</button>
+    <button class="tb" onclick="doZoom(0.83)">－</button>
+    <div style="flex:1"></div>
+
+    <input id="brd-search" type="text" placeholder="Search…" title="Search nodes (Ctrl+F)"
+      style="background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.18);border-radius:3px;
+             padding:.2rem .45rem;color:inherit;font-size:.78rem;font-family:var(--font);width:130px"
+      oninput="applyFilter()" onkeydown="if(event.key==='Escape'){this.value='';applyFilter();}"/>
+    <div class="tb-sep"></div>
+
+    <button class="tb" id="btn-minimap" onclick="toggleMinimap()" title="Minimap · M">⊟ Map</button>
+    <button class="tb" id="btn-present" onclick="enterPresent()" title="Presentation · P">▶ Present</button>
+    <div class="tb-sep"></div>
+
+    <button class="tb" onclick="clearBoard()" style="color:var(--neon2)">🗑 Clear</button>
+    <form method="post" action="/boards/{{ board.slug }}/delete" style="display:inline"
+          onsubmit="return confirm('Delete this board?')">
+      <button type="submit" class="tb" style="color:#ff5555">✕ Delete</button>
+    </form>
+    <a href="/boards/{{ board.slug }}/export" class="brd-tool-btn tb" title="Export HTML" style="text-decoration:none">⬇ Export</a>
+    <button class="tb tb-save" id="save-btn" onclick="save()">💾 Save</button>
+  </div>
+
+  <!-- Tag filter chips row -->
+  <div id="brd-tags" style="display:flex;flex-wrap:wrap;gap:.2rem;padding:.2rem .55rem;
+    background:rgba(0,0,0,.6);border-bottom:1px solid rgba(255,255,255,.07);flex-shrink:0;min-height:28px"></div>
+
+  <!-- Canvas -->
+  <div id="brd-outer">
+    <!-- Group layer (behind cards) -->
+    <svg id="brd-groups-svg" xmlns="http://www.w3.org/2000/svg"
+         style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;overflow:visible">
+      <g id="brd-groups"></g>
+    </svg>
+    <!-- SVG layer for edges (behind cards) -->
+    <svg id="brd-svg" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="glow">
+          <feGaussianBlur stdDeviation="3" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <filter id="card-shadow">
+          <feDropShadow dx="2" dy="4" stdDeviation="4" flood-color="rgba(0,0,0,0.7)"/>
+        </filter>
+        <!-- Arrow markers per edge kind -->
+        <marker id="mk-leads_to"     markerWidth="10" markerHeight="7" refX="9"   refY="3.5" orient="auto">               <polygon points="0 0,10 3.5,0 7" fill="#f0c040"/></marker>
+        <marker id="mk-causes"       markerWidth="10" markerHeight="7" refX="9"   refY="3.5" orient="auto">               <polygon points="0 0,10 3.5,0 7" fill="#ff8844"/></marker>
+        <marker id="mk-leads_to-rev" markerWidth="10" markerHeight="7" refX="1"   refY="3.5" orient="auto-start-reverse"><polygon points="0 0,10 3.5,0 7" fill="#f0c040"/></marker>
+        <marker id="mk-causes-rev"   markerWidth="10" markerHeight="7" refX="1"   refY="3.5" orient="auto-start-reverse"><polygon points="0 0,10 3.5,0 7" fill="#ff8844"/></marker>
+      </defs>
+      <g id="edge-layer"></g>
+      <g id="edge-labels"></g>
+      <g id="prev-edge" pointer-events="none"></g>
+      <!-- Marquee rubber-band -->
+      <g id="marquee-layer" pointer-events="none"></g>
+    </svg>
+    <!-- Cards layer -->
+    <div id="brd-cards"></div>
+
+    <!-- Minimap -->
+    <div id="brd-minimap" style="display:none;position:absolute;bottom:8px;right:8px;z-index:20;
+         width:180px;height:120px;background:rgba(0,0,0,.75);border:1px solid rgba(255,255,255,.2);
+         border-radius:4px;overflow:hidden;cursor:pointer">
+      <svg id="mm-svg" style="width:100%;height:100%"></svg>
+    </div>
+  </div>
+
+  <!-- Status -->
+  <div id="brd-status">
+    <span id="mode-hint">Select mode · click=select · Shift+click=multi · drag=move · dblclick=edit · Space+drag=pan</span>
+    <span id="node-count" style="margin-left:auto;opacity:.45;font-size:.75rem"></span>
+  </div>
+</div>
+
+<!-- Node edit modal -->
+<div id="node-modal" class="dlg-back">
+  <div class="dlg-box node-dlg">
+    <div id="ndlg-header">
+      <div id="ndlg-type-row">
+        {% for t,icon in [('person','👤'),('location','📍'),('event','⚡'),('clue','🔍'),('faction','🏛'),('note','📝')] %}
+        <button class="type-btn" data-type="{{ t }}" onclick="setNodeType('{{ t }}')">{{ icon }} {{ t|capitalize }}</button>
+        {% endfor %}
+      </div>
+    </div>
+    <input id="ndlg-title" placeholder="Title / Name" class="ndlg-input" style="font-size:1.05rem;font-weight:bold"/>
+    <textarea id="ndlg-body" placeholder="Notes, description, evidence…" class="ndlg-input" rows="4"></textarea>
+    <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.3rem">
+      <label style="font-size:.78rem;opacity:.6">Color</label>
+      <input type="color" id="ndlg-color" value="#334455"/>
+      <label style="font-size:.78rem;opacity:.6">Status</label>
+      <select id="ndlg-status" style="background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.18);border-radius:3px;padding:.18rem .3rem;color:inherit;font-size:.75rem;font-family:var(--font)">
+        <option value="unknown">Unknown</option>
+        <option value="verified">Verified ✔</option>
+        <option value="suspect">Suspect ?</option>
+        <option value="dismissed">Dismissed</option>
+        <option value="confirmed_false">False ✗</option>
+      </select>
+      <label style="font-size:.78rem;opacity:.6">Tags</label>
+      <input type="text" id="ndlg-tags" placeholder="tag1, tag2" class="ndlg-input-sm"/>
+    </div>
+    <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.3rem">
+      <label style="font-size:.78rem;opacity:.6">Image URL</label>
+      <input type="text" id="ndlg-imgurl" placeholder="https://… or /uploads/…" class="ndlg-input-sm"/>
+      <label style="font-size:.78rem;opacity:.6">Link entity</label>
+      <input type="text" id="ndlg-entity-search" placeholder="Search…" class="ndlg-input-sm" oninput="searchEntities(this.value)"/>
+      <div id="ndlg-entity-results" style="position:absolute;display:none;z-index:9999;background:var(--bg2);border:1px solid var(--border);border-radius:4px;max-height:140px;overflow-y:auto;min-width:200px"></div>
+    </div>
+    <div id="ndlg-entity-linked" style="display:none;font-size:.78rem;margin-top:.3rem;color:var(--neon)"></div>
+    <div style="display:flex;gap:.5rem;margin-top:.8rem">
+      <button class="btn-primary" onclick="confirmNodeEdit()">Save</button>
+      <button class="btn-cancel"  onclick="closeNodeModal()">Cancel</button>
+      <button class="tb" style="color:var(--neon2);margin-left:auto" onclick="deleteEditingNode()">🗑 Delete node</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edge label popover -->
+<div id="edge-pop" style="display:none;position:fixed;z-index:8000;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.6rem .8rem;min-width:220px;box-shadow:0 4px 16px rgba(0,0,0,.6)">
+  <div style="font-size:.78rem;opacity:.6;margin-bottom:.3rem">Connection</div>
+  <input id="edge-pop-label" style="width:100%;box-sizing:border-box;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.18);border-radius:3px;padding:.3rem .5rem;color:inherit;font-size:.88rem;font-family:var(--font)"/>
+  <div style="display:flex;gap:.4rem;margin-top:.5rem;align-items:center;flex-wrap:wrap">
+    <label style="font-size:.75rem;opacity:.6">Kind</label>
+    <select id="edge-pop-kind" style="background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.18);border-radius:3px;padding:.18rem .3rem;color:inherit;font-size:.75rem;font-family:var(--font)">
+      <option value="link">Link</option>
+      <option value="supports">Supports</option>
+      <option value="refutes">Refutes</option>
+      <option value="leads_to">Leads to →</option>
+      <option value="causes">Causes →</option>
+      <option value="same_as">Same as</option>
+    </select>
+    <div style="margin-top:.4rem;display:flex;gap:.3rem">
+      <button onclick="setEdgeDir('fwd')"  id="ebtn-fwd"  class="edge-dir-btn" title="One-way →">→</button>
+      <button onclick="setEdgeDir('rev')"  id="ebtn-rev"  class="edge-dir-btn" title="Reverse ←">←</button>
+      <button onclick="setEdgeDir('both')" id="ebtn-both" class="edge-dir-btn" title="Both ways ↔">↔</button>
+    </div>
+    <label style="font-size:.75rem;opacity:.6">Color</label>
+    <input type="color" id="edge-pop-color" value="#ff4444" style="width:24px;height:18px;padding:0;border:1px solid rgba(255,255,255,.2);border-radius:2px;cursor:pointer;background:none"/>
+    <select id="edge-pop-style" style="background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.18);border-radius:3px;padding:.18rem .3rem;color:inherit;font-size:.75rem;font-family:var(--font)">
+      <option value="string">String</option>
+      <option value="dashed">Dashed</option>
+      <option value="dotted">Dotted</option>
+      <option value="thick">Thick rope</option>
+    </select>
+    <button class="tb" style="color:var(--neon2);margin-left:auto" onclick="deleteEditingEdge()">🗑</button>
+  </div>
+  <div style="display:flex;gap:.4rem;margin-top:.5rem">
+    <button class="btn-primary" onclick="confirmEdgeEdit()" style="flex:1">OK</button>
+    <button class="btn-cancel"  onclick="closeEdgePop()">×</button>
+  </div>
+</div>
+
+<style>
+/* ── Layout ── */
+#brd-wrap { display:flex; flex-direction:column; height:calc(100vh - 56px); }
+#brd-bar {
+  display:flex; align-items:center; gap:.2rem; flex-wrap:wrap;
+  padding:.25rem .55rem; background:rgba(0,0,0,.82);
+  border-bottom:1px solid rgba(255,255,255,.1); flex-shrink:0;
+}
+.tb-title { font-size:.88rem; opacity:.65; margin:0 .2rem; }
+.tb-sep   { width:1px; height:14px; background:rgba(255,255,255,.15); margin:0 .15rem; flex-shrink:0; }
+.tb-lbl   { font-size:.74rem; opacity:.5; margin-left:.2rem; }
+.tb {
+  padding:.2rem .45rem; border:1px solid rgba(255,255,255,.18); border-radius:3px;
+  background:rgba(255,255,255,.05); color:inherit; cursor:pointer; font-size:.79rem;
+  font-family:var(--font); text-decoration:none; white-space:nowrap; display:inline-block;
+  transition:border-color .12s,color .12s;
+}
+.tb:hover,.tb.on { border-color:var(--neon); color:var(--neon); }
+.tb:disabled { opacity:.35; cursor:not-allowed; }
+.tb-check { font-size:.76rem; opacity:.75; cursor:pointer; display:flex; align-items:center; gap:.2rem; }
+.tb-save  { border-color:#44ff88 !important; color:#44ff88 !important; }
+.tb-save:hover { background:#44ff88 !important; color:#000 !important; }
+
+#brd-outer {
+  flex:1; overflow:hidden; position:relative;
+  background: {{ 'repeating-conic-gradient(#3d2a16 0% 25%, #4a3320 0% 50%) 0/14px 14px' if board.canvas_bg == 'cork'
+    else '#0d1b2a' if board.canvas_bg == 'blueprint'
+    else 'repeating-linear-gradient(45deg,#1c1c1c 0,#1c1c1c 2px,#141414 2px,#141414 10px)' if board.canvas_bg == 'metal'
+    else '#0e0e0e' }};
+}
+#brd-svg {
+  position:absolute; inset:0; width:100%; height:100%;
+  pointer-events:none; z-index:1; overflow:visible;
+}
+#brd-cards { position:absolute; inset:0; z-index:2; }
+
+#brd-status {
+  display:flex; align-items:center; padding:.22rem .55rem;
+  background:rgba(0,0,0,.8); border-top:1px solid rgba(255,255,255,.08);
+  font-size:.74rem; opacity:.6; flex-shrink:0; min-height:26px;
+}
+
+/* ── Cards ── */
+.brd-card {
+  position:absolute; width:160px; min-height:80px;
+  border-radius:4px; box-shadow:3px 5px 18px rgba(0,0,0,.7);
+  cursor:pointer; user-select:none; transition:box-shadow .15s, transform .1s, opacity .18s;
+  font-family:var(--font);
+}
+.brd-card:hover { box-shadow:3px 5px 24px rgba(0,0,0,.9); }
+.brd-card.selected { box-shadow:0 0 0 2px #fff, 0 0 16px var(--neon); transform:scale(1.03); }
+.brd-card.connect-source { box-shadow:0 0 0 2px #ff4444, 0 0 20px #ff4444; }
+.brd-card.brd-card-match { box-shadow:0 0 0 2px #ffee44, 0 0 14px #ffee44; }
+.brd-card.brd-card-dim { opacity:0.18; pointer-events:none; }
+
+.card-pin {
+  position:absolute; top:-10px; left:50%; transform:translateX(-50%);
+  width:14px; height:14px; border-radius:50%;
+  border:2px solid rgba(255,255,255,.4); z-index:10;
+  box-shadow:0 2px 6px rgba(0,0,0,.6);
+}
+/* Status badge top-right */
+.card-status {
+  position:absolute; top:2px; right:4px; font-size:.65rem; z-index:10;
+  background:rgba(0,0,0,.55); border-radius:3px; padding:0 3px;
+}
+.card-header {
+  padding:.35rem .55rem .2rem; font-weight:bold; font-size:.82rem;
+  display:flex; align-items:center; gap:.3rem;
+  border-bottom:1px solid rgba(255,255,255,.12);
+}
+.card-icon { font-size:.9rem; flex-shrink:0; }
+.card-title { flex:1; word-break:break-word; line-height:1.25; }
+.card-title.dismissed { text-decoration:line-through; opacity:.55; }
+.card-img { width:100%; max-height:90px; object-fit:cover; display:block; }
+.card-body {
+  padding:.3rem .55rem .45rem; font-size:.75rem; line-height:1.4;
+  opacity:.8; word-break:break-word; max-height:90px; overflow:hidden;
+}
+.card-entity-link {
+  display:block; padding:.15rem .55rem; font-size:.7rem;
+  opacity:.55; border-top:1px solid rgba(255,255,255,.1);
+  text-decoration:none; color:var(--neon);
+}
+.card-entity-link:hover { opacity:1; }
+.card-tags {
+  display:flex; flex-wrap:wrap; gap:.15rem;
+  padding:.2rem .45rem .3rem; border-top:1px solid rgba(255,255,255,.08);
+}
+.card-tag {
+  font-size:.63rem; padding:.05rem .3rem; border-radius:8px;
+  background:rgba(0,240,255,.12); border:1px solid rgba(0,240,255,.25); color:var(--neon);
+}
+
+/* ── Connect mode: show hotspot circles on hover ── */
+.mode-connect .brd-card:hover .connect-dot { opacity:1; }
+.connect-dot {
+  position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  width:20px; height:20px; border-radius:50%;
+  background:rgba(255,68,68,.35); border:2px solid #ff4444;
+  opacity:0; transition:opacity .15s; pointer-events:none; z-index:20;
+}
+
+/* ── Group frames ── */
+.brd-group-frame {
+  position:absolute; border:1.5px dashed rgba(255,255,255,.25);
+  border-radius:6px; pointer-events:auto; z-index:0;
+}
+.brd-group-hdr {
+  position:absolute; top:-20px; left:4px; font-size:.72rem;
+  opacity:.7; cursor:move; user-select:none; white-space:nowrap;
+  padding:.05rem .4rem; border-radius:3px; background:rgba(0,0,0,.55);
+}
+
+/* ── Tag filter chips ── */
+.brd-chip {
+  font-size:.68rem; padding:.05rem .4rem; border-radius:8px; cursor:pointer;
+  background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.18);
+  color:inherit; transition:border-color .12s,color .12s;
+}
+.brd-chip.on { border-color:var(--neon); color:var(--neon); background:rgba(0,240,255,.1); }
+
+/* ── Modal ── */
+.dlg-back { display:none; position:fixed; inset:0; z-index:9000; background:rgba(0,0,0,.65); align-items:center; justify-content:center; }
+.dlg-box  { background:var(--bg2,#1a1a2e); border:1px solid rgba(255,255,255,.2); border-radius:8px; padding:1.2rem 1.4rem; min-width:340px; max-width:500px; width:95vw; }
+.node-dlg { display:flex; flex-direction:column; gap:.5rem; }
+#ndlg-type-row { display:flex; gap:.3rem; flex-wrap:wrap; }
+.type-btn {
+  padding:.22rem .55rem; border:1px solid rgba(255,255,255,.18); border-radius:3px;
+  background:rgba(255,255,255,.05); color:inherit; cursor:pointer; font-size:.78rem;
+  font-family:var(--font); transition:all .12s;
+}
+.type-btn:hover { border-color:var(--neon); }
+.type-btn.on { border-color:var(--neon); background:rgba(0,240,255,.1); color:var(--neon); }
+.ndlg-input { width:100%; box-sizing:border-box; background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.18); border-radius:4px; padding:.4rem .6rem; color:inherit; font-size:.9rem; font-family:var(--font); resize:vertical; }
+.ndlg-input-sm { background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.18); border-radius:3px; padding:.22rem .45rem; color:inherit; font-size:.78rem; font-family:var(--font); width:150px; }
+
+/* ── Edge direction buttons ── */
+.edge-dir-btn {
+  padding:.18rem .5rem; border:1px solid rgba(255,255,255,.18); border-radius:3px;
+  background:rgba(255,255,255,.05); color:inherit; cursor:pointer; font-size:.82rem;
+  font-family:var(--font); transition:border-color .12s,color .12s,background .12s;
+}
+.edge-dir-btn:hover { border-color:var(--neon); color:var(--neon); }
+.edge-dir-btn.on { border-color:var(--neon); background:rgba(0,240,255,.12); color:var(--neon); }
+
+/* ── Presentation mode ── */
+#brd-wrap.present-mode #brd-bar,
+#brd-wrap.present-mode #brd-tags,
+#brd-wrap.present-mode #brd-status,
+#brd-wrap.present-mode #brd-minimap { display:none !important; }
+#brd-wrap.present-mode #brd-outer { cursor:default; }
+#brd-wrap.present-mode .card-pin,
+#brd-wrap.present-mode .connect-dot { display:none !important; }
+</style>
+
+<script>
+"use strict";
+const SLUG = {{ board.slug | tojson }};
+
+// ── Backwards-compat load: nodes_json may be a bare [] (legacy) or {nodes,groups} ──
+(function() {
+  const raw = JSON.parse({{ nodes_json | tojson }});
+  if (Array.isArray(raw)) {
+    window._initNodes  = raw;
+    window._initGroups = [];
+  } else {
+    window._initNodes  = raw.nodes  || [];
+    window._initGroups = raw.groups || [];
+  }
+})();
+
+let nodes  = window._initNodes;
+let groups = window._initGroups;
+let edges  = JSON.parse({{ edges_json | tojson }});
+const ENTITY_LIST = JSON.parse({{ entity_list_json | tojson }});
+
+// ── Canvas state ──────────────────────────────────────────────────────────────
+const outer      = document.getElementById('brd-outer');
+const svgEl      = document.getElementById('brd-svg');
+const cardsEl    = document.getElementById('brd-cards');
+const edgeG      = document.getElementById('edge-layer');
+const labelG     = document.getElementById('edge-labels');
+const prevEdge   = document.getElementById('prev-edge');
+const marqueeG   = document.getElementById('marquee-layer');
+const groupsG    = document.getElementById('brd-groups');
+
+let zoom = 1, panX = 0, panY = 0;
+let mode = 'select';
+let selIds = new Set();           // multi-select
+let connectFrom = null;
+let dragging    = null;           // { ids:Set, origMap:{id:{x,y}} }
+let origMap     = null;
+let marquee     = null;           // {sx,sy,cx,cy}  screen coords
+let isPanning   = false, panStart = null, panScrollStart = null;
+let spaceHeld   = false;
+let editingNodeId = null;
+let editingEdgeId = null;
+let popEdgeId     = null;   // edge currently shown in popover (for direction buttons)
+let dirty = false;
+let presentMode = false;
+let presentIdx  = 0;
+let focusNodeId = null;           // focus-mode node
+let activeTagFilters = new Set();
+let groupDrag   = null;           // {gid, ox, oy, startX, startY, nodeSnap:[{n,ox,oy}]}
+
+// ── History ───────────────────────────────────────────────────────────────────
+let history = [];
+let histIdx  = -1;
+
+function snapshot() {
+  history = history.slice(0, histIdx + 1);
+  history.push(JSON.stringify({ nodes, edges, groups }));
+  if (history.length > 50) history.shift(); else histIdx++;
+  syncUndo(); markDirty();
+}
+function undo() {
+  if (histIdx <= 0) return;
+  histIdx--;
+  const s = JSON.parse(history[histIdx]);
+  nodes = s.nodes; edges = s.edges; groups = s.groups || [];
+  selIds.clear(); render(); syncUndo();
+}
+function redo() {
+  if (histIdx >= history.length - 1) return;
+  histIdx++;
+  const s = JSON.parse(history[histIdx]);
+  nodes = s.nodes; edges = s.edges; groups = s.groups || [];
+  selIds.clear(); render(); syncUndo();
+}
+function syncUndo() {
+  document.getElementById('btn-undo').disabled = histIdx <= 0;
+  document.getElementById('btn-redo').disabled = histIdx >= history.length - 1;
+}
+
+// ── Colours per type ──────────────────────────────────────────────────────────
+const TYPE_CFG = {
+  person:   { icon:'👤', hdr:'#4a1e2a', border:'#c0394a', pin:'#e05060' },
+  location: { icon:'📍', hdr:'#1a2e4a', border:'#2a7abd', pin:'#3a9aed' },
+  event:    { icon:'⚡', hdr:'#1e3a1e', border:'#3a9a3a', pin:'#5ac05a' },
+  clue:     { icon:'🔍', hdr:'#3a3010', border:'#c0a020', pin:'#f0c840' },
+  faction:  { icon:'🏛', hdr:'#2a1a4a', border:'#7a3acd', pin:'#9a5aed' },
+  note:     { icon:'📝', hdr:'#2a2a2a', border:'#888888', pin:'#aaaaaa' },
+};
+
+const STATUS_BADGE = {
+  unknown: '',
+  verified: '✔',
+  suspect: '?',
+  dismissed: '—',
+  confirmed_false: '✗',
+};
+const STATUS_COLOR = {
+  unknown: 'transparent',
+  verified: '#44cc66',
+  suspect: '#ff4444',
+  dismissed: '#888',
+  confirmed_false: '#ff2222',
+};
+
+const EDGE_KIND_CFG = {
+  link:          { color:'#ff4444', dash:'',        thick:false, arrow:false },
+  supports:      { color:'#44cc66', dash:'',        thick:false, arrow:false },
+  refutes:       { color:'#ff3333', dash:'10 6',    thick:false, arrow:false },
+  leads_to:      { color:'#f0c040', dash:'',        thick:false, arrow:true  },
+  causes:        { color:'#ff8844', dash:'',        thick:true,  arrow:true  },
+  same_as:       { color:'#44cccc', dash:'3 5',     thick:false, arrow:false },
+};
+
+const uid = () => Math.random().toString(36).slice(2, 9);
+
+// ── Mark dirty ────────────────────────────────────────────────────────────────
+function markDirty() { dirty=true; document.getElementById('dirty-dot').style.display=''; }
+function markClean() { dirty=false; document.getElementById('dirty-dot').style.display='none'; }
+
+// ── Mode ──────────────────────────────────────────────────────────────────────
+function setMode(m) {
+  mode = m;
+  document.getElementById('btn-select').classList.toggle('on',  m==='select');
+  document.getElementById('btn-connect').classList.toggle('on', m==='connect');
+  cardsEl.classList.toggle('mode-connect', m==='connect');
+  document.getElementById('mode-hint').textContent =
+    m==='connect' ? 'Connect mode · click first card, then second · Esc=cancel'
+                  : 'Select mode · click=select · Shift+click=multi · drag=move · dblclick=edit · Space+drag=pan';
+  connectFrom = null;
+  document.querySelectorAll('.brd-card').forEach(c => c.classList.remove('connect-source'));
+  prevEdge.innerHTML = '';
+}
+
+// ── Filter / search helpers ───────────────────────────────────────────────────
+function matchNode(n, q, tags) {
+  const qok = !q || [n.title||'', n.body||'', ...(n.tags||[])].join(' ').toLowerCase().includes(q);
+  const tok  = tags.size === 0 || [...tags].every(t => (n.tags||[]).includes(t));
+  return qok && tok;
+}
+
+function applyFilter() {
+  const q = document.getElementById('brd-search').value.trim().toLowerCase();
+  const hasFilter = q || activeTagFilters.size > 0;
+  const focusNbrs = focusNodeId ? new Set([focusNodeId,
+    ...edges.filter(e=>e.from===focusNodeId||e.to===focusNodeId).flatMap(e=>[e.from,e.to])]) : null;
+
+  document.querySelectorAll('.brd-card').forEach(card => {
+    const id = card.dataset.id;
+    const n  = nodes.find(x=>x.id===id); if (!n) return;
+    card.classList.remove('brd-card-match','brd-card-dim');
+    if (focusNbrs) {
+      if (!focusNbrs.has(id)) card.classList.add('brd-card-dim');
+      return;
+    }
+    if (!hasFilter) return;
+    if (matchNode(n, q, activeTagFilters)) card.classList.add('brd-card-match');
+    else card.classList.add('brd-card-dim');
+  });
+
+  // Dim edges whose both endpoints are dimmed
+  if (hasFilter || focusNbrs) {
+    const dimIds = new Set([...document.querySelectorAll('.brd-card-dim')].map(c=>c.dataset.id));
+    document.querySelectorAll('#edge-layer path').forEach(path => {
+      const e = edges.find(x=>x.id===path.dataset.eid); if (!e) return;
+      path.style.opacity = (dimIds.has(e.from) && dimIds.has(e.to)) ? '0.08' : '0.85';
+    });
+  } else {
+    document.querySelectorAll('#edge-layer path').forEach(p => p.style.opacity = '0.85');
+  }
+}
+
+function rebuildTagChips() {
+  const bar = document.getElementById('brd-tags');
+  bar.innerHTML = '';
+  const allTags = [...new Set(nodes.flatMap(n=>n.tags||[]))].sort();
+  allTags.forEach(tag => {
+    const btn = document.createElement('button');
+    btn.className = 'brd-chip' + (activeTagFilters.has(tag)?' on':'');
+    btn.textContent = tag;
+    btn.onclick = () => {
+      if (activeTagFilters.has(tag)) activeTagFilters.delete(tag);
+      else activeTagFilters.add(tag);
+      btn.classList.toggle('on', activeTagFilters.has(tag));
+      applyFilter();
+    };
+    bar.appendChild(btn);
+  });
+}
+
+// ── Render all cards ──────────────────────────────────────────────────────────
+function render() {
+  cardsEl.innerHTML = '';
+  renderGroups();
+  nodes.forEach(n => cardsEl.appendChild(makeCard(n)));
+  redrawEdges();
+  rebuildTagChips();
+  applyFilter();
+  renderMinimap();
+  document.getElementById('node-count').textContent = `${nodes.length} nodes · ${edges.length} connections`;
+}
+
+function makeCard(n) {
+  const cfg = TYPE_CFG[n.type] || TYPE_CFG.note;
+  const isSel = selIds.has(n.id);
+  const div = document.createElement('div');
+  div.className = 'brd-card' + (isSel ? ' selected' : '');
+  div.dataset.id = n.id;
+  div.style.left  = (n.x + panX) * zoom + 'px';
+  div.style.top   = (n.y + panY) * zoom + 'px';
+  div.style.width = Math.round(160 * zoom) + 'px';
+  div.style.borderLeft  = `3px solid ${cfg.border}`;
+  div.style.background  = n.color || '#1e1e2e';
+  div.style.transition  = 'box-shadow .15s, transform .1s, opacity .18s, left .22s ease, top .22s ease';
+
+  // Pin
+  if (document.getElementById('cb-pins').checked) {
+    const pin = document.createElement('div');
+    pin.className = 'card-pin';
+    pin.style.background = cfg.pin;
+    div.appendChild(pin);
+  }
+
+  // Status badge
+  const st = n.status || 'unknown';
+  if (st !== 'unknown') {
+    const badge = document.createElement('div');
+    badge.className = 'card-status';
+    badge.textContent = STATUS_BADGE[st];
+    badge.style.color = STATUS_COLOR[st];
+    div.appendChild(badge);
+  }
+
+  // Connect hotspot
+  const dot = document.createElement('div');
+  dot.className = 'connect-dot';
+  div.appendChild(dot);
+
+  // Header
+  const hdr = document.createElement('div');
+  hdr.className = 'card-header';
+  hdr.style.background = cfg.hdr;
+  const titleSpan = document.createElement('span');
+  titleSpan.className = 'card-title' + (st==='dismissed'?' dismissed':'');
+  titleSpan.textContent = n.title || 'Untitled';
+  hdr.innerHTML = `<span class="card-icon">${cfg.icon}</span>`;
+  hdr.appendChild(titleSpan);
+  div.appendChild(hdr);
+
+  // Image
+  if (n.image_url) {
+    const img = document.createElement('img');
+    img.className = 'card-img'; img.src = n.image_url; img.alt = '';
+    img.onerror = () => img.style.display = 'none';
+    div.appendChild(img);
+  }
+
+  // Body
+  if (n.body) {
+    const bd = document.createElement('div');
+    bd.className = 'card-body'; bd.textContent = n.body;
+    div.appendChild(bd);
+  }
+
+  // Tags chips on card
+  const tags = n.tags || [];
+  if (tags.length) {
+    const tr = document.createElement('div');
+    tr.className = 'card-tags';
+    tags.forEach(t => {
+      const chip = document.createElement('span');
+      chip.className = 'card-tag'; chip.textContent = t;
+      tr.appendChild(chip);
+    });
+    div.appendChild(tr);
+  }
+
+  // Entity link
+  if (n.entity_id) {
+    const ent = ENTITY_LIST.find(e => e.id === n.entity_id);
+    if (ent) {
+      const lk = document.createElement('a');
+      lk.className = 'card-entity-link';
+      lk.href = `/entity/${ent.id}`;
+      lk.target = '_blank';
+      lk.textContent = `→ ${ent.name}`;
+      div.appendChild(lk);
+    }
+  }
+
+  div.addEventListener('mousedown',  e => onCardMousedown(e, n));
+  div.addEventListener('dblclick',   e => { e.stopPropagation(); openNodeModal(n.id); });
+  div.addEventListener('contextmenu',e => { e.preventDefault(); openNodeModal(n.id); });
+
+  return div;
+}
+
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ── Groups ────────────────────────────────────────────────────────────────────
+function renderGroups() {
+  // remove old DOM frames; re-create
+  document.querySelectorAll('.brd-group-frame').forEach(el=>el.remove());
+  groups.forEach(g => {
+    const frame = document.createElement('div');
+    frame.className = 'brd-group-frame';
+    frame.dataset.gid = g.id;
+    frame.style.left   = (g.x + panX) * zoom + 'px';
+    frame.style.top    = (g.y + panY) * zoom + 'px';
+    frame.style.width  = g.w * zoom + 'px';
+    frame.style.height = g.h * zoom + 'px';
+    frame.style.borderColor = g.color || 'rgba(255,255,255,.25)';
+
+    const hdr = document.createElement('div');
+    hdr.className = 'brd-group-hdr';
+    hdr.textContent = g.label || 'Group';
+    hdr.addEventListener('mousedown', e => onGroupHdrMousedown(e, g));
+    hdr.addEventListener('dblclick', e => {
+      e.stopPropagation();
+      const lbl = prompt('Group label:', g.label || 'Group');
+      if (lbl !== null) { g.label = lbl.trim(); renderGroups(); snapshot(); }
+    });
+    frame.appendChild(hdr);
+
+    // insert behind cards (z-index 0)
+    outer.insertBefore(frame, outer.firstChild);
+  });
+}
+
+function onGroupHdrMousedown(e, g) {
+  if (e.button !== 0) return;
+  e.stopPropagation();
+  const rect = outer.getBoundingClientRect();
+  // capture nodes inside this group at drag start
+  const contained = nodesInGroup(g);
+  groupDrag = {
+    gid: g.id,
+    og: { x:g.x, y:g.y },
+    startX: (e.clientX - rect.left) / zoom,
+    startY: (e.clientY - rect.top)  / zoom,
+    nodeSnap: contained.map(n => ({ n, ox:n.x, oy:n.y })),
+  };
+}
+
+function nodesInGroup(g) {
+  return nodes.filter(n =>
+    n.x >= g.x && n.y >= g.y && n.x + 160 <= g.x + g.w && n.y + 80 <= g.y + g.h
+  );
+}
+
+function groupFromSel() {
+  if (!selIds.size) return;
+  const sel = nodes.filter(n => selIds.has(n.id));
+  if (!sel.length) return;
+  const pad = 20;
+  const minX = Math.min(...sel.map(n=>n.x)) - pad;
+  const minY = Math.min(...sel.map(n=>n.y)) - pad - 20;
+  const maxX = Math.max(...sel.map(n=>n.x+160)) + pad;
+  const maxY = Math.max(...sel.map(n=>n.y+100)) + pad;
+  const g = { id:uid(), x:minX, y:minY, w:maxX-minX, h:maxY-minY, label:'Group', color:'rgba(255,255,255,.22)' };
+  groups.push(g); render(); snapshot();
+}
+
+// ── Edges ─────────────────────────────────────────────────────────────────────
+function redrawEdges() {
+  edgeG.innerHTML = ''; labelG.innerHTML = '';
+  const showLabels = document.getElementById('cb-labels').checked;
+  edges.forEach(e => {
+    const from = nodes.find(n=>n.id===e.from);
+    const to   = nodes.find(n=>n.id===e.to);
+    if (!from||!to) return;
+    const fp = cardCenter(from), tp = cardCenter(to);
+    const path = makePath(fp, tp, e);
+    path.dataset.eid = e.id;
+    path.style.pointerEvents = 'stroke';
+    path.style.cursor = 'pointer';
+    path.addEventListener('click',  ev => { ev.stopPropagation(); openEdgePop(e.id, ev); });
+    edgeG.appendChild(path);
+
+    if (showLabels && e.label) {
+      const mx = (fp.x+tp.x)/2, my = (fp.y+tp.y)/2 - 12;
+      const bg = makeSvg('rect', { x:mx-4, y:my-11, width:e.label.length*7+8, height:16, rx:3,
+        fill:'rgba(0,0,0,0.7)', 'pointer-events':'none' });
+      const lt = makeSvg('text', { x:mx, y:my, 'text-anchor':'middle', 'dominant-baseline':'middle',
+        'font-size':11, 'font-family':'monospace', fill:edgeColor(e), 'pointer-events':'none' });
+      lt.textContent = e.label;
+      labelG.appendChild(bg); labelG.appendChild(lt);
+    }
+  });
+}
+
+function edgeColor(e) {
+  if (e.color && e.color !== '#ff4444') return e.color;
+  const kc = EDGE_KIND_CFG[e.kind || 'link'];
+  return kc ? kc.color : '#ff4444';
+}
+
+function makePath(a, b, e) {
+  // Multi-edge offset: spread parallel edges between same node pair
+  const sameEdges = edges.filter(x => (x.from===e.from&&x.to===e.to)||(x.from===e.to&&x.to===e.from));
+  const eIdx      = sameEdges.findIndex(x=>x.id===e.id);
+  const offset    = sameEdges.length > 1 ? (eIdx - (sameEdges.length-1)/2) * 44 : 0;
+
+  const ax = a.x, ay = a.y, bx = b.x, by = b.y;
+  const dxCtrl = (bx - ax) * 0.45;
+  let c1x = ax + dxCtrl, c1y = ay;
+  let c2x = bx - dxCtrl, c2y = by;
+
+  if (offset !== 0) {
+    const dx2 = bx - ax, dy2 = by - ay, len = Math.hypot(dx2, dy2) || 1;
+    const px = -dy2/len, py = dx2/len;
+    c1x += px*offset; c1y += py*offset;
+    c2x += px*offset; c2y += py*offset;
+  }
+
+  const d     = `M${ax} ${ay} C${c1x} ${c1y} ${c2x} ${c2y} ${bx} ${by}`;
+  const kind  = e.kind  || 'link';
+  const kc    = EDGE_KIND_CFG[kind] || EDGE_KIND_CFG.link;
+  const col   = edgeColor(e);
+  const style = e.style || 'string';
+  let sw      = style==='thick' || kc.thick ? 4 : 2;
+  let dash    = style==='dashed' ? '10 6' : style==='dotted' ? '3 6' : (kc.dash || '');
+  const path  = makeSvg('path', { d, fill:'none', stroke:col, 'stroke-width':sw,
+    'stroke-linecap':'round', opacity:0.85 });
+  if (dash) path.setAttribute('stroke-dasharray', dash);
+  if (kc.arrow) {
+    const dir = e.direction || 'fwd';
+    if (dir === 'fwd' || dir === 'both') path.setAttribute('marker-end',   `url(#mk-${kind})`);
+    if (dir === 'rev' || dir === 'both') path.setAttribute('marker-start', `url(#mk-${kind}-rev)`);
+  }
+  return path;
+}
+
+function cardCenter(n) {
+  const w = 160 * zoom;
+  return { x: (n.x + panX) * zoom + w/2, y: (n.y + panY) * zoom + 40 };
+}
+
+function makeSvg(tag, attrs) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k,v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+// ── Add node ──────────────────────────────────────────────────────────────────
+function addNode(type) {
+  const cfg = TYPE_CFG[type] || TYPE_CFG.note;
+  const cx = (-panX) + (outer.clientWidth / zoom) * 0.5;
+  const cy = (-panY) + (outer.clientHeight / zoom) * 0.5;
+  const jitter = () => (Math.random() - 0.5) * 80;
+  const n = {
+    id: uid(), type, title: cfg.icon + ' ' + type.charAt(0).toUpperCase() + type.slice(1),
+    body: '', color: '#1e1e2e', image_url: '', entity_id: null,
+    status: 'unknown', tags: [],
+    x: Math.round(cx + jitter()), y: Math.round(cy + jitter()),
+  };
+  nodes.push(n); selIds.clear(); selIds.add(n.id); render(); snapshot();
+  openNodeModal(n.id);
+}
+
+// ── Card interaction ──────────────────────────────────────────────────────────
+function onCardMousedown(e, n) {
+  e.stopPropagation();
+  if (e.button !== 0) return;
+  if (presentMode) return;
+
+  if (mode === 'connect') {
+    if (!connectFrom) {
+      connectFrom = n.id;
+      document.querySelector(`[data-id="${n.id}"]`)?.classList.add('connect-source');
+      svgEl.style.pointerEvents = 'all';
+      svgEl.addEventListener('mousemove', previewEdge);
+    } else if (connectFrom !== n.id) {
+      createEdge(connectFrom, n.id);
+      connectFrom = null;
+      document.querySelectorAll('.connect-source').forEach(c=>c.classList.remove('connect-source'));
+      svgEl.style.pointerEvents = 'none';
+      svgEl.removeEventListener('mousemove', previewEdge);
+      prevEdge.innerHTML = '';
+    }
+    return;
+  }
+
+  // Multi-select
+  if (e.shiftKey) {
+    if (selIds.has(n.id)) selIds.delete(n.id);
+    else selIds.add(n.id);
+    render(); return;
+  }
+  if (!selIds.has(n.id)) {
+    selIds.clear(); selIds.add(n.id);
+    render();
+  }
+
+  // Drag — snapshot origMap for all selected
+  const rect = outer.getBoundingClientRect();
+  origMap = {};
+  selIds.forEach(id => {
+    const nd = nodes.find(x=>x.id===id);
+    if (nd) origMap[id] = { x:nd.x, y:nd.y };
+  });
+  dragging = {
+    ids: new Set(selIds),
+    startX: (e.clientX - rect.left) / zoom,
+    startY: (e.clientY - rect.top)  / zoom,
+  };
+}
+
+function previewEdge(e) {
+  prevEdge.innerHTML = '';
+  if (!connectFrom) return;
+  const from = nodes.find(n=>n.id===connectFrom); if (!from) return;
+  const fp = cardCenter(from);
+  const rect = svgEl.getBoundingClientRect();
+  const tx = e.clientX - rect.left, ty = e.clientY - rect.top;
+  const dx = (tx-fp.x)*0.45;
+  const d = `M${fp.x} ${fp.y} C${fp.x+dx} ${fp.y} ${tx-dx} ${ty} ${tx} ${ty}`;
+  prevEdge.appendChild(makeSvg('path',{d,fill:'none',stroke:'#ff4444','stroke-width':2,'stroke-dasharray':'8 4',opacity:0.7}));
+}
+
+// ── Marquee drawing ───────────────────────────────────────────────────────────
+function drawMarquee() {
+  marqueeG.innerHTML = '';
+  if (!marquee) return;
+  const sx = Math.min(marquee.sx, marquee.cx), sy = Math.min(marquee.sy, marquee.cy);
+  const sw = Math.abs(marquee.cx - marquee.sx), sh = Math.abs(marquee.cy - marquee.sy);
+  // convert screen→world coords
+  const wx = sx/zoom - panX, wy = sy/zoom - panY, ww = sw/zoom, wh = sh/zoom;
+  const rx = wx * zoom + panX * zoom, ry = wy * zoom + panY * zoom;
+  marqueeG.appendChild(makeSvg('rect', {
+    x: sx, y: sy, width: sw, height: sh,
+    fill:'rgba(0,240,255,0.06)', stroke:'#00f0ff', 'stroke-width':1, 'stroke-dasharray':'5 3'
+  }));
+}
+
+function finishMarquee() {
+  if (!marquee) return;
+  const sx = Math.min(marquee.sx, marquee.cx) / zoom - panX;
+  const sy = Math.min(marquee.sy, marquee.cy) / zoom - panY;
+  const ex = Math.max(marquee.sx, marquee.cx) / zoom - panX;
+  const ey = Math.max(marquee.sy, marquee.cy) / zoom - panY;
+  if (ex - sx < 4 && ey - sy < 4) { marqueeG.innerHTML=''; marquee=null; return; }
+  if (!marquee.addMode) selIds.clear();
+  nodes.forEach(n => {
+    const inside = n.x >= sx && n.y >= sy && n.x+160 <= ex && n.y+80 <= ey;
+    if (inside) selIds.add(n.id);
+  });
+  marqueeG.innerHTML=''; marquee=null;
+  render();
+}
+
+// ── Global mouse ──────────────────────────────────────────────────────────────
+outer.addEventListener('mousedown', e => {
+  if (presentMode) return;
+  if (e.button === 1 || (e.button === 0 && spaceHeld)) {
+    isPanning = true; panStart = {x:e.clientX, y:e.clientY};
+    panScrollStart = {x:panX, y:panY};
+    e.preventDefault(); return;
+  }
+  if (e.button !== 0) return;
+
+  // Click empty
+  if (e.target === outer || e.target === svgEl || e.target === cardsEl
+      || e.target.closest('#brd-groups-svg')) {
+    if (mode === 'connect' && connectFrom) {
+      connectFrom = null;
+      document.querySelectorAll('.connect-source').forEach(c=>c.classList.remove('connect-source'));
+      svgEl.style.pointerEvents = 'none'; svgEl.removeEventListener('mousemove', previewEdge);
+      prevEdge.innerHTML = '';
+      return;
+    }
+    if (mode === 'select' && !spaceHeld) {
+      const rect = svgEl.getBoundingClientRect();
+      marquee = { sx: e.clientX-rect.left, sy: e.clientY-rect.top,
+                  cx: e.clientX-rect.left, cy: e.clientY-rect.top,
+                  addMode: e.shiftKey };
+      if (!e.shiftKey) { selIds.clear(); render(); }
+      return;
+    }
+    selIds.clear(); render();
+  }
+});
+
+document.addEventListener('mousemove', e => {
+  if (isPanning) {
+    panX = panScrollStart.x + (e.clientX - panStart.x) / zoom;
+    panY = panScrollStart.y + (e.clientY - panStart.y) / zoom;
+    render(); return;
+  }
+  if (marquee) {
+    const rect = svgEl.getBoundingClientRect();
+    marquee.cx = e.clientX - rect.left;
+    marquee.cy = e.clientY - rect.top;
+    drawMarquee(); return;
+  }
+  if (groupDrag) {
+    const rect = outer.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) / zoom;
+    const cy = (e.clientY - rect.top)  / zoom;
+    const dx = cx - groupDrag.startX, dy = cy - groupDrag.startY;
+    const g = groups.find(x=>x.id===groupDrag.gid); if (!g) return;
+    g.x = groupDrag.og.x + dx; g.y = groupDrag.og.y + dy;
+    groupDrag.nodeSnap.forEach(({n, ox, oy}) => { n.x = ox+dx; n.y = oy+dy; });
+    render(); return;
+  }
+  if (dragging) {
+    const rect = outer.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) / zoom;
+    const cy = (e.clientY - rect.top)  / zoom;
+    const dx = cx - dragging.startX, dy = cy - dragging.startY;
+    dragging.ids.forEach(id => {
+      const n = nodes.find(x=>x.id===id); if (!n) return;
+      const o = origMap[id]; if (!o) return;
+      n.x = o.x + dx; n.y = o.y + dy;
+    });
+    // fast position update for dragged cards only
+    dragging.ids.forEach(id => {
+      const n  = nodes.find(x=>x.id===id); if (!n) return;
+      const card = document.querySelector(`[data-id="${id}"]`);
+      if (card) { card.style.left = (n.x+panX)*zoom+'px'; card.style.top=(n.y+panY)*zoom+'px'; }
+    });
+    redrawEdges();
+  }
+});
+
+document.addEventListener('mouseup', e => {
+  if (isPanning) { isPanning = false; saveVP(); return; }
+  if (marquee) { finishMarquee(); return; }
+  if (groupDrag) { groupDrag = null; snapshot(); return; }
+  if (dragging) {
+    // snap-to-grid on drag-end if enabled
+    if (document.getElementById('cb-snap').checked) {
+      dragging.ids.forEach(id => {
+        const n = nodes.find(x=>x.id===id); if (!n) return;
+        n.x = Math.round(n.x / 20) * 20;
+        n.y = Math.round(n.y / 20) * 20;
+      });
+    }
+    dragging = null; origMap = null;
+    render(); snapshot();
+  }
+});
+
+// ── Zoom ──────────────────────────────────────────────────────────────────────
+outer.addEventListener('wheel', e => {
+  e.preventDefault();
+  const f = e.deltaY < 0 ? 1.1 : 0.91;
+  zoom = Math.max(0.15, Math.min(3, zoom * f));
+  render(); saveVP();
+}, {passive:false});
+
+function saveVP() {
+  localStorage.setItem('board-vp-'+SLUG, JSON.stringify({zoom, panX, panY}));
+}
+function doZoom(f) { zoom = Math.max(0.15, Math.min(3, zoom*f)); render(); saveVP(); }
+
+function fitAll() {
+  if (!nodes.length) return;
+  const xs = nodes.map(n=>n.x), ys = nodes.map(n=>n.y);
+  const minX=Math.min(...xs), minY=Math.min(...ys);
+  const maxX=Math.max(...xs)+160, maxY=Math.max(...ys)+120;
+  const fw=outer.clientWidth, fh=outer.clientHeight;
+  zoom = Math.min(fw/(maxX-minX), fh/(maxY-minY)) * 0.85;
+  zoom = Math.max(0.15, Math.min(1.5, zoom));
+  panX = -minX + (fw/zoom - (maxX-minX)) / 2;
+  panY = -minY + (fh/zoom - (maxY-minY)) / 2;
+  render();
+}
+
+// ── Keyboard ──────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+  if (e.key===' '&&!spaceHeld) { spaceHeld=true; outer.style.cursor='grab'; e.preventDefault(); return; }
+
+  if (presentMode) {
+    if (e.key==='Escape') { exitPresent(); return; }
+    if (e.key==='ArrowRight'||e.key==='ArrowDown') { presentStep(1); return; }
+    if (e.key==='ArrowLeft'||e.key==='ArrowUp')    { presentStep(-1); return; }
+    return;
+  }
+
+  if (e.key==='Escape')  { setMode('select'); closeNodeModal(); closeEdgePop(); focusNodeId=null; applyFilter(); return; }
+  if (e.key==='w'||e.key==='W') { setMode(mode==='connect'?'select':'connect'); return; }
+  if (e.key==='f'||e.key==='F') { fitAll(); return; }
+  if (e.key==='g'||e.key==='G') { document.getElementById('cb-snap').click(); return; }
+  if (e.key==='m'||e.key==='M') { toggleMinimap(); return; }
+  if (e.key==='p'||e.key==='P') { enterPresent(); return; }
+  if (e.key==='.') {
+    // Focus mode: toggle
+    if (focusNodeId) { focusNodeId=null; applyFilter(); return; }
+    if (selIds.size === 1) { focusNodeId=[...selIds][0]; applyFilter(); }
+    return;
+  }
+  if ((e.key==='Delete'||e.key==='Backspace') && selIds.size && !editingNodeId) {
+    deleteSelected(); return;
+  }
+  if ((e.ctrlKey||e.metaKey) && e.key==='z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
+  if ((e.ctrlKey||e.metaKey) && (e.key==='Z'||e.key==='y'||e.shiftKey&&e.key==='z')) { e.preventDefault(); redo(); return; }
+  if ((e.ctrlKey||e.metaKey) && e.key==='s') { e.preventDefault(); save(); return; }
+  if ((e.ctrlKey||e.metaKey) && e.key==='f') { e.preventDefault(); document.getElementById('brd-search').focus(); return; }
+});
+document.addEventListener('keyup', e => {
+  if (e.key===' ') { spaceHeld=false; outer.style.cursor=''; }
+});
+
+// ── Edges ─────────────────────────────────────────────────────────────────────
+function createEdge(fromId, toId, kind) {
+  const k = kind || 'link';
+  if (edges.find(x=>(x.from===fromId&&x.to===toId||x.from===toId&&x.to===fromId)&&x.kind===k)) return;
+  const edge = { id:uid(), from:fromId, to:toId, label:'', color:'#ff4444', style:'string', kind:k, direction:'fwd' };
+  edges.push(edge); render(); snapshot();
+}
+
+function deleteSelected() {
+  const ids = [...selIds];
+  nodes = nodes.filter(n=>!ids.includes(n.id));
+  edges = edges.filter(e=>!ids.includes(e.from)&&!ids.includes(e.to));
+  selIds.clear(); render(); snapshot();
+}
+
+function deleteNode(id) {
+  nodes = nodes.filter(n=>n.id!==id);
+  edges = edges.filter(e=>e.from!==id&&e.to!==id);
+  selIds.delete(id);
+  render(); snapshot();
+}
+
+// ── Batch operations ──────────────────────────────────────────────────────────
+function batchColor() {
+  if (!selIds.size) return;
+  const col = prompt('Hex colour for selected nodes:', '#1e1e2e');
+  if (!col) return;
+  selIds.forEach(id => { const n=nodes.find(x=>x.id===id); if(n) n.color=col; });
+  render(); snapshot();
+}
+function batchStatus() {
+  if (!selIds.size) return;
+  const s = prompt('Status (unknown/verified/suspect/dismissed/confirmed_false):', 'verified');
+  if (!s) return;
+  selIds.forEach(id => { const n=nodes.find(x=>x.id===id); if(n) n.status=s; });
+  render(); snapshot();
+}
+function alignSel(axis) {
+  const sel = nodes.filter(n=>selIds.has(n.id));
+  if (sel.length < 2) return;
+  let ref;
+  switch(axis) {
+    case 'left':   ref=Math.min(...sel.map(n=>n.x));         sel.forEach(n=>n.x=ref); break;
+    case 'right':  ref=Math.max(...sel.map(n=>n.x+160));     sel.forEach(n=>n.x=ref-160); break;
+    case 'cx':     ref=sel.reduce((s,n)=>s+(n.x+80),0)/sel.length; sel.forEach(n=>n.x=ref-80); break;
+    case 'top':    ref=Math.min(...sel.map(n=>n.y));         sel.forEach(n=>n.y=ref); break;
+    case 'bottom': ref=Math.max(...sel.map(n=>n.y+100));     sel.forEach(n=>n.y=ref-100); break;
+    case 'cy':     ref=sel.reduce((s,n)=>s+(n.y+50),0)/sel.length; sel.forEach(n=>n.y=ref-50); break;
+  }
+  render(); snapshot();
+}
+function distSel(axis) {
+  const sel = nodes.filter(n=>selIds.has(n.id));
+  if (sel.length < 3) return;
+  const sorted = [...sel].sort((a,b) => axis==='h' ? a.x-b.x : a.y-b.y);
+  const start = axis==='h' ? sorted[0].x+80   : sorted[0].y+50;
+  const end   = axis==='h' ? sorted[sorted.length-1].x+80 : sorted[sorted.length-1].y+50;
+  const step  = (end-start) / (sorted.length-1);
+  sorted.forEach((n,i) => {
+    if (i===0||i===sorted.length-1) return;
+    if (axis==='h') n.x = start + step*i - 80;
+    else            n.y = start + step*i - 50;
+  });
+  render(); snapshot();
+}
+
+// ── Auto-layout (Fruchterman-Reingold) ────────────────────────────────────────
+function autoLayout() {
+  if (nodes.length < 2) return;
+  snapshot(); // before state for undo
+  const N = nodes.length;
+  const W = outer.clientWidth / zoom, H = outer.clientHeight / zoom;
+  const area = W * H;
+  const k = Math.sqrt(area / N) * 0.9;
+  const pos = nodes.map(n => ({ x:n.x, y:n.y, vx:0, vy:0 }));
+  const idx = {}; nodes.forEach((n,i)=>idx[n.id]=i);
+
+  const ITER = 150, COOL_START = 0.15 * Math.sqrt(W*W+H*H);
+  for (let it=0; it<ITER; it++) {
+    const temp = COOL_START * (1 - it/ITER);
+    // repulsion
+    for (let i=0; i<N; i++) for (let j=i+1; j<N; j++) {
+      const dx=pos[i].x-pos[j].x, dy=pos[i].y-pos[j].y;
+      const d=Math.max(Math.hypot(dx,dy),0.01);
+      const f=k*k/d;
+      pos[i].vx+=dx/d*f; pos[i].vy+=dy/d*f;
+      pos[j].vx-=dx/d*f; pos[j].vy-=dy/d*f;
+    }
+    // attraction along edges
+    edges.forEach(e => {
+      const i=idx[e.from], j=idx[e.to];
+      if (i===undefined||j===undefined) return;
+      const dx=pos[j].x-pos[i].x, dy=pos[j].y-pos[i].y;
+      const d=Math.max(Math.hypot(dx,dy),0.01);
+      const f=d*d/k;
+      pos[i].vx+=dx/d*f; pos[i].vy+=dy/d*f;
+      pos[j].vx-=dx/d*f; pos[j].vy-=dy/d*f;
+    });
+    // center gravity
+    pos.forEach(p => { p.vx -= (p.x-(W/2+(-panX)))*0.02; p.vy -= (p.y-(H/2+(-panY)))*0.02; });
+    // apply with cooling
+    pos.forEach(p => {
+      const d=Math.hypot(p.vx,p.vy);
+      if (d>0) { p.x+=p.vx/d*Math.min(d,temp); p.y+=p.vy/d*Math.min(d,temp); }
+      p.vx=0; p.vy=0;
+    });
+  }
+  nodes.forEach((n,i) => { n.x=Math.round(pos[i].x); n.y=Math.round(pos[i].y); });
+  render(); snapshot();
+}
+
+// ── Node modal ────────────────────────────────────────────────────────────────
+let editingEntityId = null;
+
+function openNodeModal(id) {
+  const n = nodes.find(n=>n.id===id); if (!n) return;
+  editingNodeId = id;
+  editingEntityId = n.entity_id || null;
+  document.querySelectorAll('.type-btn').forEach(b => b.classList.toggle('on', b.dataset.type===n.type));
+  document.getElementById('ndlg-title').value   = n.title || '';
+  document.getElementById('ndlg-body').value    = n.body  || '';
+  document.getElementById('ndlg-color').value   = n.color || '#1e1e2e';
+  document.getElementById('ndlg-status').value  = n.status || 'unknown';
+  document.getElementById('ndlg-tags').value    = (n.tags||[]).join(', ');
+  document.getElementById('ndlg-imgurl').value  = n.image_url || '';
+  document.getElementById('ndlg-entity-search').value = '';
+  document.getElementById('ndlg-entity-results').style.display = 'none';
+  const linked = document.getElementById('ndlg-entity-linked');
+  if (n.entity_id) {
+    const ent = ENTITY_LIST.find(e=>e.id===n.entity_id);
+    linked.style.display='';
+    linked.textContent = ent ? `Linked: ${ent.name}` : `Linked: #${n.entity_id}`;
+  } else { linked.style.display='none'; }
+  document.getElementById('node-modal').style.display = 'flex';
+  setTimeout(()=>document.getElementById('ndlg-title').focus(), 60);
+}
+
+function setNodeType(t) {
+  document.querySelectorAll('.type-btn').forEach(b=>b.classList.toggle('on',b.dataset.type===t));
+}
+function getSelectedType() {
+  return document.querySelector('.type-btn.on')?.dataset.type || 'note';
+}
+
+function confirmNodeEdit() {
+  const n = nodes.find(n=>n.id===editingNodeId); if (!n) return;
+  n.type      = getSelectedType();
+  n.title     = document.getElementById('ndlg-title').value.trim() || 'Untitled';
+  n.body      = document.getElementById('ndlg-body').value.trim();
+  n.color     = document.getElementById('ndlg-color').value;
+  n.status    = document.getElementById('ndlg-status').value || 'unknown';
+  n.tags      = document.getElementById('ndlg-tags').value.split(',').map(t=>t.trim()).filter(Boolean);
+  n.image_url = document.getElementById('ndlg-imgurl').value.trim();
+  n.entity_id = editingEntityId;
+  closeNodeModal(); render(); snapshot();
+}
+
+function deleteEditingNode() {
+  if (editingNodeId) { deleteNode(editingNodeId); closeNodeModal(); }
+}
+
+function closeNodeModal() {
+  editingNodeId = null;
+  document.getElementById('node-modal').style.display = 'none';
+  document.getElementById('ndlg-entity-results').style.display = 'none';
+}
+
+// Entity search
+function searchEntities(q) {
+  const res = document.getElementById('ndlg-entity-results');
+  if (!q.trim()) { res.style.display='none'; return; }
+  const matches = ENTITY_LIST.filter(e=>e.name.toLowerCase().includes(q.toLowerCase())).slice(0,8);
+  if (!matches.length) { res.style.display='none'; return; }
+  res.innerHTML = '';
+  const input = document.getElementById('ndlg-entity-search');
+  const rect = input.getBoundingClientRect();
+  res.style.top  = (rect.bottom+4)+'px';
+  res.style.left = rect.left+'px';
+  res.style.display='block';
+  matches.forEach(e => {
+    const d = document.createElement('div');
+    d.style.cssText='padding:.3rem .7rem;cursor:pointer;font-size:.82rem;border-bottom:1px solid rgba(255,255,255,.07)';
+    d.textContent = `${e.name} (${e.kind})`;
+    d.addEventListener('mouseover', ()=>d.style.background='rgba(255,255,255,.1)');
+    d.addEventListener('mouseout',  ()=>d.style.background='');
+    d.addEventListener('click', () => {
+      editingEntityId = e.id;
+      document.getElementById('ndlg-entity-search').value = e.name;
+      const linked = document.getElementById('ndlg-entity-linked');
+      linked.style.display=''; linked.textContent=`Linked: ${e.name}`;
+      res.style.display='none';
+    });
+    res.appendChild(d);
+  });
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('#ndlg-entity-search') && !e.target.closest('#ndlg-entity-results'))
+    document.getElementById('ndlg-entity-results').style.display='none';
+});
+
+// ── Edge popover ──────────────────────────────────────────────────────────────
+function openEdgePop(id, mouseEvent) {
+  editingEdgeId = id;
+  popEdgeId     = id;
+  const e = edges.find(e=>e.id===id); if (!e) return;
+  document.getElementById('edge-pop-label').value  = e.label  || '';
+  document.getElementById('edge-pop-color').value  = e.color  || '#ff4444';
+  document.getElementById('edge-pop-style').value  = e.style  || 'string';
+  document.getElementById('edge-pop-kind').value   = e.kind   || 'link';
+  _syncDirBtns(e.direction || 'fwd');
+  const pop = document.getElementById('edge-pop');
+  pop.style.display='block';
+  pop.style.left = mouseEvent.clientX + 'px';
+  pop.style.top  = mouseEvent.clientY + 'px';
+  setTimeout(()=>document.getElementById('edge-pop-label').focus(),50);
+}
+function _syncDirBtns(dir) {
+  ['fwd','rev','both'].forEach(d => {
+    document.getElementById('ebtn-'+d).classList.toggle('on', d===dir);
+  });
+}
+function setEdgeDir(d) {
+  const e = edges.find(x=>x.id===popEdgeId); if (!e) return;
+  e.direction = d;
+  _syncDirBtns(d);
+  redrawEdges();
+}
+function confirmEdgeEdit() {
+  const e = edges.find(e=>e.id===editingEdgeId); if (!e) return;
+  e.label     = document.getElementById('edge-pop-label').value.trim();
+  e.color     = document.getElementById('edge-pop-color').value;
+  e.style     = document.getElementById('edge-pop-style').value;
+  e.kind      = document.getElementById('edge-pop-kind').value;
+  // direction already applied live by setEdgeDir; persist it here
+  if (!e.direction) e.direction = 'fwd';
+  closeEdgePop(); redrawEdges(); snapshot();
+}
+function deleteEditingEdge() {
+  edges = edges.filter(e=>e.id!==editingEdgeId);
+  closeEdgePop(); redrawEdges(); snapshot();
+}
+function closeEdgePop() {
+  editingEdgeId=null; document.getElementById('edge-pop').style.display='none';
+}
+document.getElementById('edge-pop-label').addEventListener('keydown',e=>{if(e.key==='Enter')confirmEdgeEdit();});
+
+// ── Minimap ───────────────────────────────────────────────────────────────────
+function toggleMinimap() {
+  const mm = document.getElementById('brd-minimap');
+  const show = mm.style.display === 'none';
+  mm.style.display = show ? '' : 'none';
+  document.getElementById('btn-minimap').classList.toggle('on', show);
+  if (show) renderMinimap();
+}
+
+function renderMinimap() {
+  const mm = document.getElementById('brd-minimap');
+  if (!mm || mm.style.display === 'none' || !nodes.length) return;
+  const mmSvg = document.getElementById('mm-svg');
+  if (!nodes.length) return;
+  const xs=nodes.map(n=>n.x), ys=nodes.map(n=>n.y);
+  const minX=Math.min(...xs)-20, minY=Math.min(...ys)-20;
+  const maxX=Math.max(...xs)+180, maxY=Math.max(...ys)+140;
+  const vbW=maxX-minX, vbH=maxY-minY;
+  mmSvg.setAttribute('viewBox',`${minX} ${minY} ${vbW} ${vbH}`);
+  mmSvg.innerHTML = '';
+  // node rects
+  nodes.forEach(n => {
+    const cfg = TYPE_CFG[n.type]||TYPE_CFG.note;
+    const r = document.createElementNS('http://www.w3.org/2000/svg','rect');
+    r.setAttribute('x',n.x); r.setAttribute('y',n.y);
+    r.setAttribute('width',160); r.setAttribute('height',80);
+    r.setAttribute('rx',3); r.setAttribute('fill',cfg.border);
+    r.setAttribute('opacity',selIds.has(n.id)?'1':'0.55');
+    mmSvg.appendChild(r);
+  });
+  // viewport indicator
+  const vpX = -panX, vpY = -panY;
+  const vpW = outer.clientWidth/zoom, vpH = outer.clientHeight/zoom;
+  const vp = document.createElementNS('http://www.w3.org/2000/svg','rect');
+  vp.setAttribute('x',vpX); vp.setAttribute('y',vpY);
+  vp.setAttribute('width',vpW); vp.setAttribute('height',vpH);
+  vp.setAttribute('fill','rgba(0,240,255,0.07)');
+  vp.setAttribute('stroke','#00f0ff'); vp.setAttribute('stroke-width', vbW*0.006+'');
+  mmSvg.appendChild(vp);
+}
+
+document.getElementById('brd-minimap').addEventListener('click', e => {
+  const r = e.currentTarget.getBoundingClientRect();
+  const px = (e.clientX - r.left) / r.width;
+  const py = (e.clientY - r.top) / r.height;
+  if (!nodes.length) return;
+  const xs=nodes.map(n=>n.x), ys=nodes.map(n=>n.y);
+  const minX=Math.min(...xs)-20, minY=Math.min(...ys)-20;
+  const maxX=Math.max(...xs)+180, maxY=Math.max(...ys)+140;
+  const wx = minX + px*(maxX-minX), wy = minY + py*(maxY-minY);
+  panX = -wx + outer.clientWidth/(2*zoom);
+  panY = -wy + outer.clientHeight/(2*zoom);
+  render();
+});
+
+// ── Presentation mode ─────────────────────────────────────────────────────────
+function enterPresent() {
+  if (!nodes.length) return;
+  presentMode = true;
+  presentIdx  = 0;
+  document.getElementById('brd-wrap').classList.add('present-mode');
+  document.getElementById('btn-present').classList.add('on');
+  presentFocus();
+}
+function exitPresent() {
+  presentMode = false;
+  document.getElementById('brd-wrap').classList.remove('present-mode');
+  document.getElementById('btn-present').classList.remove('on');
+}
+function presentStep(dir) {
+  presentIdx = (presentIdx + dir + nodes.length) % nodes.length;
+  presentFocus();
+}
+function presentFocus() {
+  const n = nodes[presentIdx]; if (!n) return;
+  selIds.clear(); selIds.add(n.id);
+  // centre on node with zoom=1.2
+  zoom = 1.2;
+  panX = -n.x + outer.clientWidth/(2*zoom) - 80;
+  panY = -n.y + outer.clientHeight/(2*zoom) - 40;
+  render();
+}
+
+// ── Clear ─────────────────────────────────────────────────────────────────────
+function clearBoard() {
+  if (!confirm('Clear all nodes and connections?')) return;
+  nodes=[]; edges=[]; groups=[]; selIds.clear(); render(); snapshot();
+}
+
+// ── Save ──────────────────────────────────────────────────────────────────────
+async function save() {
+  const btn=document.getElementById('save-btn');
+  btn.textContent='⏳'; btn.disabled=true;
+  try {
+    const r = await fetch(`/boards/${SLUG}/save`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ nodes, edges, groups }),
+    });
+    btn.textContent = r.ok ? '✓ Saved' : '✗ Error';
+    if (r.ok) markClean();
+  } catch { btn.textContent='✗ Error'; }
+  setTimeout(()=>{btn.textContent='💾 Save';btn.disabled=false;},1500);
+}
+
+window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue=''; } });
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+// Apply defaults for legacy nodes
+nodes.forEach(n => {
+  if (!n.status) n.status = 'unknown';
+  if (!n.tags)   n.tags   = [];
+});
+edges.forEach(e => { if (!e.kind) e.kind = 'link'; if (!e.direction) e.direction = 'fwd'; });
+
+// Restore viewport from localStorage
+const _vp = JSON.parse(localStorage.getItem('board-vp-'+SLUG)||'null');
+if (_vp) { zoom=_vp.zoom; panX=_vp.panX; panY=_vp.panY; }
+
+snapshot();   // push initial state so undo reaches it
+render();
+if (nodes.length && !_vp) setTimeout(fitAll, 80);
+</script>
+{% endblock %}

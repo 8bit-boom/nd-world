@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}New Schematic — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="form-page">
+  <h1>📐 New Schematic Map</h1>
+  <form method="post" action="/maps/schematic/new" class="entity-form">
+    <div class="form-group">
+      <label>Name *</label>
+      <input name="name" required placeholder="e.g. Hughes Station, City District…" autocomplete="off"/>
+    </div>
+    <div class="form-group">
+      <label>Description</label>
+      <input name="description" placeholder="Short description"/>
+    </div>
+
+    <div class="form-group">
+      <label>Canvas Size</label>
+      <div class="sch-preset-grid">
+        {% for label, w, h in [
+          ('Small (1000×750)', 1000, 750),
+          ('Medium (2000×1500)', 2000, 1500),
+          ('Large (3000×2000)', 3000, 2000),
+          ('Widescreen (1920×1080)', 1920, 1080),
+          ('Square (2000×2000)', 2000, 2000),
+          ('Custom', 0, 0),
+        ] %}
+        <label class="sch-preset {% if w==2000 and h==1500 %}selected{% endif %}"
+               onclick="selectPreset(this, {{ w }}, {{ h }})">
+          <input type="radio" name="_preset" value="{{ w }}x{{ h }}" {% if w==2000 and h==1500 %}checked{% endif %} style="display:none"/>
+          {{ label }}
+        </label>
+        {% endfor %}
+      </div>
+      <div id="custom-size" style="display:none;margin-top:.5rem;display:none;gap:.5rem;align-items:center">
+        <input type="number" id="cw" name="canvas_width" value="2000" min="400" max="8000" style="width:90px"/>
+        <span style="opacity:.5">×</span>
+        <input type="number" id="ch" name="canvas_height" value="1500" min="300" max="6000" style="width:90px"/>
+        <span style="opacity:.5;font-size:.78rem">pixels</span>
+      </div>
+      <!-- Hidden inputs that get submitted -->
+      <input type="hidden" id="hcw" name="canvas_width" value="2000"/>
+      <input type="hidden" id="hch" name="canvas_height" value="1500"/>
+    </div>
+
+    <div class="form-group">
+      <label>Background Style</label>
+      <div class="sch-bg-grid">
+        {% for val, label, preview in [
+          ('dark', 'Dark', '#111'),
+          ('blueprint', 'Blueprint', '#0d1b2a'),
+          ('grid-light', 'Dark Teal', '#1a1a2e'),
+          ('light', 'Light', '#f0f0f0'),
+        ] %}
+        <label class="sch-bg-opt {% if val=='dark' %}selected{% endif %}" onclick="selectBg(this)">
+          <input type="radio" name="canvas_bg" value="{{ val }}" {% if val=='dark' %}checked{% endif %} style="display:none"/>
+          <span class="sch-bg-preview" style="background:{{ preview }}"></span>
+          {{ label }}
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Create Schematic</button>
+      <a href="/maps" class="btn-cancel">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<style>
+.sch-preset-grid { display:flex; flex-wrap:wrap; gap:.4rem; margin-top:.3rem; }
+.sch-preset {
+  padding:.35rem .8rem; border:1px solid rgba(255,255,255,.2); border-radius:4px;
+  cursor:pointer; font-size:.82rem; background:rgba(255,255,255,.05); transition:border-color .15s;
+}
+.sch-preset:hover { border-color:var(--neon); }
+.sch-preset.selected { border-color:var(--neon); color:var(--neon); background:rgba(0,240,255,.07); }
+.sch-bg-grid { display:flex; gap:.6rem; flex-wrap:wrap; margin-top:.4rem; }
+.sch-bg-opt {
+  display:flex; flex-direction:column; align-items:center; gap:.3rem;
+  padding:.5rem .8rem; border:1px solid rgba(255,255,255,.2); border-radius:6px;
+  cursor:pointer; font-size:.78rem; transition:border-color .15s;
+}
+.sch-bg-opt:hover { border-color:var(--neon); }
+.sch-bg-opt.selected { border-color:var(--neon); }
+.sch-bg-preview { width:60px; height:36px; border-radius:3px; border:1px solid rgba(255,255,255,.15); }
+</style>
+
+<script>
+function selectPreset(el, w, h) {
+  document.querySelectorAll('.sch-preset').forEach(e => e.classList.remove('selected'));
+  el.classList.add('selected');
+  const custom = document.getElementById('custom-size');
+  if (w === 0) {
+    custom.style.display = 'flex';
+    // bind custom inputs to hidden fields
+    document.getElementById('cw').oninput = () => document.getElementById('hcw').value = document.getElementById('cw').value;
+    document.getElementById('ch').oninput = () => document.getElementById('hch').value = document.getElementById('ch').value;
+  } else {
+    custom.style.display = 'none';
+    document.getElementById('hcw').value = w;
+    document.getElementById('hch').value = h;
+  }
+}
+function selectBg(el) {
+  document.querySelectorAll('.sch-bg-opt').forEach(e => e.classList.remove('selected'));
+  el.classList.add('selected');
+  el.querySelector('input').checked = true;
+}
+// prevent duplicate canvas_width submission (remove hidden if custom shown)
+document.querySelector('form').addEventListener('submit', function() {
+  const custom = document.getElementById('custom-size');
+  if (custom.style.display === 'flex') {
+    document.getElementById('hcw').remove();
+    document.getElementById('hch').remove();
+  } else {
+    document.getElementById('cw').name = '';
+    document.getElementById('ch').name = '';
+  }
+});
+</script>
+{% endblock %}

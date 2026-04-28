@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}New Board — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="form-page">
+  <h1>📌 New Investigation Board</h1>
+  <form method="post" action="/boards/new" class="entity-form">
+    <div class="form-group">
+      <label>Name *</label>
+      <input name="name" required placeholder="e.g. Hughes Industries Conspiracy, Session 3 Leads…" autocomplete="off"/>
+    </div>
+    <div class="form-group">
+      <label>Description</label>
+      <input name="description" placeholder="Short description"/>
+    </div>
+    <div class="form-group">
+      <label>Background</label>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.3rem">
+        {% for val, label, preview in [
+          ('cork','Cork Board','repeating-conic-gradient(#6b4f2a 0% 25%,#7a5c33 0% 50%) 0/8px 8px'),
+          ('dark','Dark','#111'),
+          ('blueprint','Blueprint','#0d1b2a'),
+          ('metal','Metal','repeating-linear-gradient(45deg,#222 0,#222 2px,#1a1a1a 2px,#1a1a1a 8px)'),
+        ] %}
+        <label class="sch-bg-opt {% if val=='cork' %}selected{% endif %}" onclick="selBg(this)">
+          <input type="radio" name="canvas_bg" value="{{ val }}" {% if val=='cork' %}checked{% endif %} style="display:none"/>
+          <span style="width:64px;height:38px;border-radius:3px;border:1px solid rgba(255,255,255,.15);display:block;background:{{ preview }}"></span>
+          {{ label }}
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Create Board</button>
+      <a href="/boards" class="btn-cancel">Cancel</a>
+    </div>
+  </form>
+</div>
+<script>
+function selBg(el) {
+  document.querySelectorAll('.sch-bg-opt').forEach(e => e.classList.remove('selected'));
+  el.classList.add('selected');
+  el.querySelector('input').checked = true;
+}
+</script>
+{% endblock %}

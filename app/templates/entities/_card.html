@@ -4,7 +4,12 @@
     <span class="entity-kind">{{ kind_icons[e.kind] }} {{ e.kind }}</span>
     {% if e.subtype %}<span class="entity-sub">{{ e.subtype }}</span>{% endif %}
     <h3>{{ e.name }}</h3>
-    {% if e.summary %}<p>{{ e.summary }}</p>{% endif %}
+    {% if e.summary %}
+    <p>{{ e.summary }}</p>
+    {% elif e.body %}
+    {% set excerpt = e.body | body_summary %}
+    {% if excerpt %}<p class="card-excerpt">{{ excerpt | truncate(160, True, '…') }}</p>{% endif %}
+    {% endif %}
     {% if e.tags %}
     <div class="tags">{% for t in e.tags.split(',') %}<span class="tag">{{ t.strip() }}</span>{% endfor %}</div>
     {% endif %}

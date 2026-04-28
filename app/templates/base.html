@@ -37,9 +37,26 @@
       {{ kind_icons[k] }} {{ k|capitalize }}
     </a>
     {% endfor %}
+    <a href="/maps"   class="nav-kind {% if request.url.path == '/maps' %}active{% endif %}">🗺 Maps</a>
+    <a href="/boards" class="nav-kind {% if request.url.path.startswith('/boards') %}active{% endif %}">📌 Boards</a>
+    <a href="/export" class="nav-kind">⬇ Export</a>
+    <a href="/rules"  class="nav-kind {% if request.url.path == '/rules' %}active{% endif %}">📖 Rules</a>
+    <a href="/ai"     class="nav-kind {% if request.url.path == '/ai' %}active{% endif %}">🤖 AI</a>
     <a href="/new" class="btn-new">+ New</a>
+    <span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.4rem;vertical-align:middle"></span>
   </div>
 </nav>
+<script>
+(function(){
+  fetch('/api/ai/status',{method:'POST'})
+    .then(r=>r.json())
+    .then(d=>{
+      var dot=document.getElementById('ai-dot');
+      if(d.status==='ok'){dot.style.background='#4f4';dot.title='AI ready — '+d.model;}
+      else{dot.style.background='#888';dot.title='AI unavailable';}
+    }).catch(()=>{});
+})();
+</script>
 <main>
   {% block content %}{% endblock %}
 </main>

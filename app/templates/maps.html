@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Maps — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="list-header">
+  <h1>🗺 MAPS</h1>
+</div>
+
+<div class="maps-grid">
+  {% for m in maps %}
+  <div class="map-card">
+    <div class="map-img-wrap">
+      <a href="/maps/{{ m.slug }}">
+        {% if m.image_url %}
+        <img class="map-img" src="{{ m.image_url }}" alt="{{ m.name }}"/>
+        {% else %}
+        <div class="map-placeholder">🗺</div>
+        {% endif %}
+      </a>
+    </div>
+    <div class="map-card-body">
+      <div class="map-name"><a href="/maps/{{ m.slug }}" style="color:inherit;text-decoration:none">{{ m.name }}</a></div>
+      <div class="map-meta">
+        {{ m.width }}×{{ m.height }}
+        {% if m.markers %} · {{ m.markers }} marker{{ 's' if m.markers != 1 }}{% endif %}
+      </div>
+      <form action="/maps/{{ m.slug }}/upload" method="post" enctype="multipart/form-data" class="map-upload-form">
+        <label class="map-upload-label" title="Upload map image">
+          📎 {% if m.image_url %}Replace{% else %}Upload{% endif %} image
+          <input type="file" name="file" accept="image/*" onchange="this.form.submit()" style="display:none"/>
+        </label>
+      </form>
+    </div>
+  </div>
+  {% else %}
+  <p class="empty">No maps found.</p>
+  {% endfor %}
+</div>
+
+<!-- Schematics -->
+<div class="list-header" style="margin-top:2.5rem">
+  <h2>📐 SCHEMATICS</h2>
+  <a href="/maps/schematic/new" class="btn-new">+ New Schematic</a>
+</div>
+
+<div class="maps-grid">
+  {% for s in schematics %}
+  <div class="map-card">
+    <div class="map-img-wrap">
+      {% if s.image_url %}
+      <a href="/maps/schematic/{{ s.slug }}">
+        <img class="map-img" src="{{ s.image_url }}" alt="{{ s.name }}"/>
+      </a>
+      {% else %}
+      <a href="/maps/schematic/{{ s.slug }}" class="map-placeholder" style="text-decoration:none">
+        {% if s.is_html %}🌐{% else %}📐{% endif %}
+      </a>
+      {% endif %}
+    </div>
+    <div class="map-card-body">
+      <div class="map-name">
+        <a href="/maps/schematic/{{ s.slug }}" style="color:inherit;text-decoration:none">{{ s.name }}</a>
+      </div>
+      {% if s.description %}
+      <div class="map-meta">{{ s.description }}</div>
+      {% endif %}
+      <div class="map-meta" style="margin-top:.3rem">
+        {% if s.is_html %}<span class="pill">HTML</span>{% else %}<span class="pill">Leaflet</span>{% endif %}
+      </div>
+      {% if not s.is_html %}
+      <form action="/maps/schematic/{{ s.slug }}/upload" method="post" enctype="multipart/form-data" class="map-upload-form">
+        <label class="map-upload-label" title="Upload background image">
+          📎 {% if s.image_url %}Replace{% else %}Upload{% endif %} background
+          <input type="file" name="file" accept="image/*" onchange="this.form.submit()" style="display:none"/>
+        </label>
+      </form>
+      {% endif %}
+      <form action="/maps/schematic/{{ s.slug }}/delete" method="post" onsubmit="return confirm('Delete {{s.name}}?')" style="margin-top:.4rem">
+        <button type="submit" class="btn-delete-sm">🗑 Delete</button>
+      </form>
+    </div>
+  </div>
+  {% else %}
+  <p class="empty">No schematics yet. <a href="/maps/schematic/new">Create one</a>.</p>
+  {% endfor %}
+</div>
+{% endblock %}

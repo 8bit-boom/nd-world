@@ -1,0 +1,381 @@
+{% extends "base.html" %}
+{% block title %}{{ map_data.name }} — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<div id="map-wrap">
+  <div id="map-toolbar">
+    <a href="/maps" class="tb-btn" title="Back">← Maps</a>
+    <span id="map-title">{{ map_data.name }}</span>
+    <div class="tb-spacer"></div>
+    <button id="btn-toggle-kanka" class="tb-btn active" onclick="toggleLayer('kanka')" title="Toggle imported pins">📍 Pins</button>
+    <button id="btn-edit" class="tb-btn" onclick="toggleEdit()">✏ Edit</button>
+    <div id="edit-tools" style="display:none">
+      <button id="btn-add-m" class="tb-btn" onclick="setTool('marker')">+ Marker</button>
+      <button id="btn-add-r" class="tb-btn" onclick="setTool('region')">✦ Region</button>
+      <button id="btn-move" class="tb-btn" onclick="setTool('move')">↔ Move</button>
+      <button id="btn-del" class="tb-btn" onclick="setTool('delete')">🗑 Delete</button>
+      <button id="btn-finish-r" class="tb-btn" style="display:none" onclick="finishRegion()">✓ Done</button>
+      <button class="tb-btn tb-save" onclick="saveOverlay()">💾 Save</button>
+    </div>
+  </div>
+
+  {% if not image_url %}
+  <div id="no-image-msg">
+    <p>No map image found for this map.<br>Upload one on the <a href="/maps">Maps page</a>.</p>
+  </div>
+  {% else %}
+  <div id="map"></div>
+  {% endif %}
+</div>
+
+<!-- Dialog: add/edit marker -->
+<div id="dlg-marker" class="map-dlg" style="display:none">
+  <div class="map-dlg-box">
+    <h3 id="dlg-m-title">Add Marker</h3>
+    <label>Label</label>
+    <input id="dlg-m-label" placeholder="Place name…" autocomplete="off"/>
+    <label>Color</label>
+    <div class="color-row">
+      {% for c in ['#00f0ff','#ff4466','#ffcc00','#44ff88','#ff8800','#cc44ff','#ffffff','#aaaaaa'] %}
+      <span class="cswatch" style="background:{{ c }}" data-c="{{ c }}" onclick="pickMColor('{{ c }}')"></span>
+      {% endfor %}
+    </div>
+    <label>Note (optional)</label>
+    <textarea id="dlg-m-note" rows="2" placeholder="Short description…"></textarea>
+    <div class="dlg-actions">
+      <button class="btn-primary" onclick="confirmMarker()">OK</button>
+      <button class="btn-cancel" onclick="closeDlg('dlg-marker')">Cancel</button>
+      <button id="dlg-m-del" class="btn-delete-sm" style="display:none" onclick="deleteMarker()">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Dialog: add/edit region -->
+<div id="dlg-region" class="map-dlg" style="display:none">
+  <div class="map-dlg-box">
+    <h3>Add Region</h3>
+    <label>Name</label>
+    <input id="dlg-r-name" placeholder="Region name…" autocomplete="off"/>
+    <label>Fill color</label>
+    <div class="color-row">
+      {% for c in ['#00f0ff','#ff4466','#ffcc00','#44ff88','#ff8800','#cc44ff','#ff00aa','#aaaaaa'] %}
+      <span class="cswatch" style="background:{{ c }}" data-c="{{ c }}" onclick="pickRColor('{{ c }}')"></span>
+      {% endfor %}
+    </div>
+    <label>Opacity <span id="r-opacity-val">0.25</span></label>
+    <input type="range" id="dlg-r-opacity" min="0.05" max="0.7" step="0.05" value="0.25"
+           oninput="document.getElementById('r-opacity-val').textContent=this.value"/>
+    <div class="dlg-actions">
+      <button class="btn-primary" onclick="confirmRegion()">OK</button>
+      <button class="btn-cancel" onclick="cancelRegionDraw()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<style>
+#map-wrap { display:flex; flex-direction:column; height:calc(100vh - 56px); }
+#map-toolbar {
+  display:flex; align-items:center; gap:.4rem; flex-wrap:wrap;
+  padding:.4rem .8rem; background:rgba(0,0,0,.7);
+  border-bottom:1px solid rgba(255,255,255,.1); flex-shrink:0; z-index:1000;
+}
+#map-title { font-family:var(--font); font-size:.95rem; opacity:.8; margin:0 .4rem; }
+.tb-spacer { flex:1; }
+.tb-btn {
+  padding:.3rem .7rem; border:1px solid rgba(255,255,255,.2); border-radius:3px;
+  background:rgba(255,255,255,.07); color:inherit; cursor:pointer;
+  font-family:var(--font); font-size:.82rem; text-decoration:none; display:inline-block;
+}
+.tb-btn:hover, .tb-btn.active { border-color:var(--neon); color:var(--neon); }
+.tb-save { border-color:#44ff88; color:#44ff88; }
+.tb-save:hover { background:#44ff88; color:#000; }
+#edit-tools { display:flex; gap:.3rem; align-items:center; }
+#map { flex:1; background:#111; }
+#no-image-msg { flex:1; display:flex; align-items:center; justify-content:center; opacity:.5; text-align:center; }
+
+/* Dialogs */
+.map-dlg {
+  position:fixed; inset:0; z-index:9000;
+  background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center;
+}
+.map-dlg-box {
+  background:var(--bg2); border:1px solid var(--border); border-radius:8px;
+  padding:1.2rem 1.4rem; min-width:280px; max-width:360px;
+}
+.map-dlg-box h3 { margin:0 0 .8rem; font-size:1rem; }
+.map-dlg-box label { display:block; font-size:.78rem; opacity:.65; margin:.5rem 0 .2rem; }
+.map-dlg-box input, .map-dlg-box textarea {
+  width:100%; box-sizing:border-box; background:rgba(255,255,255,.07);
+  border:1px solid rgba(255,255,255,.18); border-radius:4px;
+  padding:.4rem .6rem; color:inherit; font-size:.88rem; font-family:var(--font);
+}
+.color-row { display:flex; gap:.4rem; flex-wrap:wrap; margin:.3rem 0; }
+.cswatch {
+  width:22px; height:22px; border-radius:50%; cursor:pointer;
+  border:2px solid transparent; transition:border-color .15s;
+}
+.cswatch.sel, .cswatch:hover { border-color:#fff; }
+.dlg-actions { display:flex; gap:.5rem; margin-top:.8rem; }
+input[type=range] { width:100%; accent-color:var(--neon); }
+
+/* Leaflet overrides */
+.leaflet-container { background:#0a0a0a; font-family:var(--font); }
+.map-popup { font-family:var(--font); font-size:.85rem; max-width:220px; }
+.map-popup b { color:var(--neon); }
+.map-popup .pop-type { font-size:.72rem; opacity:.6; margin-bottom:.3rem; }
+.map-popup .pop-desc { opacity:.85; line-height:1.4; max-height:80px; overflow:hidden; }
+.map-popup a { color:var(--neon); }
+.kanka-pin { border:none; background:transparent; }
+</style>
+
+{% if image_url %}
+<script>
+const MAP_W = {{ map_data.width }};
+const MAP_H = {{ map_data.height }};
+const IMG_URL = {{ image_url | tojson }};
+const SLUG = {{ slug | tojson }};
+const KANKA_MARKERS = {{ map_data.markers | tojson }};
+const ENAME_MAP = {{ ename_map | safe }};
+let customMarkers = {{ overlay.custom_markers_json | safe }};
+let customRegions = {{ overlay.custom_regions_json | safe }};
+
+// ── Leaflet setup ──────────────────────────────────────────────────────────────
+const map = L.map('map', {
+  crs: L.CRS.Simple, minZoom: -3, maxZoom: 4,
+  attributionControl: false, zoomControl: true,
+});
+const bounds = [[0, 0], [MAP_H, MAP_W]];
+L.imageOverlay(IMG_URL, bounds).addTo(map);
+map.fitBounds(bounds);
+
+function toLL(kLat, kLng) { return L.latLng(MAP_H - kLat, kLng); }
+
+// ── Layers ─────────────────────────────────────────────────────────────────────
+const kankaLayer = L.layerGroup().addTo(map);
+const customMarkersLayer = L.layerGroup().addTo(map);
+const customRegionsLayer = L.layerGroup().addTo(map);
+
+// ── Kanka markers ─────────────────────────────────────────────────────────────
+function renderKanka() {
+  kankaLayer.clearLayers();
+  KANKA_MARKERS.forEach(m => {
+    const ll = toLL(m.latitude, m.longitude);
+    const name = m.entity?.name || m.name || '?';
+    const type = m.entity?.type || '';
+    let desc = (m.entity?.entry || '').replace(/<[^>]+>/g, '').trim().slice(0, 160);
+    if (desc.length === 160) desc += '…';
+    const lid = ENAME_MAP[name.toLowerCase()];
+    const link = lid ? `<br><a href="/entity/${lid}">→ Open in World</a>` : '';
+    const icon = L.divIcon({
+      className: 'kanka-pin',
+      html: `<svg width="16" height="16"><circle cx="8" cy="8" r="7" fill="#00f0ff" fill-opacity=".85" stroke="#fff" stroke-width="1.5"/></svg>`,
+      iconSize: [16,16], iconAnchor: [8,8],
+    });
+    L.marker(ll, {icon}).addTo(kankaLayer)
+      .bindPopup(`<div class="map-popup"><b>${name}</b>${type ? `<div class="pop-type">${type}</div>` : ''}${desc ? `<div class="pop-desc">${desc}</div>` : ''}${link}</div>`)
+      .bindTooltip(name, {direction:'right', className:'', opacity:.9});
+  });
+}
+renderKanka();
+
+// ── Custom markers ────────────────────────────────────────────────────────────
+function makeCustomIcon(color) {
+  return L.divIcon({
+    className: 'kanka-pin',
+    html: `<svg width="18" height="22" viewBox="0 0 18 22"><circle cx="9" cy="9" r="8" fill="${color}" fill-opacity=".9" stroke="#fff" stroke-width="1.5"/><line x1="9" y1="17" x2="9" y2="22" stroke="${color}" stroke-width="2"/></svg>`,
+    iconSize: [18,22], iconAnchor: [9,22],
+  });
+}
+
+function renderCustomMarkers() {
+  customMarkersLayer.clearLayers();
+  customMarkers.forEach((m, i) => {
+    const ll = L.latLng(m.lat, m.lng);
+    const lm = L.marker(ll, {icon: makeCustomIcon(m.color || '#ff4466'), draggable: false})
+      .addTo(customMarkersLayer);
+    const note = m.note ? `<div class="pop-desc">${m.note}</div>` : '';
+    lm.bindPopup(`<div class="map-popup"><b>${m.label || '?'}</b>${note}</div>`);
+    lm.bindTooltip(m.label || '', {direction:'right', opacity:.9});
+    lm.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removeCustomMarker(i); } else if (editMode && (tool === 'marker' || tool === 'move')) { L.DomEvent.stop(e); editCustomMarker(i); } });
+  });
+}
+renderCustomMarkers();
+
+// ── Custom regions ────────────────────────────────────────────────────────────
+function renderCustomRegions() {
+  customRegionsLayer.clearLayers();
+  customRegions.forEach((r, i) => {
+    const latlngs = r.points.map(p => L.latLng(p[0], p[1]));
+    const poly = L.polygon(latlngs, {
+      color: r.color || '#00f0ff',
+      fillColor: r.color || '#00f0ff',
+      fillOpacity: r.opacity || 0.25,
+      weight: 2,
+    }).addTo(customRegionsLayer);
+    if (r.name) poly.bindTooltip(r.name, {sticky:true, opacity:.9});
+    poly.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removeRegion(i); } });
+  });
+}
+renderCustomRegions();
+
+// ── Edit mode ──────────────────────────────────────────────────────────────────
+let editMode = false;
+let tool = 'pointer';
+let polyPoints = [], polyPreview = null;
+let pendingLL = null, editingMarkerIdx = null;
+let mColor = '#ff4466', rColor = '#00f0ff';
+
+function toggleEdit() {
+  editMode = !editMode;
+  document.getElementById('btn-edit').classList.toggle('active', editMode);
+  document.getElementById('edit-tools').style.display = editMode ? 'flex' : 'none';
+  if (!editMode) { setTool('pointer'); cancelRegionDraw(); }
+}
+
+function setTool(t) {
+  tool = t;
+  ['btn-add-m','btn-add-r','btn-move','btn-del'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('active', id === 'btn-' + (t==='marker'?'add-m':t==='region'?'add-r':t==='move'?'move':'del'));
+  });
+  map.getContainer().style.cursor = t === 'region' ? 'crosshair' : t === 'delete' ? 'not-allowed' : t === 'marker' ? 'crosshair' : '';
+}
+
+// Map click handler
+map.on('click', function(e) {
+  if (!editMode) return;
+  if (tool === 'marker') { pendingLL = e.latlng; editingMarkerIdx = null; openMarkerDlg(); }
+  else if (tool === 'region') {
+    polyPoints.push(e.latlng);
+    updatePolyPreview();
+    document.getElementById('btn-finish-r').style.display = polyPoints.length >= 3 ? '' : 'none';
+  }
+});
+map.on('dblclick', function(e) {
+  if (!editMode || tool !== 'region' || polyPoints.length < 3) return;
+  L.DomEvent.stop(e);
+  openRegionDlg();
+});
+
+function updatePolyPreview() {
+  if (polyPreview) map.removeLayer(polyPreview);
+  if (polyPoints.length > 1)
+    polyPreview = L.polygon(polyPoints, {color:'#00f0ff', fillOpacity:.15, dashArray:'6'}).addTo(map);
+}
+
+// ── Marker dialog ─────────────────────────────────────────────────────────────
+function openMarkerDlg(edit) {
+  const dlg = document.getElementById('dlg-marker');
+  document.getElementById('dlg-m-title').textContent = edit ? 'Edit Marker' : 'Add Marker';
+  if (edit != null) {
+    const m = customMarkers[edit];
+    document.getElementById('dlg-m-label').value = m.label;
+    document.getElementById('dlg-m-note').value = m.note || '';
+    pickMColor(m.color || '#ff4466');
+    document.getElementById('dlg-m-del').style.display = '';
+  } else {
+    document.getElementById('dlg-m-label').value = '';
+    document.getElementById('dlg-m-note').value = '';
+    pickMColor('#ff4466');
+    document.getElementById('dlg-m-del').style.display = 'none';
+  }
+  dlg.style.display = 'flex';
+  document.getElementById('dlg-m-label').focus();
+}
+
+function editCustomMarker(i) { editingMarkerIdx = i; openMarkerDlg(i); }
+
+function pickMColor(c) {
+  mColor = c;
+  document.querySelectorAll('#dlg-marker .cswatch').forEach(s => s.classList.toggle('sel', s.dataset.c === c));
+}
+function pickRColor(c) {
+  rColor = c;
+  document.querySelectorAll('#dlg-region .cswatch').forEach(s => s.classList.toggle('sel', s.dataset.c === c));
+}
+
+function confirmMarker() {
+  const label = document.getElementById('dlg-m-label').value.trim();
+  const note = document.getElementById('dlg-m-note').value.trim();
+  if (editingMarkerIdx !== null) {
+    customMarkers[editingMarkerIdx] = { ...customMarkers[editingMarkerIdx], label, note, color: mColor };
+  } else if (pendingLL) {
+    customMarkers.push({ lat: pendingLL.lat, lng: pendingLL.lng, label, note, color: mColor });
+  }
+  closeDlg('dlg-marker'); pendingLL = null; editingMarkerIdx = null;
+  renderCustomMarkers();
+}
+
+function deleteMarker() {
+  if (editingMarkerIdx !== null) customMarkers.splice(editingMarkerIdx, 1);
+  closeDlg('dlg-marker'); pendingLL = null; editingMarkerIdx = null;
+  renderCustomMarkers();
+}
+
+function removeCustomMarker(i) { customMarkers.splice(i, 1); renderCustomMarkers(); }
+
+// ── Region dialog ─────────────────────────────────────────────────────────────
+function finishRegion() {
+  if (polyPoints.length >= 3) openRegionDlg();
+}
+
+function openRegionDlg() {
+  pickRColor('#00f0ff');
+  document.getElementById('dlg-r-name').value = '';
+  document.getElementById('dlg-r-opacity').value = 0.25;
+  document.getElementById('r-opacity-val').textContent = '0.25';
+  document.getElementById('dlg-region').style.display = 'flex';
+}
+
+function confirmRegion() {
+  const name = document.getElementById('dlg-r-name').value.trim();
+  const opacity = parseFloat(document.getElementById('dlg-r-opacity').value);
+  customRegions.push({
+    points: polyPoints.map(ll => [ll.lat, ll.lng]),
+    name, color: rColor, opacity,
+  });
+  closeDlg('dlg-region');
+  cancelRegionDraw();
+  renderCustomRegions();
+}
+
+function cancelRegionDraw() {
+  polyPoints = [];
+  if (polyPreview) { map.removeLayer(polyPreview); polyPreview = null; }
+  document.getElementById('btn-finish-r').style.display = 'none';
+  closeDlg('dlg-region');
+}
+
+function removeRegion(i) { customRegions.splice(i, 1); renderCustomRegions(); }
+
+// ── Layer toggle ──────────────────────────────────────────────────────────────
+let kankaVisible = true;
+function toggleLayer(l) {
+  if (l === 'kanka') {
+    kankaVisible = !kankaVisible;
+    kankaVisible ? map.addLayer(kankaLayer) : map.removeLayer(kankaLayer);
+    document.getElementById('btn-toggle-kanka').classList.toggle('active', kankaVisible);
+  }
+}
+
+// ── Save ──────────────────────────────────────────────────────────────────────
+async function saveOverlay() {
+  const btn = document.querySelector('.tb-save');
+  btn.textContent = '⏳'; btn.disabled = true;
+  try {
+    const r = await fetch(`/api/maps/${SLUG}/overlay`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ custom_markers: customMarkers, custom_regions: customRegions }),
+    });
+    btn.textContent = r.ok ? '✓ Saved' : '✗ Error';
+    setTimeout(() => { btn.textContent = '💾 Save'; btn.disabled = false; }, 1600);
+  } catch { btn.textContent = '✗ Error'; btn.disabled = false; }
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function closeDlg(id) { document.getElementById(id).style.display = 'none'; }
+</script>
+{% endif %}
+{% endblock %}

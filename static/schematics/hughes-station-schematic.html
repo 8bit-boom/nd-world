@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Hughes Station — Orbital Platform Schematic</title>
+<style>
+:root{--bg:#0a0c10;--bg2:#0f1218;--bg3:#141820;--border:#1e2840;--text:#c8d8f0;--text-dim:#6878a0;--gold:#ccaa44;}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;overflow:hidden;}
+body{background:var(--bg);color:var(--text);font-family:'Courier New',monospace;display:flex;flex-direction:column;}
+/* Nav */
+.topbar{background:#070a0e;border-bottom:2px solid var(--gold);padding:0;display:flex;align-items:stretch;flex-shrink:0;}
+.topbar-title{padding:10px 18px;border-right:1px solid #1e2840;flex-shrink:0;}
+.topbar-title h1{font-size:1rem;letter-spacing:0.15em;color:var(--gold);text-transform:uppercase;white-space:nowrap;text-shadow:0 0 10px #ccaa4466;}
+.topbar-title p{font-size:0.6rem;color:#3a4a60;letter-spacing:0.08em;margin-top:2px;}
+.navtabs{display:flex;align-items:stretch;overflow-x:auto;flex:1;}
+.navtabs::-webkit-scrollbar{height:3px;}
+.navtabs::-webkit-scrollbar-thumb{background:#1e2840;}
+.ntab{background:transparent;border:none;border-right:1px solid #1e2840;color:#3a4a60;font-family:'Courier New',monospace;font-size:0.7rem;letter-spacing:0.1em;padding:0 16px;cursor:pointer;transition:all 0.15s;white-space:nowrap;text-transform:uppercase;}
+.ntab:hover{color:#c8d8f0;background:#0f1218;}
+.ntab.active{color:var(--tc,var(--gold));background:#0f1820;border-bottom:2px solid var(--tc,var(--gold));}
+.ntab:hover{color:var(--tc,#c8d8f0);}
+/* Views */
+.views{flex:1;overflow:hidden;}
+.view{display:none;height:100%;flex-direction:row;}
+.view.active{display:flex;}
+/* Map panel */
+.map-panel{flex:0 0 570px;background:var(--bg2);border-right:2px solid var(--border);display:flex;flex-direction:column;align-items:center;padding:10px 8px;overflow:hidden;}
+.map-hint{font-size:0.65rem;color:var(--text-dim);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:6px;flex-shrink:0;}
+.map-panel svg{width:100%;height:auto;max-height:calc(100vh - 95px);}
+.legend{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;padding:0 2px;flex-shrink:0;}
+.legend-item{display:flex;align-items:center;gap:4px;font-size:0.62rem;color:var(--text-dim);letter-spacing:0.05em;}
+/* Info panel */
+.info-panel{flex:1;overflow-y:auto;padding:18px 22px;background:var(--bg);scrollbar-width:thin;scrollbar-color:var(--border) transparent;}
+.info-panel::-webkit-scrollbar{width:5px;}
+.info-panel::-webkit-scrollbar-thumb{background:var(--border);}
+/* Placeholders */
+.sph,.bph{color:var(--text-dim);text-align:center;margin-top:60px;font-size:0.8rem;letter-spacing:0.1em;line-height:2.2;}
+.sph .arr,.bph .arr{font-size:1.6rem;color:var(--gold);display:block;margin-bottom:8px;animation:blink 1.2s step-end infinite;}
+@keyframes blink{50%{opacity:0;}}
+@keyframes pulse{0%,100%{opacity:0.4;}50%{opacity:0.9;}}
+.machine-pulse{animation:pulse 4s ease-in-out infinite;}
+/* Section overview info */
+.sinfo{display:none;}
+.sinfo.visible{display:block;}
+.si-head{border-left:3px solid var(--gold);padding-left:14px;margin-bottom:16px;}
+.si-head h2{font-size:1.4rem;text-transform:uppercase;letter-spacing:0.14em;}
+.sitag{display:inline-block;font-size:0.65rem;padding:2px 8px;border:1px solid;margin-top:5px;letter-spacing:0.1em;text-transform:uppercase;}
+.si-head p{margin-top:9px;font-size:0.86rem;line-height:1.65;}
+.si-section{margin-bottom:16px;}
+.si-section h3{font-size:0.72rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.14em;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:8px;}
+.llist{list-style:none;display:flex;flex-direction:column;gap:5px;}
+.llist li{display:flex;align-items:flex-start;gap:9px;font-size:0.82rem;padding:6px 9px;background:var(--bg2);border:1px solid var(--border);}
+.loc-icon{font-size:1rem;flex-shrink:0;line-height:1.3;}
+.loc-name{font-weight:bold;color:var(--gold);}
+.loc-desc{color:var(--text-dim);font-size:0.76rem;margin-top:2px;}
+.si-note{background:var(--bg3);border-left:2px solid #ff6a00;padding:8px 12px;font-size:0.78rem;color:var(--text-dim);margin-top:12px;line-height:1.5;}
+.drill-btn{display:inline-block;margin-top:14px;padding:7px 16px;background:transparent;border:1px solid var(--gold);color:var(--gold);font-family:'Courier New',monospace;font-size:0.7rem;letter-spacing:0.12em;text-transform:uppercase;cursor:pointer;transition:background 0.15s,color 0.15s;}
+.drill-btn:hover{background:var(--gold);color:#000;}
+/* Building info */
+.binfo{display:none;}
+.binfo.visible{display:block;}
+.bi-head{border-left:3px solid;padding-left:12px;margin-bottom:14px;}
+.bi-head h2{font-size:1.2rem;text-transform:uppercase;letter-spacing:0.1em;}
+.btag{display:inline-block;font-size:0.63rem;padding:2px 7px;border:1px solid;margin-top:4px;letter-spacing:0.08em;text-transform:uppercase;}
+.cat-tag{display:inline-block;font-size:0.58rem;padding:1px 5px;margin-left:6px;letter-spacing:0.07em;text-transform:uppercase;vertical-align:middle;}
+.cat-weapons{background:#1a0800;color:#ff4422;border:1px solid #ff4422;}
+.cat-power{background:#0d1a10;color:#39ff14;border:1px solid #39ff14;}
+.cat-comm{background:#0a1020;color:#00aaff;border:1px solid #00aaff;}
+.cat-service{background:#101825;color:#00e5ff;border:1px solid #00e5ff;}
+.cat-exec{background:#1a0f2e;color:#b44aff;border:1px solid #b44aff;}
+.cat-research{background:#150010;color:#ff88ff;border:1px solid #ff88ff;}
+.cat-residential{background:#0a1f18;color:#39ff14;border:1px solid #39ff14;}
+.cat-medical{background:#0a1a1a;color:#44aaff;border:1px solid #44aaff;}
+.cat-restricted{background:#1a0a08;color:#ff2244;border:1px solid #ff2244;}
+.cat-ai{background:#0a0a18;color:#4488aa;border:1px solid #4488aa;}
+.cat-contain{background:#0a1a1a;color:#00aaaa;border:1px solid #00aaaa;}
+.cat-weapon{background:#1a0008;color:#ff2244;border:1px solid #ff2244;}
+.cat-bio{background:#0a1a1a;color:#00cccc;border:1px solid #00cccc;}
+.cat-eldritch{background:#0a1a0a;color:#00ff88;border:1px solid #00ff88;}
+.bi-head p{margin-top:8px;font-size:0.84rem;line-height:1.65;}
+.warn-note{background:#1a0800;border-left:3px solid #ff4422;padding:10px 14px;font-size:0.78rem;color:#ff8866;margin-top:16px;line-height:1.6;}
+.warn-note strong{color:#ff4422;letter-spacing:0.1em;text-transform:uppercase;}
+.info-note{background:var(--bg3);border-left:2px solid var(--border);padding:8px 12px;font-size:0.78rem;color:var(--text-dim);margin-top:10px;line-height:1.5;}
+.note-red{border-left:3px solid #ff0000!important;color:#ff6666!important;}
+.note-green{border-left:3px solid #00ff88!important;color:#66ccaa!important;}
+/* SVG interactives */
+.district{cursor:pointer;transition:filter 0.15s;}
+.district:hover{filter:brightness(1.45);}
+.district.dactive{filter:brightness(1.7) drop-shadow(0 0 8px currentColor);}
+.building{cursor:pointer;transition:filter 0.12s;}
+.building:hover{filter:brightness(1.5);}
+.building.bactive{filter:brightness(1.85) drop-shadow(0 0 6px currentColor);}
+.district-label{font-family:'Courier New',monospace;font-size:10px;font-weight:bold;pointer-events:none;text-transform:uppercase;letter-spacing:0.08em;}
+.district-sublabel{font-family:'Courier New',monospace;font-size:7.5px;pointer-events:none;letter-spacing:0.04em;opacity:0.75;}
+.blabel{font-family:'Courier New',monospace;font-size:8.5px;font-weight:bold;pointer-events:none;text-transform:uppercase;letter-spacing:0.06em;}
+.bsub{font-family:'Courier New',monospace;font-size:6.5px;pointer-events:none;opacity:0.7;letter-spacing:0.03em;}
+
+/* ── Responsive: large screens ──────────────────────────────────────────── */
+@media (min-width:1600px){
+  .map-panel{flex:0 0 660px;}
+}
+@media (min-width:2200px){
+  .map-panel{flex:0 0 860px;}
+  .topbar-title h1{font-size:1.3rem;}
+  .ntab{font-size:0.85rem;padding:0 20px;}
+  .topbar{border-bottom-width:3px;}
+}
+@media (min-width:3200px){
+  .map-panel{flex:0 0 1100px;}
+  .topbar-title h1{font-size:1.7rem;}
+  .topbar-title p{font-size:0.78rem;}
+  .ntab{font-size:1rem;padding:0 26px;}
+  .map-hint{font-size:0.8rem;}
+  .info-panel{padding:28px 42px;}
+  .si-head h2,.bi-head h2{font-size:1.7rem;}
+  .si-head p,.bi-head p{font-size:1.05rem;}
+  .sitag,.btag,.cat-tag{font-size:0.78rem;padding:3px 9px;}
+  .si-section h3{font-size:0.88rem;}
+  .llist li{font-size:1rem;padding:9px 13px;}
+  .loc-name{font-size:1rem;}
+  .loc-desc{font-size:0.9rem;}
+  .loc-icon{font-size:1.3rem;}
+  .drill-btn{font-size:0.85rem;padding:9px 20px;}
+  .sph,.bph{font-size:1rem;}
+  .si-note,.warn-note,.info-note{font-size:0.95rem;}
+  .legend-item{font-size:0.78rem;}
+}
+/* ── Responsive: tablet ─────────────────────────────────────────────────── */
+@media (max-width:900px){
+  .map-panel{flex:0 0 260px;}
+  .map-panel svg{width:100%!important;}
+}
+/* ── Responsive: mobile ─────────────────────────────────────────────────── */
+@media (max-width:600px){
+  html,body{height:auto;overflow-y:auto;}
+  .views{height:auto;overflow:visible;}
+  .view,.view.active{flex-direction:column;height:auto;}
+  .map-panel{flex:none;width:100%;max-height:none;border-right:none;border-bottom:2px solid var(--border);overflow:visible;padding:6px 4px;}
+  .map-panel svg{width:100%!important;max-height:none;}
+  .info-panel{overflow-y:visible;padding:12px 14px;}
+  .topbar{flex-wrap:wrap;}
+  .topbar-title{padding:6px 10px;}
+  .topbar-title p{display:none;}
+  .ntab{padding:0 8px;font-size:0.6rem;letter-spacing:0.06em;}
+  .sph,.bph{margin-top:16px;}
+  .legend{justify-content:center;}
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-title">
+    <h1>Hughes Station</h1>
+    <p>Orbital Weapons Platform &nbsp;|&nbsp; Altitude: 420km &nbsp;|&nbsp; Clearance: Level 7 &nbsp;|&nbsp; Eyes of Lavitosh Only</p>
+  </div>
+  <div class="navtabs">
+    <button class="ntab" id="tab-station"     onclick="switchView('station')"     style="--tc:#ccaa44">&#x25C9; STATION MAP</button>
+    <button class="ntab" id="tab-upper-ring"  onclick="switchView('upper-ring')"  style="--tc:#ff6a00">UPPER RING</button>
+    <button class="ntab" id="tab-upper-decks" onclick="switchView('upper-decks')" style="--tc:#b44aff">UPPER DECKS</button>
+    <button class="ntab" id="tab-midsection"  onclick="switchView('midsection')"  style="--tc:#8844cc">MIDSECTION</button>
+    <button class="ntab" id="tab-core"        onclick="switchView('core')"        style="--tc:#ff0000">CORE</button>
+    <button class="ntab" id="tab-lower"       onclick="switchView('lower')"       style="--tc:#00ff88">PROJECT LOOM</button>
+  </div>
+</div>
+
+<div class="views">
+
+  <!-- STATION OVERVIEW -->
+  <div class="view" id="view-station">
+    <div class="map-panel">
+      <p class="map-hint">&#x25C9; Click a section to select</p>
+    <svg id="station-map" viewBox="0 0 520 740" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <pattern id="sgrid" width="20" height="20" patternUnits="userSpaceOnUse">
+          <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#121822" stroke-width="0.5"/>
+        </pattern>
+        <linearGradient id="elev-grad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#ccaa44" stop-opacity="0.6"/>
+          <stop offset="100%" stop-color="#ccaa44" stop-opacity="0.05"/>
+        </linearGradient>
+      </defs>
+      <rect width="520" height="740" fill="#0a0c10"/>
+      <rect width="520" height="740" fill="url(#sgrid)"/>
+      <rect x="0" y="0" width="520" height="28" fill="#050810"/>
+      <text x="260" y="18" text-anchor="middle" font-family="Courier New" font-size="7" fill="#2a3050" letter-spacing="0.25em">~ UPPER ORBIT ~</text>
+      <text x="20" y="12" font-family="Courier New" font-size="7" fill="#1a2030" letter-spacing="0.1em">VERIDIA ORBIT · HUGHES STATION</text>
+      <rect x="40" y="695" width="440" height="35" fill="#080a10" stroke="#1a2030" stroke-width="1"/>
+      <text x="260" y="716" text-anchor="middle" font-family="Courier New" font-size="8" fill="#1a2a3a" letter-spacing="0.12em">&#x25BC; CITY OF HUE · INDUSTRIAL DISTRICT &#x25BC;</text>
+      <text x="260" y="728" text-anchor="middle" font-family="Courier New" font-size="6.5" fill="#3a4560" letter-spacing="0.1em">[ Space Elevator Terminus ]</text>
+      <rect x="255" y="30" width="10" height="665" fill="url(#elev-grad)"/>
+      <rect x="257" y="30" width="6" height="665" fill="#ccaa44" opacity="0.35"/>
+      <text x="240" y="360" text-anchor="middle" font-family="Courier New" font-size="7" fill="#ccaa44" opacity="0.7" letter-spacing="0.08em" transform="rotate(-90,240,360)">SPACE ELEVATOR · 420km</text>
+      <!-- UPPER RING -->
+      <rect id="d-upper-ring" class="district" x="30" y="30" width="460" height="120" fill="#1a0a04" stroke="#ff6a00" stroke-width="1.5" rx="2" onclick="selectSection('upper-ring')" data-color="#ff6a00"/>
+      <text class="district-label" x="260" y="72" text-anchor="middle" fill="#ff6a00">UPPER RING</text>
+      <text class="district-sublabel" x="260" y="85" text-anchor="middle" fill="#ff6a00">Spear Array · Solar Panels · Comms Arrays</text>
+      <g opacity="0.5">
+        <rect x="55" y="40" width="24" height="8" fill="#ff6a00" rx="1"/><polygon points="67,36 59,40 75,40" fill="#ff6a00"/>
+        <rect x="120" y="40" width="24" height="8" fill="#ff6a00" rx="1"/><polygon points="132,36 124,40 140,40" fill="#ff6a00"/>
+        <rect x="185" y="40" width="24" height="8" fill="#ff6a00" rx="1"/><polygon points="197,36 189,40 203,40" fill="#ff6a00"/>
+        <rect x="250" y="40" width="24" height="8" fill="#ff6a00" rx="1"/><polygon points="262,36 254,40 268,40" fill="#ff6a00"/>
+        <rect x="315" y="40" width="24" height="8" fill="#ff6a00" rx="1"/><polygon points="327,36 319,40 335,40" fill="#ff6a00"/>
+        <rect x="380" y="40" width="24" height="8" fill="#ff6a00" rx="1"/><polygon points="392,36 384,40 400,40" fill="#ff6a00"/>
+        <rect x="440" y="40" width="24" height="8" fill="#ff6a00" rx="1"/><polygon points="452,36 444,40 460,40" fill="#ff6a00"/>
+      </g>
+      <!-- LOCK 1 -->
+      <line x1="30" y1="152" x2="490" y2="152" stroke="#cc6600" stroke-width="1" stroke-dasharray="4 2" opacity="0.5"/>
+      <rect x="195" y="148" width="130" height="8" fill="#0c0a00" stroke="#cc6600" stroke-width="1" rx="2"/>
+      <text x="260" y="154" text-anchor="middle" font-family="Courier New" font-size="6" fill="#cc6600" letter-spacing="0.12em">LOCK 1 — BIOMETRIC</text>
+      <!-- UPPER DECKS -->
+      <rect id="d-upper-decks" class="district" x="30" y="156" width="460" height="140" fill="#0e0a18" stroke="#b44aff" stroke-width="1.5" rx="2" onclick="selectSection('upper-decks')" data-color="#b44aff"/>
+      <text class="district-label" x="260" y="210" text-anchor="middle" fill="#b44aff">UPPER DECKS</text>
+      <text class="district-sublabel" x="260" y="223" text-anchor="middle" fill="#b44aff">Executive Offices · Research · Residential · Medical · Docking</text>
+      <rect x="380" y="162" width="60" height="35" fill="#1a0028" stroke="#ff2244" stroke-width="0.8" stroke-dasharray="3 2" rx="1"/>
+      <text x="410" y="180" text-anchor="middle" font-family="Courier New" font-size="6" fill="#ff2244" opacity="0.8">HUGHES</text>
+      <text x="410" y="190" text-anchor="middle" font-family="Courier New" font-size="5.5" fill="#ff2244" opacity="0.5">PRIVATE</text>
+      <rect x="50" y="168" width="48" height="22" fill="#12101e" stroke="#2a2050" stroke-width="0.5" rx="1"/>
+      <text x="74" y="179" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8866bb" opacity="0.8">EXEC</text>
+      <rect x="108" y="168" width="48" height="22" fill="#12101e" stroke="#2a2050" stroke-width="0.5" rx="1"/>
+      <text x="132" y="179" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8866bb" opacity="0.8">RESEARCH</text>
+      <rect x="166" y="168" width="48" height="22" fill="#12101e" stroke="#2a2050" stroke-width="0.5" rx="1"/>
+      <text x="190" y="179" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8866bb" opacity="0.8">COMMS</text>
+      <rect x="222" y="168" width="48" height="22" fill="#12101e" stroke="#2a2050" stroke-width="0.5" rx="1"/>
+      <text x="246" y="179" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8866bb" opacity="0.8">MEDICAL</text>
+      <rect x="50" y="200" width="48" height="22" fill="#12101e" stroke="#2a2050" stroke-width="0.5" rx="1"/>
+      <text x="74" y="211" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8866bb" opacity="0.8">LIFE SUPP</text>
+      <rect x="108" y="200" width="48" height="22" fill="#12101e" stroke="#2a2050" stroke-width="0.5" rx="1"/>
+      <text x="132" y="211" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8866bb" opacity="0.8">MESS/REC</text>
+      <rect x="166" y="200" width="48" height="22" fill="#12101e" stroke="#2a2050" stroke-width="0.5" rx="1"/>
+      <text x="190" y="211" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8866bb" opacity="0.8">DOCKING</text>
+      <!-- LOCK 2 -->
+      <line x1="30" y1="298" x2="490" y2="298" stroke="#ff3333" stroke-width="1" stroke-dasharray="4 2" opacity="0.5"/>
+      <rect x="185" y="294" width="150" height="8" fill="#0c0000" stroke="#ff3333" stroke-width="1" rx="2"/>
+      <text x="260" y="300" text-anchor="middle" font-family="Courier New" font-size="6" fill="#ff3333" letter-spacing="0.12em">LOCK 2 — AUTOMATED SYSTEMS ONLY</text>
+      <!-- MIDSECTION -->
+      <rect id="d-midsection" class="district" x="30" y="302" width="460" height="130" fill="#140a18" stroke="#8844cc" stroke-width="1.5" rx="2" onclick="selectSection('midsection')" data-color="#8844cc"/>
+      <text class="district-label" x="260" y="350" text-anchor="middle" fill="#8844cc">MIDSECTION</text>
+      <text class="district-sublabel" x="260" y="363" text-anchor="middle" fill="#8844cc">12x Psionic Emitters · Main Reactor · Weapons Control</text>
+      <g opacity="0.5">
+        <circle cx="60" cy="320" r="7" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><circle cx="60" cy="320" r="3" fill="none" stroke="#8844cc" stroke-width="0.4" stroke-dasharray="2 1"/>
+        <circle cx="110" cy="320" r="7" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><circle cx="110" cy="320" r="3" fill="none" stroke="#8844cc" stroke-width="0.4" stroke-dasharray="2 1"/>
+        <circle cx="160" cy="320" r="7" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><circle cx="160" cy="320" r="3" fill="none" stroke="#8844cc" stroke-width="0.4" stroke-dasharray="2 1"/>
+        <circle cx="210" cy="320" r="7" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><circle cx="210" cy="320" r="3" fill="none" stroke="#8844cc" stroke-width="0.4" stroke-dasharray="2 1"/>
+        <circle cx="260" cy="320" r="7" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><circle cx="260" cy="320" r="3" fill="none" stroke="#8844cc" stroke-width="0.4" stroke-dasharray="2 1"/>
+        <circle cx="310" cy="320" r="7" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><circle cx="310" cy="320" r="3" fill="none" stroke="#8844cc" stroke-width="0.4" stroke-dasharray="2 1"/>
+        <circle cx="360" cy="320" r="7" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><circle cx="360" cy="320" r="3" fill="none" stroke="#8844cc" stroke-width="0.4" stroke-dasharray="2 1"/>
+        <circle cx="410" cy="320" r="7" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><circle cx="410" cy="320" r="3" fill="none" stroke="#8844cc" stroke-width="0.4" stroke-dasharray="2 1"/>
+        <circle cx="460" cy="320" r="7" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><circle cx="460" cy="320" r="3" fill="none" stroke="#8844cc" stroke-width="0.4" stroke-dasharray="2 1"/>
+      </g>
+      <rect x="50" y="380" width="70" height="18" fill="#140a20" stroke="#2a1840" stroke-width="0.5" rx="1"/>
+      <text x="85" y="392" text-anchor="middle" font-family="Courier New" font-size="5.5" fill="#6a5a9a" opacity="0.8">MAIN REACTOR</text>
+      <rect x="130" y="380" width="70" height="18" fill="#140a20" stroke="#2a1840" stroke-width="0.5" rx="1"/>
+      <text x="165" y="392" text-anchor="middle" font-family="Courier New" font-size="5.5" fill="#6a5a9a" opacity="0.8">WEAPONS CTRL</text>
+      <rect x="340" y="380" width="70" height="18" fill="#0a0a18" stroke="#2a1840" stroke-width="0.5" rx="1"/>
+      <text x="375" y="392" text-anchor="middle" font-family="Courier New" font-size="5.5" fill="#4488aa" opacity="0.8">AI PROXY</text>
+      <!-- LOCK 3 -->
+      <line x1="30" y1="434" x2="490" y2="434" stroke="#ff0000" stroke-width="1.2" stroke-dasharray="4 2" opacity="0.5"/>
+      <rect x="175" y="430" width="170" height="8" fill="#0a0000" stroke="#ff0000" stroke-width="1.5" rx="2"/>
+      <text x="260" y="436" text-anchor="middle" font-family="Courier New" font-size="6" fill="#ff0000" letter-spacing="0.12em">LOCK 3 — NO RECORDS BELOW THIS LINE</text>
+      <!-- CORE -->
+      <rect id="d-core" class="district" x="30" y="438" width="460" height="100" fill="#100005" stroke="#ff0000" stroke-width="1.5" rx="2" onclick="selectSection('core')" data-color="#ff0000"/>
+      <g opacity="0.3">
+        <rect x="55" y="445" width="410" height="85" fill="none" stroke="#ff0000" stroke-width="0.5" stroke-dasharray="3 2" rx="3"/>
+        <rect x="95" y="455" width="330" height="61" fill="none" stroke="#ff0000" stroke-width="0.5" stroke-dasharray="3 2" rx="3"/>
+        <rect x="135" y="465" width="250" height="37" fill="none" stroke="#ff0000" stroke-width="0.5" stroke-dasharray="3 2" rx="3"/>
+        <rect x="155" y="470" width="210" height="25" fill="none" stroke="#ff0000" stroke-width="0.5" stroke-dasharray="3 2" rx="3"/>
+      </g>
+      <rect x="180" y="462" width="160" height="50" fill="#0a0000" stroke="#ff0000" stroke-width="1.5"/>
+      <text x="260" y="483" text-anchor="middle" font-family="Courier New" font-size="11" fill="#ff2244" font-weight="bold" letter-spacing="0.12em">THE DROWN</text>
+      <text x="260" y="497" text-anchor="middle" font-family="Courier New" font-size="6" fill="#aa2222" letter-spacing="0.08em">[ REALITY EROSION ] · 6x CONTAINMENT · NEVER TESTED</text>
+      <!-- LOWER LEVEL -->
+      <rect id="d-lower" class="district" x="30" y="540" width="460" height="155" fill="#050a10" stroke="#00ff88" stroke-width="1.5" rx="2" onclick="selectSection('lower')" data-color="#00ff88"/>
+      <g opacity="0.25">
+        <rect x="34" y="544" width="452" height="147" fill="none" stroke="#2a1050" stroke-width="0.6" stroke-dasharray="4 2" rx="2"/>
+        <rect x="50" y="552" width="420" height="131" fill="none" stroke="#2a1050" stroke-width="0.6" stroke-dasharray="4 2" rx="2"/>
+        <rect x="66" y="560" width="388" height="115" fill="none" stroke="#2a1050" stroke-width="0.6" stroke-dasharray="4 2" rx="2"/>
+      </g>
+      <circle cx="260" cy="610" r="55" fill="#040a04" stroke="#00ff88" stroke-width="1.8" opacity="0.9"/>
+      <circle cx="260" cy="610" r="65" fill="none" stroke="#00ff88" stroke-width="0.4" stroke-dasharray="3 2" opacity="0.2"/>
+      <g opacity="0.6">
+        <circle cx="228" cy="575" r="4.5" fill="#004422" stroke="#00ff88" stroke-width="0.5"/>
+        <circle cx="270" cy="578" r="4" fill="#004422" stroke="#00ff88" stroke-width="0.5"/>
+        <circle cx="295" cy="605" r="3" fill="#004422" stroke="#00ff88" stroke-width="0.5"/>
+        <circle cx="225" cy="618" r="4.5" fill="#004422" stroke="#00ff88" stroke-width="0.5"/>
+        <circle cx="280" cy="620" r="4" fill="#004422" stroke="#00ff88" stroke-width="0.5"/>
+        <circle cx="300" cy="590" r="3" fill="#004422" stroke="#00ff88" stroke-width="0.5"/>
+      </g>
+      <text x="260" y="604" text-anchor="middle" font-family="Courier New" font-size="11" fill="#00ff88" font-weight="bold" letter-spacing="0.12em">THE MACHINE</text>
+      <text x="260" y="616" text-anchor="middle" font-family="Courier New" font-size="8" fill="#33cc66" font-weight="bold" letter-spacing="0.1em">DORMANT</text>
+      <text x="260" y="628" text-anchor="middle" font-family="Courier New" font-size="5.5" fill="#227733" letter-spacing="0.06em">~50m · -40°C · +0.3%/month</text>
+      <text x="465" y="565" text-anchor="end" font-family="Courier New" font-size="5.5" fill="#ff0000" opacity="0.5" letter-spacing="0.06em" transform="rotate(90,465,565)">// THIS SECTION DOES NOT EXIST //</text>
+    </svg>
+    <div class="legend">
+      <div class="legend-item"><svg width="10" height="10"><rect width="10" height="10" fill="#1a0a04" stroke="#ff6a00" stroke-width="1.5"/></svg> Upper Ring</div>
+      <div class="legend-item"><svg width="10" height="10"><rect width="10" height="10" fill="#0e0a18" stroke="#b44aff" stroke-width="1.5"/></svg> Upper Decks</div>
+      <div class="legend-item"><svg width="10" height="10"><rect width="10" height="10" fill="#140a18" stroke="#8844cc" stroke-width="1.5"/></svg> Midsection</div>
+      <div class="legend-item"><svg width="10" height="10"><rect width="10" height="10" fill="#100005" stroke="#ff0000" stroke-width="1.5"/></svg> Core</div>
+      <div class="legend-item"><svg width="10" height="10"><rect width="10" height="10" fill="#050a10" stroke="#00ff88" stroke-width="1.5"/></svg> Project Loom</div>
+      <div class="legend-item"><svg width="10" height="10"><line x1="0" y1="5" x2="10" y2="5" stroke="#ccaa44" stroke-width="2.5"/></svg> Elevator</div>
+    </div>
+    </div>
+    <div class="info-panel" id="ipanel-station">
+      <div class="sph" id="station-ph">
+        <span class="arr">&#x25C8;</span>
+        SELECT A SECTION<br>
+        <small style="font-size:0.68rem;letter-spacing:0.06em">Click any zone on the map<br>then use "Inspect Section" to drill in</small>
+      </div>
+
+    <div class="sinfo" id="si-upper-ring">
+      <div class="si-head" style="border-color:#ff6a00"><h2 style="color:#ff6a00">Upper Ring</h2>
+        <span class="sitag" style="color:#ff6a00;border-color:#ff6a00">Clearance: OPEN</span>
+        <span class="sitag" style="color:#ff6a00;border-color:#ff6a00;margin-left:6px">Type: WEAPONS / POWER</span>
+        <p>The station's outermost ring, visible from the ground as a bright point in the sky. Houses the station's primary offensive capability: eight kinetic bombardment rods and the solar panel arrays that power the entire platform. The Spear Array is not advertised — but not well-hidden. Any astronomer with a decent telescope can see the launch tubes.</p>
+      </div>
+      <div class="si-section"><h3>Key Systems</h3>
+        <ul class="llist">
+          <li><span class="loc-icon">&#x2B07;</span><div><div class="loc-name">Spear Array (8x Kinetic Rods)</div><div class="loc-desc">Tungsten-depleted uranium kinetic bombardment rods. Each impacts with the force of a tactical nuclear weapon. Targeting time: ~14 minutes. Loaded and ready.</div></div></li>
+          <li><span class="loc-icon">&#x2600;</span><div><div class="loc-name">Solar Panel Arrays</div><div class="loc-desc">Primary power generation. Modular self-repairing panels tracking the sun. Generates 90% of station power alongside the fusion reactor.</div></div></li>
+          <li><span class="loc-icon">&#x1F4E1;</span><div><div class="loc-name">Communication Arrays</div><div class="loc-desc">Deep-space relay and surface-to-orbit link. Maintains encrypted data link to Hughes Industries ground infrastructure.</div></div></li>
+        </ul>
+      </div>
+      <div class="si-note">&#x26A0; The Spear Array has pre-programmed targeting data for strategic locations worldwide. The Eyes of Lavitosh have demanded dismantlement. Hughes has not responded in six years.</div>
+      <button class="drill-btn" style="border-color:#ff6a00;color:#ff6a00" onmouseenter="this.style.background='#ff6a00';this.style.color='#000'" onmouseleave="this.style.background='transparent';this.style.color='#ff6a00'" onclick="switchView('upper-ring')">&#x25BA; Inspect Section</button>
+    </div>
+
+    <div class="sinfo" id="si-upper-decks">
+      <div class="si-head" style="border-color:#b44aff"><h2 style="color:#b44aff">Upper Decks</h2>
+        <span class="sitag" style="color:#b44aff;border-color:#b44aff">Clearance: STAFF</span>
+        <span class="sitag" style="color:#b44aff;border-color:#b44aff;margin-left:6px">Crew: ~800</span>
+        <p>The public face of Hughes Station. Executive offices, research labs, medical facilities, crew quarters, and docking bays. Clean corridors and corporate-standard lighting. Nothing about this section suggests what exists below Lock 2.</p>
+      </div>
+      <div class="si-section"><h3>Key Facilities</h3>
+        <ul class="llist">
+          <li><span class="loc-icon">&#x1F3E2;</span><div><div class="loc-name">Executive Offices</div><div class="loc-desc">Conference rooms and corporate liaison suites. Used during inspections. Always empty otherwise. The coffee machine has never been used.</div></div></li>
+          <li><span class="loc-icon">&#x1F52C;</span><div><div class="loc-name">Research Wing</div><div class="loc-desc">Publicly described as "advanced materials science." Staff report equipment they cannot identify and colleagues who transferred without notice.</div></div></li>
+          <li><span class="loc-icon">&#x1F3E5;</span><div><div class="loc-name">Medical Bay</div><div class="loc-desc">Full surgical suite. Handles injuries including — according to unverified reports — psionic exposure incidents. All patient conditions are under NDA.</div></div></li>
+          <li><span class="loc-icon">&#x1F512;</span><div><div class="loc-name">Hughes's Private Quarters</div><div class="loc-desc">Sealed suite adjacent to Lock 1. Hughes has not left in over a decade. No staff permitted. Occasional sounds reported from behind the bulkhead.</div></div></li>
+        </ul>
+      </div>
+      <button class="drill-btn" style="border-color:#b44aff;color:#b44aff" onmouseenter="this.style.background='#b44aff';this.style.color='#000'" onmouseleave="this.style.background='transparent';this.style.color='#b44aff'" onclick="switchView('upper-decks')">&#x25BA; Inspect Section</button>
+    </div>
+
+    <div class="sinfo" id="si-midsection">
+      <div class="si-head" style="border-color:#8844cc"><h2 style="color:#8844cc">Midsection</h2>
+        <span class="sitag" style="color:#8844cc;border-color:#8844cc">Clearance: RESTRICTED</span>
+        <span class="sitag" style="color:#8844cc;border-color:#8844cc;margin-left:6px">Type: WEAPONS / POWER</span>
+        <p>The armed heart of Hughes Station. Twelve directed psionic emitter projectors on articulated struts, the main fusion reactor, and centralized weapons control. Access requires Level 2 biometric clearance. No visitor has ever been granted it.</p>
+      </div>
+      <div class="si-section"><h3>Key Systems</h3>
+        <ul class="llist">
+          <li><span class="loc-icon">&#x25C9;</span><div><div class="loc-name">12x Psionic Emitters</div><div class="loc-desc">Each projects a focused psionic wave incapacitating every mind within several km. Effects: unconsciousness to permanent neural damage. Tested once. The island's bird population has not recovered.</div></div></li>
+          <li><span class="loc-icon">&#x269B;</span><div><div class="loc-name">Main Fusion Reactor</div><div class="loc-desc">Powers the entire station. Cannot run all weapons simultaneously — firing The Drown requires shutting down all non-essential systems.</div></div></li>
+          <li><span class="loc-icon">&#x1F916;</span><div><div class="loc-name">AI Proxy Systems</div><div class="loc-desc">Hughes's communication interface. Has no knowledge of The Machine or anything Level 3+. Cannot be accessed by anyone else.</div></div></li>
+        </ul>
+      </div>
+      <div class="si-note">&#x26A0; The 12 Emitters have never been fired simultaneously. Hughes's notes describe a "cascade risk" — the cumulative psionic output could affect the station itself.</div>
+      <button class="drill-btn" style="border-color:#8844cc;color:#8844cc" onmouseenter="this.style.background='#8844cc';this.style.color='#000'" onmouseleave="this.style.background='transparent';this.style.color='#8844cc'" onclick="switchView('midsection')">&#x25BA; Inspect Section</button>
+    </div>
+
+    <div class="sinfo" id="si-core">
+      <div class="si-head" style="border-color:#ff0000"><h2 style="color:#ff0000">Core — The Drown</h2>
+        <span class="sitag" style="color:#ff0000;border-color:#ff0000">Clearance: HUGHES ONLY</span>
+        <span class="sitag" style="color:#ff0000;border-color:#ff0000;margin-left:6px">Status: NEVER TESTED</span>
+        <p>Six layers of containment shielding surround a weapon that defies categorization. Not a laser, not plasma, not a particle beam. Hughes refers to it only as "reality erosion." His note: <em>"It does not destroy the target. It makes the target not have been."</em></p>
+      </div>
+      <div class="si-section"><h3>Specifications</h3>
+        <ul class="llist">
+          <li><span class="loc-icon">&#x1F6E1;</span><div><div class="loc-name">6x Containment Layers</div><div class="loc-desc">Concentric shielding — outermost is 30cm metamaterial, innermost is unknown composition. Warm to touch despite -20°C ambient.</div></div></li>
+          <li><span class="loc-icon">&#x26A1;</span><div><div class="loc-name">Power Requirement</div><div class="loc-desc">Full station power-down required. Only life support, The Machine's containment, and The Drown remain active. Estimated firing duration: 7 seconds.</div></div></li>
+        </ul>
+      </div>
+      <div class="si-note">&#x26A0; Hughes has written: "I will not fire this. I am not sure I could stop it." No evacuation protocol exists. No deactivation procedure has been written.</div>
+      <button class="drill-btn" style="border-color:#ff0000;color:#ff0000" onmouseenter="this.style.background='#ff0000';this.style.color='#000'" onmouseleave="this.style.background='transparent';this.style.color='#ff0000'" onclick="switchView('core')">&#x25BA; Inspect Section</button>
+    </div>
+
+    <div class="sinfo" id="si-lower">
+      <div class="si-head" style="border-color:#00ff88"><h2 style="color:#00ff88">Lower Level — Project Loom</h2>
+        <span class="sitag" style="color:#00ff88;border-color:#00ff88">Clearance: NONE</span>
+        <span class="sitag" style="color:#00ff88;border-color:#00ff88;margin-left:6px">EXISTENCE: DENIED</span>
+        <p>Does not appear on any schematic, blueprint, or personnel manifest. Designed and constructed by Jonathan Hughes personally using diverted resources. The official position of Hughes Industries: this section does not exist.</p>
+      </div>
+      <div class="si-section"><h3>The Machine</h3>
+        <ul class="llist">
+          <li><span class="loc-icon">&#x1F441;</span><div><div class="loc-name">The Machine (Dormant)</div><div class="loc-desc">~50m diameter hybrid of eldritch godflesh and supercomputing architecture. Living membrane, grown eyes, slow breath, bioluminescent coolant. Psionic heartbeat. Status: DORMANT. Temp: -40°C. Growth: +0.3%/month.</div></div></li>
+          <li><span class="loc-icon">&#x1F6E1;</span><div><div class="loc-name">7x Psionic Dampening Mesh</div><div class="loc-desc">Concentric suppression layers reducing The Machine's dormant emissions to 0.3% of potential. Maintained by Hughes alone.</div></div></li>
+        </ul>
+      </div>
+      <div class="si-note">&#x26A0; The Machine is growing. Hughes has ordered drones not to stop it, stating: "I don't think it would let us." Its pulse rhythm has been accelerating.</div>
+      <button class="drill-btn" style="border-color:#00ff88;color:#00ff88" onmouseenter="this.style.background='#00ff88';this.style.color='#000'" onmouseleave="this.style.background='transparent';this.style.color='#00ff88'" onclick="switchView('lower')">&#x25BA; Inspect Section</button>
+    </div>
+    </div>
+  </div>
+
+  <!-- UPPER RING -->
+  <div class="view" id="view-upper-ring">
+    <div class="map-panel">
+      <p class="map-hint">&#x25A3; Click a location to inspect</p>
+    <svg viewBox="0 0 556 520" xmlns="http://www.w3.org/2000/svg">
+      <defs><pattern id="ur-grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M 20 0 L 0 0 0 20" fill="none" stroke="#1a1008" stroke-width="0.5"/></pattern></defs>
+      <rect width="556" height="520" fill="#1a0a04"/><rect width="556" height="520" fill="url(#ur-grid)"/>
+      <rect x="8" y="8" width="540" height="504" fill="none" stroke="#ff6a00" stroke-width="1" opacity="0.25" rx="4"/>
+      <text x="278" y="18" text-anchor="middle" font-family="Courier New" font-size="6" fill="#ff6a00" letter-spacing="0.12em" opacity="0.5">HUGHES STATION — UPPER RING — TOP-DOWN CROSS SECTION</text>
+      <rect id="ur-b-corridors" class="building" x="8" y="445" width="540" height="67" fill="#10100a" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showB('ur','corridors')"/>
+      <text class="blabel" x="278" y="473" text-anchor="middle" fill="#00e5ff">Zero-G Maintenance Corridors</text>
+      <text class="bsub" x="278" y="485" text-anchor="middle" fill="#00e5ff">Tether Points Every 20m — Emergency Egress</text>
+      <rect id="ur-b-spears_1_4" class="building" x="14" y="30" width="140" height="200" fill="#1a0800" stroke="#ff4422" stroke-width="1.2" rx="1" onclick="showB('ur','spears_1_4')"/>
+      <polygon points="44,38 34,60 54,60" fill="#ff4422" opacity="0.4"/><rect x="30" y="60" width="28" height="50" fill="#ff4422" opacity="0.2" stroke="#ff4422" stroke-width="0.5"/>
+      <text x="44" y="75" text-anchor="middle" font-family="Courier New" font-size="5.5" fill="#ff6644">SPR-1</text>
+      <polygon points="84,38 74,60 94,60" fill="#ff4422" opacity="0.4"/><rect x="70" y="60" width="28" height="50" fill="#ff4422" opacity="0.2" stroke="#ff4422" stroke-width="0.5"/>
+      <text x="84" y="75" text-anchor="middle" font-family="Courier New" font-size="5.5" fill="#ff6644">SPR-2</text>
+      <polygon points="124,38 114,60 134,60" fill="#ff4422" opacity="0.4"/><rect x="110" y="60" width="28" height="50" fill="#ff4422" opacity="0.2" stroke="#ff4422" stroke-width="0.5"/>
+      <text x="124" y="75" text-anchor="middle" font-family="Courier New" font-size="5.5" fill="#ff6644">SPR-3</text>
+      <polygon points="44,120 34,142 54,142" fill="#ff4422" opacity="0.4"/><rect x="30" y="142" width="28" height="50" fill="#ff4422" opacity="0.2" stroke="#ff4422" stroke-width="0.5"/>
+      <text x="44" y="157" text-anchor="middle" font-family="Courier New" font-size="5.5" fill="#ff6644">SPR-4</text>
+      <text class="blabel" x="84" y="210" text-anchor="middle" fill="#ff6644">Spear Array</text>
+      <text class="bsub" x="84" y="222" text-anchor="middle" fill="#ff6644">Tubes 1-4 — Kinetic Bombardment</text>
+      <rect id="ur-b-spears_5_8" class="building" x="402" y="30" width="140" height="200" fill="#1a0800" stroke="#ff4422" stroke-width="1.2" rx="1" onclick="showB('ur','spears_5_8')"/>
+      <polygon points="432,38 422,60 442,60" fill="#ff4422" opacity="0.4"/><rect x="418" y="60" width="28" height="50" fill="#ff4422" opacity="0.2" stroke="#ff4422" stroke-width="0.5"/>
+      <text x="432" y="75" text-anchor="middle" font-family="Courier New" font-size="5.5" fill="#ff6644">SPR-5</text>
+      <polygon points="472,38 462,60 482,60" fill="#ff4422" opacity="0.4"/><rect x="458" y="60" width="28" height="50" fill="#ff4422" opacity="0.2" stroke="#ff4422" stroke-width="0.5"/>
+      <text x="472" y="75" text-anchor="middle" font-family="Courier New" font-size="5.5" fill="#ff6644">SPR-6</text>
+      <polygon points="512,38 502,60 522,60" fill="#ff4422" opacity="0.4"/><rect x="498" y="60" width="28" height="50" fill="#ff4422" opacity="0.2" stroke="#ff4422" stroke-width="0.5"/>
+      <text x="512" y="75" text-anchor="middle" font-family="Courier New" font-size="5.5" fill="#ff6644">SPR-7</text>
+      <polygon points="432,120 422,142 442,142" fill="#ff4422" opacity="0.4"/><rect x="418" y="142" width="28" height="50" fill="#ff4422" opacity="0.2" stroke="#ff4422" stroke-width="0.5"/>
+      <text x="432" y="157" text-anchor="middle" font-family="Courier New" font-size="5.5" fill="#ff6644">SPR-8</text>
+      <text class="blabel" x="472" y="210" text-anchor="middle" fill="#ff6644">Spear Array</text>
+      <text class="bsub" x="472" y="222" text-anchor="middle" fill="#ff6644">Tubes 5-8 — Kinetic Bombardment</text>
+      <rect id="ur-b-solar_alpha" class="building" x="164" y="30" width="228" height="110" fill="#0a1408" stroke="#39ff14" stroke-width="1.2" rx="1" onclick="showB('ur','solar_alpha')"/>
+      <line x1="164" y1="55" x2="392" y2="55" stroke="#39ff14" stroke-width="0.3" opacity="0.3"/>
+      <line x1="164" y1="80" x2="392" y2="80" stroke="#39ff14" stroke-width="0.3" opacity="0.3"/>
+      <line x1="210" y1="30" x2="210" y2="140" stroke="#39ff14" stroke-width="0.3" opacity="0.3"/>
+      <line x1="258" y1="30" x2="258" y2="140" stroke="#39ff14" stroke-width="0.3" opacity="0.3"/>
+      <line x1="306" y1="30" x2="306" y2="140" stroke="#39ff14" stroke-width="0.3" opacity="0.3"/>
+      <line x1="354" y1="30" x2="354" y2="140" stroke="#39ff14" stroke-width="0.3" opacity="0.3"/>
+      <text class="blabel" x="278" y="77" text-anchor="middle" fill="#39ff14">Solar Array Alpha</text>
+      <text class="bsub" x="278" y="90" text-anchor="middle" fill="#39ff14">Primary Collection — 40% Station Power</text>
+      <rect id="ur-b-solar_beta" class="building" x="14" y="240" width="200" height="130" fill="#0a1408" stroke="#39ff14" stroke-width="1.2" rx="1" onclick="showB('ur','solar_beta')"/>
+      <text class="blabel" x="114" y="298" text-anchor="middle" fill="#39ff14">Solar Array Beta</text>
+      <text class="bsub" x="114" y="311" text-anchor="middle" fill="#39ff14">Secondary Collection — 30% Power</text>
+      <rect id="ur-b-solar_gamma" class="building" x="342" y="240" width="200" height="130" fill="#0a1408" stroke="#39ff14" stroke-width="1.2" rx="1" onclick="showB('ur','solar_gamma')"/>
+      <text class="blabel" x="442" y="298" text-anchor="middle" fill="#39ff14">Solar Array Gamma</text>
+      <text class="bsub" x="442" y="311" text-anchor="middle" fill="#39ff14">Tertiary Collection — 20% Power</text>
+      <rect id="ur-b-comm" class="building" x="164" y="150" width="228" height="80" fill="#0a1020" stroke="#00aaff" stroke-width="1.2" rx="1" onclick="showB('ur','comm')"/>
+      <circle cx="195" cy="190" r="12" fill="none" stroke="#00aaff" stroke-width="0.6" opacity="0.5"/>
+      <circle cx="230" cy="180" r="10" fill="none" stroke="#00aaff" stroke-width="0.6" opacity="0.5"/>
+      <circle cx="260" cy="195" r="8" fill="none" stroke="#00aaff" stroke-width="0.6" opacity="0.5"/>
+      <text class="blabel" x="330" y="183" text-anchor="middle" fill="#00aaff">Communication Arrays</text>
+      <text class="bsub" x="330" y="196" text-anchor="middle" fill="#00aaff">Deep-Space Relay — Surface Link</text>
+      <rect id="ur-b-sensor" class="building" x="14" y="380" width="200" height="58" fill="#0a1020" stroke="#00aaff" stroke-width="1.2" rx="1" onclick="showB('ur','sensor')"/>
+      <text class="blabel" x="134" y="406" text-anchor="middle" fill="#00aaff">Sensor Suite</text>
+      <text class="bsub" x="134" y="418" text-anchor="middle" fill="#00aaff">Radar / Lidar / Thermal / Psionic</text>
+      <rect x="1" y="1" width="554" height="518" fill="none" stroke="#ff6a00" stroke-width="1.5" opacity="0.3"/>
+    </svg>
+    </div>
+    <div class="info-panel" id="ipanel-upper-ring">
+      <div class="bph" id="bph-upper-ring"><span class="arr">&#x25C8;</span>SELECT A LOCATION<br><small>Click any system on the map</small></div>
+
+    <div class="binfo" id="ur-binfo-spears_1_4">
+      <div class="bi-head" style="border-color:#ff4422"><h2 style="color:#ff4422">Spear Array Tubes 1–4</h2>
+        <span class="btag" style="border-color:#ff4422;color:#ff4422">Kinetic Bombardment — Port Cluster</span><span class="cat-tag cat-weapons">WEAPONS</span>
+        <p>Four of eight kinetic bombardment rods. Tungsten-depleted uranium alloy, 20m each. Impact force equivalent to a tactical nuclear weapon — no radiation, no fallout. Targeting time: ~14 minutes to any surface coordinates. Loaded and ready. The Eyes of Lavitosh have demanded dismantlement. Hughes has not responded in six years.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ur-binfo-spears_5_8">
+      <div class="bi-head" style="border-color:#ff4422"><h2 style="color:#ff4422">Spear Array Tubes 5–8</h2>
+        <span class="btag" style="border-color:#ff4422;color:#ff4422">Kinetic Bombardment — Starboard Cluster</span><span class="cat-tag cat-weapons">WEAPONS</span>
+        <p>Four of eight kinetic bombardment rods. Identical to port cluster. Targeting data is pre-programmed for strategic locations worldwide. Hughes has never explained why the targeting data exists.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ur-binfo-solar_alpha">
+      <div class="bi-head" style="border-color:#39ff14"><h2 style="color:#39ff14">Solar Array Alpha</h2>
+        <span class="btag" style="border-color:#39ff14;color:#39ff14">Primary Solar Collection</span><span class="cat-tag cat-power">POWER</span>
+        <p>Primary solar collection. Modular self-repairing panels tracking the sun. Generates approximately 40% of station power. Hughes has discussed upgrading to fusion cells but has not committed funding.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ur-binfo-solar_beta">
+      <div class="bi-head" style="border-color:#39ff14"><h2 style="color:#39ff14">Solar Array Beta</h2>
+        <span class="btag" style="border-color:#39ff14;color:#39ff14">Secondary Solar Collection</span><span class="cat-tag cat-power">POWER</span>
+        <p>Secondary solar collection. Generates approximately 30% of station power. Panels replaced quarterly. Maintenance crew rotate every 6 months.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ur-binfo-solar_gamma">
+      <div class="bi-head" style="border-color:#39ff14"><h2 style="color:#39ff14">Solar Array Gamma</h2>
+        <span class="btag" style="border-color:#39ff14;color:#39ff14">Tertiary Solar Collection</span><span class="cat-tag cat-power">POWER</span>
+        <p>Tertiary solar collection. Generates approximately 20% of station power. Backup battery arrays located beneath.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ur-binfo-comm">
+      <div class="bi-head" style="border-color:#00aaff"><h2 style="color:#00aaff">Communication Arrays</h2>
+        <span class="btag" style="border-color:#00aaff;color:#00aaff">Deep-Space Relay</span><span class="cat-tag cat-comm">COMM</span>
+        <p>Deep-space relay and surface-to-orbit communications. Maintains encrypted data link between Hughes Station and Hughes Industries ground infrastructure. Signal latency: 1.3 seconds to surface.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ur-binfo-sensor">
+      <div class="bi-head" style="border-color:#00aaff"><h2 style="color:#00aaff">Sensor Suite</h2>
+        <span class="btag" style="border-color:#00aaff;color:#00aaff">External Sensor Array</span><span class="cat-tag cat-comm">COMM</span>
+        <p>Radar, lidar, thermal imaging, and psionic signature detection. Full 360-degree scan. Data feeds to both Midsection weapons control and Hughes's private terminal.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ur-binfo-corridors">
+      <div class="bi-head" style="border-color:#00e5ff"><h2 style="color:#00e5ff">Maintenance Corridors</h2>
+        <span class="btag" style="border-color:#00e5ff;color:#00e5ff">Zero-G Walkways</span><span class="cat-tag cat-service">SERVICE</span>
+        <p>Zero-G maintenance walkways connecting all Upper Ring systems. Emergency tether points every 20 meters. Three maintenance-related fatalities in station history. All classified as 'structural failure.'</p>
+      </div>
+      <div class="warn-note"><strong>WARNING:</strong> The Spear Array is loaded and combat-ready. All eight rods have pre-programmed targeting data for strategic locations worldwide. No entity outside Hughes Industries has ever inspected the launch tubes.</div>
+    </div>
+    </div>
+  </div>
+
+  <!-- UPPER DECKS -->
+  <div class="view" id="view-upper-decks">
+    <div class="map-panel">
+      <p class="map-hint">&#x25A3; Click a location to inspect</p>
+    <svg viewBox="0 0 556 580" xmlns="http://www.w3.org/2000/svg">
+      <defs><pattern id="ud-grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M 20 0 L 0 0 0 20" fill="none" stroke="#151025" stroke-width="0.5"/></pattern></defs>
+      <rect width="556" height="580" fill="#0e0a18"/><rect width="556" height="580" fill="url(#ud-grid)"/>
+      <rect x="8" y="8" width="540" height="564" fill="none" stroke="#2a1840" stroke-width="2" rx="4"/>
+      <rect x="30" y="240" width="500" height="30" fill="#0c0814" stroke="#1e1830" stroke-width="1" rx="1"/>
+      <text x="280" y="259" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a2050" letter-spacing="0.15em">PRIMARY CORRIDOR — DECK 7</text>
+      <rect x="220" y="68" width="24" height="175" fill="#0c0814" stroke="#1e1830" stroke-width="1" rx="1"/>
+      <rect id="ud-b-lock1" class="building" x="170" y="18" width="124" height="50" fill="#1a0a08" stroke="#ff2244" stroke-width="1.2" rx="2" onclick="showB('ud','lock1')"/>
+      <text class="blabel" x="232" y="40" text-anchor="middle" fill="#ff2244">Lock 1</text>
+      <text class="bsub" x="232" y="51" text-anchor="middle" fill="#ff2244">&#x25A0; Biometric Airlock</text>
+      <rect id="ud-b-execoffices" class="building" x="30" y="30" width="130" height="95" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showB('ud','execoffices')"/>
+      <text class="blabel" x="95" y="70" text-anchor="middle" fill="#b44aff">Executive Offices</text>
+      <text class="bsub" x="95" y="81" text-anchor="middle" fill="#b44aff">&#x25A0; Corporate Liaison</text>
+      <rect id="ud-b-research" class="building" x="320" y="30" width="206" height="95" fill="#0e0a18" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showB('ud','research')"/>
+      <text class="blabel" x="423" y="70" text-anchor="middle" fill="#b44aff">Research Wing</text>
+      <text class="bsub" x="423" y="81" text-anchor="middle" fill="#b44aff">&#x25A0; Advanced Materials</text>
+      <rect id="ud-b-docking" class="building" x="30" y="140" width="120" height="90" fill="#101825" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showB('ud','docking')"/>
+      <text class="blabel" x="90" y="178" text-anchor="middle" fill="#00e5ff">Docking Bay</text>
+      <text class="bsub" x="90" y="189" text-anchor="middle" fill="#00e5ff">&#x25A0; Shuttle Transfer</text>
+      <rect id="ud-b-medical" class="building" x="30" y="275" width="120" height="80" fill="#0a1a1a" stroke="#44aaff" stroke-width="1.2" rx="1" onclick="showB('ud','medical')"/>
+      <text class="blabel" x="90" y="309" text-anchor="middle" fill="#44aaff">Medical Bay</text>
+      <text class="bsub" x="90" y="320" text-anchor="middle" fill="#44aaff">&#x25A0; Surgical Suite</text>
+      <rect id="ud-b-resa" class="building" x="190" y="140" width="120" height="90" fill="#0a1f18" stroke="#39ff14" stroke-width="1.2" rx="1" onclick="showB('ud','resa')"/>
+      <text class="blabel" x="250" y="178" text-anchor="middle" fill="#39ff14">Residential Block A</text>
+      <text class="bsub" x="250" y="189" text-anchor="middle" fill="#39ff14">&#x25A0; 200 Personnel</text>
+      <rect id="ud-b-resb" class="building" x="325" y="140" width="115" height="90" fill="#0a1f18" stroke="#39ff14" stroke-width="1.2" rx="1" onclick="showB('ud','resb')"/>
+      <text class="blabel" x="382" y="178" text-anchor="middle" fill="#39ff14">Residential Block B</text>
+      <text class="bsub" x="382" y="189" text-anchor="middle" fill="#39ff14">&#x25A0; 180 Personnel</text>
+      <rect id="ud-b-lifesupport" class="building" x="30" y="410" width="140" height="70" fill="#101825" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showB('ud','lifesupport')"/>
+      <text class="blabel" x="100" y="440" text-anchor="middle" fill="#00e5ff">Life Support</text>
+      <text class="bsub" x="100" y="451" text-anchor="middle" fill="#00e5ff">&#x25A0; Atmosphere / Water / Temp</text>
+      <rect id="ud-b-messhall" class="building" x="185" y="410" width="145" height="70" fill="#101825" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showB('ud','messhall')"/>
+      <text class="blabel" x="257" y="440" text-anchor="middle" fill="#00e5ff">Mess Hall / Recreation</text>
+      <text class="bsub" x="257" y="451" text-anchor="middle" fill="#00e5ff">&#x25A0; Dining &amp; Leisure</text>
+      <rect id="ud-b-comms" class="building" x="30" y="500" width="140" height="62" fill="#101825" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showB('ud','comms')"/>
+      <text class="blabel" x="100" y="528" text-anchor="middle" fill="#00e5ff">Comms Center</text>
+      <text class="bsub" x="100" y="539" text-anchor="middle" fill="#00e5ff">&#x25A0; Surface-to-Orbit Hub</text>
+      <rect id="ud-b-hughesquarters" class="building" x="380" y="400" width="160" height="162" fill="#1a0008" stroke="#ff2244" stroke-width="2" stroke-dasharray="8 4" rx="2" onclick="showB('ud','hughesquarters')"/>
+      <text class="blabel" x="460" y="472" text-anchor="middle" fill="#ff2244">Hughes's</text>
+      <text class="blabel" x="460" y="484" text-anchor="middle" fill="#ff2244">Private Quarters</text>
+      <text class="bsub" x="460" y="496" text-anchor="middle" fill="#ff2244">&#x25A0; SEALED — NO ENTRY</text>
+      <line x1="30" y1="540" x2="350" y2="540" stroke="#ff2244" stroke-width="1" stroke-dasharray="6 4" opacity="0.5"/>
+      <text x="190" y="553" text-anchor="middle" font-family="Courier New" font-size="5.5" fill="#ff2244" letter-spacing="0.1em" opacity="0.6">&#x25A0;&#x25A0;&#x25A0; LOCK 2 — NO FURTHER ACCESS &#x25A0;&#x25A0;&#x25A0;</text>
+      <rect x="1" y="1" width="554" height="578" fill="none" stroke="#b44aff" stroke-width="1.5" opacity="0.3"/>
+    </svg>
+    </div>
+    <div class="info-panel" id="ipanel-upper-decks">
+      <div class="bph" id="bph-upper-decks"><span class="arr">&#x25C8;</span>SELECT A LOCATION<br><small>Click any section on the map</small></div>
+
+    <div class="binfo" id="ud-binfo-lock1">
+      <div class="bi-head" style="border-color:#ff2244"><h2 style="color:#ff2244">Lock 1 — Biometric Airlock</h2>
+        <span class="btag" style="border-color:#ff2244;color:#ff2244">Primary Access Point</span><span class="cat-tag cat-restricted">RESTRICTED</span>
+        <p>Primary airlock between Upper Ring and Upper Decks. Biometric scan required — retinal, palm, voice. The lock cycles in 45 seconds. Emergency override exists but requires Hughes's personal authorization.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ud-binfo-execoffices">
+      <div class="bi-head" style="border-color:#b44aff"><h2 style="color:#b44aff">Executive Offices</h2>
+        <span class="btag" style="border-color:#b44aff;color:#b44aff">Corporate Liaison</span><span class="cat-tag cat-exec">EXEC</span>
+        <p>Conference rooms, briefing theaters, and corporate liaison suites. Used when corpo delegates visit for inspections — approximately once per year. Always empty otherwise. The furniture is real leather. The coffee machine has never been used.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ud-binfo-research">
+      <div class="bi-head" style="border-color:#b44aff"><h2 style="color:#b44aff">Research Wing</h2>
+        <span class="btag" style="border-color:#b44aff;color:#b44aff">Advanced Materials</span><span class="cat-tag cat-research">RESEARCH</span>
+        <p>Publicly described as 'advanced materials science.' Staff report equipment they cannot identify, experiments with results they cannot discuss, and colleagues who transferred without notice. Three researchers in the past decade have submitted resignation letters that were never processed.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ud-binfo-medical">
+      <div class="bi-head" style="border-color:#44aaff"><h2 style="color:#44aaff">Medical Bay</h2>
+        <span class="btag" style="border-color:#44aaff;color:#44aaff">Surgical Suite</span><span class="cat-tag cat-medical">MEDICAL</span>
+        <p>Full surgical suite with two operating tables. Handles injuries from industrial accidents, zero-g adaptation complications, and — according to unverified reports — psionic exposure incidents. The medical staff have signed NDAs preventing them from discussing any patient's condition with anyone, including the patient.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ud-binfo-resa">
+      <div class="bi-head" style="border-color:#39ff14"><h2 style="color:#39ff14">Residential Quarters — Block A</h2>
+        <span class="btag" style="border-color:#39ff14;color:#39ff14">200 Personnel Capacity</span><span class="cat-tag cat-residential">RESIDENTIAL</span>
+        <p>Standard crew habitation. Small but functional rooms with artificial daylight windows. Staff rotations every 6 months. Morale is reportedly 'within acceptable parameters' according to management surveys that no crew member remembers being asked to complete.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ud-binfo-resb">
+      <div class="bi-head" style="border-color:#39ff14"><h2 style="color:#39ff14">Residential Quarters — Block B</h2>
+        <span class="btag" style="border-color:#39ff14;color:#39ff14">180 Personnel Capacity</span><span class="cat-tag cat-residential">RESIDENTIAL</span>
+        <p>Second residential block. Identical to Block A but with a recurring plumbing issue in corridors C-7 through C-12 that maintenance has been 'aware of' for three years. Crew have named the leak 'the weeping wall.'</p>
+      </div>
+    </div>
+    <div class="binfo" id="ud-binfo-docking">
+      <div class="bi-head" style="border-color:#00e5ff"><h2 style="color:#00e5ff">Docking Bay</h2>
+        <span class="btag" style="border-color:#00e5ff;color:#00e5ff">Shuttle Transfer Point</span><span class="cat-tag cat-service">SERVICE</span>
+        <p>Handles approximately 12 arrivals per month. All craft are searched on arrival. Two shuttles are permanently docked as emergency evacuation vessels. Neither has been tested.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ud-binfo-lifesupport">
+      <div class="bi-head" style="border-color:#00e5ff"><h2 style="color:#00e5ff">Life Support</h2>
+        <span class="btag" style="border-color:#00e5ff;color:#00e5ff">Atmosphere / Water / Temperature</span><span class="cat-tag cat-service">SERVICE</span>
+        <p>Atmosphere recycling, water purification, and temperature regulation. Redundant systems — if primary fails, backup engages in 4.7 seconds. If backup fails, crew has approximately 3 hours of breathable air.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ud-binfo-messhall">
+      <div class="bi-head" style="border-color:#00e5ff"><h2 style="color:#00e5ff">Mess Hall / Recreation</h2>
+        <span class="btag" style="border-color:#00e5ff;color:#00e5ff">Dining &amp; Leisure</span><span class="cat-tag cat-service">SERVICE</span>
+        <p>Seating for 120. Vending machines, a ping-pong table, and a single ancient arcade cabinet that still works. The food is adequate. The coffee is not. A bulletin board near the entrance is used for crew notices and, occasionally, poetry.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ud-binfo-comms">
+      <div class="bi-head" style="border-color:#00e5ff"><h2 style="color:#00e5ff">Comms Center</h2>
+        <span class="btag" style="border-color:#00e5ff;color:#00e5ff">Surface-to-Orbit Hub</span><span class="cat-tag cat-service">SERVICE</span>
+        <p>All external communications pass through here before routing. The comms officer on duty has no knowledge of what is transmitted on the encrypted channels. They are instructed to log timestamps only.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ud-binfo-hughesquarters">
+      <div class="bi-head" style="border-color:#ff2244"><h2 style="color:#ff2244">Hughes's Private Quarters</h2>
+        <span class="btag" style="border-color:#ff2244;color:#ff2244">Sealed — No Entry</span><span class="cat-tag cat-restricted">RESTRICTED</span>
+        <p>A sealed suite adjacent to Lock 1. Hughes has not left this room in over a decade. Biometric access only. No staff permitted. Staff report occasional sounds from behind the bulkhead: a low hum, sometimes a voice. Maintenance has been instructed to ignore them.</p>
+      </div>
+      <div class="info-note">NOTE: The Upper Decks present a carefully maintained facade of normalcy. No resident of the Upper Decks has ever been below Lock 2. Those who asked what lies below were told: "Automated systems. Nothing that requires human presence."</div>
+    </div>
+    </div>
+  </div>
+
+  <!-- MIDSECTION -->
+  <div class="view" id="view-midsection">
+    <div class="map-panel">
+      <p class="map-hint">&#x25A3; Click a location to inspect</p>
+    <svg viewBox="0 0 556 560" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <pattern id="ms-grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M 20 0 L 0 0 0 20" fill="none" stroke="#111820" stroke-width="0.5"/></pattern>
+        <radialGradient id="ms-rglow" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="#ff6a00" stop-opacity="0.15"/>
+          <stop offset="100%" stop-color="#ff6a00" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <rect width="556" height="560" fill="#140a18"/><rect width="556" height="560" fill="url(#ms-grid)"/>
+      <rect id="ms-b-lock2" class="building" x="30" y="10" width="496" height="34" fill="#1a0000" stroke="#ff2244" stroke-width="1.5" rx="1" onclick="showB('ms','lock2')"/>
+      <text class="blabel" x="278" y="29" text-anchor="middle" fill="#ff2244">LOCK 2 — AUTOMATED SYSTEMS ONLY</text>
+      <text class="bsub" x="278" y="38" text-anchor="middle" fill="#ff2244">NO ORGANIC PERSONNEL PERMITTED</text>
+      <rect id="ms-b-emitter_port" class="building" x="30" y="55" width="245" height="120" fill="#140a18" stroke="#8844cc" stroke-width="1.2" rx="1" onclick="showB('ms','emitter_port')"/>
+      <text class="blabel" x="152" y="82" text-anchor="middle" fill="#8844cc">Emitter Array — Port Side</text>
+      <text class="bsub" x="152" y="92" text-anchor="middle" fill="#8844cc">EMITTERS 1-6 · PSIONIC PROJECTORS</text>
+      <g opacity="0.6">
+        <circle cx="70" cy="125" r="10" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><text x="70" y="128" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8844cc">1</text>
+        <circle cx="116" cy="115" r="10" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><text x="116" y="118" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8844cc">2</text>
+        <circle cx="152" cy="108" r="10" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><text x="152" y="111" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8844cc">3</text>
+        <circle cx="190" cy="115" r="10" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><text x="190" y="118" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8844cc">4</text>
+        <circle cx="230" cy="125" r="10" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><text x="230" y="128" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8844cc">5</text>
+        <circle cx="258" cy="140" r="10" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><text x="258" y="143" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8844cc">6</text>
+      </g>
+      <rect id="ms-b-emitter_starboard" class="building" x="286" y="55" width="240" height="120" fill="#140a18" stroke="#8844cc" stroke-width="1.2" rx="1" onclick="showB('ms','emitter_starboard')"/>
+      <text class="blabel" x="406" y="82" text-anchor="middle" fill="#8844cc">Emitter Array — Starboard Side</text>
+      <text class="bsub" x="406" y="92" text-anchor="middle" fill="#8844cc">EMITTERS 7-12 · PSIONIC PROJECTORS</text>
+      <g opacity="0.6">
+        <circle cx="298" cy="140" r="10" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><text x="298" y="143" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8844cc">7</text>
+        <circle cx="326" cy="125" r="10" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><text x="326" y="128" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8844cc">8</text>
+        <circle cx="366" cy="115" r="10" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><text x="366" y="118" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8844cc">9</text>
+        <circle cx="406" cy="108" r="10" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><text x="406" y="111" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8844cc">10</text>
+        <circle cx="446" cy="115" r="10" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><text x="446" y="118" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8844cc">11</text>
+        <circle cx="486" cy="125" r="10" fill="#1a0a20" stroke="#8844cc" stroke-width="0.8"/><text x="486" y="128" text-anchor="middle" font-family="Courier New" font-size="5" fill="#8844cc">12</text>
+      </g>
+      <circle cx="278" cy="272" r="72" fill="url(#ms-rglow)" opacity="0.5"/>
+      <circle cx="278" cy="272" r="62" fill="#0e0818" stroke="#ff6a00" stroke-width="1.5" class="building" id="ms-b-reactor" onclick="showB('ms','reactor')"/>
+      <circle cx="278" cy="272" r="48" fill="none" stroke="#ff6a00" stroke-width="0.5" stroke-dasharray="4 3" opacity="0.4"/>
+      <text class="blabel" x="278" y="268" text-anchor="middle" fill="#ff6a00">Main Fusion</text>
+      <text class="blabel" x="278" y="279" text-anchor="middle" fill="#ff6a00">Reactor</text>
+      <text class="bsub" x="278" y="290" text-anchor="middle" fill="#ff6a00">PRIMARY POWER SOURCE</text>
+      <rect id="ms-b-ai_proxy" class="building" x="410" y="210" width="116" height="90" fill="#0a0a18" stroke="#4488aa" stroke-width="1.2" rx="1" onclick="showB('ms','ai_proxy')"/>
+      <text class="blabel" x="468" y="248" text-anchor="middle" fill="#4488aa">AI Proxy</text>
+      <text class="blabel" x="468" y="258" text-anchor="middle" fill="#4488aa">Systems</text>
+      <text class="bsub" x="468" y="268" text-anchor="middle" fill="#4488aa">HUGHES COMM INTERFACE</text>
+      <rect id="ms-b-weapons_control" class="building" x="155" y="365" width="246" height="58" fill="#140a18" stroke="#8844cc" stroke-width="1.2" rx="1" onclick="showB('ms','weapons_control')"/>
+      <text class="blabel" x="278" y="393" text-anchor="middle" fill="#8844cc">Weapons Control Center</text>
+      <text class="bsub" x="278" y="403" text-anchor="middle" fill="#8844cc">TARGETING &amp; AUTHORIZATION HUB</text>
+      <rect id="ms-b-cooling" class="building" x="30" y="438" width="200" height="58" fill="#101825" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showB('ms','cooling')"/>
+      <text class="blabel" x="130" y="464" text-anchor="middle" fill="#00e5ff">Cooling Systems</text>
+      <text class="bsub" x="130" y="474" text-anchor="middle" fill="#00e5ff">THERMAL MANAGEMENT — 14KM CONDUIT</text>
+      <rect id="ms-b-power_grid" class="building" x="30" y="508" width="496" height="34" fill="#101018" stroke="#cc8800" stroke-width="1.2" rx="1" onclick="showB('ms','power_grid')"/>
+      <text class="blabel" x="278" y="527" text-anchor="middle" fill="#cc8800">Power Distribution Grid</text>
+      <text class="bsub" x="278" y="537" text-anchor="middle" fill="#cc8800">SUPERCONDUCTING CONDUITS — STATION-WIDE</text>
+      <rect id="ms-b-lock3" class="building" x="30" y="550" width="496" height="8" fill="#0a0000" stroke="#ff0000" stroke-width="1.5" rx="1" onclick="showB('ms','lock3')"/>
+      <text x="278" y="556" text-anchor="middle" font-family="Courier New" font-size="5" fill="#ff0000" letter-spacing="0.12em">LOCK 3 — NO RECORDS BELOW THIS LINE</text>
+      <rect x="1" y="1" width="554" height="558" fill="none" stroke="#8844cc" stroke-width="1.5" opacity="0.3"/>
+    </svg>
+    </div>
+    <div class="info-panel" id="ipanel-midsection">
+      <div class="bph" id="bph-midsection"><span class="arr">&#x25C8;</span>SELECT A LOCATION<br><small>Click any building on the map</small></div>
+
+    <div class="binfo" id="ms-binfo-lock2">
+      <div class="bi-head" style="border-color:#ff2244"><h2 style="color:#ff2244">Lock 2</h2>
+        <span class="btag" style="border-color:#ff2244;color:#ff2244">Automated Systems Only</span><span class="cat-tag cat-restricted">RESTRICTED</span>
+        <p>Airlock between Upper Decks and Midsection. No organic personnel permitted. The lock has a manual override sealed behind a panel that requires a tool that does not exist in any standard toolkit.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ms-binfo-emitter_port">
+      <div class="bi-head" style="border-color:#8844cc"><h2 style="color:#8844cc">Emitter Array — Port Side</h2>
+        <span class="btag" style="border-color:#8844cc;color:#8844cc">Emitters 1–6</span><span class="cat-tag cat-weapons">WEAPONS</span>
+        <p>Six of twelve directed psionic emitter projectors. Reverse-engineered from Biolumina psionic research. Each emitter projects a focused psionic wave capable of incapacitating every mind within several kilometers. Effects range from unconsciousness to permanent neural damage. Power draw per emitter: 4.7 gigawatts.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ms-binfo-emitter_starboard">
+      <div class="bi-head" style="border-color:#8844cc"><h2 style="color:#8844cc">Emitter Array — Starboard Side</h2>
+        <span class="btag" style="border-color:#8844cc;color:#8844cc">Emitters 7–12</span><span class="cat-tag cat-weapons">WEAPONS</span>
+        <p>Six of twelve directed psionic emitter projectors. Identical specifications to port side. The twelve emitters have never been fired simultaneously. Hughes's notes describe a 'cascade risk' — simultaneous activation could produce a psionic cascade event affecting all minds within 50km. Tested once on an uninhabited island. The bird population has not recovered.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ms-binfo-reactor">
+      <div class="bi-head" style="border-color:#ff6a00"><h2 style="color:#ff6a00">Main Fusion Reactor</h2>
+        <span class="btag" style="border-color:#ff6a00;color:#ff6a00">Primary Power Source</span><span class="cat-tag cat-power">POWER</span>
+        <p>Primary power source for the entire station. When The Drown fires, all non-essential systems must power down. No human has been inside the reactor chamber in seven years.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ms-binfo-weapons_control">
+      <div class="bi-head" style="border-color:#8844cc"><h2 style="color:#8844cc">Weapons Control Center</h2>
+        <span class="btag" style="border-color:#8844cc;color:#8844cc">Targeting &amp; Authorization Hub</span><span class="cat-tag cat-weapons">WEAPONS</span>
+        <p>Centralized targeting for the Spear Array and all twelve Psionic Emitters. Dual-command authorization required: Hughes's AI proxy AND a physical key that only Hughes possesses. The control room is empty. It has always been empty.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ms-binfo-ai_proxy">
+      <div class="bi-head" style="border-color:#4488aa"><h2 style="color:#4488aa">AI Proxy Systems</h2>
+        <span class="btag" style="border-color:#4488aa;color:#4488aa">Hughes Communication Interface</span><span class="cat-tag cat-ai">AI</span>
+        <p>Routing and communication interface for Jonathan Hughes. Handles all his external communications. The AI proxy has no knowledge of The Machine, the Lower Level, or anything classified at Level 3 or above. Cannot be accessed by any other individual. Hughes built it himself.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ms-binfo-cooling">
+      <div class="bi-head" style="border-color:#00e5ff"><h2 style="color:#00e5ff">Cooling Systems</h2>
+        <span class="btag" style="border-color:#00e5ff;color:#00e5ff">Thermal Management</span><span class="cat-tag cat-service">SERVICE</span>
+        <p>Circulates coolant through 14km of conduit. Runs at 97% efficiency. The remaining 3% is vented as steam through exterior radiators — the only visible sign from the ground that Hughes Station is more than a corporate office.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ms-binfo-power_grid">
+      <div class="bi-head" style="border-color:#cc8800"><h2 style="color:#cc8800">Power Distribution Grid</h2>
+        <span class="btag" style="border-color:#cc8800;color:#cc8800">Superconducting Conduits</span><span class="cat-tag cat-power">POWER</span>
+        <p>Routes reactor output to all sections. Includes a fail-safe that can isolate any section during a catastrophic power surge. Hughes installed it 'in case something down there decides to wake up.'</p>
+      </div>
+    </div>
+    <div class="binfo" id="ms-binfo-lock3">
+      <div class="bi-head" style="border-color:#ff0000"><h2 style="color:#ff0000">Lock 3</h2>
+        <span class="btag" style="border-color:#ff0000;color:#ff0000">No Records Below</span><span class="cat-tag cat-restricted">RESTRICTED</span>
+        <p>Access boundary between Midsection and Core. No personnel records exist for anyone who has passed through. The only reference to it in the station's database: "Lock 3 — Do not open unless specifically instructed by J. Hughes. There is no scenario in which this should happen."</p>
+      </div>
+      <div class="info-note note-warn">WARNING: The 12 Emitters have never been fired simultaneously. Simultaneous activation could produce a psionic cascade event affecting all minds within 50km. Hughes's notes on this end mid-sentence. The next page is torn out.</div>
+    </div>
+    </div>
+  </div>
+
+  <!-- CORE -->
+  <div class="view" id="view-core">
+    <div class="map-panel">
+      <p class="map-hint">&#x25A3; Click a location to inspect</p>
+    <svg viewBox="0 0 556 520" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <pattern id="cr-grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M 20 0 L 0 0 0 20" fill="none" stroke="#1a0810" stroke-width="0.5"/></pattern>
+        <filter id="cr-glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <radialGradient id="cr-core" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#1a0000"/><stop offset="100%" stop-color="#0a0000"/></radialGradient>
+      </defs>
+      <rect width="556" height="520" fill="#100005"/><rect width="556" height="520" fill="url(#cr-grid)"/>
+      <rect id="cr-b-lock3" class="building" x="15" y="8" width="526" height="32" fill="#0a0000" stroke="#ff0000" stroke-width="2" rx="1" onclick="showB('cr','lock3')"/>
+      <text class="blabel" x="278" y="22" text-anchor="middle" fill="#ff0000">LOCK 3 — NO RECORDS BELOW THIS LINE</text>
+      <text class="bsub" x="278" y="32" text-anchor="middle" fill="#ff0000">BIOMETRIC — HUGHES ONLY — OPENED 11 TIMES</text>
+      <rect id="cr-b-layer1" class="building" x="30" y="52" width="496" height="355" fill="none" stroke="#ff6600" stroke-width="1.2" stroke-dasharray="6 3" rx="3" onclick="showB('cr','layer1')"/>
+      <text x="40" y="66" font-family="Courier New" font-size="6" fill="#ff6600" opacity="0.6" letter-spacing="0.1em">CONTAINMENT LAYER 1 — 30cm METAMATERIAL</text>
+      <rect x="58" y="78" width="440" height="303" fill="none" stroke="#ff4400" stroke-width="0.7" stroke-dasharray="5 3" rx="3" opacity="0.5"/>
+      <text x="68" y="90" font-family="Courier New" font-size="5.5" fill="#ff4400" opacity="0.4" letter-spacing="0.08em">LAYER 2</text>
+      <rect id="cr-b-layer3" class="building" x="86" y="104" width="384" height="251" fill="none" stroke="#ff6600" stroke-width="1" stroke-dasharray="4 3" rx="3" onclick="showB('cr','layer3')"/>
+      <text x="96" y="116" font-family="Courier New" font-size="6" fill="#ff6600" opacity="0.6" letter-spacing="0.1em">CONTAINMENT LAYER 3 — NON-EUCLIDEAN GEOMETRY</text>
+      <rect x="114" y="130" width="328" height="199" fill="none" stroke="#ff4400" stroke-width="0.7" stroke-dasharray="4 3" rx="3" opacity="0.5"/>
+      <text x="124" y="142" font-family="Courier New" font-size="5.5" fill="#ff4400" opacity="0.4">LAYER 4</text>
+      <rect x="142" y="156" width="272" height="147" fill="none" stroke="#ff4400" stroke-width="0.7" stroke-dasharray="3 3" rx="3" opacity="0.5"/>
+      <text x="152" y="168" font-family="Courier New" font-size="5.5" fill="#ff4400" opacity="0.4">LAYER 5</text>
+      <rect id="cr-b-layer6" class="building" x="170" y="182" width="216" height="95" fill="none" stroke="#ff6600" stroke-width="1.2" stroke-dasharray="3 2" rx="3" onclick="showB('cr','layer6')"/>
+      <text x="278" y="193" text-anchor="middle" font-family="Courier New" font-size="6" fill="#ff6600" opacity="0.7" letter-spacing="0.1em">CONTAINMENT LAYER 6 — INNERMOST</text>
+      <rect id="cr-b-drown" class="building" x="210" y="210" width="136" height="50" fill="url(#cr-core)" stroke="#ff0000" stroke-width="3" rx="1" onclick="showB('cr','drown')" filter="url(#cr-glow)"/>
+      <text x="278" y="234" text-anchor="middle" font-family="Courier New" font-size="11" fill="#ff0000" font-weight="bold" letter-spacing="0.12em">THE DROWN</text>
+      <text x="278" y="247" text-anchor="middle" font-family="Courier New" font-size="5.5" fill="#aa2222" letter-spacing="0.06em">[ REALITY EROSION ] · 7 SEC · NEVER FIRED</text>
+      <line class="building" x1="238" y1="52" x2="238" y2="210" stroke="#00e5ff" stroke-width="2" opacity="0.5" onclick="showB('cr','conduits')"/>
+      <line class="building" x1="278" y1="52" x2="278" y2="210" stroke="#00e5ff" stroke-width="2.5" opacity="0.6" onclick="showB('cr','conduits')"/>
+      <line class="building" x1="318" y1="52" x2="318" y2="210" stroke="#00e5ff" stroke-width="2" opacity="0.5" onclick="showB('cr','conduits')"/>
+      <text x="368" y="72" font-family="Courier New" font-size="5.5" fill="#00e5ff" opacity="0.7" letter-spacing="0.08em" style="cursor:pointer" onclick="showB('cr','conduits')">POWER CONDUITS — REDUNDANT x3</text>
+      <rect id="cr-b-monitoring" class="building" x="430" y="280" width="86" height="60" fill="#0a0808" stroke="#ff88ff" stroke-width="1" rx="1" onclick="showB('cr','monitoring')"/>
+      <text class="blabel" x="473" y="302" text-anchor="middle" fill="#ff88ff">Monitoring</text>
+      <text class="blabel" x="473" y="312" text-anchor="middle" fill="#ff88ff">Station</text>
+      <text class="bsub" x="473" y="323" text-anchor="middle" fill="#ff88ff">EMPTY</text>
+      <rect id="cr-b-override" class="building" x="190" y="420" width="176" height="40" fill="#0a0808" stroke="#ff88ff" stroke-width="1" stroke-dasharray="4 2" rx="1" onclick="showB('cr','override')"/>
+      <text class="blabel" x="278" y="438" text-anchor="middle" fill="#ff88ff">Emergency Override</text>
+      <text class="bsub" x="278" y="450" text-anchor="middle" fill="#ff88ff">THE DROWN DEACTIVATION — NOT CONNECTED</text>
+      <text x="278" y="478" text-anchor="middle" font-family="Courier New" font-size="5" fill="#440000" opacity="0.6" letter-spacing="0.15em">// NO SCHEMATIC EXISTS BEYOND THIS POINT //</text>
+      <rect x="1" y="1" width="554" height="518" fill="none" stroke="#ff0000" stroke-width="1.5" opacity="0.2"/>
+    </svg>
+    </div>
+    <div class="info-panel" id="ipanel-core">
+      <div class="bph" id="bph-core"><span class="arr">&#x25C8;</span>SELECT A LOCATION<br><small>Click any element on the map</small></div>
+
+    <div class="binfo" id="cr-binfo-lock3">
+      <div class="bi-head" style="border-color:#ff0000"><h2 style="color:#ff0000">Lock 3 — No Records Below</h2>
+        <span class="btag" style="border-color:#ff0000;color:#ff0000">Final Airlock — Hughes Only</span><span class="cat-tag cat-restricted">RESTRICTED</span>
+        <p>The final airlock. Beyond this point, no schematic exists. The lock engages automatically and can only be opened by Hughes's personal biometric authorization. The lock has been opened eleven times. Each log entry reads only: 'MAINTENANCE.' No maintenance crew were dispatched.</p>
+      </div>
+    </div>
+    <div class="binfo" id="cr-binfo-layer1">
+      <div class="bi-head" style="border-color:#ff6600"><h2 style="color:#ff6600">Containment Layer 1 (Outermost)</h2>
+        <span class="btag" style="border-color:#ff6600;color:#ff6600">30cm Metamaterial Shielding</span><span class="cat-tag cat-contain">CONTAINMENT</span>
+        <p>Outermost containment ring. 30cm of metamaterial — a composite of tungsten, depleted uranium, and a compound Hughes refers to as 'the quiet stuff.' Inspected by Hughes personally. No one else has touched it.</p>
+      </div>
+    </div>
+    <div class="binfo" id="cr-binfo-layer3">
+      <div class="bi-head" style="border-color:#ff6600"><h2 style="color:#ff6600">Containment Layer 3 (Middle)</h2>
+        <span class="btag" style="border-color:#ff6600;color:#ff6600">Non-Euclidean Geometry</span><span class="cat-tag cat-contain">CONTAINMENT</span>
+        <p>Middle containment ring. Incorporates theurgic engineering principles from the Eyes of Lavitosh archives. The interior surface area is larger than the exterior surface area, which should be impossible. Engineers who reviewed the blueprints reported headaches lasting three days.</p>
+      </div>
+    </div>
+    <div class="binfo" id="cr-binfo-layer6">
+      <div class="bi-head" style="border-color:#ff6600"><h2 style="color:#ff6600">Containment Layer 6 (Innermost)</h2>
+        <span class="btag" style="border-color:#ff6600;color:#ff6600">Unknown Composition</span><span class="cat-tag cat-contain">CONTAINMENT</span>
+        <p>Innermost containment ring. The compound has never been identified. It is warm to the touch despite the chamber's ambient temperature of -20°C. Hughes has written: 'I did not design this layer. It was already there when I understood what needed to be built.'</p>
+      </div>
+    </div>
+    <div class="binfo" id="cr-binfo-drown">
+      <div class="bi-head" style="border-color:#ff0000"><h2 style="color:#ff0000">The Drown — Weapon Chamber</h2>
+        <span class="btag" style="border-color:#ff0000;color:#ff0000">Reality Erosion — Never Tested</span><span class="cat-tag cat-weapon">WEAPON</span>
+        <p>Not a laser. Not plasma. Not a particle beam. Hughes refers to it only as 'reality erosion.' The single functional note reads: 'It does not destroy the target. It makes the target not have been.' Firing requires a full station power-down. Estimated firing duration: 7 seconds. Hughes has written: 'I will not fire this. I am not sure I could stop it.'</p>
+      </div>
+      <div class="info-note note-red">CRITICAL: The Drown's operating principle is derived from theurgic engineering — machinery designed to interface with entities that exist outside normal reality. The Eyes of Lavitosh classified this research as forbidden 400 years ago. There is no known defense.</div>
+      <div class="info-note note-green">NOTE: No one on Hughes Station has been trained for a scenario involving The Drown's activation. No evacuation protocol exists. Hughes's only post-activation document: "If it fires, pray it was aimed at the right thing."</div>
+    </div>
+    <div class="binfo" id="cr-binfo-conduits">
+      <div class="bi-head" style="border-color:#00e5ff"><h2 style="color:#00e5ff">Power Conduits</h2>
+        <span class="btag" style="border-color:#00e5ff;color:#00e5ff">Direct Feed — Redundant x3</span><span class="cat-tag cat-power">POWER</span>
+        <p>Three independent power lines from the Main Fusion Reactor, any one capable of sustaining full firing power. When The Drown is charged, the conduits emit a low-frequency vibration felt through deck plating three sections away. The vibration stops when charging stops. It has never stopped on its own.</p>
+      </div>
+    </div>
+    <div class="binfo" id="cr-binfo-monitoring">
+      <div class="bi-head" style="border-color:#ff88ff"><h2 style="color:#ff88ff">Monitoring Station</h2>
+        <span class="btag" style="border-color:#ff88ff;color:#ff88ff">Empty — Unknown Purpose</span><span class="cat-tag cat-restricted">RESTRICTED</span>
+        <p>A room. Empty. There are monitoring terminals, but they display nothing. There is a chair, but the leather is pristine. There is a coffee cup on the desk, full, cold, untouched. Hughes has never entered this room. No one knows who placed the coffee cup.</p>
+      </div>
+    </div>
+    <div class="binfo" id="cr-binfo-override">
+      <div class="bi-head" style="border-color:#ff88ff"><h2 style="color:#ff88ff">Emergency Override Panel</h2>
+        <span class="btag" style="border-color:#ff88ff;color:#ff88ff">Not Connected</span><span class="cat-tag cat-restricted">RESTRICTED</span>
+        <p>Labeled 'EMERGENCY OVERRIDE — THE DROWN DEACTIVATION.' Behind the panel is a switch. The switch is not connected to anything. Hughes installed it to give himself the comfort of believing there was a way to stop it. There isn't.</p>
+      </div>
+    </div>
+    </div>
+  </div>
+
+  <!-- PROJECT LOOM -->
+  <div class="view" id="view-lower">
+    <div class="map-panel">
+      <p class="map-hint">&#x25A3; Click a location to inspect</p>
+    <svg viewBox="0 0 556 600" xmlns="http://www.w3.org/2000/svg">
+      <defs><pattern id="ll-grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M 20 0 L 0 0 0 20" fill="none" stroke="#0a1a10" stroke-width="0.5"/></pattern></defs>
+      <rect width="556" height="600" fill="#050a10"/><rect width="556" height="600" fill="url(#ll-grid)"/>
+      <rect id="ll-b-corridor" class="building" x="20" y="20" width="516" height="40" fill="#050000" stroke="#ff2244" stroke-width="1.5" rx="1" onclick="showB('ll','corridor')"/>
+      <text x="278" y="36" text-anchor="middle" font-family="Courier New" font-size="7" fill="#ff2244" letter-spacing="0.2em" font-weight="bold">// THIS SECTION DOES NOT EXIST //</text>
+      <text x="278" y="50" text-anchor="middle" font-family="Courier New" font-size="6" fill="#ff224488" letter-spacing="0.1em">SEALED ACCESS CORRIDOR — BIOMETRIC LOCK</text>
+      <rect id="ll-b-mesh1" class="building" x="30" y="75" width="496" height="490" fill="none" stroke="#00aaaa" stroke-width="0.8" stroke-dasharray="8 4" rx="2" onclick="showB('ll','mesh1')"/>
+      <text x="42" y="88" font-family="Courier New" font-size="5.5" fill="#00aaaa55" letter-spacing="0.08em">MESH L1 — 3% SUPPRESSION</text>
+      <rect x="60" y="100" width="436" height="440" fill="none" stroke="#00aaaa" stroke-width="0.7" stroke-dasharray="6 4" rx="2"/>
+      <rect x="90" y="120" width="376" height="400" fill="none" stroke="#00aaaa" stroke-width="0.7" stroke-dasharray="5 4" rx="2"/>
+      <rect id="ll-b-mesh4" class="building" x="120" y="140" width="316" height="360" fill="none" stroke="#00aaaa" stroke-width="0.8" stroke-dasharray="5 4" rx="2" onclick="showB('ll','mesh4')"/>
+      <text x="132" y="153" font-family="Courier New" font-size="5.5" fill="#00aaaa66" letter-spacing="0.08em">MESH L4 — 0.7% SUPPRESSION</text>
+      <rect x="150" y="165" width="256" height="310" fill="none" stroke="#00aaaa" stroke-width="0.7" stroke-dasharray="4 4" rx="2"/>
+      <rect x="175" y="190" width="206" height="260" fill="none" stroke="#00aaaa" stroke-width="0.7" stroke-dasharray="3 4" rx="2"/>
+      <rect id="ll-b-mesh7" class="building" x="198" y="215" width="160" height="210" fill="none" stroke="#00aaaa" stroke-width="0.9" stroke-dasharray="3 3" rx="2" onclick="showB('ll','mesh7')"/>
+      <text x="210" y="228" font-family="Courier New" font-size="5.5" fill="#00aaaa77" letter-spacing="0.08em">MESH L7 — 0.3% SUPPRESSION</text>
+      <g id="ll-b-machine" class="building" onclick="showB('ll','machine')">
+        <circle cx="278" cy="300" r="80" fill="none" stroke="#00ff8822" stroke-width="8" class="machine-pulse"/>
+        <circle cx="278" cy="300" r="70" fill="#040a04" stroke="#00ff88" stroke-width="1.5"/>
+        <circle cx="260" cy="275" r="18" fill="#061006" stroke="#00ff8866" stroke-width="0.8"/>
+        <circle cx="295" cy="310" r="22" fill="#050c05" stroke="#00ff8855" stroke-width="0.8"/>
+        <path d="M 208 300 Q 180 290 165 270" fill="none" stroke="#00ff8833" stroke-width="2" class="machine-pulse"/>
+        <path d="M 348 300 Q 370 285 390 275" fill="none" stroke="#00ff8833" stroke-width="2" class="machine-pulse"/>
+        <circle cx="255" cy="285" r="3" fill="#004422" stroke="#00ff88" stroke-width="0.6"/>
+        <circle cx="288" cy="278" r="2.5" fill="#004422" stroke="#00ff88" stroke-width="0.5"/>
+        <circle cx="270" cy="310" r="2" fill="#004422" stroke="#00ff88" stroke-width="0.5"/>
+        <circle cx="298" cy="300" r="3.5" fill="#004422" stroke="#00ff88" stroke-width="0.6"/>
+        <circle cx="265" cy="268" r="2" fill="#004422" stroke="#00ff88" stroke-width="0.5"/>
+        <text x="278" y="296" text-anchor="middle" font-family="Courier New" font-size="8" fill="#00ff88" font-weight="bold" letter-spacing="0.15em">THE MACHINE</text>
+        <text x="278" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#00ff8888" letter-spacing="0.12em">DORMANT</text>
+        <text x="278" y="352" text-anchor="middle" font-family="Courier New" font-size="5" fill="#00ff8844" letter-spacing="0.08em">-40&#xB0;C // +0.3%/mo</text>
+      </g>
+      <rect id="ll-b-drones" class="building" x="35" y="160" width="115" height="100" fill="#050a10" stroke="#00cccc" stroke-width="1.2" rx="1" onclick="showB('ll','drones')"/>
+      <text class="blabel" x="92" y="205" text-anchor="middle" fill="#00cccc">Drone Bay</text>
+      <text class="bsub" x="92" y="217" text-anchor="middle" fill="#00cccc">12 Maintenance Units</text>
+      <rect id="ll-b-observation" class="building" x="405" y="160" width="120" height="100" fill="#0a0508" stroke="#ff2244" stroke-width="1.2" stroke-dasharray="6 3" rx="1" onclick="showB('ll','observation')"/>
+      <text class="blabel" x="465" y="200" text-anchor="middle" fill="#ff2244">Hughes's Obs. Room</text>
+      <text class="bsub" x="465" y="212" text-anchor="middle" fill="#ff2244">Private Station</text>
+      <rect id="ll-b-lab" class="building" x="400" y="430" width="125" height="80" fill="#050a08" stroke="#00cccc" stroke-width="1.2" rx="1" onclick="showB('ll','lab')"/>
+      <text class="blabel" x="462" y="465" text-anchor="middle" fill="#00cccc">Suppressant Lab</text>
+      <text class="bsub" x="462" y="477" text-anchor="middle" fill="#00cccc">Chemical Production</text>
+      <rect id="ll-b-coolant" class="building" x="35" y="430" width="130" height="80" fill="#050a10" stroke="#00aaaa" stroke-width="1.2" rx="1" onclick="showB('ll','coolant')"/>
+      <text class="blabel" x="100" y="465" text-anchor="middle" fill="#00aaaa">Coolant Recovery</text>
+      <text class="bsub" x="100" y="477" text-anchor="middle" fill="#00aaaa">Bioluminescent Circulation</text>
+      <rect id="ll-b-storage" class="building" x="190" y="460" width="170" height="80" fill="#050a08" stroke="#00cccc" stroke-width="1.2" rx="1" onclick="showB('ll','storage')"/>
+      <text class="blabel" x="275" y="495" text-anchor="middle" fill="#00cccc">Chemical Storage</text>
+      <text class="bsub" x="275" y="507" text-anchor="middle" fill="#00cccc">Raw Material Tanks</text>
+      <text x="25" y="595" font-family="Courier New" font-size="4.5" fill="#1e2840" letter-spacing="0.05em">PROJECT LOOM // LOWER LEVEL // CLASSIFICATION: ULTRAVIOLET</text>
+      <rect x="1" y="1" width="554" height="598" fill="none" stroke="#00ff88" stroke-width="1.5" opacity="0.15"/>
+    </svg>
+    </div>
+    <div class="info-panel" id="ipanel-lower">
+      <div class="bph" id="bph-lower"><span class="arr">&#x25C8;</span>SELECT A LOCATION<br><small>Click any location on the map</small></div>
+
+    <div class="binfo" id="ll-binfo-corridor">
+      <div class="bi-head" style="border-color:#ff2244"><h2 style="color:#ff2244">&#x25A0; Access Corridor — Sealed</h2>
+        <span class="btag" style="border-color:#ff2244;color:#ff2244">Biometric Lock — Hughes Only</span><span class="cat-tag cat-restricted">RESTRICTED</span>
+        <p>A 40-meter corridor with no lighting, no markings, and no environmental controls beyond basic atmosphere. Sealed at both ends by bulkheads responding only to Hughes's biometrics. The walls are lined with psionic dampening mesh. Walking through reportedly induces nausea, disorientation, and a persistent feeling of being watched. Hughes walks it twice daily.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ll-binfo-mesh1">
+      <div class="bi-head" style="border-color:#00aaaa"><h2 style="color:#00aaaa">Dampening Mesh Layer 1</h2>
+        <span class="btag" style="border-color:#00aaaa;color:#00aaaa">Outermost — 3% Suppression</span><span class="cat-tag cat-contain">CONTAINMENT</span>
+        <p>First of seven concentric psionic dampening layers. Suppresses The Machine's dormant emissions to approximately 3% of potential strength at this distance. Layer 1 is the most degraded — the mesh develops micro-fractures over time that Hughes repairs by hand.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ll-binfo-mesh4">
+      <div class="bi-head" style="border-color:#00aaaa"><h2 style="color:#00aaaa">Dampening Mesh Layer 4</h2>
+        <span class="btag" style="border-color:#00aaaa;color:#00aaaa">Middle — 0.7% Suppression</span><span class="cat-tag cat-contain">CONTAINMENT</span>
+        <p>Fourth dampening layer. The Machine's emissions suppressed to 0.7%. The mesh here is approximately 12°C warmer than ambient — heat from The Machine, not from any electrical system. The mesh is colonized by a thin film of biological material that Hughes removes weekly.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ll-binfo-mesh7">
+      <div class="bi-head" style="border-color:#00aaaa"><h2 style="color:#00aaaa">Dampening Mesh Layer 7</h2>
+        <span class="btag" style="border-color:#00aaaa;color:#00aaaa">Innermost — 0.3% Suppression</span><span class="cat-tag cat-contain">CONTAINMENT</span>
+        <p>Final dampening layer. Suppressed to 0.3% of potential. The mesh here pulses faintly in rhythm with The Machine's heartbeat — a 0.02Hz oscillation that registers on instruments as a periodic distortion in the fabric of space itself.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ll-binfo-machine">
+      <div class="bi-head" style="border-color:#00ff88"><h2 style="color:#00ff88">&#x2B22; The Machine (Dormant)</h2>
+        <span class="btag" style="border-color:#00ff88;color:#00ff88">Eldritch-Synthetic Hybrid — ~50m Diameter</span><span class="cat-tag cat-eldritch">ELDRITCH</span>
+        <p>A ~50-meter diameter hybrid of eldritch godflesh from the Nox entity and supercomputing architecture. Not a computer. Not an AI. Not a biological organism. Covered in translucent living membrane with grown, unfocused eyes. Breathes slowly. Bleeds bioluminescent coolant. Has a psionic heartbeat that pulses even in dormancy.</p>
+        <p style="margin-top:10px;color:#00ff88;font-size:0.75rem;letter-spacing:0.06em;">STATUS: DORMANT // TEMP: -40&#xB0;C // GROWTH: +0.3% per month</p>
+        <p style="margin-top:8px;">The Machine is getting larger. Hughes has ordered the drones not to stop it, stating: "I don't think it would let us."</p>
+      </div>
+    </div>
+    <div class="binfo" id="ll-binfo-drones">
+      <div class="bi-head" style="border-color:#00cccc"><h2 style="color:#00cccc">Drone Bay — 12 Maintenance Units</h2>
+        <span class="btag" style="border-color:#00cccc;color:#00cccc">Automated — No Wireless</span><span class="cat-tag cat-bio">BIOLOGICAL</span>
+        <p>Twelve automated maintenance drones. No wireless connectivity — all programming via physical cable. They repair ruptured coolant conduits, trim excess eldritch growth, and collect biological samples. One drone was retired last year after moving in patterns not consistent with its programming. Hughes dismantled it himself. He did not explain why.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ll-binfo-observation">
+      <div class="bi-head" style="border-color:#ff2244"><h2 style="color:#ff2244">Hughes's Observation Room</h2>
+        <span class="btag" style="border-color:#ff2244;color:#ff2244">Private Station — Direct Line of Sight</span><span class="cat-tag cat-restricted">RESTRICTED</span>
+        <p>Hughes's private station within the Lower Level. Direct line of sight to The Machine through seven layers of transparent dampening mesh. Hughes spends approximately 14 hours per day here. The walls are lined with instruments monitoring every measurable property of The Machine. His pupils no longer dilate in response to light.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ll-binfo-lab">
+      <div class="bi-head" style="border-color:#00cccc"><h2 style="color:#00cccc">Suppressant Laboratory</h2>
+        <span class="btag" style="border-color:#00cccc;color:#00cccc">Chemical Production — Hughes Only</span><span class="cat-tag cat-bio">BIOLOGICAL</span>
+        <p>Private laboratory for chemical suppressant production. No one else has access. The compound circulated through The Machine's chamber slows eldritch cellular division. Must be replenished every 72 hours. The formula has never been shared. The raw materials include organic compounds that Hughes will not allow anyone else to handle.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ll-binfo-coolant">
+      <div class="bi-head" style="border-color:#00aaaa"><h2 style="color:#00aaaa">Coolant Recovery Systems</h2>
+        <span class="btag" style="border-color:#00aaaa;color:#00aaaa">Bioluminescent Coolant Circulation</span><span class="cat-tag cat-contain">CONTAINMENT</span>
+        <p>Recovery and recirculation system for The Machine's bioluminescent coolant. The coolant is a living suspension of eldritch cells. Conduits rupture periodically as the eldritch tissue grows faster than the engineering can contain. The coolant pools on the chamber floor in iridescent puddles that glow faintly.</p>
+      </div>
+    </div>
+    <div class="binfo" id="ll-binfo-storage">
+      <div class="bi-head" style="border-color:#00cccc"><h2 style="color:#00cccc">Chemical Storage</h2>
+        <span class="btag" style="border-color:#00cccc;color:#00cccc">Raw Material Tanks</span><span class="cat-tag cat-bio">BIOLOGICAL</span>
+        <p>Storage tanks for suppressant raw materials. Made of a material not in any engineering catalogue — Hughes fabricated them himself. The storage room is the only room in the Lower Level that is warm — approximately 22°C. The warmth has no apparent source.</p>
+      </div>
+      <div class="info-note note-warn">WARNING: The Machine's psionic emissions at 0.3% suppression produce measurable effects. Crew within three decks report identical dreams: vast darkness, breathing that is not theirs, the sensation of being seen by something between thoughts. The dreams are becoming clearer.</div>
+      <div class="info-note note-green">NOTE: The Nox entity's pulse rhythm has been accelerating. Hughes's last readable journal entry: "The pulse is accelerating. Not ours. Theirs. If it reaches threshold before I am ready, nothing else matters."</div>
+    </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const SECTIONS = ['upper-ring','upper-decks','midsection','core','lower'];
+const SECTION_BIDS = {
+  'upper-ring':  ['spears_1_4','spears_5_8','solar_alpha','solar_beta','solar_gamma','comm','sensor','corridors'],
+  'upper-decks': ['lock1','execoffices','research','medical','resa','resb','docking','lifesupport','messhall','comms','hughesquarters'],
+  'midsection':  ['lock2','emitter_port','emitter_starboard','reactor','ai_proxy','weapons_control','cooling','power_grid','lock3'],
+  'core':        ['lock3','layer1','layer3','layer6','drown','conduits','monitoring','override'],
+  'lower':       ['corridor','mesh1','mesh4','mesh7','machine','drones','observation','lab','coolant','storage']
+};
+const PREFIX = {'upper-ring':'ur','upper-decks':'ud','midsection':'ms','core':'cr','lower':'ll'};
+
+function switchView(id) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.ntab').forEach(t => t.classList.remove('active'));
+  const vId = id === 'station' ? 'view-station' : 'view-' + id;
+  const v = document.getElementById(vId);
+  if (v) v.classList.add('active');
+  const tab = document.getElementById('tab-' + id);
+  if (tab) tab.classList.add('active');
+  if (id !== 'station') {
+    document.getElementById('bph-' + id).style.display = 'block';
+    if (SECTION_BIDS[id]) SECTION_BIDS[id].forEach(b => {
+      const el = document.getElementById(PREFIX[id] + '-b-' + b);
+      if (el) el.classList.remove('bactive');
+      const inf = document.getElementById(PREFIX[id] + '-binfo-' + b);
+      if (inf) inf.classList.remove('visible');
+    });
+    document.getElementById('ipanel-' + id).scrollTop = 0;
+  }
+}
+
+function selectSection(id) {
+  document.querySelectorAll('.district').forEach(d => d.classList.remove('dactive'));
+  document.querySelectorAll('.sinfo').forEach(s => s.classList.remove('visible'));
+  document.getElementById('station-ph').style.display = 'none';
+  const svgEl = document.getElementById('d-' + id);
+  if (svgEl) svgEl.classList.add('dactive');
+  const si = document.getElementById('si-' + id);
+  if (si) si.classList.add('visible');
+  document.getElementById('ipanel-station').scrollTop = 0;
+}
+
+function showB(prefix, bid) {
+  const sectionMap = {ur:'upper-ring',ud:'upper-decks',ms:'midsection',cr:'core',ll:'lower'};
+  const section = sectionMap[prefix];
+  document.getElementById('bph-' + section).style.display = 'none';
+  if (SECTION_BIDS[section]) SECTION_BIDS[section].forEach(b => {
+    const el = document.getElementById(prefix + '-b-' + b);
+    if (el) el.classList.remove('bactive');
+    const inf = document.getElementById(prefix + '-binfo-' + b);
+    if (inf) inf.classList.remove('visible');
+  });
+  const svgEl = document.getElementById(prefix + '-b-' + bid);
+  if (svgEl) svgEl.classList.add('bactive');
+  const infoEl = document.getElementById(prefix + '-binfo-' + bid);
+  if (infoEl) infoEl.classList.add('visible');
+  document.getElementById('ipanel-' + section).scrollTop = 0;
+}
+
+switchView('station');
+</script>
+</body>
+</html>

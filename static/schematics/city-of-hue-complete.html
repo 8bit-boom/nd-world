@@ -1,0 +1,2063 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>City of Hue — Complete Schematic</title>
+<style>
+:root{--bg:#0a0c10;--bg2:#0f1218;--bg3:#141820;--border:#1e2840;--text:#c8d8f0;--text-dim:#6878a0;}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;overflow:hidden;}
+body{background:var(--bg);color:var(--text);font-family:'Courier New',monospace;display:flex;flex-direction:column;}
+
+/* Nav */
+.topbar{background:#070a0e;border-bottom:2px solid #1e2840;padding:0;display:flex;align-items:stretch;flex-shrink:0;}
+.topbar-title{padding:10px 18px;border-right:1px solid #1e2840;flex-shrink:0;}
+.topbar-title h1{font-size:1rem;letter-spacing:0.15em;color:#00e5ff;text-transform:uppercase;white-space:nowrap;text-shadow:0 0 10px #00e5ff66;}
+.topbar-title p{font-size:0.6rem;color:#3a4a60;letter-spacing:0.08em;margin-top:2px;}
+.navtabs{display:flex;align-items:stretch;overflow-x:auto;flex:1;}
+.navtabs::-webkit-scrollbar{height:3px;}
+.navtabs::-webkit-scrollbar-thumb{background:#1e2840;}
+.ntab{background:transparent;border:none;border-right:1px solid #1e2840;color:#3a4a60;font-family:'Courier New',monospace;font-size:0.7rem;letter-spacing:0.1em;padding:0 14px;cursor:pointer;transition:all 0.15s;white-space:nowrap;text-transform:uppercase;}
+.ntab:hover{color:#c8d8f0;background:#0f1218;}
+.ntab.active{color:#00e5ff;background:#0f1820;border-bottom:2px solid #00e5ff;}
+.ntab[style]{--tc:#00e5ff;}
+.ntab[style].active{color:var(--tc);border-bottom-color:var(--tc);}
+.ntab[style]:hover{color:var(--tc);}
+
+/* Views */
+.views{flex:1;overflow:hidden;position:relative;}
+.view{display:none;height:100%;flex-direction:row;}
+.view.active{display:flex;}
+
+/* Map panel */
+.map-panel{flex:0 0 570px;background:var(--bg2);border-right:2px solid var(--border);display:flex;flex-direction:column;align-items:center;padding:10px 8px;overflow:hidden;}
+.map-hint{font-size:0.65rem;color:var(--text-dim);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:6px;}
+.district-map{width:554px;height:auto;max-height:calc(100vh - 90px);}
+#city-svg{width:500px;height:auto;max-height:calc(100vh - 90px);}
+.bldg{cursor:pointer;transition:filter 0.12s;}
+.bldg:hover{filter:brightness(1.5);}
+.bldg.bactive{filter:brightness(1.85) drop-shadow(0 0 5px currentColor);}
+.city-dist{cursor:pointer;transition:filter 0.12s;}
+.city-dist:hover{filter:brightness(1.45);}
+.city-dist.cactive{filter:brightness(1.7) drop-shadow(0 0 7px currentColor);}
+.dlabel{font-family:'Courier New',monospace;font-size:10px;font-weight:bold;pointer-events:none;text-transform:uppercase;letter-spacing:0.08em;}
+.dsub{font-family:'Courier New',monospace;font-size:7px;pointer-events:none;opacity:0.75;letter-spacing:0.04em;}
+.blabel{font-family:'Courier New',monospace;font-size:8px;font-weight:bold;pointer-events:none;text-transform:uppercase;letter-spacing:0.05em;}
+.bsub{font-family:'Courier New',monospace;font-size:6.5px;pointer-events:none;opacity:0.7;}
+
+/* Info panel */
+.info-panel{flex:1;overflow-y:auto;padding:18px 22px;scrollbar-width:thin;scrollbar-color:var(--border) transparent;}
+.info-panel::-webkit-scrollbar{width:5px;}
+.info-panel::-webkit-scrollbar-thumb{background:var(--border);}
+.bplaceholder{color:var(--text-dim);text-align:center;margin-top:50px;font-size:0.8rem;letter-spacing:0.1em;line-height:2;}
+.bplaceholder .arr{font-size:1.6rem;color:#3a6070;display:block;margin-bottom:8px;animation:blink 1.2s step-end infinite;}
+@keyframes blink{50%{opacity:0;}}
+.binfo{display:none;}
+.binfo.visible{display:block;}
+.city-dinfo{display:none;}
+.city-dinfo.visible{display:block;}
+
+/* City info */
+.di-head{border-left:3px solid;padding-left:12px;margin-bottom:14px;}
+.di-head h2{font-size:1.25rem;text-transform:uppercase;letter-spacing:0.12em;}
+.dtag{display:inline-block;font-size:0.63rem;padding:2px 7px;border:1px solid;margin-top:5px;letter-spacing:0.08em;text-transform:uppercase;}
+.di-head p{margin-top:8px;font-size:0.83rem;line-height:1.65;}
+.di-locs h3{font-size:0.68rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:0.12em;margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px;}
+.llist{list-style:none;display:flex;flex-direction:column;gap:5px;}
+.llist li{display:flex;align-items:flex-start;gap:9px;font-size:0.82rem;padding:6px 9px;background:var(--bg2);border:1px solid var(--border);}
+.loc-icon{font-size:1rem;flex-shrink:0;line-height:1.3;}
+.loc-name{font-weight:bold;color:#00e5ff;}
+.loc-desc{color:var(--text-dim);font-size:0.76rem;margin-top:2px;}
+.drill-btn{display:inline-block;margin-top:14px;padding:7px 14px;background:transparent;border:1px solid;font-family:'Courier New',monospace;font-size:0.7rem;letter-spacing:0.12em;text-transform:uppercase;cursor:pointer;color:inherit;transition:background 0.15s,color 0.15s;}
+.drill-btn:hover{background:var(--tc,#00e5ff);color:#000!important;}
+
+/* Building info */
+.bi-header{border-left:3px solid;padding-left:12px;margin-bottom:14px;}
+.bi-header h2{font-size:1.2rem;text-transform:uppercase;letter-spacing:0.1em;}
+.btag{display:inline-block;font-size:0.62rem;padding:2px 6px;border:1px solid;margin-top:4px;letter-spacing:0.08em;text-transform:uppercase;}
+.cat-tag{display:inline-block;font-size:0.58rem;padding:1px 5px;margin-left:6px;letter-spacing:0.07em;text-transform:uppercase;vertical-align:middle;}
+.cat-corp{background:#1a0f2e;color:#b44aff;border:1px solid #b44aff;}
+.cat-commercial{background:#0d1820;color:#00c8ff;border:1px solid #00c8ff;}
+.cat-residential{background:#0a1f18;color:#39ff14;border:1px solid #39ff14;}
+.cat-service{background:#101825;color:#00e5ff;border:1px solid #00e5ff;}
+.cat-danger{background:#1a0a08;color:#ff2244;border:1px solid #ff2244;}
+.cat-secret{background:#150010;color:#cc88ff;border:1px solid #cc88ff;}
+.bi-header p{margin-top:8px;font-size:0.84rem;line-height:1.65;}
+
+/* District hero */
+.district-hero{display:none;flex-direction:column;gap:10px;margin-bottom:16px;}
+.district-hero img{max-height:130px;width:100%;object-fit:cover;border:1px solid var(--border);}
+.hero-desc{border-left:3px solid;padding-left:12px;}
+.hero-desc h2{font-size:1.1rem;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;}
+.hero-desc p{font-size:0.82rem;line-height:1.6;color:var(--text-dim);}
+
+/* City overview panel placeholder */
+#city-placeholder{color:var(--text-dim);text-align:center;margin-top:50px;font-size:0.8rem;letter-spacing:0.1em;line-height:2.2;}
+#city-placeholder .arr{font-size:1.6rem;color:#1e4050;display:block;margin-bottom:8px;animation:blink 1.2s step-end infinite;}
+
+/* ── Responsive: large screens ──────────────────────────────────────────── */
+@media (min-width:1600px){
+  .map-panel{flex:0 0 660px;}
+  .district-map,#city-svg{width:100%!important;}
+}
+@media (min-width:2200px){
+  .map-panel{flex:0 0 860px;}
+  .topbar-title h1{font-size:1.3rem;}
+  .ntab{font-size:0.85rem;padding:0 20px;}
+  .topbar{border-bottom-width:3px;}
+}
+@media (min-width:3200px){
+  .map-panel{flex:0 0 1100px;}
+  .topbar-title h1{font-size:1.7rem;}
+  .topbar-title p{font-size:0.78rem;}
+  .ntab{font-size:1rem;padding:0 26px;}
+  .map-hint{font-size:0.8rem;}
+  .info-panel{padding:28px 42px;}
+  .di-head h2,.bi-header h2{font-size:1.7rem;}
+  .di-head p,.bi-header p{font-size:1.05rem;}
+  .dtag,.btag,.cat-tag{font-size:0.78rem;padding:3px 9px;}
+  .di-locs h3{font-size:0.82rem;}
+  .llist li{font-size:1rem;padding:9px 13px;}
+  .loc-name{font-size:1rem;}
+  .loc-desc{font-size:0.9rem;}
+  .loc-icon{font-size:1.3rem;}
+  .drill-btn{font-size:0.85rem;padding:9px 20px;}
+  .bplaceholder,.arr,#city-placeholder{font-size:1rem;}
+  .hero-desc h2{font-size:1.4rem;}
+  .hero-desc p{font-size:1rem;}
+  .district-hero img{max-height:200px;}
+}
+/* ── Responsive: tablet ─────────────────────────────────────────────────── */
+@media (max-width:900px){
+  .map-panel{flex:0 0 260px;}
+  .district-map{width:100%!important;}
+  #city-svg{width:100%!important;}
+}
+/* ── Responsive: mobile ─────────────────────────────────────────────────── */
+@media (max-width:600px){
+  html,body{height:auto;overflow-y:auto;}
+  .views{height:auto;overflow:visible;}
+  .view,.view.active{flex-direction:column;height:auto;}
+  .map-panel{flex:none;width:100%;max-height:none;border-right:none;border-bottom:2px solid var(--border);overflow:visible;padding:6px 4px;}
+  .district-map,#city-svg{width:100%!important;max-height:none;}
+  .info-panel{overflow-y:visible;padding:12px 14px;}
+  .topbar{flex-wrap:wrap;}
+  .topbar-title{padding:6px 10px;}
+  .topbar-title p{display:none;}
+  .ntab{padding:0 8px;font-size:0.6rem;letter-spacing:0.06em;}
+  .bplaceholder{margin-top:16px;}
+  #city-placeholder{margin-top:16px;}
+  .district-hero img{max-height:160px;}
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-title">
+    <h1>The City of Hue</h1>
+    <p>Complete District Schematic &mdash; Hughes Industries Urban Infrastructure Division</p>
+  </div>
+  <div class="navtabs">
+    <button class="ntab active" id="tab-city" onclick="switchView('city')">&#9671; CITY MAP</button>
+    <button class="ntab" id="tab-executive" onclick="switchView('executive')" style="--tc:#b44aff">EXEC</button>
+    <button class="ntab" id="tab-commonwealth" onclick="switchView('commonwealth')" style="--tc:#39ff14">CMNW</button>
+    <button class="ntab" id="tab-central" onclick="switchView('central')" style="--tc:#00e5ff">CTRL</button>
+    <button class="ntab" id="tab-shantytown" onclick="switchView('shantytown')" style="--tc:#ff6a00">SHAN</button>
+    <button class="ntab" id="tab-entertainment" onclick="switchView('entertainment')" style="--tc:#ff2244">ENT</button>
+    <button class="ntab" id="tab-industrial" onclick="switchView('industrial')" style="--tc:#ffe600">IND</button>
+    <button class="ntab" id="tab-commercial" onclick="switchView('commercial')" style="--tc:#00c8ff">COM</button>
+    <button class="ntab" id="tab-docks" onclick="switchView('docks')" style="--tc:#0099cc">DOCK</button>
+    <button class="ntab" id="tab-underground" onclick="switchView('underground')" style="--tc:#9933cc">UNDR</button>
+  </div>
+</div>
+
+<div class="views">
+
+  <!-- ═══ CITY OVERVIEW ═══ -->
+  <div class="view" id="view-city">
+    <div class="map-panel">
+      <p class="map-hint">&#9671; Click a district to select</p>
+      <svg id="city-svg" viewBox="0 0 520 720" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <pattern id="cgrid" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#151d2a" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="520" height="720" fill="#0a0c10"/>
+        <rect width="520" height="720" fill="url(#cgrid)"/>
+        <!-- Ocean -->
+        <rect x="0" y="630" width="520" height="90" fill="#041428"/>
+        <rect x="0" y="628" width="520" height="4" fill="#0077aa" opacity="0.6"/>
+        <path d="M 20 650 Q 50 644 80 650 Q 110 656 140 650 Q 170 644 200 650 Q 230 656 260 650 Q 290 644 320 650 Q 350 656 380 650 Q 410 644 440 650 Q 470 656 500 650" fill="none" stroke="#0077aa" stroke-width="1" opacity="0.35"/>
+        <text x="260" y="660" text-anchor="middle" font-family="Courier New" font-size="11" fill="#0099cc" letter-spacing="0.2em" opacity="0.7">~ OCEAN ~</text>
+        <!-- Wastelands -->
+        <rect x="0" y="0" width="520" height="34" fill="#0f0d08"/>
+        <text x="260" y="14" text-anchor="middle" font-family="Courier New" font-size="8" fill="#7a6a44" letter-spacing="0.25em">&#9650; ROAD TO THE WASTELANDS &#9650;</text>
+        <line x1="50" y1="20" x2="200" y2="20" stroke="#7a6a44" stroke-width="0.5" stroke-dasharray="4 3"/>
+        <line x1="320" y1="20" x2="470" y2="20" stroke="#7a6a44" stroke-width="0.5" stroke-dasharray="4 3"/>
+        <text x="260" y="28" text-anchor="middle" font-family="Courier New" font-size="7" fill="#5a4a34" letter-spacing="0.1em">[ OUTSIDE CITY WALLS ]</text>
+        <!-- Walls -->
+        <rect x="28" y="34" width="464" height="596" fill="none" stroke="#2a3a50" stroke-width="3"/>
+        <rect x="22" y="28" width="18" height="18" fill="none" stroke="#3a5070" stroke-width="2"/>
+        <rect x="480" y="28" width="18" height="18" fill="none" stroke="#3a5070" stroke-width="2"/>
+        <rect x="22" y="624" width="18" height="18" fill="none" stroke="#3a5070" stroke-width="2"/>
+        <rect x="480" y="624" width="18" height="18" fill="none" stroke="#3a5070" stroke-width="2"/>
+        <text x="10" y="330" text-anchor="middle" font-family="Courier New" font-size="7.5" fill="#2a3a50" letter-spacing="0.15em" transform="rotate(-90,10,330)">CITY WALL</text>
+        <text x="512" y="330" text-anchor="middle" font-family="Courier New" font-size="7.5" fill="#2a3a50" letter-spacing="0.15em" transform="rotate(90,512,330)">CITY WALL</text>
+        <rect x="218" y="30" width="84" height="8" fill="#1a2530" stroke="#3a5070" stroke-width="1.5"/>
+        <text x="260" y="37" text-anchor="middle" font-family="Courier New" font-size="6" fill="#5a7090" letter-spacing="0.1em">NORTH GATE</text>
+        <!-- Districts -->
+        <rect id="city-d-executive" class="city-dist" x="32" y="38" width="190" height="150" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.5" rx="2" onclick="selectCityDistrict('executive')" data-color="#b44aff"/>
+        <text class="dlabel" x="127" y="95" text-anchor="middle" fill="#b44aff">EXECUTIVE</text>
+        <text class="dsub" x="127" y="108" text-anchor="middle" fill="#9944cc">Corp HQs · Hughes HQ</text>
+        <rect id="city-d-commonwealth" class="city-dist" x="226" y="38" width="266" height="150" fill="#0a1f18" stroke="#39ff14" stroke-width="1.5" rx="2" onclick="selectCityDistrict('commonwealth')" data-color="#39ff14"/>
+        <text class="dlabel" x="359" y="95" text-anchor="middle" fill="#39ff14">COMMONWEALTH</text>
+        <text class="dsub" x="359" y="108" text-anchor="middle" fill="#22cc0a">Above-avg · The Garden</text>
+        <rect id="city-d-central" class="city-dist" x="32" y="192" width="195" height="145" fill="#101825" stroke="#00e5ff" stroke-width="1.5" rx="2" onclick="selectCityDistrict('central')" data-color="#00e5ff"/>
+        <text class="dlabel" x="129" y="255" text-anchor="middle" fill="#00e5ff">CENTRAL</text>
+        <text class="dsub" x="129" y="268" text-anchor="middle" fill="#00aacc">Mid-income Residential</text>
+        <rect id="city-d-shantytown" class="city-dist" x="231" y="192" width="261" height="145" fill="#1c1108" stroke="#ff6a00" stroke-width="1.5" rx="2" onclick="selectCityDistrict('shantytown')" data-color="#ff6a00"/>
+        <text class="dlabel" x="361" y="255" text-anchor="middle" fill="#ff6a00">SHANTYTOWN</text>
+        <text class="dsub" x="361" y="268" text-anchor="middle" fill="#cc5500">Poorest · Labyrinth</text>
+        <rect id="city-d-entertainment" class="city-dist" x="32" y="341" width="172" height="130" fill="#1a0a18" stroke="#ff2244" stroke-width="1.5" rx="2" onclick="selectCityDistrict('entertainment')" data-color="#ff2244"/>
+        <text class="dlabel" x="118" y="395" text-anchor="middle" fill="#ff2244">ENTERTAINMENT</text>
+        <text class="dsub" x="118" y="408" text-anchor="middle" fill="#cc1133">Casinos · Arenas</text>
+        <rect id="city-d-industrial" class="city-dist" x="208" y="341" width="284" height="130" fill="#181008" stroke="#ffe600" stroke-width="1.5" rx="2" onclick="selectCityDistrict('industrial')" data-color="#ffe600"/>
+        <text class="dlabel" x="350" y="395" text-anchor="middle" fill="#ffe600">INDUSTRIAL</text>
+        <text class="dsub" x="350" y="408" text-anchor="middle" fill="#ccbb00">Factories · Elevator</text>
+        <line x1="420" y1="341" x2="420" y2="34" stroke="#ffe600" stroke-width="1.2" stroke-dasharray="6 3" opacity="0.4"/>
+        <line x1="420" y1="28" x2="420" y2="0" stroke="#ffe600" stroke-width="1.5" stroke-dasharray="3 3" opacity="0.5"/>
+        <polygon points="420,0 416,8 424,8" fill="#ffe600" opacity="0.6"/>
+        <text x="433" y="18" font-family="Courier New" font-size="6.5" fill="#ffe600" opacity="0.75" letter-spacing="0.08em">HUGHES STATION &#8593;</text>
+        <rect id="city-d-commercial" class="city-dist" x="32" y="475" width="460" height="100" fill="#0d1820" stroke="#00c8ff" stroke-width="1.5" rx="2" onclick="selectCityDistrict('commercial')" data-color="#00c8ff"/>
+        <text class="dlabel" x="262" y="518" text-anchor="middle" fill="#00c8ff">COMMERCIAL</text>
+        <text class="dsub" x="262" y="531" text-anchor="middle" fill="#0099cc">Banks · Markets · Black Market</text>
+        <rect id="city-d-docks" class="city-dist" x="32" y="579" width="460" height="51" fill="#061520" stroke="#0077aa" stroke-width="1.5" rx="2" onclick="selectCityDistrict('docks')" data-color="#0077aa"/>
+        <text class="dlabel" x="262" y="605" text-anchor="middle" fill="#0099cc">DOCKS</text>
+        <text class="dsub" x="262" y="618" text-anchor="middle" fill="#005577">Warehouses · Coastal Access</text>
+        <rect id="city-d-underground" class="city-dist" x="82" y="596" width="110" height="22" fill="#0d0016" stroke="#9933cc" stroke-width="1" stroke-dasharray="3 2" rx="2" onclick="selectCityDistrict('underground')" data-color="#9933cc"/>
+        <text class="dlabel" x="137" y="611" text-anchor="middle" fill="#9933cc" font-size="8">THE UNDERGROUND &#8595;</text>
+        <!-- Road lines -->
+        <line x1="222" y1="38" x2="222" y2="630" stroke="#1e2840" stroke-width="1" stroke-dasharray="4 4" opacity="0.5"/>
+        <line x1="32" y1="188" x2="492" y2="188" stroke="#1e2840" stroke-width="1" stroke-dasharray="4 4" opacity="0.5"/>
+        <line x1="32" y1="337" x2="492" y2="337" stroke="#1e2840" stroke-width="1" stroke-dasharray="4 4" opacity="0.5"/>
+        <line x1="32" y1="471" x2="492" y2="471" stroke="#1e2840" stroke-width="1" stroke-dasharray="4 4" opacity="0.5"/>
+        <line x1="32" y1="575" x2="492" y2="575" stroke="#1e2840" stroke-width="1" stroke-dasharray="4 4" opacity="0.5"/>
+        <!-- Compass -->
+        <g transform="translate(474,68)">
+          <circle cx="0" cy="0" r="18" fill="#0a0c10" stroke="#1e2840" stroke-width="1"/>
+          <polygon points="0,-14 -3,-3 3,-3" fill="#00e5ff" opacity="0.8"/>
+          <polygon points="0,14 -3,3 3,3" fill="#3a4560" opacity="0.6"/>
+          <polygon points="-14,0 -3,-3 -3,3" fill="#3a4560" opacity="0.5"/>
+          <polygon points="14,0 3,-3 3,3" fill="#3a4560" opacity="0.5"/>
+          <text x="0" y="-17" text-anchor="middle" font-family="Courier New" font-size="7" fill="#00e5ff">N</text>
+          <text x="0" y="24" text-anchor="middle" font-family="Courier New" font-size="6" fill="#3a4560">S</text>
+          <text x="-22" y="3" text-anchor="middle" font-family="Courier New" font-size="6" fill="#3a4560">W</text>
+          <text x="22" y="3" text-anchor="middle" font-family="Courier New" font-size="6" fill="#3a4560">E</text>
+        </g>
+      </svg>
+    </div>
+    <div class="info-panel" id="city-ipanel">
+      <div id="city-placeholder">
+        <span class="arr">&#x25C8;</span>
+        SELECT A DISTRICT<br>
+        <small style="font-size:0.68rem;letter-spacing:0.06em">Click any zone on the map &mdash; then use<br>"Inspect District" to drill into buildings</small>
+      </div>
+    <div class="city-dinfo" id="city-info-executive">
+      <div class="di-head" style="border-color:#b44aff">
+        <h2 style="color:#b44aff">Executive District</h2>
+        <span class="dtag" style="color:#b44aff;border-color:#b44aff">Income: Elite</span>
+        <span class="dtag" style="color:#b44aff;border-color:#b44aff;margin-left:6px">Security: Maximum</span>
+        <p>Home to the most powerful corporations and their senior officers. Towering headquarters pierce the smog layer, the tallest belonging to Hughes Industries. Private security patrols every block. Mansions sit behind reinforced walls.</p>
+      </div>
+      <div class="di-locs">
+        <h3>Key Locations</h3>
+        <ul class="llist">
+          <li><span class="loc-icon">🏢</span><div><div class="loc-name">Hughes Industries HQ</div><div class="loc-desc">Tallest structure in the city. Hughes' face projected on the south facade 24/7.</div></div></li>
+          <li><span class="loc-icon">⚙️</span><div><div class="loc-name">Prometheus Corp</div><div class="loc-desc">Military contracting giant. Supplies weapons systems and private soldiers.</div></div></li>
+          <li><span class="loc-icon">🌿</span><div><div class="loc-name">Hughes Private Gardens</div><div class="loc-desc">Restricted green space for senior management. Secure outdoor meeting area.</div></div></li>
+          <li><span class="loc-icon">🚁</span><div><div class="loc-name">Executive Helipad</div><div class="loc-desc">Connects directly to Hughes Station via atmospheric shuttle twice daily.</div></div></li>
+        </ul>
+      </div>
+      <button class="drill-btn" style="color:#b44aff;border-color:#b44aff" onclick="switchView('executive')">&#9654; Inspect District</button>
+    </div>
+    <div class="city-dinfo" id="city-info-commonwealth">
+      <div class="di-head" style="border-color:#39ff14">
+        <h2 style="color:#39ff14">Commonwealth District</h2>
+        <span class="dtag" style="color:#39ff14;border-color:#39ff14">Income: Above Average</span>
+        <span class="dtag" style="color:#39ff14;border-color:#39ff14;margin-left:6px">Security: Moderate</span>
+        <p>One of the more comfortable residential zones in the city. Clean streets, functioning infrastructure, and genuine green space make this a desirable address for professionals and mid-tier corporate employees.</p>
+      </div>
+      <div class="di-locs">
+        <h3>Key Locations</h3>
+        <ul class="llist">
+          <li><span class="loc-icon">🌿</span><div><div class="loc-name">The Garden</div><div class="loc-desc">One of the few genuine parks in the city. Maintained greenery, walking paths.</div></div></li>
+          <li><span class="loc-icon">📚</span><div><div class="loc-name">Rowan Academy</div><div class="loc-desc">One of only three accredited private schools in Hue.</div></div></li>
+          <li><span class="loc-icon">🍷</span><div><div class="loc-name">The Meridian</div><div class="loc-desc">Finest dining in the district. Popular for informal corporate meetings.</div></div></li>
+          <li><span class="loc-icon">💻</span><div><div class="loc-name">The Tech Quarter</div><div class="loc-desc">Cluster of small tech firms and freelance engineers.</div></div></li>
+        </ul>
+      </div>
+      <button class="drill-btn" style="color:#39ff14;border-color:#39ff14" onclick="switchView('commonwealth')">&#9654; Inspect District</button>
+    </div>
+    <div class="city-dinfo" id="city-info-central">
+      <div class="di-head" style="border-color:#00e5ff">
+        <h2 style="color:#00e5ff">Central District</h2>
+        <span class="dtag" style="color:#00e5ff;border-color:#00e5ff">Income: Middle</span>
+        <span class="dtag" style="color:#00e5ff;border-color:#00e5ff;margin-left:6px">Security: Standard</span>
+        <p>The backbone of Hue's working population. Middle-income residential blocks packed tightly together, neighborhood shops, and the constant hum of urban life.</p>
+      </div>
+      <div class="di-locs">
+        <h3>Key Locations</h3>
+        <ul class="llist">
+          <li><span class="loc-icon">🚊</span><div><div class="loc-name">Central Transit Hub</div><div class="loc-desc">Main transit node for the city. 180,000 passengers daily.</div></div></li>
+          <li><span class="loc-icon">🍔</span><div><div class="loc-name">Food Fight</div><div class="loc-desc">Cheapest hot food in the district. Open 24 hours.</div></div></li>
+          <li><span class="loc-icon">📖</span><div><div class="loc-name">Hue Public Archive</div><div class="loc-desc">One of few unmonitored public data terminals in the city.</div></div></li>
+          <li><span class="loc-icon">🛒</span><div><div class="loc-name">Central Market</div><div class="loc-desc">Sprawling daily market. Legitimate and illegal goods coexist peacefully.</div></div></li>
+        </ul>
+      </div>
+      <button class="drill-btn" style="color:#00e5ff;border-color:#00e5ff" onclick="switchView('central')">&#9654; Inspect District</button>
+    </div>
+    <div class="city-dinfo" id="city-info-shantytown">
+      <div class="di-head" style="border-color:#ff6a00">
+        <h2 style="color:#ff6a00">Shantytown</h2>
+        <span class="dtag" style="color:#ff6a00;border-color:#ff6a00">Income: Impoverished</span>
+        <span class="dtag" style="color:#ff6a00;border-color:#ff6a00;margin-left:6px">Security: None / Gang</span>
+        <p>The poorest district in Hue. Labyrinthine streets of makeshift housing. Gang law is the only reality. Despite the poverty, a stubborn community culture persists.</p>
+      </div>
+      <div class="di-locs">
+        <h3>Key Locations</h3>
+        <ul class="llist">
+          <li><span class="loc-icon">🪙</span><div><div class="loc-name">Yamai's Pawnshop</div><div class="loc-desc">Run by a drow who buys everything and asks nothing.</div></div></li>
+          <li><span class="loc-icon">🍺</span><div><div class="loc-name">Broken Dreams Bar</div><div class="loc-desc">The social center of Shantytown. Information trades here.</div></div></li>
+          <li><span class="loc-icon">🍲</span><div><div class="loc-name">Mother Hen's</div><div class="loc-desc">Community kitchen. 300 free meals a day. Protected ground.</div></div></li>
+          <li><span class="loc-icon">⬇️</span><div><div class="loc-name">The Hollow</div><div class="loc-desc">Well-known access point to the Underground.</div></div></li>
+        </ul>
+      </div>
+      <button class="drill-btn" style="color:#ff6a00;border-color:#ff6a00" onclick="switchView('shantytown')">&#9654; Inspect District</button>
+    </div>
+    <div class="city-dinfo" id="city-info-entertainment">
+      <div class="di-head" style="border-color:#ff2244">
+        <h2 style="color:#ff2244">Entertainment District</h2>
+        <span class="dtag" style="color:#ff2244;border-color:#ff2244">Income: Mixed</span>
+        <span class="dtag" style="color:#ff2244;border-color:#ff2244;margin-left:6px">Security: Corpo-Patrolled</span>
+        <p>Where the city spends its money and forgets its problems. Casinos, combat arenas, clubs. Every vice is for sale, every spectacle available for the right price.</p>
+      </div>
+      <div class="di-locs">
+        <h3>Key Locations</h3>
+        <ul class="llist">
+          <li><span class="loc-icon">🎰</span><div><div class="loc-name">Lucky Dwarf Casino</div><div class="loc-desc">Multi-floor casino with an unofficial basement sports book.</div></div></li>
+          <li><span class="loc-icon">⚔️</span><div><div class="loc-name">Bloodsport Arena</div><div class="loc-desc">Capacity 8,000. Licensed death matches and the underground Merc Circuit.</div></div></li>
+          <li><span class="loc-icon">🌙</span><div><div class="loc-name">The Afterparty</div><div class="loc-desc">Opens 03:00. Has been 'about to be shut down' for nine years.</div></div></li>
+          <li><span class="loc-icon">🔬</span><div><div class="loc-name">Chrome & Flesh</div><div class="loc-desc">Grey-market augmentation parlor. Fair prices, no medical records.</div></div></li>
+        </ul>
+      </div>
+      <button class="drill-btn" style="color:#ff2244;border-color:#ff2244" onclick="switchView('entertainment')">&#9654; Inspect District</button>
+    </div>
+    <div class="city-dinfo" id="city-info-industrial">
+      <div class="di-head" style="border-color:#ffe600">
+        <h2 style="color:#ffe600">Industrial District</h2>
+        <span class="dtag" style="color:#ffe600;border-color:#ffe600">Income: Working Class</span>
+        <span class="dtag" style="color:#ffe600;border-color:#ffe600;margin-left:6px">Security: Heavy (Elevator Zone)</span>
+        <p>The engine room of Hue. Factories run day and night. Most importantly, the district hosts the foot of the Space Elevator connecting the city to Hughes Station at 420km altitude.</p>
+      </div>
+      <div class="di-locs">
+        <h3>Key Locations</h3>
+        <ul class="llist">
+          <li><span class="loc-icon">🛗</span><div><div class="loc-name">Space Elevator Terminal</div><div class="loc-desc">Most heavily guarded location in the city. Level 2+ clearance required.</div></div></li>
+          <li><span class="loc-icon">🍺</span><div><div class="loc-name">Stairway to Heaven</div><div class="loc-desc">Bar below the elevator. Best place to find someone with elevator access.</div></div></li>
+          <li><span class="loc-icon">⛪</span><div><div class="loc-name">Shelter for the Cursed</div><div class="loc-desc">Non-profit refuge under threat of eviction by Hughes Industries.</div></div></li>
+          <li><span class="loc-icon">⚡</span><div><div class="loc-name">Power Relay Station Gamma</div><div class="loc-desc">Controls elevator power. Hardened against EMP and physical attack.</div></div></li>
+        </ul>
+      </div>
+      <button class="drill-btn" style="color:#ffe600;border-color:#ffe600" onclick="switchView('industrial')">&#9654; Inspect District</button>
+    </div>
+    <div class="city-dinfo" id="city-info-commercial">
+      <div class="di-head" style="border-color:#00c8ff">
+        <h2 style="color:#00c8ff">Commercial District</h2>
+        <span class="dtag" style="color:#00c8ff;border-color:#00c8ff">Income: Mixed</span>
+        <span class="dtag" style="color:#00c8ff;border-color:#00c8ff;margin-left:6px">Security: Standard</span>
+        <p>Commerce, legitimate and otherwise. The Commercial District handles everything the city buys and sells — officially and unofficially. The two systems are deeply integrated.</p>
+      </div>
+      <div class="di-locs">
+        <h3>Key Locations</h3>
+        <ul class="llist">
+          <li><span class="loc-icon">🏦</span><div><div class="loc-name">Credit Collective Bank</div><div class="loc-desc">Main commercial bank. Their debt enforcement methods are not legal.</div></div></li>
+          <li><span class="loc-icon">🔫</span><div><div class="loc-name">Gunter's Firearms</div><div class="loc-desc">Licensed front with significant grey-market stock in the back.</div></div></li>
+          <li><span class="loc-icon">🕳️</span><div><div class="loc-name">No Questions Asked</div><div class="loc-desc">Permanent black market. Entry point changes every 72 hours.</div></div></li>
+          <li><span class="loc-icon">📊</span><div><div class="loc-name">DataBroker Exchange</div><div class="loc-desc">Information trading floor. Licensed operation and sensitive back room.</div></div></li>
+        </ul>
+      </div>
+      <button class="drill-btn" style="color:#00c8ff;border-color:#00c8ff" onclick="switchView('commercial')">&#9654; Inspect District</button>
+    </div>
+    <div class="city-dinfo" id="city-info-docks">
+      <div class="di-head" style="border-color:#0099cc">
+        <h2 style="color:#0099cc">Docks</h2>
+        <span class="dtag" style="color:#0099cc;border-color:#0099cc">Income: Working Class</span>
+        <span class="dtag" style="color:#0099cc;border-color:#0099cc;margin-left:6px">Security: Port Authority</span>
+        <p>Everything the city imports and exports passes through the Docks. Legitimate freight through Port Authority terminals. Everything else through the warehouses.</p>
+      </div>
+      <div class="di-locs">
+        <h3>Key Locations</h3>
+        <ul class="llist">
+          <li><span class="loc-icon">⚓</span><div><div class="loc-name">The Weary Sailor</div><div class="loc-desc">Oldest bar in Hue. Maritime intelligence passes through constantly.</div></div></li>
+          <li><span class="loc-icon">📦</span><div><div class="loc-name">Strat Warehouses</div><div class="loc-desc">Official front for significant smuggling operations.</div></div></li>
+          <li><span class="loc-icon">🌊</span><div><div class="loc-name">Submarine Bay</div><div class="loc-desc">Classified facility. Hughes Industries denies existence.</div></div></li>
+          <li><span class="loc-icon">🐟</span><div><div class="loc-name">Fisherman's Wharf</div><div class="loc-desc">Pre-corporate community. Has resisted seven buyout attempts.</div></div></li>
+        </ul>
+      </div>
+      <button class="drill-btn" style="color:#0099cc;border-color:#0099cc" onclick="switchView('docks')">&#9654; Inspect District</button>
+    </div>
+    <div class="city-dinfo" id="city-info-underground">
+      <div class="di-head" style="border-color:#9933cc">
+        <h2 style="color:#9933cc">The Underground</h2>
+        <span class="dtag" style="color:#9933cc;border-color:#9933cc">Depth: Multiple Levels</span>
+        <span class="dtag" style="color:#9933cc;border-color:#9933cc;margin-left:6px">Jurisdiction: Disputed</span>
+        <p>Beneath the city's surface lies a vast, unmapped subterranean network. No complete map exists. It is its own city beneath the city.</p>
+      </div>
+      <div class="di-locs">
+        <h3>Key Locations</h3>
+        <ul class="llist">
+          <li><span class="loc-icon">📡</span><div><div class="loc-name">The Sanctum</div><div class="loc-desc">Psionic dead zone. No Hughes Station emitter signal penetrates here.</div></div></li>
+          <li><span class="loc-icon">💾</span><div><div class="loc-name">Memory Banks</div><div class="loc-desc">Hidden data haven sought by three governments. Not yet found.</div></div></li>
+          <li><span class="loc-icon">👁️</span><div><div class="loc-name">Whisper Market</div><div class="loc-desc">Weekly market dealing exclusively in information.</div></div></li>
+          <li><span class="loc-icon">🦴</span><div><div class="loc-name">Bone Road</div><div class="loc-desc">Deep passage. Parties that follow it entirely do not report back.</div></div></li>
+        </ul>
+      </div>
+      <button class="drill-btn" style="color:#9933cc;border-color:#9933cc" onclick="switchView('underground')">&#9654; Inspect District</button>
+    </div>
+    </div>
+  </div>
+
+  <!-- ═══ DISTRICT VIEWS ═══ -->
+  <div class="view" id="view-executive">
+    <div class="map-panel">
+      <p class="map-hint">&#x25A3; Click a location to inspect</p>
+      <svg id="map-executive" class="district-map" viewBox="0 0 556 580" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <pattern id="grid-executive" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#111820" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="556" height="580" fill="#1a0f2e"/>
+        <rect width="556" height="580" fill="url(#grid-executive)"/>
+        <line x1="30" y1="200" x2="530" y2="200" stroke="#1a2030" stroke-width="14"/>
+        <text x="280" y="197" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">CORPORATE BOULEVARD</text>
+        <line x1="30" y1="370" x2="530" y2="370" stroke="#1a2030" stroke-width="10"/>
+        <text x="280" y="367" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">PRESTIGE AVENUE</text>
+        <line x1="30" y1="480" x2="530" y2="480" stroke="#1a2030" stroke-width="8"/>
+        <text x="280" y="477" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">SECURITY RING ROAD</text>
+        <line x1="180" y1="40" x2="180" y2="580" stroke="#1a2030" stroke-width="10"/>
+        <text x="177" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,177,310)">HUGHES MERIDIAN</text>
+        <line x1="350" y1="40" x2="350" y2="580" stroke="#1a2030" stroke-width="10"/>
+        <text x="347" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,347,310)">ARCADIA LANE</text>
+        <rect x="32" y="42" width="500" height="580" fill="#120820" stroke="#b44aff" stroke-width="1" stroke-dasharray="4 3" rx="2"/>
+        <text x="282" y="54" text-anchor="middle" font-family="Courier New" font-size="6.5" fill="#b44aff" letter-spacing="0.1em" opacity="0.7">RESTRICTED AIRSPACE — NO DRONE FLIGHT BELOW 800m</text>
+        <rect id="executive-b-hq" class="bldg" x="190" y="42" width="150" height="148" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('executive','hq')" data-cat="corp"/>
+        <text class="blabel" x="265" y="110" text-anchor="middle" fill="#b44aff">Hughes Industries HQ</text>
+        <text class="bsub"   x="265" y="120" text-anchor="middle" fill="#b44aff">🏢 Tallest Structure in Hue</text>
+        <rect id="executive-b-prometheus" class="bldg" x="360" y="42" width="155" height="100" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('executive','prometheus')" data-cat="corp"/>
+        <text class="blabel" x="437" y="86" text-anchor="middle" fill="#b44aff">Prometheus Corp</text>
+        <text class="bsub"   x="437" y="96" text-anchor="middle" fill="#b44aff">⚙️ Military Contracting</text>
+        <rect id="executive-b-neuralsync" class="bldg" x="32" y="42" width="140" height="90" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('executive','neuralsync')" data-cat="corp"/>
+        <text class="blabel" x="102" y="81" text-anchor="middle" fill="#b44aff">NeuralSync Technologies</text>
+        <text class="bsub"   x="102" y="91" text-anchor="middle" fill="#b44aff">🧠 Augmentation R&D</text>
+        <rect id="executive-b-vaultbank" class="bldg" x="32" y="145" width="130" height="45" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('executive','vaultbank')" data-cat="corp"/>
+        <text class="blabel" x="97" y="161" text-anchor="middle" fill="#b44aff">VaultBank — Hue Central</text>
+        <text class="bsub"   x="97" y="171" text-anchor="middle" fill="#b44aff">🏦 Tier-1 Financial Institution</text>
+        <rect id="executive-b-arcadia" class="bldg" x="362" y="152" width="152" height="38" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('executive','arcadia')" data-cat="commercial"/>
+        <text class="blabel" x="438" y="165" text-anchor="middle" fill="#00c8ff">Arcadia Club</text>
+        <text class="bsub"   x="438" y="175" text-anchor="middle" fill="#00c8ff">🥂 Elite Members-Only Social Club</text>
+        <rect id="executive-b-spire" class="bldg" x="192" y="210" width="145" height="150" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('executive','spire')" data-cat="commercial"/>
+        <text class="blabel" x="264" y="279" text-anchor="middle" fill="#00c8ff">The Spire Hotel</text>
+        <text class="bsub"   x="264" y="289" text-anchor="middle" fill="#00c8ff">🌃 Five-Star Executive Lodging</text>
+        <rect id="executive-b-security_a" class="bldg" x="32" y="210" width="140" height="80" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('executive','security_a')" data-cat="corp"/>
+        <text class="blabel" x="102" y="244" text-anchor="middle" fill="#b44aff">Security Station Alpha</text>
+        <text class="bsub"   x="102" y="254" text-anchor="middle" fill="#b44aff">🛡️ Hughes Private Security HQ</text>
+        <rect id="executive-b-helipad" class="bldg" x="362" y="210" width="152" height="80" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('executive','helipad')" data-cat="service"/>
+        <text class="blabel" x="438" y="244" text-anchor="middle" fill="#00e5ff">Executive Helipad Comple</text>
+        <text class="bsub"   x="438" y="254" text-anchor="middle" fill="#00e5ff">🚁 Private Air Transit Hub</text>
+        <rect id="executive-b-plaza" class="bldg" x="192" y="380" width="150" height="80" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('executive','plaza')" data-cat="service"/>
+        <text class="blabel" x="267" y="414" text-anchor="middle" fill="#00e5ff">Hughes Memorial Plaza</text>
+        <text class="bsub"   x="267" y="424" text-anchor="middle" fill="#00e5ff">🗿 Public Square (Monitored)</text>
+        <rect id="executive-b-tribunal" class="bldg" x="32" y="300" width="140" height="60" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('executive','tribunal')" data-cat="corp"/>
+        <text class="blabel" x="102" y="324" text-anchor="middle" fill="#b44aff">Meridian Law Chambers</text>
+        <text class="bsub"   x="102" y="334" text-anchor="middle" fill="#b44aff">⚖️ Corporate Legal Authority</text>
+        <rect id="executive-b-clinic" class="bldg" x="362" y="300" width="152" height="60" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('executive','clinic')" data-cat="service"/>
+        <text class="blabel" x="438" y="324" text-anchor="middle" fill="#00e5ff">ExcelMed Private Clinic</text>
+        <text class="bsub"   x="438" y="334" text-anchor="middle" fill="#00e5ff">⚕️ Executive Healthcare</text>
+        <rect id="executive-b-garden" class="bldg" x="32" y="380" width="140" height="100" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('executive','garden')" data-cat="service"/>
+        <text class="blabel" x="102" y="424" text-anchor="middle" fill="#00e5ff">Hughes Private Gardens</text>
+        <text class="bsub"   x="102" y="434" text-anchor="middle" fill="#00e5ff">🌿 Restricted Green Space</text>
+        <rect id="executive-b-residences" class="bldg" x="362" y="390" width="152" height="80" fill="#0a1f18" stroke="#39ff14" stroke-width="1.2" rx="1" onclick="showBuilding('executive','residences')" data-cat="residential"/>
+        <text class="blabel" x="438" y="424" text-anchor="middle" fill="#39ff14">Executive Residences</text>
+        <text class="bsub"   x="438" y="434" text-anchor="middle" fill="#39ff14">🏰 Corporate Housing — Gated</text>
+        <rect id="executive-b-gate" class="bldg" x="185" y="490" width="190" height="55" fill="#1c0a08" stroke="#ff2244" stroke-width="1.2" rx="1" onclick="showBuilding('executive','gate')" data-cat="danger"/>
+        <text class="blabel" x="280" y="511" text-anchor="middle" fill="#ff2244">North Gate Security Post</text>
+        <text class="bsub"   x="280" y="521" text-anchor="middle" fill="#ff2244">🚧 District Entry Control</text>
+        <rect x="1" y="1" width="554" height="578" fill="none" stroke="#b44aff" stroke-width="1.5" opacity="0.3"/>
+      </svg>
+    </div>
+    <div class="info-panel" id="ipanel-executive">
+      <div class="bplaceholder" id="bph-executive">
+        <span class="arr">&#x25C8;</span>
+        SELECT A LOCATION<br><small>Click any building on the map</small>
+      </div>
+      <div class="district-hero" id="hero-executive" style="display:none">
+        <img src="../../../../maps/the city of hue/executive-district.jpg" alt="Executive" onerror="this.style.display='none'"/>
+        <div class="hero-desc" style="border-color:#b44aff">
+          <h2 style="color:#b44aff">Executive</h2>
+          <p>The crown of the City of Hue. Every major corporation maintains a tower here. Private security outnumbers civilians three to one. Streets are clean because they're empty.</p>
+        </div>
+      </div>
+      <div class="binfo" id="executive-info-hq">
+        <div class="bi-header" style="border-color:#b44aff">
+          <h2 style="color:#b44aff">🏢 Hughes Industries HQ</h2>
+          <span class="btag" style="color:#b44aff;border-color:#b44aff">Tallest Structure in Hue</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>The seat of Jonathan Hughes' empire. 92 floors. The upper 20 are sealed to all but Level-3 clearance holders. Hughes' face is projected on the south facade 24 hours a day. A fusion reactor in the sub-basement powers the entire block. Rumour: Floor 87 houses a private tribunal — people enter and do not leave.</p>
+        </div>
+      </div>
+      <div class="binfo" id="executive-info-prometheus">
+        <div class="bi-header" style="border-color:#b44aff">
+          <h2 style="color:#b44aff">⚙️ Prometheus Corp</h2>
+          <span class="btag" style="color:#b44aff;border-color:#b44aff">Military Contracting</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>Second-tallest tower in the district. Prometheus supplies weapons systems, armored vehicles, and private soldiers to Hughes Industries and the city-state authority. Their lobby is open to the public. Their loading bays, working around the clock, are not.</p>
+        </div>
+      </div>
+      <div class="binfo" id="executive-info-neuralsync">
+        <div class="bi-header" style="border-color:#b44aff">
+          <h2 style="color:#b44aff">🧠 NeuralSync Technologies</h2>
+          <span class="btag" style="color:#b44aff;border-color:#b44aff">Augmentation R&D</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>Cutting-edge neural implant research firm. Publicly traded but majority-owned by Hughes Industries. Their test subjects sign contracts most lawyers would refuse to read. The building smells faintly of antiseptic and burnt silicon.</p>
+        </div>
+      </div>
+      <div class="binfo" id="executive-info-vaultbank">
+        <div class="bi-header" style="border-color:#b44aff">
+          <h2 style="color:#b44aff">🏦 VaultBank — Hue Central</h2>
+          <span class="btag" style="color:#b44aff;border-color:#b44aff">Tier-1 Financial Institution</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>The most secure banking facility in the city. Physical vault six levels underground, reinforced against seismic, EMP, and forced entry. Rumoured to hold holdings for three different governments simultaneously. No branch hours — appointment only.</p>
+        </div>
+      </div>
+      <div class="binfo" id="executive-info-arcadia">
+        <div class="bi-header" style="border-color:#b44aff">
+          <h2 style="color:#b44aff">🥂 Arcadia Club</h2>
+          <span class="btag" style="color:#b44aff;border-color:#b44aff">Elite Members-Only Social Club</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Invitation only. Members include senior Hughes staff, foreign dignitaries, and the occasional crime boss who has purchased respectability. The wine list is legitimate. The conversations at the back tables are not. No recording devices function inside — jamming is built into the walls.</p>
+        </div>
+      </div>
+      <div class="binfo" id="executive-info-spire">
+        <div class="bi-header" style="border-color:#b44aff">
+          <h2 style="color:#b44aff">🌃 The Spire Hotel</h2>
+          <span class="btag" style="color:#b44aff;border-color:#b44aff">Five-Star Executive Lodging</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>The only hotel in the Executive District. 340 rooms, all suites. Corporate clients only — ID and clearance checked at the door. A private helipad on the roof connects directly to the penthouse floors. The concierge has seen things that would end careers.</p>
+        </div>
+      </div>
+      <div class="binfo" id="executive-info-security_a">
+        <div class="bi-header" style="border-color:#b44aff">
+          <h2 style="color:#b44aff">🛡️ Security Station Alpha</h2>
+          <span class="btag" style="color:#b44aff;border-color:#b44aff">Hughes Private Security HQ</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>Central command for all private security operations in the Executive District. 200 officers on shift at any time. Armed with corporate-grade weaponry. Authority supersedes city police within district boundaries. They answer only to Hughes Industries.</p>
+        </div>
+      </div>
+      <div class="binfo" id="executive-info-helipad">
+        <div class="bi-header" style="border-color:#b44aff">
+          <h2 style="color:#b44aff">🚁 Executive Helipad Complex</h2>
+          <span class="btag" style="color:#b44aff;border-color:#b44aff">Private Air Transit Hub</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Four landing pads for private transport. Connects the Executive District directly to Hughes Station via atmospheric shuttle. Access requires Level 2+ clearance and advance booking. The shuttle runs twice daily.</p>
+        </div>
+      </div>
+      <div class="binfo" id="executive-info-plaza">
+        <div class="bi-header" style="border-color:#b44aff">
+          <h2 style="color:#b44aff">🗿 Hughes Memorial Plaza</h2>
+          <span class="btag" style="color:#b44aff;border-color:#b44aff">Public Square (Monitored)</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>A wide, clean plaza fronting the Hughes HQ tower. Surveillance density: one camera per 4 square meters. A bronze statue of Jonathan Hughes stands at the center — 12 meters tall. Protests are legally classified as 'atmospheric disturbances' and dispersed within minutes.</p>
+        </div>
+      </div>
+      <div class="binfo" id="executive-info-tribunal">
+        <div class="bi-header" style="border-color:#b44aff">
+          <h2 style="color:#b44aff">⚖️ Meridian Law Chambers</h2>
+          <span class="btag" style="color:#b44aff;border-color:#b44aff">Corporate Legal Authority</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>Hughes Industries' internal legal arm. Handles everything from contract disputes to internal 'corrections'. Their verdicts carry the force of law within Hughes-owned territory. No appeals process. No public record.</p>
+        </div>
+      </div>
+      <div class="binfo" id="executive-info-clinic">
+        <div class="bi-header" style="border-color:#b44aff">
+          <h2 style="color:#b44aff">⚕️ ExcelMed Private Clinic</h2>
+          <span class="btag" style="color:#b44aff;border-color:#b44aff">Executive Healthcare</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Elite medical facility for corporate staff. Full augmentation suite, trauma surgery, gene therapy. Street cost would be prohibitive. Corporate employees receive it as a benefit. No record-keeping on procedures that would embarrass the corporation.</p>
+        </div>
+      </div>
+      <div class="binfo" id="executive-info-garden">
+        <div class="bi-header" style="border-color:#b44aff">
+          <h2 style="color:#b44aff">🌿 Hughes Private Gardens</h2>
+          <span class="btag" style="color:#b44aff;border-color:#b44aff">Restricted Green Space</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>A genuine garden with actual trees — a rarity in Hue. Maintained by a dedicated groundskeeping staff of 40. Access restricted to Hughes senior management. The garden contains a secure outdoor meeting area where sensitive conversations occur, safe from electronic surveillance.</p>
+        </div>
+      </div>
+      <div class="binfo" id="executive-info-residences">
+        <div class="bi-header" style="border-color:#b44aff">
+          <h2 style="color:#b44aff">🏰 Executive Residences</h2>
+          <span class="btag" style="color:#b44aff;border-color:#b44aff">Corporate Housing — Gated</span>
+          <span class="cat-tag cat-residential">RESIDENTIAL</span>
+          <p>Six residential towers exclusively for C-suite officers and their families. Biometric entry, private elevators, armed concierge. Residents rarely need to leave the district. Everything is delivered — or is already inside.</p>
+        </div>
+      </div>
+      <div class="binfo" id="executive-info-gate">
+        <div class="bi-header" style="border-color:#b44aff">
+          <h2 style="color:#b44aff">🚧 North Gate Security Post</h2>
+          <span class="btag" style="color:#b44aff;border-color:#b44aff">District Entry Control</span>
+          <span class="cat-tag cat-danger">DANGER</span>
+          <p>The primary entry/exit point for the Executive District. All persons scanned. Vehicles searched. Unauthorized individuals are turned away. A second, unmarked gate exists on the west wall for unlogged movement of cargo and persons.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="view" id="view-commonwealth">
+    <div class="map-panel">
+      <p class="map-hint">&#x25A3; Click a location to inspect</p>
+      <svg id="map-commonwealth" class="district-map" viewBox="0 0 556 580" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <pattern id="grid-commonwealth" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#111820" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="556" height="580" fill="#0a1f18"/>
+        <rect width="556" height="580" fill="url(#grid-commonwealth)"/>
+        <line x1="30" y1="180" x2="530" y2="180" stroke="#1a2030" stroke-width="14"/>
+        <text x="280" y="177" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">GREENWAY BOULEVARD</text>
+        <line x1="30" y1="350" x2="530" y2="350" stroke="#1a2030" stroke-width="10"/>
+        <text x="280" y="347" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">ROSE AVENUE</text>
+        <line x1="30" y1="460" x2="530" y2="460" stroke="#1a2030" stroke-width="8"/>
+        <text x="280" y="457" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">SOUTH RING ROAD</text>
+        <line x1="160" y1="40" x2="160" y2="580" stroke="#1a2030" stroke-width="10"/>
+        <text x="157" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,157,310)">MERIDIAN WALK</text>
+        <line x1="360" y1="40" x2="360" y2="580" stroke="#1a2030" stroke-width="10"/>
+        <text x="357" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,357,310)">GARDEN LANE</text>
+        <rect x="32" y="185" width="320" height="155" fill="#091a10" stroke="#39ff14" stroke-width="1" stroke-dasharray="4 3" rx="2"/>
+        <text x="192" y="197" text-anchor="middle" font-family="Courier New" font-size="6.5" fill="#39ff14" letter-spacing="0.1em" opacity="0.7">THE GARDEN — PUBLIC GREEN SPACE</text>
+        <rect id="commonwealth-b-garden" class="bldg" x="36" y="190" width="310" height="150" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('commonwealth','garden')" data-cat="service"/>
+        <text class="blabel" x="191" y="259" text-anchor="middle" fill="#00e5ff">The Garden</text>
+        <text class="bsub"   x="191" y="269" text-anchor="middle" fill="#00e5ff">🌿 Public Park & Green Space</text>
+        <rect id="commonwealth-b-tower_a" class="bldg" x="42" y="42" width="100" height="130" fill="#0a1f18" stroke="#39ff14" stroke-width="1.2" rx="1" onclick="showBuilding('commonwealth','tower_a')" data-cat="residential"/>
+        <text class="blabel" x="92" y="101" text-anchor="middle" fill="#39ff14">Commonwealth Tower A</text>
+        <text class="bsub"   x="92" y="111" text-anchor="middle" fill="#39ff14">🏘️ Above-Average Residential</text>
+        <rect id="commonwealth-b-tower_b" class="bldg" x="155" y="42" width="100" height="120" fill="#0a1f18" stroke="#39ff14" stroke-width="1.2" rx="1" onclick="showBuilding('commonwealth','tower_b')" data-cat="residential"/>
+        <text class="blabel" x="205" y="96" text-anchor="middle" fill="#39ff14">Commonwealth Tower B</text>
+        <text class="bsub"   x="205" y="106" text-anchor="middle" fill="#39ff14">🏘️ Above-Average Residential</text>
+        <rect id="commonwealth-b-rowan" class="bldg" x="268" y="42" width="100" height="80" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('commonwealth','rowan')" data-cat="service"/>
+        <text class="blabel" x="318" y="76" text-anchor="middle" fill="#00e5ff">Rowan Academy</text>
+        <text class="bsub"   x="318" y="86" text-anchor="middle" fill="#00e5ff">📚 Private Secondary School</text>
+        <rect id="commonwealth-b-meridian" class="bldg" x="380" y="42" width="138" height="80" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('commonwealth','meridian')" data-cat="commercial"/>
+        <text class="blabel" x="449" y="76" text-anchor="middle" fill="#00c8ff">The Meridian</text>
+        <text class="bsub"   x="449" y="86" text-anchor="middle" fill="#00c8ff">🍷 Upscale Bar & Restaurant</text>
+        <rect id="commonwealth-b-market" class="bldg" x="380" y="135" width="138" height="80" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('commonwealth','market')" data-cat="commercial"/>
+        <text class="blabel" x="449" y="169" text-anchor="middle" fill="#00c8ff">Sunrise Market</text>
+        <text class="bsub"   x="449" y="179" text-anchor="middle" fill="#00c8ff">🛒 Daily Provisions Market</text>
+        <rect id="commonwealth-b-health" class="bldg" x="380" y="228" width="138" height="60" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('commonwealth','health')" data-cat="service"/>
+        <text class="blabel" x="449" y="252" text-anchor="middle" fill="#00e5ff">Commonwealth Health Clin</text>
+        <text class="bsub"   x="449" y="262" text-anchor="middle" fill="#00e5ff">⚕️ Licensed Medical Facility</text>
+        <rect id="commonwealth-b-jade" class="bldg" x="36" y="360" width="115" height="90" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('commonwealth','jade')" data-cat="commercial"/>
+        <text class="blabel" x="93" y="399" text-anchor="middle" fill="#00c8ff">The Jade Terrace</text>
+        <text class="bsub"   x="93" y="409" text-anchor="middle" fill="#00c8ff">🍜 Restaurant & Community Hub</text>
+        <rect id="commonwealth-b-security" class="bldg" x="162" y="360" width="185" height="80" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('commonwealth','security')" data-cat="service"/>
+        <text class="blabel" x="254" y="394" text-anchor="middle" fill="#00e5ff">Commonwealth Security Po</text>
+        <text class="bsub"   x="254" y="404" text-anchor="middle" fill="#00e5ff">🛡️ Municipal Security Station</text>
+        <rect id="commonwealth-b-tech" class="bldg" x="360" y="360" width="155" height="90" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('commonwealth','tech')" data-cat="commercial"/>
+        <text class="blabel" x="437" y="399" text-anchor="middle" fill="#00c8ff">The Tech Quarter</text>
+        <text class="bsub"   x="437" y="409" text-anchor="middle" fill="#00c8ff">💻 Small Business Office Hub</text>
+        <rect id="commonwealth-b-walkway" class="bldg" x="36" y="462" width="480" height="50" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('commonwealth','walkway')" data-cat="service"/>
+        <text class="blabel" x="276" y="481" text-anchor="middle" fill="#00e5ff">Greenway Pedestrian Zone</text>
+        <text class="bsub"   x="276" y="491" text-anchor="middle" fill="#00e5ff">🚶 Public Transit & Walking Route</text>
+        <rect x="1" y="1" width="554" height="578" fill="none" stroke="#39ff14" stroke-width="1.5" opacity="0.3"/>
+      </svg>
+    </div>
+    <div class="info-panel" id="ipanel-commonwealth">
+      <div class="bplaceholder" id="bph-commonwealth">
+        <span class="arr">&#x25C8;</span>
+        SELECT A LOCATION<br><small>Click any building on the map</small>
+      </div>
+      <div class="district-hero" id="hero-commonwealth" style="display:none">
+        <img src="../../../../maps/the city of hue/commonwealth-1.jpg" alt="Commonwealth" onerror="this.style.display='none'"/>
+        <div class="hero-desc" style="border-color:#39ff14">
+          <h2 style="color:#39ff14">Commonwealth</h2>
+          <p>The most liveable district in Hue. Functioning utilities, actual parks, and security that responds within minutes. It is aspirational — most of Hue can see it but cannot afford to live here.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commonwealth-info-garden">
+        <div class="bi-header" style="border-color:#39ff14">
+          <h2 style="color:#39ff14">🌿 The Garden</h2>
+          <span class="btag" style="color:#39ff14;border-color:#39ff14">Public Park & Green Space</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>The largest green space in the city. Genuine soil, cultivated trees, and maintained footpaths. On clear days you can see the space elevator from the east bench. Families, joggers, and office workers at lunch. A small illegal market operates near the north entrance after dark — the local security post looks away.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commonwealth-info-tower_a">
+        <div class="bi-header" style="border-color:#39ff14">
+          <h2 style="color:#39ff14">🏘️ Commonwealth Tower A</h2>
+          <span class="btag" style="color:#39ff14;border-color:#39ff14">Above-Average Residential</span>
+          <span class="cat-tag cat-residential">RESIDENTIAL</span>
+          <p>32 floors of well-maintained apartments. Waiting list typically 8 months. Residents receive full utility access, climate control, and ground-floor retail. Management committee handles disputes internally. Quiet building, tight community.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commonwealth-info-tower_b">
+        <div class="bi-header" style="border-color:#39ff14">
+          <h2 style="color:#39ff14">🏘️ Commonwealth Tower B</h2>
+          <span class="btag" style="color:#39ff14;border-color:#39ff14">Above-Average Residential</span>
+          <span class="cat-tag cat-residential">RESIDENTIAL</span>
+          <p>Slightly newer than Tower A. 28 floors. Houses a number of mid-level corporate employees and professionals. The rooftop communal space has a licensed bar that serves until 02:00. Considered the livelier of the twin towers.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commonwealth-info-rowan">
+        <div class="bi-header" style="border-color:#39ff14">
+          <h2 style="color:#39ff14">📚 Rowan Academy</h2>
+          <span class="btag" style="color:#39ff14;border-color:#39ff14">Private Secondary School</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>One of only three accredited private schools in Hue. High entry standards, corporate sponsorship from three firms. Alumni go directly to corpo internships. The headteacher has undisclosed connections to Hughes Industries HR.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commonwealth-info-meridian">
+        <div class="bi-header" style="border-color:#39ff14">
+          <h2 style="color:#39ff14">🍷 The Meridian</h2>
+          <span class="btag" style="color:#39ff14;border-color:#39ff14">Upscale Bar & Restaurant</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Commonwealth's finest dining. Reservation required two weeks in advance. The kitchen sources actual non-synthesized food where possible. Popular venue for corporate 'informal meetings' — the private dining room is swept for bugs weekly, by both the owner and corporate clients.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commonwealth-info-market">
+        <div class="bi-header" style="border-color:#39ff14">
+          <h2 style="color:#39ff14">🛒 Sunrise Market</h2>
+          <span class="btag" style="color:#39ff14;border-color:#39ff14">Daily Provisions Market</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Clean, organized market. Stalls selling fresh produce, quality synth-food, and household goods. Unlike the commercial district, prices are fair and stalls are licensed. The market runs 06:00–20:00. A small produce black market operates in the alley behind it.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commonwealth-info-health">
+        <div class="bi-header" style="border-color:#39ff14">
+          <h2 style="color:#39ff14">⚕️ Commonwealth Health Clinic</h2>
+          <span class="btag" style="color:#39ff14;border-color:#39ff14">Licensed Medical Facility</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Full-service clinic with actual doctors. Walk-in hours, appointment system, pharmaceutical dispensary. Significantly cheaper than ExcelMed across the wall. The waiting room has magazines less than a year old.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commonwealth-info-jade">
+        <div class="bi-header" style="border-color:#39ff14">
+          <h2 style="color:#39ff14">🍜 The Jade Terrace</h2>
+          <span class="btag" style="color:#39ff14;border-color:#39ff14">Restaurant & Community Hub</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Family-run restaurant, three generations deep. Serves fusion cuisine. Popular with long-term residents. The back room hosts community meetings, neighborhood dispute resolution, and the occasional illegal card game for local regulars.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commonwealth-info-security">
+        <div class="bi-header" style="border-color:#39ff14">
+          <h2 style="color:#39ff14">🛡️ Commonwealth Security Post 3</h2>
+          <span class="btag" style="color:#39ff14;border-color:#39ff14">Municipal Security Station</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Licensed security contractors operating under city mandate. Response time under 4 minutes within district. Officers are paid enough to not take bribes — mostly. The station has a small holding cell and processes minor offenses locally.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commonwealth-info-tech">
+        <div class="bi-header" style="border-color:#39ff14">
+          <h2 style="color:#39ff14">💻 The Tech Quarter</h2>
+          <span class="btag" style="color:#39ff14;border-color:#39ff14">Small Business Office Hub</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Cluster of small-to-medium tech firms, freelance engineers, and independent consultants. Four office buildings sharing a courtyard. Coffee shop on ground floor. Security is self-managed. A few tenants have zero public presence and receive visitors at unusual hours.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commonwealth-info-walkway">
+        <div class="bi-header" style="border-color:#39ff14">
+          <h2 style="color:#39ff14">🚶 Greenway Pedestrian Zone</h2>
+          <span class="btag" style="color:#39ff14;border-color:#39ff14">Public Transit & Walking Route</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Elevated walkway connecting Commonwealth to the Central and Executive districts. Lined with automated planters, public seating, and surveillance cameras. Clean and well-lit. Unofficially, it is also the route used by couriers moving goods between districts without surface-level inspection.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="view" id="view-central">
+    <div class="map-panel">
+      <p class="map-hint">&#x25A3; Click a location to inspect</p>
+      <svg id="map-central" class="district-map" viewBox="0 0 556 580" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <pattern id="grid-central" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#111820" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="556" height="580" fill="#101825"/>
+        <rect width="556" height="580" fill="url(#grid-central)"/>
+        <line x1="30" y1="190" x2="530" y2="190" stroke="#1a2030" stroke-width="14"/>
+        <text x="280" y="187" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">CENTRAL MAIN ROAD</text>
+        <line x1="30" y1="340" x2="530" y2="340" stroke="#1a2030" stroke-width="10"/>
+        <text x="280" y="337" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">CROSS AVENUE</text>
+        <line x1="30" y1="450" x2="530" y2="450" stroke="#1a2030" stroke-width="8"/>
+        <text x="280" y="447" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">SOUTH CONNECTOR</text>
+        <line x1="165" y1="40" x2="165" y2="580" stroke="#1a2030" stroke-width="12"/>
+        <text x="162" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,162,310)">TOWER STREET</text>
+        <line x1="345" y1="40" x2="345" y2="580" stroke="#1a2030" stroke-width="10"/>
+        <text x="342" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,342,310)">MARKET ROW</text>
+        
+        <rect id="central-b-transit" class="bldg" x="170" y="195" width="165" height="130" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('central','transit')" data-cat="service"/>
+        <text class="blabel" x="252" y="254" text-anchor="middle" fill="#00e5ff">Central Transit Hub</text>
+        <text class="bsub"   x="252" y="264" text-anchor="middle" fill="#00e5ff">🚊 District Transport Center</text>
+        <rect id="central-b-block_a" class="bldg" x="36" y="42" width="120" height="140" fill="#0a1f18" stroke="#39ff14" stroke-width="1.2" rx="1" onclick="showBuilding('central','block_a')" data-cat="residential"/>
+        <text class="blabel" x="96" y="106" text-anchor="middle" fill="#39ff14">Midtown Residential A</text>
+        <text class="bsub"   x="96" y="116" text-anchor="middle" fill="#39ff14">🏗️ 42-Floor Housing Block</text>
+        <rect id="central-b-block_b" class="bldg" x="169" y="42" width="165" height="140" fill="#0a1f18" stroke="#39ff14" stroke-width="1.2" rx="1" onclick="showBuilding('central','block_b')" data-cat="residential"/>
+        <text class="blabel" x="251" y="106" text-anchor="middle" fill="#39ff14">Midtown Residential B</text>
+        <text class="bsub"   x="251" y="116" text-anchor="middle" fill="#39ff14">🏗️ 38-Floor Housing Block</text>
+        <rect id="central-b-block_c" class="bldg" x="347" y="42" width="165" height="100" fill="#0a1f18" stroke="#39ff14" stroke-width="1.2" rx="1" onclick="showBuilding('central','block_c')" data-cat="residential"/>
+        <text class="blabel" x="429" y="86" text-anchor="middle" fill="#39ff14">Midtown Residential C</text>
+        <text class="bsub"   x="429" y="96" text-anchor="middle" fill="#39ff14">🏗️ 50-Floor Housing Block</text>
+        <rect id="central-b-foodfight" class="bldg" x="347" y="155" width="165" height="26" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('central','foodfight')" data-cat="commercial"/>
+        <text class="blabel" x="429" y="162" text-anchor="middle" fill="#00c8ff">Food Fight</text>
+        <text class="bsub"   x="429" y="172" text-anchor="middle" fill="#00c8ff">🍔 Fast Food Chain — Central Bran</text>
+        <rect id="central-b-rusty" class="bldg" x="36" y="195" width="125" height="80" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('central','rusty')" data-cat="commercial"/>
+        <text class="blabel" x="98" y="229" text-anchor="middle" fill="#00c8ff">The Rusty Bolt</text>
+        <text class="bsub"   x="98" y="239" text-anchor="middle" fill="#00c8ff">🔧 Hardware & Repair Shop</text>
+        <rect id="central-b-library" class="bldg" x="36" y="287" width="125" height="44" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('central','library')" data-cat="service"/>
+        <text class="blabel" x="98" y="303" text-anchor="middle" fill="#00e5ff">Hue Public Archive — Bra</text>
+        <text class="bsub"   x="98" y="313" text-anchor="middle" fill="#00e5ff">📖 Public Library & Data Terminal</text>
+        <rect id="central-b-medicore" class="bldg" x="174" y="345" width="160" height="95" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('central','medicore')" data-cat="service"/>
+        <text class="blabel" x="254" y="386" text-anchor="middle" fill="#00e5ff">Medicore Clinic</text>
+        <text class="bsub"   x="254" y="396" text-anchor="middle" fill="#00e5ff">💉 Budget Healthcare — Walk-In</text>
+        <rect id="central-b-neonpawn" class="bldg" x="36" y="345" width="125" height="95" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('central','neonpawn')" data-cat="commercial"/>
+        <text class="blabel" x="98" y="386" text-anchor="middle" fill="#00c8ff">Neon Pawn</text>
+        <text class="bsub"   x="98" y="396" text-anchor="middle" fill="#00c8ff">💾 Pawnshop & Second-Hand Goods</text>
+        <rect id="central-b-community" class="bldg" x="347" y="195" width="165" height="100" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('central','community')" data-cat="service"/>
+        <text class="blabel" x="429" y="239" text-anchor="middle" fill="#00e5ff">Central Community Hall</text>
+        <text class="bsub"   x="429" y="249" text-anchor="middle" fill="#00e5ff">🏛️ Civic & Event Space</text>
+        <rect id="central-b-security7" class="bldg" x="347" y="305" width="165" height="25" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('central','security7')" data-cat="service"/>
+        <text class="blabel" x="429" y="311" text-anchor="middle" fill="#00e5ff">Security Post 7</text>
+        <text class="bsub"   x="429" y="321" text-anchor="middle" fill="#00e5ff">🛡️ Municipal Security — Central</text>
+        <rect id="central-b-market" class="bldg" x="174" y="452" width="340" height="60" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('central','market')" data-cat="commercial"/>
+        <text class="blabel" x="344" y="476" text-anchor="middle" fill="#00c8ff">Central Market</text>
+        <text class="bsub"   x="344" y="486" text-anchor="middle" fill="#00c8ff">🛒 Daily Open-Air Market</text>
+        <rect x="1" y="1" width="554" height="578" fill="none" stroke="#00e5ff" stroke-width="1.5" opacity="0.3"/>
+      </svg>
+    </div>
+    <div class="info-panel" id="ipanel-central">
+      <div class="bplaceholder" id="bph-central">
+        <span class="arr">&#x25C8;</span>
+        SELECT A LOCATION<br><small>Click any building on the map</small>
+      </div>
+      <div class="district-hero" id="hero-central" style="display:none">
+        <img src="../../../../maps/the city of hue/central-district.jpg" alt="Central" onerror="this.style.display='none'"/>
+        <div class="hero-desc" style="border-color:#00e5ff">
+          <h2 style="color:#00e5ff">Central</h2>
+          <p>The backbone of Hue's working population. Middle-income residential blocks packed tightly together, neighborhood shops, and the constant hum of urban life.</p>
+        </div>
+      </div>
+      <div class="binfo" id="central-info-transit">
+        <div class="bi-header" style="border-color:#00e5ff">
+          <h2 style="color:#00e5ff">🚊 Central Transit Hub</h2>
+          <span class="btag" style="color:#00e5ff;border-color:#00e5ff">District Transport Center</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>The main transit node for the city. Connects to all other districts via rail, bus, and automated pod lines. Processes 180,000 passengers daily. The lower level has unofficial luggage storage run by a man named Kev who doesn't own a record book. Lost & Found is a misnomer — things go to Kev.</p>
+        </div>
+      </div>
+      <div class="binfo" id="central-info-block_a">
+        <div class="bi-header" style="border-color:#00e5ff">
+          <h2 style="color:#00e5ff">🏗️ Midtown Residential A</h2>
+          <span class="btag" style="color:#00e5ff;border-color:#00e5ff">42-Floor Housing Block</span>
+          <span class="cat-tag cat-residential">RESIDENTIAL</span>
+          <p>Standard mid-income housing. 840 units. Common areas maintained quarterly. The 17th floor laundry room is a known meeting point for the local neighborhood watch — who also run an unlicensed gambling operation on Thursdays.</p>
+        </div>
+      </div>
+      <div class="binfo" id="central-info-block_b">
+        <div class="bi-header" style="border-color:#00e5ff">
+          <h2 style="color:#00e5ff">🏗️ Midtown Residential B</h2>
+          <span class="btag" style="color:#00e5ff;border-color:#00e5ff">38-Floor Housing Block</span>
+          <span class="cat-tag cat-residential">RESIDENTIAL</span>
+          <p>Slightly newer than Block A. Integrated with the transit hub's eastern entrance. Ground floor hosts a mix of small shops. Residents of floor 3 have a long-running dispute with management about the ventilation system that predates everyone currently employed there.</p>
+        </div>
+      </div>
+      <div class="binfo" id="central-info-block_c">
+        <div class="bi-header" style="border-color:#00e5ff">
+          <h2 style="color:#00e5ff">🏗️ Midtown Residential C</h2>
+          <span class="btag" style="color:#00e5ff;border-color:#00e5ff">50-Floor Housing Block</span>
+          <span class="cat-tag cat-residential">RESIDENTIAL</span>
+          <p>The tallest residential tower in the district. Upper floors have a view over the smog layer on clear days. A functioning residents' association. The building's basement connects — allegedly — to a passage that leads toward the Underground.</p>
+        </div>
+      </div>
+      <div class="binfo" id="central-info-foodfight">
+        <div class="bi-header" style="border-color:#00e5ff">
+          <h2 style="color:#00e5ff">🍔 Food Fight</h2>
+          <span class="btag" style="color:#00e5ff;border-color:#00e5ff">Fast Food Chain — Central Branch</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Cheapest hot food in the district. Synthburgers, neon sauce, 28 varieties of flavored protein paste. Open 24 hours. The night shift staff have seen things. The booth in the back-left corner is where half the district's informal business gets conducted.</p>
+        </div>
+      </div>
+      <div class="binfo" id="central-info-rusty">
+        <div class="bi-header" style="border-color:#00e5ff">
+          <h2 style="color:#00e5ff">🔧 The Rusty Bolt</h2>
+          <span class="btag" style="color:#00e5ff;border-color:#00e5ff">Hardware & Repair Shop</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Multi-generational hardware store. Sells parts, tools, and fabricated components. The owner, a retired mechanic named Silke, can fix almost anything and asks no questions about what it was originally for. Her back-room parts inventory is significantly larger than the shop front suggests.</p>
+        </div>
+      </div>
+      <div class="binfo" id="central-info-library">
+        <div class="bi-header" style="border-color:#00e5ff">
+          <h2 style="color:#00e5ff">📖 Hue Public Archive — Branch 7</h2>
+          <span class="btag" style="color:#00e5ff;border-color:#00e5ff">Public Library & Data Terminal</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>One of the few public data terminals in the city not actively monitored in real-time. The archive holds physical printed records going back to Hue's founding — increasingly rare. The librarian, an elderly orc named Petrus, knows where everything is and will help anyone who is polite.</p>
+        </div>
+      </div>
+      <div class="binfo" id="central-info-medicore">
+        <div class="bi-header" style="border-color:#00e5ff">
+          <h2 style="color:#00e5ff">💉 Medicore Clinic</h2>
+          <span class="btag" style="color:#00e5ff;border-color:#00e5ff">Budget Healthcare — Walk-In</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Affordable medical care for the district. Long queues, overworked staff, adequate outcomes. The clinic quietly performs off-book augmentation corrections for people who can't afford official services. Ask for the night doctor.</p>
+        </div>
+      </div>
+      <div class="binfo" id="central-info-neonpawn">
+        <div class="bi-header" style="border-color:#00e5ff">
+          <h2 style="color:#00e5ff">💾 Neon Pawn</h2>
+          <span class="btag" style="color:#00e5ff;border-color:#00e5ff">Pawnshop & Second-Hand Goods</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Buys and sells everything. Electronics, weapons, personal items, data chips of uncertain origin. The owner is deeply uninterested in provenance. A locked case near the back contains items the owner has decided not to sell — the price list for those is different.</p>
+        </div>
+      </div>
+      <div class="binfo" id="central-info-community">
+        <div class="bi-header" style="border-color:#00e5ff">
+          <h2 style="color:#00e5ff">🏛️ Central Community Hall</h2>
+          <span class="btag" style="color:#00e5ff;border-color:#00e5ff">Civic & Event Space</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Hosts public meetings, community events, and dispute mediation. The hall is ostensibly neutral ground — even gang representatives attend when district-wide issues arise. Booking the hall for a private event is cheap. The calendar is always suspiciously full on the third Tuesday of each month.</p>
+        </div>
+      </div>
+      <div class="binfo" id="central-info-security7">
+        <div class="bi-header" style="border-color:#00e5ff">
+          <h2 style="color:#00e5ff">🛡️ Security Post 7</h2>
+          <span class="btag" style="color:#00e5ff;border-color:#00e5ff">Municipal Security — Central</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Underfunded and understaffed. Four officers covering the whole district. They respond when they can. They have a complicated relationship with the community — some residents see them as allies, others as a threat. They turn a blind eye to a lot because they have to.</p>
+        </div>
+      </div>
+      <div class="binfo" id="central-info-market">
+        <div class="bi-header" style="border-color:#00e5ff">
+          <h2 style="color:#00e5ff">🛒 Central Market</h2>
+          <span class="btag" style="color:#00e5ff;border-color:#00e5ff">Daily Open-Air Market</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Sprawling daily market filling a three-block area. Legitimate produce, second-hand goods, and clearly illegal items coexist peacefully. The stall owners self-police — the market works because everyone has agreed it works. Outsiders trying to shake down vendors have a habit of leaving the district quickly.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="view" id="view-shantytown">
+    <div class="map-panel">
+      <p class="map-hint">&#x25A3; Click a location to inspect</p>
+      <svg id="map-shantytown" class="district-map" viewBox="0 0 556 580" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <pattern id="grid-shantytown" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#111820" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="556" height="580" fill="#1c1108"/>
+        <rect width="556" height="580" fill="url(#grid-shantytown)"/>
+        <line x1="30" y1="210" x2="530" y2="210" stroke="#1a2030" stroke-width="8"/>
+        <text x="280" y="207" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">RAT RUN (MAIN ARTERY)</text>
+        <line x1="30" y1="380" x2="530" y2="380" stroke="#1a2030" stroke-width="6"/>
+        <text x="280" y="377" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">SCRAP BOULEVARD</text>
+        <line x1="140" y1="40" x2="140" y2="580" stroke="#1a2030" stroke-width="6"/>
+        <text x="137" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,137,310)">CROOKED LANE</text>
+        <line x1="320" y1="40" x2="320" y2="580" stroke="#1a2030" stroke-width="6"/>
+        <text x="317" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,317,310)">SOUTH ALLEY</text>
+        <rect x="325" y="42" width="200" height="160" fill="#220a00" stroke="#ff2244" stroke-width="1" stroke-dasharray="4 3" rx="2"/>
+        <text x="425" y="54" text-anchor="middle" font-family="Courier New" font-size="6.5" fill="#ff2244" letter-spacing="0.1em" opacity="0.7">BLACK ALLEY — GANG TERRITORY</text>
+        <rect x="36" y="390" width="290" height="100" fill="#1a0800" stroke="#ff6a00" stroke-width="1" stroke-dasharray="4 3" rx="2"/>
+        <text x="181" y="402" text-anchor="middle" font-family="Courier New" font-size="6.5" fill="#ff6a00" letter-spacing="0.1em" opacity="0.7">THE WARRENS — NO ENTRY FOR OUTSIDERS</text>
+        <rect id="shantytown-b-yamai" class="bldg" x="36" y="42" width="96" height="100" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('shantytown','yamai')" data-cat="commercial"/>
+        <text class="blabel" x="84" y="86" text-anchor="middle" fill="#00c8ff">Yamai's Pawnshop</text>
+        <text class="bsub"   x="84" y="96" text-anchor="middle" fill="#00c8ff">🪙 Drow Proprietor — No Questions</text>
+        <rect id="shantytown-b-dreams" class="bldg" x="145" y="42" width="165" height="110" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('shantytown','dreams')" data-cat="commercial"/>
+        <text class="blabel" x="227" y="91" text-anchor="middle" fill="#00c8ff">Broken Dreams Bar</text>
+        <text class="bsub"   x="227" y="101" text-anchor="middle" fill="#00c8ff">🍺 Dive Bar — Information Hub</text>
+        <rect id="shantytown-b-mother" class="bldg" x="36" y="155" width="275" height="45" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('shantytown','mother')" data-cat="service"/>
+        <text class="blabel" x="173" y="171" text-anchor="middle" fill="#00e5ff">Mother Hen's</text>
+        <text class="bsub"   x="173" y="181" text-anchor="middle" fill="#00e5ff">🍲 Community Kitchen — Free Meals</text>
+        <rect id="shantytown-b-scrap" class="bldg" x="325" y="42" width="167" height="115" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('shantytown','scrap')" data-cat="commercial"/>
+        <text class="blabel" x="408" y="93" text-anchor="middle" fill="#00c8ff">The Scrapyard</text>
+        <text class="bsub"   x="408" y="103" text-anchor="middle" fill="#00c8ff">⚙️ Salvage & Parts Market</text>
+        <rect id="shantytown-b-pit" class="bldg" x="346" y="168" width="80" height="32" fill="#1c0a08" stroke="#ff2244" stroke-width="1.2" rx="1" onclick="showBuilding('shantytown','pit')" data-cat="danger"/>
+        <text class="blabel" x="386" y="178" text-anchor="middle" fill="#ff2244">The Pit</text>
+        <text class="bsub"   x="386" y="188" text-anchor="middle" fill="#ff2244">👊 Underground Fighting Ring</text>
+        <rect id="shantytown-b-warrens" class="bldg" x="36" y="220" width="280" height="150" fill="#0a1f18" stroke="#39ff14" stroke-width="1.2" rx="1" onclick="showBuilding('shantytown','warrens')" data-cat="residential"/>
+        <text class="blabel" x="176" y="289" text-anchor="middle" fill="#39ff14">The Warrens</text>
+        <text class="bsub"   x="176" y="299" text-anchor="middle" fill="#39ff14">🌀 Labyrinthine Residential Core</text>
+        <rect id="shantytown-b-hollow" class="bldg" x="330" y="210" width="80" height="90" fill="#1c0a08" stroke="#ff2244" stroke-width="1.2" rx="1" onclick="showBuilding('shantytown','hollow')" data-cat="danger"/>
+        <text class="blabel" x="370" y="249" text-anchor="middle" fill="#ff2244">The Hollow</text>
+        <text class="bsub"   x="370" y="259" text-anchor="middle" fill="#ff2244">⬇️ Underground Access Point</text>
+        <rect id="shantytown-b-medic" class="bldg" x="420" y="210" width="100" height="90" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('shantytown','medic')" data-cat="service"/>
+        <text class="blabel" x="470" y="249" text-anchor="middle" fill="#00e5ff">Patchwork Medics</text>
+        <text class="bsub"   x="470" y="259" text-anchor="middle" fill="#00e5ff">🩹 Unlicensed Medical Station</text>
+        <rect id="shantytown-b-assembly" class="bldg" x="330" y="310" width="190" height="60" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('shantytown','assembly')" data-cat="service"/>
+        <text class="blabel" x="425" y="334" text-anchor="middle" fill="#00e5ff">The Assembly Point</text>
+        <text class="bsub"   x="425" y="344" text-anchor="middle" fill="#00e5ff">🗣️ Shantytown Governance — Inform</text>
+        <rect id="shantytown-b-salvage" class="bldg" x="36" y="390" width="280" height="95" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('shantytown','salvage')" data-cat="commercial"/>
+        <text class="blabel" x="176" y="431" text-anchor="middle" fill="#00c8ff">Salvage Row</text>
+        <text class="bsub"   x="176" y="441" text-anchor="middle" fill="#00c8ff">🔩 Strip-and-Sell Operations</text>
+        <rect id="shantytown-b-shrine" class="bldg" x="330" y="385" width="90" height="80" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('shantytown','shrine')" data-cat="service"/>
+        <text class="blabel" x="375" y="419" text-anchor="middle" fill="#00e5ff">The Shrine</text>
+        <text class="bsub"   x="375" y="429" text-anchor="middle" fill="#00e5ff">🕯️ Community Memorial — Protected</text>
+        <rect id="shantytown-b-lookout" class="bldg" x="430" y="385" width="90" height="80" fill="#1c0a08" stroke="#ff2244" stroke-width="1.2" rx="1" onclick="showBuilding('shantytown','lookout')" data-cat="danger"/>
+        <text class="blabel" x="475" y="419" text-anchor="middle" fill="#ff2244">The Watchtower</text>
+        <text class="bsub"   x="475" y="429" text-anchor="middle" fill="#ff2244">👁️ Gang Lookout Post — North Entr</text>
+        <rect x="1" y="1" width="554" height="578" fill="none" stroke="#ff6a00" stroke-width="1.5" opacity="0.3"/>
+      </svg>
+    </div>
+    <div class="info-panel" id="ipanel-shantytown">
+      <div class="bplaceholder" id="bph-shantytown">
+        <span class="arr">&#x25C8;</span>
+        SELECT A LOCATION<br><small>Click any building on the map</small>
+      </div>
+      <div class="district-hero" id="hero-shantytown" style="display:none">
+        <img src="../../../../maps/the city of hue/shantytowns.jpg" alt="Shantytown" onerror="this.style.display='none'"/>
+        <div class="hero-desc" style="border-color:#ff6a00">
+          <h2 style="color:#ff6a00">Shantytown</h2>
+          <p>No official maps of Shantytown are accurate. The district grows and shifts — structures built overnight, passages blocked by new construction, entire blocks changing function within weeks.</p>
+        </div>
+      </div>
+      <div class="binfo" id="shantytown-info-yamai">
+        <div class="bi-header" style="border-color:#ff6a00">
+          <h2 style="color:#ff6a00">🪙 Yamai's Pawnshop</h2>
+          <span class="btag" style="color:#ff6a00;border-color:#ff6a00">Drow Proprietor — No Questions</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Run by Yamai, a drow who arrived in Shantytown twenty years ago and never left. Buys everything. Sells most of it. Knows the value of things that have no official price. The back room has been used for mediation, hiding, and at least one birth. Yamai's memory for faces is perfect and permanent.</p>
+        </div>
+      </div>
+      <div class="binfo" id="shantytown-info-dreams">
+        <div class="bi-header" style="border-color:#ff6a00">
+          <h2 style="color:#ff6a00">🍺 Broken Dreams Bar</h2>
+          <span class="btag" style="color:#ff6a00;border-color:#ff6a00">Dive Bar — Information Hub</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>The social center of Shantytown. Cheap synth-ale, no dress code, frequent violence that everyone ignores. Information trades here — who is hiring, who is hunting whom, what moved through the city last night. The bar top has been repaired so many times it is now mostly old repair materials.</p>
+        </div>
+      </div>
+      <div class="binfo" id="shantytown-info-mother">
+        <div class="bi-header" style="border-color:#ff6a00">
+          <h2 style="color:#ff6a00">🍲 Mother Hen's</h2>
+          <span class="btag" style="color:#ff6a00;border-color:#ff6a00">Community Kitchen — Free Meals</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Operating for eleven years on pure donations and stubbornness. Serves 300 meals a day. Run by a collective of Shantytown residents. No records, no questions. An unspoken rule: no violence within sight of Mother Hen's. Everyone enforces this, including the gangs.</p>
+        </div>
+      </div>
+      <div class="binfo" id="shantytown-info-scrap">
+        <div class="bi-header" style="border-color:#ff6a00">
+          <h2 style="color:#ff6a00">⚙️ The Scrapyard</h2>
+          <span class="btag" style="color:#ff6a00;border-color:#ff6a00">Salvage & Parts Market</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>A vast open salvage market. Industrial machinery, vehicle parts, building materials, and electronic components in various states of function. The 'market' has no fixed prices — everything is negotiated. Three families have divided the yard between them for decades. Outsiders are welcome to buy. Not to loiter.</p>
+        </div>
+      </div>
+      <div class="binfo" id="shantytown-info-pit">
+        <div class="bi-header" style="border-color:#ff6a00">
+          <h2 style="color:#ff6a00">👊 The Pit</h2>
+          <span class="btag" style="color:#ff6a00;border-color:#ff6a00">Underground Fighting Ring</span>
+          <span class="cat-tag cat-danger">DANGER</span>
+          <p>A fighting ring operating in a converted loading bay. No rules, no weight classes, full bets accepted. Runs three nights a week. The pit has its own informal medical staff — two retired field medics who patch fighters for a cut of the winnings.</p>
+        </div>
+      </div>
+      <div class="binfo" id="shantytown-info-warrens">
+        <div class="bi-header" style="border-color:#ff6a00">
+          <h2 style="color:#ff6a00">🌀 The Warrens</h2>
+          <span class="btag" style="color:#ff6a00;border-color:#ff6a00">Labyrinthine Residential Core</span>
+          <span class="cat-tag cat-residential">RESIDENTIAL</span>
+          <p>The densest residential zone in Shantytown — perhaps the whole city. Structures three and four stories tall built on top of each other, connected by bridges, rope ladders, and passages that appear and disappear. Residents navigate by instinct. Emergency services have a standing policy of not entering.</p>
+        </div>
+      </div>
+      <div class="binfo" id="shantytown-info-hollow">
+        <div class="bi-header" style="border-color:#ff6a00">
+          <h2 style="color:#ff6a00">⬇️ The Hollow</h2>
+          <span class="btag" style="color:#ff6a00;border-color:#ff6a00">Underground Access Point</span>
+          <span class="cat-tag cat-danger">DANGER</span>
+          <p>One of the most well-known surface access points to the Underground. A drop of about 4 meters through a collapsed floor in a derelict structure. The Underground residents below have installed a rope ladder. Traffic goes both ways at all hours.</p>
+        </div>
+      </div>
+      <div class="binfo" id="shantytown-info-medic">
+        <div class="bi-header" style="border-color:#ff6a00">
+          <h2 style="color:#ff6a00">🩹 Patchwork Medics</h2>
+          <span class="btag" style="color:#ff6a00;border-color:#ff6a00">Unlicensed Medical Station</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Three medics with mixed credentials operating out of a converted workshop. No augmentation installs, but trauma care, suture, and pharmaceutical access. They charge what people can pay. Their supply chain for medicine is creative and entirely unregulated.</p>
+        </div>
+      </div>
+      <div class="binfo" id="shantytown-info-assembly">
+        <div class="bi-header" style="border-color:#ff6a00">
+          <h2 style="color:#ff6a00">🗣️ The Assembly Point</h2>
+          <span class="btag" style="color:#ff6a00;border-color:#ff6a00">Shantytown Governance — Informal</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>An open concrete yard where district-wide decisions are made by the people who live here. No elected officials. No corporate liaison. Decisions are binding by collective agreement and enforced by everyone. Outsiders have tried to co-opt this process. None have succeeded.</p>
+        </div>
+      </div>
+      <div class="binfo" id="shantytown-info-salvage">
+        <div class="bi-header" style="border-color:#ff6a00">
+          <h2 style="color:#ff6a00">🔩 Salvage Row</h2>
+          <span class="btag" style="color:#ff6a00;border-color:#ff6a00">Strip-and-Sell Operations</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>A long strip of open-front workshops where vehicles, electronics, and structures are disassembled and sold by component. Salvage Row is the endpoint for a significant portion of the city's stolen property pipeline.</p>
+        </div>
+      </div>
+      <div class="binfo" id="shantytown-info-shrine">
+        <div class="bi-header" style="border-color:#ff6a00">
+          <h2 style="color:#ff6a00">🕯️ The Shrine</h2>
+          <span class="btag" style="color:#ff6a00;border-color:#ff6a00">Community Memorial — Protected Ground</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>A memorial to district residents who died in the Corpo Wars. Maintained communally. Like Mother Hen's, it is protected ground — violence near the Shrine is one of the few acts that will unite all Shantytown factions against a common target.</p>
+        </div>
+      </div>
+      <div class="binfo" id="shantytown-info-lookout">
+        <div class="bi-header" style="border-color:#ff6a00">
+          <h2 style="color:#ff6a00">👁️ The Watchtower</h2>
+          <span class="btag" style="color:#ff6a00;border-color:#ff6a00">Gang Lookout Post — North Entry</span>
+          <span class="cat-tag cat-danger">DANGER</span>
+          <p>A makeshift tower at the north entry to Shantytown's inner zone. Manned around the clock. The watchers track who enters, who leaves, and who is carrying what. This information feeds to every gang in the district simultaneously — a rare point of cooperation.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="view" id="view-entertainment">
+    <div class="map-panel">
+      <p class="map-hint">&#x25A3; Click a location to inspect</p>
+      <svg id="map-entertainment" class="district-map" viewBox="0 0 556 580" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <pattern id="grid-entertainment" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#111820" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="556" height="580" fill="#1a0a18"/>
+        <rect width="556" height="580" fill="url(#grid-entertainment)"/>
+        <line x1="30" y1="200" x2="530" y2="200" stroke="#1a2030" stroke-width="18"/>
+        <text x="280" y="197" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">THE NEON STRIP — MAIN BOULEVARD</text>
+        <line x1="30" y1="370" x2="530" y2="370" stroke="#1a2030" stroke-width="10"/>
+        <text x="280" y="367" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">BACKSTREET ROW</text>
+        <line x1="30" y1="480" x2="530" y2="480" stroke="#1a2030" stroke-width="8"/>
+        <text x="280" y="477" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">SOUTH ACCESS ROAD</text>
+        <line x1="155" y1="40" x2="155" y2="580" stroke="#1a2030" stroke-width="10"/>
+        <text x="152" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,152,310)">CASINO LANE</text>
+        <line x1="360" y1="40" x2="360" y2="580" stroke="#1a2030" stroke-width="10"/>
+        <text x="357" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,357,310)">ARENA APPROACH</text>
+        <rect x="32" y="42" width="490" height="148" fill="#150010" stroke="#ff2244" stroke-width="1" stroke-dasharray="4 3" rx="2"/>
+        <text x="277" y="54" text-anchor="middle" font-family="Courier New" font-size="6.5" fill="#ff2244" letter-spacing="0.1em" opacity="0.7">THE STRIP — CORPO-POLICED ZONE</text>
+        <rect id="entertainment-b-lucky" class="bldg" x="36" y="210" width="175" height="145" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('entertainment','lucky')" data-cat="commercial"/>
+        <text class="blabel" x="123" y="276" text-anchor="middle" fill="#00c8ff">Lucky Dwarf Casino</text>
+        <text class="bsub"   x="123" y="286" text-anchor="middle" fill="#00c8ff">🎰 Multi-Level Gambling Venue</text>
+        <rect id="entertainment-b-bloodsport" class="bldg" x="365" y="210" width="157" height="150" fill="#1c0a08" stroke="#ff2244" stroke-width="1.2" rx="1" onclick="showBuilding('entertainment','bloodsport')" data-cat="danger"/>
+        <text class="blabel" x="443" y="279" text-anchor="middle" fill="#ff2244">Bloodsport Arena</text>
+        <text class="bsub"   x="443" y="289" text-anchor="middle" fill="#ff2244">⚔️ Licensed Combat Venue</text>
+        <rect id="entertainment-b-vertigo" class="bldg" x="160" y="210" width="195" height="80" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('entertainment','vertigo')" data-cat="commercial"/>
+        <text class="blabel" x="257" y="244" text-anchor="middle" fill="#00c8ff">Club Vertigo</text>
+        <text class="bsub"   x="257" y="254" text-anchor="middle" fill="#00c8ff">🎵 Nightclub — 24hr License</text>
+        <rect id="entertainment-b-jackpot" class="bldg" x="36" y="42" width="110" height="150" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('entertainment','jackpot')" data-cat="commercial"/>
+        <text class="blabel" x="91" y="111" text-anchor="middle" fill="#00c8ff">The Jackpot Hotel</text>
+        <text class="bsub"   x="91" y="121" text-anchor="middle" fill="#00c8ff">🏨 Casino-Attached Lodging</text>
+        <rect id="entertainment-b-fortune8" class="bldg" x="158" y="42" width="185" height="80" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('entertainment','fortune8')" data-cat="commercial"/>
+        <text class="blabel" x="250" y="76" text-anchor="middle" fill="#00c8ff">Fortune 8</text>
+        <text class="bsub"   x="250" y="86" text-anchor="middle" fill="#00c8ff">🀄 Second-Tier Casino</text>
+        <rect id="entertainment-b-velvet" class="bldg" x="355" y="42" width="165" height="80" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('entertainment','velvet')" data-cat="commercial"/>
+        <text class="blabel" x="437" y="76" text-anchor="middle" fill="#00c8ff">The Velvet Syndicate</text>
+        <text class="bsub"   x="437" y="86" text-anchor="middle" fill="#00c8ff">💎 High-End Members Club</text>
+        <rect id="entertainment-b-chromatic" class="bldg" x="355" y="132" width="165" height="60" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('entertainment','chromatic')" data-cat="commercial"/>
+        <text class="blabel" x="437" y="156" text-anchor="middle" fill="#00c8ff">Chromatic Lounge</text>
+        <text class="bsub"   x="437" y="166" text-anchor="middle" fill="#00c8ff">🎭 Art Bar & Live Performance</text>
+        <rect id="entertainment-b-rex" class="bldg" x="36" y="375" width="110" height="90" fill="#1c0a08" stroke="#ff2244" stroke-width="1.2" rx="1" onclick="showBuilding('entertainment','rex')" data-cat="danger"/>
+        <text class="blabel" x="91" y="414" text-anchor="middle" fill="#ff2244">Rex's Fight Club</text>
+        <text class="bsub"   x="91" y="424" text-anchor="middle" fill="#ff2244">🥊 Unlicensed Combat Venue</text>
+        <rect id="entertainment-b-afterparty" class="bldg" x="158" y="375" width="190" height="85" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('entertainment','afterparty')" data-cat="commercial"/>
+        <text class="blabel" x="253" y="411" text-anchor="middle" fill="#00c8ff">The Afterparty</text>
+        <text class="bsub"   x="253" y="421" text-anchor="middle" fill="#00c8ff">🌙 Late-Night Venue — Opens 03:00</text>
+        <rect id="entertainment-b-surgery" class="bldg" x="360" y="375" width="160" height="85" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('entertainment','surgery')" data-cat="service"/>
+        <text class="blabel" x="440" y="411" text-anchor="middle" fill="#00e5ff">Chrome & Flesh</text>
+        <text class="bsub"   x="440" y="421" text-anchor="middle" fill="#00e5ff">🔬 Augmentation Parlor — Grey Mar</text>
+        <rect id="entertainment-b-security_e" class="bldg" x="36" y="475" width="480" height="55" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('entertainment','security_e')" data-cat="corp"/>
+        <text class="blabel" x="276" y="496" text-anchor="middle" fill="#b44aff">Entertainment Zone Patro</text>
+        <text class="bsub"   x="276" y="506" text-anchor="middle" fill="#b44aff">🛡️ Corporate Security Post — Stri</text>
+        <rect x="1" y="1" width="554" height="578" fill="none" stroke="#ff2244" stroke-width="1.5" opacity="0.3"/>
+      </svg>
+    </div>
+    <div class="info-panel" id="ipanel-entertainment">
+      <div class="bplaceholder" id="bph-entertainment">
+        <span class="arr">&#x25C8;</span>
+        SELECT A LOCATION<br><small>Click any building on the map</small>
+      </div>
+      <div class="district-hero" id="hero-entertainment" style="display:none">
+        <img src="../../../../maps/the city of hue/entertainment-district.jpg" alt="Entertainment" onerror="this.style.display='none'"/>
+        <div class="hero-desc" style="border-color:#ff2244">
+          <h2 style="color:#ff2244">Entertainment</h2>
+          <p>The district that never closes. Every vice has a price, every spectacle available for the right price. The Entertainment District is Hue's pressure valve — and its most profitable square kilometer.</p>
+        </div>
+      </div>
+      <div class="binfo" id="entertainment-info-lucky">
+        <div class="bi-header" style="border-color:#ff2244">
+          <h2 style="color:#ff2244">🎰 Lucky Dwarf Casino</h2>
+          <span class="btag" style="color:#ff2244;border-color:#ff2244">Multi-Level Gambling Venue</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Six floors of licensed gambling. Ground floor: slots, automated games. Floors 2–4: table games, escalating stakes. Floor 5: private rooms for high rollers. Floor 6: does not officially exist. The basement runs an illegal sports book and a numbers operation. The building's security staff have more combat experience than most city police units.</p>
+        </div>
+      </div>
+      <div class="binfo" id="entertainment-info-bloodsport">
+        <div class="bi-header" style="border-color:#ff2244">
+          <h2 style="color:#ff2244">⚔️ Bloodsport Arena</h2>
+          <span class="btag" style="color:#ff2244;border-color:#ff2244">Licensed Combat Venue</span>
+          <span class="cat-tag cat-danger">DANGER</span>
+          <p>The largest entertainment venue in the district. Capacity 8,000. Hosts sanctioned death matches, augmented fighter bouts, and the Merc Circuit. Corporate-sponsored fighters get entrance music and branded gear. Underground tournament runs parallel — winners are invited. Not all of them come back. All of it is broadcast.</p>
+        </div>
+      </div>
+      <div class="binfo" id="entertainment-info-vertigo">
+        <div class="bi-header" style="border-color:#ff2244">
+          <h2 style="color:#ff2244">🎵 Club Vertigo</h2>
+          <span class="btag" style="color:#ff2244;border-color:#ff2244">Nightclub — 24hr License</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Four floors of music, synthesized chemicals, and questionable decisions. Popular with everyone from factory workers to corporate assistants. The VIP section on floor three is technically invitation-only — the invitation is a particular style of wallet.</p>
+        </div>
+      </div>
+      <div class="binfo" id="entertainment-info-jackpot">
+        <div class="bi-header" style="border-color:#ff2244">
+          <h2 style="color:#ff2244">🏨 The Jackpot Hotel</h2>
+          <span class="btag" style="color:#ff2244;border-color:#ff2244">Casino-Attached Lodging</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>200 rooms attached to the Lucky Dwarf. Hourly rates available, no questions. Discretion is the hotel's primary product. Security footage retention policy: none. Three guests have died in-room in the past year. None of the deaths were investigated.</p>
+        </div>
+      </div>
+      <div class="binfo" id="entertainment-info-fortune8">
+        <div class="bi-header" style="border-color:#ff2244">
+          <h2 style="color:#ff2244">🀄 Fortune 8</h2>
+          <span class="btag" style="color:#ff2244;border-color:#ff2244">Second-Tier Casino</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Smaller and louder than Lucky Dwarf. Attracts a rougher clientele and looser enforcement. Fortune 8 is also the main venue for an informal information market — a broker sits at table 14 every night from 22:00, buying and selling actionable intelligence.</p>
+        </div>
+      </div>
+      <div class="binfo" id="entertainment-info-velvet">
+        <div class="bi-header" style="border-color:#ff2244">
+          <h2 style="color:#ff2244">💎 The Velvet Syndicate</h2>
+          <span class="btag" style="color:#ff2244;border-color:#ff2244">High-End Members Club</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>The most exclusive venue in the district. Membership by referral only. No visible branding outside — a plain black door. Inside: real spirits, private rooms, a discreet medical service, and a clientele who are never photographed.</p>
+        </div>
+      </div>
+      <div class="binfo" id="entertainment-info-chromatic">
+        <div class="bi-header" style="border-color:#ff2244">
+          <h2 style="color:#ff2244">🎭 Chromatic Lounge</h2>
+          <span class="btag" style="color:#ff2244;border-color:#ff2244">Art Bar & Live Performance</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>The district's cultural fig leaf. Genuine live music, performance art, and a less aggressive atmosphere. Hides a document forgery operation behind the stage. Artists need supplemental income.</p>
+        </div>
+      </div>
+      <div class="binfo" id="entertainment-info-rex">
+        <div class="bi-header" style="border-color:#ff2244">
+          <h2 style="color:#ff2244">🥊 Rex's Fight Club</h2>
+          <span class="btag" style="color:#ff2244;border-color:#ff2244">Unlicensed Combat Venue</span>
+          <span class="cat-tag cat-danger">DANGER</span>
+          <p>Everything the Bloodsport Arena is, minus the license and the cameras. Bare knuckle, any method. Rex runs it and personally throws out anyone who brings weapons into the crowd.</p>
+        </div>
+      </div>
+      <div class="binfo" id="entertainment-info-afterparty">
+        <div class="bi-header" style="border-color:#ff2244">
+          <h2 style="color:#ff2244">🌙 The Afterparty</h2>
+          <span class="btag" style="color:#ff2244;border-color:#ff2244">Late-Night Venue — Opens 03:00</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>The Entertainment District's final destination. Opens when everything else closes. No cover charge, no dress code, no operating license technically in effect. The Afterparty has been 'about to be shut down' for nine years.</p>
+        </div>
+      </div>
+      <div class="binfo" id="entertainment-info-surgery">
+        <div class="bi-header" style="border-color:#ff2244">
+          <h2 style="color:#ff2244">🔬 Chrome & Flesh</h2>
+          <span class="btag" style="color:#ff2244;border-color:#ff2244">Augmentation Parlor — Grey Market</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Licensed for minor cosmetic augmentation. Performs significantly more that after hours. Popular with fighters and anyone who needs functional combat upgrades without a corporate medical record. Their prices are fair and their rejection rate for complications is low.</p>
+        </div>
+      </div>
+      <div class="binfo" id="entertainment-info-security_e">
+        <div class="bi-header" style="border-color:#ff2244">
+          <h2 style="color:#ff2244">🛡️ Entertainment Zone Patrol</h2>
+          <span class="btag" style="color:#ff2244;border-color:#ff2244">Corporate Security Post — Strip</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>Patrols the Strip primarily to protect business revenue, not civilians. Response time to venue disputes: 90 seconds. Response time to civilian complaints: not measured. They maintain order and are entirely uninterested in what happens in the unlicensed venues.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="view" id="view-industrial">
+    <div class="map-panel">
+      <p class="map-hint">&#x25A3; Click a location to inspect</p>
+      <svg id="map-industrial" class="district-map" viewBox="0 0 556 580" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <pattern id="grid-industrial" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#111820" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="556" height="580" fill="#181008"/>
+        <rect width="556" height="580" fill="url(#grid-industrial)"/>
+        <line x1="30" y1="200" x2="530" y2="200" stroke="#1a2030" stroke-width="14"/>
+        <text x="280" y="197" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">INDUSTRIAL CORRIDOR — MAIN</text>
+        <line x1="30" y1="360" x2="530" y2="360" stroke="#1a2030" stroke-width="10"/>
+        <text x="280" y="357" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">FREIGHT ROAD ALPHA</text>
+        <line x1="30" y1="470" x2="530" y2="470" stroke="#1a2030" stroke-width="8"/>
+        <text x="280" y="467" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">WORKERS ROAD</text>
+        <line x1="175" y1="40" x2="175" y2="580" stroke="#1a2030" stroke-width="10"/>
+        <text x="172" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,172,310)">TOWER ACCESS ROAD</text>
+        <line x1="355" y1="40" x2="355" y2="580" stroke="#1a2030" stroke-width="10"/>
+        <text x="352" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,352,310)">EAST FREIGHT LANE</text>
+        <rect x="180" y="42" width="165" height="155" fill="#151000" stroke="#ffe600" stroke-width="1" stroke-dasharray="4 3" rx="2"/>
+        <text x="262" y="54" text-anchor="middle" font-family="Courier New" font-size="6.5" fill="#ffe600" letter-spacing="0.1em" opacity="0.7">ELEVATOR EXCLUSION ZONE — LEVEL 2+ CLEARANCE ONLY</text>
+        <rect id="industrial-b-elevator" class="bldg" x="190" y="42" width="148" height="148" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('industrial','elevator')" data-cat="corp"/>
+        <text class="blabel" x="264" y="110" text-anchor="middle" fill="#b44aff">Space Elevator — Base Te</text>
+        <text class="bsub"   x="264" y="120" text-anchor="middle" fill="#b44aff">🛗 Orbital Tether — Checkpoint Om</text>
+        <rect id="industrial-b-fab1" class="bldg" x="36" y="42" width="130" height="148" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('industrial','fab1')" data-cat="corp"/>
+        <text class="blabel" x="101" y="110" text-anchor="middle" fill="#b44aff">Hughes Fabrication Plant</text>
+        <text class="bsub"   x="101" y="120" text-anchor="middle" fill="#b44aff">🏭 Heavy Manufacturing — Weapons </text>
+        <rect id="industrial-b-fab2" class="bldg" x="352" y="42" width="165" height="148" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('industrial','fab2')" data-cat="corp"/>
+        <text class="blabel" x="434" y="110" text-anchor="middle" fill="#b44aff">Hughes Fabrication Plant</text>
+        <text class="bsub"   x="434" y="120" text-anchor="middle" fill="#b44aff">🏭 Biotech Assembly — Augmentatio</text>
+        <rect id="industrial-b-biomed" class="bldg" x="36" y="205" width="130" height="90" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('industrial','biomed')" data-cat="corp"/>
+        <text class="blabel" x="101" y="244" text-anchor="middle" fill="#b44aff">Biomed Assembly Complex</text>
+        <text class="bsub"   x="101" y="254" text-anchor="middle" fill="#b44aff">💊 Medical Device Manufacturing</text>
+        <rect id="industrial-b-checkpoint" class="bldg" x="190" y="205" width="148" height="65" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('industrial','checkpoint')" data-cat="corp"/>
+        <text class="blabel" x="264" y="231" text-anchor="middle" fill="#b44aff">Checkpoint Omega</text>
+        <text class="bsub"   x="264" y="241" text-anchor="middle" fill="#b44aff">🚧 Elevator Security Command</text>
+        <rect id="industrial-b-heaven" class="bldg" x="360" y="205" width="152" height="90" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('industrial','heaven')" data-cat="commercial"/>
+        <text class="blabel" x="436" y="244" text-anchor="middle" fill="#00c8ff">Stairway to Heaven</text>
+        <text class="bsub"   x="436" y="254" text-anchor="middle" fill="#00c8ff">🍺 Workers' Bar — Elevator Crew H</text>
+        <rect id="industrial-b-depot_a" class="bldg" x="36" y="305" width="130" height="45" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('industrial','depot_a')" data-cat="service"/>
+        <text class="blabel" x="101" y="321" text-anchor="middle" fill="#00e5ff">Freight Depot Alpha</text>
+        <text class="bsub"   x="101" y="331" text-anchor="middle" fill="#00e5ff">📦 Cargo Staging & Transit Hub</text>
+        <rect id="industrial-b-power" class="bldg" x="190" y="280" width="148" height="70" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('industrial','power')" data-cat="corp"/>
+        <text class="blabel" x="264" y="309" text-anchor="middle" fill="#b44aff">Power Relay Station Gamm</text>
+        <text class="bsub"   x="264" y="319" text-anchor="middle" fill="#b44aff">⚡ District Power Infrastructure</text>
+        <rect id="industrial-b-shelter" class="bldg" x="360" y="305" width="152" height="45" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('industrial','shelter')" data-cat="service"/>
+        <text class="blabel" x="436" y="321" text-anchor="middle" fill="#00e5ff">Shelter for the Cursed</text>
+        <text class="bsub"   x="436" y="331" text-anchor="middle" fill="#00e5ff">⛪ Non-Profit Refuge — Augmented </text>
+        <rect id="industrial-b-dormitory" class="bldg" x="36" y="370" width="310" height="90" fill="#0a1f18" stroke="#39ff14" stroke-width="1.2" rx="1" onclick="showBuilding('industrial','dormitory')" data-cat="residential"/>
+        <text class="blabel" x="191" y="409" text-anchor="middle" fill="#39ff14">Worker Dormitory Blocks</text>
+        <text class="bsub"   x="191" y="419" text-anchor="middle" fill="#39ff14">🏘️ Factory Staff Housing</text>
+        <rect id="industrial-b-grease" class="bldg" x="355" y="365" width="155" height="90" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('industrial','grease')" data-cat="commercial"/>
+        <text class="blabel" x="432" y="404" text-anchor="middle" fill="#00c8ff">The Grease Trap</text>
+        <text class="bsub"   x="432" y="414" text-anchor="middle" fill="#00c8ff">🔧 Worker Bar — Unlicensed</text>
+        <rect id="industrial-b-medstation" class="bldg" x="36" y="475" width="480" height="50" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('industrial','medstation')" data-cat="service"/>
+        <text class="blabel" x="276" y="494" text-anchor="middle" fill="#00e5ff">Industrial Medical Stati</text>
+        <text class="bsub"   x="276" y="504" text-anchor="middle" fill="#00e5ff">🏥 Trauma & Occupational Health</text>
+        <rect x="1" y="1" width="554" height="578" fill="none" stroke="#ffe600" stroke-width="1.5" opacity="0.3"/>
+      </svg>
+    </div>
+    <div class="info-panel" id="ipanel-industrial">
+      <div class="bplaceholder" id="bph-industrial">
+        <span class="arr">&#x25C8;</span>
+        SELECT A LOCATION<br><small>Click any building on the map</small>
+      </div>
+      <div class="district-hero" id="hero-industrial" style="display:none">
+        <img src="../../../../maps/the city of hue/industrial-district-1.webp" alt="Industrial" onerror="this.style.display='none'"/>
+        <div class="hero-desc" style="border-color:#ffe600">
+          <h2 style="color:#ffe600">Industrial</h2>
+          <p>The engine room of Hue. Factories running 24-hour cycles, freight moving constantly, and at the district's center: the base of the Space Elevator.</p>
+        </div>
+      </div>
+      <div class="binfo" id="industrial-info-elevator">
+        <div class="bi-header" style="border-color:#ffe600">
+          <h2 style="color:#ffe600">🛗 Space Elevator — Base Terminal</h2>
+          <span class="btag" style="color:#ffe600;border-color:#ffe600">Orbital Tether — Checkpoint Omega</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>The most heavily guarded location in the city. The elevator tether anchors here and rises 420km to Hughes Station. Entry requires Hughes Industries Level 2+ clearance, biometric scan, full body search, and a pre-approved manifest. Eight-hour ascent. The terminal processes approximately 40 approved passengers and 200 tonnes of cargo per day.</p>
+        </div>
+      </div>
+      <div class="binfo" id="industrial-info-fab1">
+        <div class="bi-header" style="border-color:#ffe600">
+          <h2 style="color:#ffe600">🏭 Hughes Fabrication Plant 1</h2>
+          <span class="btag" style="color:#ffe600;border-color:#ffe600">Heavy Manufacturing — Weapons Components</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>Produces weapons systems components for both the city-state authority and external contracts. Three shift rotations. Workers sign NDAs. A persistent underground rumour says the plant's basement produces something the public manifest doesn't mention.</p>
+        </div>
+      </div>
+      <div class="binfo" id="industrial-info-fab2">
+        <div class="bi-header" style="border-color:#ffe600">
+          <h2 style="color:#ffe600">🏭 Hughes Fabrication Plant 2</h2>
+          <span class="btag" style="color:#ffe600;border-color:#ffe600">Biotech Assembly — Augmentation Components</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>Assembles augmentation components from NeuralSync designs. Output goes primarily to ExcelMed and a classified Hughes Industries supply chain. The workers here have better protective gear than Plant 1. This is noted but not discussed.</p>
+        </div>
+      </div>
+      <div class="binfo" id="industrial-info-biomed">
+        <div class="bi-header" style="border-color:#ffe600">
+          <h2 style="color:#ffe600">💊 Biomed Assembly Complex</h2>
+          <span class="btag" style="color:#ffe600;border-color:#ffe600">Medical Device Manufacturing</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>Produces hospital-grade equipment and pharmaceutical compounds. Legitimate output. The shipping logs, however, show deliveries to addresses that do not match any registered medical facility. The discrepancy has been raised internally twice. Both times, the person who raised it transferred departments.</p>
+        </div>
+      </div>
+      <div class="binfo" id="industrial-info-checkpoint">
+        <div class="bi-header" style="border-color:#ffe600">
+          <h2 style="color:#ffe600">🚧 Checkpoint Omega</h2>
+          <span class="btag" style="color:#ffe600;border-color:#ffe600">Elevator Security Command</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>The security command for the elevator terminal. Staffed by Hughes' most trusted private military contractors. They operate under standing orders that supersede city law. Lethal response is authorized for anyone who breaches the exclusion zone perimeter without clearance.</p>
+        </div>
+      </div>
+      <div class="binfo" id="industrial-info-heaven">
+        <div class="bi-header" style="border-color:#ffe600">
+          <h2 style="color:#ffe600">🍺 Stairway to Heaven</h2>
+          <span class="btag" style="color:#ffe600;border-color:#ffe600">Workers' Bar — Elevator Crew Hangout</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Named after the elevator it overlooks. Run by a retired cargo operator named Maas. Frequented by elevator technicians, factory workers, and the occasional person trying to bribe one of them. Maas is aware of this last category and accepts a cut.</p>
+        </div>
+      </div>
+      <div class="binfo" id="industrial-info-depot_a">
+        <div class="bi-header" style="border-color:#ffe600">
+          <h2 style="color:#ffe600">📦 Freight Depot Alpha</h2>
+          <span class="btag" style="color:#ffe600;border-color:#ffe600">Cargo Staging & Transit Hub</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Primary cargo staging area for all freight entering and leaving the elevator. The depot processes more cargo than its official manifest suggests — the discrepancy is documented only in the depot manager's private ledger, which she keeps at home.</p>
+        </div>
+      </div>
+      <div class="binfo" id="industrial-info-power">
+        <div class="bi-header" style="border-color:#ffe600">
+          <h2 style="color:#ffe600">⚡ Power Relay Station Gamma</h2>
+          <span class="btag" style="color:#ffe600;border-color:#ffe600">District Power Infrastructure</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>Controls power distribution for the elevator terminal and surrounding industrial zone. Losing this station would shut down the elevator and approximately 60% of the district's manufacturing capacity. The station is hardened against EMP, physical attack, and unauthorized access.</p>
+        </div>
+      </div>
+      <div class="binfo" id="industrial-info-shelter">
+        <div class="bi-header" style="border-color:#ffe600">
+          <h2 style="color:#ffe600">⛪ Shelter for the Cursed</h2>
+          <span class="btag" style="color:#ffe600;border-color:#ffe600">Non-Profit Refuge — Augmented Persons</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Running on community donations for 14 years. Currently under pressure from Hughes Industries, which wants the land. Three eviction proceedings have been filed and defeated. The fourth is pending. The shelter has no political allies — only a community willing to block the bulldozers.</p>
+        </div>
+      </div>
+      <div class="binfo" id="industrial-info-dormitory">
+        <div class="bi-header" style="border-color:#ffe600">
+          <h2 style="color:#ffe600">🏘️ Worker Dormitory Blocks</h2>
+          <span class="btag" style="color:#ffe600;border-color:#ffe600">Factory Staff Housing</span>
+          <span class="cat-tag cat-residential">RESIDENTIAL</span>
+          <p>Functional, oppressive, owned by Hughes Industries. Workers can deduct rent from wages — in practice this means they can't save. A tenant union has been attempted three times. The third attempt is ongoing.</p>
+        </div>
+      </div>
+      <div class="binfo" id="industrial-info-grease">
+        <div class="bi-header" style="border-color:#ffe600">
+          <h2 style="color:#ffe600">🔧 The Grease Trap</h2>
+          <span class="btag" style="color:#ffe600;border-color:#ffe600">Worker Bar — Unlicensed</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>An informal bar that has operated out of a converted maintenance bay for eight years. No license. Hughes security has raided it twice. Both times, every worker in the district called in sick the following morning. Hughes decided the raids were not cost-effective.</p>
+        </div>
+      </div>
+      <div class="binfo" id="industrial-info-medstation">
+        <div class="bi-header" style="border-color:#ffe600">
+          <h2 style="color:#ffe600">🏥 Industrial Medical Station</h2>
+          <span class="btag" style="color:#ffe600;border-color:#ffe600">Trauma & Occupational Health</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Handles factory accidents, machinery injuries, and chemical exposures. Owned by Hughes Industries. Their paperwork systematically understates injury severity to avoid compensation claims. Workers know this. They have no alternative.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="view" id="view-commercial">
+    <div class="map-panel">
+      <p class="map-hint">&#x25A3; Click a location to inspect</p>
+      <svg id="map-commercial" class="district-map" viewBox="0 0 556 580" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <pattern id="grid-commercial" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#111820" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="556" height="580" fill="#0d1820"/>
+        <rect width="556" height="580" fill="url(#grid-commercial)"/>
+        <line x1="30" y1="195" x2="530" y2="195" stroke="#1a2030" stroke-width="16"/>
+        <text x="280" y="192" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">BANKING ROW — MAIN BOULEVARD</text>
+        <line x1="30" y1="360" x2="530" y2="360" stroke="#1a2030" stroke-width="10"/>
+        <text x="280" y="357" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">MARKET STREET</text>
+        <line x1="30" y1="465" x2="530" y2="465" stroke="#1a2030" stroke-width="8"/>
+        <text x="280" y="462" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">SOUTH TRADE ROAD</text>
+        <line x1="165" y1="40" x2="165" y2="580" stroke="#1a2030" stroke-width="10"/>
+        <text x="162" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,162,310)">CREDIT AVENUE</text>
+        <line x1="355" y1="40" x2="355" y2="580" stroke="#1a2030" stroke-width="10"/>
+        <text x="352" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,352,310)">EXCHANGE LANE</text>
+        <rect x="360" y="375" width="158" height="100" fill="#080d14" stroke="#00c8ff" stroke-width="1" stroke-dasharray="4 3" rx="2"/>
+        <text x="439" y="387" text-anchor="middle" font-family="Courier New" font-size="6.5" fill="#00c8ff" letter-spacing="0.1em" opacity="0.7">NO QUESTIONS ASKED — LOCATION CLASSIFIED</text>
+        <rect id="commercial-b-creditbank" class="bldg" x="36" y="42" width="120" height="145" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('commercial','creditbank')" data-cat="corp"/>
+        <text class="blabel" x="96" y="108" text-anchor="middle" fill="#b44aff">Credit Collective Bank</text>
+        <text class="bsub"   x="96" y="118" text-anchor="middle" fill="#b44aff">🏦 Corporate-Backed Financial Ins</text>
+        <rect id="commercial-b-vaultb2" class="bldg" x="169" y="42" width="175" height="100" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('commercial','vaultb2')" data-cat="corp"/>
+        <text class="blabel" x="256" y="86" text-anchor="middle" fill="#b44aff">VaultBank — Commercial B</text>
+        <text class="bsub"   x="256" y="96" text-anchor="middle" fill="#b44aff">🏦 Secure Financial Services</text>
+        <rect id="commercial-b-databroker" class="bldg" x="357" y="42" width="155" height="95" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('commercial','databroker')" data-cat="commercial"/>
+        <text class="blabel" x="434" y="83" text-anchor="middle" fill="#00c8ff">DataBroker Exchange</text>
+        <text class="bsub"   x="434" y="93" text-anchor="middle" fill="#00c8ff">📊 Information Trading Floor</text>
+        <rect id="commercial-b-gunter" class="bldg" x="169" y="154" width="175" height="34" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('commercial','gunter')" data-cat="commercial"/>
+        <text class="blabel" x="256" y="165" text-anchor="middle" fill="#00c8ff">Gunter's Firearms</text>
+        <text class="bsub"   x="256" y="175" text-anchor="middle" fill="#00c8ff">🔫 Licensed Weapons Dealer</text>
+        <rect id="commercial-b-cyber" class="bldg" x="357" y="148" width="155" height="80" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('commercial','cyber')" data-cat="commercial"/>
+        <text class="blabel" x="434" y="182" text-anchor="middle" fill="#00c8ff">Cyberware Emporium</text>
+        <text class="bsub"   x="434" y="192" text-anchor="middle" fill="#00c8ff">🦾 Legal Augmentation Sales</text>
+        <rect id="commercial-b-bazaar" class="bldg" x="36" y="200" width="120" height="150" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('commercial','bazaar')" data-cat="commercial"/>
+        <text class="blabel" x="96" y="269" text-anchor="middle" fill="#00c8ff">The Neon Bazaar</text>
+        <text class="bsub"   x="96" y="279" text-anchor="middle" fill="#00c8ff">🛍️ Permanent Indoor Market</text>
+        <rect id="commercial-b-broker_den" class="bldg" x="170" y="200" width="175" height="150" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('commercial','broker_den')" data-cat="commercial"/>
+        <text class="blabel" x="257" y="269" text-anchor="middle" fill="#00c8ff">The Broker's Den</text>
+        <text class="bsub"   x="257" y="279" text-anchor="middle" fill="#00c8ff">🤝 Commercial Services Hub</text>
+        <rect id="commercial-b-pawn" class="bldg" x="360" y="240" width="152" height="110" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('commercial','pawn')" data-cat="commercial"/>
+        <text class="blabel" x="436" y="289" text-anchor="middle" fill="#00c8ff">Hue Pawn & Trade</text>
+        <text class="bsub"   x="436" y="299" text-anchor="middle" fill="#00c8ff">💱 Pawnshop & Resale</text>
+        <rect id="commercial-b-nqa" class="bldg" x="360" y="375" width="152" height="90" fill="#1c0a08" stroke="#ff2244" stroke-width="1.2" rx="1" onclick="showBuilding('commercial','nqa')" data-cat="danger"/>
+        <text class="blabel" x="436" y="414" text-anchor="middle" fill="#ff2244">"No Questions Asked"</text>
+        <text class="bsub"   x="436" y="424" text-anchor="middle" fill="#ff2244">🕳️ Black Market — Location Redact</text>
+        <rect id="commercial-b-medmarket" class="bldg" x="36" y="365" width="120" height="90" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('commercial','medmarket')" data-cat="commercial"/>
+        <text class="blabel" x="96" y="404" text-anchor="middle" fill="#00c8ff">MediMarket</text>
+        <text class="bsub"   x="96" y="414" text-anchor="middle" fill="#00c8ff">💊 Pharmaceutical Sales — Semi-Li</text>
+        <rect id="commercial-b-transit_c" class="bldg" x="170" y="365" width="175" height="90" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('commercial','transit_c')" data-cat="service"/>
+        <text class="blabel" x="257" y="404" text-anchor="middle" fill="#00e5ff">Commercial Transit Depot</text>
+        <text class="bsub"   x="257" y="414" text-anchor="middle" fill="#00e5ff">🚛 Freight Routing Center</text>
+        <rect id="commercial-b-security_c" class="bldg" x="36" y="470" width="480" height="50" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('commercial','security_c')" data-cat="service"/>
+        <text class="blabel" x="276" y="489" text-anchor="middle" fill="#00e5ff">Commercial Security — Di</text>
+        <text class="bsub"   x="276" y="499" text-anchor="middle" fill="#00e5ff">🛡️ Joint Corpo-Municipal Operatio</text>
+        <rect x="1" y="1" width="554" height="578" fill="none" stroke="#00c8ff" stroke-width="1.5" opacity="0.3"/>
+      </svg>
+    </div>
+    <div class="info-panel" id="ipanel-commercial">
+      <div class="bplaceholder" id="bph-commercial">
+        <span class="arr">&#x25C8;</span>
+        SELECT A LOCATION<br><small>Click any building on the map</small>
+      </div>
+      <div class="district-hero" id="hero-commercial" style="display:none">
+        <img src="../../../../maps/the city of hue/commercial-district.jpg" alt="Commercial" onerror="this.style.display='none'"/>
+        <div class="hero-desc" style="border-color:#00c8ff">
+          <h2 style="color:#00c8ff">Commercial</h2>
+          <p>Commerce, legitimate and otherwise. The Commercial District handles everything the city buys and sells — officially through licensed businesses, unofficially through a parallel economy.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commercial-info-creditbank">
+        <div class="bi-header" style="border-color:#00c8ff">
+          <h2 style="color:#00c8ff">🏦 Credit Collective Bank</h2>
+          <span class="btag" style="color:#00c8ff;border-color:#00c8ff">Corporate-Backed Financial Institution</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>The district's main commercial bank. The vault has not been successfully robbed in 30 years — not because of the security, but because whoever has tried has subsequently disappeared without complaint being filed. The loan department's interest rates are legal. The debt enforcement arm's methods are not.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commercial-info-vaultb2">
+        <div class="bi-header" style="border-color:#00c8ff">
+          <h2 style="color:#00c8ff">🏦 VaultBank — Commercial Branch</h2>
+          <span class="btag" style="color:#00c8ff;border-color:#00c8ff">Secure Financial Services</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>A branch of the Executive District's tier-1 bank, handling commercial-volume transactions. Most of the city's legal money flows through here at some point. The manager is a nervous man who has clearly been told something he wishes he hadn't.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commercial-info-databroker">
+        <div class="bi-header" style="border-color:#00c8ff">
+          <h2 style="color:#00c8ff">📊 DataBroker Exchange</h2>
+          <span class="btag" style="color:#00c8ff;border-color:#00c8ff">Information Trading Floor</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>A licensed exchange for commercial data. The back room handles information of a more sensitive variety: corporate secrets, blackmail material, personnel files. Payment in untraceable currencies only.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commercial-info-gunter">
+        <div class="bi-header" style="border-color:#00c8ff">
+          <h2 style="color:#00c8ff">🔫 Gunter's Firearms</h2>
+          <span class="btag" style="color:#00c8ff;border-color:#00c8ff">Licensed Weapons Dealer</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Gunter sells legal weapons and ammunition through the front counter. He sells considerably more through the back. His grey-market stock includes military-surplus equipment, prohibited modifications, and weapons with serial numbers that have undergone a manufacturing defect.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commercial-info-cyber">
+        <div class="bi-header" style="border-color:#00c8ff">
+          <h2 style="color:#00c8ff">🦾 Cyberware Emporium</h2>
+          <span class="btag" style="color:#00c8ff;border-color:#00c8ff">Legal Augmentation Sales</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Sells licensed augmentation hardware. The showroom is bright and legal. The stockroom contains models that have not received city approval — available for 'research purposes'. Customers with the right referral can access a fitting service in the basement.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commercial-info-bazaar">
+        <div class="bi-header" style="border-color:#00c8ff">
+          <h2 style="color:#00c8ff">🛍️ The Neon Bazaar</h2>
+          <span class="btag" style="color:#00c8ff;border-color:#00c8ff">Permanent Indoor Market</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>A covered market across two floors. 140 stalls selling everything from food to electronics to questionable documents. No stall is officially registered as what it actually sells. The market association self-regulates, handles disputes, and maintains a collective insurance scheme.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commercial-info-broker_den">
+        <div class="bi-header" style="border-color:#00c8ff">
+          <h2 style="color:#00c8ff">🤝 The Broker's Den</h2>
+          <span class="btag" style="color:#00c8ff;border-color:#00c8ff">Commercial Services Hub</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>A cluster of small offices providing contract negotiation, currency exchange, and identity verification. The identity verification desk accepts payment to verify identities that may not fully correspond to the individual presenting.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commercial-info-pawn">
+        <div class="bi-header" style="border-color:#00c8ff">
+          <h2 style="color:#00c8ff">💱 Hue Pawn & Trade</h2>
+          <span class="btag" style="color:#00c8ff;border-color:#00c8ff">Pawnshop & Resale</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>The largest pawn operation in the district. The third floor holds inventory of a quality and provenance that requires specific introductions. The owner, a cold-eyed woman named Devaris, has a memory for valuations that makes people uncomfortable.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commercial-info-nqa">
+        <div class="bi-header" style="border-color:#00c8ff">
+          <h2 style="color:#00c8ff">🕳️ "No Questions Asked"</h2>
+          <span class="btag" style="color:#00c8ff;border-color:#00c8ff">Black Market — Location Redacted</span>
+          <span class="cat-tag cat-danger">DANGER</span>
+          <p>The district's open secret. A permanent black market operation accessible through a referral system that changes its entry point every 72 hours. Sells: prohibited augmentations, military hardware, forged documentation, classified data. The operators have never been raided.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commercial-info-medmarket">
+        <div class="bi-header" style="border-color:#00c8ff">
+          <h2 style="color:#00c8ff">💊 MediMarket</h2>
+          <span class="btag" style="color:#00c8ff;border-color:#00c8ff">Pharmaceutical Sales — Semi-Licensed</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Legal pharmaceutical sales alongside a grey-market section for medications that require a prescription most people cannot obtain. Their supplemental stock comes from the Biomed Assembly Complex via a route neither party acknowledges.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commercial-info-transit_c">
+        <div class="bi-header" style="border-color:#00c8ff">
+          <h2 style="color:#00c8ff">🚛 Commercial Transit Depot</h2>
+          <span class="btag" style="color:#00c8ff;border-color:#00c8ff">Freight Routing Center</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Coordinates cargo movement between the Commercial District and the rest of the city. The official manifest covers 60% of the volume moving through the depot. The rest is routed through a parallel booking system.</p>
+        </div>
+      </div>
+      <div class="binfo" id="commercial-info-security_c">
+        <div class="bi-header" style="border-color:#00c8ff">
+          <h2 style="color:#00c8ff">🛡️ Commercial Security — District Post</h2>
+          <span class="btag" style="color:#00c8ff;border-color:#00c8ff">Joint Corpo-Municipal Operation</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Funded jointly by Banking Row institutions and the city authority. Their priorities reflect their funding: financial institution security first, public safety second. They are aware of the black market operation. This awareness has a monthly cost, paid in cryptocurrency.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="view" id="view-docks">
+    <div class="map-panel">
+      <p class="map-hint">&#x25A3; Click a location to inspect</p>
+      <svg id="map-docks" class="district-map" viewBox="0 0 556 580" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <pattern id="grid-docks" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#111820" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="556" height="580" fill="#061520"/>
+        <rect width="556" height="580" fill="url(#grid-docks)"/>
+        <line x1="30" y1="180" x2="530" y2="180" stroke="#1a2030" stroke-width="12"/>
+        <text x="280" y="177" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">HARBOUR ROAD — MAIN</text>
+        <line x1="30" y1="330" x2="530" y2="330" stroke="#1a2030" stroke-width="10"/>
+        <text x="280" y="327" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">WHARF STREET</text>
+        <line x1="30" y1="445" x2="530" y2="445" stroke="#1a2030" stroke-width="8"/>
+        <text x="280" y="442" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">DOCK ROAD SOUTH</text>
+        <line x1="155" y1="40" x2="155" y2="580" stroke="#1a2030" stroke-width="10"/>
+        <text x="152" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,152,310)">PORT AVENUE</text>
+        <line x1="360" y1="40" x2="360" y2="580" stroke="#1a2030" stroke-width="10"/>
+        <text x="357" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,357,310)">STRAT LANE</text>
+        <rect x="32" y="510" width="490" height="110" fill="#020d18" stroke="#0077aa" stroke-width="1" stroke-dasharray="4 3" rx="2"/>
+        <text x="277" y="522" text-anchor="middle" font-family="Courier New" font-size="6.5" fill="#0077aa" letter-spacing="0.1em" opacity="0.7">OCEAN — COASTAL ACCESS — PORT AUTHORITY JURISDICTION</text>
+        <rect id="docks-b-weary" class="bldg" x="36" y="42" width="110" height="125" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('docks','weary')" data-cat="commercial"/>
+        <text class="blabel" x="91" y="98" text-anchor="middle" fill="#00c8ff">The Weary Sailor</text>
+        <text class="bsub"   x="91" y="108" text-anchor="middle" fill="#00c8ff">⚓ Dockside Bar & Information Hub</text>
+        <rect id="docks-b-port_auth" class="bldg" x="158" y="42" width="190" height="120" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('docks','port_auth')" data-cat="corp"/>
+        <text class="blabel" x="253" y="96" text-anchor="middle" fill="#b44aff">Port Authority HQ</text>
+        <text class="bsub"   x="253" y="106" text-anchor="middle" fill="#b44aff">⚓ Maritime Law Enforcement</text>
+        <rect id="docks-b-customs" class="bldg" x="360" y="42" width="152" height="120" fill="#1a0f2e" stroke="#b44aff" stroke-width="1.2" rx="1" onclick="showBuilding('docks','customs')" data-cat="corp"/>
+        <text class="blabel" x="436" y="96" text-anchor="middle" fill="#b44aff">Customs Office</text>
+        <text class="bsub"   x="436" y="106" text-anchor="middle" fill="#b44aff">📋 Cargo Inspection — Official</text>
+        <rect id="docks-b-strat_a" class="bldg" x="36" y="186" width="110" height="135" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('docks','strat_a')" data-cat="commercial"/>
+        <text class="blabel" x="91" y="247" text-anchor="middle" fill="#00c8ff">Strat Warehouses — Block</text>
+        <text class="bsub"   x="91" y="257" text-anchor="middle" fill="#00c8ff">📦 Freight Storage — Front</text>
+        <rect id="docks-b-strat_b" class="bldg" x="158" y="186" width="190" height="65" fill="#1c0a08" stroke="#ff2244" stroke-width="1.2" rx="1" onclick="showBuilding('docks','strat_b')" data-cat="danger"/>
+        <text class="blabel" x="253" y="212" text-anchor="middle" fill="#ff2244">Strat Warehouses — Block</text>
+        <text class="bsub"   x="253" y="222" text-anchor="middle" fill="#ff2244">📦 Freight Storage — Actual</text>
+        <rect id="docks-b-salt" class="bldg" x="360" y="186" width="152" height="65" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('docks','salt')" data-cat="commercial"/>
+        <text class="blabel" x="436" y="212" text-anchor="middle" fill="#00c8ff">The Salt Bar</text>
+        <text class="bsub"   x="436" y="222" text-anchor="middle" fill="#00c8ff">🍺 Second Dockside Bar</text>
+        <rect id="docks-b-terminal_a" class="bldg" x="36" y="336" width="310" height="95" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('docks','terminal_a')" data-cat="service"/>
+        <text class="blabel" x="191" y="377" text-anchor="middle" fill="#00e5ff">Cargo Terminal A</text>
+        <text class="bsub"   x="191" y="387" text-anchor="middle" fill="#00e5ff">🚢 Primary Maritime Freight Handl</text>
+        <rect id="docks-b-submarine" class="bldg" x="360" y="261" width="152" height="80" fill="#1c0a08" stroke="#ff2244" stroke-width="1.2" rx="1" onclick="showBuilding('docks','submarine')" data-cat="danger"/>
+        <text class="blabel" x="436" y="295" text-anchor="middle" fill="#ff2244">Submarine Bay — [RESTRIC</text>
+        <text class="bsub"   x="436" y="305" text-anchor="middle" fill="#ff2244">🌊 Classified Maritime Facility</text>
+        <rect id="docks-b-fishwharf" class="bldg" x="360" y="348" width="152" height="90" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('docks','fishwharf')" data-cat="service"/>
+        <text class="blabel" x="436" y="387" text-anchor="middle" fill="#00e5ff">Fisherman's Wharf</text>
+        <text class="bsub"   x="436" y="397" text-anchor="middle" fill="#00e5ff">🐟 Traditional Fishing Operations</text>
+        <rect id="docks-b-residences" class="bldg" x="36" y="450" width="310" height="50" fill="#0a1f18" stroke="#39ff14" stroke-width="1.2" rx="1" onclick="showBuilding('docks','residences')" data-cat="residential"/>
+        <text class="blabel" x="191" y="469" text-anchor="middle" fill="#39ff14">Sailor Residences</text>
+        <text class="bsub"   x="191" y="479" text-anchor="middle" fill="#39ff14">🏘️ Permanent Dockworker Housing</text>
+        <rect id="docks-b-anchor" class="bldg" x="360" y="450" width="152" height="50" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('docks','anchor')" data-cat="commercial"/>
+        <text class="blabel" x="436" y="469" text-anchor="middle" fill="#00c8ff">The Rusty Anchor</text>
+        <text class="bsub"   x="436" y="479" text-anchor="middle" fill="#00c8ff">⚙️ Marine Parts & Repair Supply</text>
+        <rect id="docks-b-ocean_label" class="bldg" x="170" y="515" width="180" height="35" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('docks','ocean_label')" data-cat="service"/>
+        <text class="blabel" x="260" y="526" text-anchor="middle" fill="#00e5ff">~ Ocean Access ~</text>
+        <text class="bsub"   x="260" y="536" text-anchor="middle" fill="#00e5ff">🌊 Maritime Entry — Open Water</text>
+        <rect x="1" y="1" width="554" height="578" fill="none" stroke="#0099cc" stroke-width="1.5" opacity="0.3"/>
+      </svg>
+    </div>
+    <div class="info-panel" id="ipanel-docks">
+      <div class="bplaceholder" id="bph-docks">
+        <span class="arr">&#x25C8;</span>
+        SELECT A LOCATION<br><small>Click any building on the map</small>
+      </div>
+      <div class="district-hero" id="hero-docks" style="display:none">
+        <img src="../../../../maps/the city of hue/docks.jpg" alt="Docks" onerror="this.style.display='none'"/>
+        <div class="hero-desc" style="border-color:#0099cc">
+          <h2 style="color:#0099cc">Docks</h2>
+          <p>Everything the city imports and exports passes through the Docks. Legitimate freight through the Port Authority terminals. Everything else through the warehouses that technically only store legitimate freight.</p>
+        </div>
+      </div>
+      <div class="binfo" id="docks-info-weary">
+        <div class="bi-header" style="border-color:#0099cc">
+          <h2 style="color:#0099cc">⚓ The Weary Sailor</h2>
+          <span class="btag" style="color:#0099cc;border-color:#0099cc">Dockside Bar & Information Hub</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>The oldest continuously operating bar in Hue. Every piece of maritime intelligence in the city passes through at some point — arrival schedules, manifest discrepancies, which Port Authority officer is covering which gate tonight. The barkeep, a former navigator named Coral, hears everything and sells selectively.</p>
+        </div>
+      </div>
+      <div class="binfo" id="docks-info-port_auth">
+        <div class="bi-header" style="border-color:#0099cc">
+          <h2 style="color:#0099cc">⚓ Port Authority HQ</h2>
+          <span class="btag" style="color:#0099cc;border-color:#0099cc">Maritime Law Enforcement</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>The official port administration and law enforcement body. Approximately 40% of the staff are uncompromised. The other 60% have standing arrangements with shipping operators, which is known to the 40% and tolerated because the alternative is worse.</p>
+        </div>
+      </div>
+      <div class="binfo" id="docks-info-customs">
+        <div class="bi-header" style="border-color:#0099cc">
+          <h2 style="color:#0099cc">📋 Customs Office</h2>
+          <span class="btag" style="color:#0099cc;border-color:#0099cc">Cargo Inspection — Official</span>
+          <span class="cat-tag cat-corp">CORP</span>
+          <p>Officially processes all inbound cargo. In practice, approves what the Port Authority directs it to approve. The customs officers have a rotation schedule that is posted, unofficially, on three different smugglers' networks 48 hours in advance.</p>
+        </div>
+      </div>
+      <div class="binfo" id="docks-info-strat_a">
+        <div class="bi-header" style="border-color:#0099cc">
+          <h2 style="color:#0099cc">📦 Strat Warehouses — Block A</h2>
+          <span class="btag" style="color:#0099cc;border-color:#0099cc">Freight Storage — Front</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>The official face of Strat's operations. Stores legitimate contracted cargo. The Port Authority inspectors assigned to Strat warehouses have the district's lowest rejection rate and highest overtime hours.</p>
+        </div>
+      </div>
+      <div class="binfo" id="docks-info-strat_b">
+        <div class="bi-header" style="border-color:#0099cc">
+          <h2 style="color:#0099cc">📦 Strat Warehouses — Block B</h2>
+          <span class="btag" style="color:#0099cc;border-color:#0099cc">Freight Storage — Actual</span>
+          <span class="cat-tag cat-danger">DANGER</span>
+          <p>Adjacent to Block A, connected by a corridor not on the public floor plan. The cargo moved through Block B does not appear on the Port Authority manifest system. Three shifts of workers who do not appear on Strat's official payroll.</p>
+        </div>
+      </div>
+      <div class="binfo" id="docks-info-salt">
+        <div class="bi-header" style="border-color:#0099cc">
+          <h2 style="color:#0099cc">🍺 The Salt Bar</h2>
+          <span class="btag" style="color:#0099cc;border-color:#0099cc">Second Dockside Bar</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Rougher than The Weary Sailor and aware of it. Caters to day-shift dock workers and the type of sailors who cause problems on other ships. Fights are resolved by the bar's owner — a half-orc named Brex — personally and immediately. Brex has never lost.</p>
+        </div>
+      </div>
+      <div class="binfo" id="docks-info-terminal_a">
+        <div class="bi-header" style="border-color:#0099cc">
+          <h2 style="color:#0099cc">🚢 Cargo Terminal A</h2>
+          <span class="btag" style="color:#0099cc;border-color:#0099cc">Primary Maritime Freight Handling</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>The main commercial cargo terminal. Three berths for large freight vessels, continuous loading/unloading. The terminal crane operators are among the best-paid workers in the district. They also see everything that gets loaded and unloaded, on every ship, at every hour.</p>
+        </div>
+      </div>
+      <div class="binfo" id="docks-info-submarine">
+        <div class="bi-header" style="border-color:#0099cc">
+          <h2 style="color:#0099cc">🌊 Submarine Bay — [RESTRICTED]</h2>
+          <span class="btag" style="color:#0099cc;border-color:#0099cc">Classified Maritime Facility</span>
+          <span class="cat-tag cat-danger">DANGER</span>
+          <p>A concealed marine bay accessible from the ocean side, not visible from the public dock area. Hughes Industries officially denies its existence. Three sources of independent intelligence confirm it houses two submersibles used for below-manifest cargo movement.</p>
+        </div>
+      </div>
+      <div class="binfo" id="docks-info-fishwharf">
+        <div class="bi-header" style="border-color:#0099cc">
+          <h2 style="color:#0099cc">🐟 Fisherman's Wharf</h2>
+          <span class="btag" style="color:#0099cc;border-color:#0099cc">Traditional Fishing Operations</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>The oldest part of the Docks — predates the city's corporate construction. A community of fishers who have operated here for generations. They have resisted six buyout attempts by Strat and one by Hughes Industries. They know more about the ocean approaches to the city than anyone.</p>
+        </div>
+      </div>
+      <div class="binfo" id="docks-info-residences">
+        <div class="bi-header" style="border-color:#0099cc">
+          <h2 style="color:#0099cc">🏘️ Sailor Residences</h2>
+          <span class="btag" style="color:#0099cc;border-color:#0099cc">Permanent Dockworker Housing</span>
+          <span class="cat-tag cat-residential">RESIDENTIAL</span>
+          <p>Long-term housing for dock workers and maritime crew. Perpetually damp, adequate maintenance, communal facilities. A tight community with its own informal governance structure. Outsiders moving in are noticed immediately.</p>
+        </div>
+      </div>
+      <div class="binfo" id="docks-info-anchor">
+        <div class="bi-header" style="border-color:#0099cc">
+          <h2 style="color:#0099cc">⚙️ The Rusty Anchor</h2>
+          <span class="btag" style="color:#0099cc;border-color:#0099cc">Marine Parts & Repair Supply</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>Sells everything needed to maintain a vessel at sea. Parts of uncertain provenance, navigation tools, underwater equipment, and specialized hardware that could serve maritime or non-maritime purposes equally. The catalogue is not posted publicly.</p>
+        </div>
+      </div>
+      <div class="binfo" id="docks-info-ocean_label">
+        <div class="bi-header" style="border-color:#0099cc">
+          <h2 style="color:#0099cc">🌊 ~ Ocean Access ~</h2>
+          <span class="btag" style="color:#0099cc;border-color:#0099cc">Maritime Entry — Open Water</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>Open ocean access. City patrol boats operate a loose perimeter. The space between patrol routes is precisely 22 minutes — known to everyone who uses this access point for unofficial purposes.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="view" id="view-underground">
+    <div class="map-panel">
+      <p class="map-hint">&#x25A3; Click a location to inspect</p>
+      <svg id="map-underground" class="district-map" viewBox="0 0 556 580" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <pattern id="grid-underground" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#111820" stroke-width="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="556" height="580" fill="#0d0016"/>
+        <rect width="556" height="580" fill="url(#grid-underground)"/>
+        <line x1="30" y1="220" x2="530" y2="220" stroke="#1a2030" stroke-width="10"/>
+        <text x="280" y="217" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">UNDERCURRENT — MAIN TUNNEL</text>
+        <line x1="30" y1="380" x2="530" y2="380" stroke="#1a2030" stroke-width="6"/>
+        <text x="280" y="377" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">BONE ROAD</text>
+        <line x1="30" y1="470" x2="530" y2="470" stroke="#1a2030" stroke-width="5"/>
+        <text x="280" y="467" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em">DEEP ACCESS TUNNEL</text>
+        <line x1="160" y1="40" x2="160" y2="580" stroke="#1a2030" stroke-width="8"/>
+        <text x="157" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,157,310)">NORTH DROP SHAFT</text>
+        <line x1="360" y1="40" x2="360" y2="580" stroke="#1a2030" stroke-width="6"/>
+        <text x="357" y="310" text-anchor="middle" font-family="Courier New" font-size="6" fill="#2a3a50" letter-spacing="0.12em" transform="rotate(90,357,310)">EAST PASSAGE</text>
+        <rect x="36" y="385" width="490" height="195" fill="#090010" stroke="#9933cc" stroke-width="1" stroke-dasharray="4 3" rx="2"/>
+        <text x="281" y="397" text-anchor="middle" font-family="Courier New" font-size="6.5" fill="#9933cc" letter-spacing="0.1em" opacity="0.7">UNMAPPED DEPTHS — MULTIPLE DISAPPEARANCES RECORDED</text>
+        <rect x="36" y="42" width="116" height="175" fill="#0a001a" stroke="#39ff14" stroke-width="1" stroke-dasharray="4 3" rx="2"/>
+        <text x="94" y="54" text-anchor="middle" font-family="Courier New" font-size="6.5" fill="#39ff14" letter-spacing="0.1em" opacity="0.7">PSIONIC DEAD ZONE — EMITTER SIGNAL NULL</text>
+        <rect id="underground-b-undercurrent" class="bldg" x="168" y="42" width="178" height="168" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('underground','undercurrent')" data-cat="service"/>
+        <text class="blabel" x="257" y="120" text-anchor="middle" fill="#00e5ff">The Undercurrent</text>
+        <text class="bsub"   x="257" y="130" text-anchor="middle" fill="#00e5ff">🌀 Main Tunnel Junction — Communi</text>
+        <rect id="underground-b-sanctum" class="bldg" x="36" y="42" width="116" height="170" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('underground','sanctum')" data-cat="service"/>
+        <text class="blabel" x="94" y="121" text-anchor="middle" fill="#00e5ff">The Sanctum</text>
+        <text class="bsub"   x="94" y="131" text-anchor="middle" fill="#00e5ff">📡 Psionic Dead Zone — Protected </text>
+        <rect id="underground-b-deads_jxn" class="bldg" x="360" y="42" width="150" height="110" fill="#1c0a08" stroke="#ff2244" stroke-width="1.2" rx="1" onclick="showBuilding('underground','deads_jxn')" data-cat="danger"/>
+        <text class="blabel" x="435" y="91" text-anchor="middle" fill="#ff2244">Dead Man's Junction</text>
+        <text class="bsub"   x="435" y="101" text-anchor="middle" fill="#ff2244">💀 Intersection — High Traffic — </text>
+        <rect id="underground-b-forge" class="bldg" x="36" y="225" width="116" height="85" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('underground','forge')" data-cat="commercial"/>
+        <text class="blabel" x="94" y="261" text-anchor="middle" fill="#00c8ff">The Forge</text>
+        <text class="bsub"   x="94" y="271" text-anchor="middle" fill="#00c8ff">⚔️ Underground Weapons Workshop</text>
+        <rect id="underground-b-whisper" class="bldg" x="168" y="230" width="178" height="90" fill="#0d1820" stroke="#00c8ff" stroke-width="1.2" rx="1" onclick="showBuilding('underground','whisper')" data-cat="commercial"/>
+        <text class="blabel" x="257" y="269" text-anchor="middle" fill="#00c8ff">Whisper Market</text>
+        <text class="bsub"   x="257" y="279" text-anchor="middle" fill="#00c8ff">👁️ Underground Information Bazaar</text>
+        <rect id="underground-b-memory" class="bldg" x="360" y="162" width="150" height="75" fill="#1c0a08" stroke="#ff2244" stroke-width="1.2" rx="1" onclick="showBuilding('underground','memory')" data-cat="danger"/>
+        <text class="blabel" x="435" y="193" text-anchor="middle" fill="#ff2244">Memory Banks</text>
+        <text class="bsub"   x="435" y="203" text-anchor="middle" fill="#ff2244">💾 Hidden Data Haven — Classified</text>
+        <rect id="underground-b-refuge" class="bldg" x="36" y="320" width="300" height="50" fill="#0a1f18" stroke="#39ff14" stroke-width="1.2" rx="1" onclick="showBuilding('underground','refuge')" data-cat="residential"/>
+        <text class="blabel" x="186" y="339" text-anchor="middle" fill="#39ff14">The Refuge</text>
+        <text class="bsub"   x="186" y="349" text-anchor="middle" fill="#39ff14">🏘️ Permanent Underground Communit</text>
+        <rect id="underground-b-transit_b" class="bldg" x="348" y="250" width="160" height="120" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('underground','transit_b')" data-cat="service"/>
+        <text class="blabel" x="428" y="304" text-anchor="middle" fill="#00e5ff">Old Transit Station Brav</text>
+        <text class="bsub"   x="428" y="314" text-anchor="middle" fill="#00e5ff">🚊 Pre-War Structure — Repurposed</text>
+        <rect id="underground-b-sump" class="bldg" x="36" y="390" width="490" height="60" fill="#1c0a08" stroke="#ff2244" stroke-width="1.2" rx="1" onclick="showBuilding('underground','sump')" data-cat="danger"/>
+        <text class="blabel" x="281" y="414" text-anchor="middle" fill="#ff2244">The Sump</text>
+        <text class="bsub"   x="281" y="424" text-anchor="middle" fill="#ff2244">☣️ Toxic Lower Level — Avoid</text>
+        <rect id="underground-b-bone_road" class="bldg" x="36" y="460" width="490" height="60" fill="#1c0a08" stroke="#ff2244" stroke-width="1.2" rx="1" onclick="showBuilding('underground','bone_road')" data-cat="danger"/>
+        <text class="blabel" x="281" y="484" text-anchor="middle" fill="#ff2244">Bone Road</text>
+        <text class="bsub"   x="281" y="494" text-anchor="middle" fill="#ff2244">🦴 Deep Passage — Unknown Destina</text>
+        <rect id="underground-b-access_pts" class="bldg" x="36" y="530" width="490" height="40" fill="#0e1820" stroke="#00e5ff" stroke-width="1.2" rx="1" onclick="showBuilding('underground','access_pts')" data-cat="service"/>
+        <text class="blabel" x="281" y="544" text-anchor="middle" fill="#00e5ff">Surface Access Network</text>
+        <text class="bsub"   x="281" y="554" text-anchor="middle" fill="#00e5ff">⬆️ Distributed Entry Points — Var</text>
+        <rect x="1" y="1" width="554" height="578" fill="none" stroke="#9933cc" stroke-width="1.5" opacity="0.3"/>
+      </svg>
+    </div>
+    <div class="info-panel" id="ipanel-underground">
+      <div class="bplaceholder" id="bph-underground">
+        <span class="arr">&#x25C8;</span>
+        SELECT A LOCATION<br><small>Click any building on the map</small>
+      </div>
+      <div class="district-hero" id="hero-underground" style="display:none">
+        <img src="../../../../maps/the city of hue/underground.jpg" alt="Underground" onerror="this.style.display='none'"/>
+        <div class="hero-desc" style="border-color:#9933cc">
+          <h2 style="color:#9933cc">Underground</h2>
+          <p>Below the city's surface, a second city exists. No complete map exists. Several have been attempted. None agree.</p>
+        </div>
+      </div>
+      <div class="binfo" id="underground-info-undercurrent">
+        <div class="bi-header" style="border-color:#9933cc">
+          <h2 style="color:#9933cc">🌀 The Undercurrent</h2>
+          <span class="btag" style="color:#9933cc;border-color:#9933cc">Main Tunnel Junction — Community Hub</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>The central node of Underground life. A massive vaulted space created when three pre-war transit tunnels collapsed into each other. Hosts a permanent market, a community meeting space, and the only reliable source of clean water in the Underground — a filtered tap accessed and sealed into the wall forty years ago.</p>
+        </div>
+      </div>
+      <div class="binfo" id="underground-info-sanctum">
+        <div class="bi-header" style="border-color:#9933cc">
+          <h2 style="color:#9933cc">📡 The Sanctum</h2>
+          <span class="btag" style="color:#9933cc;border-color:#9933cc">Psionic Dead Zone — Protected Refuge</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>A section of the Underground naturally shielded from the Hughes Station Psionic Emitter array. No psionic signals penetrate here — neither surveillance nor influence. The Underground community treats it as sacred ground. People come here to think clearly. The dead zone boundary is marked in paint on the floor.</p>
+        </div>
+      </div>
+      <div class="binfo" id="underground-info-deads_jxn">
+        <div class="bi-header" style="border-color:#9933cc">
+          <h2 style="color:#9933cc">💀 Dead Man's Junction</h2>
+          <span class="btag" style="color:#9933cc;border-color:#9933cc">Intersection — High Traffic — Dangerous</span>
+          <span class="cat-tag cat-danger">DANGER</span>
+          <p>Where four major passages meet. High foot traffic makes it a commercial hub and a prime spot for robbery. The junction has its own informal toll system managed by a rotating coalition who take a percentage of commerce in exchange for keeping the major violence down.</p>
+        </div>
+      </div>
+      <div class="binfo" id="underground-info-forge">
+        <div class="bi-header" style="border-color:#9933cc">
+          <h2 style="color:#9933cc">⚔️ The Forge</h2>
+          <span class="btag" style="color:#9933cc;border-color:#9933cc">Underground Weapons Workshop</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>A working weapons fabrication shop run by two former factory workers. Produces unlicensed weapons, augmentation components, and custom modifications. No serial numbers. They have a six-month backlog. They do not take rush orders from people they don't know.</p>
+        </div>
+      </div>
+      <div class="binfo" id="underground-info-whisper">
+        <div class="bi-header" style="border-color:#9933cc">
+          <h2 style="color:#9933cc">👁️ Whisper Market</h2>
+          <span class="btag" style="color:#9933cc;border-color:#9933cc">Underground Information Bazaar</span>
+          <span class="cat-tag cat-commercial">COMMERCIAL</span>
+          <p>A weekly market dealing exclusively in information. Buyers and sellers meet in a designated space. Prices are negotiated by code. The market has its own arbitration system for disputed intelligence. False information sells once; its source never sells again.</p>
+        </div>
+      </div>
+      <div class="binfo" id="underground-info-memory">
+        <div class="bi-header" style="border-color:#9933cc">
+          <h2 style="color:#9933cc">💾 Memory Banks</h2>
+          <span class="btag" style="color:#9933cc;border-color:#9933cc">Hidden Data Haven — Classified Archives</span>
+          <span class="cat-tag cat-danger">DANGER</span>
+          <p>A data storage facility running on salvaged hardware. Stores information that cannot exist on the surface network: suppressed medical records, erased corporate documents, destroyed public archives. Has been sought by Hughes Industries, city authority, and three foreign governments. It has not been found.</p>
+        </div>
+      </div>
+      <div class="binfo" id="underground-info-refuge">
+        <div class="bi-header" style="border-color:#9933cc">
+          <h2 style="color:#9933cc">🏘️ The Refuge</h2>
+          <span class="btag" style="color:#9933cc;border-color:#9933cc">Permanent Underground Community</span>
+          <span class="cat-tag cat-residential">RESIDENTIAL</span>
+          <p>A settled community of approximately 400 people who live entirely underground. Built functional housing, a school, a medical station, and a governance structure over two generations. Self-sufficient and extremely cautious about outsiders.</p>
+        </div>
+      </div>
+      <div class="binfo" id="underground-info-transit_b">
+        <div class="bi-header" style="border-color:#9933cc">
+          <h2 style="color:#9933cc">🚊 Old Transit Station Bravo</h2>
+          <span class="btag" style="color:#9933cc;border-color:#9933cc">Pre-War Structure — Repurposed</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>A sealed pre-war transit station reoccupied and repurposed. The old platforms serve as sleeping areas. The transit tunnels connect to passages that surface in every district — the Underground community's primary navigation advantage.</p>
+        </div>
+      </div>
+      <div class="binfo" id="underground-info-sump">
+        <div class="bi-header" style="border-color:#9933cc">
+          <h2 style="color:#9933cc">☣️ The Sump</h2>
+          <span class="btag" style="color:#9933cc;border-color:#9933cc">Toxic Lower Level — Avoid</span>
+          <span class="cat-tag cat-danger">DANGER</span>
+          <p>The lowest accessible level. Flooded with chemical runoff from the Industrial District above. Air quality requires breathing protection. Despite this, at least three separate parties maintain operations here — either because the toxicity is a security feature, or they have nowhere else to go.</p>
+        </div>
+      </div>
+      <div class="binfo" id="underground-info-bone_road">
+        <div class="bi-header" style="border-color:#9933cc">
+          <h2 style="color:#9933cc">🦴 Bone Road</h2>
+          <span class="btag" style="color:#9933cc;border-color:#9933cc">Deep Passage — Unknown Destination</span>
+          <span class="cat-tag cat-danger">DANGER</span>
+          <p>A long passage named by the first Underground resident to map it — for reasons she documented but the document was lost. Parties that have followed it entirely have not returned to report where it goes. Parties that turned back report only that after two hours, the walls change material.</p>
+        </div>
+      </div>
+      <div class="binfo" id="underground-info-access_pts">
+        <div class="bi-header" style="border-color:#9933cc">
+          <h2 style="color:#9933cc">⬆️ Surface Access Network</h2>
+          <span class="btag" style="color:#9933cc;border-color:#9933cc">Distributed Entry Points — Variable</span>
+          <span class="cat-tag cat-service">SERVICE</span>
+          <p>The Underground connects to the surface through approximately 60 access points. Specific locations are not mapped here — they change. Known stable points include The Hollow (Shantytown), basement hatches in Central, a drainage connection near the Docks, and at least two points in Commercial's oldest structures.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const VIEWS = ['executive', 'commonwealth', 'central', 'shantytown', 'entertainment', 'industrial', 'commercial', 'docks', 'underground'];
+const BIDS = {
+  "executive": ['hq','prometheus','neuralsync','vaultbank','arcadia','spire','security_a','helipad','plaza','tribunal','clinic','garden','residences','gate'],
+  "commonwealth": ['garden','tower_a','tower_b','rowan','meridian','market','health','jade','security','tech','walkway'],
+  "central": ['transit','block_a','block_b','block_c','foodfight','rusty','library','medicore','neonpawn','community','security7','market'],
+  "shantytown": ['yamai','dreams','mother','scrap','pit','warrens','hollow','medic','assembly','salvage','shrine','lookout'],
+  "entertainment": ['lucky','bloodsport','vertigo','jackpot','fortune8','velvet','chromatic','rex','afterparty','surgery','security_e'],
+  "industrial": ['elevator','fab1','fab2','biomed','checkpoint','heaven','depot_a','power','shelter','dormitory','grease','medstation'],
+  "commercial": ['creditbank','vaultb2','databroker','gunter','cyber','bazaar','broker_den','pawn','nqa','medmarket','transit_c','security_c'],
+  "docks": ['weary','port_auth','customs','strat_a','strat_b','salt','terminal_a','submarine','fishwharf','residences','anchor','ocean_label'],
+  "underground": ['undercurrent','sanctum','deads_jxn','forge','whisper','memory','refuge','transit_b','sump','bone_road','access_pts']
+};
+
+function switchView(id) {
+  // hide all views
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.getElementById('view-city') && document.getElementById('view-city').classList.remove('active');
+  const target = document.getElementById('view-' + id) || document.getElementById('view-city');
+  if (target) target.classList.add('active');
+
+  // update nav tabs
+  document.querySelectorAll('.ntab').forEach(t => t.classList.remove('active'));
+  const tab = document.getElementById('tab-' + id);
+  if (tab) tab.classList.add('active');
+
+  // show hero on district switch
+  if (id !== 'city') {
+    const hero = document.getElementById('hero-' + id);
+    if (hero) hero.style.display = 'flex';
+    const bph = document.getElementById('bph-' + id);
+    if (bph) bph.style.display = 'none';
+    // deselect all buildings
+    if (BIDS[id]) BIDS[id].forEach(bid => {
+      const el = document.getElementById(id + '-b-' + bid);
+      if (el) el.classList.remove('bactive');
+      const inf = document.getElementById(id + '-info-' + bid);
+      if (inf) inf.classList.remove('visible');
+    });
+    const ip = document.getElementById('ipanel-' + id);
+    if (ip) ip.scrollTop = 0;
+  }
+}
+
+function selectCityDistrict(id) {
+  // deselect all city districts
+  document.querySelectorAll('.city-dist').forEach(d => d.classList.remove('cactive'));
+  document.querySelectorAll('.city-dinfo').forEach(d => d.classList.remove('visible'));
+  document.getElementById('city-placeholder').style.display = 'none';
+
+  const svgEl = document.getElementById('city-d-' + id);
+  if (svgEl) svgEl.classList.add('cactive');
+
+  const infoEl = document.getElementById('city-info-' + id);
+  if (infoEl) infoEl.classList.add('visible');
+
+  document.getElementById('city-ipanel').scrollTop = 0;
+}
+
+function showBuilding(districtId, bid) {
+  const ip = document.getElementById('ipanel-' + districtId);
+  const bph = document.getElementById('bph-' + districtId);
+  const hero = document.getElementById('hero-' + districtId);
+
+  if (bph) bph.style.display = 'none';
+  if (hero) hero.style.display = 'none';
+
+  // deselect all in this district
+  if (BIDS[districtId]) BIDS[districtId].forEach(b => {
+    const el = document.getElementById(districtId + '-b-' + b);
+    if (el) el.classList.remove('bactive');
+    const inf = document.getElementById(districtId + '-info-' + b);
+    if (inf) inf.classList.remove('visible');
+  });
+
+  const svgEl = document.getElementById(districtId + '-b-' + bid);
+  if (svgEl) svgEl.classList.add('bactive');
+
+  const infoEl = document.getElementById(districtId + '-info-' + bid);
+  if (infoEl) infoEl.classList.add('visible');
+
+  if (ip) ip.scrollTop = 0;
+}
+
+// Start on city map
+switchView('city');
+</script>
+</body>
+</html>

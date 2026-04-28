@@ -16,6 +16,20 @@
   {% endfor %}
 </section>
 
+{% if preview_maps %}
+<section class="map-preview-section">
+  <h2>🗺 MAPS <a href="/maps" class="map-preview-all">View all →</a></h2>
+  <div class="map-mini-grid">
+    {% for m in preview_maps %}
+    <a href="/maps/{{ m.slug }}" class="map-mini-card">
+      {% if m.image_url %}<img src="{{ m.image_url }}" alt="{{ m.name }}"/>{% else %}<div class="map-mini-ph">🗺</div>{% endif %}
+      <span class="map-mini-name">{{ m.name }}</span>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 {% if recent %}
 <section class="recent">
   <h2>// RECENTLY UPDATED</h2>
@@ -37,4 +51,74 @@
   </div>
 </section>
 {% endif %}
+
+{% if most_linked %}
+<section class="dash-section">
+  <h2 class="dash-heading">🔗 Most Referenced</h2>
+  <div class="linked-strip">
+    {% for ent, n in most_linked %}
+    <a href="/entity/{{ ent.id }}" class="linked-card">
+      {% if ent.image_url %}<img src="{{ ent.image_url }}" class="linked-img" alt=""/>{% else %}<div class="linked-icon">{{ kind_icons[ent.kind] }}</div>{% endif %}
+      <div class="linked-name">{{ ent.name }}</div>
+      <div class="linked-badge">{{ n }} link{{ 's' if n != 1 }}</div>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if top_tags %}
+<section class="dash-section">
+  <h2 class="dash-heading">🏷 Tags</h2>
+  {% set max_count = top_tags[0][1] %}
+  <div class="tag-cloud">
+    {% for tag, count in top_tags %}
+    <a href="/search?q={{ tag }}" class="tag-chip" style="font-size:calc(0.72rem + {{ ((count / max_count) * 0.55)|round(2) }}rem)">{{ tag }}</a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if recent_boards or recent_schematics %}
+<section class="dash-section">
+  <h2 class="dash-heading">🛠 Recent Tools</h2>
+  <div style="display:flex;gap:2rem;flex-wrap:wrap">
+    {% if recent_boards %}
+    <div>
+      <div class="tool-label">📌 Boards</div>
+      {% for b in recent_boards %}
+      <a href="/boards/{{ b.slug }}" class="tool-item">{{ b.name }}<span class="tool-date">{{ b.updated_at.strftime('%b %d') if b.updated_at }}</span></a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if recent_schematics %}
+    <div>
+      <div class="tool-label">✏ Schematics</div>
+      {% for s in recent_schematics %}
+      <a href="/schematics/{{ s.slug }}" class="tool-item">{{ s.name }}<span class="tool-date">{{ s.updated_at.strftime('%b %d') if s.updated_at }}</span></a>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+<style>
+.dash-section { margin: 2rem 0; }
+.dash-heading { font-size:1rem; color:#aaa; font-weight:600; margin:0 0 .75rem; letter-spacing:.04em; text-transform:uppercase; }
+.linked-strip { display:flex; gap:.75rem; flex-wrap:nowrap; overflow-x:auto; padding-bottom:.5rem; }
+.linked-card { display:flex; flex-direction:column; align-items:center; text-align:center; text-decoration:none; color:#e0e0e0; background:#161616; border:1px solid #2a2a2a; border-radius:6px; padding:.6rem; min-width:90px; max-width:110px; gap:.3rem; transition:border-color .15s; flex-shrink:0; }
+.linked-card:hover { border-color:var(--neon); }
+.linked-img { width:56px; height:56px; object-fit:cover; border-radius:4px; }
+.linked-icon { width:56px; height:56px; display:flex; align-items:center; justify-content:center; font-size:1.8rem; background:#1a1a1a; border-radius:4px; }
+.linked-name { font-size:.78rem; font-weight:600; line-height:1.2; word-break:break-word; }
+.linked-badge { font-size:.68rem; color:var(--neon); opacity:.8; }
+.tag-cloud { display:flex; flex-wrap:wrap; gap:.4rem .6rem; line-height:2; }
+.tag-chip { color:#aaa; text-decoration:none; padding:.1em .4em; border:1px solid #2a2a2a; border-radius:3px; transition:color .12s,border-color .12s; }
+.tag-chip:hover { color:var(--neon); border-color:var(--neon); }
+.tool-label { font-size:.78rem; color:#666; font-weight:600; margin-bottom:.3rem; }
+.tool-item { display:flex; justify-content:space-between; align-items:center; text-decoration:none; color:#ccc; padding:.25rem .4rem; border-radius:3px; font-size:.85rem; gap:1rem; }
+.tool-item:hover { background:#1a1a1a; color:var(--neon); }
+.tool-date { font-size:.72rem; color:#555; flex-shrink:0; }
+</style>
 {% endblock %}
