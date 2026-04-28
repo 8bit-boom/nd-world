@@ -24,6 +24,23 @@
     </div>
   </header>
 
+  {% if entity.kind in ('item', 'feat') and entity.body %}
+  {% set stats = entity.body | parse_stats %}
+  {% if stats %}
+  <div class="stat-block">
+    <div class="stat-block-header">
+      {% if entity.kind == 'item' %}⚙ Attributes{% else %}✦ Details{% endif %}
+    </div>
+    {% for row in stats %}
+    <div class="stat-row{% if row.special %} stat-special{% endif %}">
+      <span class="stat-key">{{ row.key }}</span>
+      <span class="stat-val">{{ row.val }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endif %}
+
   {% if entity.body %}
   <div class="detail-body prose">
     {{ entity.body | md | safe }}
@@ -51,13 +68,34 @@
     <p class="empty-small">No connections yet.</p>
     {% endif %}
 
+    {% if backlinks %}
+    <details class="conn-section" open>
+      <summary>🔗 Referenced by ({{ backlinks|length }})</summary>
+      <div class="rel-grid">
+        {% for r in backlinks %}
+        <a href="/entity/{{ r.id }}" class="rel-card">
+          <span class="rel-icon">{{ kind_icons[r.kind] }}</span>
+          <span class="rel-name">{{ r.name }}</span>
+          {% if r.subtype %}<span class="rel-sub">{{ r.subtype }}</span>{% endif %}
+        </a>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
+
     <details class="add-link-panel">
       <summary>+ Add connection</summary>
       <div class="add-link-body">
-        <input id="link-filter" placeholder="Filter entities…" oninput="filterLinks(this.value)"/>
+        <div class="kind-filters" style="display:flex;flex-wrap:wrap;gap:.3rem;margin-bottom:.5rem">
+          <button class="kf-btn active" onclick="setKindFilter(this,'all')">All</button>
+          {% for k in kinds %}
+          <button class="kf-btn" onclick="setKindFilter(this,'{{ k }}')">{{ kind_icons[k] }} {{ k|capitalize }}</button>
+          {% endfor %}
+        </div>
+        <input id="link-search" placeholder="Filter entities…" oninput="filterLinks()"/>
         <div id="link-list">
           {% for e in all_entities %}
-          <form action="/entity/{{ entity.id }}/link/{{ e.id }}" method="post" class="link-item" data-name="{{ e.name|lower }}">
+          <form action="/entity/{{ entity.id }}/link/{{ e.id }}" method="post" class="link-item linkable-item" data-name="{{ e.name|lower }}" data-kind="{{ e.kind }}">
             <span>{{ kind_icons[e.kind] }} {{ e.name }}{% if e.subtype %} <em>{{ e.subtype }}</em>{% endif %}</span>
             <button type="submit">Link</button>
           </form>
@@ -66,13 +104,156 @@
       </div>
     </details>
   </section>
+
+  <details class="ai-panel">
+    <summary>🤖 Ask AI about {{ entity.name }}</summary>
+    <div class="ai-panel-body">
+      <div class="ep-messages" id="ep-messages"></div>
+      <div class="ep-bar">
+        <textarea id="ep-input" rows="1" placeholder="Ask about this entity… (Enter to send)" onkeydown="epKey(event)" oninput="epResize(this)"></textarea>
+        <button id="ep-send" onclick="epSend()">Ask</button>
+      </div>
+    </div>
+  </details>
 </article>
 
+<style>
+.conn-section { margin-top: 1rem; }
+.conn-section summary { cursor:pointer; font-size:.9rem; color:#aaa; padding:.25rem 0; }
+.rel-grid { display:flex; flex-wrap:wrap; gap:.5rem; margin-top:.5rem; }
+.rel-card { display:flex; align-items:center; gap:.4rem; text-decoration:none; color:#ccc; background:#161616; border:1px solid #2a2a2a; border-radius:5px; padding:.35rem .6rem; font-size:.82rem; transition:border-color .15s; }
+.rel-card:hover { border-color:var(--neon); color:var(--neon); }
+.rel-icon { font-size:1rem; }
+.rel-name { font-weight:600; }
+.rel-sub { font-size:.72rem; color:#777; }
+.kf-btn { font-size:.75rem; padding:.2rem .55rem; background:#1a1a1a; border:1px solid #333; border-radius:12px; color:#aaa; cursor:pointer; transition:border-color .12s,color .12s; }
+.kf-btn:hover { border-color:var(--neon); color:var(--neon); }
+.kf-btn.active { border-color:var(--neon); color:var(--neon); background:#0a0a0a; }
+/* AI panel */
+.ai-panel { margin-top:1.5rem; border:1px solid var(--border); border-radius:8px; padding:.5rem .75rem; }
+.ai-panel > summary { cursor:pointer; font-size:.9rem; color:var(--neon); padding:.25rem 0; user-select:none; }
+.ai-panel-body { margin-top:.75rem; }
+.ai-panel .ep-messages { display:flex; flex-direction:column; gap:.6rem; max-height:340px; overflow-y:auto; margin-bottom:.5rem; }
+.ai-panel .ai-msg { display:flex; max-width:100%; }
+.ai-panel .ai-msg--user { align-self:flex-end; flex-direction:row-reverse; }
+.ai-panel .ai-msg--assistant { align-self:flex-start; }
+.ai-panel .ai-bubble { padding:.45rem .75rem; border-radius:8px; font-size:.85rem; line-height:1.6; word-break:break-word; max-width:90%; }
+.ai-panel .ai-msg--user .ai-bubble { background:var(--neon); color:#000; font-weight:500; }
+.ai-panel .ai-msg--assistant .ai-bubble { background:var(--bg2); border:1px solid var(--border); }
+.ai-panel .ai-thinking .ai-bubble { color:var(--text-dim); font-style:italic; border-style:dashed; }
+.ai-panel .ep-bar { display:flex; gap:.5rem; align-items:flex-end; }
+.ai-panel .ep-bar textarea { flex:1; background:var(--bg3); border:1px solid var(--border); border-radius:5px; color:var(--text); padding:.4rem .65rem; font-size:.85rem; resize:none; font-family:inherit; line-height:1.5; max-height:100px; overflow-y:auto; }
+.ai-panel .ep-bar textarea:focus { outline:1px solid var(--neon); }
+.ai-panel .ep-bar button { background:var(--neon); color:#000; border:none; border-radius:5px; padding:.4rem .9rem; font-weight:700; cursor:pointer; font-size:.85rem; white-space:nowrap; }
+.ai-panel .ep-bar button:disabled { opacity:.45; cursor:not-allowed; }
+</style>
+
 <script>
-function filterLinks(q) {
-  document.querySelectorAll('#link-list .link-item').forEach(el => {
-    el.style.display = el.dataset.name.includes(q.toLowerCase()) ? '' : 'none';
+let _activeKind = 'all';
+function setKindFilter(btn, kind) {
+  _activeKind = kind;
+  document.querySelectorAll('.kf-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  filterLinks();
+}
+function filterLinks() {
+  const q = (document.getElementById('link-search')?.value || '').toLowerCase();
+  document.querySelectorAll('.linkable-item').forEach(el => {
+    const nameMatch = !q || el.dataset.name.includes(q);
+    const kindMatch = _activeKind === 'all' || el.dataset.kind === _activeKind;
+    el.style.display = (nameMatch && kindMatch) ? '' : 'none';
   });
 }
+
+function _mdToHtml(text) {
+  let h = text
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/```[\s\S]*?```/g, m => '<pre><code>' + m.slice(3,-3).replace(/^\w+\n/,'') + '</code></pre>')
+    .replace(/`([^`\n]+)`/g,'<code>$1</code>')
+    .replace(/\*\*\*(.+?)\*\*\*/g,'<strong><em>$1</em></strong>')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,'<em>$1</em>')
+    .replace(/^### (.+)$/gm,'<h3>$1</h3>').replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/^# (.+)$/gm,'<h1>$1</h1>')
+    .replace(/^[-*] (.+)$/gm,'<li>$1</li>').replace(/(<li>[\s\S]+?<\/li>)/g,'<ul>$1</ul>')
+    .replace(/\n\n/g,'</p><p>').replace(/\n/g,'<br>');
+  return '<p>' + h + '</p>';
+}
+function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+(function(){
+  const ENTITY_CTX = {{ (
+    entity.kind|capitalize + ': ' + entity.name
+    + ('\nSubtype: ' + entity.subtype if entity.subtype else '')
+    + ('\nSummary: ' + entity.summary if entity.summary else '')
+    + ('\n\n' + (entity.body or '')[:3000] if entity.body else '')
+  ) | tojson }};
+
+  const EP_SYSTEM = "You are a world-building assistant. Answer questions about the entity provided. Be concise and in-world.";
+  let epHistory = [];
+
+  window.epSend = async function() {
+    const inp = document.getElementById('ep-input');
+    const btn = document.getElementById('ep-send');
+    const text = inp.value.trim();
+    if (!text || btn.disabled) return;
+    inp.value = ''; epResize(inp);
+    epAdd('user', text);
+    epHistory.push({ role: 'user', content: text });
+    btn.disabled = true;
+    const bubble = epAdd('assistant', '…', true);
+    try {
+      const messages = [
+        { role: 'user', content: 'Entity context:\n\n' + ENTITY_CTX },
+        { role: 'assistant', content: 'Understood.' },
+        ...epHistory
+      ];
+      const res = await fetch('/api/ai/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages, system: EP_SYSTEM })
+      });
+      bubble.parentElement.classList.remove('ai-thinking');
+      bubble.innerHTML = '';
+      let full = '';
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split('\n\n'); buf = parts.pop();
+        for (const p of parts) {
+          if (!p.startsWith('data: ')) continue;
+          const pay = p.slice(6);
+          if (pay === '[DONE]') break;
+          const { token } = JSON.parse(pay);
+          full += token;
+          bubble.innerHTML = _mdToHtml(full);
+          document.getElementById('ep-messages').scrollTop = 99999;
+        }
+      }
+      epHistory.push({ role: 'assistant', content: full });
+    } catch(e) {
+      bubble.parentElement.classList.remove('ai-thinking');
+      bubble.textContent = 'Error: ' + e.message;
+    } finally { btn.disabled = false; inp.focus(); }
+  };
+
+  function epAdd(role, text, thinking) {
+    const box = document.getElementById('ep-messages');
+    const w = document.createElement('div');
+    w.className = 'ai-msg ai-msg--' + role + (thinking ? ' ai-thinking' : '');
+    const b = document.createElement('div');
+    b.className = 'ai-bubble';
+    b.innerHTML = role === 'user' ? _escHtml(text) : (thinking ? text : _mdToHtml(text));
+    w.appendChild(b); box.appendChild(w);
+    box.scrollTop = box.scrollHeight;
+    return b;
+  }
+
+  window.epKey = function(e) { if (e.key==='Enter'&&!e.shiftKey){e.preventDefault();epSend();} };
+  window.epResize = function(el) { el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,100)+'px'; };
+})();
 </script>
 {% endblock %}

@@ -64,9 +64,19 @@
       <input name="tags" value="{{ entity.tags if entity else '' }}" placeholder="yellow, corp, nox, …"/>
     </div>
 
+    <div class="form-group" id="attrs-section" style="display:none">
+      <label>Attributes <small>(key-value stats that appear in table columns)</small></label>
+      <div id="attr-rows"></div>
+      <button type="button" class="btn-add-attr" onclick="addAttrRow()">+ Add attribute</button>
+    </div>
+
     <div class="form-group">
       <label>Notes <small>(Markdown supported)</small></label>
-      <textarea name="body" rows="16" placeholder="# History&#10;…">{{ entity.body if entity else '' }}</textarea>
+      <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.4rem">
+        <button type="button" id="ai-gen-btn" onclick="aiGenerate()" style="background:#1a1a2e;border:1px solid var(--neon);color:var(--neon);border-radius:4px;padding:.3rem .7rem;cursor:pointer;font-size:.82rem">✨ Generate with AI</button>
+        <span id="ai-gen-status" style="font-size:.8rem;color:#888"></span>
+      </div>
+      <textarea name="body" id="body-field" rows="16" placeholder="# History&#10;…">{{ entity.body if entity else '' }}</textarea>
     </div>
 
     <div class="form-actions">
@@ -89,6 +99,7 @@ function previewImage(input) {
     preview.style.display = 'block';
   }
 }
+
 const subtypesData = {{ subtypes | tojson }};
 function updateSubtypes() {
   const kind = document.getElementById('kind-select').value;
@@ -101,7 +112,123 @@ function updateSubtypes() {
     if (s === current) o.selected = true;
     sel.appendChild(o);
   });
+  // show/hide attributes section for item/feat
+  const show = kind === 'item' || kind === 'feat';
+  document.getElementById('attrs-section').style.display = show ? '' : 'none';
 }
+
+// ── Attribute row editor ──────────────────────────────────────────────────────
+
+function addAttrRow(key='', val='') {
+  const container = document.getElementById('attr-rows');
+  const row = document.createElement('div');
+  row.className = 'attr-row';
+  row.innerHTML =
+    `<input class="attr-key" placeholder="e.g. Damage" value="${escHtml(key)}"/>` +
+    `<span class="attr-sep">:</span>` +
+    `<input class="attr-val" placeholder="e.g. 2d6+2" value="${escHtml(val)}"/>` +
+    `<button type="button" class="btn-rm-attr" onclick="this.parentElement.remove()">✕</button>`;
+  container.appendChild(row);
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+}
+
+// Parse existing body into (attrs, rest) and populate the editor
+function parseBodyIntoEditor() {
+  const body = document.getElementById('body-field').value;
+  const attrRe = /^\*\s+\*\*([^*]+)\*\*:\s*(.+)/;
+  const lines = body.split('\n');
+  const attrLines = [];
+  const restLines = [];
+  let inAttrsBlock = false;
+
+  for (const ln of lines) {
+    if (/^##\s+attributes/i.test(ln)) { inAttrsBlock = true; continue; }
+    if (inAttrsBlock && /^##/.test(ln)) inAttrsBlock = false;
+    if (inAttrsBlock) {
+      const m = ln.match(attrRe);
+      if (m) { attrLines.push([m[1].trim(), m[2].trim()]); continue; }
+      if (ln.trim()) { inAttrsBlock = false; }
+    }
+    if (!inAttrsBlock) restLines.push(ln);
+  }
+
+  // If no ## Attributes block, scan top-level bullet stats
+  if (!attrLines.length) {
+    const remaining = [];
+    for (const ln of lines) {
+      const m = ln.match(attrRe);
+      if (m) attrLines.push([m[1].trim(), m[2].trim()]);
+      else remaining.push(ln);
+    }
+  }
+
+  attrLines.forEach(([k, v]) => addAttrRow(k, v));
+}
+
+// Before submit: write attr rows back into body textarea
+document.querySelector('.entity-form').addEventListener('submit', function() {
+  const rows = document.querySelectorAll('.attr-row');
+  const pairs = [];
+  rows.forEach(r => {
+    const k = r.querySelector('.attr-key').value.trim();
+    const v = r.querySelector('.attr-val').value.trim();
+    if (k && v) pairs.push(`* **${k}**: ${v}`);
+  });
+
+  const bodyField = document.getElementById('body-field');
+  let body = bodyField.value;
+
+  // Strip existing ## Attributes block
+  body = body.replace(/^##\s+[Aa]ttributes[\s\S]*?(?=\n##\s|\n# |\s*$)/, '').trim();
+
+  if (pairs.length) {
+    body = '## Attributes\n' + pairs.join('\n') + (body ? '\n\n' + body : '');
+  }
+  bodyField.value = body;
+});
+
 updateSubtypes();
+parseBodyIntoEditor();
+
+async function aiGenerate() {
+  const btn = document.getElementById('ai-gen-btn');
+  const status = document.getElementById('ai-gen-status');
+  const name = document.querySelector('input[name="name"]').value.trim();
+  const kind = document.getElementById('kind-select').value;
+  const subtype = document.getElementById('subtype-select').value;
+  const summary = document.querySelector('input[name="summary"]').value.trim();
+  const body = document.getElementById('body-field').value.trim();
+  if (!name) { status.style.color = '#f55'; status.textContent = 'Enter a name first.'; return; }
+  btn.disabled = true;
+  status.style.color = '#888';
+  status.textContent = 'Generating…';
+  try {
+    const res = await fetch('/api/ai/generate/entity-smart', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name, kind, subtype, summary: summary || body || '' })
+    });
+    if (!res.ok) throw new Error('Server error ' + res.status);
+    const data = await res.json();
+    if (data.result && data.result.startsWith('[AI unavailable')) {
+      status.style.color = '#f55';
+      status.textContent = 'AI unavailable — is Ollama running?';
+    } else {
+      document.getElementById('body-field').value =
+        (body ? body + '\n\n' : '') + data.result;
+      status.style.color = '#4f4';
+      status.textContent = 'Done!';
+      setTimeout(() => { status.textContent = ''; }, 3000);
+    }
+  } catch (e) {
+    status.style.color = '#f55';
+    status.textContent = 'Error: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
 </script>
 {% endblock %}
