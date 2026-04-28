@@ -179,6 +179,13 @@
 .model-pull-btn { font-size:.7rem; background:transparent; border:1px solid #333; color:#666; border-radius:3px; padding:.1rem .3rem; cursor:pointer; white-space:nowrap; transition:border-color .12s,color .12s; font-family:inherit; flex-shrink:0; }
 .model-pull-btn:hover { border-color:var(--neon); color:var(--neon); }
 .model-pull-btn:disabled { opacity:.4; cursor:default; }
+.model-del-btn { font-size:.7rem; background:transparent; border:none; color:#444; cursor:pointer; padding:0 .15rem; line-height:1; transition:color .12s; flex-shrink:0; }
+.model-del-btn:hover { color:#c44; }
+.model-add-form { display:flex; flex-direction:column; gap:.3rem; margin-top:.5rem; }
+.model-add-form input { background:var(--bg3); border:1px solid var(--border); border-radius:4px; color:var(--text); padding:.3rem .5rem; font-size:.78rem; font-family:inherit; width:100%; box-sizing:border-box; }
+.model-add-form input:focus { outline:1px solid var(--neon); }
+.model-add-form button { background:transparent; border:1px solid var(--border); color:var(--text-dim); border-radius:4px; padding:.3rem; font-size:.78rem; cursor:pointer; font-family:inherit; transition:border-color .12s,color .12s; }
+.model-add-form button:hover { border-color:var(--neon); color:var(--neon); }
 
 .save-note-btn {
   display: inline-block;
@@ -291,8 +298,25 @@ async function loadModels() {
         row.appendChild(btn);
       }
 
+      if (!m.builtin) {
+        const del = document.createElement('button');
+        del.className = 'model-del-btn';
+        del.textContent = '✕';
+        del.title = 'Remove model';
+        del.onclick = () => removeModel(m.id, row, m.loaded);
+        row.appendChild(del);
+      }
+
       list.appendChild(row);
     }
+
+    // Add-model form
+    const form = document.createElement('div');
+    form.className = 'model-add-form';
+    form.innerHTML =
+      '<input id="model-add-id" placeholder="Model ID (e.g. llama3:8b or hf.co/…)" />' +
+      '<button onclick="addModel()">+ Add model</button>';
+    list.appendChild(form);
   } catch(e) {
     list.textContent = '✗ Unavailable';
   }
@@ -343,6 +367,38 @@ async function pullModel(modelId, btn, dot) {
     btn.disabled = false;
   }
 }
+async function addModel() {
+  const input = document.getElementById('model-add-id');
+  const id = (input?.value || '').trim();
+  if (!id) return;
+  try {
+    await fetch('/api/ai/models/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    });
+    input.value = '';
+    loadModels();
+  } catch(e) {
+    alert('Failed to add model: ' + e.message);
+  }
+}
+
+async function removeModel(modelId, row, isLoaded) {
+  const deleteFromOllama = isLoaded && confirm('Also delete this model from Ollama storage?\n(Frees disk space but requires re-downloading to use again)');
+  try {
+    await fetch('/api/ai/models/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_id: modelId, delete_from_ollama: deleteFromOllama })
+    });
+    if (activeModel === modelId) activeModel = '';
+    row.remove();
+  } catch(e) {
+    alert('Failed to remove model: ' + e.message);
+  }
+}
+
 loadModels();
 
 function mdToHtml(text) {

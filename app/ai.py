@@ -1,10 +1,14 @@
 import os
 import json as _json
 import httpx
+from pathlib import Path
 from collections.abc import AsyncGenerator
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:26b")
+
+_DATA_DIR = Path(os.getenv("DB_PATH", "/data/world.db")).parent
+_CUSTOM_MODELS_FILE = _DATA_DIR / "ai_models.json"
 
 KNOWN_MODELS = [
     {"id": "gemma4:26b", "label": "Gemma 4 26B (default)"},
@@ -29,6 +33,22 @@ KNOWN_MODELS = [
         "label": "Nemotron 30B Reasoning",
     },
 ]
+
+def load_custom_models() -> list[dict]:
+    try:
+        return _json.loads(_CUSTOM_MODELS_FILE.read_text())
+    except Exception:
+        return []
+
+
+def save_custom_models(models: list[dict]) -> None:
+    _CUSTOM_MODELS_FILE.write_text(_json.dumps(models, indent=2))
+
+
+def all_models() -> list[dict]:
+    seen = {m["id"] for m in KNOWN_MODELS}
+    return KNOWN_MODELS + [m for m in load_custom_models() if m["id"] not in seen]
+
 
 _SYSTEM = (
     "You are a creative fantasy world-building assistant. "
