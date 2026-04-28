@@ -298,14 +298,12 @@ async function loadModels() {
         row.appendChild(btn);
       }
 
-      if (!m.builtin) {
-        const del = document.createElement('button');
-        del.className = 'model-del-btn';
-        del.textContent = '✕';
-        del.title = 'Remove model';
-        del.onclick = () => removeModel(m.id, row, m.loaded);
-        row.appendChild(del);
-      }
+      const del = document.createElement('button');
+      del.className = 'model-del-btn';
+      del.textContent = '✕';
+      del.title = 'Remove model';
+      del.onclick = () => removeModel(m.id, row, m.loaded);
+      row.appendChild(del);
 
       list.appendChild(row);
     }

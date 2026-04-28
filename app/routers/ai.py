@@ -72,11 +72,14 @@ async def ai_models_add(body: AddModelBody):
         from fastapi import HTTPException
         raise HTTPException(400, "model id required")
     label = body.label.strip() or model_id.split("/")[-1].split(":")[0]
-    custom = _ai.load_custom_models()
-    if not any(m["id"] == model_id for m in custom) and \
-       not any(m["id"] == model_id for m in _ai.KNOWN_MODELS):
-        custom.append({"id": model_id, "label": label})
-        _ai.save_custom_models(custom)
+    builtin_ids = {m["id"] for m in _ai.KNOWN_MODELS}
+    if model_id in builtin_ids:
+        _ai.unhide_builtin(model_id)
+    else:
+        custom = _ai.load_custom_models()
+        if not any(m["id"] == model_id for m in custom):
+            custom.append({"id": model_id, "label": label})
+            _ai.save_custom_models(custom)
     return {"ok": True}
 
 
@@ -87,9 +90,13 @@ class RemoveModelBody(BaseModel):
 
 @router.post("/models/remove")
 async def ai_models_remove(body: RemoveModelBody):
-    custom = _ai.load_custom_models()
-    custom = [m for m in custom if m["id"] != body.model_id]
-    _ai.save_custom_models(custom)
+    builtin_ids = {m["id"] for m in _ai.KNOWN_MODELS}
+    if body.model_id in builtin_ids:
+        _ai.hide_builtin(body.model_id)
+    else:
+        custom = _ai.load_custom_models()
+        custom = [m for m in custom if m["id"] != body.model_id]
+        _ai.save_custom_models(custom)
     if body.delete_from_ollama:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:

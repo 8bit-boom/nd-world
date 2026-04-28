@@ -34,20 +34,51 @@ KNOWN_MODELS = [
     },
 ]
 
-def load_custom_models() -> list[dict]:
+def _load_data() -> dict:
     try:
         return _json.loads(_CUSTOM_MODELS_FILE.read_text())
     except Exception:
-        return []
+        return {"custom": [], "hidden": []}
+
+
+def _save_data(data: dict) -> None:
+    _CUSTOM_MODELS_FILE.write_text(_json.dumps(data, indent=2))
+
+
+def load_custom_models() -> list[dict]:
+    return _load_data().get("custom", [])
+
+
+def load_hidden_ids() -> set:
+    return set(_load_data().get("hidden", []))
 
 
 def save_custom_models(models: list[dict]) -> None:
-    _CUSTOM_MODELS_FILE.write_text(_json.dumps(models, indent=2))
+    data = _load_data()
+    data["custom"] = models
+    _save_data(data)
+
+
+def hide_builtin(model_id: str) -> None:
+    data = _load_data()
+    if model_id not in data.setdefault("hidden", []):
+        data["hidden"].append(model_id)
+    _save_data(data)
+
+
+def unhide_builtin(model_id: str) -> None:
+    data = _load_data()
+    data["hidden"] = [i for i in data.get("hidden", []) if i != model_id]
+    _save_data(data)
 
 
 def all_models() -> list[dict]:
+    hidden = load_hidden_ids()
+    custom = load_custom_models()
     seen = {m["id"] for m in KNOWN_MODELS}
-    return KNOWN_MODELS + [m for m in load_custom_models() if m["id"] not in seen]
+    visible_builtins = [m for m in KNOWN_MODELS if m["id"] not in hidden]
+    extra = [m for m in custom if m["id"] not in seen and m["id"] not in hidden]
+    return visible_builtins + extra
 
 
 _SYSTEM = (
