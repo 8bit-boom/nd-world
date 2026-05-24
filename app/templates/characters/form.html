@@ -1,0 +1,436 @@
+{% extends "base.html" %}
+{% block title %}{% if pc %}Edit {{ pc.name }}{% else %}New Character{% endif %} — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<style>
+.cf { max-width:900px; margin:0 auto; }
+.cf-section { background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem; }
+.cf-section-title { font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.75rem;border-bottom:1px solid var(--border);padding-bottom:.4rem; }
+.cf-grid { display:grid;gap:.6rem; }
+.cf-grid-2 { grid-template-columns:1fr 1fr; }
+.cf-grid-3 { grid-template-columns:1fr 1fr 1fr; }
+.cf-grid-6 { grid-template-columns:repeat(6,1fr); }
+.cf-field { display:flex;flex-direction:column;gap:.25rem; }
+.cf-field label { font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em; }
+.cf-field input, .cf-field select, .cf-field textarea {
+  background:var(--bg3);border:1px solid var(--border);color:var(--text);
+  padding:.4rem .6rem;border-radius:4px;font-family:var(--font);font-size:.9rem;
+  width:100%;
+}
+.cf-field input:focus, .cf-field select:focus, .cf-field textarea:focus { border-color:var(--neon);outline:none; }
+.cf-field textarea { min-height:80px;resize:vertical; }
+.cf-field .hint { font-size:.65rem;color:var(--text-dim);margin-top:.1rem; }
+
+.cf-score-box { display:flex;flex-direction:column;align-items:center;gap:.2rem;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:.5rem .4rem; }
+.cf-score-label { font-size:.65rem;color:var(--text-dim);text-transform:uppercase; }
+.cf-score-input { width:56px;text-align:center;background:transparent;border:none;border-bottom:1px solid var(--border);color:var(--neon);font-size:1.3rem;font-weight:bold;font-family:var(--font);padding:.2rem 0; }
+.cf-score-input:focus { outline:none;border-color:var(--neon); }
+.cf-score-mod { font-size:.8rem;color:var(--text-dim);min-height:1em; }
+
+.cf-check-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:.3rem; }
+.cf-check-item { display:flex;align-items:center;gap:.4rem;font-size:.82rem;cursor:pointer; }
+.cf-check-item input[type=checkbox] { accent-color:var(--neon);width:14px;height:14px;cursor:pointer; }
+.cf-check-item .skill-stat { font-size:.6rem;color:var(--text-dim);width:26px; }
+.cf-exp-check { accent-color:var(--neon3) !important; }
+
+.cf-dynamic-table { width:100%;border-collapse:collapse;font-size:.85rem;margin-bottom:.5rem; }
+.cf-dynamic-table th { color:var(--text-dim);font-size:.65rem;text-transform:uppercase;padding:.3rem .4rem;border-bottom:1px solid var(--border);text-align:left; }
+.cf-dynamic-table td { padding:.3rem .4rem; }
+.cf-dynamic-table td input { background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;border-radius:3px;font-family:var(--font);font-size:.82rem;width:100%; }
+.cf-dynamic-table td input:focus { border-color:var(--neon);outline:none; }
+.cf-add-btn { background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.3rem .75rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.8rem; }
+.cf-add-btn:hover { border-color:var(--neon);color:var(--neon); }
+.cf-del-btn { background:transparent;border:none;color:var(--neon2);cursor:pointer;font-size:1rem;padding:0 .3rem; }
+
+.cf-portrait-preview { width:90px;height:90px;border-radius:6px;border:2px solid var(--border);object-fit:cover;display:block;margin-top:.4rem; }
+.cf-submit-row { display:flex;gap:.75rem;justify-content:flex-end;align-items:center;flex-wrap:wrap;padding-top:.5rem; }
+
+@media (max-width:640px) {
+  .cf-grid-2, .cf-grid-3 { grid-template-columns:1fr; }
+  .cf-grid-6 { grid-template-columns:repeat(3,1fr); }
+  .cf-check-grid { grid-template-columns:repeat(2,1fr); }
+}
+</style>
+
+<div class="cf">
+  <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem;">
+    <a href="{% if pc %}/characters/{{ pc.id }}{% else %}/characters{% endif %}" style="color:var(--text-dim);font-size:.85rem;">←</a>
+    <h1 style="color:var(--neon);font-size:1.3rem;">{% if pc %}Edit {{ pc.name }}{% else %}New Character{% endif %}</h1>
+  </div>
+
+  <form method="post" action="{% if pc %}/characters/{{ pc.id }}/edit{% else %}/characters/new{% endif %}" enctype="multipart/form-data" id="char-form">
+
+    <!-- Basic Info -->
+    <div class="cf-section">
+      <div class="cf-section-title">Identity</div>
+      <div class="cf-grid cf-grid-2" style="margin-bottom:.6rem;">
+        <div class="cf-field">
+          <label>Character Name *</label>
+          <input type="text" name="name" required value="{{ pc.name if pc else '' }}" placeholder="Name">
+        </div>
+        <div class="cf-field">
+          <label>Player Name</label>
+          <input type="text" name="player_name" value="{{ pc.player_name if pc else '' }}" placeholder="Your name">
+        </div>
+      </div>
+      <div class="cf-grid cf-grid-3" style="margin-bottom:.6rem;">
+        <div class="cf-field">
+          <label>Race / Species</label>
+          <input type="text" name="race" value="{{ pc.race if pc else '' }}" placeholder="e.g. Human, Elf, Synth">
+        </div>
+        <div class="cf-field">
+          <label>Class</label>
+          <input type="text" name="char_class" value="{{ pc.char_class if pc else '' }}" placeholder="e.g. Hacker, Soldier">
+        </div>
+        <div class="cf-field">
+          <label>Subclass / Archetype</label>
+          <input type="text" name="subclass" value="{{ pc.subclass if pc else '' }}" placeholder="Specialization">
+        </div>
+      </div>
+      <div class="cf-grid cf-grid-3" style="margin-bottom:.6rem;">
+        <div class="cf-field">
+          <label>Background</label>
+          <input type="text" name="background" value="{{ pc.background if pc else '' }}" placeholder="e.g. Street Rat">
+        </div>
+        <div class="cf-field">
+          <label>Alignment</label>
+          <select name="alignment">
+            <option value="">— None —</option>
+            {% for a in alignments %}
+            <option value="{{ a }}" {% if pc and pc.alignment == a %}selected{% endif %}>{{ a }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="cf-field">
+          <label>Level</label>
+          <input type="number" name="level" min="1" max="20" value="{{ pc.level if pc else 1 }}">
+        </div>
+      </div>
+      <div class="cf-grid cf-grid-2">
+        <div class="cf-field">
+          <label>Experience Points (XP)</label>
+          <input type="number" name="xp" min="0" value="{{ pc.xp if pc else 0 }}">
+        </div>
+        <div class="cf-field">
+          <label>Portrait Image</label>
+          {% if pc and pc.portrait_url %}
+          <img src="{{ pc.portrait_url }}" class="cf-portrait-preview" id="portrait-preview">
+          {% else %}
+          <img class="cf-portrait-preview" id="portrait-preview" style="display:none;">
+          {% endif %}
+          <input type="file" name="portrait" accept="image/*" onchange="previewPortrait(this)">
+        </div>
+      </div>
+    </div>
+
+    <!-- Ability Scores + Combat -->
+    <div class="cf-section">
+      <div class="cf-section-title">Ability Scores</div>
+      <div class="cf-grid cf-grid-6" style="margin-bottom:1rem;">
+        {% for stat, label in [("str","STR"),("dex","DEX"),("con","CON"),("int","INT"),("wis","WIS"),("cha","CHA")] %}
+        <div class="cf-score-box">
+          <div class="cf-score-label">{{ label }}</div>
+          <input class="cf-score-input" type="number" name="{{ stat }}_score" id="score_{{ stat }}"
+                 min="1" max="30" value="{{ pc[stat+'_score'] if pc else 10 }}"
+                 oninput="updateMod('{{ stat }}')">
+          <div class="cf-score-mod" id="mod_{{ stat }}">{{ (((pc[stat+'_score'] if pc else 10)-10)//2)|int }}</div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="cf-section-title">Combat</div>
+      <div class="cf-grid cf-grid-3">
+        <div class="cf-field"><label>Max HP</label>
+          <input type="number" name="max_hp" min="1" value="{{ pc.max_hp if pc else 10 }}"></div>
+        <div class="cf-field"><label>Current HP</label>
+          <input type="number" name="current_hp" value="{{ pc.current_hp if pc else 10 }}"></div>
+        <div class="cf-field"><label>Temp HP</label>
+          <input type="number" name="temp_hp" min="0" value="{{ pc.temp_hp if pc else 0 }}"></div>
+        <div class="cf-field"><label>Armor Class</label>
+          <input type="number" name="armor_class" min="0" value="{{ pc.armor_class if pc else 10 }}"></div>
+        <div class="cf-field"><label>Speed (ft)</label>
+          <input type="number" name="speed" min="0" value="{{ pc.speed if pc else 30 }}"></div>
+        <div class="cf-field"><label>Hit Dice</label>
+          <input type="text" name="hit_dice" value="{{ pc.hit_dice if pc else '1d8' }}" placeholder="e.g. 5d8"></div>
+      </div>
+    </div>
+
+    <!-- Saving Throws -->
+    <div class="cf-section">
+      <div class="cf-section-title">Saving Throw Proficiencies</div>
+      <div class="cf-check-grid">
+        {% for stat in saving_throws %}
+        <label class="cf-check-item">
+          <input type="checkbox" class="save-prof-cb" data-stat="{{ stat }}"
+                 {% if pc and stat in (save_profs if save_profs is defined else []) %}checked{% endif %}>
+          {{ stat|upper }}
+        </label>
+        {% endfor %}
+      </div>
+      <input type="hidden" name="saving_throw_profs" id="saving_throw_profs_field" value="{{ save_profs|tojson if save_profs is defined else '[]' }}">
+    </div>
+
+    <!-- Skills -->
+    <div class="cf-section">
+      <div class="cf-section-title">Skill Proficiencies</div>
+      <div style="font-size:.7rem;color:var(--text-dim);margin-bottom:.5rem;">
+        Solid dot = proficient &nbsp;|&nbsp; ◆ (purple checkbox) = expertise (double proficiency)
+      </div>
+      <div class="cf-check-grid">
+        {% for skill_id, stat_label in skills %}
+        <div style="display:flex;align-items:center;gap:.3rem;font-size:.82rem;">
+          <input type="checkbox" class="skill-prof-cb" data-skill="{{ skill_id }}"
+                 {% if pc and skill_id in (skill_profs if skill_profs is defined else []) %}checked{% endif %}>
+          <input type="checkbox" class="skill-exp-cb cf-exp-check" data-skill="{{ skill_id }}" title="Expertise"
+                 {% if pc and skill_id in (skill_expertise if skill_expertise is defined else []) %}checked{% endif %}>
+          <span class="skill-stat" style="font-size:.6rem;color:var(--text-dim);width:26px;">{{ stat_label }}</span>
+          {{ skill_id.replace("_"," ").title() }}
+        </div>
+        {% endfor %}
+      </div>
+      <input type="hidden" name="skill_profs" id="skill_profs_field" value="{{ skill_profs|tojson if skill_profs is defined else '[]' }}">
+      <input type="hidden" name="skill_expertise" id="skill_expertise_field" value="{{ skill_expertise|tojson if skill_expertise is defined else '[]' }}">
+    </div>
+
+    <!-- Proficiencies & Languages -->
+    <div class="cf-section">
+      <div class="cf-section-title">Proficiencies &amp; Languages</div>
+      <div class="cf-grid cf-grid-2">
+        <div class="cf-field"><label>Armor Proficiencies</label>
+          <input type="text" name="armor_profs" value="{{ pc.armor_profs if pc else '' }}" placeholder="Light, Medium, Heavy, Shields"></div>
+        <div class="cf-field"><label>Weapon Proficiencies</label>
+          <input type="text" name="weapon_profs" value="{{ pc.weapon_profs if pc else '' }}" placeholder="Simple, Martial, Firearms"></div>
+        <div class="cf-field"><label>Tool Proficiencies</label>
+          <input type="text" name="tool_profs" value="{{ pc.tool_profs if pc else '' }}" placeholder="Hacking Kit, Medic Tools"></div>
+        <div class="cf-field"><label>Languages</label>
+          <input type="text" name="languages" value="{{ pc.languages if pc else '' }}" placeholder="Common, Draconic, Binary"></div>
+      </div>
+    </div>
+
+    <!-- Attacks -->
+    <div class="cf-section">
+      <div class="cf-section-title">Attacks &amp; Actions</div>
+      <table class="cf-dynamic-table">
+        <thead><tr><th>Name</th><th>Attack Bonus</th><th>Damage</th><th>Type</th><th>Notes</th><th></th></tr></thead>
+        <tbody id="attacks-body"></tbody>
+      </table>
+      <button type="button" class="cf-add-btn" onclick="addAttack()">+ Add Attack</button>
+      <input type="hidden" name="attacks_json" id="attacks_json">
+    </div>
+
+    <!-- Equipment -->
+    <div class="cf-section">
+      <div class="cf-section-title">Equipment</div>
+      <table class="cf-dynamic-table">
+        <thead><tr><th>Item Name</th><th>Qty</th><th>Weight (lbs)</th><th>Equipped</th><th>Notes</th><th></th></tr></thead>
+        <tbody id="equipment-body"></tbody>
+      </table>
+      <button type="button" class="cf-add-btn" onclick="addEquipment()">+ Add Item</button>
+      <input type="hidden" name="equipment_json" id="equipment_json">
+      <div class="cf-grid cf-grid-3" style="margin-top:.75rem;">
+        <div class="cf-field"><label>Copper (CP)</label><input type="number" name="currency_cp" min="0" value="{{ pc.currency_cp if pc else 0 }}"></div>
+        <div class="cf-field"><label>Silver (SP)</label><input type="number" name="currency_sp" min="0" value="{{ pc.currency_sp if pc else 0 }}"></div>
+        <div class="cf-field"><label>Electrum (EP)</label><input type="number" name="currency_ep" min="0" value="{{ pc.currency_ep if pc else 0 }}"></div>
+        <div class="cf-field"><label>Gold (GP)</label><input type="number" name="currency_gp" min="0" value="{{ pc.currency_gp if pc else 0 }}"></div>
+        <div class="cf-field"><label>Platinum (PP)</label><input type="number" name="currency_pp" min="0" value="{{ pc.currency_pp if pc else 0 }}"></div>
+      </div>
+    </div>
+
+    <!-- Feats & Features -->
+    <div class="cf-section">
+      <div class="cf-section-title">Features &amp; Feats</div>
+      <table class="cf-dynamic-table">
+        <thead><tr><th>Feature Name</th><th>Source</th><th>Description</th><th></th></tr></thead>
+        <tbody id="feats-body"></tbody>
+      </table>
+      <button type="button" class="cf-add-btn" onclick="addFeat()">+ Add Feature</button>
+      <input type="hidden" name="feats_json" id="feats_json">
+    </div>
+
+    <!-- Appearance -->
+    <div class="cf-section">
+      <div class="cf-section-title">Appearance</div>
+      <div class="cf-grid cf-grid-3">
+        <div class="cf-field"><label>Age</label><input type="text" name="age" value="{{ pc.age if pc else '' }}" placeholder="e.g. 28"></div>
+        <div class="cf-field"><label>Height</label><input type="text" name="height" value="{{ pc.height if pc else '' }}" placeholder="e.g. 5'10&quot;"></div>
+        <div class="cf-field"><label>Weight</label><input type="text" name="weight_app" value="{{ pc.weight_app if pc else '' }}" placeholder="e.g. 165 lbs"></div>
+        <div class="cf-field"><label>Eyes</label><input type="text" name="eyes" value="{{ pc.eyes if pc else '' }}" placeholder="e.g. Neon Blue Cybernetic"></div>
+        <div class="cf-field"><label>Skin</label><input type="text" name="skin" value="{{ pc.skin if pc else '' }}" placeholder="e.g. Pale"></div>
+        <div class="cf-field"><label>Hair</label><input type="text" name="hair" value="{{ pc.hair if pc else '' }}" placeholder="e.g. Black undercut"></div>
+      </div>
+    </div>
+
+    <!-- Personality & Background -->
+    <div class="cf-section">
+      <div class="cf-section-title">Personality</div>
+      <div class="cf-grid cf-grid-2" style="margin-bottom:.6rem;">
+        <div class="cf-field"><label>Personality Traits</label>
+          <textarea name="personality_traits" placeholder="How does your character behave?">{{ pc.personality_traits if pc else '' }}</textarea></div>
+        <div class="cf-field"><label>Ideals</label>
+          <textarea name="ideals" placeholder="What drives your character?">{{ pc.ideals if pc else '' }}</textarea></div>
+        <div class="cf-field"><label>Bonds</label>
+          <textarea name="bonds" placeholder="What connections does your character have?">{{ pc.bonds if pc else '' }}</textarea></div>
+        <div class="cf-field"><label>Flaws</label>
+          <textarea name="flaws" placeholder="What weaknesses or failings?">{{ pc.flaws if pc else '' }}</textarea></div>
+      </div>
+      <div class="cf-field" style="margin-bottom:.6rem;"><label>Backstory (Markdown supported)</label>
+        <textarea name="backstory" style="min-height:120px;" placeholder="Character history and origin...">{{ pc.backstory if pc else '' }}</textarea></div>
+      <div class="cf-field"><label>Session Notes (Markdown supported)</label>
+        <textarea name="notes" style="min-height:100px;" placeholder="Ongoing notes, quests, contacts...">{{ pc.notes if pc else '' }}</textarea></div>
+    </div>
+
+    <div class="cf-submit-row">
+      <a href="{% if pc %}/characters/{{ pc.id }}{% else %}/characters{% endif %}" style="color:var(--text-dim);">Cancel</a>
+      <button type="submit" class="btn-primary">{% if pc %}Save Changes{% else %}Create Character{% endif %}</button>
+    </div>
+  </form>
+</div>
+
+<script>
+// ── Ability score modifier display ────────────────────────────────────────────
+function updateMod(stat) {
+  const score = parseInt(document.getElementById('score_' + stat).value) || 10;
+  const mod = Math.floor((score - 10) / 2);
+  document.getElementById('mod_' + stat).textContent = (mod >= 0 ? '+' : '') + mod;
+}
+['str','dex','con','int','wis','cha'].forEach(updateMod);
+
+// ── Portrait preview ──────────────────────────────────────────────────────────
+function previewPortrait(input) {
+  const prev = document.getElementById('portrait-preview');
+  if (input.files && input.files[0]) {
+    const reader = new FileReader();
+    reader.onload = e => { prev.src = e.target.result; prev.style.display = 'block'; };
+    reader.readAsDataURL(input.files[0]);
+  }
+}
+
+// ── Proficiency serialization ─────────────────────────────────────────────────
+function serializeCheckboxes(selector, fieldId) {
+  const vals = [...document.querySelectorAll(selector + ':checked')]
+    .map(el => el.dataset.stat || el.dataset.skill).filter(Boolean);
+  document.getElementById(fieldId).value = JSON.stringify(vals);
+}
+document.querySelectorAll('.save-prof-cb').forEach(cb => {
+  cb.addEventListener('change', () => serializeCheckboxes('.save-prof-cb', 'saving_throw_profs_field'));
+});
+document.querySelectorAll('.skill-prof-cb').forEach(cb => {
+  cb.addEventListener('change', () => serializeCheckboxes('.skill-prof-cb', 'skill_profs_field'));
+});
+document.querySelectorAll('.skill-exp-cb').forEach(cb => {
+  cb.addEventListener('change', () => serializeCheckboxes('.skill-exp-cb', 'skill_expertise_field'));
+});
+
+// ── Dynamic table helpers ─────────────────────────────────────────────────────
+function makeInput(val, placeholder, width) {
+  return `<input type="text" value="${(val||'').replace(/"/g,'&quot;')}" placeholder="${placeholder}" style="width:${width||'100%'}">`;
+}
+function makeCheckbox(checked) {
+  return `<input type="checkbox" ${checked?'checked':''} style="width:auto;accent-color:var(--neon);">`;
+}
+function delBtn(onclick) {
+  return `<button type="button" class="cf-del-btn" onclick="${onclick}">✕</button>`;
+}
+
+// ── Attacks ───────────────────────────────────────────────────────────────────
+let _attacks = {{ attacks|tojson if attacks is defined else '[]' }};
+function renderAttacks() {
+  const tbody = document.getElementById('attacks-body');
+  tbody.innerHTML = _attacks.map((a, i) => `
+    <tr>
+      <td>${makeInput(a.name, 'Longsword', '110px')}</td>
+      <td>${makeInput(a.bonus, '+5', '60px')}</td>
+      <td>${makeInput(a.damage, '1d8+3', '80px')}</td>
+      <td>${makeInput(a.dmg_type, 'slashing', '80px')}</td>
+      <td>${makeInput(a.notes, 'finesse', '100px')}</td>
+      <td>${delBtn('delAttack('+i+')')}</td>
+    </tr>
+  `).join('');
+}
+function addAttack() {
+  _attacks.push({name:'',bonus:'',damage:'',dmg_type:'',notes:''});
+  renderAttacks();
+}
+function delAttack(i) { _attacks.splice(i,1); renderAttacks(); }
+
+// ── Equipment ─────────────────────────────────────────────────────────────────
+let _equipment = {{ equipment|tojson if equipment is defined else '[]' }};
+function renderEquipment() {
+  const tbody = document.getElementById('equipment-body');
+  tbody.innerHTML = _equipment.map((e, i) => `
+    <tr>
+      <td>${makeInput(e.name, 'Item name', '140px')}</td>
+      <td>${makeInput(e.qty||'1', '1', '40px')}</td>
+      <td>${makeInput(e.weight||'0', '0', '50px')}</td>
+      <td style="text-align:center">${makeCheckbox(e.equipped)}</td>
+      <td>${makeInput(e.notes, 'notes', '100px')}</td>
+      <td>${delBtn('delEquipment('+i+')')}</td>
+    </tr>
+  `).join('');
+}
+function addEquipment() {
+  _equipment.push({name:'',qty:1,weight:0,equipped:false,notes:''});
+  renderEquipment();
+}
+function delEquipment(i) { _equipment.splice(i,1); renderEquipment(); }
+
+// ── Feats ─────────────────────────────────────────────────────────────────────
+let _feats = {{ feats|tojson if feats is defined else '[]' }};
+function renderFeats() {
+  const tbody = document.getElementById('feats-body');
+  tbody.innerHTML = _feats.map((f, i) => `
+    <tr>
+      <td>${makeInput(f.name, 'Feature name', '150px')}</td>
+      <td>${makeInput(f.source, 'Class, Race…', '100px')}</td>
+      <td>${makeInput(f.description, 'Description', '200px')}</td>
+      <td>${delBtn('delFeat('+i+')')}</td>
+    </tr>
+  `).join('');
+}
+function addFeat() {
+  _feats.push({name:'',source:'',description:''});
+  renderFeats();
+}
+function delFeat(i) { _feats.splice(i,1); renderFeats(); }
+
+// ── Form submit — serialize JSON fields ───────────────────────────────────────
+document.getElementById('char-form').addEventListener('submit', function() {
+  // Read live values from attack table rows
+  const atbody = document.getElementById('attacks-body');
+  _attacks = [...atbody.querySelectorAll('tr')].map(row => {
+    const inputs = row.querySelectorAll('input[type=text]');
+    return {name:inputs[0]?.value||'',bonus:inputs[1]?.value||'',
+            damage:inputs[2]?.value||'',dmg_type:inputs[3]?.value||'',notes:inputs[4]?.value||''};
+  });
+  document.getElementById('attacks_json').value = JSON.stringify(_attacks);
+
+  const eqbody = document.getElementById('equipment-body');
+  _equipment = [...eqbody.querySelectorAll('tr')].map(row => {
+    const inputs = row.querySelectorAll('input[type=text]');
+    const qty_input = row.querySelectorAll('input[type=text]')[1];
+    const wt_input = row.querySelectorAll('input[type=text]')[2];
+    const eq_cb = row.querySelector('input[type=checkbox]');
+    return {name:inputs[0]?.value||'',qty:parseInt(inputs[1]?.value)||1,
+            weight:parseFloat(inputs[2]?.value)||0,equipped:eq_cb?.checked||false,
+            notes:inputs[3]?.value||''};
+  });
+  document.getElementById('equipment_json').value = JSON.stringify(_equipment);
+
+  const ftbody = document.getElementById('feats-body');
+  _feats = [...ftbody.querySelectorAll('tr')].map(row => {
+    const inputs = row.querySelectorAll('input[type=text]');
+    return {name:inputs[0]?.value||'',source:inputs[1]?.value||'',description:inputs[2]?.value||''};
+  });
+  document.getElementById('feats_json').value = JSON.stringify(_feats);
+
+  // Final sync of proficiency checkboxes → hidden name= fields
+  serializeCheckboxes('.save-prof-cb', 'saving_throw_profs_field');
+  serializeCheckboxes('.skill-prof-cb', 'skill_profs_field');
+  serializeCheckboxes('.skill-exp-cb', 'skill_expertise_field');
+});
+
+// Initial render
+renderAttacks();
+renderEquipment();
+renderFeats();
+</script>
+{% endblock %}

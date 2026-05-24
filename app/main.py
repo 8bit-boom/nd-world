@@ -20,7 +20,9 @@ from pathlib import Path
 from .database import init_db, get_db
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links
 from .routers.ai import router as ai_router
+from .routers.characters import router as characters_router
 from . import ai as _ai_module
+from .constants import KINDS, SUBTYPES, KIND_ICONS
 
 BASE_DIR = Path(__file__).parent.parent
 UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
@@ -30,25 +32,12 @@ app = FastAPI(title="N&D World")
 _allowed = [h.strip() for h in os.getenv("ND_ALLOWED_HOSTS", "*").split(",") if h.strip()]
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed)
 app.include_router(ai_router)
+app.include_router(characters_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 
-KINDS = ["character", "location", "organization", "creature", "event", "item", "feat", "note"]
-SUBTYPES = {
-    "character": ["NPC", "PC", "villain", "ally", "neutral"],
-    "location": ["district", "city", "country", "void station", "moon", "ruin", "corp facility"],
-    "organization": ["megacorp", "syndicate", "government", "cult", "secret society", "gang", "AI entity", "family"],
-    "creature": ["mutant", "animal", "abomination", "corp-enhanced", "ice creature", "undead"],
-    "event": ["corporate war", "outbreak", "disaster", "political", "yellow corruption", "discovery"],
-    "item": ["weapon", "armor", "augment", "bio-augmentation", "drone", "husk", "vehicle", "oddity", "metal", "item"],
-    "feat": ["common feat", "origin feat", "profession feat", "profession ability", "psy power", "race feat"],
-    "note": ["lore", "session note", "rumor", "prophecy", "theory"],
-}
-KIND_ICONS = {
-    "character": "👤", "location": "🗺", "organization": "🏢",
-    "creature": "☠", "event": "⚡", "item": "⚙", "feat": "✦", "note": "📄",
-}
+# KINDS, SUBTYPES, KIND_ICONS imported from .constants
 ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
 ENTITY_COLS = {"kind", "subtype", "folder", "name", "tags", "summary", "body", "image_url", "world_id"}
 

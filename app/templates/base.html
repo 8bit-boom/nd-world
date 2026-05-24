@@ -42,6 +42,7 @@
     <a href="/boards"       class="nav-kind {% if request.url.path.startswith('/boards') %}active{% endif %}">📌 Boards</a>
     <a href="/export"       class="nav-kind">⬇ Export</a>
     <a href="/rules"        class="nav-kind {% if request.url.path == '/rules' %}active{% endif %}">📖 Rules</a>
+    <a href="/characters"   class="nav-kind {% if request.url.path.startswith('/characters') %}active{% endif %}">🎲 Characters</a>
     <a href="/ai"           class="nav-kind {% if request.url.path == '/ai' %}active{% endif %}">🤖 AI</a>
     <a href="/imagestudio"  class="nav-kind {% if request.url.path == '/imagestudio' %}active{% endif %}">🎨 Image Studio</a>
     <a href="/new" class="btn-new">+ New</a>

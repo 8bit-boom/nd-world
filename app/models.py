@@ -48,6 +48,86 @@ class Entity(Base):
         backref="referenced_by",
     )
 
+class PlayerCharacter(Base):
+    __tablename__ = "player_characters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, default=1, index=True)
+
+    # Identity
+    name         = Column(String(256), nullable=False)
+    player_name  = Column(String(256), default="")
+    race         = Column(String(128), default="")
+    char_class   = Column(String(128), default="")
+    subclass     = Column(String(128), default="")
+    level        = Column(Integer, default=1)
+    xp           = Column(Integer, default=0)
+    background   = Column(String(128), default="")
+    alignment    = Column(String(64),  default="")
+    portrait_url = Column(String(512), default="")
+
+    # Ability scores
+    str_score = Column(Integer, default=10)
+    dex_score = Column(Integer, default=10)
+    con_score = Column(Integer, default=10)
+    int_score = Column(Integer, default=10)
+    wis_score = Column(Integer, default=10)
+    cha_score = Column(Integer, default=10)
+
+    # HP & combat
+    max_hp     = Column(Integer, default=10)
+    current_hp = Column(Integer, default=10)
+    temp_hp    = Column(Integer, default=0)
+    armor_class = Column(Integer, default=10)
+    speed       = Column(Integer, default=30)
+    hit_dice    = Column(String(32), default="1d8")
+    death_saves_success = Column(Integer, default=0)
+    death_saves_failure = Column(Integer, default=0)
+
+    # Proficiencies (JSON arrays of ids)
+    saving_throw_profs = Column(Text, default="[]")
+    skill_profs        = Column(Text, default="[]")
+    skill_expertise    = Column(Text, default="[]")
+    armor_profs        = Column(String(256), default="")
+    weapon_profs       = Column(String(256), default="")
+    tool_profs         = Column(String(256), default="")
+    languages          = Column(String(256), default="")
+
+    # Equipment JSON: [{name, qty, weight, equipped, notes}]
+    equipment_json = Column(Text, default="[]")
+    currency_cp    = Column(Integer, default=0)
+    currency_sp    = Column(Integer, default=0)
+    currency_ep    = Column(Integer, default=0)
+    currency_gp    = Column(Integer, default=0)
+    currency_pp    = Column(Integer, default=0)
+
+    # Features JSON: [{name, source, description}]
+    feats_json = Column(Text, default="[]")
+    # Attacks JSON: [{name, bonus, damage, dmg_type, notes}]
+    attacks_json = Column(Text, default="[]")
+
+    # Personality
+    personality_traits = Column(Text, default="")
+    ideals             = Column(Text, default="")
+    bonds              = Column(Text, default="")
+    flaws              = Column(Text, default="")
+    backstory          = Column(Text, default="")
+    notes              = Column(Text, default="")
+
+    # Appearance
+    age        = Column(String(32), default="")
+    height     = Column(String(32), default="")
+    weight_app = Column(String(32), default="")
+    eyes       = Column(String(64), default="")
+    skin       = Column(String(64), default="")
+    hair       = Column(String(64), default="")
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    world = relationship("World")
+
+
 class MapOverlay(Base):
     __tablename__ = "map_overlays"
 
