@@ -13,6 +13,8 @@ services:
       IMAGEGEN_URL: http://swarmui:7801
       # Set to http://<truenas-ip>:7801 to enable the Image Studio iframe inside nd-world
       SWARMUI_EXTERNAL_URL: ""
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: gemma4:26b   # change to whichever model you've pulled
     labels:
       net.ix-portals.nd-world.scheme: "http"
       net.ix-portals.nd-world.port: "8087"
@@ -20,6 +22,7 @@ services:
       net.ix-portals.nd-world.host: ""
     depends_on:
       - swarmui
+      - ollama
 
   swarmui:
     image: ghcr.io/mcmonkeyprojects/swarmui:latest
@@ -38,6 +41,29 @@ services:
       net.ix-portals.swarmui.port: "7801"
       net.ix-portals.swarmui.path: "/"
       net.ix-portals.swarmui.host: ""
+
+  ollama:
+    image: ollama/ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - /mnt/DeadPool/apps/ollama:/root/.ollama
+    labels:
+      net.ix-portals.ollama.scheme: "http"
+      net.ix-portals.ollama.port: "11434"
+      net.ix-portals.ollama.path: "/"
+      net.ix-portals.ollama.host: ""
+    # To pull a model after first start:
+    #   docker compose exec ollama ollama pull gemma4:26b
+    # For NVIDIA GPU, uncomment the deploy block below:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
 
   watchtower:
     image: containrrr/watchtower

@@ -15,8 +15,11 @@ services:
       IMAGEGEN_TYPE: swarmui
       IMAGEGEN_URL: http://swarmui:7801
       SWARMUI_EXTERNAL_URL: ""   # set to http://<your-host>:7801 to enable the Image Studio iframe
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: gemma4:26b   # change to whichever model you've pulled
     depends_on:
       - swarmui
+      - ollama
 
   swarmui:
     image: ghcr.io/mcmonkeyprojects/swarmui:latest
@@ -32,6 +35,25 @@ services:
       SWARMUI_NETWORK_BIND_ADDRESS: "0.0.0.0"
       SWARMUI_NETWORK_PORT: "7801"
 
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    # To pull a model after first start:
+    #   docker compose exec ollama ollama pull gemma4:26b
+    # For NVIDIA GPU, uncomment the deploy block below:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
 volumes:
   nd-world-data:
     driver: local
@@ -40,4 +62,6 @@ volumes:
   swarmui-models:
     driver: local
   swarmui-dlbackend:
+    driver: local
+  ollama-data:
     driver: local
