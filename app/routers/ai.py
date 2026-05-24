@@ -239,21 +239,35 @@ class ImagegenBody(BaseModel):
     steps: int = 20
     cfg: float = 7.0
     seed: int = -1
+    sampler: str = "euler"
+    scheduler: str = "normal"
+    batch_size: int = 1
+    loras: str = ""
+    lora_weights: str = ""
+    vae: str = ""
+    clip_skip: int = -1
+    init_image: str = ""
+    init_strength: float = 0.6
 
 
 @router.post("/imagegen/generate")
 async def api_imagegen_generate(body: ImagegenBody):
     _uploads = _Path(_os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
     try:
-        url = await _ai.imagegen_generate(
+        urls = await _ai.imagegen_generate(
             prompt=body.prompt, negative=body.negative, model=body.model,
             width=body.width, height=body.height, steps=body.steps,
             cfg=body.cfg, seed=body.seed, uploads_dir=_uploads,
+            sampler=body.sampler, scheduler=body.scheduler,
+            batch_size=body.batch_size, loras=body.loras,
+            lora_weights=body.lora_weights, vae=body.vae,
+            clip_skip=body.clip_skip, init_image=body.init_image,
+            init_strength=body.init_strength,
         )
-        return {"url": url}
+        return {"url": urls[0] if urls else "", "urls": urls}
     except Exception as exc:
         _log.error("imagegen_generate failed: %s", exc)
-        return {"url": "", "error": str(exc)}
+        return {"url": "", "urls": [], "error": str(exc)}
 
 
 @router.get("/test-chat")

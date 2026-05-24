@@ -954,26 +954,25 @@ input[type="file"]:hover { border-color: var(--neon); }
 
 /* ── Mobile / tablet nav collapse (≤768px) ── */
 @media (max-width: 768px) {
-  /* Show hamburger, hide inline nav */
-  .nav-hamburger { display: block; }
+  /* Show hamburger */
+  .nav-hamburger { display: block !important; }
+
+  /* Hide nav by default; when .open, expand as a full-width row below topbar */
   .nav-kinds {
-    display: none;
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    background: var(--bg2);
-    border-top: 1px solid var(--border);
-    border-bottom: 2px solid var(--neon);
+    display: none !important;
+    order: 99;
+    width: 100%;
     flex-direction: column;
     flex-wrap: nowrap;
     gap: 0;
-    padding: .5rem 0;
-    z-index: 99;
+    background: var(--bg2);
+    border-top: 2px solid var(--neon);
+    padding: .3rem 0;
   }
-  .nav-kinds.open { display: flex; }
+  .nav-kinds.open { display: flex !important; }
+
   .nav-kind {
-    padding: .7rem 1.2rem;
+    padding: .75rem 1.2rem;
     border-left: none;
     border-radius: 0;
     font-size: .9rem;
@@ -982,10 +981,10 @@ input[type="file"]:hover { border-color: var(--neon); }
   }
   .nav-kind:last-of-type { border-bottom: none; }
   .btn-new {
-    margin: .5rem 1rem;
+    margin: .4rem 1rem .5rem;
     padding: .6rem 1rem;
     font-size: .9rem;
-    display: inline-block;
+    display: block;
     width: calc(100% - 2rem);
     text-align: center;
   }
