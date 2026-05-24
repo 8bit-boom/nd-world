@@ -24,6 +24,7 @@ from . import ai as _ai_module
 
 BASE_DIR = Path(__file__).parent.parent
 UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+SWARMUI_EXTERNAL_URL = os.getenv("SWARMUI_EXTERNAL_URL", "").rstrip("/")
 
 app = FastAPI(title="N&D World")
 _allowed = [h.strip() for h in os.getenv("ND_ALLOWED_HOSTS", "*").split(",") if h.strip()]
@@ -891,6 +892,15 @@ def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: 
         "request": request, "world": world, "worlds": worlds,
         "kinds": KINDS, "kind_icons": KIND_ICONS,
         "entity_counts": entity_counts, "world_system": world_system,
+    })
+
+@app.get("/imagestudio", response_class=HTMLResponse)
+def imagestudio(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, worlds = _get_world_ctx(db, active_world)
+    return templates.TemplateResponse("imagestudio.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "kinds": KINDS, "kind_icons": KIND_ICONS,
+        "swarmui_url": SWARMUI_EXTERNAL_URL,
     })
 
 @app.get("/boards", response_class=HTMLResponse)
