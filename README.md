@@ -6,7 +6,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 
 ## Features
 
-- **Multi-world support** — create and switch between separate game worlds, each with its own color accent
+- **Multi-world support** — create and switch between separate game worlds, each with its own colour accent
 - **8 entity types** — Characters, Locations, Organizations, Creatures, Events, Items, Feats, Notes — each with TTRPG-specific subtypes
 - **Entity relationships** — link any entity to any other; navigate connections from the detail page
 - **Folder organization** — hierarchical folders per entity type for large lore collections
@@ -15,9 +15,11 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - **Interactive maps** — add custom markers and region overlays to map images
 - **Schematics** — SVG-based canvas editor for drawing station/dungeon layouts
 - **Investment boards** — node-and-edge graph boards for plotting organization structures and story threads
-- **AI chat** — Ollama LLM integration for lore generation and brainstorming
-- **AI image generation** — SwarmUI or ComfyUI backend with sampler/scheduler control, LoRA, VAE, CLIP skip, img2img, and batch output
+- **AI chat** — Ollama LLM integration with streaming responses and world-lore RAG context
+- **AI Models tab** — download, manage, and delete Ollama models directly from the app UI with live progress bars; popular model quick-picks included
+- **AI image generation** — SwarmUI or ComfyUI backend with sampler/scheduler, LoRA, VAE, CLIP skip, upscaling, img2img, batch output, and generation history with parameter reuse
 - **Image Studio** — embedded SwarmUI iframe at `/imagestudio`
+- **Universal character sheets** — fully configurable stats, skills, and currency (N&D defaults: POW/AGI/FOR/INT/PER/SOC); optional secondary resource tracker
 - **Full-text search** — across names, tags, summaries, and body text
 - **JSON export / import** — complete world backup and restore with embedded images
 - **Mobile-responsive UI** — hamburger nav, touch-friendly targets, stacking layouts on phones and tablets
@@ -44,10 +46,10 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 | Requirement | Notes |
 |-------------|-------|
 | Docker Engine + Docker Compose v2 | Required for all install methods |
-| Ollama | Optional — for AI chat |
-| SwarmUI or ComfyUI | Optional — for AI image generation |
-| GPU | Optional — CPU-only mode works for both Ollama and SwarmUI |
 | Git | For cloning the repository |
+| GPU | Optional — CPU-only mode works for Ollama and SwarmUI |
+
+Ollama and SwarmUI are **included in the Docker stack** — no separate installation needed.
 
 ---
 
@@ -89,18 +91,15 @@ docker --version          # Docker version 26.x or newer
 docker compose version    # Docker Compose version v2.x or newer
 ```
 
-### Step 2 — Install Git and clone the repository
+### Step 2 — Clone the repository
 
 ```bash
 sudo apt install -y git
-
 git clone https://github.com/8bit-boom/nd-world.git
 cd nd-world
 ```
 
 ### Step 3 — Configure the stack
-
-Open `docker-compose.yml` in any text editor and adjust the environment section:
 
 ```bash
 nano docker-compose.yml
@@ -114,23 +113,11 @@ services:
     ports:
       - "8080:8000"       # change 8080 if that port is already in use
     environment:
-      DB_PATH: /data/world.db
-      OLLAMA_URL: http://host.docker.internal:11434   # if Ollama runs on the host
-      OLLAMA_MODEL: gemma4:26b
-      IMAGEGEN_TYPE: swarmui
-      IMAGEGEN_URL: http://swarmui:7801
-      SWARMUI_EXTERNAL_URL: ""   # set to http://<your-linux-machine-ip>:7801
+      OLLAMA_MODEL: gemma4:26b        # model to use for AI chat
+      SWARMUI_EXTERNAL_URL: ""        # set to http://<your-ip>:7801 for Image Studio iframe
 ```
 
-> **Note:** `host.docker.internal` resolves to the host machine from inside a container on Linux only if you add `--add-host=host.docker.internal:host-gateway` to your run command, or add the equivalent to your compose file. Alternatively, use your machine's LAN IP (e.g., `http://192.168.1.100:11434`).
-
-To add host gateway resolution, add this under the `world` service:
-
-```yaml
-  world:
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-```
+> **Note:** `OLLAMA_URL` is pre-configured to `http://ollama:11434` pointing at the bundled Ollama container. You only need to change it if you want to use a different Ollama instance.
 
 ### Step 4 — Start the stack
 
@@ -138,43 +125,52 @@ To add host gateway resolution, add this under the `world` service:
 docker compose up -d
 ```
 
-Watch the logs to confirm both containers started:
+This starts three services: **nd-world** (app), **SwarmUI** (image gen), and **Ollama** (AI chat).
 
+Watch the logs:
 ```bash
 docker compose logs -f
 ```
 
-SwarmUI performs a first-run setup on initial boot (downloads ComfyUI backend). This can take **5–15 minutes** depending on your connection. Wait until you see `SwarmUI is ready` in the logs before trying to generate images.
+SwarmUI performs a first-run setup on initial boot (downloads the ComfyUI backend). This can take **5–15 minutes** depending on your connection.
 
-### Step 5 — Open the app
+### Step 5 — Download an AI model
+
+Open the app at [http://localhost:8080](http://localhost:8080) and go to **AI → 🤖 Models tab**. Click any model in the **Popular Models** grid (e.g. *Llama 3.2 3B* for a fast 2 GB download, or *Gemma 4 26B* for the best quality) — the progress bar shows download percentage and GB transferred. Once complete, the model is ready for chat.
+
+Alternatively, pull from the command line:
+```bash
+docker compose exec ollama ollama pull gemma4:26b
+```
+
+### Step 6 — Open the app
 
 - **N&D World:** [http://localhost:8080](http://localhost:8080)
 - **SwarmUI:** [http://localhost:7801](http://localhost:7801)
+- **Ollama API:** [http://localhost:11434](http://localhost:11434)
 
 To access from other devices on your network, replace `localhost` with your machine's LAN IP:
 ```bash
 ip addr show | grep "inet " | grep -v 127.0.0.1
-# example output: inet 192.168.1.100/24
+# example: inet 192.168.1.100/24
 ```
 
-### Step 6 — Install Ollama (AI chat)
+Also set `SWARMUI_EXTERNAL_URL: "http://192.168.1.100:7801"` in `docker-compose.yml` to enable the Image Studio iframe, then restart: `docker compose restart world`.
+
+### Step 7 — Add image generation models
+
+Place `.safetensors` or `.ckpt` checkpoint files into the SwarmUI models volume. With Docker named volumes, the easiest way is to copy via a temporary container:
 
 ```bash
-curl -fsSL https://ollama.com/install.sh | sh
+# Find the volume mount path
+docker volume inspect nd-world_swarmui-models
 
-# Start Ollama (it runs as a systemd service automatically after install)
-ollama pull gemma4:26b
+# Or copy directly via docker
+docker run --rm -v nd-world_swarmui-models:/models \
+  -v $(pwd):/src alpine cp /src/your-model.safetensors /models/Stable-Diffusion/
 ```
 
-Update `OLLAMA_URL` in `docker-compose.yml` to use your LAN IP if running Ollama on the host:
-```yaml
-OLLAMA_URL: http://192.168.1.100:11434
-```
-
-Then restart the world container:
-```bash
-docker compose restart world
-```
+Then open the **AI → Image Gen** tab, click the model dropdown refresh button — your model will appear.
 
 ### Managing the service
 
@@ -222,39 +218,21 @@ docker --version
 docker compose version
 ```
 
-### Step 3 — Install Git
+### Step 3 — Install Git and clone the repository
 
 Download and install Git from [git-scm.com](https://git-scm.com/download/win).
 
-During setup, select **"Use Git from the Windows Command Prompt"** and **"Use WSL Git"** if prompted.
-
-### Step 4 — Clone the repository
-
-Open a terminal (**Git Bash**, **PowerShell**, or **WSL Ubuntu**) and run:
-
+Then in Git Bash, PowerShell, or WSL:
 ```bash
 git clone https://github.com/8bit-boom/nd-world.git
 cd nd-world
 ```
 
-> **Tip:** For best performance, clone inside the WSL filesystem rather than a Windows path. In WSL terminal:
-> ```bash
-> cd ~
-> git clone https://github.com/8bit-boom/nd-world.git
-> cd nd-world
-> ```
+> **Tip:** For best performance, clone inside the WSL filesystem: open WSL terminal → `cd ~` → then clone.
 
-### Step 5 — Configure the stack
+### Step 4 — Configure the stack
 
-Open `docker-compose.yml` in a text editor (Notepad++, VS Code, etc.):
-
-```powershell
-code docker-compose.yml     # if VS Code is installed
-# or
-notepad docker-compose.yml
-```
-
-Key settings:
+Open `docker-compose.yml` in VS Code or Notepad:
 
 ```yaml
 services:
@@ -262,33 +240,31 @@ services:
     ports:
       - "8080:8000"
     environment:
-      OLLAMA_URL: http://host.docker.internal:11434   # works on Windows — points to the host
       OLLAMA_MODEL: gemma4:26b
-      IMAGEGEN_TYPE: swarmui
-      IMAGEGEN_URL: http://swarmui:7801
-      SWARMUI_EXTERNAL_URL: "http://localhost:7801"   # on Windows localhost works for iframe
+      SWARMUI_EXTERNAL_URL: "http://localhost:7801"   # localhost works on Windows for iframe
 ```
 
-> **Windows note:** `host.docker.internal` works out of the box on Docker Desktop for Windows — no extra configuration needed.
+> **Windows note:** `host.docker.internal` is automatically available on Docker Desktop for Windows — no extra configuration needed. The bundled Ollama container connects internally via `http://ollama:11434`.
 
-### Step 6 — Start the stack
-
-In your terminal (Git Bash, PowerShell, or WSL):
+### Step 5 — Start the stack
 
 ```bash
 docker compose up -d
 ```
 
-Check that both containers started:
+Check all three containers started:
 ```bash
 docker compose ps
+# nd-world, swarmui, ollama should all show "Up"
 ```
 
-You should see `nd-world` and `swarmui` with status `Up`.
+### Step 6 — Download an AI model
 
-Watch logs while SwarmUI does its first-run setup:
+Open [http://localhost:8080](http://localhost:8080) → **AI → 🤖 Models** → click any popular model chip to download it with live progress.
+
+Or via terminal:
 ```bash
-docker compose logs -f swarmui
+docker compose exec ollama ollama pull gemma4:26b
 ```
 
 ### Step 7 — Open the app
@@ -297,28 +273,16 @@ docker compose logs -f swarmui
 - **SwarmUI:** [http://localhost:7801](http://localhost:7801)
 
 To make the app accessible to other devices on your network:
-1. Find your Windows LAN IP: open **PowerShell** → `ipconfig` → look for IPv4 Address
-2. Open Windows Firewall and create inbound rules for ports **8080** and **7801**:
+1. Find your LAN IP: **PowerShell** → `ipconfig` → look for IPv4 Address under your adapter
+2. Open Windows Firewall for the ports:
    ```powershell
    # Run as Administrator
    New-NetFirewallRule -DisplayName "nd-world" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow
    New-NetFirewallRule -DisplayName "SwarmUI"  -Direction Inbound -Protocol TCP -LocalPort 7801 -Action Allow
+   New-NetFirewallRule -DisplayName "Ollama"   -Direction Inbound -Protocol TCP -LocalPort 11434 -Action Allow
    ```
-
-### Step 8 — Install Ollama (AI chat)
-
-1. Download the Windows installer from [ollama.com](https://ollama.com/download/windows)
-2. Run the installer — Ollama starts automatically as a background service
-3. Open **PowerShell** and pull a model:
-   ```powershell
-   ollama pull gemma4:26b
-   ```
-
-Because Docker Desktop uses `host.docker.internal` to reach the host, no URL changes are needed — Ollama at `http://host.docker.internal:11434` is already configured in the compose file.
 
 ### Managing the service on Windows
-
-Use these commands in any terminal:
 
 ```bash
 docker compose stop          # stop containers
@@ -342,26 +306,24 @@ In the TrueNAS web UI go to **Datasets** and create the following datasets under
 | Dataset path | Purpose |
 |---|---|
 | `DeadPool/apps/nd-world` | nd-world database and uploads |
-| `DeadPool/apps/swarmui` | SwarmUI root |
 | `DeadPool/apps/swarmui/data` | SwarmUI configuration |
 | `DeadPool/apps/swarmui/models` | Checkpoint/LoRA model files |
 | `DeadPool/apps/swarmui/dlbackend` | ComfyUI backend (auto-downloaded) |
+| `DeadPool/apps/ollama` | Ollama model storage |
 
-> **Or** create them via SSH shell in one command:
+> **Or** create them all via SSH shell:
 > ```bash
 > mkdir -p /mnt/DeadPool/apps/nd-world
 > mkdir -p /mnt/DeadPool/apps/swarmui/{data,models,dlbackend}
+> mkdir -p /mnt/DeadPool/apps/ollama
 > ```
 
 If your pool is named differently, search and replace `DeadPool` throughout `truenas-compose.yml`.
 
 ### Step 2 — Edit truenas-compose.yml
 
-Copy the file and edit it in a text editor or via the TrueNAS shell:
-
 ```bash
-cp truenas-compose.yml my-truenas-compose.yml
-nano my-truenas-compose.yml
+nano truenas-compose.yml
 ```
 
 Set your TrueNAS IP address:
@@ -370,23 +332,11 @@ Set your TrueNAS IP address:
 services:
   world:
     environment:
-      OLLAMA_URL: "http://192.168.1.xxx:11434"       # your TrueNAS or Ollama host IP
       OLLAMA_MODEL: gemma4:26b
-      SWARMUI_EXTERNAL_URL: "http://192.168.1.xxx:7801"  # TrueNAS IP for iframe
+      SWARMUI_EXTERNAL_URL: "http://192.168.1.xxx:7801"  # your TrueNAS IP
 ```
 
-If your datasets are on a different pool or path, update all volume bind mounts:
-
-```yaml
-    volumes:
-      - /mnt/YourPool/apps/nd-world:/data         # ← change this path
-
-  swarmui:
-    volumes:
-      - /mnt/YourPool/apps/swarmui/data:/SwarmUI/Data
-      - /mnt/YourPool/apps/swarmui/models:/SwarmUI/Models
-      - /mnt/YourPool/apps/swarmui/dlbackend:/SwarmUI/dlbackend
-```
+If your datasets are on a different pool or path, update all volume bind mounts (search and replace `/mnt/DeadPool`).
 
 ### Step 3 — Deploy via Custom App
 
@@ -398,73 +348,40 @@ If your datasets are on a different pool or path, update all volume bind mounts:
    - Paste the full contents of your edited `truenas-compose.yml`
 4. Click **Install**
 
-TrueNAS will pull the images and start all three containers (`world`, `swarmui`, `watchtower`).
+TrueNAS will pull the images and start all containers (`world`, `swarmui`, `ollama`, `watchtower`).
 
 ### Step 4 — Open the portals
 
 After deployment, TrueNAS registers portal buttons automatically from the `net.ix-portals.*` labels:
 
-- **nd-world** opens on port **8087** → `http://<truenas-ip>:8087`
-- **SwarmUI** opens on port **7801** → `http://<truenas-ip>:7801`
+| Service | Port | URL |
+|---------|------|-----|
+| nd-world | 8087 | `http://<truenas-ip>:8087` |
+| SwarmUI | 7801 | `http://<truenas-ip>:7801` |
+| Ollama | 11434 | `http://<truenas-ip>:11434` |
 
 These appear as clickable portal buttons on the app's tile in **Apps → Installed Apps**.
 
-### Step 5 — Install Ollama on TrueNAS (optional)
+### Step 5 — Download an AI model
 
-You can run Ollama directly on TrueNAS inside a Debian VM or as a separate Docker container.
+Open nd-world → **AI → 🤖 Models tab** → click a popular model to download it, or:
 
-**Option A — Ollama Docker container** (add to `truenas-compose.yml`):
-
-```yaml
-  ollama:
-    image: ollama/ollama:latest
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    volumes:
-      - /mnt/DeadPool/apps/ollama:/root/.ollama
-    # Uncomment if you have a supported NVIDIA GPU:
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
-```
-
-Then update the `world` service env var:
-```yaml
-OLLAMA_URL: http://ollama:11434
-```
-
-Pull a model after the container starts:
 ```bash
-docker exec -it ollama ollama pull gemma4:26b
+docker exec -it <ollama-container-name> ollama pull gemma4:26b
 ```
 
-**Option B — Ollama in a Debian VM:**
-Install Ollama normally inside the VM (`curl -fsSL https://ollama.com/install.sh | sh`) and set `OLLAMA_URL` to the VM's IP.
+### Step 6 — Place image generation checkpoints
 
-### Step 6 — Place model checkpoints
+Copy `.safetensors` or `.ckpt` files into the models directory:
+```bash
+cp your-model.safetensors /mnt/DeadPool/apps/swarmui/models/Stable-Diffusion/
+```
 
-To generate images, you need at least one Stable Diffusion checkpoint (`.safetensors` or `.ckpt`):
-
-1. Download a checkpoint (e.g., from [civitai.com](https://civitai.com) or [huggingface.co](https://huggingface.co))
-2. Place it in the models directory:
-   ```bash
-   cp your-model.safetensors /mnt/DeadPool/apps/swarmui/models/Stable-Diffusion/
-   ```
-   SwarmUI organizes models in subdirectories — create `Stable-Diffusion/` if it doesn't exist yet.
-3. In SwarmUI's web UI (port 7801), click the **refresh models** button to pick it up.
+Then open the **AI → Image Gen** tab and refresh the model dropdown.
 
 ### Step 7 — Install ComfyUI-Manager (optional)
 
-If you want to install custom ComfyUI nodes via the Manager UI, run the included script from the TrueNAS shell:
-
 ```bash
-bash /path/to/nd-world/install-comfyui-manager.sh
-# or specify the SwarmUI path explicitly:
 bash install-comfyui-manager.sh /mnt/DeadPool/apps/swarmui/dlbackend/ComfyUI
 ```
 
@@ -472,9 +389,7 @@ The script auto-detects the correct path and installs ComfyUI-Manager into `cust
 
 ### Auto-updates (Watchtower)
 
-`truenas-compose.yml` includes **Watchtower**, which checks every 5 minutes for new versions of `ghcr.io/8bit-boom/nd-world:latest` and `ghcr.io/mcmonkeyprojects/swarmui:latest`. When a new image is published it pulls and restarts the affected container automatically — no manual intervention needed.
-
-To disable auto-updates, remove or comment out the `watchtower` service block.
+`truenas-compose.yml` includes **Watchtower**, which checks every 5 minutes for new image versions and restarts affected containers automatically. To disable auto-updates, remove or comment out the `watchtower` service block.
 
 ---
 
@@ -483,10 +398,10 @@ To disable auto-updates, remove or comment out the `watchtower` service block.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DB_PATH` | `/data/world.db` | Path to the SQLite database file |
-| `OLLAMA_URL` | `http://127.0.0.1:11434` | URL of your Ollama instance |
+| `OLLAMA_URL` | `http://ollama:11434` | URL of the Ollama instance (pre-configured to bundled container) |
 | `OLLAMA_MODEL` | `gemma4:26b` | Default LLM model for AI chat |
-| `IMAGEGEN_TYPE` | _(empty)_ | Image generator backend: `swarmui` or `comfyui` |
-| `IMAGEGEN_URL` | _(empty)_ | Internal URL of the image generator API |
+| `IMAGEGEN_TYPE` | `swarmui` | Image generator backend: `swarmui` or `comfyui` |
+| `IMAGEGEN_URL` | `http://swarmui:7801` | Internal URL of the image generator API |
 | `SWARMUI_EXTERNAL_URL` | _(empty)_ | Browser-accessible SwarmUI URL for the Image Studio iframe |
 | `ND_ALLOWED_HOSTS` | `*` | Comma-separated allowed `Host` headers (security hardening) |
 
@@ -496,14 +411,52 @@ To disable auto-updates, remove or comment out the `watchtower` service block.
 
 ### Ollama (chat)
 
-1. Install Ollama (see platform-specific instructions above)
-2. Pull a model:
-   ```bash
-   ollama pull gemma4:26b
-   ```
-3. Set `OLLAMA_URL` and `OLLAMA_MODEL` in your compose file.
+Ollama is included in both `docker-compose.yml` and `truenas-compose.yml` and starts automatically with the stack. No separate installation needed.
 
-The AI dot in the top navigation bar turns **green** when Ollama is reachable. You can manage models (add, pull, remove) from the **AI** page inside the app.
+**Downloading models:**
+
+The easiest way is via the in-app **🤖 Models tab** (AI page):
+- Click any chip in the **Popular Models** grid to start a download with live progress
+- Or paste a custom model ID (e.g. `llama3.2:3b`, `hf.co/username/model`) and click **⬇ Pull & Add**
+- Downloaded models appear in the model list with a green status dot and a **✓ Use** button to activate them for chat
+
+From the command line:
+```bash
+# Docker Compose
+docker compose exec ollama ollama pull gemma4:26b
+
+# TrueNAS (find container name first)
+docker ps | grep ollama
+docker exec -it <name> ollama pull gemma4:26b
+```
+
+**Recommended models by hardware:**
+
+| Model | Size | Notes |
+|-------|------|-------|
+| `llama3.2:1b` | ~0.9 GB | Minimum spec — works on anything |
+| `llama3.2:3b` | ~2 GB | Good quality, fast on CPU |
+| `gemma3:4b` | ~3 GB | Strong reasoning, low RAM |
+| `gemma3:12b` | ~8 GB | Best quality under 16 GB RAM |
+| `gemma4:26b` | ~17 GB | Best quality — needs 20+ GB RAM or GPU |
+
+**GPU acceleration:**
+
+Uncomment the `deploy` block in the Ollama service to enable NVIDIA GPU offloading:
+
+```yaml
+  ollama:
+    # ...
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+```
+
+AMD GPU support requires the ROCm image: change `image: ollama/ollama` to `image: ollama/ollama:rocm`.
 
 ### SwarmUI (image generation)
 
@@ -512,15 +465,19 @@ SwarmUI is included in all compose files and starts automatically. On first boot
 Set `SWARMUI_EXTERNAL_URL` to your host's accessible URL to enable the **Image Studio** embedded iframe view.
 
 The **AI → Image Gen** panel supports:
-- Checkpoint model selection, size presets (512², 768×512, 1024², and more), custom W×H
+- Checkpoint model selection with deep subfolder scanning
+- Size presets (512², 768×512, 1024², and more) plus custom W×H
 - Sampler, scheduler, steps, CFG scale, seed
-- Batch generation (1–4 images shown in a grid)
-- LoRA name + weight, VAE override, CLIP skip
+- Batch generation (1–4 images)
+- LoRA name + weight
+- VAE override, CLIP skip
+- **Upscaling** — model selector (pulls from SwarmUI Upscale model folder) + ×1.5/×2/×3/×4 scale factor
 - Image-to-image (img2img) — upload an init image and set denoising strength
+- **Generation history** — last 50 generations stored in browser localStorage with one-click parameter reuse
 
 ### ComfyUI (alternative backend)
 
-Set `IMAGEGEN_TYPE=comfyui` and `IMAGEGEN_URL` to your ComfyUI instance address (default port 8188). A checkpoint must already be loaded in ComfyUI before sending a request.
+Set `IMAGEGEN_TYPE=comfyui` and `IMAGEGEN_URL` to your ComfyUI instance address (default port 8188). A checkpoint must already be loaded before sending a request.
 
 ---
 
@@ -528,11 +485,11 @@ Set `IMAGEGEN_TYPE=comfyui` and `IMAGEGEN_URL` to your ComfyUI instance address 
 
 All persistent data lives in the `/data` volume:
 - `world.db` — SQLite database with all worlds, entities, and relationships
-- `uploads/` — uploaded images and AI-generated images
+- `uploads/` — uploaded images and AI-generated images (`uploads/ai-images/`)
 
 ### Export a world
 
-Click **Export** in the nav bar. The download is a self-contained JSON file with all entities and images embedded as base64. Keep this file as your backup.
+Click **Export** in the nav bar. The download is a self-contained JSON file with all entities and images embedded as base64.
 
 ### Import a world
 
@@ -555,18 +512,22 @@ cp -r /mnt/DeadPool/apps/nd-world ./backup-$(date +%Y%m%d)
 ```
 nd-world/
 ├── app/
-│   ├── main.py              # All FastAPI routes
+│   ├── main.py              # FastAPI routes
 │   ├── models.py            # SQLAlchemy ORM models
 │   ├── database.py          # DB init and migrations
 │   ├── ai.py                # Ollama + image gen integration
+│   ├── constants.py         # N&D default stats, skills, currency
 │   ├── routers/
-│   │   └── ai.py            # /api/ai/* endpoints
-│   ├── templates/           # Jinja2 HTML templates
-│   └── core_rules.md        # Game rules source document
+│   │   ├── ai.py            # /api/ai/* endpoints
+│   │   └── characters.py    # /api/characters/* endpoints
+│   └── templates/           # Jinja2 HTML templates
+│       ├── ai_chat.html     # AI chat + Image Gen + Models tabs
+│       ├── imagestudio.html # SwarmUI iframe page
+│       └── characters/      # Character sheet, list, form
 ├── static/
 │   └── style.css            # All app styles
-├── docker-compose.yml       # Development / Linux / Windows stack
-├── truenas-compose.yml      # TrueNAS SCALE production stack
+├── docker-compose.yml       # Linux / Windows stack (named volumes)
+├── truenas-compose.yml      # TrueNAS SCALE stack (bind mounts)
 ├── Dockerfile
 ├── requirements.txt
 └── install-comfyui-manager.sh
@@ -576,42 +537,51 @@ nd-world/
 
 ## Ports Reference
 
-| Service | Default Port | Compose file |
-|---------|-------------|--------------|
+| Service | Port | Compose file |
+|---------|------|--------------|
 | nd-world | 8080 | `docker-compose.yml` |
 | nd-world | 8087 | `truenas-compose.yml` |
 | SwarmUI | 7801 | both |
-| Ollama | 11434 | external / optional container |
+| Ollama | 11434 | both |
 
 ---
 
 ## Troubleshooting
 
-**AI dot stays grey**
-- Check Ollama is running: `curl http://localhost:11434/api/tags`
-- On Linux/Windows with Ollama on the host: make sure `OLLAMA_URL` uses your LAN IP or `host.docker.internal`, not `localhost` (which resolves inside the container)
-- Restart after changing env vars: `docker compose restart world`
+**AI dot stays grey / chat returns errors**
+- Open **AI → 🤖 Models** — the Ollama status indicator shows whether the service is reachable and the URL it's connecting to
+- Check the Ollama container is running: `docker compose ps`
+- View Ollama logs: `docker compose logs ollama`
+- If you changed `OLLAMA_URL` to point at a host Ollama, make sure it's not `localhost` (which resolves inside the container) — use your LAN IP instead
+
+**No models in the Models tab**
+- Click **↺ Refresh** or go to the **Popular Models** grid and click a chip to download one
+- The model list is empty until at least one model is pulled
 
 **Image generation returns an error**
 - Check backend status at `/api/ai/imagegen/status` in your browser
-- Confirm both `IMAGEGEN_TYPE` and `IMAGEGEN_URL` are set
 - SwarmUI first-run can take 10–15 minutes — check logs: `docker compose logs -f swarmui`
 - Confirm at least one checkpoint model is present in the models directory
+- The Image Gen model dropdown refresh button (↺) rescans the SwarmUI model folders
 
 **Image Studio iframe is blank or shows connection refused**
 - `SWARMUI_EXTERNAL_URL` must be a URL your **browser** can reach — not an internal Docker hostname like `http://swarmui:7801`
-- Use your LAN IP: `http://192.168.1.xxx:7801`
+- Use your LAN IP: `SWARMUI_EXTERNAL_URL=http://192.168.1.xxx:7801`
 - On Windows, ensure the Windows Firewall allows port 7801
+
+**Models or LoRAs not showing in Image Gen dropdowns**
+- The scanner uses `depth: 10` for nested subfolders — make sure the files are inside the SwarmUI models directory
+- Click the ↺ refresh button next to the dropdown to force a rescan
 
 **Database locked / app won't start**
 - Only one nd-world instance should write to the same `world.db`
 - Recover from a crashed container: `docker compose restart world`
 
 **Port already in use on startup**
-- Change the host port in `docker-compose.yml` (left side of the mapping):
+- Change the host port in your compose file (left side of the mapping):
   ```yaml
   ports:
-    - "8090:8000"   # use 8090 instead
+    - "8090:8000"   # use 8090 instead of 8080
   ```
 
 **Uploads not persisting after restart**
@@ -620,4 +590,4 @@ nd-world/
 
 **SwarmUI models directory is empty after restart (TrueNAS)**
 - Make sure the models bind mount is correct in `truenas-compose.yml`
-- The bind path must exist on the host before the container starts; create it with `mkdir -p`
+- The bind path must exist on the host before the container starts: `mkdir -p /mnt/DeadPool/apps/swarmui/models/Stable-Diffusion`
