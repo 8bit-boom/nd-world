@@ -271,8 +271,56 @@
   to   { background-position: -200% 0; }
 }
 
+/* ── Mobile: hide sidebar (≤700px existing) + full mobile overhaul ── */
 @media (max-width: 700px) {
   .ai-sidebar { display: none; }
+}
+
+@media (max-width: 768px) {
+  /* Chat panel: auto height so page scrolls normally on mobile */
+  .ai-page {
+    flex-direction: column;
+    height: auto;
+    overflow: visible;
+    min-height: 60vh;
+  }
+  .ai-main { overflow: visible; }
+  .ai-messages {
+    max-height: 55vh;
+    overflow-y: auto;
+    padding: .75rem;
+  }
+  .ai-bubble { font-size: .88rem; padding: .5rem .75rem; }
+  .ai-input-bar {
+    padding: .5rem .75rem;
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+  }
+  #ai-input { font-size: 16px; } /* prevent iOS auto-zoom */
+
+  /* Image gen panel: auto height, stack sidebar above main */
+  #image-panel { height: auto; overflow: visible; }
+  .ig-layout {
+    flex-direction: column;
+    height: auto;
+    overflow: visible;
+  }
+  .ig-sidebar {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    max-height: none;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: .6rem;
+    padding: .75rem;
+  }
+  .ig-sidebar > div { min-width: 140px; flex: 1; }
+  .ig-main { padding: .75rem; overflow: visible; }
+  .ig-concept-row { flex-direction: column; }
+  .ig-btn, .ig-generate-btn { width: 100%; }
+  .ig-select, .ig-input-num { font-size: 16px; }
 }
 
 /* ── Image gen tab ── */
