@@ -581,8 +581,9 @@
 </style>
 
 <div class="ai-tab-bar">
-  <button class="ai-tab active" id="tab-chat" onclick="switchTab('chat')">💬 Chat</button>
-  <button class="ai-tab" id="tab-image" onclick="switchTab('image')">🎨 Image Gen</button>
+  <button class="ai-tab active" id="tab-chat"   onclick="switchTab('chat')">💬 Chat</button>
+  <button class="ai-tab"        id="tab-image"  onclick="switchTab('image')">🎨 Image Gen</button>
+  <button class="ai-tab"        id="tab-models" onclick="switchTab('models')">🤖 Models</button>
   <span id="ig-dot" title="Image gen unavailable"
         style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle"></span>
 </div>
@@ -906,6 +907,76 @@
 
   </div><!-- /ig-wrap -->
 </div><!-- /image-panel -->
+
+<!-- ── Models Panel ── -->
+<div id="models-panel" style="display:none;padding:1.2rem;max-width:820px;margin:0 auto">
+
+  <!-- Ollama status + search -->
+  <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
+    <span style="font-size:1rem;color:var(--neon);font-weight:700;letter-spacing:.05em">🤖 Ollama Models</span>
+    <span id="mp-status-dot" style="width:8px;height:8px;border-radius:50%;background:#444;flex-shrink:0" title="checking…"></span>
+    <span id="mp-status-txt" style="font-size:.78rem;color:var(--text-dim)">Checking…</span>
+    <input id="mp-search" type="text" placeholder="Filter models…"
+           oninput="mpFilter(this.value)"
+           style="flex:1;min-width:140px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:.82rem;padding:.3rem .55rem">
+    <button class="ig-btn" onclick="mpRefresh()" style="white-space:nowrap">↺ Refresh</button>
+  </div>
+
+  <!-- Model list -->
+  <div id="mp-model-list" style="display:flex;flex-direction:column;gap:.55rem;margin-bottom:1.2rem">
+    <div style="color:var(--text-dim);font-size:.82rem">⏳ Loading…</div>
+  </div>
+
+  <!-- Add custom model -->
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-bottom:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">+ Add / Download Model</div>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:flex-start">
+      <div style="flex:1;min-width:200px;display:flex;flex-direction:column;gap:.3rem">
+        <input id="mp-add-id" type="text" placeholder="Model ID — e.g. llama3.2:3b or hf.co/…"
+               style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:.85rem;padding:.38rem .55rem;width:100%;box-sizing:border-box"
+               onkeydown="if(event.key==='Enter')mpAddAndPull()">
+        <div style="font-size:.7rem;color:var(--text-dim)">
+          Browse models at
+          <a href="https://ollama.com/library" target="_blank" rel="noopener"
+             style="color:var(--neon);text-decoration:none">ollama.com/library</a>
+        </div>
+      </div>
+      <button class="ig-btn" onclick="mpAddAndPull()"
+              style="border-color:var(--neon);color:var(--neon);padding:.38rem 1rem;white-space:nowrap">⬇ Pull &amp; Add</button>
+    </div>
+    <!-- Pull progress -->
+    <div id="mp-pull-progress" style="display:none;margin-top:.65rem">
+      <div style="font-size:.78rem;color:var(--neon);margin-bottom:.25rem" id="mp-pull-label">Pulling…</div>
+      <div style="height:5px;background:var(--bg3);border-radius:3px;overflow:hidden">
+        <div id="mp-pull-bar" style="height:100%;width:0%;background:var(--neon);border-radius:3px;transition:width .2s"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quick-pick popular models -->
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2)">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Popular Models</div>
+    <div style="display:flex;flex-wrap:wrap;gap:.35rem" id="mp-popular">
+      {% for m in [
+        ('llama3.2:3b',       'Llama 3.2 3B',  '~2 GB'),
+        ('llama3.2:1b',       'Llama 3.2 1B',  '~0.9 GB'),
+        ('gemma3:4b',         'Gemma 3 4B',    '~3 GB'),
+        ('gemma3:12b',        'Gemma 3 12B',   '~8 GB'),
+        ('gemma4:26b',        'Gemma 4 26B',   '~17 GB'),
+        ('mistral:7b',        'Mistral 7B',    '~4 GB'),
+        ('qwen2.5:7b',        'Qwen 2.5 7B',   '~5 GB'),
+        ('qwen2.5:14b',       'Qwen 2.5 14B',  '~9 GB'),
+        ('phi4:14b',          'Phi-4 14B',     '~9 GB'),
+        ('deepseek-r1:8b',    'DeepSeek R1 8B','~5 GB'),
+        ('nomic-embed-text',  'Nomic Embed',   '~0.3 GB'),
+      ] %}
+      <button class="ig-preset-btn" onclick="mpQuickPull('{{ m[0] }}')"
+              title="{{ m[2] }}">{{ m[1] }}<span style="color:var(--text-dim);font-size:.65rem;margin-left:.3rem">{{ m[2] }}</span></button>
+      {% endfor %}
+    </div>
+  </div>
+
+</div><!-- /models-panel -->
 
 <script>
 const WORLD_SYSTEM = {{ world_system | tojson }};
@@ -1567,21 +1638,22 @@ function autoResize(el) {
 // ── Tab switching ─────────────────────────────────────────────────────────────
 
 function switchTab(tab) {
-  const chatPage  = document.querySelector('.ai-page');
-  const imgPanel  = document.getElementById('image-panel');
-  const tabChat   = document.getElementById('tab-chat');
-  const tabImg    = document.getElementById('tab-image');
-  if (tab === 'chat') {
-    chatPage.style.display = 'flex';
-    imgPanel.style.display = 'none';
-    tabChat.classList.add('active');
-    tabImg.classList.remove('active');
-  } else {
-    chatPage.style.display = 'none';
-    imgPanel.style.display = 'block';
-    tabChat.classList.remove('active');
-    tabImg.classList.add('active');
-  }
+  const chatPage     = document.querySelector('.ai-page');
+  const imgPanel     = document.getElementById('image-panel');
+  const modelsPanel  = document.getElementById('models-panel');
+  const tabChat      = document.getElementById('tab-chat');
+  const tabImg       = document.getElementById('tab-image');
+  const tabMod       = document.getElementById('tab-models');
+
+  chatPage.style.display    = tab === 'chat'   ? 'flex'  : 'none';
+  imgPanel.style.display    = tab === 'image'  ? 'block' : 'none';
+  modelsPanel.style.display = tab === 'models' ? 'block' : 'none';
+
+  tabChat.classList.toggle('active',  tab === 'chat');
+  tabImg.classList.toggle('active',   tab === 'image');
+  tabMod.classList.toggle('active',   tab === 'models');
+
+  if (tab === 'models') mpLoad();
 }
 
 // ── Image gen state ───────────────────────────────────────────────────────────
@@ -1997,6 +2069,313 @@ function igClearHistory() {
   localStorage.removeItem(_HIST_KEY);
   igLoadHistory();
 }
+
+// ── Models panel ─────────────────────────────────────────────────────────────
+
+let _mpModels = [];
+let _mpPulling = false;
+
+async function mpLoad() {
+  const list = document.getElementById('mp-model-list');
+  const dot  = document.getElementById('mp-status-dot');
+  const txt  = document.getElementById('mp-status-txt');
+  list.innerHTML = '<div style="color:var(--text-dim);font-size:.82rem">⏳ Loading…</div>';
+  try {
+    // Check Ollama reachability
+    const dbg = await fetch('/api/ai/debug').then(r => r.json());
+    if (dbg.ollama_reachable) {
+      dot.style.background = '#4f4';
+      dot.title = 'Ollama reachable';
+      txt.textContent = 'Connected · ' + dbg.ollama_url;
+      txt.style.color = '#4f4';
+    } else {
+      dot.style.background = '#c44';
+      dot.title = 'Ollama unreachable';
+      txt.textContent = 'Ollama unreachable — is it running?';
+      txt.style.color = '#c44';
+    }
+
+    const d = await fetch('/api/ai/models').then(r => r.json());
+    _mpModels = d.models || [];
+    mpRender(_mpModels, d.available || []);
+  } catch(e) {
+    dot.style.background = '#c44';
+    txt.textContent = 'Error: ' + e.message;
+    txt.style.color = '#c44';
+    list.innerHTML = '<div style="color:#c44;font-size:.82rem">✗ Could not load models</div>';
+  }
+}
+
+function mpRender(models, available) {
+  const list = document.getElementById('mp-model-list');
+  if (!models.length) {
+    list.innerHTML = '<div style="color:var(--text-dim);font-size:.82rem">No models configured. Add one below.</div>';
+    return;
+  }
+  list.innerHTML = '';
+  for (const m of models) {
+    const isActive = m.id === activeModel;
+    const card = document.createElement('div');
+    card.dataset.modelId = m.id;
+    card.style.cssText = 'border:1px solid ' + (isActive ? 'var(--neon)' : 'var(--border)') + ';border-radius:6px;padding:.65rem .9rem;background:var(--bg2);display:flex;align-items:center;gap:.7rem;flex-wrap:wrap';
+
+    // Status dot
+    const sdot = document.createElement('span');
+    sdot.id = 'mp-dot-' + btoa(m.id).replace(/[^a-z0-9]/gi,'');
+    sdot.style.cssText = 'width:9px;height:9px;border-radius:50%;flex-shrink:0;background:' + (m.loaded ? '#4f4' : '#444');
+    sdot.title = m.loaded ? 'Loaded in Ollama' : 'Not downloaded';
+
+    // Name + meta
+    const info = document.createElement('div');
+    info.style.cssText = 'flex:1;min-width:0';
+    const nameEl = document.createElement('div');
+    nameEl.style.cssText = 'font-size:.88rem;color:' + (isActive ? 'var(--neon)' : 'var(--text)') + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:' + (isActive ? '700' : '400');
+    nameEl.textContent = m.label || m.id;
+    nameEl.title = m.id;
+    const idEl = document.createElement('div');
+    idEl.style.cssText = 'font-size:.68rem;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:.1rem';
+    idEl.textContent = m.id;
+    info.appendChild(nameEl);
+    info.appendChild(idEl);
+
+    // Progress bar (hidden until pulling)
+    const progWrap = document.createElement('div');
+    progWrap.id = 'mp-prog-' + btoa(m.id).replace(/[^a-z0-9]/gi,'');
+    progWrap.style.cssText = 'display:none;width:100%;flex:1 1 100%;padding-top:.3rem';
+    progWrap.innerHTML = '<div style="font-size:.72rem;color:var(--neon);margin-bottom:.2rem" class="mp-prog-label">Pulling…</div><div style="height:4px;background:var(--bg3);border-radius:2px;overflow:hidden"><div class="mp-prog-bar" style="height:100%;width:0%;background:var(--neon);border-radius:2px;transition:width .2s"></div></div>';
+
+    // Actions
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;gap:.35rem;flex-shrink:0;flex-wrap:wrap';
+
+    if (!isActive) {
+      const useBtn = document.createElement('button');
+      useBtn.className = 'ig-btn';
+      useBtn.textContent = '✓ Use';
+      useBtn.title = 'Set as active chat model';
+      useBtn.onclick = () => {
+        activeModel = m.id;
+        const shortId = m.id.split('/').pop().split(':')[0] || m.id;
+        document.getElementById('active-model-label').textContent = shortId;
+        mpLoad();
+        loadModels();
+      };
+      actions.appendChild(useBtn);
+    } else {
+      const activeTag = document.createElement('span');
+      activeTag.style.cssText = 'font-size:.72rem;color:var(--neon);padding:.22rem .5rem;border:1px solid var(--neon);border-radius:3px;white-space:nowrap';
+      activeTag.textContent = '● Active';
+      actions.appendChild(activeTag);
+    }
+
+    const pullKey = 'mp-pull-' + btoa(m.id).replace(/[^a-z0-9]/gi,'');
+    if (!m.loaded) {
+      const pullBtn = document.createElement('button');
+      pullBtn.className = 'ig-btn';
+      pullBtn.id = pullKey;
+      pullBtn.style.cssText = 'border-color:var(--neon);color:var(--neon)';
+      pullBtn.textContent = '⬇ Download';
+      pullBtn.onclick = () => mpPullModel(m.id, card);
+      actions.appendChild(pullBtn);
+    } else {
+      const repullBtn = document.createElement('button');
+      repullBtn.className = 'ig-btn';
+      repullBtn.id = pullKey;
+      repullBtn.title = 'Re-download (fixes corrupted model)';
+      repullBtn.textContent = '↺ Re-dl';
+      repullBtn.onclick = () => mpPullModel(m.id, card, true);
+      actions.appendChild(repullBtn);
+    }
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'ig-btn';
+    delBtn.style.cssText = 'border-color:#555;color:#888';
+    delBtn.textContent = '✕';
+    delBtn.title = 'Remove model';
+    delBtn.onclick = () => mpDeleteModel(m.id, m.loaded, card);
+    actions.appendChild(delBtn);
+
+    card.appendChild(sdot);
+    card.appendChild(info);
+    card.appendChild(actions);
+    card.appendChild(progWrap);
+    list.appendChild(card);
+  }
+}
+
+function mpFilter(q) {
+  q = q.toLowerCase();
+  const items = document.querySelectorAll('#mp-model-list > div[data-model-id]');
+  items.forEach(el => {
+    const id = (el.dataset.modelId || '').toLowerCase();
+    el.style.display = (!q || id.includes(q)) ? '' : 'none';
+  });
+}
+
+async function mpPullModel(modelId, cardEl, forceDelete = false) {
+  if (_mpPulling) { alert('Another download is in progress. Please wait.'); return; }
+  _mpPulling = true;
+
+  if (forceDelete) {
+    try {
+      await fetch('/api/ai/models/remove', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({model_id: modelId, delete_from_ollama: true}),
+      });
+    } catch(e) {}
+  }
+
+  const key = btoa(modelId).replace(/[^a-z0-9]/gi,'');
+  const progWrap = cardEl?.querySelector?.('[id^="mp-prog-"]') || document.getElementById('mp-prog-' + key);
+  const progBar  = progWrap?.querySelector?.('.mp-prog-bar');
+  const progLbl  = progWrap?.querySelector?.('.mp-prog-label');
+  const sdot     = document.getElementById('mp-dot-' + key);
+  const pullBtn  = document.getElementById('mp-pull-' + key);
+
+  if (progWrap) progWrap.style.display = 'block';
+  if (progLbl)  progLbl.textContent = 'Starting download…';
+  if (progBar)  progBar.style.width = '0%';
+  if (pullBtn)  { pullBtn.disabled = true; pullBtn.textContent = '⏳'; }
+  if (sdot)     sdot.style.background = '#fa0';
+
+  try {
+    const res = await fetch('/api/ai/pull', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model_id: modelId}),
+    });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      const parts = buf.split('\n\n'); buf = parts.pop();
+      for (const p of parts) {
+        if (!p.startsWith('data: ')) continue;
+        const raw = p.slice(6);
+        if (raw === '[DONE]') break;
+        try {
+          const obj = JSON.parse(raw);
+          if (obj.error) throw new Error(obj.error);
+          if (obj.total && obj.completed) {
+            const pct = Math.round(obj.completed / obj.total * 100);
+            if (progBar) progBar.style.width = pct + '%';
+            if (progLbl) progLbl.textContent = `Downloading… ${pct}% (${(obj.completed/1e9).toFixed(1)} / ${(obj.total/1e9).toFixed(1)} GB)`;
+          } else if (obj.status) {
+            if (progLbl) progLbl.textContent = obj.status;
+          }
+        } catch(pe) {
+          if (pe.message && !pe.message.includes('JSON')) throw pe;
+        }
+      }
+    }
+    if (progLbl)  progLbl.textContent = '✓ Download complete';
+    if (progBar)  progBar.style.width = '100%';
+    if (sdot)     sdot.style.background = '#4f4';
+    setTimeout(() => mpLoad(), 1000);
+  } catch(e) {
+    if (progLbl) progLbl.textContent = '✗ Failed: ' + e.message;
+    if (sdot)    sdot.style.background = '#c44';
+    if (pullBtn) { pullBtn.disabled = false; pullBtn.textContent = '⬇ Retry'; }
+  } finally {
+    _mpPulling = false;
+  }
+}
+
+async function mpDeleteModel(modelId, isLoaded, cardEl) {
+  const deleteFromOllama = isLoaded &&
+    confirm(`Remove "${modelId}" from Ollama storage?\n\nThis frees disk space but requires re-downloading to use again.`);
+  try {
+    await fetch('/api/ai/models/remove', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model_id: modelId, delete_from_ollama: deleteFromOllama}),
+    });
+    if (activeModel === modelId) activeModel = '';
+    mpLoad();
+    loadModels();
+  } catch(e) {
+    alert('Failed to remove: ' + e.message);
+  }
+}
+
+async function mpAddAndPull() {
+  const inp = document.getElementById('mp-add-id');
+  const id = (inp?.value || '').trim();
+  if (!id) { inp?.focus(); return; }
+
+  // Register the model first
+  try {
+    await fetch('/api/ai/models/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id}),
+    });
+  } catch(e) {}
+
+  inp.value = '';
+
+  // Show pull progress in the add-section bar
+  const prog = document.getElementById('mp-pull-progress');
+  const bar  = document.getElementById('mp-pull-bar');
+  const lbl  = document.getElementById('mp-pull-label');
+  prog.style.display = 'block';
+  if (bar) bar.style.width = '0%';
+  if (lbl) lbl.textContent = 'Starting download…';
+  _mpPulling = true;
+
+  try {
+    const res = await fetch('/api/ai/pull', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model_id: id}),
+    });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, {stream: true});
+      const parts = buf.split('\n\n'); buf = parts.pop();
+      for (const p of parts) {
+        if (!p.startsWith('data: ')) continue;
+        const raw = p.slice(6);
+        if (raw === '[DONE]') break;
+        try {
+          const obj = JSON.parse(raw);
+          if (obj.error) throw new Error(obj.error);
+          if (obj.total && obj.completed) {
+            const pct = Math.round(obj.completed / obj.total * 100);
+            if (bar) bar.style.width = pct + '%';
+            if (lbl) lbl.textContent = `Downloading ${id}… ${pct}% (${(obj.completed/1e9).toFixed(1)} / ${(obj.total/1e9).toFixed(1)} GB)`;
+          } else if (obj.status) {
+            if (lbl) lbl.textContent = obj.status;
+          }
+        } catch(pe) {
+          if (pe.message && !pe.message.includes('JSON')) throw pe;
+        }
+      }
+    }
+    if (lbl) lbl.textContent = `✓ ${id} downloaded`;
+    if (bar) bar.style.width = '100%';
+    setTimeout(() => { prog.style.display = 'none'; mpLoad(); loadModels(); }, 2000);
+  } catch(e) {
+    if (lbl) lbl.textContent = '✗ Failed: ' + e.message;
+  } finally {
+    _mpPulling = false;
+  }
+}
+
+function mpQuickPull(modelId) {
+  document.getElementById('mp-add-id').value = modelId;
+  mpAddAndPull();
+}
+
+function mpRefresh() { mpLoad(); loadModels(); }
 
 // ── Attach generated image to an entity ──────────────────────────────────────
 
