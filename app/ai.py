@@ -250,6 +250,57 @@ async def imagegen_status() -> dict:
         return {"ok": False, "reason": str(e)}
 
 
+async def imagegen_loras() -> list:
+    t, u = _get_type(), _get_url()
+    if not t or not u:
+        return []
+    try:
+        async with _httpx.AsyncClient(timeout=8) as c:
+            if t == "swarmui":
+                sid = await _swarmui_session(u, c)
+                r = await c.post(f"{u}/API/ListModels",
+                                 json={"session_id": sid, "path": "LoRA", "depth": 3})
+                data = r.json()
+                return [m["name"] for m in data.get("files", []) if m.get("name")]
+            else:
+                r = await c.get(f"{u}/object_info/LoraLoader")
+                data = r.json()
+                return data["LoraLoader"]["input"]["required"]["lora_name"][0]
+    except Exception:
+        return []
+
+
+async def imagegen_samplers_schedulers() -> dict:
+    t, u = _get_type(), _get_url()
+    if t == "comfyui" and u:
+        try:
+            async with _httpx.AsyncClient(timeout=8) as c:
+                r = await c.get(f"{u}/object_info/KSampler")
+                data = r.json()
+                req = data["KSampler"]["input"]["required"]
+                return {
+                    "samplers": req["sampler_name"][0],
+                    "schedulers": req["scheduler"][0],
+                }
+        except Exception:
+            pass
+    return {
+        "samplers": [
+            "euler", "euler_ancestral", "euler_cfg_pp", "euler_ancestral_cfg_pp",
+            "heun", "heunpp2", "dpm_2", "dpm_2_ancestral",
+            "lms", "dpm_fast", "dpm_adaptive",
+            "dpmpp_2s_ancestral", "dpmpp_sde", "dpmpp_sde_gpu",
+            "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_2m_sde_gpu",
+            "dpmpp_3m_sde", "dpmpp_3m_sde_gpu",
+            "ddpm", "lcm", "ipndm", "deis", "ddim", "uni_pc",
+        ],
+        "schedulers": [
+            "normal", "karras", "exponential", "sgm_uniform",
+            "simple", "ddim_uniform", "beta",
+        ],
+    }
+
+
 async def imagegen_models() -> list:
     t, u = _get_type(), _get_url()
     if not t or not u:

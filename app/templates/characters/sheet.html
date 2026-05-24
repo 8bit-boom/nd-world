@@ -41,31 +41,36 @@
 .cs-death-pip.filled-success { background:var(--neon);border-color:var(--neon); }
 .cs-death-pip.filled-failure { background:var(--neon2);border-color:var(--neon2); }
 
-.cs-body { display:grid;grid-template-columns:200px 1fr 1fr;gap:.75rem;margin-bottom:1rem; }
+/* Secondary resource bar */
+.cs-secondary { background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap; }
+.cs-secondary-label { font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-dim);white-space:nowrap; }
+.cs-secondary-display { font-size:1.4rem;font-weight:bold;color:var(--neon3);min-width:4ch;text-align:center;cursor:pointer; }
+.cs-secondary-max { color:var(--text-dim);font-size:.9rem; }
+
+.cs-body { display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem; }
 .cs-panel { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.75rem; }
 .cs-panel-title { font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.6rem;border-bottom:1px solid var(--border);padding-bottom:.3rem; }
 
-.cs-ability-list { display:flex;flex-direction:column;gap:.4rem; }
-.cs-ability { display:flex;align-items:center;gap:.5rem;background:var(--bg3);border-radius:4px;padding:.35rem .5rem; }
-.cs-ability-name { font-size:.65rem;color:var(--text-dim);width:28px;text-transform:uppercase; }
-.cs-ability-score { font-size:1.1rem;font-weight:bold;color:var(--text);min-width:2ch;text-align:center; }
-.cs-ability-mod { font-size:.85rem;color:var(--neon);min-width:3ch;text-align:right; }
+/* Attribute grid */
+.cs-attr-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:.4rem; }
+.cs-attr-box { background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:.45rem .5rem;text-align:center; }
+.cs-attr-abbr { font-size:.6rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em; }
+.cs-attr-val { font-size:1.3rem;font-weight:bold;color:var(--neon); }
+.cs-attr-label { font-size:.6rem;color:var(--text-dim); }
 
-.cs-save-list, .cs-skill-list { display:flex;flex-direction:column;gap:.2rem; }
-.cs-save-item, .cs-skill-item { display:flex;align-items:center;gap:.4rem;font-size:.8rem; }
-.cs-prof-dot { width:10px;height:10px;border-radius:50%;border:1px solid var(--text-dim);flex-shrink:0; }
-.cs-prof-dot.prof { background:var(--neon);border-color:var(--neon); }
-.cs-prof-dot.expertise { background:var(--neon3);border-color:var(--neon3); }
-.cs-save-name, .cs-skill-name { flex:1; }
-.cs-save-bonus, .cs-skill-bonus { color:var(--neon);min-width:3ch;text-align:right; }
-.cs-skill-stat { font-size:.6rem;color:var(--text-dim);width:28px; }
+/* Skills list */
+.cs-skill-list { display:flex;flex-direction:column;gap:.18rem; }
+.cs-skill-item { display:flex;align-items:center;gap:.4rem;font-size:.82rem; }
+.cs-skill-stat { font-size:.6rem;color:var(--text-dim);width:28px;text-align:center;background:var(--bg3);border-radius:3px;padding:.1rem .2rem; }
+.cs-skill-name { flex:1; }
+.cs-skill-val { color:var(--neon);min-width:3ch;text-align:right;font-weight:bold; }
 
 .cs-attacks { width:100%;border-collapse:collapse;font-size:.8rem; }
 .cs-attacks th { color:var(--text-dim);font-size:.65rem;text-transform:uppercase;padding:.3rem .4rem;border-bottom:1px solid var(--border);text-align:left; }
 .cs-attacks td { padding:.35rem .4rem;border-bottom:1px solid var(--border); }
 .cs-attacks tr:last-child td { border-bottom:none; }
 .cs-attacks .atk-bonus { color:var(--neon); }
-.cs-attacks .atk-dmg { color:var(--yellow); }
+.cs-attacks .atk-dmg   { color:var(--yellow); }
 
 .cs-bottom { display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem; }
 .cs-equipment-table { width:100%;border-collapse:collapse;font-size:.8rem; }
@@ -74,14 +79,9 @@
 .cs-equipment-table tr:last-child td { border-bottom:none; }
 .cs-equipped-dot { color:var(--neon); }
 .cs-currency { display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem;padding-top:.5rem;border-top:1px solid var(--border); }
-.cs-coin { display:flex;flex-direction:column;align-items:center;gap:.1rem;min-width:36px; }
-.cs-coin-val { font-size:.9rem;font-weight:bold; }
+.cs-coin { display:flex;flex-direction:column;align-items:center;gap:.1rem;min-width:48px;background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:.3rem .5rem; }
+.cs-coin-val { font-size:.95rem;font-weight:bold;color:var(--neon); }
 .cs-coin-lbl { font-size:.6rem;color:var(--text-dim); }
-.cs-coin.cp { color:#b87333; }
-.cs-coin.sp { color:#c0c0c0; }
-.cs-coin.ep { color:#50c878; }
-.cs-coin.gp { color:var(--yellow); }
-.cs-coin.pp { color:#e5e4e2; }
 .cs-weight-bar { height:6px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-top:.4rem; }
 .cs-weight-fill { height:100%;background:var(--neon);border-radius:3px; }
 
@@ -123,10 +123,7 @@
 .cs-appear-val { font-size:.9rem; }
 
 @media (max-width:900px) {
-  .cs-body { grid-template-columns:1fr 1fr; }
-  .cs-body > :first-child { grid-column:1/-1; display:flex;flex-wrap:wrap;gap:.5rem;padding:.5rem; }
-  .cs-ability-list { flex-direction:row;flex-wrap:wrap; }
-  .cs-ability { min-width:calc(33% - .5rem); }
+  .cs-body { grid-template-columns:1fr; }
   .cs-bottom { grid-template-columns:1fr; }
   .cs-personality { grid-template-columns:1fr 1fr; }
   .cs-appear { grid-template-columns:repeat(3,1fr); }
@@ -134,14 +131,12 @@
 @media (max-width:600px) {
   .cs-header { flex-direction:column;align-items:center;text-align:center; }
   .cs-combat-row .cs-stat-box { min-width:calc(33% - .5rem); }
-  .cs-body { grid-template-columns:1fr; }
   .cs-personality { grid-template-columns:1fr; }
   .cs-appear { grid-template-columns:1fr 1fr; }
 }
 </style>
 
 <div class="cs">
-  <!-- Actions -->
   <div class="cs-actions">
     <a href="/characters" style="color:var(--text-dim);font-size:.85rem;">← All Characters</a>
     <a href="/characters/{{ pc.id }}/edit" class="btn-primary" style="padding:.35rem .9rem;">Edit</a>
@@ -153,18 +148,16 @@
   <!-- Header -->
   <div class="cs-header">
     <div class="cs-portrait">
-      {% if pc.portrait_url %}
-      <img src="{{ pc.portrait_url }}" alt="{{ pc.name }}">
+      {% if pc.portrait_url %}<img src="{{ pc.portrait_url }}" alt="{{ pc.name }}">
       {% else %}{{ pc.name[0]|upper }}{% endif %}
     </div>
     <div class="cs-identity">
       <div class="cs-name">{{ pc.name }}</div>
       <div class="cs-class-line">
-        {% if pc.char_class %}<span>{{ pc.char_class }}{% if pc.subclass %} ({{ pc.subclass }}){% endif %}</span>{% endif %}
-        {% if pc.char_class and (pc.race or pc.background) %} · {% endif %}
-        {% if pc.race %}<span>{{ pc.race }}</span>{% endif %}
+        {% if pc.char_class %}<span>{{ pc.char_class }}{% if pc.subclass %} · {{ pc.subclass }}{% endif %}</span>{% endif %}
+        {% if pc.race %} · <span>{{ pc.race }}</span>{% endif %}
         {% if pc.background %} · <span>{{ pc.background }}</span>{% endif %}
-        {% if pc.alignment %} · <span>{{ pc.alignment }}</span>{% endif %}
+        {% if pc.alignment %} · <span style="color:var(--text-dim)">{{ pc.alignment }}</span>{% endif %}
       </div>
       <div class="cs-class-line">
         Level <span>{{ pc.level }}</span>
@@ -182,46 +175,55 @@
     </div>
   </div>
 
-  <!-- Combat row -->
+  <!-- Combat vitals row -->
   <div class="cs-combat-row">
     <div class="cs-stat-box">
       <div class="val">{{ pc.armor_class }}</div>
-      <div class="lbl">Armor Class</div>
-    </div>
-    <div class="cs-stat-box">
-      <div class="val">{{ initiative_str }}</div>
-      <div class="lbl">Initiative</div>
+      <div class="lbl">Defense / AC</div>
     </div>
     <div class="cs-stat-box">
       <div class="val">{{ pc.speed }}</div>
-      <div class="lbl">Speed (ft)</div>
-    </div>
-    <div class="cs-stat-box">
-      <div class="val">{{ prof_bonus_str }}</div>
-      <div class="lbl">Prof Bonus</div>
-    </div>
-    <div class="cs-stat-box">
-      <div class="val">{{ passive_perc }}</div>
-      <div class="lbl">Passive Perc</div>
+      <div class="lbl">Speed</div>
     </div>
     <div class="cs-stat-box">
       <div class="val">{{ pc.hit_dice }}</div>
       <div class="lbl">Hit Dice</div>
     </div>
+    {% if pc.armor_profs %}
+    <div class="cs-stat-box" style="min-width:140px;">
+      <div class="val" style="font-size:.85rem;">{{ pc.armor_profs }}</div>
+      <div class="lbl">Armor Profs</div>
+    </div>
+    {% endif %}
+    {% if pc.weapon_profs %}
+    <div class="cs-stat-box" style="min-width:140px;">
+      <div class="val" style="font-size:.85rem;">{{ pc.weapon_profs }}</div>
+      <div class="lbl">Weapon Profs</div>
+    </div>
+    {% endif %}
+    {% if pc.languages %}
+    <div class="cs-stat-box" style="min-width:120px;">
+      <div class="val" style="font-size:.85rem;">{{ pc.languages }}</div>
+      <div class="lbl">Languages</div>
+    </div>
+    {% endif %}
   </div>
 
   <!-- HP tracker -->
   <div class="cs-hp-section">
-    <div class="cs-hp-main">
-      <button class="cs-hp-btn" onclick="changeHp(-1)" title="−1 HP">−</button>
-      <div class="cs-hp-display" id="hp-current" onclick="hpSetDialog()">{{ pc.current_hp }}</div>
-      <div class="cs-hp-max">/ <span id="hp-max">{{ pc.max_hp }}</span></div>
-      <button class="cs-hp-btn" onclick="changeHp(1)" title="+1 HP">+</button>
+    <div>
+      <div style="font-size:.65rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.3rem;">Hit Points</div>
+      <div class="cs-hp-main">
+        <button class="cs-hp-btn" onclick="changeHp(-1)" title="−1 HP">−</button>
+        <div class="cs-hp-display" id="hp-current" onclick="hpSetDialog()">{{ pc.current_hp }}</div>
+        <div class="cs-hp-max">/ <span id="hp-max">{{ pc.max_hp }}</span></div>
+        <button class="cs-hp-btn" onclick="changeHp(1)" title="+1 HP">+</button>
+      </div>
     </div>
     <div class="cs-hp-fields">
       <div class="cs-hp-field">
         <label>Damage / Heal</label>
-        <input type="number" id="hp-delta-input" placeholder="5" style="width:80px;">
+        <input type="number" id="hp-delta-input" placeholder="5">
       </div>
       <button class="cs-hp-inline-btn" onclick="applyDamage()">Damage</button>
       <button class="cs-hp-inline-btn" onclick="applyHeal()">Heal</button>
@@ -247,82 +249,61 @@
     </div>
   </div>
 
-  <!-- Ability Scores | Saves+Skills | Attacks -->
+  <!-- Secondary resource (optional) -->
+  {% if secondary %}
+  <div class="cs-secondary">
+    <span class="cs-secondary-label">{{ secondary.name }}</span>
+    <button class="cs-hp-btn" onclick="secDelta(-1)">−</button>
+    <div class="cs-secondary-display" id="sec-current" onclick="secSetDialog()">{{ secondary.current }}</div>
+    <div class="cs-secondary-max" style="color:var(--text-dim);">/ <span id="sec-max">{{ secondary.max }}</span></div>
+    <button class="cs-hp-btn" onclick="secDelta(1)">+</button>
+  </div>
+  {% endif %}
+
+  <!-- Stats + Skills -->
   <div class="cs-body">
-    <!-- Ability Scores -->
-    <div class="cs-panel">
-      <div class="cs-panel-title">Ability Scores</div>
-      <div class="cs-ability-list">
-        {% for stat in ["str","dex","con","int","wis","cha"] %}
-        <div class="cs-ability">
-          <span class="cs-ability-name">{{ stat|upper }}</span>
-          <span class="cs-ability-score">{{ scores[stat] }}</span>
-          <span class="cs-ability-mod">{{ mod_strs[stat] }}</span>
-        </div>
-        {% endfor %}
-      </div>
-    </div>
 
-    <!-- Saves + Skills -->
+    <!-- Attributes -->
     <div class="cs-panel">
-      <div class="cs-panel-title">Saving Throws</div>
-      <div class="cs-save-list" style="margin-bottom:.75rem;">
-        {% for stat in ["str","dex","con","int","wis","cha"] %}
-        <div class="cs-save-item">
-          <div class="cs-prof-dot {% if stat in save_profs %}prof{% endif %}"></div>
-          <span class="cs-save-name">{{ stat|upper }}</span>
-          <span class="cs-save-bonus">{{ save_strs[stat] }}</span>
+      <div class="cs-panel-title">Attributes</div>
+      {% if stats %}
+      <div class="cs-attr-grid">
+        {% for s in stats %}
+        <div class="cs-attr-box">
+          <div class="cs-attr-abbr">{{ s.abbr or s.label }}</div>
+          <div class="cs-attr-val">{{ s.value }}</div>
+          <div class="cs-attr-label">{{ s.label }}</div>
         </div>
         {% endfor %}
       </div>
-      <div class="cs-panel-title">Skills</div>
-      <div class="cs-skill-list">
-        {% for skill in skills %}
-        <div class="cs-skill-item">
-          <div class="cs-prof-dot {% if skill.prof_level == 2 %}expertise{% elif skill.prof_level == 1 %}prof{% endif %}"></div>
-          <span class="cs-skill-stat">{{ skill.stat }}</span>
-          <span class="cs-skill-name">{{ skill.label }}</span>
-          <span class="cs-skill-bonus">{{ skill.bonus_str }}</span>
-        </div>
-        {% endfor %}
-      </div>
-    </div>
-
-    <!-- Attacks + Proficiencies -->
-    <div class="cs-panel">
-      <div class="cs-panel-title">Attacks &amp; Actions</div>
-      {% if attacks %}
-      <table class="cs-attacks">
-        <thead>
-          <tr><th>Name</th><th>Bonus</th><th>Damage</th><th>Type</th></tr>
-        </thead>
-        <tbody>
-          {% for atk in attacks %}
-          <tr>
-            <td>{{ atk.name }}</td>
-            <td class="atk-bonus">{{ atk.bonus }}</td>
-            <td class="atk-dmg">{{ atk.damage }}</td>
-            <td>{{ atk.dmg_type }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
       {% else %}
-      <p style="color:var(--text-dim);font-size:.8rem;">No attacks defined. <a href="/characters/{{ pc.id }}/edit">Edit character</a> to add attacks.</p>
-      {% endif %}
-
-      {% if pc.armor_profs or pc.weapon_profs or pc.tool_profs or pc.languages %}
-      <div class="cs-panel-title" style="margin-top:.75rem;">Proficiencies &amp; Languages</div>
-      {% if pc.armor_profs %}<p style="font-size:.8rem;"><span style="color:var(--text-dim);">Armor:</span> {{ pc.armor_profs }}</p>{% endif %}
-      {% if pc.weapon_profs %}<p style="font-size:.8rem;"><span style="color:var(--text-dim);">Weapons:</span> {{ pc.weapon_profs }}</p>{% endif %}
-      {% if pc.tool_profs %}<p style="font-size:.8rem;"><span style="color:var(--text-dim);">Tools:</span> {{ pc.tool_profs }}</p>{% endif %}
-      {% if pc.languages %}<p style="font-size:.8rem;"><span style="color:var(--text-dim);">Languages:</span> {{ pc.languages }}</p>{% endif %}
+      <p style="color:var(--text-dim);font-size:.82rem;">No stats defined. <a href="/characters/{{ pc.id }}/edit">Edit</a> to add.</p>
       {% endif %}
     </div>
+
+    <!-- Skills -->
+    <div class="cs-panel">
+      <div class="cs-panel-title">Skills</div>
+      {% if skills %}
+      <div class="cs-skill-list">
+        {% for sk in skills %}
+        <div class="cs-skill-item">
+          <span class="cs-skill-stat" title="{{ sk.stat_label }}">{{ sk.stat_abbr }}</span>
+          <span class="cs-skill-name">{{ sk.label }}</span>
+          <span class="cs-skill-val">{{ '%+d' % sk.value if sk.value != 0 else sk.value }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p style="color:var(--text-dim);font-size:.82rem;">No skills defined. <a href="/characters/{{ pc.id }}/edit">Edit</a> to add.</p>
+      {% endif %}
+    </div>
+
   </div>
 
-  <!-- Equipment + Feats -->
+  <!-- Attacks + Equipment + Feats -->
   <div class="cs-bottom">
+    <!-- Equipment & Currency -->
     <div class="cs-panel">
       <div class="cs-panel-title">Equipment</div>
       {% if equipment %}
@@ -339,35 +320,58 @@
           {% endfor %}
         </tbody>
       </table>
-      {% set w_pct = [100, (total_weight / carry_cap * 100)|int]|min if carry_cap > 0 else 0 %}
+      {% set w_pct = [100, (total_weight / (1 + total_weight) * 100)|int]|min if total_weight > 0 else 0 %}
       <div style="font-size:.75rem;color:var(--text-dim);margin-top:.4rem;">
-        Weight: {{ total_weight|int }} / {{ carry_cap }} lbs
+        Total weight: {{ total_weight|int }}
       </div>
-      <div class="cs-weight-bar"><div class="cs-weight-fill" style="width:{{ w_pct }}%"></div></div>
       {% else %}
-      <p style="color:var(--text-dim);font-size:.8rem;">No equipment. <a href="/characters/{{ pc.id }}/edit">Add items</a>.</p>
+      <p style="color:var(--text-dim);font-size:.82rem;">No equipment. <a href="/characters/{{ pc.id }}/edit">Add items</a>.</p>
       {% endif %}
+      {% if currency %}
       <div class="cs-currency">
-        <div class="cs-coin cp"><span class="cs-coin-val">{{ pc.currency_cp }}</span><span class="cs-coin-lbl">CP</span></div>
-        <div class="cs-coin sp"><span class="cs-coin-val">{{ pc.currency_sp }}</span><span class="cs-coin-lbl">SP</span></div>
-        <div class="cs-coin ep"><span class="cs-coin-val">{{ pc.currency_ep }}</span><span class="cs-coin-lbl">EP</span></div>
-        <div class="cs-coin gp"><span class="cs-coin-val">{{ pc.currency_gp }}</span><span class="cs-coin-lbl">GP</span></div>
-        <div class="cs-coin pp"><span class="cs-coin-val">{{ pc.currency_pp }}</span><span class="cs-coin-lbl">PP</span></div>
-      </div>
-    </div>
-
-    <div class="cs-panel">
-      <div class="cs-panel-title">Features &amp; Feats</div>
-      {% if feats %}
-        {% for feat in feats %}
-        <div class="cs-feat-item">
-          <div class="cs-feat-name">{{ feat.name }}</div>
-          {% if feat.source %}<div class="cs-feat-source">{{ feat.source }}</div>{% endif %}
-          {% if feat.description %}<div class="cs-feat-desc">{{ feat.description }}</div>{% endif %}
+        {% for c in currency %}
+        <div class="cs-coin">
+          <span class="cs-coin-val">{{ c.value }}</span>
+          <span class="cs-coin-lbl">{{ c.abbr or c.label }}</span>
         </div>
         {% endfor %}
-      {% else %}
-      <p style="color:var(--text-dim);font-size:.8rem;">No features. <a href="/characters/{{ pc.id }}/edit">Add feats</a>.</p>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- Attacks + Feats -->
+    <div class="cs-panel">
+      {% if attacks %}
+      <div class="cs-panel-title">Attacks &amp; Actions</div>
+      <table class="cs-attacks">
+        <thead><tr><th>Name</th><th>Bonus</th><th>Damage</th><th>Type</th></tr></thead>
+        <tbody>
+          {% for atk in attacks %}
+          <tr>
+            <td>{{ atk.name }}</td>
+            <td class="atk-bonus">{{ atk.bonus }}</td>
+            <td class="atk-dmg">{{ atk.damage }}</td>
+            <td>{{ atk.dmg_type }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+      {% if feats %}
+      <div class="cs-panel-title" style="margin-top:.75rem;">Features &amp; Feats</div>
+      {% for feat in feats %}
+      <div class="cs-feat-item">
+        <div class="cs-feat-name">{{ feat.name }}</div>
+        {% if feat.source %}<div class="cs-feat-source">{{ feat.source }}</div>{% endif %}
+        {% if feat.description %}<div class="cs-feat-desc">{{ feat.description }}</div>{% endif %}
+      </div>
+      {% endfor %}
+      {% endif %}
+
+      {% if not attacks and not feats %}
+      <div class="cs-panel-title">Attacks &amp; Feats</div>
+      <p style="color:var(--text-dim);font-size:.82rem;"><a href="/characters/{{ pc.id }}/edit">Add attacks and features</a>.</p>
       {% endif %}
     </div>
   </div>
@@ -377,7 +381,7 @@
   <div class="cs-appear">
     {% if pc.age %}<div class="cs-appear-field"><div class="cs-appear-label">Age</div><div class="cs-appear-val">{{ pc.age }}</div></div>{% endif %}
     {% if pc.height %}<div class="cs-appear-field"><div class="cs-appear-label">Height</div><div class="cs-appear-val">{{ pc.height }}</div></div>{% endif %}
-    {% if pc.weight_app %}<div class="cs-appear-field"><div class="cs-appear-label">Weight</div><div class="cs-appear-val">{{ pc.weight_app }}</div></div>{% endif %}
+    {% if pc.weight_app %}<div class="cs-appear-field"><div class="cs-appear-label">Weight / Build</div><div class="cs-appear-val">{{ pc.weight_app }}</div></div>{% endif %}
     {% if pc.eyes %}<div class="cs-appear-field"><div class="cs-appear-label">Eyes</div><div class="cs-appear-val">{{ pc.eyes }}</div></div>{% endif %}
     {% if pc.skin %}<div class="cs-appear-field"><div class="cs-appear-label">Skin</div><div class="cs-appear-val">{{ pc.skin }}</div></div>{% endif %}
     {% if pc.hair %}<div class="cs-appear-field"><div class="cs-appear-label">Hair</div><div class="cs-appear-val">{{ pc.hair }}</div></div>{% endif %}
@@ -391,18 +395,17 @@
     <div class="cs-pers-box"><div class="cs-pers-title">Personality Traits</div><div class="cs-pers-text">{{ pc.personality_traits }}</div></div>
     {% endif %}
     {% if pc.ideals %}
-    <div class="cs-pers-box"><div class="cs-pers-title">Ideals</div><div class="cs-pers-text">{{ pc.ideals }}</div></div>
+    <div class="cs-pers-box"><div class="cs-pers-title">Ideals / Goals</div><div class="cs-pers-text">{{ pc.ideals }}</div></div>
     {% endif %}
     {% if pc.bonds %}
-    <div class="cs-pers-box"><div class="cs-pers-title">Bonds</div><div class="cs-pers-text">{{ pc.bonds }}</div></div>
+    <div class="cs-pers-box"><div class="cs-pers-title">Bonds / Connections</div><div class="cs-pers-text">{{ pc.bonds }}</div></div>
     {% endif %}
     {% if pc.flaws %}
-    <div class="cs-pers-box"><div class="cs-pers-title">Flaws</div><div class="cs-pers-text">{{ pc.flaws }}</div></div>
+    <div class="cs-pers-box"><div class="cs-pers-title">Flaws / Weaknesses</div><div class="cs-pers-text">{{ pc.flaws }}</div></div>
     {% endif %}
   </div>
   {% endif %}
 
-  <!-- Backstory + Notes -->
   {% if pc.backstory %}
   <div class="cs-prose">
     <div class="cs-prose-title">Backstory</div>
@@ -456,29 +459,23 @@ async function hpAjax(body) {
   document.getElementById('hp-max').textContent = d.max_hp;
   updateDeathPips('success', d.death_success);
   updateDeathPips('failure', d.death_failure);
+  if (d.secondary_current !== undefined) {
+    const el = document.getElementById('sec-current');
+    if (el) el.textContent = d.secondary_current;
+  }
 }
 
 function changeHp(delta) { hpAjax({action:'delta', value:delta}); }
-
-function applyDamage() {
-  const v = parseInt(document.getElementById('hp-delta-input').value) || 0;
-  hpAjax({action:'delta', value:-Math.abs(v)});
-}
-function applyHeal() {
-  const v = parseInt(document.getElementById('hp-delta-input').value) || 0;
-  hpAjax({action:'delta', value:Math.abs(v)});
-}
-function setTempHp() {
-  const v = parseInt(document.getElementById('hp-temp-input').value) || 0;
-  hpAjax({action:'temp', value:v});
-}
+function applyDamage() { hpAjax({action:'delta', value:-Math.abs(parseInt(document.getElementById('hp-delta-input').value)||0)}); }
+function applyHeal()   { hpAjax({action:'delta', value: Math.abs(parseInt(document.getElementById('hp-delta-input').value)||0)}); }
+function setTempHp()   { hpAjax({action:'temp',  value: parseInt(document.getElementById('hp-temp-input').value)||0}); }
 function hpSetDialog() {
   const v = prompt('Set current HP to:', document.getElementById('hp-current').textContent);
   if (v !== null && !isNaN(parseInt(v))) hpAjax({action:'set', value:parseInt(v)});
 }
 
 function updateDeathPips(type, count) {
-  for (let i=0; i<3; i++) {
+  for (let i = 0; i < 3; i++) {
     const el = document.getElementById(`ds-${type === 'success' ? 's' : 'f'}-${i}`);
     if (!el) continue;
     el.className = 'cs-death-pip' + (i < count ? (type === 'success' ? ' filled-success' : ' filled-failure') : '');
@@ -491,13 +488,17 @@ async function toggleDeath(type, idx) {
   if (type === 'success') {
     _deathSuccess = _deathSuccess === idx + 1 ? idx : idx + 1;
     await hpAjax({action:'death_success', value:_deathSuccess});
-    _deathSuccess = parseInt(document.getElementById('ds-s-0').classList.contains('filled-success') ? 1 : 0)
-      + parseInt(document.getElementById('ds-s-1') ? document.getElementById('ds-s-1').classList.contains('filled-success') ? 1 : 0 : 0)
-      + parseInt(document.getElementById('ds-s-2') ? document.getElementById('ds-s-2').classList.contains('filled-success') ? 1 : 0 : 0);
   } else {
     _deathFailure = _deathFailure === idx + 1 ? idx : idx + 1;
     await hpAjax({action:'death_failure', value:_deathFailure});
   }
+}
+
+// ── Secondary resource ────────────────────────────────────────────────────────
+function secDelta(delta) { hpAjax({action:'secondary_delta', value:delta}); }
+function secSetDialog() {
+  const v = prompt('Set {{ pc.secondary_resource_name or "resource" }} to:', document.getElementById('sec-current')?.textContent || '0');
+  if (v !== null && !isNaN(parseInt(v))) hpAjax({action:'secondary_set', value:parseInt(v)});
 }
 
 // ── XP ────────────────────────────────────────────────────────────────────────
@@ -509,8 +510,7 @@ async function xpDialog() {
     body: JSON.stringify({delta: parseInt(v)})
   });
   const d = await r.json();
-  document.getElementById('xp-label').textContent =
-    d.xp + ' XP' + (d.xp_hi ? ' / ' + d.xp_hi : '');
+  document.getElementById('xp-label').textContent = d.xp + ' XP' + (d.xp_hi ? ' / ' + d.xp_hi : '');
   document.getElementById('xp-bar').style.width = d.xp_pct + '%';
 }
 
@@ -536,19 +536,15 @@ async function rollExpr(expr) {
 }
 
 function quickRoll(die) { rollExpr('1' + die); }
-
 function doRoll() {
   const n = document.getElementById('dice-count').value || '1';
   const s = document.getElementById('dice-sides').value;
   const m = parseInt(document.getElementById('dice-modifier').value) || 0;
-  const expr = `${n}d${s}${m >= 0 ? '+' + m : m}`.replace('+0','');
-  rollExpr(expr);
+  rollExpr(`${n}d${s}${m >= 0 ? '+' + m : m}`.replace('+0',''));
 }
-
 function doCustomRoll() {
   const expr = document.getElementById('dice-expr').value.trim();
-  if (!expr) return;
-  rollExpr(expr);
+  if (expr) rollExpr(expr);
 }
 </script>
 {% endblock %}

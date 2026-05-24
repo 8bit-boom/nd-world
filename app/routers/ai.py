@@ -230,6 +230,16 @@ async def api_imagegen_models():
     return {"models": await _ai.imagegen_models()}
 
 
+@router.get("/imagegen/loras")
+async def api_imagegen_loras():
+    return {"loras": await _ai.imagegen_loras()}
+
+
+@router.get("/imagegen/samplers-schedulers")
+async def api_imagegen_samplers_schedulers():
+    return await _ai.imagegen_samplers_schedulers()
+
+
 class ImagegenBody(BaseModel):
     prompt: str = ""
     negative: str = ""

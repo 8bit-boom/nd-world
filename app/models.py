@@ -122,6 +122,16 @@ class PlayerCharacter(Base):
     skin       = Column(String(64), default="")
     hair       = Column(String(64), default="")
 
+    # Universal stats/skills/currency (replaces D&D-specific fixed columns)
+    stats_json    = Column(Text, default='[]')  # [{id,label,abbr,value}]
+    skills_json   = Column(Text, default='[]')  # [{id,label,stat_id,value}]
+    currency_json = Column(Text, default='[]')  # [{label,abbr,value}]
+
+    # Optional secondary resource (mana, energy, shields, etc.)
+    secondary_resource_name    = Column(String(128), default='')
+    secondary_resource_max     = Column(Integer, default=0)
+    secondary_resource_current = Column(Integer, default=0)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -52,11 +52,17 @@ def _migrate():
         if pc_exists:
             pc_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(player_characters)")).fetchall()]
             _pc_extra = [
-                ("death_saves_success", "INTEGER DEFAULT 0"),
-                ("death_saves_failure", "INTEGER DEFAULT 0"),
-                ("skill_expertise",     "TEXT DEFAULT '[]'"),
-                ("currency_ep",         "INTEGER DEFAULT 0"),
-                ("weight_app",          "VARCHAR(32) DEFAULT ''"),
+                ("death_saves_success",        "INTEGER DEFAULT 0"),
+                ("death_saves_failure",         "INTEGER DEFAULT 0"),
+                ("skill_expertise",             "TEXT DEFAULT '[]'"),
+                ("currency_ep",                 "INTEGER DEFAULT 0"),
+                ("weight_app",                  "VARCHAR(32) DEFAULT ''"),
+                ("stats_json",                  "TEXT DEFAULT '[]'"),
+                ("skills_json",                 "TEXT DEFAULT '[]'"),
+                ("currency_json",               "TEXT DEFAULT '[]'"),
+                ("secondary_resource_name",     "VARCHAR(128) DEFAULT ''"),
+                ("secondary_resource_max",      "INTEGER DEFAULT 0"),
+                ("secondary_resource_current",  "INTEGER DEFAULT 0"),
             ]
             for col, defn in _pc_extra:
                 if col not in pc_cols:
