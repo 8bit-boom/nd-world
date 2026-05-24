@@ -259,7 +259,7 @@ async def imagegen_loras() -> list:
             if t == "swarmui":
                 sid = await _swarmui_session(u, c)
                 r = await c.post(f"{u}/API/ListModels",
-                                 json={"session_id": sid, "path": "LoRA", "depth": 3})
+                                 json={"session_id": sid, "path": "LoRA", "depth": 10})
                 data = r.json()
                 return [m["name"] for m in data.get("files", []) if m.get("name")]
             else:
@@ -310,13 +310,33 @@ async def imagegen_models() -> list:
             if t == "swarmui":
                 sid = await _swarmui_session(u, c)
                 r = await c.post(f"{u}/API/ListModels",
-                                 json={"session_id": sid, "path": "", "depth": 2})
+                                 json={"session_id": sid, "path": "", "depth": 10})
                 data = r.json()
                 return [m["name"] for m in data.get("files", []) if m.get("name")]
             else:
                 r = await c.get(f"{u}/object_info/CheckpointLoaderSimple")
                 data = r.json()
                 return data["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"][0]
+    except Exception:
+        return []
+
+
+async def imagegen_upscalers() -> list:
+    t, u = _get_type(), _get_url()
+    if not t or not u:
+        return []
+    try:
+        async with _httpx.AsyncClient(timeout=8) as c:
+            if t == "swarmui":
+                sid = await _swarmui_session(u, c)
+                r = await c.post(f"{u}/API/ListModels",
+                                 json={"session_id": sid, "path": "Upscale", "depth": 10})
+                data = r.json()
+                return [m["name"] for m in data.get("files", []) if m.get("name")]
+            else:
+                r = await c.get(f"{u}/object_info/UpscaleModelLoader")
+                data = r.json()
+                return data["UpscaleModelLoader"]["input"]["required"]["model_name"][0]
     except Exception:
         return []
 
@@ -332,7 +352,9 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                             vae: str = "",
                             clip_skip: int = -1,
                             init_image: str = "",
-                            init_strength: float = 0.6) -> list[str]:
+                            init_strength: float = 0.6,
+                            upscale_model: str = "",
+                            upscale_factor: float = 1.0) -> list[str]:
     import copy, random, asyncio, base64 as _b64, uuid as _uuid
     t, u = _get_type(), _get_url()
     ai_img_dir = Path(uploads_dir) / "ai-images"
@@ -370,6 +392,9 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
             if init_image:
                 payload["initimage"] = init_image
                 payload["initimagecreativity"] = init_strength
+            if upscale_model:
+                payload["upscalemodel"] = upscale_model
+                payload["upscalemultiplier"] = upscale_factor
 
             gr = await c.post(f"{u}/API/GenerateText2Image", json=payload)
             _log.info("SwarmUI generate status=%s body=%.400s", gr.status_code, gr.text)
@@ -397,6 +422,10 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                 "sampler_name": sampler or "euler",
                 "scheduler": scheduler or "normal",
             })
+            if upscale_model:
+                wf["8"] = {"class_type": "UpscaleModelLoader", "inputs": {"model_name": upscale_model}}
+                wf["9"] = {"class_type": "ImageUpscaleWithModel", "inputs": {"upscale_model": ["8", 0], "image": ["6", 0]}}
+                wf["7"]["inputs"]["images"] = ["9", 0]
             pr = await c.post(f"{u}/prompt", json={"prompt": wf})
             pid = pr.json()["prompt_id"]
             for _ in range(120):

@@ -802,6 +802,32 @@
         </div>
       </details>
 
+      <!-- Upscaling (collapsed) -->
+      <details class="ig-collapsible">
+        <summary>🔍 Upscaling</summary>
+        <div class="ig-section-body">
+          <div>
+            <label class="ig-label">Upscale model</label>
+            <div style="display:flex;gap:.25rem;margin-bottom:.3rem">
+              <select id="ig-upscaler" class="ig-select" style="flex:1;font-size:.78rem">
+                <option value="">— none (output at gen size) —</option>
+              </select>
+              <button class="ig-btn" type="button" onclick="igLoadUpscalers()" title="Refresh upscaler list"
+                      style="padding:.22rem .45rem;flex-shrink:0;font-size:.78rem;line-height:1">↺</button>
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">Scale factor</label>
+            <div class="ig-batch-row">
+              <button class="ig-batch-btn" data-scale="1.5" onclick="igSetUpscale(this)">×1.5</button>
+              <button class="ig-batch-btn ig-batch-active" data-scale="2" onclick="igSetUpscale(this)">×2</button>
+              <button class="ig-batch-btn" data-scale="3" onclick="igSetUpscale(this)">×3</button>
+              <button class="ig-batch-btn" data-scale="4" onclick="igSetUpscale(this)">×4</button>
+            </div>
+          </div>
+        </div>
+      </details>
+
     </div><!-- /ig-settings -->
 
     <!-- ── Prompts + Generate + Results ── -->
@@ -1561,6 +1587,7 @@ function switchTab(tab) {
 // ── Image gen state ───────────────────────────────────────────────────────────
 
 let _igBatchSize = 1;
+let _igUpscaleFactor = 2.0;
 let _igInitImageB64 = '';
 let _igLastUrls = [];
 
@@ -1573,7 +1600,13 @@ function igSetSize(w, h, btn) {
 
 function igSetBatch(btn) {
   _igBatchSize = parseInt(btn.dataset.val);
-  document.querySelectorAll('.ig-batch-btn').forEach(b => b.classList.remove('ig-batch-active'));
+  document.querySelectorAll('.ig-batch-btn[data-val]').forEach(b => b.classList.remove('ig-batch-active'));
+  btn.classList.add('ig-batch-active');
+}
+
+function igSetUpscale(btn) {
+  _igUpscaleFactor = parseFloat(btn.dataset.scale);
+  document.querySelectorAll('.ig-batch-btn[data-scale]').forEach(b => b.classList.remove('ig-batch-active'));
   btn.classList.add('ig-batch-active');
 }
 
@@ -1617,6 +1650,7 @@ function igClearInit() {
     }
     igLoadSamplersSchedulers();
     igLoadLoras();
+    igLoadUpscalers();
     igLoadHistory();
   } catch (e) {
     console.warn('igInit error', e);
@@ -1715,6 +1749,8 @@ async function igGenerate() {
       clip_skip:   parseInt(document.getElementById('ig-clipskip')?.value || '-1'),
       init_image:  _igInitImageB64,
       init_strength: parseFloat(document.getElementById('ig-strength')?.value || '0.65'),
+      upscale_model: (document.getElementById('ig-upscaler')?.value || '').trim(),
+      upscale_factor: _igUpscaleFactor,
     };
 
     const r = await fetch('/api/ai/imagegen/generate', {
@@ -1801,6 +1837,27 @@ async function igLoadLoras() {
       for (const l of d.loras) {
         const name = l.length > 44 ? '…' + l.slice(-41) : l;
         sel.innerHTML += `<option value="${l}"${l === cur ? ' selected' : ''} title="${l}">${name}</option>`;
+      }
+    }
+  } catch(e) {
+    sel.innerHTML = '<option value="">— unavailable —</option>';
+  }
+}
+
+// ── Upscaler dynamic loading ───────────────────────────────────────────────────
+
+async function igLoadUpscalers() {
+  const sel = document.getElementById('ig-upscaler');
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">⏳ Loading…</option>';
+  try {
+    const d = await fetch('/api/ai/imagegen/upscalers').then(r => r.json());
+    sel.innerHTML = '<option value="">— none (output at gen size) —</option>';
+    if (d.upscalers && d.upscalers.length) {
+      for (const u of d.upscalers) {
+        const name = u.length > 44 ? '…' + u.slice(-41) : u;
+        sel.innerHTML += `<option value="${u}"${u === cur ? ' selected' : ''} title="${u}">${name}</option>`;
       }
     }
   } catch(e) {
@@ -1911,6 +1968,13 @@ function igReuseParams(idx) {
     set('ig-lora-weight', p.lora_weights || '0.8');
     set('ig-vae',        p.vae || '');
     set('ig-clipskip',   p.clip_skip || '-1');
+    set('ig-upscaler',   p.upscale_model || '');
+    if (p.upscale_factor) {
+      _igUpscaleFactor = p.upscale_factor;
+      document.querySelectorAll('.ig-batch-btn[data-scale]').forEach(b => {
+        b.classList.toggle('ig-batch-active', parseFloat(b.dataset.scale) === p.upscale_factor);
+      });
+    }
     const stepsVal = document.getElementById('ig-steps-val');
     if (stepsVal && p.steps) stepsVal.textContent = p.steps;
     const cfgVal = document.getElementById('ig-cfg-val');

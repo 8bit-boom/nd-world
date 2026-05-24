@@ -240,6 +240,11 @@ async def api_imagegen_samplers_schedulers():
     return await _ai.imagegen_samplers_schedulers()
 
 
+@router.get("/imagegen/upscalers")
+async def api_imagegen_upscalers():
+    return {"upscalers": await _ai.imagegen_upscalers()}
+
+
 class ImagegenBody(BaseModel):
     prompt: str = ""
     negative: str = ""
@@ -258,6 +263,8 @@ class ImagegenBody(BaseModel):
     clip_skip: int = -1
     init_image: str = ""
     init_strength: float = 0.6
+    upscale_model: str = ""
+    upscale_factor: float = 1.0
 
 
 @router.post("/imagegen/generate")
@@ -273,6 +280,7 @@ async def api_imagegen_generate(body: ImagegenBody):
             lora_weights=body.lora_weights, vae=body.vae,
             clip_skip=body.clip_skip, init_image=body.init_image,
             init_strength=body.init_strength,
+            upscale_model=body.upscale_model, upscale_factor=body.upscale_factor,
         )
         return {"url": urls[0] if urls else "", "urls": urls}
     except Exception as exc:
