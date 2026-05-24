@@ -727,24 +727,13 @@
           <div>
             <label class="ig-label">Sampler</label>
             <select id="ig-sampler" class="ig-select">
-              <option value="euler" selected>Euler</option>
-              <option value="euler_ancestral">Euler Ancestral</option>
-              <option value="dpm++2m">DPM++ 2M</option>
-              <option value="dpm++2m_karras">DPM++ 2M Karras</option>
-              <option value="dpm++sde">DPM++ SDE</option>
-              <option value="dpm++sde_karras">DPM++ SDE Karras</option>
-              <option value="heun">Heun</option>
-              <option value="lcm">LCM</option>
-              <option value="ddim">DDIM</option>
+              <option value="euler" selected>euler</option>
             </select>
           </div>
           <div>
             <label class="ig-label">Scheduler</label>
             <select id="ig-scheduler" class="ig-select">
-              <option value="normal" selected>Normal</option>
-              <option value="karras">Karras</option>
-              <option value="exponential">Exponential</option>
-              <option value="sgm_uniform">SGM Uniform</option>
+              <option value="normal" selected>normal</option>
             </select>
           </div>
           <div>
@@ -782,8 +771,16 @@
         <summary>🔧 Advanced</summary>
         <div class="ig-section-body">
           <div>
-            <label class="ig-label">LoRA name</label>
-            <input type="text" id="ig-lora" class="ig-input-text" placeholder="e.g. detail_tweaker">
+            <label class="ig-label">LoRA</label>
+            <div style="display:flex;gap:.25rem;margin-bottom:.3rem">
+              <select id="ig-lora-sel" class="ig-select" style="flex:1;font-size:.78rem"
+                      onchange="document.getElementById('ig-lora').value=this.value">
+                <option value="">— no LoRA —</option>
+              </select>
+              <button class="ig-btn" type="button" onclick="igLoadLoras()" title="Refresh LoRA list"
+                      style="padding:.22rem .45rem;flex-shrink:0;font-size:.78rem;line-height:1">↺</button>
+            </div>
+            <input type="text" id="ig-lora" class="ig-input-text" placeholder="or type name manually">
           </div>
           <div>
             <label class="ig-label">LoRA weight</label>
@@ -867,6 +864,16 @@
       <!-- Results -->
       <div id="ig-results" style="display:none">
         <div id="ig-results-grid" class="ig-results-grid"></div>
+      </div>
+
+      <!-- History -->
+      <div id="ig-history-section" style="display:none;margin-top:.75rem">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.4rem;">
+          <span style="font-size:.72rem;color:var(--neon);text-transform:uppercase;letter-spacing:.06em;">🕘 Generated History</span>
+          <button class="ig-btn" onclick="igClearHistory()"
+                  style="font-size:.68rem;padding:.15rem .4rem;color:var(--neon2);border-color:var(--neon2)">Clear all</button>
+        </div>
+        <div id="ig-history-grid" class="ig-results-grid"></div>
       </div>
 
     </div><!-- /ig-main -->
@@ -1608,6 +1615,9 @@ function igClearInit() {
     } else {
       sel.innerHTML = '<option value="">— no models found —</option>';
     }
+    igLoadSamplersSchedulers();
+    igLoadLoras();
+    igLoadHistory();
   } catch (e) {
     console.warn('igInit error', e);
   }
@@ -1655,7 +1665,11 @@ async function igBuildPrompt() {
       }
     }
   } catch (e) {
-    ta.value = 'Error: ' + e.message;
+    const msg = e.message || String(e);
+    ta.value = '';
+    alert('Build from World Lore failed: ' + (msg.toLowerCase().includes('networkerror') || msg.toLowerCase().includes('fetch')
+      ? 'Cannot reach AI service. Is Ollama running?'
+      : msg));
   } finally {
     btn.disabled = false;
     btn.textContent = '✨ Build from World Lore';
@@ -1715,6 +1729,7 @@ async function igGenerate() {
     const urls = data.urls && data.urls.length ? data.urls : (data.url ? [data.url] : []);
     if (!urls.length) throw new Error('No images returned');
     _igLastUrls = urls;
+    igSaveToHistory(urls, body);
 
     urls.forEach((url, i) => {
       const card = document.createElement('div');
@@ -1739,12 +1754,184 @@ async function igGenerate() {
     });
     results.style.display = 'block';
   } catch (e) {
-    err.textContent = '❌ ' + e.message;
+    const msg = e.message || String(e);
+    err.textContent = '❌ ' + (msg.toLowerCase().includes('networkerror') || msg.toLowerCase().includes('fetch')
+      ? 'Cannot reach image generation service. Is SwarmUI/ComfyUI running and configured?'
+      : msg);
     err.style.display = 'block';
   } finally {
     btn.disabled = false;
     status.style.display = 'none';
   }
+}
+
+// ── Samplers / Schedulers dynamic loading ─────────────────────────────────────
+
+async function igLoadSamplersSchedulers() {
+  try {
+    const d = await fetch('/api/ai/imagegen/samplers-schedulers').then(r => r.json());
+    const samSel = document.getElementById('ig-sampler');
+    const schSel = document.getElementById('ig-scheduler');
+    if (d.samplers && d.samplers.length) {
+      const cur = samSel.value || 'euler';
+      samSel.innerHTML = d.samplers.map(s =>
+        `<option value="${s}"${s === cur ? ' selected' : ''}>${s}</option>`
+      ).join('');
+    }
+    if (d.schedulers && d.schedulers.length) {
+      const cur = schSel.value || 'normal';
+      schSel.innerHTML = d.schedulers.map(s =>
+        `<option value="${s}"${s === cur ? ' selected' : ''}>${s}</option>`
+      ).join('');
+    }
+  } catch(e) { console.warn('igLoadSamplersSchedulers', e); }
+}
+
+// ── LoRA dynamic loading ───────────────────────────────────────────────────────
+
+async function igLoadLoras() {
+  const sel = document.getElementById('ig-lora-sel');
+  if (!sel) return;
+  const cur = document.getElementById('ig-lora')?.value || '';
+  sel.innerHTML = '<option value="">⏳ Loading…</option>';
+  try {
+    const d = await fetch('/api/ai/imagegen/loras').then(r => r.json());
+    sel.innerHTML = '<option value="">— no LoRA —</option>';
+    if (d.loras && d.loras.length) {
+      for (const l of d.loras) {
+        const name = l.length > 44 ? '…' + l.slice(-41) : l;
+        sel.innerHTML += `<option value="${l}"${l === cur ? ' selected' : ''} title="${l}">${name}</option>`;
+      }
+    }
+  } catch(e) {
+    sel.innerHTML = '<option value="">— unavailable —</option>';
+  }
+}
+
+// ── Image generation history (localStorage) ────────────────────────────────────
+
+const _HIST_KEY = 'nd_imagegen_history';
+const _HIST_MAX = 50;
+
+function igSaveToHistory(urls, params) {
+  if (!urls || !urls.length) return;
+  try {
+    let hist = JSON.parse(localStorage.getItem(_HIST_KEY) || '[]');
+    hist.unshift({urls, params, ts: Date.now()});
+    if (hist.length > _HIST_MAX) hist = hist.slice(0, _HIST_MAX);
+    localStorage.setItem(_HIST_KEY, JSON.stringify(hist));
+    igLoadHistory();
+  } catch(e) {}
+}
+
+function igLoadHistory() {
+  try {
+    const hist = JSON.parse(localStorage.getItem(_HIST_KEY) || '[]');
+    const section = document.getElementById('ig-history-section');
+    const grid    = document.getElementById('ig-history-grid');
+    if (!section || !grid) return;
+    if (!hist.length) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+    grid.innerHTML = hist.map((entry, i) => {
+      const url  = entry.urls[0];
+      const p    = entry.params || {};
+      const date = new Date(entry.ts).toLocaleDateString();
+      const time = new Date(entry.ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+      const more = entry.urls.length > 1 ? ` +${entry.urls.length - 1}` : '';
+      const shortPrompt = (p.prompt || '').slice(0, 45);
+      return `
+        <div class="ig-result-card">
+          <img src="${url}" alt="Generated" loading="lazy" style="cursor:pointer" onclick="igHistViewAll(${i})">
+          <div class="ig-result-card-actions" style="flex-direction:column;gap:.22rem;padding:.3rem .4rem">
+            <div style="font-size:.63rem;color:var(--text-dim)">${date} ${time}${more}</div>
+            <div style="font-size:.63rem;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                 title="${(p.prompt||'').replace(/"/g,'&quot;')}">${shortPrompt}${shortPrompt.length < (p.prompt||'').length ? '…' : ''}</div>
+            <div style="display:flex;gap:.25rem;flex-wrap:wrap">
+              <button onclick="igReuseParams(${i})"
+                      style="font-size:.68rem;background:transparent;border:1px solid var(--neon);color:var(--neon);border-radius:3px;padding:.12rem .38rem;cursor:pointer;font-family:inherit">↩ Reuse</button>
+              <a href="${url}" download
+                 style="font-size:.68rem;background:transparent;border:1px solid var(--border);color:var(--text-dim);border-radius:3px;padding:.12rem .38rem;text-decoration:none">⬇</a>
+              <button onclick="igDelHistEntry(${i})"
+                      style="font-size:.68rem;background:transparent;border:none;color:#555;cursor:pointer;font-family:inherit;padding:.12rem .2rem">✕</button>
+            </div>
+          </div>
+        </div>`;
+    }).join('');
+  } catch(e) {}
+}
+
+function igHistViewAll(idx) {
+  try {
+    const hist  = JSON.parse(localStorage.getItem(_HIST_KEY) || '[]');
+    const entry = hist[idx];
+    if (!entry) return;
+    const results = document.getElementById('ig-results');
+    const grid    = document.getElementById('ig-results-grid');
+    grid.innerHTML = '';
+    results.style.display = 'block';
+    entry.urls.forEach((url, i) => {
+      const card = document.createElement('div');
+      card.className = 'ig-result-card';
+      const img = document.createElement('img');
+      img.src = url; img.alt = `Generated image ${i + 1}`;
+      const actions = document.createElement('div');
+      actions.className = 'ig-result-card-actions';
+      const dlLink = document.createElement('a');
+      dlLink.href = url; dlLink.download = `nd-image-${i + 1}.png`; dlLink.textContent = '⬇ Save';
+      const attachBtn = document.createElement('button');
+      attachBtn.textContent = '📎 Attach…';
+      attachBtn.onclick = () => igAttachToEntity(url);
+      actions.appendChild(dlLink);
+      actions.appendChild(attachBtn);
+      card.appendChild(img); card.appendChild(actions);
+      grid.appendChild(card);
+    });
+    results.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  } catch(e) {}
+}
+
+function igReuseParams(idx) {
+  try {
+    const hist  = JSON.parse(localStorage.getItem(_HIST_KEY) || '[]');
+    const entry = hist[idx];
+    if (!entry || !entry.params) return;
+    const p = entry.params;
+    const set = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined && val !== null) el.value = val; };
+    set('ig-prompt',     p.prompt);
+    set('ig-negative',   p.negative);
+    set('ig-model',      p.model);
+    set('ig-width',      p.width);
+    set('ig-height',     p.height);
+    set('ig-steps',      p.steps);
+    set('ig-cfg',        p.cfg);
+    set('ig-seed',       p.seed);
+    set('ig-sampler',    p.sampler);
+    set('ig-scheduler',  p.scheduler);
+    set('ig-lora',       p.loras || '');
+    set('ig-lora-weight', p.lora_weights || '0.8');
+    set('ig-vae',        p.vae || '');
+    set('ig-clipskip',   p.clip_skip || '-1');
+    const stepsVal = document.getElementById('ig-steps-val');
+    if (stepsVal && p.steps) stepsVal.textContent = p.steps;
+    const cfgVal = document.getElementById('ig-cfg-val');
+    if (cfgVal && p.cfg) cfgVal.textContent = p.cfg;
+    document.querySelector('.ig-main')?.scrollTo({top: 0, behavior: 'smooth'});
+  } catch(e) { alert('Could not load parameters: ' + e.message); }
+}
+
+function igDelHistEntry(idx) {
+  try {
+    let hist = JSON.parse(localStorage.getItem(_HIST_KEY) || '[]');
+    hist.splice(idx, 1);
+    localStorage.setItem(_HIST_KEY, JSON.stringify(hist));
+    igLoadHistory();
+  } catch(e) {}
+}
+
+function igClearHistory() {
+  if (!confirm('Clear all generated image history?')) return;
+  localStorage.removeItem(_HIST_KEY);
+  igLoadHistory();
 }
 
 // ── Attach generated image to an entity ──────────────────────────────────────

@@ -991,10 +991,11 @@ input[type="file"]:hover { border-color: var(--neon); }
   #ai-dot { display: none; }
 
   /* Topbar compact */
-  .topbar { padding: .5rem .75rem; gap: .5rem; position: relative; }
-  .logo { font-size: .95rem; }
+  .topbar { padding: .4rem .6rem; gap: .4rem; position: relative; }
+  .logo { font-size: .88rem; flex-shrink: 0; }
   .search-form { flex: 1; min-width: 0; max-width: none; }
-  .world-btn { font-size: .72rem; padding: .28rem .6rem; }
+  .world-btn { font-size: .68rem; padding: .25rem .45rem; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nav-hamburger { margin-left: 0 !important; flex-shrink: 0; }
 
   /* Main content padding */
   main { padding: .75rem; max-width: 100%; }

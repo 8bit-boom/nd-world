@@ -12,7 +12,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from ..constants import ALIGNMENTS, KIND_ICONS, KINDS, SAVING_THROWS, SKILLS, SUBTYPES, XP_THRESHOLDS
+from ..constants import (
+    KIND_ICONS, KINDS, SUBTYPES, XP_THRESHOLDS,
+    ND_DEFAULT_STATS, ND_DEFAULT_SKILLS, ND_DEFAULT_CURRENCY,
+)
 from ..database import get_db
 from ..models import PlayerCharacter, World
 
@@ -31,18 +34,6 @@ ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _prof_bonus(level: int) -> int:
-    return max(2, (min(level, 20) - 1) // 4 + 2)
-
-
-def _mod(score: int) -> int:
-    return (score - 10) // 2
-
-
-def _fmt(n: int) -> str:
-    return f"+{n}" if n >= 0 else str(n)
-
-
 def _world_ctx(db: Session, active_world: Optional[str]):
     worlds = db.query(World).all()
     world = next((w for w in worlds if w.slug == active_world), None) or (worlds[0] if worlds else None)
@@ -50,39 +41,12 @@ def _world_ctx(db: Session, active_world: Optional[str]):
 
 
 def _derived(pc: PlayerCharacter) -> dict:
-    profs   = json.loads(pc.saving_throw_profs or "[]")
-    skill_p = json.loads(pc.skill_profs or "[]")
-    skill_e = json.loads(pc.skill_expertise or "[]")
-    pb = _prof_bonus(pc.level)
-
-    scores = {
-        "str": pc.str_score, "dex": pc.dex_score, "con": pc.con_score,
-        "int": pc.int_score, "wis": pc.wis_score, "cha": pc.cha_score,
-    }
-    mods = {k: _mod(v) for k, v in scores.items()}
-
-    saves = {s: mods[s] + (pb if s in profs else 0) for s in SAVING_THROWS}
-
-    computed_skills = []
-    for skill_id, stat_label in SKILLS:
-        stat_key = stat_label.lower()
-        base = mods[stat_key]
-        if skill_id in skill_e:
-            bonus, plvl = base + pb * 2, 2
-        elif skill_id in skill_p:
-            bonus, plvl = base + pb, 1
-        else:
-            bonus, plvl = base, 0
-        computed_skills.append({
-            "id": skill_id,
-            "label": skill_id.replace("_", " ").title(),
-            "stat": stat_label,
-            "bonus": bonus,
-            "bonus_str": _fmt(bonus),
-            "prof_level": plvl,
-        })
-
-    passive_perc = 10 + mods["wis"] + (pb if "perception" in skill_p else 0) + (pb * 2 if "perception" in skill_e else 0)
+    stats    = json.loads(pc.stats_json    or "[]")
+    skills   = json.loads(pc.skills_json   or "[]")
+    currency = json.loads(pc.currency_json or "[]")
+    equipment = json.loads(pc.equipment_json or "[]")
+    feats     = json.loads(pc.feats_json     or "[]")
+    attacks   = json.loads(pc.attacks_json   or "[]")
 
     lvl = min(pc.level, 20)
     xp_lo = XP_THRESHOLDS[lvl - 1]
@@ -92,29 +56,40 @@ def _derived(pc: PlayerCharacter) -> dict:
     else:
         xp_pct = 100
 
-    equipment = json.loads(pc.equipment_json or "[]")
-    feats     = json.loads(pc.feats_json     or "[]")
-    attacks   = json.loads(pc.attacks_json   or "[]")
-
     total_weight = sum(
         float(item.get("weight", 0)) * int(item.get("qty", 1))
         for item in equipment
     )
 
+    # Build stat lookup for skill display
+    stat_map = {s["id"]: s for s in stats}
+
+    # Annotate skills with stat label for display
+    annotated_skills = []
+    for sk in skills:
+        stat = stat_map.get(sk.get("stat_id", ""), {})
+        annotated_skills.append({
+            **sk,
+            "stat_abbr": stat.get("abbr", sk.get("stat_id", "").upper()),
+            "stat_label": stat.get("label", ""),
+        })
+
+    secondary = None
+    if getattr(pc, "secondary_resource_name", ""):
+        secondary = {
+            "name": pc.secondary_resource_name,
+            "max": pc.secondary_resource_max,
+            "current": pc.secondary_resource_current,
+        }
+
     return {
-        "scores": scores, "mods": mods,
-        "mod_strs":    {k: _fmt(v) for k, v in mods.items()},
-        "saves":       saves,
-        "save_strs":   {k: _fmt(v) for k, v in saves.items()},
-        "save_profs":  profs,
-        "skills":      computed_skills,
-        "skill_profs": skill_p, "skill_expertise": skill_e,
-        "prof_bonus":  pb, "prof_bonus_str": _fmt(pb),
-        "passive_perc": passive_perc,
-        "initiative_str": _fmt(mods["dex"]),
+        "stats": stats,
+        "skills": annotated_skills,
+        "currency": currency,
+        "secondary": secondary,
         "xp_lo": xp_lo, "xp_hi": xp_hi, "xp_pct": xp_pct,
         "equipment": equipment, "feats": feats, "attacks": attacks,
-        "total_weight": total_weight, "carry_cap": pc.str_score * 15,
+        "total_weight": total_weight,
     }
 
 
@@ -122,36 +97,25 @@ def _apply_form(pc: PlayerCharacter, data: dict):
     def gi(k, d=0):  return int(data.get(k) or d)
     def gs(k, d=""): return str(data.get(k) or d).strip()
 
-    pc.name         = gs("name") or "Unnamed"
-    pc.player_name  = gs("player_name")
-    pc.race         = gs("race")
-    pc.char_class   = gs("char_class")
-    pc.subclass     = gs("subclass")
-    pc.level        = max(1, min(20, gi("level", 1)))
-    pc.xp           = max(0, gi("xp"))
-    pc.background   = gs("background")
-    pc.alignment    = gs("alignment")
-    pc.str_score    = max(1, min(30, gi("str_score", 10)))
-    pc.dex_score    = max(1, min(30, gi("dex_score", 10)))
-    pc.con_score    = max(1, min(30, gi("con_score", 10)))
-    pc.int_score    = max(1, min(30, gi("int_score", 10)))
-    pc.wis_score    = max(1, min(30, gi("wis_score", 10)))
-    pc.cha_score    = max(1, min(30, gi("cha_score", 10)))
-    pc.max_hp       = max(1, gi("max_hp", 10))
-    pc.current_hp   = gi("current_hp", pc.max_hp)
-    pc.temp_hp      = max(0, gi("temp_hp"))
-    pc.armor_class  = max(0, gi("armor_class", 10))
-    pc.speed        = max(0, gi("speed", 30))
-    pc.hit_dice     = gs("hit_dice", "1d8")
+    pc.name        = gs("name") or "Unnamed"
+    pc.player_name = gs("player_name")
+    pc.race        = gs("race")
+    pc.char_class  = gs("char_class")
+    pc.subclass    = gs("subclass")
+    pc.level       = max(1, min(20, gi("level", 1)))
+    pc.xp          = max(0, gi("xp"))
+    pc.background  = gs("background")
+    pc.alignment   = gs("alignment")
+    pc.max_hp      = max(1, gi("max_hp", 10))
+    pc.current_hp  = gi("current_hp", pc.max_hp)
+    pc.temp_hp     = max(0, gi("temp_hp"))
+    pc.armor_class = max(0, gi("armor_class", 10))
+    pc.speed       = max(0, gi("speed", 30))
+    pc.hit_dice    = gs("hit_dice", "1d8")
     pc.armor_profs  = gs("armor_profs")
     pc.weapon_profs = gs("weapon_profs")
     pc.tool_profs   = gs("tool_profs")
     pc.languages    = gs("languages")
-    pc.currency_cp  = max(0, gi("currency_cp"))
-    pc.currency_sp  = max(0, gi("currency_sp"))
-    pc.currency_ep  = max(0, gi("currency_ep"))
-    pc.currency_gp  = max(0, gi("currency_gp"))
-    pc.currency_pp  = max(0, gi("currency_pp"))
     pc.personality_traits = gs("personality_traits")
     pc.ideals       = gs("ideals")
     pc.bonds        = gs("bonds")
@@ -164,7 +128,14 @@ def _apply_form(pc: PlayerCharacter, data: dict):
     pc.eyes         = gs("eyes")
     pc.skin         = gs("skin")
     pc.hair         = gs("hair")
-    for field in ("saving_throw_profs", "skill_profs", "skill_expertise",
+
+    # Secondary resource
+    pc.secondary_resource_name    = gs("secondary_resource_name")
+    pc.secondary_resource_max     = max(0, gi("secondary_resource_max"))
+    pc.secondary_resource_current = max(0, gi("secondary_resource_current"))
+
+    # JSON fields
+    for field in ("stats_json", "skills_json", "currency_json",
                   "equipment_json", "feats_json", "attacks_json"):
         raw = data.get(field, "[]") or "[]"
         try:
@@ -172,6 +143,7 @@ def _apply_form(pc: PlayerCharacter, data: dict):
         except Exception:
             raw = "[]"
         setattr(pc, field, raw)
+
     pc.updated_at = datetime.utcnow()
 
 
@@ -215,8 +187,12 @@ def character_new_form(request: Request, db: Session = Depends(get_db), active_w
     world, worlds = _world_ctx(db, active_world)
     return templates.TemplateResponse("characters/form.html", {
         "request": request, "world": world, "worlds": worlds,
-        "pc": None, "skills": SKILLS, "saving_throws": SAVING_THROWS,
-        "alignments": ALIGNMENTS,
+        "pc": None,
+        "nd_default_stats": ND_DEFAULT_STATS,
+        "nd_default_skills": ND_DEFAULT_SKILLS,
+        "nd_default_currency": ND_DEFAULT_CURRENCY,
+        "stats": [], "skills": [], "currency": [],
+        "equipment": [], "feats": [], "attacks": [],
     })
 
 
@@ -269,14 +245,16 @@ def character_edit_form(pc_id: int, request: Request, db: Session = Depends(get_
         raise HTTPException(404)
     return templates.TemplateResponse("characters/form.html", {
         "request": request, "world": world, "worlds": worlds,
-        "pc": pc, "skills": SKILLS, "saving_throws": SAVING_THROWS,
-        "alignments": ALIGNMENTS,
-        "save_profs": json.loads(pc.saving_throw_profs or "[]"),
-        "skill_profs": json.loads(pc.skill_profs or "[]"),
-        "skill_expertise": json.loads(pc.skill_expertise or "[]"),
+        "pc": pc,
+        "nd_default_stats": ND_DEFAULT_STATS,
+        "nd_default_skills": ND_DEFAULT_SKILLS,
+        "nd_default_currency": ND_DEFAULT_CURRENCY,
+        "stats":     json.loads(pc.stats_json    or "[]"),
+        "skills":    json.loads(pc.skills_json   or "[]"),
+        "currency":  json.loads(pc.currency_json or "[]"),
         "equipment": json.loads(pc.equipment_json or "[]"),
-        "feats": json.loads(pc.feats_json or "[]"),
-        "attacks": json.loads(pc.attacks_json or "[]"),
+        "feats":     json.loads(pc.feats_json     or "[]"),
+        "attacks":   json.loads(pc.attacks_json   or "[]"),
     })
 
 
@@ -314,6 +292,8 @@ def character_delete(pc_id: int, db: Session = Depends(get_db)):
     return RedirectResponse("/characters", status_code=303)
 
 
+# ── AJAX: HP ──────────────────────────────────────────────────────────────────
+
 @router.post("/api/characters/{pc_id}/hp-async")
 async def character_hp_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
     body = await request.json()
@@ -333,6 +313,10 @@ async def character_hp_async(pc_id: int, request: Request, db: Session = Depends
         pc.death_saves_success = max(0, min(3, pc.death_saves_success + val))
     elif action == "death_failure":
         pc.death_saves_failure = max(0, min(3, pc.death_saves_failure + val))
+    elif action == "secondary_set":
+        pc.secondary_resource_current = max(0, min(pc.secondary_resource_max, val))
+    elif action == "secondary_delta":
+        pc.secondary_resource_current = max(0, min(pc.secondary_resource_max, pc.secondary_resource_current + val))
     else:
         pc.current_hp = max(0, min(pc.max_hp + pc.temp_hp, val))
     db.commit()
@@ -341,6 +325,7 @@ async def character_hp_async(pc_id: int, request: Request, db: Session = Depends
         "temp_hp": pc.temp_hp,
         "death_success": pc.death_saves_success,
         "death_failure": pc.death_saves_failure,
+        "secondary_current": getattr(pc, "secondary_resource_current", 0),
     }
 
 
@@ -368,7 +353,6 @@ async def character_xp(pc_id: int, request: Request, db: Session = Depends(get_d
 async def dice_roll(request: Request):
     body = await request.json()
     expr = str(body.get("expr", "1d20")).lower().strip()
-    # parse NdM[+/-mod]
     import re
     m = re.match(r"^(\d+)d(\d+)([+-]\d+)?$", expr)
     if not m:
@@ -383,6 +367,6 @@ async def dice_roll(request: Request):
     return {
         "expr": expr, "rolls": rolls, "modifier": modifier,
         "total": total,
-        "crit": count == 1 and sides == 20 and rolls[0] == 20,
+        "crit":   count == 1 and sides == 20 and rolls[0] == 20,
         "fumble": count == 1 and sides == 20 and rolls[0] == 1,
     }

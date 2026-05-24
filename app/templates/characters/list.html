@@ -33,24 +33,24 @@
         {% if pc.race %} · {{ pc.race }}{% endif %}
       </div>
       <div class="pc-card-stats">
-        <span title="Armor Class">🛡 {{ pc.armor_class }}</span>
+        <span title="Defense / AC">🛡 {{ pc.armor_class }}</span>
         <span title="Hit Points">❤ {{ pc.current_hp }}/{{ pc.max_hp }}</span>
-        <span title="Speed">⚡ {{ pc.speed }}ft</span>
+        <span title="Speed">⚡ {{ pc.speed }}</span>
       </div>
+      {% if d.stats %}
       <div class="pc-card-scores">
-        {% for stat, score in d.scores.items() %}
+        {% for s in d.stats[:6] %}
         <div class="pc-card-score">
-          <span class="pc-card-score-mod">{{ d.mod_strs[stat] }}</span>
-          <span class="pc-card-score-label">{{ stat|upper }}</span>
+          <span class="pc-card-score-mod">{{ s.value }}</span>
+          <span class="pc-card-score-label">{{ s.abbr or s.label }}</span>
         </div>
         {% endfor %}
       </div>
-      {% if pc.xp is defined %}
+      {% endif %}
       <div class="pc-card-xp">
         <div class="pc-xp-bar" style="width:{{ d.xp_pct }}%"></div>
         <span class="pc-card-xp-label">{{ pc.xp }} XP</span>
       </div>
-      {% endif %}
     </div>
     {% if pc.player_name %}
     <div class="pc-card-player">{{ pc.player_name }}</div>
