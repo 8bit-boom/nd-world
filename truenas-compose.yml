@@ -9,11 +9,35 @@ services:
       - /mnt/DeadPool/apps/nd-world:/data
     environment:
       DB_PATH: /data/world.db
+      IMAGEGEN_TYPE: swarmui
+      IMAGEGEN_URL: http://swarmui:7801
+      # Set to http://<truenas-ip>:7801 to enable the Image Studio iframe inside nd-world
+      SWARMUI_EXTERNAL_URL: ""
     labels:
       net.ix-portals.nd-world.scheme: "http"
       net.ix-portals.nd-world.port: "8087"
       net.ix-portals.nd-world.path: "/"
       net.ix-portals.nd-world.host: ""
+    depends_on:
+      - swarmui
+
+  swarmui:
+    image: ghcr.io/mcmonkeyprojects/swarmui:latest
+    restart: unless-stopped
+    ports:
+      - "7801:7801"
+    volumes:
+      - /mnt/DeadPool/apps/swarmui/data:/SwarmUI/Data
+      - /mnt/DeadPool/apps/swarmui/models:/SwarmUI/Models
+      - /mnt/DeadPool/apps/swarmui/dlbackend:/SwarmUI/dlbackend
+    environment:
+      SWARMUI_NETWORK_BIND_ADDRESS: "0.0.0.0"
+      SWARMUI_NETWORK_PORT: "7801"
+    labels:
+      net.ix-portals.swarmui.scheme: "http"
+      net.ix-portals.swarmui.port: "7801"
+      net.ix-portals.swarmui.path: "/"
+      net.ix-portals.swarmui.host: ""
 
   watchtower:
     image: containrrr/watchtower

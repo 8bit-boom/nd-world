@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Image Studio — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<style>
+.imagestudio-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.imagestudio-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .6rem;
+}
+.imagestudio-header h1 {
+  font-size: 1.3rem;
+  letter-spacing: .12em;
+  color: var(--neon);
+}
+.imagestudio-actions {
+  display: flex;
+  gap: .6rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.btn-open-tab {
+  padding: .4rem .9rem;
+  border: 1px solid var(--neon);
+  color: var(--neon);
+  border-radius: 2px;
+  font-size: .82rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.btn-open-tab:hover { background: var(--neon); color: #000; text-decoration: none; }
+
+/* iframe container */
+.imagestudio-frame-wrap {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+.imagestudio-frame {
+  width: 100%;
+  height: calc(100vh - 130px);
+  border: none;
+  display: block;
+  min-height: 500px;
+}
+
+/* setup / not-configured card */
+.imagestudio-setup {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2rem;
+  max-width: 700px;
+}
+.imagestudio-setup h2 { color: var(--neon); margin-bottom: 1rem; font-size: 1rem; }
+.imagestudio-setup p { color: var(--text-dim); font-size: .88rem; line-height: 1.7; margin-bottom: .8rem; }
+.imagestudio-setup code {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  padding: .1rem .4rem;
+  border-radius: 2px;
+  font-size: .85rem;
+  color: var(--neon3);
+}
+.imagestudio-setup pre {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1rem;
+  font-size: .82rem;
+  overflow-x: auto;
+  margin: .6rem 0 1rem;
+  color: var(--text);
+}
+.imagestudio-links { display: flex; gap: .8rem; flex-wrap: wrap; margin-top: 1.2rem; }
+
+/* mobile notice — hidden on desktop, shown on mobile */
+.imagestudio-mobile-notice {
+  display: none;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1.2rem 1rem;
+  text-align: center;
+}
+.imagestudio-mobile-notice p { color: var(--text-dim); font-size: .88rem; margin-bottom: .8rem; }
+.imagestudio-mobile-notice a { color: var(--neon); }
+
+@media (max-width: 768px) {
+  .imagestudio-frame-wrap { display: none; }
+  .imagestudio-mobile-notice { display: block; }
+  .imagestudio-frame { display: none; }
+}
+</style>
+
+<div class="imagestudio-wrap">
+  <div class="imagestudio-header">
+    <h1>🎨 Image Studio</h1>
+    <div class="imagestudio-actions">
+      {% if swarmui_url %}
+      <a href="{{ swarmui_url }}" target="_blank" rel="noopener" class="btn-open-tab">↗ Open in new tab</a>
+      <a href="/ai" class="btn-open-tab" style="border-color:var(--neon3);color:var(--neon3)">🤖 AI + Image Gen</a>
+      {% else %}
+      <a href="/ai" class="btn-open-tab">🤖 AI + Image Gen</a>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if swarmui_url %}
+    {# Desktop: full iframe embed #}
+    <div class="imagestudio-frame-wrap">
+      <iframe
+        class="imagestudio-frame"
+        src="{{ swarmui_url }}"
+        title="SwarmUI Image Studio"
+        allow="clipboard-read; clipboard-write"
+        loading="lazy"
+      ></iframe>
+    </div>
+
+    {# Mobile: notice with links #}
+    <div class="imagestudio-mobile-notice">
+      <p>SwarmUI is optimised for desktop browsers. On mobile, use the built-in <a href="/ai">AI &amp; Image Gen</a> tab instead.</p>
+      <a href="{{ swarmui_url }}" target="_blank" rel="noopener" class="btn-open-tab">Open SwarmUI in browser ↗</a>
+    </div>
+
+  {% else %}
+    <div class="imagestudio-setup">
+      <h2>SwarmUI not configured</h2>
+      <p>To enable the Image Studio embed, set the <code>SWARMUI_EXTERNAL_URL</code> environment variable to the public URL of your SwarmUI instance (the address your browser can reach it at).</p>
+      <p>SwarmUI is already running in the same Docker stack on port <code>7801</code> — set the env var to your host's IP or hostname:</p>
+      <pre>SWARMUI_EXTERNAL_URL=http://&lt;your-truenas-ip&gt;:7801</pre>
+      <p>For TrueNAS, edit <code>truenas-compose.yml</code> and set the value under the <code>world</code> service's <code>environment</code> section, then redeploy.</p>
+      <p>You can still generate images using the <strong>AI + Image Gen</strong> tab — it talks directly to SwarmUI internally without needing this URL.</p>
+      <div class="imagestudio-links">
+        <a href="/ai" class="btn-open-tab">🤖 AI + Image Gen</a>
+      </div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

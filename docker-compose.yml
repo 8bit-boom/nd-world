@@ -7,12 +7,37 @@ services:
     container_name: nd-world
     restart: unless-stopped
     ports:
-      - "8080:8000"         # change 8080 to any free port on TrueNAS
+      - "8080:8000"
     volumes:
-      - nd-world-data:/data # persistent SQLite database
+      - nd-world-data:/data
     environment:
       DB_PATH: /data/world.db
+      IMAGEGEN_TYPE: swarmui
+      IMAGEGEN_URL: http://swarmui:7801
+      SWARMUI_EXTERNAL_URL: ""   # set to http://<your-host>:7801 to enable the Image Studio iframe
+    depends_on:
+      - swarmui
+
+  swarmui:
+    image: ghcr.io/mcmonkeyprojects/swarmui:latest
+    container_name: swarmui
+    restart: unless-stopped
+    ports:
+      - "7801:7801"
+    volumes:
+      - swarmui-data:/SwarmUI/Data
+      - swarmui-models:/SwarmUI/Models
+      - swarmui-dlbackend:/SwarmUI/dlbackend
+    environment:
+      SWARMUI_NETWORK_BIND_ADDRESS: "0.0.0.0"
+      SWARMUI_NETWORK_PORT: "7801"
 
 volumes:
   nd-world-data:
+    driver: local
+  swarmui-data:
+    driver: local
+  swarmui-models:
+    driver: local
+  swarmui-dlbackend:
     driver: local
