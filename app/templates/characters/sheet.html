@@ -1,0 +1,554 @@
+{% extends "base.html" %}
+{% block title %}{{ pc.name }} — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<style>
+.cs { max-width:1100px; margin:0 auto; }
+.cs-actions { display:flex;gap:.5rem;justify-content:flex-end;margin-bottom:1rem;flex-wrap:wrap; }
+.cs-header { display:flex;gap:1.5rem;align-items:flex-start;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem; }
+.cs-portrait { width:110px;height:110px;flex-shrink:0;border-radius:6px;overflow:hidden;border:2px solid var(--neon);background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:2.5rem;color:var(--neon); }
+.cs-portrait img { width:100%;height:100%;object-fit:cover; }
+.cs-identity { flex:1;min-width:0; }
+.cs-name { font-size:1.6rem;font-weight:bold;color:var(--neon);margin-bottom:.25rem; }
+.cs-class-line { color:var(--text-dim);font-size:.95rem;margin-bottom:.5rem; }
+.cs-class-line span { color:var(--text); }
+.cs-xp-row { display:flex;align-items:center;gap:.75rem;flex-wrap:wrap; }
+.cs-xp-bar-wrap { flex:1;min-width:120px;height:8px;background:var(--bg3);border-radius:4px;overflow:hidden;border:1px solid var(--border); }
+.cs-xp-bar-fill { height:100%;background:var(--neon);transition:width .4s; }
+.cs-xp-label { font-size:.8rem;color:var(--text-dim);white-space:nowrap; }
+
+.cs-combat-row { display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem; }
+.cs-stat-box { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.5rem .75rem;text-align:center;flex:1;min-width:80px; }
+.cs-stat-box .val { font-size:1.4rem;font-weight:bold;color:var(--neon); }
+.cs-stat-box .lbl { font-size:.65rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em; }
+
+.cs-hp-section { background:var(--bg2);border:1px solid var(--neon);border-radius:8px;padding:1rem;margin-bottom:1rem;display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap; }
+.cs-hp-main { display:flex;align-items:center;gap:.75rem; }
+.cs-hp-btn { background:var(--bg3);border:1px solid var(--border);color:var(--text);width:34px;height:34px;border-radius:4px;font-size:1.2rem;cursor:pointer;display:flex;align-items:center;justify-content:center; }
+.cs-hp-btn:hover { border-color:var(--neon);color:var(--neon); }
+.cs-hp-display { font-size:2rem;font-weight:bold;color:var(--neon);min-width:3ch;text-align:center;cursor:pointer; }
+.cs-hp-max { color:var(--text-dim);font-size:1rem;align-self:flex-end;padding-bottom:.25rem; }
+.cs-hp-fields { display:flex;gap:1rem;flex-wrap:wrap;align-items:center; }
+.cs-hp-field { display:flex;flex-direction:column;gap:.2rem; }
+.cs-hp-field label { font-size:.65rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em; }
+.cs-hp-field input { width:70px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;border-radius:4px;font-family:var(--font);font-size:.9rem;text-align:center; }
+.cs-hp-inline-btn { align-self:flex-end;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .75rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.8rem; }
+.cs-hp-inline-btn:hover { border-color:var(--neon);color:var(--neon); }
+
+.cs-death-saves { display:flex;flex-direction:column;gap:.3rem; }
+.cs-death-row { display:flex;gap:.3rem;align-items:center; }
+.cs-death-label { font-size:.7rem;color:var(--text-dim);width:60px; }
+.cs-death-pip { width:14px;height:14px;border-radius:50%;border:1px solid var(--border);cursor:pointer;background:var(--bg3); }
+.cs-death-pip.filled-success { background:var(--neon);border-color:var(--neon); }
+.cs-death-pip.filled-failure { background:var(--neon2);border-color:var(--neon2); }
+
+.cs-body { display:grid;grid-template-columns:200px 1fr 1fr;gap:.75rem;margin-bottom:1rem; }
+.cs-panel { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.75rem; }
+.cs-panel-title { font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.6rem;border-bottom:1px solid var(--border);padding-bottom:.3rem; }
+
+.cs-ability-list { display:flex;flex-direction:column;gap:.4rem; }
+.cs-ability { display:flex;align-items:center;gap:.5rem;background:var(--bg3);border-radius:4px;padding:.35rem .5rem; }
+.cs-ability-name { font-size:.65rem;color:var(--text-dim);width:28px;text-transform:uppercase; }
+.cs-ability-score { font-size:1.1rem;font-weight:bold;color:var(--text);min-width:2ch;text-align:center; }
+.cs-ability-mod { font-size:.85rem;color:var(--neon);min-width:3ch;text-align:right; }
+
+.cs-save-list, .cs-skill-list { display:flex;flex-direction:column;gap:.2rem; }
+.cs-save-item, .cs-skill-item { display:flex;align-items:center;gap:.4rem;font-size:.8rem; }
+.cs-prof-dot { width:10px;height:10px;border-radius:50%;border:1px solid var(--text-dim);flex-shrink:0; }
+.cs-prof-dot.prof { background:var(--neon);border-color:var(--neon); }
+.cs-prof-dot.expertise { background:var(--neon3);border-color:var(--neon3); }
+.cs-save-name, .cs-skill-name { flex:1; }
+.cs-save-bonus, .cs-skill-bonus { color:var(--neon);min-width:3ch;text-align:right; }
+.cs-skill-stat { font-size:.6rem;color:var(--text-dim);width:28px; }
+
+.cs-attacks { width:100%;border-collapse:collapse;font-size:.8rem; }
+.cs-attacks th { color:var(--text-dim);font-size:.65rem;text-transform:uppercase;padding:.3rem .4rem;border-bottom:1px solid var(--border);text-align:left; }
+.cs-attacks td { padding:.35rem .4rem;border-bottom:1px solid var(--border); }
+.cs-attacks tr:last-child td { border-bottom:none; }
+.cs-attacks .atk-bonus { color:var(--neon); }
+.cs-attacks .atk-dmg { color:var(--yellow); }
+
+.cs-bottom { display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem; }
+.cs-equipment-table { width:100%;border-collapse:collapse;font-size:.8rem; }
+.cs-equipment-table th { color:var(--text-dim);font-size:.65rem;text-transform:uppercase;padding:.3rem .4rem;border-bottom:1px solid var(--border);text-align:left; }
+.cs-equipment-table td { padding:.3rem .4rem;border-bottom:1px solid var(--border); }
+.cs-equipment-table tr:last-child td { border-bottom:none; }
+.cs-equipped-dot { color:var(--neon); }
+.cs-currency { display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem;padding-top:.5rem;border-top:1px solid var(--border); }
+.cs-coin { display:flex;flex-direction:column;align-items:center;gap:.1rem;min-width:36px; }
+.cs-coin-val { font-size:.9rem;font-weight:bold; }
+.cs-coin-lbl { font-size:.6rem;color:var(--text-dim); }
+.cs-coin.cp { color:#b87333; }
+.cs-coin.sp { color:#c0c0c0; }
+.cs-coin.ep { color:#50c878; }
+.cs-coin.gp { color:var(--yellow); }
+.cs-coin.pp { color:#e5e4e2; }
+.cs-weight-bar { height:6px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-top:.4rem; }
+.cs-weight-fill { height:100%;background:var(--neon);border-radius:3px; }
+
+.cs-feat-item { padding:.4rem 0;border-bottom:1px solid var(--border); }
+.cs-feat-item:last-child { border-bottom:none; }
+.cs-feat-name { color:var(--neon);font-size:.85rem; }
+.cs-feat-source { font-size:.7rem;color:var(--text-dim); }
+.cs-feat-desc { font-size:.8rem;margin-top:.2rem;color:var(--text); }
+
+.cs-personality { display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem; }
+.cs-pers-box { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.75rem; }
+.cs-pers-title { font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon2);margin-bottom:.4rem; }
+.cs-pers-text { font-size:.85rem;color:var(--text);line-height:1.5; }
+
+.cs-prose { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem;margin-bottom:.75rem; }
+.cs-prose-title { font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.5rem; }
+.cs-prose .rendered-md h1,.cs-prose .rendered-md h2,.cs-prose .rendered-md h3 { color:var(--neon);margin:.5rem 0 .25rem; }
+
+.cs-dice-section { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem;margin-bottom:1rem; }
+.cs-dice-row { display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.75rem; }
+.cs-die-btn { background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .7rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.85rem;transition:all .15s; }
+.cs-die-btn:hover { border-color:var(--neon);color:var(--neon); }
+.cs-dice-controls { display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.75rem; }
+.cs-dice-controls input { background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;border-radius:4px;font-family:var(--font);font-size:.85rem; }
+.cs-dice-controls input[type=number] { width:60px;text-align:center; }
+.cs-dice-controls input[type=text] { width:110px; }
+.cs-roll-btn { background:var(--neon);color:#000;border:none;padding:.4rem 1rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-weight:bold;font-size:.9rem; }
+.cs-roll-btn:hover { opacity:.85; }
+.cs-dice-log { max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:.3rem; }
+.cs-roll-entry { background:var(--bg3);border-radius:4px;padding:.35rem .6rem;font-size:.82rem;display:flex;justify-content:space-between;align-items:center; }
+.cs-roll-total { font-size:1.1rem;font-weight:bold;color:var(--neon); }
+.cs-roll-total.crit { color:var(--yellow); }
+.cs-roll-total.fumble { color:var(--neon2); }
+.cs-roll-detail { color:var(--text-dim);font-size:.75rem; }
+
+.cs-appear { display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;margin-bottom:1rem; }
+.cs-appear-field { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.5rem .75rem; }
+.cs-appear-label { font-size:.6rem;text-transform:uppercase;color:var(--text-dim);letter-spacing:.05em; }
+.cs-appear-val { font-size:.9rem; }
+
+@media (max-width:900px) {
+  .cs-body { grid-template-columns:1fr 1fr; }
+  .cs-body > :first-child { grid-column:1/-1; display:flex;flex-wrap:wrap;gap:.5rem;padding:.5rem; }
+  .cs-ability-list { flex-direction:row;flex-wrap:wrap; }
+  .cs-ability { min-width:calc(33% - .5rem); }
+  .cs-bottom { grid-template-columns:1fr; }
+  .cs-personality { grid-template-columns:1fr 1fr; }
+  .cs-appear { grid-template-columns:repeat(3,1fr); }
+}
+@media (max-width:600px) {
+  .cs-header { flex-direction:column;align-items:center;text-align:center; }
+  .cs-combat-row .cs-stat-box { min-width:calc(33% - .5rem); }
+  .cs-body { grid-template-columns:1fr; }
+  .cs-personality { grid-template-columns:1fr; }
+  .cs-appear { grid-template-columns:1fr 1fr; }
+}
+</style>
+
+<div class="cs">
+  <!-- Actions -->
+  <div class="cs-actions">
+    <a href="/characters" style="color:var(--text-dim);font-size:.85rem;">← All Characters</a>
+    <a href="/characters/{{ pc.id }}/edit" class="btn-primary" style="padding:.35rem .9rem;">Edit</a>
+    <form method="post" action="/characters/{{ pc.id }}/delete" onsubmit="return confirm('Delete {{ pc.name }}?');" style="display:inline;">
+      <button type="submit" style="background:transparent;border:1px solid var(--neon2);color:var(--neon2);padding:.35rem .75rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.85rem;">Delete</button>
+    </form>
+  </div>
+
+  <!-- Header -->
+  <div class="cs-header">
+    <div class="cs-portrait">
+      {% if pc.portrait_url %}
+      <img src="{{ pc.portrait_url }}" alt="{{ pc.name }}">
+      {% else %}{{ pc.name[0]|upper }}{% endif %}
+    </div>
+    <div class="cs-identity">
+      <div class="cs-name">{{ pc.name }}</div>
+      <div class="cs-class-line">
+        {% if pc.char_class %}<span>{{ pc.char_class }}{% if pc.subclass %} ({{ pc.subclass }}){% endif %}</span>{% endif %}
+        {% if pc.char_class and (pc.race or pc.background) %} · {% endif %}
+        {% if pc.race %}<span>{{ pc.race }}</span>{% endif %}
+        {% if pc.background %} · <span>{{ pc.background }}</span>{% endif %}
+        {% if pc.alignment %} · <span>{{ pc.alignment }}</span>{% endif %}
+      </div>
+      <div class="cs-class-line">
+        Level <span>{{ pc.level }}</span>
+        {% if pc.player_name %} · Player: <span>{{ pc.player_name }}</span>{% endif %}
+      </div>
+      <div class="cs-xp-row">
+        <div class="cs-xp-bar-wrap">
+          <div class="cs-xp-bar-fill" id="xp-bar" style="width:{{ xp_pct }}%"></div>
+        </div>
+        <span class="cs-xp-label" id="xp-label">
+          {{ pc.xp }} XP{% if xp_hi %} / {{ xp_hi }}{% endif %}
+        </span>
+        <button class="cs-hp-inline-btn" onclick="xpDialog()">+ XP</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Combat row -->
+  <div class="cs-combat-row">
+    <div class="cs-stat-box">
+      <div class="val">{{ pc.armor_class }}</div>
+      <div class="lbl">Armor Class</div>
+    </div>
+    <div class="cs-stat-box">
+      <div class="val">{{ initiative_str }}</div>
+      <div class="lbl">Initiative</div>
+    </div>
+    <div class="cs-stat-box">
+      <div class="val">{{ pc.speed }}</div>
+      <div class="lbl">Speed (ft)</div>
+    </div>
+    <div class="cs-stat-box">
+      <div class="val">{{ prof_bonus_str }}</div>
+      <div class="lbl">Prof Bonus</div>
+    </div>
+    <div class="cs-stat-box">
+      <div class="val">{{ passive_perc }}</div>
+      <div class="lbl">Passive Perc</div>
+    </div>
+    <div class="cs-stat-box">
+      <div class="val">{{ pc.hit_dice }}</div>
+      <div class="lbl">Hit Dice</div>
+    </div>
+  </div>
+
+  <!-- HP tracker -->
+  <div class="cs-hp-section">
+    <div class="cs-hp-main">
+      <button class="cs-hp-btn" onclick="changeHp(-1)" title="−1 HP">−</button>
+      <div class="cs-hp-display" id="hp-current" onclick="hpSetDialog()">{{ pc.current_hp }}</div>
+      <div class="cs-hp-max">/ <span id="hp-max">{{ pc.max_hp }}</span></div>
+      <button class="cs-hp-btn" onclick="changeHp(1)" title="+1 HP">+</button>
+    </div>
+    <div class="cs-hp-fields">
+      <div class="cs-hp-field">
+        <label>Damage / Heal</label>
+        <input type="number" id="hp-delta-input" placeholder="5" style="width:80px;">
+      </div>
+      <button class="cs-hp-inline-btn" onclick="applyDamage()">Damage</button>
+      <button class="cs-hp-inline-btn" onclick="applyHeal()">Heal</button>
+      <div class="cs-hp-field">
+        <label>Temp HP</label>
+        <input type="number" id="hp-temp-input" value="{{ pc.temp_hp }}" placeholder="0">
+      </div>
+      <button class="cs-hp-inline-btn" onclick="setTempHp()">Set Temp</button>
+    </div>
+    <div class="cs-death-saves">
+      <div class="cs-death-row">
+        <span class="cs-death-label" style="color:var(--neon);">Successes</span>
+        {% for i in range(3) %}
+        <div class="cs-death-pip {% if i < pc.death_saves_success %}filled-success{% endif %}" id="ds-s-{{ i }}" onclick="toggleDeath('success', {{ i }})"></div>
+        {% endfor %}
+      </div>
+      <div class="cs-death-row">
+        <span class="cs-death-label" style="color:var(--neon2);">Failures</span>
+        {% for i in range(3) %}
+        <div class="cs-death-pip {% if i < pc.death_saves_failure %}filled-failure{% endif %}" id="ds-f-{{ i }}" onclick="toggleDeath('failure', {{ i }})"></div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Ability Scores | Saves+Skills | Attacks -->
+  <div class="cs-body">
+    <!-- Ability Scores -->
+    <div class="cs-panel">
+      <div class="cs-panel-title">Ability Scores</div>
+      <div class="cs-ability-list">
+        {% for stat in ["str","dex","con","int","wis","cha"] %}
+        <div class="cs-ability">
+          <span class="cs-ability-name">{{ stat|upper }}</span>
+          <span class="cs-ability-score">{{ scores[stat] }}</span>
+          <span class="cs-ability-mod">{{ mod_strs[stat] }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- Saves + Skills -->
+    <div class="cs-panel">
+      <div class="cs-panel-title">Saving Throws</div>
+      <div class="cs-save-list" style="margin-bottom:.75rem;">
+        {% for stat in ["str","dex","con","int","wis","cha"] %}
+        <div class="cs-save-item">
+          <div class="cs-prof-dot {% if stat in save_profs %}prof{% endif %}"></div>
+          <span class="cs-save-name">{{ stat|upper }}</span>
+          <span class="cs-save-bonus">{{ save_strs[stat] }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="cs-panel-title">Skills</div>
+      <div class="cs-skill-list">
+        {% for skill in skills %}
+        <div class="cs-skill-item">
+          <div class="cs-prof-dot {% if skill.prof_level == 2 %}expertise{% elif skill.prof_level == 1 %}prof{% endif %}"></div>
+          <span class="cs-skill-stat">{{ skill.stat }}</span>
+          <span class="cs-skill-name">{{ skill.label }}</span>
+          <span class="cs-skill-bonus">{{ skill.bonus_str }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- Attacks + Proficiencies -->
+    <div class="cs-panel">
+      <div class="cs-panel-title">Attacks &amp; Actions</div>
+      {% if attacks %}
+      <table class="cs-attacks">
+        <thead>
+          <tr><th>Name</th><th>Bonus</th><th>Damage</th><th>Type</th></tr>
+        </thead>
+        <tbody>
+          {% for atk in attacks %}
+          <tr>
+            <td>{{ atk.name }}</td>
+            <td class="atk-bonus">{{ atk.bonus }}</td>
+            <td class="atk-dmg">{{ atk.damage }}</td>
+            <td>{{ atk.dmg_type }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p style="color:var(--text-dim);font-size:.8rem;">No attacks defined. <a href="/characters/{{ pc.id }}/edit">Edit character</a> to add attacks.</p>
+      {% endif %}
+
+      {% if pc.armor_profs or pc.weapon_profs or pc.tool_profs or pc.languages %}
+      <div class="cs-panel-title" style="margin-top:.75rem;">Proficiencies &amp; Languages</div>
+      {% if pc.armor_profs %}<p style="font-size:.8rem;"><span style="color:var(--text-dim);">Armor:</span> {{ pc.armor_profs }}</p>{% endif %}
+      {% if pc.weapon_profs %}<p style="font-size:.8rem;"><span style="color:var(--text-dim);">Weapons:</span> {{ pc.weapon_profs }}</p>{% endif %}
+      {% if pc.tool_profs %}<p style="font-size:.8rem;"><span style="color:var(--text-dim);">Tools:</span> {{ pc.tool_profs }}</p>{% endif %}
+      {% if pc.languages %}<p style="font-size:.8rem;"><span style="color:var(--text-dim);">Languages:</span> {{ pc.languages }}</p>{% endif %}
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Equipment + Feats -->
+  <div class="cs-bottom">
+    <div class="cs-panel">
+      <div class="cs-panel-title">Equipment</div>
+      {% if equipment %}
+      <table class="cs-equipment-table">
+        <thead><tr><th>Item</th><th>Qty</th><th>Wt</th><th>Eq</th></tr></thead>
+        <tbody>
+          {% for item in equipment %}
+          <tr>
+            <td>{{ item.name }}{% if item.notes %} <span style="color:var(--text-dim);font-size:.75rem;">({{ item.notes }})</span>{% endif %}</td>
+            <td>{{ item.qty or 1 }}</td>
+            <td>{{ item.weight or 0 }}</td>
+            <td>{% if item.equipped %}<span class="cs-equipped-dot">●</span>{% else %}<span style="color:var(--text-dim);">○</span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% set w_pct = [100, (total_weight / carry_cap * 100)|int]|min if carry_cap > 0 else 0 %}
+      <div style="font-size:.75rem;color:var(--text-dim);margin-top:.4rem;">
+        Weight: {{ total_weight|int }} / {{ carry_cap }} lbs
+      </div>
+      <div class="cs-weight-bar"><div class="cs-weight-fill" style="width:{{ w_pct }}%"></div></div>
+      {% else %}
+      <p style="color:var(--text-dim);font-size:.8rem;">No equipment. <a href="/characters/{{ pc.id }}/edit">Add items</a>.</p>
+      {% endif %}
+      <div class="cs-currency">
+        <div class="cs-coin cp"><span class="cs-coin-val">{{ pc.currency_cp }}</span><span class="cs-coin-lbl">CP</span></div>
+        <div class="cs-coin sp"><span class="cs-coin-val">{{ pc.currency_sp }}</span><span class="cs-coin-lbl">SP</span></div>
+        <div class="cs-coin ep"><span class="cs-coin-val">{{ pc.currency_ep }}</span><span class="cs-coin-lbl">EP</span></div>
+        <div class="cs-coin gp"><span class="cs-coin-val">{{ pc.currency_gp }}</span><span class="cs-coin-lbl">GP</span></div>
+        <div class="cs-coin pp"><span class="cs-coin-val">{{ pc.currency_pp }}</span><span class="cs-coin-lbl">PP</span></div>
+      </div>
+    </div>
+
+    <div class="cs-panel">
+      <div class="cs-panel-title">Features &amp; Feats</div>
+      {% if feats %}
+        {% for feat in feats %}
+        <div class="cs-feat-item">
+          <div class="cs-feat-name">{{ feat.name }}</div>
+          {% if feat.source %}<div class="cs-feat-source">{{ feat.source }}</div>{% endif %}
+          {% if feat.description %}<div class="cs-feat-desc">{{ feat.description }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      {% else %}
+      <p style="color:var(--text-dim);font-size:.8rem;">No features. <a href="/characters/{{ pc.id }}/edit">Add feats</a>.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Appearance -->
+  {% if pc.age or pc.height or pc.weight_app or pc.eyes or pc.skin or pc.hair %}
+  <div class="cs-appear">
+    {% if pc.age %}<div class="cs-appear-field"><div class="cs-appear-label">Age</div><div class="cs-appear-val">{{ pc.age }}</div></div>{% endif %}
+    {% if pc.height %}<div class="cs-appear-field"><div class="cs-appear-label">Height</div><div class="cs-appear-val">{{ pc.height }}</div></div>{% endif %}
+    {% if pc.weight_app %}<div class="cs-appear-field"><div class="cs-appear-label">Weight</div><div class="cs-appear-val">{{ pc.weight_app }}</div></div>{% endif %}
+    {% if pc.eyes %}<div class="cs-appear-field"><div class="cs-appear-label">Eyes</div><div class="cs-appear-val">{{ pc.eyes }}</div></div>{% endif %}
+    {% if pc.skin %}<div class="cs-appear-field"><div class="cs-appear-label">Skin</div><div class="cs-appear-val">{{ pc.skin }}</div></div>{% endif %}
+    {% if pc.hair %}<div class="cs-appear-field"><div class="cs-appear-label">Hair</div><div class="cs-appear-val">{{ pc.hair }}</div></div>{% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Personality -->
+  {% if pc.personality_traits or pc.ideals or pc.bonds or pc.flaws %}
+  <div class="cs-personality">
+    {% if pc.personality_traits %}
+    <div class="cs-pers-box"><div class="cs-pers-title">Personality Traits</div><div class="cs-pers-text">{{ pc.personality_traits }}</div></div>
+    {% endif %}
+    {% if pc.ideals %}
+    <div class="cs-pers-box"><div class="cs-pers-title">Ideals</div><div class="cs-pers-text">{{ pc.ideals }}</div></div>
+    {% endif %}
+    {% if pc.bonds %}
+    <div class="cs-pers-box"><div class="cs-pers-title">Bonds</div><div class="cs-pers-text">{{ pc.bonds }}</div></div>
+    {% endif %}
+    {% if pc.flaws %}
+    <div class="cs-pers-box"><div class="cs-pers-title">Flaws</div><div class="cs-pers-text">{{ pc.flaws }}</div></div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Backstory + Notes -->
+  {% if pc.backstory %}
+  <div class="cs-prose">
+    <div class="cs-prose-title">Backstory</div>
+    <div class="rendered-md">{{ pc.backstory | md | safe }}</div>
+  </div>
+  {% endif %}
+  {% if pc.notes %}
+  <div class="cs-prose">
+    <div class="cs-prose-title">Notes</div>
+    <div class="rendered-md">{{ pc.notes | md | safe }}</div>
+  </div>
+  {% endif %}
+
+  <!-- Dice Roller -->
+  <div class="cs-dice-section">
+    <div class="cs-panel-title">🎲 Dice Roller</div>
+    <div class="cs-dice-row">
+      {% for d in ["d4","d6","d8","d10","d12","d20","d100"] %}
+      <button class="cs-die-btn" onclick="quickRoll('{{ d }}')">{{ d }}</button>
+      {% endfor %}
+    </div>
+    <div class="cs-dice-controls">
+      <input type="number" id="dice-count" value="1" min="1" max="20" title="Number of dice">
+      <select id="dice-sides" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;border-radius:4px;font-family:var(--font);">
+        <option>4</option><option>6</option><option>8</option><option>10</option>
+        <option>12</option><option selected>20</option><option>100</option>
+      </select>
+      <input type="number" id="dice-modifier" value="0" style="width:70px;" title="Modifier (+/-)">
+      <span style="color:var(--text-dim);font-size:.8rem;">mod</span>
+      <button class="cs-roll-btn" onclick="doRoll()">Roll!</button>
+      <input type="text" id="dice-expr" placeholder="e.g. 2d6+3" title="Custom expression">
+      <button class="cs-roll-btn" onclick="doCustomRoll()">Roll Expr</button>
+    </div>
+    <div class="cs-dice-log" id="dice-log">
+      <p style="color:var(--text-dim);font-size:.8rem;text-align:center;">Roll the dice to see results here.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+const PC_ID = {{ pc.id }};
+
+// ── HP ────────────────────────────────────────────────────────────────────────
+async function hpAjax(body) {
+  const r = await fetch(`/api/characters/${PC_ID}/hp-async`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  });
+  const d = await r.json();
+  document.getElementById('hp-current').textContent = d.current_hp;
+  document.getElementById('hp-max').textContent = d.max_hp;
+  updateDeathPips('success', d.death_success);
+  updateDeathPips('failure', d.death_failure);
+}
+
+function changeHp(delta) { hpAjax({action:'delta', value:delta}); }
+
+function applyDamage() {
+  const v = parseInt(document.getElementById('hp-delta-input').value) || 0;
+  hpAjax({action:'delta', value:-Math.abs(v)});
+}
+function applyHeal() {
+  const v = parseInt(document.getElementById('hp-delta-input').value) || 0;
+  hpAjax({action:'delta', value:Math.abs(v)});
+}
+function setTempHp() {
+  const v = parseInt(document.getElementById('hp-temp-input').value) || 0;
+  hpAjax({action:'temp', value:v});
+}
+function hpSetDialog() {
+  const v = prompt('Set current HP to:', document.getElementById('hp-current').textContent);
+  if (v !== null && !isNaN(parseInt(v))) hpAjax({action:'set', value:parseInt(v)});
+}
+
+function updateDeathPips(type, count) {
+  for (let i=0; i<3; i++) {
+    const el = document.getElementById(`ds-${type === 'success' ? 's' : 'f'}-${i}`);
+    if (!el) continue;
+    el.className = 'cs-death-pip' + (i < count ? (type === 'success' ? ' filled-success' : ' filled-failure') : '');
+  }
+}
+
+let _deathSuccess = {{ pc.death_saves_success }};
+let _deathFailure = {{ pc.death_saves_failure }};
+async function toggleDeath(type, idx) {
+  if (type === 'success') {
+    _deathSuccess = _deathSuccess === idx + 1 ? idx : idx + 1;
+    await hpAjax({action:'death_success', value:_deathSuccess});
+    _deathSuccess = parseInt(document.getElementById('ds-s-0').classList.contains('filled-success') ? 1 : 0)
+      + parseInt(document.getElementById('ds-s-1') ? document.getElementById('ds-s-1').classList.contains('filled-success') ? 1 : 0 : 0)
+      + parseInt(document.getElementById('ds-s-2') ? document.getElementById('ds-s-2').classList.contains('filled-success') ? 1 : 0 : 0);
+  } else {
+    _deathFailure = _deathFailure === idx + 1 ? idx : idx + 1;
+    await hpAjax({action:'death_failure', value:_deathFailure});
+  }
+}
+
+// ── XP ────────────────────────────────────────────────────────────────────────
+async function xpDialog() {
+  const v = prompt('Add or subtract XP (e.g. 250 or -100):');
+  if (v === null || isNaN(parseInt(v))) return;
+  const r = await fetch(`/api/characters/${PC_ID}/xp`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({delta: parseInt(v)})
+  });
+  const d = await r.json();
+  document.getElementById('xp-label').textContent =
+    d.xp + ' XP' + (d.xp_hi ? ' / ' + d.xp_hi : '');
+  document.getElementById('xp-bar').style.width = d.xp_pct + '%';
+}
+
+// ── Dice ──────────────────────────────────────────────────────────────────────
+async function rollExpr(expr) {
+  const r = await fetch('/api/characters/roll', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({expr})
+  });
+  const d = await r.json();
+  if (d.error) { alert(d.error); return; }
+  const log = document.getElementById('dice-log');
+  const entry = document.createElement('div');
+  entry.className = 'cs-roll-entry';
+  const totalClass = d.crit ? 'crit' : d.fumble ? 'fumble' : '';
+  const label = d.crit ? ' CRIT!' : d.fumble ? ' FUMBLE' : '';
+  entry.innerHTML = `
+    <span class="cs-roll-detail">${d.expr} [${d.rolls.join(', ')}]${d.modifier !== 0 ? (d.modifier > 0 ? ' +' : ' ') + d.modifier : ''}</span>
+    <span class="cs-roll-total ${totalClass}">${d.total}${label}</span>
+  `;
+  if (log.querySelector('p')) log.innerHTML = '';
+  log.prepend(entry);
+}
+
+function quickRoll(die) { rollExpr('1' + die); }
+
+function doRoll() {
+  const n = document.getElementById('dice-count').value || '1';
+  const s = document.getElementById('dice-sides').value;
+  const m = parseInt(document.getElementById('dice-modifier').value) || 0;
+  const expr = `${n}d${s}${m >= 0 ? '+' + m : m}`.replace('+0','');
+  rollExpr(expr);
+}
+
+function doCustomRoll() {
+  const expr = document.getElementById('dice-expr').value.trim();
+  if (!expr) return;
+  rollExpr(expr);
+}
+</script>
+{% endblock %}

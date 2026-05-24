@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Characters — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="page-header" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:1.5rem;">
+  <h1 style="color:var(--neon);font-size:1.4rem;letter-spacing:.05em;">🎲 Player Characters</h1>
+  <a href="/characters/new" class="btn-primary">+ New Character</a>
+</div>
+
+{% if not pcs %}
+<div class="empty-state" style="text-align:center;padding:4rem 2rem;color:var(--text-dim);">
+  <div style="font-size:3rem;margin-bottom:1rem;">🎲</div>
+  <p style="font-size:1.1rem;margin-bottom:.5rem;">No player characters yet.</p>
+  <p style="margin-bottom:1.5rem;">Create a character sheet to track stats, equipment, and feats.</p>
+  <a href="/characters/new" class="btn-primary">Create First Character</a>
+</div>
+{% else %}
+<div class="pc-grid">
+  {% for pc in pcs %}
+  {% set d = derived[pc.id] %}
+  <a href="/characters/{{ pc.id }}" class="pc-card">
+    <div class="pc-card-portrait">
+      {% if pc.portrait_url %}
+      <img src="{{ pc.portrait_url }}" alt="{{ pc.name }}">
+      {% else %}
+      <div class="pc-card-portrait-placeholder">{{ pc.name[0] | upper }}</div>
+      {% endif %}
+    </div>
+    <div class="pc-card-body">
+      <div class="pc-card-name">{{ pc.name }}</div>
+      <div class="pc-card-meta">
+        Lvl {{ pc.level }}
+        {% if pc.char_class %} {{ pc.char_class }}{% endif %}
+        {% if pc.race %} · {{ pc.race }}{% endif %}
+      </div>
+      <div class="pc-card-stats">
+        <span title="Armor Class">🛡 {{ pc.armor_class }}</span>
+        <span title="Hit Points">❤ {{ pc.current_hp }}/{{ pc.max_hp }}</span>
+        <span title="Speed">⚡ {{ pc.speed }}ft</span>
+      </div>
+      <div class="pc-card-scores">
+        {% for stat, score in d.scores.items() %}
+        <div class="pc-card-score">
+          <span class="pc-card-score-mod">{{ d.mod_strs[stat] }}</span>
+          <span class="pc-card-score-label">{{ stat|upper }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% if pc.xp is defined %}
+      <div class="pc-card-xp">
+        <div class="pc-xp-bar" style="width:{{ d.xp_pct }}%"></div>
+        <span class="pc-card-xp-label">{{ pc.xp }} XP</span>
+      </div>
+      {% endif %}
+    </div>
+    {% if pc.player_name %}
+    <div class="pc-card-player">{{ pc.player_name }}</div>
+    {% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

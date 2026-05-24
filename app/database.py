@@ -1,7 +1,7 @@
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
-from .models import Base, World, Schematic, MapOverlay, InvestBoard
+from .models import Base, World, Schematic, MapOverlay, InvestBoard, PlayerCharacter
 
 DB_PATH = os.environ.get("DB_PATH", "/data/world.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
@@ -45,6 +45,23 @@ def _migrate():
             if sch_cols and col not in sch_cols:
                 conn.execute(text(f"ALTER TABLE schematics ADD COLUMN {col} {defn}"))
         conn.commit()
+        # player_characters table — add any missing columns to existing installs
+        pc_exists = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='player_characters'"
+        )).fetchone()
+        if pc_exists:
+            pc_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(player_characters)")).fetchall()]
+            _pc_extra = [
+                ("death_saves_success", "INTEGER DEFAULT 0"),
+                ("death_saves_failure", "INTEGER DEFAULT 0"),
+                ("skill_expertise",     "TEXT DEFAULT '[]'"),
+                ("currency_ep",         "INTEGER DEFAULT 0"),
+                ("weight_app",          "VARCHAR(32) DEFAULT ''"),
+            ]
+            for col, defn in _pc_extra:
+                if col not in pc_cols:
+                    conn.execute(text(f"ALTER TABLE player_characters ADD COLUMN {col} {defn}"))
+            conn.commit()
 
 def _seed():
     db = SessionLocal()
