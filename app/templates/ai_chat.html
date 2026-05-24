@@ -323,7 +323,7 @@
   .ig-select, .ig-input-num { font-size: 16px; }
 }
 
-/* ── Image gen tab ── */
+/* ── Image gen tab bar ── */
 .ai-tab-bar {
   display: flex;
   align-items: center;
@@ -347,35 +347,36 @@
 .ai-tab.active { border-color: var(--neon); color: var(--neon); }
 .ai-tab:hover:not(.active) { border-color: #666; color: var(--text); }
 
-/* Image panel layout */
-#image-panel {
-  display: none;
-  height: calc(100vh - 88px);
-  overflow: hidden;
-}
-.ig-layout {
+/* ── Full Image Gen Panel ── */
+#image-panel { display: none; height: calc(100vh - 88px); overflow: hidden; }
+
+.ig-wrap {
   display: flex;
   height: 100%;
   overflow: hidden;
 }
-.ig-sidebar {
-  width: 220px;
+
+/* Settings column */
+.ig-settings {
+  width: 230px;
   flex-shrink: 0;
   background: var(--bg2);
   border-right: 1px solid var(--border);
-  padding: .9rem .75rem;
+  padding: .7rem .65rem;
   display: flex;
   flex-direction: column;
-  gap: .9rem;
+  gap: .5rem;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 .ig-label {
-  font-size: .75rem;
+  font-size: .72rem;
   color: var(--text-dim);
   display: block;
-  margin-bottom: .2rem;
+  margin-bottom: .18rem;
+  letter-spacing: .03em;
 }
-.ig-select, .ig-input-num {
+.ig-select, .ig-input-num, .ig-input-text {
   width: 100%;
   background: var(--bg3);
   border: 1px solid var(--border);
@@ -383,47 +384,106 @@
   color: var(--text);
   font-family: inherit;
   font-size: .82rem;
-  padding: .3rem .5rem;
+  padding: .28rem .45rem;
   box-sizing: border-box;
 }
-.ig-select:focus, .ig-input-num:focus { outline: 1px solid var(--neon); }
-.ig-range-row { display: flex; align-items: center; gap: .4rem; }
-.ig-range-row input[type=range] { flex: 1; accent-color: var(--neon); cursor: pointer; }
-.ig-range-val { font-size: .78rem; color: var(--neon); min-width: 2.5ch; text-align: right; }
+.ig-select:focus, .ig-input-num:focus, .ig-input-text:focus { outline: 1px solid var(--neon); }
+.ig-range-row { display: flex; align-items: center; gap: .35rem; }
+.ig-range-row input[type=range] { flex: 1; accent-color: var(--neon); cursor: pointer; min-width: 0; }
+
+/* Collapsible sections */
+.ig-collapsible {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: .35rem .5rem .4rem;
+  background: var(--bg3);
+}
+.ig-collapsible summary {
+  font-size: .7rem;
+  color: var(--neon);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  padding-bottom: 0;
+}
+.ig-collapsible summary::-webkit-details-marker { display: none; }
+.ig-collapsible[open] summary { padding-bottom: .35rem; border-bottom: 1px solid var(--border); margin-bottom: .35rem; }
+.ig-section-body { display: flex; flex-direction: column; gap: .35rem; }
+
+/* Size presets */
+.ig-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .25rem;
+  margin-bottom: .3rem;
+}
+.ig-preset-btn {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: .68rem;
+  padding: .18rem .38rem;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color .1s, color .1s;
+}
+.ig-preset-btn:hover, .ig-preset-btn.ig-preset-active { border-color: var(--neon); color: var(--neon); }
+.ig-size-row { display: flex; align-items: center; gap: .3rem; }
+.ig-size-sep { color: var(--text-dim); font-size: .8rem; flex-shrink: 0; }
+
+/* Batch buttons */
+.ig-batch-row { display: flex; gap: .25rem; }
+.ig-batch-btn {
+  flex: 1;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: .82rem;
+  padding: .25rem 0;
+  border-radius: 3px;
+  cursor: pointer;
+  text-align: center;
+  transition: border-color .1s, color .1s;
+}
+.ig-batch-btn:hover, .ig-batch-btn.ig-batch-active { border-color: var(--neon); color: var(--neon); }
+
+/* Main prompts area */
 .ig-main {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: .8rem;
-  padding: 1rem 1.2rem;
+  gap: .65rem;
+  padding: .9rem 1rem;
   overflow-y: auto;
+  min-width: 0;
 }
-.ig-field { display: flex; flex-direction: column; gap: .3rem; }
-.ig-field textarea {
+.ig-field { display: flex; flex-direction: column; gap: .25rem; }
+.ig-field textarea, .ig-field input[type=text] {
   background: var(--bg3);
   border: 1px solid var(--border);
   border-radius: 4px;
   color: var(--text);
   font-family: inherit;
   font-size: .88rem;
-  padding: .45rem .6rem;
+  padding: .42rem .6rem;
   resize: vertical;
   width: 100%;
   box-sizing: border-box;
 }
-.ig-field textarea:focus { outline: 1px solid var(--neon); }
+.ig-field textarea:focus, .ig-field input:focus { outline: 1px solid var(--neon); }
 .ig-concept-row { display: flex; gap: .5rem; align-items: stretch; }
-.ig-concept-row input {
-  flex: 1;
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text);
-  font-family: inherit;
-  font-size: .88rem;
-  padding: .4rem .6rem;
-}
-.ig-concept-row input:focus { outline: 1px solid var(--neon); }
+.ig-concept-row input { flex: 1; resize: none; }
+
+/* Img2img */
+.ig-i2i-preview img { max-width: 100%; max-height: 140px; border-radius: 4px; border: 1px solid var(--border); display: block; margin: .3rem 0; }
+
+/* Generate row */
+.ig-generate-row { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
 .ig-btn {
   background: transparent;
   border: 1px solid var(--border);
@@ -431,12 +491,14 @@
   color: var(--text-dim);
   font-family: inherit;
   font-size: .82rem;
-  padding: .4rem .7rem;
+  padding: .38rem .7rem;
   cursor: pointer;
   white-space: nowrap;
+  text-decoration: none;
+  display: inline-block;
   transition: border-color .12s, color .12s;
 }
-.ig-btn:hover:not(:disabled) { border-color: var(--neon); color: var(--neon); }
+.ig-btn:hover:not(:disabled) { border-color: var(--neon); color: var(--neon); text-decoration: none; }
 .ig-btn:disabled { opacity: .4; cursor: not-allowed; }
 .ig-generate-btn {
   background: var(--neon);
@@ -444,20 +506,77 @@
   border-radius: 5px;
   color: #000;
   font-family: inherit;
-  font-size: .9rem;
+  font-size: .92rem;
   font-weight: 700;
-  padding: .5rem 1.4rem;
+  padding: .55rem 1.6rem;
   cursor: pointer;
-  align-self: flex-start;
   transition: opacity .15s;
+  flex-shrink: 0;
 }
 .ig-generate-btn:disabled { opacity: .45; cursor: not-allowed; }
-#ig-result-img {
-  max-width: 100%;
-  border-radius: 4px;
+
+/* Results grid */
+.ig-results-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: .6rem;
+  margin-top: .3rem;
+}
+.ig-result-card { border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: var(--bg2); }
+.ig-result-card img { width: 100%; display: block; }
+.ig-result-card-actions {
+  display: flex;
+  gap: .3rem;
+  padding: .3rem .4rem;
+  background: var(--bg3);
+  flex-wrap: wrap;
+}
+.ig-result-card-actions a, .ig-result-card-actions button {
+  font-size: .7rem;
+  color: var(--text-dim);
+  background: transparent;
   border: 1px solid var(--border);
-  display: block;
-  margin-top: .4rem;
+  border-radius: 3px;
+  padding: .18rem .45rem;
+  cursor: pointer;
+  text-decoration: none;
+  font-family: inherit;
+  transition: border-color .1s, color .1s;
+}
+.ig-result-card-actions a:hover, .ig-result-card-actions button:hover { border-color: var(--neon); color: var(--neon); text-decoration: none; }
+
+/* ── Mobile overrides ── */
+@media (max-width: 768px) {
+  .ai-page { flex-direction: column; height: auto; overflow: visible; min-height: 60vh; }
+  .ai-main { overflow: visible; }
+  .ai-messages { max-height: 55vh; overflow-y: auto; padding: .75rem; }
+  .ai-bubble { font-size: .88rem; padding: .5rem .75rem; }
+  .ai-input-bar { padding: .5rem .75rem; position: sticky; bottom: 0; z-index: 10; }
+  #ai-input { font-size: 16px; }
+
+  #image-panel { height: auto; overflow: visible; }
+  .ig-wrap { flex-direction: column; overflow: visible; height: auto; }
+  .ig-settings {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: .5rem;
+    max-height: none;
+    padding: .6rem;
+  }
+  .ig-settings > * { min-width: 140px; flex: 1; }
+  .ig-collapsible { width: 100%; flex: 1 1 100%; }
+  .ig-main { padding: .7rem; overflow: visible; }
+  .ig-concept-row { flex-direction: column; }
+  .ig-generate-btn { width: 100%; text-align: center; }
+  .ig-results-grid { grid-template-columns: 1fr 1fr; }
+  .ig-select, .ig-input-num, .ig-input-text, .ig-field input, .ig-field textarea { font-size: 16px; }
+}
+@media (max-width: 480px) {
+  .ig-results-grid { grid-template-columns: 1fr; }
+  .ig-settings > * { min-width: 100%; flex: 1 1 100%; }
 }
 </style>
 
@@ -556,53 +675,142 @@
 
 <!-- ── Image Generation Panel ── -->
 <div id="image-panel">
-  <div class="ig-layout">
-    <!-- Sidebar: generation settings -->
-    <div class="ig-sidebar">
+  <div class="ig-wrap">
+
+    <!-- ── Settings column ── -->
+    <div class="ig-settings">
+
+      <!-- Model -->
       <div>
         <label class="ig-label">Model</label>
-        <select id="ig-model" class="ig-select">
-          <option value="">— loading —</option>
-        </select>
+        <select id="ig-model" class="ig-select"><option value="">— loading —</option></select>
       </div>
+
+      <!-- Size presets -->
       <div>
         <label class="ig-label">Size</label>
-        <div style="display:flex;gap:.4rem">
+        <div class="ig-presets">
+          <button class="ig-preset-btn ig-preset-active" onclick="igSetSize(512,512,this)">512²</button>
+          <button class="ig-preset-btn" onclick="igSetSize(768,512,this)">768×512</button>
+          <button class="ig-preset-btn" onclick="igSetSize(512,768,this)">512×768</button>
+          <button class="ig-preset-btn" onclick="igSetSize(1024,1024,this)">1024²</button>
+          <button class="ig-preset-btn" onclick="igSetSize(1216,832,this)">1216×832</button>
+          <button class="ig-preset-btn" onclick="igSetSize(832,1216,this)">832×1216</button>
+        </div>
+        <div class="ig-size-row">
           <select id="ig-width" class="ig-select">
-            <option value="512">512 px</option>
-            <option value="768">768 px</option>
-            <option value="1024">1024 px</option>
+            <option value="512" selected>512 W</option>
+            <option value="640">640 W</option>
+            <option value="768">768 W</option>
+            <option value="832">832 W</option>
+            <option value="1024">1024 W</option>
+            <option value="1152">1152 W</option>
+            <option value="1216">1216 W</option>
           </select>
-          <span style="align-self:center;color:var(--text-dim);font-size:.8rem">×</span>
+          <span class="ig-size-sep">×</span>
           <select id="ig-height" class="ig-select">
-            <option value="512">512 px</option>
-            <option value="768">768 px</option>
-            <option value="1024">1024 px</option>
+            <option value="512" selected>512 H</option>
+            <option value="640">640 H</option>
+            <option value="768">768 H</option>
+            <option value="832">832 H</option>
+            <option value="1024">1024 H</option>
+            <option value="1152">1152 H</option>
+            <option value="1216">1216 H</option>
           </select>
         </div>
       </div>
-      <div>
-        <label class="ig-label">Steps: <span id="ig-steps-val">20</span></label>
-        <div class="ig-range-row">
-          <input type="range" id="ig-steps" min="1" max="50" value="20"
-                 oninput="document.getElementById('ig-steps-val').textContent=this.value">
-        </div>
-      </div>
-      <div>
-        <label class="ig-label">CFG: <span id="ig-cfg-val">7</span></label>
-        <div class="ig-range-row">
-          <input type="range" id="ig-cfg" min="1" max="20" value="7" step="0.5"
-                 oninput="document.getElementById('ig-cfg-val').textContent=this.value">
-        </div>
-      </div>
-      <div>
-        <label class="ig-label">Seed (–1 = random)</label>
-        <input type="number" id="ig-seed" class="ig-input-num" value="-1">
-      </div>
-    </div>
 
-    <!-- Main: prompts + result -->
+      <!-- Sampling (open by default) -->
+      <details class="ig-collapsible" open>
+        <summary>⚙ Sampling</summary>
+        <div class="ig-section-body">
+          <div>
+            <label class="ig-label">Sampler</label>
+            <select id="ig-sampler" class="ig-select">
+              <option value="euler" selected>Euler</option>
+              <option value="euler_ancestral">Euler Ancestral</option>
+              <option value="dpm++2m">DPM++ 2M</option>
+              <option value="dpm++2m_karras">DPM++ 2M Karras</option>
+              <option value="dpm++sde">DPM++ SDE</option>
+              <option value="dpm++sde_karras">DPM++ SDE Karras</option>
+              <option value="heun">Heun</option>
+              <option value="lcm">LCM</option>
+              <option value="ddim">DDIM</option>
+            </select>
+          </div>
+          <div>
+            <label class="ig-label">Scheduler</label>
+            <select id="ig-scheduler" class="ig-select">
+              <option value="normal" selected>Normal</option>
+              <option value="karras">Karras</option>
+              <option value="exponential">Exponential</option>
+              <option value="sgm_uniform">SGM Uniform</option>
+            </select>
+          </div>
+          <div>
+            <label class="ig-label">Steps: <span id="ig-steps-val">20</span></label>
+            <div class="ig-range-row">
+              <input type="range" id="ig-steps" min="1" max="60" value="20"
+                     oninput="document.getElementById('ig-steps-val').textContent=this.value">
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">CFG Scale: <span id="ig-cfg-val">7</span></label>
+            <div class="ig-range-row">
+              <input type="range" id="ig-cfg" min="1" max="20" value="7" step="0.5"
+                     oninput="document.getElementById('ig-cfg-val').textContent=this.value">
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">Batch</label>
+            <div class="ig-batch-row">
+              <button class="ig-batch-btn ig-batch-active" data-val="1" onclick="igSetBatch(this)">×1</button>
+              <button class="ig-batch-btn" data-val="2" onclick="igSetBatch(this)">×2</button>
+              <button class="ig-batch-btn" data-val="3" onclick="igSetBatch(this)">×3</button>
+              <button class="ig-batch-btn" data-val="4" onclick="igSetBatch(this)">×4</button>
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">Seed (–1 = random)</label>
+            <input type="number" id="ig-seed" class="ig-input-num" value="-1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Advanced (collapsed) -->
+      <details class="ig-collapsible">
+        <summary>🔧 Advanced</summary>
+        <div class="ig-section-body">
+          <div>
+            <label class="ig-label">LoRA name</label>
+            <input type="text" id="ig-lora" class="ig-input-text" placeholder="e.g. detail_tweaker">
+          </div>
+          <div>
+            <label class="ig-label">LoRA weight</label>
+            <input type="number" id="ig-lora-weight" class="ig-input-num" value="0.8" step="0.05" min="-2" max="2">
+          </div>
+          <div>
+            <label class="ig-label">VAE override</label>
+            <input type="text" id="ig-vae" class="ig-input-text" placeholder="blank = default">
+          </div>
+          <div>
+            <label class="ig-label">CLIP Skip</label>
+            <select id="ig-clipskip" class="ig-select">
+              <option value="-1" selected>Default</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+            </select>
+          </div>
+        </div>
+      </details>
+
+    </div><!-- /ig-settings -->
+
+    <!-- ── Prompts + Generate + Results ── -->
     <div class="ig-main">
+
+      <!-- Concept -->
       <div class="ig-field">
         <label class="ig-label">Concept / subject</label>
         <div class="ig-concept-row">
@@ -610,29 +818,61 @@
           <button class="ig-btn" id="ig-build-btn" onclick="igBuildPrompt()">✨ Build from World Lore</button>
         </div>
       </div>
-      <div class="ig-field" style="flex:1">
+
+      <!-- Full prompt -->
+      <div class="ig-field" style="flex:1;min-height:0">
         <label class="ig-label">Full prompt (editable)</label>
-        <textarea id="ig-prompt" rows="5" placeholder="Detailed image generation prompt…"></textarea>
+        <textarea id="ig-prompt" rows="4" placeholder="Detailed image generation prompt…"></textarea>
       </div>
+
+      <!-- Negative -->
       <div class="ig-field">
         <label class="ig-label">Negative prompt</label>
-        <textarea id="ig-negative" rows="2" placeholder="blurry, bad anatomy, watermark, text, low quality…">blurry, bad anatomy, watermark, text, low quality, deformed</textarea>
+        <textarea id="ig-negative" rows="2">blurry, bad anatomy, watermark, text, low quality, deformed</textarea>
       </div>
-      <div style="display:flex;align-items:center;gap:.8rem">
-        <button class="ig-generate-btn" id="ig-generate-btn" onclick="igGenerate()">🎨 Generate</button>
-        <span id="ig-status" style="font-size:.82rem;color:var(--neon);display:none">⏳ Generating…</span>
-      </div>
-      <div id="ig-result" style="display:none">
-        <img id="ig-result-img" src="" alt="Generated image">
-        <div style="display:flex;gap:.6rem;margin-top:.5rem;flex-wrap:wrap">
-          <a id="ig-download" download="nd-image.png" class="ig-btn">⬇ Download</a>
-          <button class="ig-btn" onclick="igAttachToEntity()">📎 Attach to entity…</button>
+
+      <!-- Img2img -->
+      <details class="ig-collapsible" id="ig-i2i-section">
+        <summary>🖼 Img2Img / Variation</summary>
+        <div class="ig-section-body">
+          <div>
+            <label class="ig-label">Source image</label>
+            <input type="file" id="ig-init-file" accept="image/*" onchange="igPreviewInit(this)"
+                   style="width:100%;font-size:.78rem;color:var(--text-dim);background:var(--bg3);border:1px dashed var(--border);border-radius:4px;padding:.3rem .5rem;cursor:pointer;box-sizing:border-box">
+          </div>
+          <div class="ig-i2i-preview" id="ig-i2i-preview" style="display:none">
+            <img id="ig-init-img" src="" alt="source">
+            <button onclick="igClearInit()" style="background:transparent;border:none;color:var(--neon2);cursor:pointer;font-size:.75rem;padding:.1rem 0;font-family:inherit;display:block;margin-top:.2rem">✕ Remove</button>
+          </div>
+          <div>
+            <label class="ig-label">Denoising: <span id="ig-strength-val">0.65</span>
+              <span style="color:var(--text-dim);font-weight:normal"> (0=copy · 1=ignore)</span>
+            </label>
+            <div class="ig-range-row">
+              <input type="range" id="ig-strength" min="0.05" max="1" step="0.05" value="0.65"
+                     oninput="document.getElementById('ig-strength-val').textContent=parseFloat(this.value).toFixed(2)">
+            </div>
+          </div>
         </div>
+      </details>
+
+      <!-- Generate row -->
+      <div class="ig-generate-row">
+        <button class="ig-generate-btn" id="ig-generate-btn" onclick="igGenerate()">🎨 Generate</button>
+        <span id="ig-status" style="display:none;font-size:.82rem;color:var(--neon)">⏳ Generating…</span>
       </div>
-      <div id="ig-error" style="display:none;color:#c44;font-size:.82rem"></div>
-    </div>
-  </div>
-</div>
+
+      <div id="ig-error" style="display:none;color:#c44;font-size:.82rem;padding:.3rem 0"></div>
+
+      <!-- Results -->
+      <div id="ig-results" style="display:none">
+        <div id="ig-results-grid" class="ig-results-grid"></div>
+      </div>
+
+    </div><!-- /ig-main -->
+
+  </div><!-- /ig-wrap -->
+</div><!-- /image-panel -->
 
 <script>
 const WORLD_SYSTEM = {{ world_system | tojson }};
@@ -1311,7 +1551,44 @@ function switchTab(tab) {
   }
 }
 
-// ── Image gen — init ──────────────────────────────────────────────────────────
+// ── Image gen state ───────────────────────────────────────────────────────────
+
+let _igBatchSize = 1;
+let _igInitImageB64 = '';
+let _igLastUrls = [];
+
+function igSetSize(w, h, btn) {
+  document.getElementById('ig-width').value = w;
+  document.getElementById('ig-height').value = h;
+  document.querySelectorAll('.ig-preset-btn').forEach(b => b.classList.remove('ig-preset-active'));
+  if (btn) btn.classList.add('ig-preset-active');
+}
+
+function igSetBatch(btn) {
+  _igBatchSize = parseInt(btn.dataset.val);
+  document.querySelectorAll('.ig-batch-btn').forEach(b => b.classList.remove('ig-batch-active'));
+  btn.classList.add('ig-batch-active');
+}
+
+function igPreviewInit(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    _igInitImageB64 = e.target.result; // full data URI
+    document.getElementById('ig-init-img').src = _igInitImageB64;
+    document.getElementById('ig-i2i-preview').style.display = 'block';
+  };
+  reader.readAsDataURL(file);
+}
+
+function igClearInit() {
+  _igInitImageB64 = '';
+  document.getElementById('ig-init-file').value = '';
+  document.getElementById('ig-i2i-preview').style.display = 'none';
+}
+
+// ── Image gen init ────────────────────────────────────────────────────────────
 
 (async function igInit() {
   try {
@@ -1341,15 +1618,12 @@ function switchTab(tab) {
 async function igBuildPrompt() {
   const concept = document.getElementById('ig-concept').value.trim();
   if (!concept) { alert('Enter a concept/subject first.'); return; }
-
   const btn = document.getElementById('ig-build-btn');
   btn.disabled = true;
   btn.textContent = '⏳ Building…';
   const ta = document.getElementById('ig-prompt');
   ta.value = '';
-
   try {
-    // Fetch world lore context
     const ctxLimit = document.getElementById('ctx-limit') ? parseInt(document.getElementById('ctx-limit').value) : 10;
     const ctxR = await fetch('/api/ai/world-context-smart', {
       method: 'POST',
@@ -1358,17 +1632,13 @@ async function igBuildPrompt() {
     });
     const ctxD = await ctxR.json();
     const lore = (ctxD.context || '').trim();
-
-    // Stream prompt from Ollama
     const system = 'You are an image prompt writer for a cyberpunk-fantasy TTRPG. Given world lore and a subject, write ONE detailed image generation prompt (comma-separated tags and descriptive phrases, ~50-80 words). Output only the prompt — no explanation, no preamble, no quotes.';
-    const userMsg = `Subject: ${concept}\n\n${lore ? 'World lore context:\n' + lore : '(No lore context available — use general cyberpunk-fantasy style)'}`;
-
+    const userMsg = `Subject: ${concept}\n\n${lore ? 'World lore context:\n' + lore : '(No lore context — use general cyberpunk-fantasy style)'}`;
     const resp = await fetch('/api/ai/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messages: [{ role: 'user', content: userMsg }], system, model: activeModel }),
     });
-
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
@@ -1376,20 +1646,16 @@ async function igBuildPrompt() {
       const { done, value } = await reader.read();
       if (done) break;
       buf += dec.decode(value, { stream: true });
-      const lines = buf.split('\n');
-      buf = lines.pop();
+      const lines = buf.split('\n'); buf = lines.pop();
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const raw = line.slice(6).trim();
         if (raw === '[DONE]') break;
-        try {
-          const d = JSON.parse(raw);
-          if (d.token) ta.value += d.token;
-        } catch {}
+        try { const d = JSON.parse(raw); if (d.token) ta.value += d.token; } catch {}
       }
     }
   } catch (e) {
-    ta.value = 'Error building prompt: ' + e.message;
+    ta.value = 'Error: ' + e.message;
   } finally {
     btn.disabled = false;
     btn.textContent = '✨ Build from World Lore';
@@ -1405,40 +1671,73 @@ async function igGenerate() {
   const btn    = document.getElementById('ig-generate-btn');
   const status = document.getElementById('ig-status');
   const err    = document.getElementById('ig-error');
-  const result = document.getElementById('ig-result');
+  const results = document.getElementById('ig-results');
+  const grid   = document.getElementById('ig-results-grid');
 
   btn.disabled = true;
   status.style.display = 'inline';
   err.style.display = 'none';
-  result.style.display = 'none';
+  results.style.display = 'none';
+  grid.innerHTML = '';
 
   try {
+    const loraName   = (document.getElementById('ig-lora')?.value || '').trim();
+    const loraWeight = document.getElementById('ig-lora-weight')?.value || '0.8';
     const body = {
       prompt,
-      negative: document.getElementById('ig-negative').value,
-      model:    document.getElementById('ig-model').value,
-      width:    parseInt(document.getElementById('ig-width').value),
-      height:   parseInt(document.getElementById('ig-height').value),
-      steps:    parseInt(document.getElementById('ig-steps').value),
-      cfg:      parseFloat(document.getElementById('ig-cfg').value),
-      seed:     parseInt(document.getElementById('ig-seed').value),
+      negative:    document.getElementById('ig-negative').value,
+      model:       document.getElementById('ig-model').value,
+      width:       parseInt(document.getElementById('ig-width').value),
+      height:      parseInt(document.getElementById('ig-height').value),
+      steps:       parseInt(document.getElementById('ig-steps').value),
+      cfg:         parseFloat(document.getElementById('ig-cfg').value),
+      seed:        parseInt(document.getElementById('ig-seed').value),
+      sampler:     document.getElementById('ig-sampler').value,
+      scheduler:   document.getElementById('ig-scheduler').value,
+      batch_size:  _igBatchSize,
+      loras:       loraName,
+      lora_weights: loraName ? loraWeight : '',
+      vae:         (document.getElementById('ig-vae')?.value || '').trim(),
+      clip_skip:   parseInt(document.getElementById('ig-clipskip')?.value || '-1'),
+      init_image:  _igInitImageB64,
+      init_strength: parseFloat(document.getElementById('ig-strength')?.value || '0.65'),
     };
+
     const r = await fetch('/api/ai/imagegen/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (!r.ok) {
-      const t = await r.text();
-      throw new Error(`Server error ${r.status}: ${t}`);
-    }
+    if (!r.ok) throw new Error(`Server error ${r.status}: ${await r.text()}`);
     const data = await r.json();
     if (data.error) throw new Error(data.error);
-    const img = document.getElementById('ig-result-img');
-    img.src = data.url;
-    document.getElementById('ig-download').href = data.url;
-    result.style.display = 'block';
-    window._igLastUrl = data.url;
+
+    const urls = data.urls && data.urls.length ? data.urls : (data.url ? [data.url] : []);
+    if (!urls.length) throw new Error('No images returned');
+    _igLastUrls = urls;
+
+    urls.forEach((url, i) => {
+      const card = document.createElement('div');
+      card.className = 'ig-result-card';
+      const img = document.createElement('img');
+      img.src = url;
+      img.alt = `Generated image ${i + 1}`;
+      const actions = document.createElement('div');
+      actions.className = 'ig-result-card-actions';
+      const dlLink = document.createElement('a');
+      dlLink.href = url;
+      dlLink.download = `nd-image-${i + 1}.png`;
+      dlLink.textContent = '⬇ Save';
+      const attachBtn = document.createElement('button');
+      attachBtn.textContent = '📎 Attach…';
+      attachBtn.onclick = () => igAttachToEntity(url);
+      actions.appendChild(dlLink);
+      actions.appendChild(attachBtn);
+      card.appendChild(img);
+      card.appendChild(actions);
+      grid.appendChild(card);
+    });
+    results.style.display = 'block';
   } catch (e) {
     err.textContent = '❌ ' + e.message;
     err.style.display = 'block';
@@ -1450,9 +1749,9 @@ async function igGenerate() {
 
 // ── Attach generated image to an entity ──────────────────────────────────────
 
-async function igAttachToEntity() {
-  const url = window._igLastUrl;
-  if (!url) return;
+async function igAttachToEntity(url) {
+  const imgUrl = url || (_igLastUrls[0] || '');
+  if (!imgUrl) return;
   const name = prompt('Search for entity by name:');
   if (!name || !name.trim()) return;
   try {
@@ -1465,7 +1764,7 @@ async function igAttachToEntity() {
       entity = entities[0];
     } else {
       const choices = entities.map((e, i) => `${i + 1}. ${e.name} (${e.kind})`).join('\n');
-      const pick = prompt(`Multiple matches found:\n${choices}\n\nEnter number (1-${entities.length}):`);
+      const pick = prompt(`Multiple matches:\n${choices}\n\nEnter number (1-${entities.length}):`);
       const idx = parseInt(pick) - 1;
       if (isNaN(idx) || idx < 0 || idx >= entities.length) { alert('Invalid choice.'); return; }
       entity = entities[idx];
@@ -1473,13 +1772,10 @@ async function igAttachToEntity() {
     const patchR = await fetch(`/api/entity/${entity.id}/image`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_url: url }),
+      body: JSON.stringify({ image_url: imgUrl }),
     });
-    if (patchR.ok) {
-      alert(`✓ Image attached to "${entity.name}"`);
-    } else {
-      alert('Could not attach image.');
-    }
+    if (patchR.ok) alert(`✓ Image attached to "${entity.name}"`);
+    else alert('Could not attach image.');
   } catch (e) {
     alert('Error: ' + e.message);
   }

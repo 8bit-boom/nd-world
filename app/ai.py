@@ -272,38 +272,67 @@ async def imagegen_models() -> list:
 
 async def imagegen_generate(prompt: str, negative: str, model: str,
                             width: int, height: int, steps: int,
-                            cfg: float, seed: int, uploads_dir: Path) -> str:
+                            cfg: float, seed: int, uploads_dir: Path,
+                            sampler: str = "euler",
+                            scheduler: str = "normal",
+                            batch_size: int = 1,
+                            loras: str = "",
+                            lora_weights: str = "",
+                            vae: str = "",
+                            clip_skip: int = -1,
+                            init_image: str = "",
+                            init_strength: float = 0.6) -> list[str]:
     import copy, random, asyncio, base64 as _b64, uuid as _uuid
     t, u = _get_type(), _get_url()
     ai_img_dir = Path(uploads_dir) / "ai-images"
     ai_img_dir.mkdir(parents=True, exist_ok=True)
-    fname = str(_uuid.uuid4()) + ".png"
-    dest = ai_img_dir / fname
+
+    urls: list[str] = []
 
     async with _httpx.AsyncClient(timeout=600) as c:
         if t == "swarmui":
             sr = await c.post(f"{u}/API/GetNewSession", json={})
             session_id = sr.json().get("session_id", "ndworld")
-            # SwarmUI expects model name without extension
             model_name = model.rsplit(".", 1)[0] if model.endswith((".safetensors", ".ckpt", ".bin")) else model
-            payload = {
-                "session_id": session_id, "images": 1,
-                "prompt": prompt, "negativeprompt": negative,
-                "model": model_name, "width": width, "height": height,
-                "steps": steps, "cfgscale": cfg,
+            payload: dict = {
+                "session_id": session_id,
+                "images": max(1, min(batch_size, 8)),
+                "prompt": prompt,
+                "negativeprompt": negative,
+                "model": model_name,
+                "width": width,
+                "height": height,
+                "steps": steps,
+                "cfgscale": cfg,
                 "seed": seed if seed >= 0 else -1,
+                "sampler": sampler or "euler",
+                "scheduler": scheduler or "normal",
+                "donotsave": False,
             }
+            if loras:
+                payload["loras"] = loras
+                payload["loraweights"] = lora_weights or "1"
+            if vae:
+                payload["vae"] = vae
+            if clip_skip > 0:
+                payload["clipstop"] = -clip_skip
+            if init_image:
+                payload["initimage"] = init_image
+                payload["initimagecreativity"] = init_strength
+
             gr = await c.post(f"{u}/API/GenerateText2Image", json=payload)
             _log.info("SwarmUI generate status=%s body=%.400s", gr.status_code, gr.text)
             data = gr.json()
-            img_raw = (data.get("images") or [""])[0]
-            if not img_raw:
+            images = data.get("images") or []
+            if not images:
                 err = data.get("error") or data.get("errorid") or data.get("message") or str(data)
                 raise ValueError(f"SwarmUI returned no image: {err}")
-            # Images may be data URIs: "data:image/png;base64,..."
-            if img_raw.startswith("data:"):
-                img_raw = img_raw.split(",", 1)[1]
-            dest.write_bytes(_b64.b64decode(img_raw))
+            for img_raw in images:
+                if img_raw.startswith("data:"):
+                    img_raw = img_raw.split(",", 1)[1]
+                fname = str(_uuid.uuid4()) + ".png"
+                (ai_img_dir / fname).write_bytes(_b64.b64decode(img_raw))
+                urls.append(f"/uploads/ai-images/{fname}")
 
         else:  # comfyui
             wf = copy.deepcopy(_COMFYUI_WORKFLOW)
@@ -314,6 +343,8 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
             wf["5"]["inputs"].update({
                 "steps": steps, "cfg": cfg,
                 "seed": seed if seed >= 0 else random.randint(0, 2**32),
+                "sampler_name": sampler or "euler",
+                "scheduler": scheduler or "normal",
             })
             pr = await c.post(f"{u}/prompt", json={"prompt": wf})
             pid = pr.json()["prompt_id"]
@@ -323,13 +354,14 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                 hist = hr.json().get(pid, {})
                 if hist.get("outputs"):
                     imgs = list(hist["outputs"].values())[0].get("images", [])
-                    if imgs:
-                        img_info = imgs[0]
+                    for img_info in imgs:
                         ir = await c.get(f"{u}/view",
                                          params={"filename": img_info["filename"],
                                                  "subfolder": img_info.get("subfolder", ""),
                                                  "type": "output"})
-                        dest.write_bytes(ir.content)
-                        break
+                        fname = str(_uuid.uuid4()) + ".png"
+                        (ai_img_dir / fname).write_bytes(ir.content)
+                        urls.append(f"/uploads/ai-images/{fname}")
+                    break
 
-    return f"/uploads/ai-images/{fname}"
+    return urls
