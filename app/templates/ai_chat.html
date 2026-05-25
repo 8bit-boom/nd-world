@@ -3256,35 +3256,34 @@ function mpRender(models, available) {
     const isActive = m.id === activeModel;
     const card = document.createElement('div');
     card.dataset.modelId = m.id;
-    card.style.cssText = 'border:1px solid ' + (isActive ? 'var(--neon)' : 'var(--border)') + ';border-radius:6px;padding:.65rem .9rem;background:var(--bg2);display:flex;align-items:center;gap:.7rem;flex-wrap:wrap';
+    card.style.cssText = 'border:1px solid ' + (isActive ? 'var(--neon)' : 'var(--border)') + ';border-radius:6px;padding:.65rem .9rem;background:var(--bg2);display:flex;flex-direction:column;gap:.45rem';
 
-    // Status dot
+    // Top row: dot + name
+    const topRow = document.createElement('div');
+    topRow.style.cssText = 'display:flex;align-items:flex-start;gap:.55rem';
+
     const sdot = document.createElement('span');
     sdot.id = 'mp-dot-' + btoa(m.id).replace(/[^a-z0-9]/gi,'');
-    sdot.style.cssText = 'width:9px;height:9px;border-radius:50%;flex-shrink:0;background:' + (m.loaded ? '#4f4' : '#444');
+    sdot.style.cssText = 'width:9px;height:9px;border-radius:50%;flex-shrink:0;margin-top:.35rem;background:' + (m.loaded ? '#4f4' : '#444');
     sdot.title = m.loaded ? 'Loaded in Ollama' : 'Not downloaded';
 
-    // Name + meta
     const info = document.createElement('div');
     info.style.cssText = 'flex:1;min-width:0';
     const nameEl = document.createElement('div');
-    nameEl.style.cssText = 'font-size:.88rem;color:' + (isActive ? 'var(--neon)' : 'var(--text)') + ';word-break:break-all;font-weight:' + (isActive ? '700' : '400');
+    nameEl.style.cssText = 'font-size:.88rem;color:' + (isActive ? 'var(--neon)' : 'var(--text)') + ';overflow-wrap:anywhere;font-weight:' + (isActive ? '700' : '400');
     nameEl.textContent = m.label || m.id;
     const idEl = document.createElement('div');
-    idEl.style.cssText = 'font-size:.68rem;color:var(--text-dim);word-break:break-all;margin-top:.1rem';
+    idEl.style.cssText = 'font-size:.68rem;color:var(--text-dim);overflow-wrap:anywhere;margin-top:.1rem';
     idEl.textContent = m.id;
     info.appendChild(nameEl);
     info.appendChild(idEl);
 
-    // Progress bar (hidden until pulling)
-    const progWrap = document.createElement('div');
-    progWrap.id = 'mp-prog-' + btoa(m.id).replace(/[^a-z0-9]/gi,'');
-    progWrap.style.cssText = 'display:none;width:100%;flex:1 1 100%;padding-top:.3rem';
-    progWrap.innerHTML = '<div style="font-size:.72rem;color:var(--neon);margin-bottom:.2rem" class="mp-prog-label">Pulling…</div><div style="height:4px;background:var(--bg3);border-radius:2px;overflow:hidden"><div class="mp-prog-bar" style="height:100%;width:0%;background:var(--neon);border-radius:2px;transition:width .2s"></div></div>';
+    topRow.appendChild(sdot);
+    topRow.appendChild(info);
 
-    // Actions
+    // Actions row
     const actions = document.createElement('div');
-    actions.style.cssText = 'display:flex;gap:.35rem;flex-shrink:0;flex-wrap:wrap';
+    actions.style.cssText = 'display:flex;gap:.35rem;flex-wrap:wrap';
 
     if (!isActive) {
       const useBtn = document.createElement('button');
@@ -3333,8 +3332,13 @@ function mpRender(models, available) {
     delBtn.onclick = () => mpDeleteModel(m.id, m.loaded, card);
     actions.appendChild(delBtn);
 
-    card.appendChild(sdot);
-    card.appendChild(info);
+    // Progress bar (hidden until pulling)
+    const progWrap = document.createElement('div');
+    progWrap.id = 'mp-prog-' + btoa(m.id).replace(/[^a-z0-9]/gi,'');
+    progWrap.style.cssText = 'display:none';
+    progWrap.innerHTML = '<div style="font-size:.72rem;color:var(--neon);margin-bottom:.2rem" class="mp-prog-label">Pulling…</div><div style="height:4px;background:var(--bg3);border-radius:2px;overflow:hidden"><div class="mp-prog-bar" style="height:100%;width:0%;background:var(--neon);border-radius:2px;transition:width .2s"></div></div>';
+
+    card.appendChild(topRow);
     card.appendChild(actions);
     card.appendChild(progWrap);
     list.appendChild(card);
