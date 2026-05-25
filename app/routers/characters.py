@@ -17,7 +17,7 @@ from ..constants import (
     ND_DEFAULT_STATS, ND_DEFAULT_CURRENCY,
 )
 from ..database import get_db
-from ..models import PlayerCharacter, World
+from ..models import PlayerCharacter, SheetTemplate, World
 
 router = APIRouter()
 
@@ -27,6 +27,7 @@ templates.env.globals.update(kinds=KINDS, subtypes=SUBTYPES, kind_icons=KIND_ICO
 templates.env.filters["md"] = lambda t: (
     markdown2.markdown(t, extras=["fenced-code-blocks", "tables", "strike"]) if t else ""
 )
+templates.env.filters["fromjson"] = lambda s: json.loads(s) if s else []
 
 UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
 ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
@@ -137,6 +138,18 @@ def _apply_form(pc: PlayerCharacter, data: dict):
     pc.minor_edge = gs("minor_edge")
     pc.major_edge = gs("major_edge")
 
+    # Sheet template
+    tpl_id = data.get("sheet_template_id")
+    pc.sheet_template_id = int(tpl_id) if tpl_id and str(tpl_id).isdigit() else None
+
+    # Custom fields (free-form JSON object)
+    raw_cf = data.get("custom_fields_json", "{}") or "{}"
+    try:
+        json.loads(raw_cf)
+    except Exception:
+        raw_cf = "{}"
+    pc.custom_fields_json = raw_cf
+
     # JSON fields (no skills_json in N&D)
     for field in ("stats_json", "skills_json", "currency_json",
                   "equipment_json", "feats_json", "attacks_json",
@@ -169,6 +182,14 @@ def _upload_portrait(file: UploadFile) -> Optional[str]:
 
 # ── List ──────────────────────────────────────────────────────────────────────
 
+def _templates_for_world(db: Session, world_id: Optional[int]):
+    q = db.query(SheetTemplate).filter(
+        (SheetTemplate.world_id == None) |
+        (SheetTemplate.world_id == world_id)
+    ).order_by(SheetTemplate.is_builtin.desc(), SheetTemplate.name)
+    return q.all()
+
+
 @router.get("/characters", response_class=HTMLResponse)
 def characters_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = _world_ctx(db, active_world)
@@ -179,17 +200,31 @@ def characters_list(request: Request, db: Session = Depends(get_db), active_worl
         .all()
     ) if world else []
     derived = {pc.id: _derived(pc) for pc in pcs}
+    sheet_templates_list = _templates_for_world(db, world.id if world else None)
     return templates.TemplateResponse("characters/list.html", {
         "request": request, "world": world, "worlds": worlds,
         "pcs": pcs, "derived": derived,
+        "sheet_templates": sheet_templates_list,
     })
 
 
 # ── New ───────────────────────────────────────────────────────────────────────
 
 @router.get("/characters/new", response_class=HTMLResponse)
-def character_new_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def character_new_form(
+    request: Request,
+    db: Session = Depends(get_db),
+    active_world: str = Cookie(None),
+    template_id: Optional[int] = None,
+):
     world, worlds = _world_ctx(db, active_world)
+    sheet_templates_list = _templates_for_world(db, world.id if world else None)
+    # Pre-select template if given
+    chosen_tpl = db.query(SheetTemplate).filter(SheetTemplate.id == template_id).first() if template_id else None
+    if not chosen_tpl:
+        # Default to N&D template
+        chosen_tpl = db.query(SheetTemplate).filter(SheetTemplate.slug == "nd-default").first()
+    tpl_fields = json.loads(chosen_tpl.fields_json) if chosen_tpl else []
     return templates.TemplateResponse("characters/form.html", {
         "request": request, "world": world, "worlds": worlds,
         "pc": None,
@@ -197,6 +232,10 @@ def character_new_form(request: Request, db: Session = Depends(get_db), active_w
         "nd_default_currency": ND_DEFAULT_CURRENCY,
         "stats": [], "currency": [],
         "equipment": [], "feats": [], "cyberware": [],
+        "sheet_templates": sheet_templates_list,
+        "chosen_template": chosen_tpl,
+        "tpl_fields": tpl_fields,
+        "custom_fields": {},
     })
 
 
@@ -233,9 +272,17 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
     if not pc:
         raise HTTPException(404)
     d = _derived(pc)
+    chosen_tpl = db.query(SheetTemplate).filter(
+        SheetTemplate.id == pc.sheet_template_id
+    ).first() if pc.sheet_template_id else None
+    tpl_fields = json.loads(chosen_tpl.fields_json) if chosen_tpl else []
+    custom_fields = json.loads(getattr(pc, "custom_fields_json", None) or "{}")
     return templates.TemplateResponse("characters/sheet.html", {
         "request": request, "world": world, "worlds": worlds,
         "pc": pc, **d,
+        "chosen_template": chosen_tpl,
+        "tpl_fields": tpl_fields,
+        "custom_fields": custom_fields,
     })
 
 
@@ -247,6 +294,12 @@ def character_edit_form(pc_id: int, request: Request, db: Session = Depends(get_
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
+    sheet_templates_list = _templates_for_world(db, world.id if world else None)
+    chosen_tpl = db.query(SheetTemplate).filter(
+        SheetTemplate.id == pc.sheet_template_id
+    ).first() if pc.sheet_template_id else None
+    tpl_fields = json.loads(chosen_tpl.fields_json) if chosen_tpl else []
+    custom_fields = json.loads(getattr(pc, "custom_fields_json", None) or "{}")
     return templates.TemplateResponse("characters/form.html", {
         "request": request, "world": world, "worlds": worlds,
         "pc": pc,
@@ -257,6 +310,10 @@ def character_edit_form(pc_id: int, request: Request, db: Session = Depends(get_
         "equipment":  json.loads(pc.equipment_json  or "[]"),
         "feats":      json.loads(pc.feats_json       or "[]"),
         "cyberware":  json.loads(getattr(pc, "cyberware_json", None) or "[]"),
+        "sheet_templates": sheet_templates_list,
+        "chosen_template": chosen_tpl,
+        "tpl_fields": tpl_fields,
+        "custom_fields": custom_fields,
     })
 
 
@@ -422,6 +479,117 @@ async def character_xp(pc_id: int, request: Request, db: Session = Depends(get_d
     xp_hi = XP_THRESHOLDS[lvl] if lvl < 20 else None
     xp_pct = min(100, int(max(0, pc.xp - xp_lo) * 100 / (xp_hi - xp_lo))) if xp_hi and xp_hi > xp_lo else 100
     return {"xp": pc.xp, "xp_lo": xp_lo, "xp_hi": xp_hi, "xp_pct": xp_pct}
+
+
+# ── Sheet Templates ───────────────────────────────────────────────────────────
+
+@router.get("/characters/templates", response_class=HTMLResponse)
+def template_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, worlds = _world_ctx(db, active_world)
+    tpls = _templates_for_world(db, world.id if world else None)
+    return templates.TemplateResponse("characters/templates_list.html", {
+        "request": request, "world": world, "worlds": worlds, "sheet_templates": tpls,
+    })
+
+
+@router.get("/characters/templates/new", response_class=HTMLResponse)
+def template_new_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, worlds = _world_ctx(db, active_world)
+    return templates.TemplateResponse("characters/template_form.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "tpl": None, "fields": [],
+    })
+
+
+@router.post("/characters/templates/new")
+async def template_create(
+    request: Request,
+    db: Session = Depends(get_db),
+    active_world: str = Cookie(None),
+):
+    world, _ = _world_ctx(db, active_world)
+    form = await request.form()
+    name = str(form.get("name", "")).strip() or "Unnamed Template"
+    desc = str(form.get("description", "")).strip()
+    raw_fields = str(form.get("fields_json", "[]") or "[]")
+    try:
+        json.loads(raw_fields)
+    except Exception:
+        raw_fields = "[]"
+    base_slug = name.lower().replace(" ", "-")[:50]
+    slug = base_slug
+    n = 1
+    while db.query(SheetTemplate).filter(SheetTemplate.slug == slug).first():
+        slug = f"{base_slug}-{n}"; n += 1
+    tpl = SheetTemplate(
+        world_id=world.id if world else None,
+        name=name, slug=slug, description=desc,
+        is_builtin=False, fields_json=raw_fields,
+    )
+    db.add(tpl)
+    db.commit()
+    db.refresh(tpl)
+    return RedirectResponse(f"/characters/templates/{tpl.id}/edit", status_code=303)
+
+
+@router.get("/characters/templates/{tpl_id}/edit", response_class=HTMLResponse)
+def template_edit_form(tpl_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, worlds = _world_ctx(db, active_world)
+    tpl = db.query(SheetTemplate).filter(SheetTemplate.id == tpl_id).first()
+    if not tpl:
+        raise HTTPException(404)
+    fields = json.loads(tpl.fields_json or "[]")
+    return templates.TemplateResponse("characters/template_form.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "tpl": tpl, "fields": fields,
+    })
+
+
+@router.post("/characters/templates/{tpl_id}/edit")
+async def template_update(
+    tpl_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    tpl = db.query(SheetTemplate).filter(SheetTemplate.id == tpl_id).first()
+    if not tpl:
+        raise HTTPException(404)
+    form = await request.form()
+    if not tpl.is_builtin:
+        tpl.name = str(form.get("name", tpl.name)).strip() or tpl.name
+        tpl.description = str(form.get("description", "")).strip()
+    raw_fields = str(form.get("fields_json", "[]") or "[]")
+    try:
+        json.loads(raw_fields)
+    except Exception:
+        raw_fields = "[]"
+    tpl.fields_json = raw_fields
+    tpl.updated_at = datetime.utcnow()
+    db.commit()
+    return RedirectResponse(f"/characters/templates/{tpl_id}/edit?saved=1", status_code=303)
+
+
+@router.post("/characters/templates/{tpl_id}/delete")
+def template_delete(tpl_id: int, db: Session = Depends(get_db)):
+    tpl = db.query(SheetTemplate).filter(SheetTemplate.id == tpl_id).first()
+    if not tpl:
+        raise HTTPException(404)
+    if tpl.is_builtin:
+        raise HTTPException(403, "Cannot delete built-in templates")
+    db.delete(tpl)
+    db.commit()
+    return RedirectResponse("/characters/templates", status_code=303)
+
+
+@router.get("/api/characters/templates")
+def api_template_list(db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = _world_ctx(db, active_world)
+    tpls = _templates_for_world(db, world.id if world else None)
+    return [
+        {"id": t.id, "name": t.name, "is_builtin": t.is_builtin,
+         "fields": json.loads(t.fields_json or "[]")}
+        for t in tpls
+    ]
 
 
 # ── AJAX: Dice roll ───────────────────────────────────────────────────────────

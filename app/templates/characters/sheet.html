@@ -417,6 +417,41 @@
   </div>
   {% endif %}
 
+  {% if tpl_fields %}
+  <!-- Custom fields from template -->
+  <div style="background:var(--bg2);border:1px solid var(--neon3,#a855f7);border-radius:6px;padding:.75rem 1rem;margin-bottom:1rem">
+    <div class="cs-panel-title" style="color:var(--neon3,#a855f7)">
+      Extra Fields
+      {% if chosen_template %}<span style="font-size:.65rem;color:var(--text-dim);font-weight:normal;margin-left:.4rem">({{ chosen_template.name }})</span>{% endif %}
+    </div>
+    {% for sec_name, sec_fields in tpl_fields | groupby('section') %}
+    <div style="margin-bottom:.75rem">
+      <div style="font-size:.62rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-dim);margin-bottom:.4rem">{{ sec_name }}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:.5rem">
+        {% for f in sec_fields %}
+          {% if f.type == 'resource' %}
+          <div class="cs-derived-chip" style="border-color:var(--neon3,#a855f7)">
+            <div class="dc-val" style="color:var(--neon3,#a855f7)">{{ custom_fields.get(f.id~'_current', '0') }} / {{ custom_fields.get(f.id~'_max', '0') }}</div>
+            <div class="dc-lbl">{{ f.label }}</div>
+          </div>
+          {% elif f.type == 'number' %}
+          <div class="cs-derived-chip">
+            <div class="dc-val">{{ custom_fields.get(f.id, f.default_value or '0') }}</div>
+            <div class="dc-lbl">{{ f.label }}</div>
+          </div>
+          {% elif f.type in ['textarea', 'text'] %}
+          <div style="flex:1;min-width:200px">
+            <div style="font-size:.65rem;text-transform:uppercase;color:var(--text-dim);margin-bottom:.2rem">{{ f.label }}</div>
+            <div style="font-size:.85rem;color:var(--text);white-space:pre-wrap">{{ custom_fields.get(f.id, '') }}</div>
+          </div>
+          {% endif %}
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   <!-- Dice Roller -->
   <div class="cs-dice-section">
     <div class="cs-panel-title">Dice Roller</div>

@@ -332,6 +332,7 @@
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
 .ai-tab {
   background: transparent;
@@ -343,9 +344,35 @@
   padding: .25rem .7rem;
   cursor: pointer;
   transition: border-color .12s, color .12s;
+  white-space: nowrap;
 }
 .ai-tab.active { border-color: var(--neon); color: var(--neon); }
 .ai-tab:hover:not(.active) { border-color: #666; color: var(--text); }
+
+/* Compact model bar — shown on mobile only */
+.ai-model-bar {
+  display: none;
+  align-items: center;
+  gap: .4rem;
+  padding: .3rem .75rem;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  font-size: .75rem;
+}
+.ai-model-bar select {
+  flex: 1;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: .75rem;
+  padding: .2rem .4rem;
+}
+@media (max-width: 700px) {
+  .ai-model-bar { display: flex; }
+  .ai-tab { font-size: .75rem; padding: .22rem .5rem; }
+}
 
 /* ── Full Image Gen Panel ── */
 #image-panel { display: none; height: calc(100vh - 88px); overflow: hidden; }
@@ -585,7 +612,15 @@
   <button class="ai-tab"        id="tab-image"  onclick="switchTab('image')">🎨 Image Gen</button>
   <button class="ai-tab"        id="tab-models" onclick="switchTab('models')">🤖 Models</button>
   <span id="ig-dot" title="Image gen unavailable"
-        style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle"></span>
+        style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle;flex-shrink:0"></span>
+</div>
+<!-- Mobile-only: compact model selector (sidebar hidden on small screens) -->
+<div class="ai-model-bar" id="mobile-model-bar">
+  <span style="color:var(--text-dim);white-space:nowrap">Model:</span>
+  <select id="mobile-model-sel" onchange="mobileSelectModel(this.value)">
+    <option value="">⏳ Loading…</option>
+  </select>
+  <span id="mobile-ollama-dot" style="width:7px;height:7px;border-radius:50%;background:#444;flex-shrink:0" title="checking…"></span>
 </div>
 
 <div class="ai-page">
@@ -657,7 +692,7 @@
         <div class="ai-bubble">
           Hello! I'm your world-building assistant for <strong>{{ world.name if world else 'your world' }}</strong>.
           I'll look up relevant lore from your world automatically as you ask questions.
-          <br><br>Use the quick prompts on the left or ask me anything.
+          <br><br>Ask me anything — or try a quick prompt like "create an NPC" or "write a quest hook".
         </div>
       </div>
     </div>
@@ -1239,8 +1274,27 @@ async function loadModels() {
       '<button onclick="addModel()">+ Add model</button>' +
       '<button onclick="resetModels()" style="color:#888;border-color:#333">↺ Restore defaults</button>';
     list.appendChild(form);
+
+    // Populate mobile model selector
+    const mobSel  = document.getElementById('mobile-model-sel');
+    const mobDot  = document.getElementById('mobile-ollama-dot');
+    if (mobSel) {
+      mobSel.innerHTML = d.models.map(m =>
+        `<option value="${m.id}"${m.id === activeModel ? ' selected' : ''}>${m.label || m.id}${m.loaded ? '' : ' ⬇'}</option>`
+      ).join('');
+      if (!d.models.length) mobSel.innerHTML = '<option value="">No models — go to 🤖 Models tab</option>';
+    }
+    if (mobDot) {
+      const hasLoaded = d.models.some(m => m.loaded);
+      mobDot.style.background = hasLoaded ? '#4f4' : '#c44';
+      mobDot.title = hasLoaded ? 'Ollama has loaded models' : 'No models loaded — visit 🤖 Models tab';
+    }
   } catch(e) {
     list.textContent = '✗ Unavailable';
+    const mobSel = document.getElementById('mobile-model-sel');
+    if (mobSel) mobSel.innerHTML = '<option value="">Ollama unavailable</option>';
+    const mobDot = document.getElementById('mobile-ollama-dot');
+    if (mobDot) { mobDot.style.background = '#c44'; mobDot.title = 'Ollama unreachable'; }
   }
 }
 
@@ -1250,6 +1304,22 @@ function selectModel(id, labelEl) {
   labelEl.classList.add('active');
   const shortId = id.split('/').pop().split(':')[0] || id;
   document.getElementById('active-model-label').textContent = shortId;
+  _syncMobileModelSel();
+}
+
+function mobileSelectModel(id) {
+  if (!id) return;
+  activeModel = id;
+  const shortId = id.split('/').pop().split(':')[0] || id;
+  document.getElementById('active-model-label').textContent = shortId;
+  document.querySelectorAll('.model-label').forEach(l => {
+    l.classList.toggle('active', l.title === id);
+  });
+}
+
+function _syncMobileModelSel() {
+  const sel = document.getElementById('mobile-model-sel');
+  if (sel) sel.value = activeModel || '';
 }
 
 async function pullModel(modelId, btn, dot) {
@@ -1575,7 +1645,13 @@ async function sendMessage() {
     }
   } catch (e) {
     thinking.parentElement.classList.remove('ai-thinking');
-    if (e.name !== 'AbortError') thinking.textContent = 'Error: ' + e.message;
+    if (e.name !== 'AbortError') {
+      const msg = e.message || String(e);
+      const isNet = msg.toLowerCase().includes('networkerror') || msg.toLowerCase().includes('fetch') || msg.toLowerCase().includes('failed to fetch');
+      thinking.innerHTML = '<span style="color:#c44">⚠ ' + (isNet
+        ? 'Cannot reach AI service — is Ollama running? Pull a model in the <strong>🤖 Models</strong> tab first.'
+        : escHtml(msg)) + '</span>';
+    }
   } finally {
     // Clean up any lingering timer / dot pulse
     if (typeof statsTimer !== 'undefined' && statsTimer) clearInterval(statsTimer);
