@@ -373,7 +373,11 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                             init_image: str = "",
                             init_strength: float = 0.6,
                             upscale_model: str = "",
-                            upscale_factor: float = 1.0) -> list[str]:
+                            upscale_factor: float = 1.0,
+                            controlnet_image: str = "",
+                            controlnet_strength: float = 0.8,
+                            controlnet_preprocessor: str = "",
+                            controlnet_model: str = "") -> list[str]:
     import copy, random, asyncio, base64 as _b64, uuid as _uuid
     t, u = _get_type(), _get_url()
     ai_img_dir = Path(uploads_dir) / "ai-images"
@@ -414,6 +418,13 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
             if upscale_model:
                 payload["upscalemodel"] = upscale_model
                 payload["upscalemultiplier"] = upscale_factor
+            if controlnet_image:
+                payload["controlnetimage"] = controlnet_image
+                payload["controlnetstrength"] = controlnet_strength
+                if controlnet_preprocessor:
+                    payload["controlnetpreprocessor"] = controlnet_preprocessor
+                if controlnet_model:
+                    payload["controlnetmodel"] = controlnet_model
 
             gr = await c.post(f"{u}/API/GenerateText2Image", json=payload)
             _log.info("SwarmUI generate status=%s body=%.400s", gr.status_code, gr.text)

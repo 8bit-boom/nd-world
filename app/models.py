@@ -167,6 +167,19 @@ class SheetTemplate(Base):
     updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class StarredImage(Base):
+    __tablename__ = "starred_images"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    url         = Column(String(512), nullable=False, unique=True)
+    prompt      = Column(Text, default="")
+    negative    = Column(Text, default="")
+    model       = Column(String(256), default="")
+    seed        = Column(Integer, default=-1)
+    params_json = Column(Text, default="{}")
+    created_at  = Column(DateTime, default=datetime.utcnow)
+
+
 class MapOverlay(Base):
     __tablename__ = "map_overlays"
 

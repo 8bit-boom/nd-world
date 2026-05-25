@@ -1,7 +1,7 @@
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
-from .models import Base, World, Schematic, MapOverlay, InvestBoard, PlayerCharacter, SheetTemplate
+from .models import Base, World, Schematic, MapOverlay, InvestBoard, PlayerCharacter, SheetTemplate, StarredImage
 
 DB_PATH = os.environ.get("DB_PATH", "/data/world.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})

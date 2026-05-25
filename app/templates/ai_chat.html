@@ -606,6 +606,30 @@
   .ig-settings > * { min-width: 100%; flex: 1 1 100%; }
 }
 
+/* ── Starred images panel ── */
+.starred-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .7rem; }
+.starred-card { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--bg2); }
+.starred-card img { width: 100%; display: block; cursor: pointer; }
+.starred-card-info { padding: .4rem .5rem; background: var(--bg3); font-size: .68rem; color: var(--text-dim); }
+.starred-card-info .prompt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: .2rem; }
+.starred-card-actions { display: flex; gap: .3rem; padding: .3rem .4rem; background: var(--bg3); border-top: 1px solid var(--border); flex-wrap: wrap; }
+.starred-card-actions a, .starred-card-actions button { font-size: .7rem; color: var(--text-dim); background: transparent; border: 1px solid var(--border); border-radius: 3px; padding: .18rem .4rem; cursor: pointer; text-decoration: none; font-family: inherit; transition: border-color .1s, color .1s; }
+.starred-card-actions a:hover, .starred-card-actions button:hover { border-color: var(--neon); color: var(--neon); text-decoration: none; }
+.star-btn { background: transparent; border: none; cursor: pointer; font-size: .95rem; padding: .05rem .2rem; line-height: 1; transition: transform .1s; }
+.star-btn:hover { transform: scale(1.25); }
+.star-btn.starred { color: gold; }
+
+/* ── Tag sources panel ── */
+.tag-source-row { display: flex; align-items: center; gap: .45rem; padding: .35rem .5rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg3); margin-bottom: .25rem; }
+.tag-source-row.active-source { border-color: var(--neon); }
+.tag-source-info { flex: 1; min-width: 0; }
+.tag-source-label { font-size: .82rem; color: var(--text); }
+.tag-source-desc { font-size: .65rem; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tag-source-badge { font-size: .62rem; padding: .1rem .3rem; border-radius: 2px; white-space: nowrap; flex-shrink: 0; }
+.tag-source-badge.active { background: var(--neon); color: #000; }
+.tag-source-badge.dl { border: 1px solid #4f4; color: #4f4; }
+.tag-source-badge.missing { border: 1px solid #444; color: #666; }
+
 /* ── Tag autocomplete ── */
 .tag-ac-wrap { position: relative; }
 .tag-ac-dropdown {
@@ -640,9 +664,10 @@
 </style>
 
 <div class="ai-tab-bar">
-  <button class="ai-tab active" id="tab-chat"   onclick="switchTab('chat')">💬 Chat</button>
-  <button class="ai-tab"        id="tab-image"  onclick="switchTab('image')">🎨 Image Gen</button>
-  <button class="ai-tab"        id="tab-models" onclick="switchTab('models')">🤖 Models</button>
+  <button class="ai-tab active" id="tab-chat"    onclick="switchTab('chat')">💬 Chat</button>
+  <button class="ai-tab"        id="tab-image"   onclick="switchTab('image')">🎨 Image Gen</button>
+  <button class="ai-tab"        id="tab-models"  onclick="switchTab('models')">🤖 Models</button>
+  <button class="ai-tab"        id="tab-starred" onclick="switchTab('starred')">⭐ Starred</button>
   <span id="ig-dot" title="Image gen unavailable"
         style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle;flex-shrink:0"></span>
 </div>
@@ -910,11 +935,22 @@
         </div>
       </div>
 
-      <!-- Tag autocomplete status bar -->
-      <div id="tag-ac-bar" style="display:flex;align-items:center;gap:.5rem;font-size:.75rem;color:var(--text-dim);flex-wrap:wrap">
-        <span id="tag-ac-status">⏳ Checking tag data…</span>
-        <button id="tag-ac-fetch-btn" onclick="igFetchTags()" style="display:none;background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.2rem .55rem;font-size:.72rem;border-radius:3px;cursor:pointer;font-family:inherit">⬇ Download Tags</button>
-      </div>
+      <!-- Tag sources manager -->
+      <details class="ig-collapsible" id="ig-tag-sources-section">
+        <summary>🏷 Tag Autocomplete — <span id="tag-ac-summary">checking…</span></summary>
+        <div class="ig-section-body" style="margin-top:.4rem">
+          <div id="tag-sources-list" style="display:flex;flex-direction:column;gap:0"></div>
+          <!-- Custom source -->
+          <div style="margin-top:.5rem;border-top:1px solid var(--border);padding-top:.5rem">
+            <div style="font-size:.68rem;color:var(--neon);margin-bottom:.3rem;text-transform:uppercase;letter-spacing:.06em">+ Custom source</div>
+            <div style="display:flex;gap:.25rem;flex-wrap:wrap">
+              <input id="tag-custom-id" placeholder="ID (e.g. my-tags)" class="ig-input-text" style="flex:1;min-width:80px;font-size:.75rem">
+              <input id="tag-custom-url" placeholder="CSV URL" class="ig-input-text" style="flex:2;min-width:160px;font-size:.75rem">
+              <button class="ig-btn" onclick="igAddCustomSource()" style="white-space:nowrap;font-size:.75rem">⬇ Download</button>
+            </div>
+          </div>
+        </div>
+      </details>
 
       <!-- Full prompt -->
       <div class="ig-field tag-ac-wrap" style="flex:1;min-height:0">
@@ -951,6 +987,46 @@
               <input type="range" id="ig-strength" min="0.05" max="1" step="0.05" value="0.65"
                      oninput="document.getElementById('ig-strength-val').textContent=parseFloat(this.value).toFixed(2)">
             </div>
+          </div>
+        </div>
+      </details>
+
+      <!-- ControlNet -->
+      <details class="ig-collapsible" id="ig-cn-section">
+        <summary>🎛 ControlNet</summary>
+        <div class="ig-section-body">
+          <div>
+            <label class="ig-label">Control image</label>
+            <input type="file" id="ig-cn-file" accept="image/*" onchange="igPreviewCN(this)"
+                   style="width:100%;font-size:.78rem;color:var(--text-dim);background:var(--bg3);border:1px dashed var(--border);border-radius:4px;padding:.3rem .5rem;cursor:pointer;box-sizing:border-box">
+          </div>
+          <div id="ig-cn-preview" style="display:none">
+            <img id="ig-cn-img" src="" alt="control" style="max-width:100%;max-height:120px;border-radius:4px;border:1px solid var(--border);display:block;margin:.3rem 0">
+            <button onclick="igClearCN()" style="background:transparent;border:none;color:var(--neon2);cursor:pointer;font-size:.75rem;padding:.1rem 0;font-family:inherit;display:block">✕ Remove</button>
+          </div>
+          <div>
+            <label class="ig-label">Preprocessor</label>
+            <select id="ig-cn-preprocessor" class="ig-select">
+              <option value="">None (raw image)</option>
+              <option value="canny">Canny edge</option>
+              <option value="depth">Depth</option>
+              <option value="openpose">OpenPose</option>
+              <option value="lineart">Lineart</option>
+              <option value="softedge">SoftEdge</option>
+              <option value="scribble">Scribble</option>
+              <option value="normal">Normal map</option>
+            </select>
+          </div>
+          <div>
+            <label class="ig-label">Strength: <span id="ig-cn-str-val">0.80</span></label>
+            <div class="ig-range-row">
+              <input type="range" id="ig-cn-strength" min="0" max="2" step="0.05" value="0.8"
+                     oninput="document.getElementById('ig-cn-str-val').textContent=parseFloat(this.value).toFixed(2)">
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">ControlNet model <span style="color:var(--text-dim)">(blank = auto)</span></label>
+            <input type="text" id="ig-cn-model" class="ig-input-text" placeholder="e.g. control_v11p_sd15_canny">
           </div>
         </div>
       </details>
@@ -1052,6 +1128,18 @@
   </div>
 
 </div><!-- /models-panel -->
+
+<!-- ── Starred Images Panel ── -->
+<div id="starred-panel" style="display:none;padding:1.2rem;max-width:1200px;margin:0 auto">
+  <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
+    <span style="font-size:1rem;color:var(--neon);font-weight:700;letter-spacing:.05em">⭐ Starred Images</span>
+    <button class="ig-btn" onclick="igLoadStarred()" style="white-space:nowrap">↺ Refresh</button>
+    <button class="ig-btn" onclick="igClearAllStarred()" style="white-space:nowrap;color:#c44;border-color:#c44">✕ Clear all</button>
+  </div>
+  <div id="starred-grid" class="starred-grid">
+    <div style="color:var(--text-dim);font-size:.82rem">Loading…</div>
+  </div>
+</div>
 
 <script>
 const WORLD_SYSTEM = {{ world_system | tojson }};
@@ -1754,22 +1842,22 @@ function autoResize(el) {
 // ── Tab switching ─────────────────────────────────────────────────────────────
 
 function switchTab(tab) {
-  const chatPage     = document.querySelector('.ai-page');
-  const imgPanel     = document.getElementById('image-panel');
-  const modelsPanel  = document.getElementById('models-panel');
-  const tabChat      = document.getElementById('tab-chat');
-  const tabImg       = document.getElementById('tab-image');
-  const tabMod       = document.getElementById('tab-models');
+  const chatPage      = document.querySelector('.ai-page');
+  const imgPanel      = document.getElementById('image-panel');
+  const modelsPanel   = document.getElementById('models-panel');
+  const starredPanel  = document.getElementById('starred-panel');
 
-  chatPage.style.display    = tab === 'chat'   ? 'flex'  : 'none';
-  imgPanel.style.display    = tab === 'image'  ? 'block' : 'none';
-  modelsPanel.style.display = tab === 'models' ? 'block' : 'none';
+  chatPage.style.display     = tab === 'chat'    ? 'flex'  : 'none';
+  imgPanel.style.display     = tab === 'image'   ? 'block' : 'none';
+  modelsPanel.style.display  = tab === 'models'  ? 'block' : 'none';
+  starredPanel.style.display = tab === 'starred' ? 'block' : 'none';
 
-  tabChat.classList.toggle('active',  tab === 'chat');
-  tabImg.classList.toggle('active',   tab === 'image');
-  tabMod.classList.toggle('active',   tab === 'models');
+  ['chat','image','models','starred'].forEach(t => {
+    document.getElementById('tab-' + t)?.classList.toggle('active', t === tab);
+  });
 
-  if (tab === 'models') mpLoad();
+  if (tab === 'models')  mpLoad();
+  if (tab === 'starred') igLoadStarred();
 }
 
 // ── Image gen state ───────────────────────────────────────────────────────────
@@ -1777,7 +1865,9 @@ function switchTab(tab) {
 let _igBatchSize = 1;
 let _igUpscaleFactor = 2.0;
 let _igInitImageB64 = '';
+let _igCNImageB64 = '';
 let _igLastUrls = [];
+let _igStarred = new Set(); // URLs of starred images
 
 function igSetSize(w, h, btn) {
   document.getElementById('ig-width').value = w;
@@ -1816,6 +1906,24 @@ function igClearInit() {
   document.getElementById('ig-i2i-preview').style.display = 'none';
 }
 
+function igPreviewCN(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    _igCNImageB64 = e.target.result;
+    document.getElementById('ig-cn-img').src = _igCNImageB64;
+    document.getElementById('ig-cn-preview').style.display = 'block';
+  };
+  reader.readAsDataURL(file);
+}
+
+function igClearCN() {
+  _igCNImageB64 = '';
+  document.getElementById('ig-cn-file').value = '';
+  document.getElementById('ig-cn-preview').style.display = 'none';
+}
+
 // ── Image gen init ────────────────────────────────────────────────────────────
 
 (async function igInit() {
@@ -1840,7 +1948,8 @@ function igClearInit() {
     igLoadLoras();
     igLoadUpscalers();
     igLoadHistory();
-    igTagsInit();
+    igLoadSourcesPanel();
+    igLoadStarred();
   } catch (e) {
     console.warn('igInit error', e);
   }
@@ -1940,6 +2049,10 @@ async function igGenerate() {
       init_strength: parseFloat(document.getElementById('ig-strength')?.value || '0.65'),
       upscale_model: (document.getElementById('ig-upscaler')?.value || '').trim(),
       upscale_factor: _igUpscaleFactor,
+      controlnet_image: _igCNImageB64,
+      controlnet_strength: parseFloat(document.getElementById('ig-cn-strength')?.value || '0.8'),
+      controlnet_preprocessor: (document.getElementById('ig-cn-preprocessor')?.value || ''),
+      controlnet_model: (document.getElementById('ig-cn-model')?.value || '').trim(),
     };
 
     const r = await fetch('/api/ai/imagegen/generate', {
@@ -1971,8 +2084,14 @@ async function igGenerate() {
       const attachBtn = document.createElement('button');
       attachBtn.textContent = '📎 Attach…';
       attachBtn.onclick = () => igAttachToEntity(url);
+      const starBtn = document.createElement('button');
+      starBtn.className = 'star-btn';
+      starBtn.title = 'Star this image';
+      starBtn.textContent = '☆';
+      starBtn.onclick = () => igToggleStar(url, body, starBtn);
       actions.appendChild(dlLink);
       actions.appendChild(attachBtn);
+      actions.appendChild(starBtn);
       card.appendChild(img);
       card.appendChild(actions);
       grid.appendChild(card);
@@ -2187,50 +2306,126 @@ function igClearHistory() {
   igLoadHistory();
 }
 
-// ── Tag autocomplete ─────────────────────────────────────────────────────────
+// ── Tag sources manager ───────────────────────────────────────────────────────
 
-async function igTagsInit() {
+async function igLoadSourcesPanel() {
+  const list = document.getElementById('tag-sources-list');
+  const summary = document.getElementById('tag-ac-summary');
   try {
-    const st = await fetch('/api/ai/imagegen/tags/status').then(r => r.json());
-    const bar  = document.getElementById('tag-ac-bar');
-    const span = document.getElementById('tag-ac-status');
-    const btn  = document.getElementById('tag-ac-fetch-btn');
-    if (st.loaded) {
-      span.textContent = `🏷 ${st.count.toLocaleString()} tags ready`;
-      span.style.color = '#4f4';
-      btn.style.display = 'none';
-    } else {
-      span.textContent = '🏷 Tag autocomplete: not downloaded yet';
-      btn.style.display = '';
+    const d = await fetch('/api/ai/imagegen/tags/sources').then(r => r.json());
+    const sources = d.sources || [];
+    const activeItem = sources.find(s => s.active);
+    summary.textContent = activeItem
+      ? `${activeItem.label} · ${activeItem.count.toLocaleString()} tags`
+      : 'no source active';
+    list.innerHTML = '';
+    for (const s of sources) {
+      const row = document.createElement('div');
+      row.className = 'tag-source-row' + (s.active ? ' active-source' : '');
+      const info = document.createElement('div');
+      info.className = 'tag-source-info';
+      info.innerHTML = `<div class="tag-source-label">${s.label}</div><div class="tag-source-desc">${s.description}</div>`;
+      const badge = document.createElement('span');
+      badge.className = 'tag-source-badge ' + (s.active ? 'active' : s.downloaded ? 'dl' : 'missing');
+      badge.textContent = s.active ? '● Active' : s.downloaded ? `✓ ${(s.count/1000).toFixed(0)}k tags` : 'Not downloaded';
+      const acts = document.createElement('div');
+      acts.style.cssText = 'display:flex;gap:.25rem;flex-shrink:0';
+      if (!s.downloaded) {
+        const dlBtn = document.createElement('button');
+        dlBtn.className = 'ig-btn';
+        dlBtn.style.cssText = 'border-color:var(--neon);color:var(--neon);font-size:.7rem;padding:.15rem .4rem';
+        dlBtn.textContent = '⬇';
+        dlBtn.title = 'Download';
+        dlBtn.onclick = () => igDownloadSource(s.id, dlBtn);
+        acts.appendChild(dlBtn);
+      } else {
+        if (!s.active) {
+          const actBtn = document.createElement('button');
+          actBtn.className = 'ig-btn';
+          actBtn.style.cssText = 'font-size:.7rem;padding:.15rem .4rem';
+          actBtn.textContent = '✓ Use';
+          actBtn.title = 'Set as active';
+          actBtn.onclick = () => igActivateSource(s.id);
+          acts.appendChild(actBtn);
+        }
+        const delBtn = document.createElement('button');
+        delBtn.className = 'ig-btn';
+        delBtn.style.cssText = 'font-size:.7rem;padding:.15rem .35rem;color:#888;border-color:#444';
+        delBtn.textContent = '✕';
+        delBtn.title = 'Delete downloaded file';
+        delBtn.onclick = () => igDeleteSource(s.id);
+        acts.appendChild(delBtn);
+      }
+      row.appendChild(info);
+      row.appendChild(badge);
+      row.appendChild(acts);
+      list.appendChild(row);
     }
   } catch(e) {
-    document.getElementById('tag-ac-status').textContent = '🏷 Tag status unavailable';
+    if (summary) summary.textContent = 'unavailable';
+    if (list) list.innerHTML = '<div style="font-size:.75rem;color:#c44">Could not load tag sources</div>';
   }
 }
 
-async function igFetchTags() {
-  const btn  = document.getElementById('tag-ac-fetch-btn');
-  const span = document.getElementById('tag-ac-status');
-  btn.disabled = true;
-  btn.textContent = '⏳ Downloading…';
-  span.textContent = '⏳ Downloading tag list (~4 MB)…';
+async function igDownloadSource(sourceId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
   try {
-    const r = await fetch('/api/ai/imagegen/tags/fetch', {method:'POST'}).then(r => r.json());
-    if (r.ok) {
-      span.textContent = `🏷 ${r.count.toLocaleString()} tags loaded`;
-      span.style.color = '#4f4';
-      btn.style.display = 'none';
-    } else {
-      span.textContent = `⚠ Download failed: ${r.error}`;
-      span.style.color = '#c44';
-      btn.disabled = false;
-      btn.textContent = '⬇ Retry Download';
-    }
+    const r = await fetch('/api/ai/imagegen/tags/fetch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({source_id: sourceId}),
+    }).then(r => r.json());
+    if (!r.ok) throw new Error(r.error || 'Download failed');
+    await igLoadSourcesPanel();
   } catch(e) {
-    span.textContent = '⚠ Download error — check network';
-    span.style.color = '#c44';
-    btn.disabled = false;
-    btn.textContent = '⬇ Retry Download';
+    alert('Download failed: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '⬇'; }
+  }
+}
+
+async function igActivateSource(sourceId) {
+  try {
+    await fetch('/api/ai/imagegen/tags/activate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({source_id: sourceId}),
+    });
+    await igLoadSourcesPanel();
+  } catch(e) { alert('Failed to activate: ' + e.message); }
+}
+
+async function igDeleteSource(sourceId) {
+  if (!confirm(`Delete the downloaded "${sourceId}" tag file?`)) return;
+  try {
+    await fetch('/api/ai/imagegen/tags/delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({source_id: sourceId}),
+    });
+    await igLoadSourcesPanel();
+  } catch(e) { alert('Failed to delete: ' + e.message); }
+}
+
+async function igAddCustomSource() {
+  const id  = document.getElementById('tag-custom-id').value.trim();
+  const url = document.getElementById('tag-custom-url').value.trim();
+  if (!id || !url) { alert('Enter both an ID and URL.'); return; }
+  const btn = document.querySelector('#ig-tag-sources-section .ig-btn:last-child');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Downloading…'; }
+  try {
+    const r = await fetch('/api/ai/imagegen/tags/fetch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({source_id: id, url, label: id}),
+    }).then(r => r.json());
+    if (!r.ok) throw new Error(r.error || 'Download failed');
+    document.getElementById('tag-custom-id').value = '';
+    document.getElementById('tag-custom-url').value = '';
+    await igLoadSourcesPanel();
+  } catch(e) {
+    alert('Download failed: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⬇ Download'; }
   }
 }
 
@@ -2364,6 +2559,106 @@ function _fmtCount(n) {
 // Initialise autocomplete on both prompt areas
 _acInit('ig-prompt',   'tag-ac-pos');
 _acInit('ig-negative', 'tag-ac-neg');
+
+// ── Star / unstar images ──────────────────────────────────────────────────────
+
+async function igToggleStar(url, params, btn) {
+  if (_igStarred.has(url)) {
+    // Unstar
+    try {
+      await fetch('/api/ai/imagegen/unstar', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url}),
+      });
+      _igStarred.delete(url);
+      btn.textContent = '☆'; btn.classList.remove('starred'); btn.title = 'Star this image';
+    } catch(e) { alert('Failed to unstar: ' + e.message); }
+  } else {
+    // Star
+    try {
+      await fetch('/api/ai/imagegen/star', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          url,
+          prompt: params.prompt || '',
+          negative: params.negative || '',
+          model: params.model || '',
+          seed: params.seed || -1,
+          params: {width: params.width, height: params.height, steps: params.steps,
+                   cfg: params.cfg, sampler: params.sampler},
+        }),
+      });
+      _igStarred.add(url);
+      btn.textContent = '⭐'; btn.classList.add('starred'); btn.title = 'Unstar';
+    } catch(e) { alert('Failed to star: ' + e.message); }
+  }
+}
+
+async function igLoadStarred() {
+  const grid = document.getElementById('starred-grid');
+  if (!grid) return;
+  try {
+    const d = await fetch('/api/ai/imagegen/starred').then(r => r.json());
+    _igStarred = new Set((d.images || []).map(i => i.url));
+    if (!d.images || !d.images.length) {
+      grid.innerHTML = '<div style="color:var(--text-dim);font-size:.88rem;grid-column:1/-1">No starred images yet. Star images from the 🎨 Image Gen tab.</div>';
+      return;
+    }
+    grid.innerHTML = '';
+    for (const img of d.images) {
+      const card = document.createElement('div');
+      card.className = 'starred-card';
+      const imgEl = document.createElement('img');
+      imgEl.src = img.url; imgEl.alt = 'Starred image';
+      imgEl.loading = 'lazy';
+      imgEl.onclick = () => window.open(img.url, '_blank');
+      const info = document.createElement('div');
+      info.className = 'starred-card-info';
+      const shortPrompt = (img.prompt || '').slice(0, 80);
+      info.innerHTML = `<div class="prompt" title="${(img.prompt||'').replace(/"/g,'&quot;')}">${shortPrompt || '(no prompt)'}</div>
+        <div>${img.model ? img.model.split('/').pop() : ''} · seed ${img.seed >= 0 ? img.seed : 'random'}</div>`;
+      const acts = document.createElement('div');
+      acts.className = 'starred-card-actions';
+      const dl = document.createElement('a');
+      dl.href = img.url; dl.download = 'starred.png'; dl.textContent = '⬇ Save';
+      const reuseBtn = document.createElement('button');
+      reuseBtn.textContent = '↩ Reuse'; reuseBtn.title = 'Load params into Image Gen';
+      reuseBtn.onclick = () => {
+        switchTab('image');
+        const set = (id, val) => { const el = document.getElementById(id); if (el && val != null) el.value = val; };
+        set('ig-prompt', img.prompt); set('ig-negative', img.negative);
+        set('ig-model', img.model); set('ig-seed', img.seed);
+        if (img.params) { set('ig-width', img.params.width); set('ig-height', img.params.height);
+          set('ig-steps', img.params.steps); set('ig-cfg', img.params.cfg);
+          set('ig-sampler', img.params.sampler); }
+      };
+      const unstarBtn = document.createElement('button');
+      unstarBtn.textContent = '✕ Unstar'; unstarBtn.style.color = '#c44'; unstarBtn.style.borderColor = '#c44';
+      unstarBtn.onclick = async () => {
+        await fetch('/api/ai/imagegen/unstar', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url: img.url})});
+        card.remove();
+        _igStarred.delete(img.url);
+        if (!grid.children.length) igLoadStarred();
+      };
+      acts.appendChild(dl); acts.appendChild(reuseBtn); acts.appendChild(unstarBtn);
+      card.appendChild(imgEl); card.appendChild(info); card.appendChild(acts);
+      grid.appendChild(card);
+    }
+  } catch(e) {
+    if (grid) grid.innerHTML = '<div style="color:#c44">Failed to load starred images</div>';
+  }
+}
+
+async function igClearAllStarred() {
+  const d = await fetch('/api/ai/imagegen/starred').then(r => r.json()).catch(() => ({images:[]}));
+  if (!d.images || !d.images.length) return;
+  if (!confirm(`Unstar all ${d.images.length} images?`)) return;
+  await Promise.all(d.images.map(i =>
+    fetch('/api/ai/imagegen/unstar', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url: i.url})})
+  ));
+  _igStarred.clear();
+  igLoadStarred();
+}
 
 // ── Models panel ─────────────────────────────────────────────────────────────
 

@@ -4,12 +4,13 @@ import logging
 import os as _os
 import ollama as _ollama
 import urllib.request as _urllib
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from fastapi.responses import StreamingResponse as _SR
 from pydantic import BaseModel
 from typing import List
 from pathlib import Path as _Path
 from .. import ai as _ai
+from ..database import get_db
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 _log = logging.getLogger("nd.ai.router")
@@ -247,75 +248,187 @@ async def api_imagegen_upscalers():
     return {"upscalers": await _ai.imagegen_upscalers()}
 
 
-# ── Tag autocomplete ───────────────────────────────────────────────────────────
+# ── Tag sources ───────────────────────────────────────────────────────────────
 
-_TAG_CSV_URL = "https://github.com/BetaDoggo/danbooru-tag-list/releases/download/Model-Tags/ChenkinNoob-XL-V0.3_underscore.csv"
-_TAG_CAT_COLORS = {0: "#aaa", 1: "#c0a060", 3: "#a060c0", 4: "#60a0c0", 5: "#60c080"}
-# in-memory cache: list of [tag, category, count]
-_tags_cache: list[list] = []
+_BUILTIN_SOURCES = [
+    {
+        "id": "danbooru",
+        "label": "Danbooru",
+        "description": "General anime/art tags sorted by usage · SDXL optimised · ~4 MB",
+        "url": "https://github.com/BetaDoggo/danbooru-tag-list/releases/download/Model-Tags/ChenkinNoob-XL-V0.3_underscore.csv",
+        "swarmui_name": "danbooru",
+        "cat_colors": {0: "#aaa", 1: "#c0a060", 3: "#a060c0", 4: "#60a0c0", 5: "#60c080"},
+    },
+    {
+        "id": "e621",
+        "label": "e621",
+        "description": "Furry / anthro art tags from e621 · ~3 MB",
+        "url": "https://github.com/DominikDoom/a1111-sd-webui-tagcomplete/raw/main/tags/e621.csv",
+        "swarmui_name": "e621",
+        "cat_colors": {0: "#aaa", 1: "#60c080", 3: "#a060c0", 4: "#60a0c0"},
+    },
+]
+
+# per-source in-memory cache: source_id -> list of [tag, category, count]
+_tags_cache: dict[str, list[list]] = {}
 
 
-def _tag_file() -> _Path:
+def _tag_dir() -> _Path:
     data_dir = _Path(_os.environ.get("DB_PATH", "/data/world.db")).parent
-    return data_dir / "tags" / "danbooru_tags.csv"
+    return data_dir / "tags"
+
+
+def _tag_file_for(source_id: str) -> _Path:
+    return _tag_dir() / f"{source_id}_tags.csv"
+
+
+def _active_source_file() -> _Path:
+    return _tag_dir() / "active_source.txt"
+
+
+def _custom_sources_file() -> _Path:
+    return _tag_dir() / "custom_sources.json"
 
 
 def _swarmui_ac_dir() -> _Path | None:
-    """Directory SwarmUI reads for autocomplete CSVs (shared volume mount)."""
     d = _os.environ.get("SWARMUI_AC_DIR", "/data/swarmui-ac")
     return _Path(d) if d else None
 
 
-def _load_tags_from_disk() -> list[list]:
-    global _tags_cache
-    if _tags_cache:
-        return _tags_cache
-    tf = _tag_file()
+def _get_active_source_id() -> str:
+    f = _active_source_file()
+    if f.exists():
+        s = f.read_text().strip()
+        if s:
+            return s
+    # Backward-compat: if old danbooru_tags.csv exists treat as active
+    if _tag_file_for("danbooru").exists():
+        return "danbooru"
+    return ""
+
+
+def _set_active_source_id(source_id: str):
+    f = _active_source_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(source_id)
+
+
+def _all_sources() -> list[dict]:
+    sources = list(_BUILTIN_SOURCES)
+    cf = _custom_sources_file()
+    if cf.exists():
+        try:
+            sources.extend(_json.loads(cf.read_text()))
+        except Exception:
+            pass
+    return sources
+
+
+def _source_by_id(source_id: str) -> dict | None:
+    for s in _all_sources():
+        if s["id"] == source_id:
+            return s
+    return None
+
+
+def _load_tags_for(source_id: str) -> list[list]:
+    if source_id in _tags_cache:
+        return _tags_cache[source_id]
+    tf = _tag_file_for(source_id)
     if not tf.exists():
         return []
     rows: list[list] = []
     with open(tf, newline="", encoding="utf-8") as f:
         for row in _csv.reader(f):
-            if len(row) >= 3:
+            if len(row) >= 2:
                 try:
-                    rows.append([row[0], int(row[1]), int(row[2])])
+                    cat = int(row[1]) if len(row) > 1 else 0
+                    cnt = int(row[2]) if len(row) > 2 else 0
+                    rows.append([row[0], cat, cnt])
                 except ValueError:
                     pass
-    _tags_cache = rows
+    _tags_cache[source_id] = rows
     return rows
+
+
+@router.get("/imagegen/tags/sources")
+async def api_tags_sources():
+    active = _get_active_source_id()
+    result = []
+    for s in _all_sources():
+        tf = _tag_file_for(s["id"])
+        downloaded = tf.exists()
+        count = len(_load_tags_for(s["id"])) if downloaded else 0
+        result.append({
+            "id": s["id"],
+            "label": s["label"],
+            "description": s.get("description", ""),
+            "builtin": any(b["id"] == s["id"] for b in _BUILTIN_SOURCES),
+            "downloaded": downloaded,
+            "count": count,
+            "active": s["id"] == active,
+        })
+    return {"sources": result, "active": active}
 
 
 @router.get("/imagegen/tags/status")
 async def api_tags_status():
-    tf = _tag_file()
-    if tf.exists():
-        count = len(_load_tags_from_disk())
-        return {"loaded": True, "count": count, "file": tf.name}
-    return {"loaded": False, "count": 0, "file": ""}
+    active = _get_active_source_id()
+    if active:
+        count = len(_load_tags_for(active))
+        return {"loaded": bool(count), "count": count, "active": active}
+    return {"loaded": False, "count": 0, "active": ""}
+
+
+class FetchTagsBody(BaseModel):
+    source_id: str = "danbooru"
+    url: str = ""
+    label: str = ""
 
 
 @router.post("/imagegen/tags/fetch")
-async def api_tags_fetch():
-    global _tags_cache
+async def api_tags_fetch(body: FetchTagsBody):
     import asyncio
-    tf = _tag_file()
+    source_id = body.source_id.strip() or "danbooru"
+    source = _source_by_id(source_id)
+    fetch_url = body.url.strip() or (source["url"] if source else "")
+    if not fetch_url:
+        return {"ok": False, "error": "No URL for this source"}
+
+    # Register as custom source if unknown
+    if not source:
+        label = body.label.strip() or source_id
+        cf = _custom_sources_file()
+        cf.parent.mkdir(parents=True, exist_ok=True)
+        custom = []
+        if cf.exists():
+            try:
+                custom = _json.loads(cf.read_text())
+            except Exception:
+                pass
+        if not any(s["id"] == source_id for s in custom):
+            custom.append({"id": source_id, "label": label, "description": "Custom",
+                           "url": fetch_url, "swarmui_name": source_id, "cat_colors": {}})
+            cf.write_text(_json.dumps(custom))
+        source = _source_by_id(source_id)
+
+    tf = _tag_file_for(source_id)
     tf.parent.mkdir(parents=True, exist_ok=True)
 
     def _download():
         opener = _urllib.build_opener()
         opener.addheaders = [("User-Agent", "nd-world/1.0")]
-        with opener.open(_TAG_CSV_URL, timeout=60) as resp:
+        with opener.open(fetch_url, timeout=120) as resp:
             data = resp.read()
         tf.write_bytes(data)
-        # Also copy to SwarmUI Data/Autocompletions if the shared volume is mounted
         ac_dir = _swarmui_ac_dir()
         if ac_dir and ac_dir.exists():
             try:
-                ac_dir.mkdir(parents=True, exist_ok=True)
-                (ac_dir / "danbooru.csv").write_bytes(data)
-                _log.info("copied tag CSV to SwarmUI Autocompletions at %s", ac_dir)
-            except Exception as copy_exc:
-                _log.warning("could not copy tags to SwarmUI AC dir: %s", copy_exc)
+                swarmui_name = (source or {}).get("swarmui_name", source_id)
+                (ac_dir / f"{swarmui_name}.csv").write_bytes(data)
+                _log.info("copied %s tags to SwarmUI AC dir", source_id)
+            except Exception as exc:
+                _log.warning("could not copy tags to SwarmUI AC dir: %s", exc)
         return len(data)
 
     try:
@@ -323,19 +436,61 @@ async def api_tags_fetch():
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
-    _tags_cache = []          # invalidate cache so it reloads
-    count = len(_load_tags_from_disk())
-    # Report whether SwarmUI copy succeeded
+    _tags_cache.pop(source_id, None)
+    count = len(_load_tags_for(source_id))
+    if not _get_active_source_id():
+        _set_active_source_id(source_id)
     ac_dir = _swarmui_ac_dir()
-    swarmui_ok = bool(ac_dir and (ac_dir / "danbooru.csv").exists())
-    return {"ok": True, "bytes": size, "count": count, "swarmui_ac": swarmui_ok}
+    return {"ok": True, "bytes": size, "count": count,
+            "swarmui_ac": bool(ac_dir and ac_dir.exists())}
+
+
+class ActivateTagBody(BaseModel):
+    source_id: str
+
+
+@router.post("/imagegen/tags/activate")
+async def api_tags_activate(body: ActivateTagBody):
+    if not _tag_file_for(body.source_id).exists():
+        from fastapi import HTTPException
+        raise HTTPException(400, f"Source '{body.source_id}' not downloaded yet")
+    _set_active_source_id(body.source_id)
+    count = len(_load_tags_for(body.source_id))
+    return {"ok": True, "active": body.source_id, "count": count}
+
+
+class DeleteTagSourceBody(BaseModel):
+    source_id: str
+
+
+@router.post("/imagegen/tags/delete")
+async def api_tags_delete(body: DeleteTagSourceBody):
+    tf = _tag_file_for(body.source_id)
+    if tf.exists():
+        tf.unlink()
+    _tags_cache.pop(body.source_id, None)
+    if _get_active_source_id() == body.source_id:
+        _set_active_source_id("")
+    cf = _custom_sources_file()
+    if cf.exists():
+        try:
+            custom = [s for s in _json.loads(cf.read_text()) if s["id"] != body.source_id]
+            cf.write_text(_json.dumps(custom))
+        except Exception:
+            pass
+    return {"ok": True}
 
 
 @router.get("/imagegen/tags")
 async def api_tags_search(q: str = "", limit: int = 25):
     if len(q) < 1:
         return {"tags": []}
-    tags = _load_tags_from_disk()
+    active = _get_active_source_id()
+    if not active:
+        return {"tags": []}
+    tags = _load_tags_for(active)
+    source = _source_by_id(active)
+    cat_colors = {int(k): v for k, v in (source or {}).get("cat_colors", {0: "#aaa"}).items()}
     q_norm = q.lower().replace(" ", "_")
     exact: list[list] = []
     prefix: list[list] = []
@@ -351,10 +506,61 @@ async def api_tags_search(q: str = "", limit: int = 25):
     return {
         "tags": [
             {"tag": t[0], "category": t[1], "count": t[2],
-             "color": _TAG_CAT_COLORS.get(t[1], "#aaa")}
+             "color": cat_colors.get(t[1], "#aaa")}
             for t in results
         ]
     }
+
+
+# ── Starred images ────────────────────────────────────────────────────────────
+
+class StarBody(BaseModel):
+    url: str
+    prompt: str = ""
+    negative: str = ""
+    model: str = ""
+    seed: int = -1
+    params: dict = {}
+
+
+@router.post("/imagegen/star")
+async def api_imagegen_star(body: StarBody, db=Depends(get_db)):
+    from ..models import StarredImage
+    existing = db.query(StarredImage).filter(StarredImage.url == body.url).first()
+    if existing:
+        return {"ok": True, "id": existing.id, "already": True}
+    img = StarredImage(url=body.url, prompt=body.prompt, negative=body.negative,
+                       model=body.model, seed=body.seed,
+                       params_json=_json.dumps(body.params))
+    db.add(img)
+    db.commit()
+    db.refresh(img)
+    return {"ok": True, "id": img.id}
+
+
+class UnstarBody(BaseModel):
+    url: str
+
+
+@router.post("/imagegen/unstar")
+async def api_imagegen_unstar(body: UnstarBody, db=Depends(get_db)):
+    from ..models import StarredImage
+    db.query(StarredImage).filter(StarredImage.url == body.url).delete()
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/imagegen/starred")
+async def api_imagegen_starred(db=Depends(get_db)):
+    from ..models import StarredImage
+    images = db.query(StarredImage).order_by(StarredImage.created_at.desc()).all()
+    return {"images": [
+        {"id": i.id, "url": i.url, "prompt": i.prompt, "negative": i.negative,
+         "model": i.model, "seed": i.seed,
+         "params": _json.loads(i.params_json or "{}"),
+         "created_at": i.created_at.isoformat()}
+        for i in images
+    ]}
 
 
 class ImagegenBody(BaseModel):
@@ -377,6 +583,10 @@ class ImagegenBody(BaseModel):
     init_strength: float = 0.6
     upscale_model: str = ""
     upscale_factor: float = 1.0
+    controlnet_image: str = ""
+    controlnet_strength: float = 0.8
+    controlnet_preprocessor: str = ""
+    controlnet_model: str = ""
 
 
 @router.post("/imagegen/generate")
@@ -393,6 +603,10 @@ async def api_imagegen_generate(body: ImagegenBody):
             clip_skip=body.clip_skip, init_image=body.init_image,
             init_strength=body.init_strength,
             upscale_model=body.upscale_model, upscale_factor=body.upscale_factor,
+            controlnet_image=body.controlnet_image,
+            controlnet_strength=body.controlnet_strength,
+            controlnet_preprocessor=body.controlnet_preprocessor,
+            controlnet_model=body.controlnet_model,
         )
         return {"url": urls[0] if urls else "", "urls": urls}
     except Exception as exc:
