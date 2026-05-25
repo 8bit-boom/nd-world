@@ -661,6 +661,17 @@
 .tag-ac-name em { color: var(--neon); font-style: normal; font-weight: bold; }
 .tag-ac-count { font-size: .7rem; color: var(--text-dim); white-space: nowrap; }
 .tag-ac-cat { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+/* Auto-resize prompt textareas */
+#ai-input { max-height: 160px; overflow-y: auto; }
+#ig-prompt { min-height: 72px; max-height: 400px; overflow-y: auto; }
+#ig-negative { min-height: 44px; max-height: 200px; overflow-y: auto; }
+
+/* Generation progress */
+#ig-progress-wrap { margin: .3rem 0; }
+#ig-progress-bar-track { height: 4px; background: var(--bg3); border-radius: 2px; overflow: hidden; }
+#ig-progress-bar { height: 100%; width: 0%; background: var(--neon); border-radius: 2px; transition: width .3s; }
+#ig-preview-thumb { max-height: 120px; border-radius: 4px; border: 1px solid var(--border); margin-top: .4rem; display: none; }
 </style>
 
 <div class="ai-tab-bar">
@@ -856,6 +867,18 @@
             <label class="ig-label">Seed (–1 = random)</label>
             <input type="number" id="ig-seed" class="ig-input-num" value="-1">
           </div>
+          <div>
+            <label class="ig-label">Variation seed <span style="color:var(--text-dim)">(–1 = off)</span></label>
+            <input type="number" id="ig-variation-seed" class="ig-input-num" value="-1"
+                   oninput="igUpdateVariationStrength()">
+          </div>
+          <div id="ig-variation-strength-row" style="display:none">
+            <label class="ig-label">Strength: <span id="ig-variation-str-val">0.00</span></label>
+            <div class="ig-range-row">
+              <input type="range" id="ig-variation-strength" min="0" max="1" step="0.05" value="0"
+                     oninput="document.getElementById('ig-variation-str-val').textContent=parseFloat(this.value).toFixed(2)">
+            </div>
+          </div>
         </div>
       </details>
 
@@ -864,20 +887,42 @@
         <summary>🔧 Advanced</summary>
         <div class="ig-section-body">
           <div>
-            <label class="ig-label">LoRA</label>
-            <div style="display:flex;gap:.25rem;margin-bottom:.3rem">
-              <select id="ig-lora-sel" class="ig-select" style="flex:1;font-size:.78rem"
-                      onchange="document.getElementById('ig-lora').value=this.value">
-                <option value="">— no LoRA —</option>
-              </select>
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.2rem">
+              <label class="ig-label" style="margin:0">LoRA (max 4)</label>
               <button class="ig-btn" type="button" onclick="igLoadLoras()" title="Refresh LoRA list"
-                      style="padding:.22rem .45rem;flex-shrink:0;font-size:.78rem;line-height:1">↺</button>
+                      style="padding:.12rem .35rem;font-size:.68rem;line-height:1">↺</button>
             </div>
-            <input type="text" id="ig-lora" class="ig-input-text" placeholder="or type name manually">
+            <div id="ig-lora-list"></div>
+            <button class="ig-btn" id="ig-add-lora-btn" onclick="igAddLora()"
+                    style="width:100%;margin-top:.2rem;font-size:.75rem;text-align:center">+ Add LoRA</button>
           </div>
           <div>
-            <label class="ig-label">LoRA weight</label>
-            <input type="number" id="ig-lora-weight" class="ig-input-num" value="0.8" step="0.05" min="-2" max="2">
+            <label class="ig-label">Refiner model <span style="color:var(--text-dim)">(SDXL)</span></label>
+            <div style="display:flex;gap:.25rem;margin-bottom:.3rem">
+              <select id="ig-refiner" class="ig-select" style="flex:1;font-size:.78rem">
+                <option value="">— none —</option>
+              </select>
+              <button class="ig-btn" type="button" onclick="igLoadRefiners()" title="Refresh"
+                      style="padding:.22rem .45rem;flex-shrink:0;font-size:.78rem;line-height:1">↺</button>
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">Switch at: <span id="ig-refiner-ctrl-val">0.80</span></label>
+            <div class="ig-range-row">
+              <input type="range" id="ig-refiner-ctrl" min="0" max="1" step="0.05" value="0.8"
+                     oninput="document.getElementById('ig-refiner-ctrl-val').textContent=parseFloat(this.value).toFixed(2)">
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">Seamless tiling</label>
+            <div style="display:flex;gap:.75rem;align-items:center">
+              <label style="display:flex;align-items:center;gap:.3rem;font-size:.82rem;cursor:pointer">
+                <input type="checkbox" id="ig-seamless-x"> Tile X
+              </label>
+              <label style="display:flex;align-items:center;gap:.3rem;font-size:.82rem;cursor:pointer">
+                <input type="checkbox" id="ig-seamless-y"> Tile Y
+              </label>
+            </div>
           </div>
           <div>
             <label class="ig-label">VAE override</label>
@@ -955,14 +1000,14 @@
       <!-- Full prompt -->
       <div class="ig-field tag-ac-wrap" style="flex:1;min-height:0">
         <label class="ig-label">Full prompt (editable)</label>
-        <textarea id="ig-prompt" rows="4" placeholder="Detailed image generation prompt… (type a tag to autocomplete)"></textarea>
+        <textarea id="ig-prompt" placeholder="Detailed image generation prompt… (type a tag to autocomplete)" oninput="autoResize(this)"></textarea>
         <div class="tag-ac-dropdown" id="tag-ac-pos" style="display:none"></div>
       </div>
 
       <!-- Negative -->
       <div class="ig-field tag-ac-wrap">
         <label class="ig-label">Negative prompt</label>
-        <textarea id="ig-negative" rows="2">blurry, bad anatomy, watermark, text, low quality, deformed</textarea>
+        <textarea id="ig-negative" oninput="autoResize(this)">blurry, bad anatomy, watermark, text, low quality, deformed</textarea>
         <div class="tag-ac-dropdown" id="tag-ac-neg" style="display:none"></div>
       </div>
 
@@ -1031,10 +1076,75 @@
         </div>
       </details>
 
+      <!-- Highres Fix -->
+      <details class="ig-collapsible" id="ig-hires-section">
+        <summary>🔬 Highres Fix</summary>
+        <div class="ig-section-body">
+          <div>
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;cursor:pointer">
+              <input type="checkbox" id="ig-hires-enable" onchange="_igHiresFix=this.checked;igUpdateHiresState()">
+              Enable Highres Fix
+            </label>
+          </div>
+          <div id="ig-hires-body" style="opacity:.4;pointer-events:none;display:flex;flex-direction:column;gap:.35rem">
+            <div>
+              <label class="ig-label">Scale</label>
+              <div class="ig-batch-row">
+                <button class="ig-batch-btn" data-hires-scale="1.5" onclick="igSetHiresScale(this)">×1.5</button>
+                <button class="ig-batch-btn ig-batch-active" data-hires-scale="2" onclick="igSetHiresScale(this)">×2</button>
+                <button class="ig-batch-btn" data-hires-scale="3" onclick="igSetHiresScale(this)">×3</button>
+              </div>
+            </div>
+            <div class="ig-size-row">
+              <select id="ig-hires-w" class="ig-select">
+                <option value="1024">1024 W</option>
+                <option value="1152">1152 W</option>
+                <option value="1216">1216 W</option>
+                <option value="1344">1344 W</option>
+                <option value="1536">1536 W</option>
+                <option value="2048">2048 W</option>
+              </select>
+              <span class="ig-size-sep">×</span>
+              <select id="ig-hires-h" class="ig-select">
+                <option value="1024">1024 H</option>
+                <option value="1152">1152 H</option>
+                <option value="1216">1216 H</option>
+                <option value="1344">1344 H</option>
+                <option value="1536">1536 H</option>
+                <option value="2048">2048 H</option>
+              </select>
+            </div>
+            <div>
+              <label class="ig-label">Denoise: <span id="ig-hires-denoise-val">0.50</span></label>
+              <div class="ig-range-row">
+                <input type="range" id="ig-hires-denoise" min="0.1" max="0.9" step="0.05" value="0.5"
+                       oninput="document.getElementById('ig-hires-denoise-val').textContent=parseFloat(this.value).toFixed(2)">
+              </div>
+            </div>
+            <div>
+              <label class="ig-label">Extra steps <span style="color:var(--text-dim)">(0 = same as main)</span></label>
+              <input type="number" id="ig-hires-steps" class="ig-input-num" value="0" min="0" max="60">
+            </div>
+          </div>
+        </div>
+      </details>
+
       <!-- Generate row -->
       <div class="ig-generate-row">
         <button class="ig-generate-btn" id="ig-generate-btn" onclick="igGenerate()">🎨 Generate</button>
         <span id="ig-status" style="display:none;font-size:.82rem;color:var(--neon)">⏳ Generating…</span>
+      </div>
+
+      <!-- Progress bar -->
+      <div id="ig-progress-wrap" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.25rem">
+          <span style="font-size:.75rem;color:var(--neon)">Generating…</span>
+          <span id="ig-progress-text" style="font-size:.72rem;color:var(--text-dim)"></span>
+        </div>
+        <div id="ig-progress-bar-track">
+          <div id="ig-progress-bar"></div>
+        </div>
+        <img id="ig-preview-thumb" src="" alt="preview">
       </div>
 
       <div id="ig-error" style="display:none;color:#c44;font-size:.82rem;padding:.3rem 0"></div>
@@ -1836,7 +1946,7 @@ function handleKey(e) {
 
 function autoResize(el) {
   el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  el.style.height = el.scrollHeight + 'px';
 }
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
@@ -1867,7 +1977,11 @@ let _igUpscaleFactor = 2.0;
 let _igInitImageB64 = '';
 let _igCNImageB64 = '';
 let _igLastUrls = [];
-let _igStarred = new Set(); // URLs of starred images
+let _igStarred = new Set();
+let _igHiresFix = false;
+let _igProgressTimer = null;
+let _igLoras = [{name: '', weight: '0.8'}];
+let _igLoraList = [];
 
 function igSetSize(w, h, btn) {
   document.getElementById('ig-width').value = w;
@@ -1944,12 +2058,19 @@ function igClearCN() {
     } else {
       sel.innerHTML = '<option value="">— no models found —</option>';
     }
+    igRenderLoras();
     igLoadSamplersSchedulers();
     igLoadLoras();
     igLoadUpscalers();
+    igLoadRefiners();
     igLoadHistory();
     igLoadSourcesPanel();
     igLoadStarred();
+    // Init auto-resize on prompt textareas
+    const promptEl = document.getElementById('ig-prompt');
+    const negEl = document.getElementById('ig-negative');
+    if (promptEl) autoResize(promptEl);
+    if (negEl) autoResize(negEl);
   } catch (e) {
     console.warn('igInit error', e);
   }
@@ -2026,9 +2147,19 @@ async function igGenerate() {
   results.style.display = 'none';
   grid.innerHTML = '';
 
+  const progressWrap = document.getElementById('ig-progress-wrap');
+  if (progressWrap) {
+    progressWrap.style.display = 'block';
+    const pb = document.getElementById('ig-progress-bar');
+    if (pb) pb.style.width = '0%';
+    document.getElementById('ig-progress-text').textContent = '';
+    const thumb = document.getElementById('ig-preview-thumb');
+    if (thumb) { thumb.style.display = 'none'; thumb.src = ''; }
+  }
+  _igProgressTimer = setInterval(igPollProgress, 1200);
+
   try {
-    const loraName   = (document.getElementById('ig-lora')?.value || '').trim();
-    const loraWeight = document.getElementById('ig-lora-weight')?.value || '0.8';
+    const activeLoras = _igLoras.filter(l => (l.name || '').trim());
     const body = {
       prompt,
       negative:    document.getElementById('ig-negative').value,
@@ -2041,8 +2172,8 @@ async function igGenerate() {
       sampler:     document.getElementById('ig-sampler').value,
       scheduler:   document.getElementById('ig-scheduler').value,
       batch_size:  _igBatchSize,
-      loras:       loraName,
-      lora_weights: loraName ? loraWeight : '',
+      loras:       activeLoras.map(l => l.name).join(','),
+      lora_weights: activeLoras.map(l => l.weight || '0.8').join(','),
       vae:         (document.getElementById('ig-vae')?.value || '').trim(),
       clip_skip:   parseInt(document.getElementById('ig-clipskip')?.value || '-1'),
       init_image:  _igInitImageB64,
@@ -2053,6 +2184,17 @@ async function igGenerate() {
       controlnet_strength: parseFloat(document.getElementById('ig-cn-strength')?.value || '0.8'),
       controlnet_preprocessor: (document.getElementById('ig-cn-preprocessor')?.value || ''),
       controlnet_model: (document.getElementById('ig-cn-model')?.value || '').trim(),
+      hiresfix: _igHiresFix,
+      hireswidth: _igHiresFix ? parseInt(document.getElementById('ig-hires-w')?.value || 0) : 0,
+      hiresheight: _igHiresFix ? parseInt(document.getElementById('ig-hires-h')?.value || 0) : 0,
+      hiresdenoisestrength: _igHiresFix ? parseFloat(document.getElementById('ig-hires-denoise')?.value || 0.5) : 0.5,
+      hiressteps: _igHiresFix ? parseInt(document.getElementById('ig-hires-steps')?.value || 0) : 0,
+      refiner_model: (document.getElementById('ig-refiner')?.value || '').trim(),
+      refiner_control: parseFloat(document.getElementById('ig-refiner-ctrl')?.value || 0.8),
+      seamless_x: document.getElementById('ig-seamless-x')?.checked || false,
+      seamless_y: document.getElementById('ig-seamless-y')?.checked || false,
+      variation_seed: parseInt(document.getElementById('ig-variation-seed')?.value || '-1'),
+      variation_strength: parseFloat(document.getElementById('ig-variation-strength')?.value || '0'),
     };
 
     const r = await fetch('/api/ai/imagegen/generate', {
@@ -2104,6 +2246,9 @@ async function igGenerate() {
       : msg);
     err.style.display = 'block';
   } finally {
+    clearInterval(_igProgressTimer);
+    _igProgressTimer = null;
+    if (progressWrap) progressWrap.style.display = 'none';
     btn.disabled = false;
     status.style.display = 'none';
   }
@@ -2131,25 +2276,147 @@ async function igLoadSamplersSchedulers() {
   } catch(e) { console.warn('igLoadSamplersSchedulers', e); }
 }
 
-// ── LoRA dynamic loading ───────────────────────────────────────────────────────
+// ── LoRA multi-stack ──────────────────────────────────────────────────────────
+
+function igRenderLoras() {
+  const container = document.getElementById('ig-lora-list');
+  if (!container) return;
+  container.innerHTML = '';
+  _igLoras.forEach((lora, idx) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:.22rem;align-items:center;margin-bottom:.18rem';
+
+    const sel = document.createElement('select');
+    sel.className = 'ig-select';
+    sel.style.cssText = 'flex:1;font-size:.74rem';
+    sel.innerHTML = '<option value="">— none —</option>' +
+      _igLoraList.map(l => {
+        const name = l.length > 34 ? '…' + l.slice(-31) : l;
+        return `<option value="${l}"${l === lora.name ? ' selected' : ''} title="${l}">${name}</option>`;
+      }).join('');
+    if (lora.name && !_igLoraList.includes(lora.name)) {
+      sel.innerHTML += `<option value="${lora.name}" selected title="${lora.name}">${lora.name.slice(-28)}</option>`;
+    }
+    sel.value = lora.name;
+    sel.onchange = () => { _igLoras[idx].name = sel.value; };
+
+    const wt = document.createElement('input');
+    wt.type = 'number'; wt.className = 'ig-input-num';
+    wt.style.cssText = 'width:54px;flex-shrink:0';
+    wt.value = lora.weight; wt.step = '0.05'; wt.min = '-2'; wt.max = '2';
+    wt.oninput = () => { _igLoras[idx].weight = wt.value; };
+
+    const rm = document.createElement('button');
+    rm.className = 'ig-btn';
+    rm.style.cssText = 'padding:.12rem .28rem;font-size:.72rem;flex-shrink:0;color:#888;border-color:#444';
+    rm.textContent = '✕'; rm.title = 'Remove';
+    rm.onclick = () => igRemoveLora(idx);
+
+    row.appendChild(sel); row.appendChild(wt); row.appendChild(rm);
+    container.appendChild(row);
+  });
+  const addBtn = document.getElementById('ig-add-lora-btn');
+  if (addBtn) addBtn.style.display = _igLoras.length >= 4 ? 'none' : '';
+}
+
+function igAddLora() {
+  if (_igLoras.length >= 4) return;
+  _igLoras.push({name: '', weight: '0.8'});
+  igRenderLoras();
+}
+
+function igRemoveLora(idx) {
+  _igLoras.splice(idx, 1);
+  if (!_igLoras.length) _igLoras = [{name: '', weight: '0.8'}];
+  igRenderLoras();
+}
 
 async function igLoadLoras() {
-  const sel = document.getElementById('ig-lora-sel');
-  if (!sel) return;
-  const cur = document.getElementById('ig-lora')?.value || '';
-  sel.innerHTML = '<option value="">⏳ Loading…</option>';
   try {
     const d = await fetch('/api/ai/imagegen/loras').then(r => r.json());
-    sel.innerHTML = '<option value="">— no LoRA —</option>';
-    if (d.loras && d.loras.length) {
-      for (const l of d.loras) {
-        const name = l.length > 44 ? '…' + l.slice(-41) : l;
-        sel.innerHTML += `<option value="${l}"${l === cur ? ' selected' : ''} title="${l}">${name}</option>`;
+    _igLoraList = d.loras || [];
+    igRenderLoras();
+  } catch(e) {
+    _igLoraList = [];
+    igRenderLoras();
+  }
+}
+
+// ── Refiner loading ───────────────────────────────────────────────────────────
+
+async function igLoadRefiners() {
+  const sel = document.getElementById('ig-refiner');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">⏳ Loading…</option>';
+  try {
+    const d = await fetch('/api/ai/imagegen/refiners').then(r => r.json());
+    sel.innerHTML = '<option value="">— none —</option>';
+    if (d.refiners && d.refiners.length) {
+      for (const r of d.refiners) {
+        const name = r.length > 44 ? '…' + r.slice(-41) : r;
+        sel.innerHTML += `<option value="${r}" title="${r}">${name}</option>`;
       }
     }
   } catch(e) {
     sel.innerHTML = '<option value="">— unavailable —</option>';
   }
+}
+
+// ── Highres Fix helpers ───────────────────────────────────────────────────────
+
+function igUpdateHiresState() {
+  const body = document.getElementById('ig-hires-body');
+  if (body) {
+    body.style.opacity = _igHiresFix ? '1' : '.4';
+    body.style.pointerEvents = _igHiresFix ? '' : 'none';
+  }
+}
+
+function igSetHiresScale(btn) {
+  const scale = parseFloat(btn.dataset.hiresScale);
+  document.querySelectorAll('[data-hires-scale]').forEach(b => b.classList.remove('ig-batch-active'));
+  btn.classList.add('ig-batch-active');
+  const w = parseInt(document.getElementById('ig-width')?.value || 512);
+  const h = parseInt(document.getElementById('ig-height')?.value || 512);
+  _setClosestOpt(document.getElementById('ig-hires-w'), Math.round(w * scale / 64) * 64);
+  _setClosestOpt(document.getElementById('ig-hires-h'), Math.round(h * scale / 64) * 64);
+}
+
+function _setClosestOpt(sel, val) {
+  if (!sel) return;
+  let best = null, bestDiff = Infinity;
+  for (const opt of sel.options) {
+    const diff = Math.abs(parseInt(opt.value) - val);
+    if (diff < bestDiff) { bestDiff = diff; best = opt.value; }
+  }
+  if (best !== null) sel.value = best;
+}
+
+// ── Variation seed helper ─────────────────────────────────────────────────────
+
+function igUpdateVariationStrength() {
+  const v = parseInt(document.getElementById('ig-variation-seed')?.value || '-1');
+  const row = document.getElementById('ig-variation-strength-row');
+  if (row) row.style.display = v >= 0 ? '' : 'none';
+}
+
+// ── Progress polling ──────────────────────────────────────────────────────────
+
+async function igPollProgress() {
+  try {
+    const d = await fetch('/api/ai/imagegen/progress').then(r => r.json());
+    const step = d.step || 0, total = d.total || 0;
+    const bar = document.getElementById('ig-progress-bar');
+    const txt = document.getElementById('ig-progress-text');
+    if (total > 0) {
+      if (bar) bar.style.width = Math.round(step / total * 100) + '%';
+      if (txt) txt.textContent = `Step ${step} / ${total}`;
+    }
+    if (d.preview) {
+      const thumb = document.getElementById('ig-preview-thumb');
+      if (thumb) { thumb.src = 'data:image/png;base64,' + d.preview; thumb.style.display = 'block'; }
+    }
+  } catch(e) {}
 }
 
 // ── Upscaler dynamic loading ───────────────────────────────────────────────────
@@ -2272,8 +2539,14 @@ function igReuseParams(idx) {
     set('ig-seed',       p.seed);
     set('ig-sampler',    p.sampler);
     set('ig-scheduler',  p.scheduler);
-    set('ig-lora',       p.loras || '');
-    set('ig-lora-weight', p.lora_weights || '0.8');
+    if (p.loras) {
+      const names = p.loras.split(',').map(s => s.trim()).filter(Boolean);
+      const wts   = (p.lora_weights || '').split(',').map(s => s.trim());
+      _igLoras = names.map((n, i) => ({name: n, weight: wts[i] || '0.8'}));
+    } else {
+      _igLoras = [{name: '', weight: '0.8'}];
+    }
+    igRenderLoras();
     set('ig-vae',        p.vae || '');
     set('ig-clipskip',   p.clip_skip || '-1');
     set('ig-upscaler',   p.upscale_model || '');

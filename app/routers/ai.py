@@ -248,6 +248,16 @@ async def api_imagegen_upscalers():
     return {"upscalers": await _ai.imagegen_upscalers()}
 
 
+@router.get("/imagegen/refiners")
+async def api_imagegen_refiners():
+    return {"refiners": await _ai.imagegen_refiners()}
+
+
+@router.get("/imagegen/progress")
+async def api_imagegen_progress():
+    return await _ai.imagegen_progress()
+
+
 # ── Tag sources ───────────────────────────────────────────────────────────────
 
 _BUILTIN_SOURCES = [
@@ -587,6 +597,17 @@ class ImagegenBody(BaseModel):
     controlnet_strength: float = 0.8
     controlnet_preprocessor: str = ""
     controlnet_model: str = ""
+    hiresfix: bool = False
+    hireswidth: int = 0
+    hiresheight: int = 0
+    hiresdenoisestrength: float = 0.5
+    hiressteps: int = 0
+    refiner_model: str = ""
+    refiner_control: float = 0.8
+    seamless_x: bool = False
+    seamless_y: bool = False
+    variation_seed: int = -1
+    variation_strength: float = 0.0
 
 
 @router.post("/imagegen/generate")
@@ -607,6 +628,14 @@ async def api_imagegen_generate(body: ImagegenBody):
             controlnet_strength=body.controlnet_strength,
             controlnet_preprocessor=body.controlnet_preprocessor,
             controlnet_model=body.controlnet_model,
+            hiresfix=body.hiresfix, hireswidth=body.hireswidth,
+            hiresheight=body.hiresheight,
+            hiresdenoisestrength=body.hiresdenoisestrength,
+            hiressteps=body.hiressteps,
+            refiner_model=body.refiner_model, refiner_control=body.refiner_control,
+            seamless_x=body.seamless_x, seamless_y=body.seamless_y,
+            variation_seed=body.variation_seed,
+            variation_strength=body.variation_strength,
         )
         return {"url": urls[0] if urls else "", "urls": urls}
     except Exception as exc:
