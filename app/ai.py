@@ -360,6 +360,24 @@ async def imagegen_upscalers() -> list:
         return []
 
 
+async def imagegen_ipadapter_models() -> list:
+    t, u = _get_type(), _get_url()
+    if not t or not u:
+        return []
+    try:
+        async with _httpx.AsyncClient(timeout=8) as c:
+            if t == "swarmui":
+                sid = await _swarmui_session(u, c)
+                r = await c.post(f"{u}/API/ListModels",
+                                 json={"session_id": sid, "path": "IPAdapter", "depth": 10})
+                data = r.json()
+                return [m["name"] for m in data.get("files", []) if m.get("name")]
+            else:
+                return []
+    except Exception:
+        return []
+
+
 async def imagegen_refiners() -> list:
     t, u = _get_type(), _get_url()
     if not t or not u:
@@ -423,7 +441,19 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                             seamless_x: bool = False,
                             seamless_y: bool = False,
                             variation_seed: int = -1,
-                            variation_strength: float = 0.0) -> list[str]:
+                            variation_strength: float = 0.0,
+                            freeu_enabled: bool = False,
+                            freeu_b1: float = 1.3,
+                            freeu_b2: float = 1.4,
+                            freeu_s1: float = 0.9,
+                            freeu_s2: float = 0.2,
+                            dynthresh_enabled: bool = False,
+                            dynthresh_mimic_scale: float = 7.0,
+                            dynthresh_percentile: float = 0.999,
+                            cfg_rescale: float = 0.0,
+                            ipadapter_image: str = "",
+                            ipadapter_strength: float = 0.6,
+                            ipadapter_model: str = "") -> list[str]:
     import copy, random, asyncio, base64 as _b64, uuid as _uuid
     t, u = _get_type(), _get_url()
     ai_img_dir = Path(uploads_dir) / "ai-images"
@@ -487,6 +517,22 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
             if variation_seed >= 0 and variation_strength > 0:
                 payload["variationseed"] = variation_seed
                 payload["variationseedstrength"] = variation_strength
+            if freeu_enabled:
+                payload["freeu_b1"] = freeu_b1
+                payload["freeu_b2"] = freeu_b2
+                payload["freeu_s1"] = freeu_s1
+                payload["freeu_s2"] = freeu_s2
+            if dynthresh_enabled:
+                payload["dynamicthresh_enabled"] = True
+                payload["dynamicthresh_mimic_scale"] = dynthresh_mimic_scale
+                payload["dynamicthresh_threshold_percentile"] = dynthresh_percentile
+            if cfg_rescale > 0:
+                payload["cfgrescale"] = cfg_rescale
+            if ipadapter_image:
+                payload["ipadapterimage"] = ipadapter_image
+                payload["ipadapterstrength"] = ipadapter_strength
+                if ipadapter_model:
+                    payload["ipadaptermodel"] = ipadapter_model
 
             gr = await c.post(f"{u}/API/GenerateText2Image", json=payload)
             _log.info("SwarmUI generate status=%s body=%.400s", gr.status_code, gr.text)
