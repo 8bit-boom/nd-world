@@ -274,6 +274,7 @@
 /* ── Mobile: hide sidebar (≤700px existing) + full mobile overhaul ── */
 @media (max-width: 700px) {
   .ai-sidebar { display: none; }
+  #mobile-rag-toggle-row { display: flex !important; }
 }
 
 @media (max-width: 768px) {
@@ -780,6 +781,34 @@
     <div class="ai-input-bar">
       <textarea id="ai-input" rows="2" placeholder="Ask anything… (Enter to send, Shift+Enter for new line)" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
       <button id="ai-send" onclick="sendMessage()">Send ↵</button>
+    </div>
+
+    <!-- Mobile RAG settings bar (hidden on desktop via CSS) -->
+    <div id="mobile-rag-bar" style="display:none;padding:.45rem .9rem;background:var(--bg2);border-top:1px solid var(--border);flex-direction:column;gap:.35rem">
+      <div style="display:flex;align-items:center;gap:.4rem">
+        <span id="ctx-status-mob" style="font-size:.72rem;color:var(--text-dim);flex:1">○ Ready</span>
+        <button onclick="document.getElementById('mobile-rag-bar').style.display='none'" style="background:none;border:none;color:var(--text-dim);font-size:.85rem;cursor:pointer;padding:0 .2rem">✕</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:.4rem">
+        <label style="font-size:.72rem;color:var(--text-dim);white-space:nowrap;min-width:4rem" title="Max entities fetched per message">Entities:</label>
+        <input type="range" id="ctx-limit-mob" min="5" max="250" step="5" value="25"
+               style="flex:1;accent-color:var(--neon);cursor:pointer"
+               oninput="syncRagSliders('entities',this.value)">
+        <span id="ctx-limit-mob-val" style="font-size:.72rem;color:var(--neon);min-width:3ch;text-align:right">25</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:.4rem">
+        <label style="font-size:.72rem;color:var(--text-dim);white-space:nowrap;min-width:4rem" title="Extra notes included per message (0 = off)">Notes:</label>
+        <input type="range" id="notes-limit-mob" min="0" max="20" step="1" value="5"
+               style="flex:1;accent-color:var(--neon);cursor:pointer"
+               oninput="syncRagSliders('notes',this.value)">
+        <span id="notes-limit-mob-val" style="font-size:.72rem;color:var(--neon);min-width:3ch;text-align:right">5</span>
+      </div>
+    </div>
+
+    <!-- Mobile RAG toggle + status row -->
+    <div id="mobile-rag-toggle-row" style="display:none;padding:.3rem .9rem;border-top:1px solid var(--border);background:var(--bg);align-items:center;gap:.5rem">
+      <span id="ctx-status-mob2" style="font-size:.72rem;color:var(--text-dim);flex:1">○ Ready</span>
+      <button onclick="toggleMobileRag()" style="font-size:.7rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:4px;padding:.2rem .5rem;cursor:pointer">⚙ RAG</button>
     </div>
   </div>
 </div>
@@ -1873,10 +1902,57 @@ async function saveNote(text, btn) {
   }
 }
 
+function toggleMobileRag() {
+  const bar = document.getElementById('mobile-rag-bar');
+  const showing = bar.style.display === 'flex';
+  bar.style.display = showing ? 'none' : 'flex';
+}
+
+function syncRagSliders(type, val) {
+  if (type === 'entities') {
+    const v = val == 250 ? 'max' : val;
+    document.getElementById('ctx-limit-mob-val').textContent = v;
+    const desk = document.getElementById('ctx-limit');
+    if (desk) { desk.value = val; document.getElementById('ctx-limit-val').textContent = v; }
+  } else {
+    const v = val == 0 ? 'off' : val;
+    document.getElementById('notes-limit-mob-val').textContent = v;
+    const desk = document.getElementById('notes-limit');
+    if (desk) { desk.value = val; document.getElementById('notes-limit-val').textContent = v; }
+  }
+}
+
+function _getMobileCtxEl() {
+  const isMobile = window.innerWidth <= 700;
+  return isMobile
+    ? document.getElementById('ctx-status-mob2')
+    : document.getElementById('ctx-status');
+}
+
+function _setCtxStatus(color, text) {
+  ['ctx-status','ctx-status-mob','ctx-status-mob2'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.style.color = color; el.textContent = text; }
+  });
+}
+
+function _getCtxLimit() {
+  const mob = document.getElementById('ctx-limit-mob');
+  const desk = document.getElementById('ctx-limit');
+  const el = (window.innerWidth <= 700 && mob) ? mob : desk;
+  return parseInt(el?.value) || 25;
+}
+
+function _getNotesLimit() {
+  const mob = document.getElementById('notes-limit-mob');
+  const desk = document.getElementById('notes-limit');
+  const el = (window.innerWidth <= 700 && mob) ? mob : desk;
+  return parseInt(el?.value) || 0;
+}
+
 async function sendMessage() {
   const input = document.getElementById('ai-input');
   const btn = document.getElementById('ai-send');
-  const ctxEl = document.getElementById('ctx-status');
   const aiBar = document.getElementById('ai-bar');
   const text = input.value.trim();
   if (!text || activeReader) return;
@@ -1890,8 +1966,7 @@ async function sendMessage() {
   btn.classList.add('stopping');
   btn.onclick = stopStream;
   aiBar.style.display = 'block'; aiBar.className = 'active';
-  ctxEl.style.color = 'var(--text-dim)';
-  ctxEl.textContent = '⏳ Finding lore…';
+  _setCtxStatus('var(--text-dim)', '⏳ Finding lore…');
   const thinking = addMessage('assistant', '<span class="thinking-dots"><span></span><span></span><span></span></span>', true);
 
   try {
@@ -1901,20 +1976,18 @@ async function sendMessage() {
       const cr = await fetch('/api/ai/world-context-smart', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: text, limit: parseInt(document.getElementById('ctx-limit').value) || 25, notes_limit: parseInt(document.getElementById('notes-limit').value) || 0 })
+        body: JSON.stringify({ query: text, limit: _getCtxLimit(), notes_limit: _getNotesLimit() })
       });
       const cd = await cr.json();
       ctx = cd.context || '';
-      ctxEl.style.color = ctx ? '#4f4' : 'var(--text-dim)';
       if (ctx) {
         const noteLabel = cd.notes ? ` + ${cd.notes} note${cd.notes > 1 ? 's' : ''}` : '';
-        ctxEl.textContent = `✓ ${cd.count} entities${noteLabel}`;
+        _setCtxStatus('#4f4', `✓ ${cd.count} entities${noteLabel}`);
       } else {
-        ctxEl.textContent = '○ No matching lore';
+        _setCtxStatus('var(--text-dim)', '○ No matching lore');
       }
     } catch(_) {
-      ctxEl.style.color = '#f55';
-      ctxEl.textContent = '✗ Lore unavailable';
+      _setCtxStatus('#f55', '✗ Lore unavailable');
     }
 
     const messagesWithCtx = ctx ? [
