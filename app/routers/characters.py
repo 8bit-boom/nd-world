@@ -14,8 +14,9 @@ from sqlalchemy.orm import Session
 
 from ..constants import (
     KIND_ICONS, KINDS, SUBTYPES, XP_THRESHOLDS,
-    ND_DEFAULT_STATS, ND_DEFAULT_SKILLS, ND_DEFAULT_CURRENCY,
+    ND_DEFAULT_STATS, ND_DEFAULT_CURRENCY,
 )
+# N&D has no skill list — ND_DEFAULT_SKILLS removed
 from ..database import get_db
 from ..models import PlayerCharacter, World
 
@@ -41,12 +42,13 @@ def _world_ctx(db: Session, active_world: Optional[str]):
 
 
 def _derived(pc: PlayerCharacter) -> dict:
-    stats    = json.loads(pc.stats_json    or "[]")
-    skills   = json.loads(pc.skills_json   or "[]")
-    currency = json.loads(pc.currency_json or "[]")
-    equipment = json.loads(pc.equipment_json or "[]")
-    feats     = json.loads(pc.feats_json     or "[]")
-    attacks   = json.loads(pc.attacks_json   or "[]")
+    stats     = json.loads(pc.stats_json      or "[]")
+    currency  = json.loads(pc.currency_json   or "[]")
+    equipment = json.loads(pc.equipment_json  or "[]")
+    feats     = json.loads(pc.feats_json      or "[]")
+    attacks   = json.loads(pc.attacks_json    or "[]")
+    cyberware = json.loads(getattr(pc, "cyberware_json",  None) or "[]")
+    conditions = json.loads(getattr(pc, "conditions_json", None) or "[]")
 
     lvl = min(pc.level, 20)
     xp_lo = XP_THRESHOLDS[lvl - 1]
@@ -61,35 +63,48 @@ def _derived(pc: PlayerCharacter) -> dict:
         for item in equipment
     )
 
-    # Build stat lookup for skill display
-    stat_map = {s["id"]: s for s in stats}
+    # N&D derived attributes
+    stat_val = {s["id"]: int(s.get("value", 0)) for s in stats}
+    phys = (stat_val.get("str", 0) + stat_val.get("dex", 0)
+            + stat_val.get("bod", 0) + stat_val.get("per", 0))
+    ment = (stat_val.get("wil", 0) + stat_val.get("int", 0)
+            + stat_val.get("cha", 0) + stat_val.get("itu", 0))
+    hp_max_derived    = phys + 10
+    shock_max_derived = ment
+    ca_derived        = stat_val.get("wil", 0) + stat_val.get("bod", 0)
+    speed_derived     = stat_val.get("dex", 0) + stat_val.get("itu", 0)
 
-    # Annotate skills with stat label for display
-    annotated_skills = []
-    for sk in skills:
-        stat = stat_map.get(sk.get("stat_id", ""), {})
-        annotated_skills.append({
-            **sk,
-            "stat_abbr": stat.get("abbr", sk.get("stat_id", "").upper()),
-            "stat_label": stat.get("label", ""),
-        })
+    shock_max     = getattr(pc, "shock_max",     0) or shock_max_derived
+    shock_current = getattr(pc, "shock_current", 0)
+    pp_current    = getattr(pc, "pp_current",    0)
+    mp_current    = getattr(pc, "mp_current",    0)
 
-    secondary = None
-    if getattr(pc, "secondary_resource_name", ""):
-        secondary = {
-            "name": pc.secondary_resource_name,
-            "max": pc.secondary_resource_max,
-            "current": pc.secondary_resource_current,
-        }
+    secondary = {
+        "name": "Shock",
+        "max": shock_max,
+        "current": shock_current,
+    }
 
     return {
         "stats": stats,
-        "skills": annotated_skills,
         "currency": currency,
         "secondary": secondary,
         "xp_lo": xp_lo, "xp_hi": xp_hi, "xp_pct": xp_pct,
         "equipment": equipment, "feats": feats, "attacks": attacks,
         "total_weight": total_weight,
+        "cyberware": cyberware,
+        "conditions": conditions,
+        "phys": phys, "ment": ment,
+        "hp_max_derived": hp_max_derived,
+        "shock_max_derived": shock_max_derived,
+        "ca_derived": ca_derived,
+        "speed_derived": speed_derived,
+        "shock_max": shock_max,
+        "shock_current": shock_current,
+        "pp_current": pp_current,
+        "mp_current": mp_current,
+        "minor_edge": getattr(pc, "minor_edge", "") or "",
+        "major_edge": getattr(pc, "major_edge", "") or "",
     }
 
 
@@ -100,43 +115,30 @@ def _apply_form(pc: PlayerCharacter, data: dict):
     pc.name        = gs("name") or "Unnamed"
     pc.player_name = gs("player_name")
     pc.race        = gs("race")
-    pc.char_class  = gs("char_class")
-    pc.subclass    = gs("subclass")
+    pc.char_class  = gs("char_class")   # profession in N&D
     pc.level       = max(1, min(20, gi("level", 1)))
     pc.xp          = max(0, gi("xp"))
-    pc.background  = gs("background")
-    pc.alignment   = gs("alignment")
-    pc.max_hp      = max(1, gi("max_hp", 10))
-    pc.current_hp  = gi("current_hp", pc.max_hp)
-    pc.temp_hp     = max(0, gi("temp_hp"))
-    pc.armor_class = max(0, gi("armor_class", 10))
-    pc.speed       = max(0, gi("speed", 30))
-    pc.hit_dice    = gs("hit_dice", "1d8")
-    pc.armor_profs  = gs("armor_profs")
-    pc.weapon_profs = gs("weapon_profs")
-    pc.tool_profs   = gs("tool_profs")
-    pc.languages    = gs("languages")
-    pc.personality_traits = gs("personality_traits")
-    pc.ideals       = gs("ideals")
-    pc.bonds        = gs("bonds")
-    pc.flaws        = gs("flaws")
-    pc.backstory    = gs("backstory")
-    pc.notes        = gs("notes")
-    pc.age          = gs("age")
-    pc.height       = gs("height")
-    pc.weight_app   = gs("weight_app")
-    pc.eyes         = gs("eyes")
-    pc.skin         = gs("skin")
-    pc.hair         = gs("hair")
+    pc.backstory   = gs("backstory")
+    pc.notes       = gs("notes")
 
-    # Secondary resource
-    pc.secondary_resource_name    = gs("secondary_resource_name")
-    pc.secondary_resource_max     = max(0, gi("secondary_resource_max"))
-    pc.secondary_resource_current = max(0, gi("secondary_resource_current"))
+    # HP
+    pc.max_hp     = max(1, gi("max_hp", 10))
+    pc.current_hp = gi("current_hp", pc.max_hp)
+
+    # N&D resources
+    pc.shock_max     = max(0, gi("shock_max"))
+    pc.shock_current = max(0, gi("shock_current"))
+    pc.pp_current    = max(0, gi("pp_current"))
+    pc.mp_current    = max(0, gi("mp_current"))
+
+    # Edges
+    pc.minor_edge = gs("minor_edge")
+    pc.major_edge = gs("major_edge")
 
     # JSON fields
     for field in ("stats_json", "skills_json", "currency_json",
-                  "equipment_json", "feats_json", "attacks_json"):
+                  "equipment_json", "feats_json", "attacks_json",
+                  "cyberware_json", "conditions_json"):
         raw = data.get(field, "[]") or "[]"
         try:
             json.loads(raw)
@@ -189,10 +191,9 @@ def character_new_form(request: Request, db: Session = Depends(get_db), active_w
         "request": request, "world": world, "worlds": worlds,
         "pc": None,
         "nd_default_stats": ND_DEFAULT_STATS,
-        "nd_default_skills": ND_DEFAULT_SKILLS,
         "nd_default_currency": ND_DEFAULT_CURRENCY,
-        "stats": [], "skills": [], "currency": [],
-        "equipment": [], "feats": [], "attacks": [],
+        "stats": [], "currency": [],
+        "equipment": [], "feats": [],
     })
 
 
@@ -247,14 +248,12 @@ def character_edit_form(pc_id: int, request: Request, db: Session = Depends(get_
         "request": request, "world": world, "worlds": worlds,
         "pc": pc,
         "nd_default_stats": ND_DEFAULT_STATS,
-        "nd_default_skills": ND_DEFAULT_SKILLS,
         "nd_default_currency": ND_DEFAULT_CURRENCY,
-        "stats":     json.loads(pc.stats_json    or "[]"),
-        "skills":    json.loads(pc.skills_json   or "[]"),
-        "currency":  json.loads(pc.currency_json or "[]"),
-        "equipment": json.loads(pc.equipment_json or "[]"),
-        "feats":     json.loads(pc.feats_json     or "[]"),
-        "attacks":   json.loads(pc.attacks_json   or "[]"),
+        "stats":      json.loads(pc.stats_json      or "[]"),
+        "currency":   json.loads(pc.currency_json   or "[]"),
+        "equipment":  json.loads(pc.equipment_json  or "[]"),
+        "feats":      json.loads(pc.feats_json       or "[]"),
+        "cyberware":  json.loads(getattr(pc, "cyberware_json", None) or "[]"),
     })
 
 

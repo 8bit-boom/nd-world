@@ -63,6 +63,14 @@ def _migrate():
                 ("secondary_resource_name",     "VARCHAR(128) DEFAULT ''"),
                 ("secondary_resource_max",      "INTEGER DEFAULT 0"),
                 ("secondary_resource_current",  "INTEGER DEFAULT 0"),
+                ("shock_max",                   "INTEGER DEFAULT 0"),
+                ("shock_current",               "INTEGER DEFAULT 0"),
+                ("pp_current",                  "INTEGER DEFAULT 0"),
+                ("mp_current",                  "INTEGER DEFAULT 0"),
+                ("minor_edge",                  "TEXT DEFAULT ''"),
+                ("major_edge",                  "TEXT DEFAULT ''"),
+                ("cyberware_json",              "TEXT DEFAULT '[]'"),
+                ("conditions_json",             "TEXT DEFAULT '[]'"),
             ]
             for col, defn in _pc_extra:
                 if col not in pc_cols:
