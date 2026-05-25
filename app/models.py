@@ -132,6 +132,16 @@ class PlayerCharacter(Base):
     secondary_resource_max     = Column(Integer, default=0)
     secondary_resource_current = Column(Integer, default=0)
 
+    # N&D specific resources
+    shock_max     = Column(Integer, default=0)
+    shock_current = Column(Integer, default=0)
+    pp_current    = Column(Integer, default=0)
+    mp_current    = Column(Integer, default=0)
+    minor_edge    = Column(Text, default='')
+    major_edge    = Column(Text, default='')
+    cyberware_json  = Column(Text, default='[]')  # [{name, ca_cost, notes}]
+    conditions_json = Column(Text, default='[]')  # list of active condition strings
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

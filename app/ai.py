@@ -272,10 +272,14 @@ async def imagegen_loras() -> list:
 
 async def imagegen_samplers_schedulers() -> dict:
     t, u = _get_type(), _get_url()
-    if t == "comfyui" and u:
+    if u:
         try:
             async with _httpx.AsyncClient(timeout=8) as c:
-                r = await c.get(f"{u}/object_info/KSampler")
+                if t == "comfyui":
+                    r = await c.get(f"{u}/object_info/KSampler")
+                else:
+                    # SwarmUI proxies the ComfyUI API at /comfyui/
+                    r = await c.get(f"{u}/comfyui/object_info/KSampler")
                 data = r.json()
                 req = data["KSampler"]["input"]["required"]
                 return {
@@ -286,17 +290,32 @@ async def imagegen_samplers_schedulers() -> dict:
             pass
     return {
         "samplers": [
+            # Euler family
             "euler", "euler_ancestral", "euler_cfg_pp", "euler_ancestral_cfg_pp",
-            "heun", "heunpp2", "dpm_2", "dpm_2_ancestral",
+            # Heun
+            "heun", "heunpp2",
+            # DPM-2
+            "dpm_2", "dpm_2_ancestral",
+            # LMS / DPM fast/adaptive
             "lms", "dpm_fast", "dpm_adaptive",
+            # DPM++ family
             "dpmpp_2s_ancestral", "dpmpp_sde", "dpmpp_sde_gpu",
             "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_2m_sde_gpu",
             "dpmpp_3m_sde", "dpmpp_3m_sde_gpu",
-            "ddpm", "lcm", "ipndm", "deis", "ddim", "uni_pc",
+            # DDPM / DDIM / LCM
+            "ddpm", "ddim", "lcm",
+            # UniPC
+            "uni_pc", "uni_pc_bh2",
+            # IPNDM
+            "ipndm", "ipndm_v",
+            # Misc newer samplers
+            "deis", "res_multistep", "res_multistep_cfg_pp",
+            "sa_solver", "er_sde", "gradient_estimation", "restart",
         ],
         "schedulers": [
             "normal", "karras", "exponential", "sgm_uniform",
             "simple", "ddim_uniform", "beta",
+            "linear_quadratic", "kl_optimal", "ays", "gits",
         ],
     }
 

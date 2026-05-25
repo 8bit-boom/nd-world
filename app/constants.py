@@ -21,33 +21,19 @@ XP_THRESHOLDS = [
     85000, 100000, 120000, 140000, 165000, 195000, 225000, 265000, 305000, 355000,
 ]
 
-# Neon & Dragons default stat/skill/currency templates
+# Neon & Dragons default stat/currency templates
+# 8 stats split Physical / Mental — total 20 points at creation
 ND_DEFAULT_STATS = [
-    {"id": "pow", "label": "Power",      "abbr": "POW", "value": 10},
-    {"id": "agi", "label": "Agility",    "abbr": "AGI", "value": 10},
-    {"id": "for", "label": "Fortitude",  "abbr": "FOR", "value": 10},
-    {"id": "int", "label": "Intellect",  "abbr": "INT", "value": 10},
-    {"id": "per", "label": "Perception", "abbr": "PER", "value": 10},
-    {"id": "soc", "label": "Social",     "abbr": "SOC", "value": 10},
-]
-
-ND_DEFAULT_SKILLS = [
-    {"id": "melee",         "label": "Melee",         "stat_id": "pow", "value": 0},
-    {"id": "athletics",     "label": "Athletics",     "stat_id": "pow", "value": 0},
-    {"id": "ranged",        "label": "Ranged",        "stat_id": "agi", "value": 0},
-    {"id": "stealth",       "label": "Stealth",       "stat_id": "agi", "value": 0},
-    {"id": "acrobatics",    "label": "Acrobatics",    "stat_id": "agi", "value": 0},
-    {"id": "endurance",     "label": "Endurance",     "stat_id": "for", "value": 0},
-    {"id": "hacking",       "label": "Hacking",       "stat_id": "int", "value": 0},
-    {"id": "technology",    "label": "Technology",    "stat_id": "int", "value": 0},
-    {"id": "lore",          "label": "Lore",          "stat_id": "int", "value": 0},
-    {"id": "investigation", "label": "Investigation", "stat_id": "int", "value": 0},
-    {"id": "awareness",     "label": "Awareness",     "stat_id": "per", "value": 0},
-    {"id": "medicine",      "label": "Medicine",      "stat_id": "per", "value": 0},
-    {"id": "streetwise",    "label": "Streetwise",    "stat_id": "soc", "value": 0},
-    {"id": "deception",     "label": "Deception",     "stat_id": "soc", "value": 0},
-    {"id": "persuasion",    "label": "Persuasion",    "stat_id": "soc", "value": 0},
-    {"id": "intimidation",  "label": "Intimidation",  "stat_id": "soc", "value": 0},
+    # Physical
+    {"id": "str", "label": "Strength",   "abbr": "STR", "value": 3},
+    {"id": "dex", "label": "Dexterity",  "abbr": "DEX", "value": 3},
+    {"id": "bod", "label": "Body",       "abbr": "BOD", "value": 3},
+    {"id": "per", "label": "Perception", "abbr": "PER", "value": 3},
+    # Mental
+    {"id": "wil", "label": "Willpower",  "abbr": "WIL", "value": 2},
+    {"id": "int", "label": "Intellect",  "abbr": "INT", "value": 2},
+    {"id": "cha", "label": "Charisma",   "abbr": "CHA", "value": 2},
+    {"id": "itu", "label": "Intuition",  "abbr": "ITU", "value": 2},
 ]
 
 ND_DEFAULT_CURRENCY = [
