@@ -360,6 +360,41 @@ async def imagegen_upscalers() -> list:
         return []
 
 
+async def imagegen_refiners() -> list:
+    t, u = _get_type(), _get_url()
+    if not t or not u:
+        return []
+    try:
+        async with _httpx.AsyncClient(timeout=8) as c:
+            if t == "swarmui":
+                sid = await _swarmui_session(u, c)
+                r = await c.post(f"{u}/API/ListModels",
+                                 json={"session_id": sid, "path": "Refiner", "depth": 10})
+                data = r.json()
+                return [m["name"] for m in data.get("files", []) if m.get("name")]
+            else:
+                return []
+    except Exception:
+        return []
+
+
+async def imagegen_progress() -> dict:
+    t, u = _get_type(), _get_url()
+    if t != "swarmui":
+        return {"step": 0, "total": 0, "preview": ""}
+    try:
+        async with _httpx.AsyncClient(timeout=5) as c:
+            r = await c.post(f"{u}/API/GetCurrentStatus", json={"session_id": "ndworld"})
+            data = r.json()
+            return {
+                "step": data.get("current_step", 0),
+                "total": data.get("total_steps", 0),
+                "preview": data.get("preview", ""),
+            }
+    except Exception:
+        return {"step": 0, "total": 0, "preview": ""}
+
+
 async def imagegen_generate(prompt: str, negative: str, model: str,
                             width: int, height: int, steps: int,
                             cfg: float, seed: int, uploads_dir: Path,
@@ -377,7 +412,18 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                             controlnet_image: str = "",
                             controlnet_strength: float = 0.8,
                             controlnet_preprocessor: str = "",
-                            controlnet_model: str = "") -> list[str]:
+                            controlnet_model: str = "",
+                            hiresfix: bool = False,
+                            hireswidth: int = 0,
+                            hiresheight: int = 0,
+                            hiresdenoisestrength: float = 0.5,
+                            hiressteps: int = 0,
+                            refiner_model: str = "",
+                            refiner_control: float = 0.8,
+                            seamless_x: bool = False,
+                            seamless_y: bool = False,
+                            variation_seed: int = -1,
+                            variation_strength: float = 0.0) -> list[str]:
     import copy, random, asyncio, base64 as _b64, uuid as _uuid
     t, u = _get_type(), _get_url()
     ai_img_dir = Path(uploads_dir) / "ai-images"
@@ -425,6 +471,22 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                     payload["controlnetpreprocessor"] = controlnet_preprocessor
                 if controlnet_model:
                     payload["controlnetmodel"] = controlnet_model
+            if hiresfix and hireswidth > 0:
+                payload["hireswidth"] = hireswidth
+                payload["hiresheight"] = hiresheight
+                payload["hiresdenoisestrength"] = hiresdenoisestrength
+                if hiressteps > 0:
+                    payload["hiressteps"] = hiressteps
+            if refiner_model:
+                payload["refinermodel"] = refiner_model
+                payload["refinercontrolpercentage"] = refiner_control
+            if seamless_x:
+                payload["seamlessx"] = True
+            if seamless_y:
+                payload["seamlessy"] = True
+            if variation_seed >= 0 and variation_strength > 0:
+                payload["variationseed"] = variation_seed
+                payload["variationseedstrength"] = variation_strength
 
             gr = await c.post(f"{u}/API/GenerateText2Image", json=payload)
             _log.info("SwarmUI generate status=%s body=%.400s", gr.status_code, gr.text)
