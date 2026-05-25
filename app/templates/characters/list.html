@@ -33,9 +33,9 @@
         {% if pc.race %} · {{ pc.race }}{% endif %}
       </div>
       <div class="pc-card-stats">
-        <span title="Defense / AC">🛡 {{ pc.armor_class }}</span>
-        <span title="Hit Points">❤ {{ pc.current_hp }}/{{ pc.max_hp }}</span>
-        <span title="Speed">⚡ {{ pc.speed }}</span>
+        <span title="Hit Points">HP {{ pc.current_hp }}/{{ d.hp_max }}</span>
+        <span title="Speed">Spd {{ d.speed_derived }}</span>
+        <span title="Cyber Adaptivity">CA {{ d.ca_derived }}</span>
       </div>
       {% if d.stats %}
       <div class="pc-card-scores">

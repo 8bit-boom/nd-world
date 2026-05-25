@@ -47,8 +47,22 @@
 .cf-del-btn { background:transparent;border:none;color:#555;cursor:pointer;font-size:1rem;padding:0 .3rem; }
 .cf-del-btn:hover { color:var(--neon2); }
 
+/* N&D stats layout */
+.cf-stats-dual { display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:.75rem; }
+.cf-stats-group { background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:.6rem; }
+.cf-stats-group-title { font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);margin-bottom:.5rem; }
+.cf-stat-row { display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem; }
+.cf-stat-row label { font-size:.78rem;flex:1; }
+.cf-stat-row .stat-abbr-disp { font-size:.65rem;color:var(--text-dim);width:28px;text-align:right; }
+.cf-stat-row input[type=number] { width:60px;text-align:center;background:var(--bg2);border:1px solid var(--border);color:var(--neon);padding:.25rem;border-radius:4px;font-family:var(--font);font-size:.9rem;font-weight:bold;box-sizing:border-box; }
+.cf-stat-row input[type=number]:focus { border-color:var(--neon);outline:none; }
+
+.cf-derived-preview { background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:.5rem .75rem;font-size:.8rem;color:var(--text-dim);margin-bottom:.5rem; }
+.cf-derived-preview strong { color:var(--neon); }
+
 @media (max-width:640px) {
   .cf-grid-2, .cf-grid-3 { grid-template-columns:1fr; }
+  .cf-stats-dual { grid-template-columns:1fr; }
 }
 </style>
 
@@ -75,33 +89,19 @@
       </div>
       <div class="cf-grid cf-grid-3" style="margin-bottom:.6rem;">
         <div class="cf-field">
-          <label>Species / Race</label>
+          <label>Race</label>
           <input type="text" name="race" value="{{ pc.race if pc else '' }}" placeholder="e.g. Human, Elf, Synth">
         </div>
         <div class="cf-field">
-          <label>Class / Profession</label>
+          <label>Profession</label>
           <input type="text" name="char_class" value="{{ pc.char_class if pc else '' }}" placeholder="e.g. Hacker, Soldier">
-        </div>
-        <div class="cf-field">
-          <label>Subclass / Archetype</label>
-          <input type="text" name="subclass" value="{{ pc.subclass if pc else '' }}" placeholder="Specialization">
-        </div>
-      </div>
-      <div class="cf-grid cf-grid-3" style="margin-bottom:.6rem;">
-        <div class="cf-field">
-          <label>Background</label>
-          <input type="text" name="background" value="{{ pc.background if pc else '' }}" placeholder="e.g. Street Rat">
-        </div>
-        <div class="cf-field">
-          <label>Alignment / Morality</label>
-          <input type="text" name="alignment" value="{{ pc.alignment if pc else '' }}" placeholder="e.g. Pragmatic, Honorable">
         </div>
         <div class="cf-field">
           <label>Level</label>
           <input type="number" name="level" min="1" max="20" value="{{ pc.level if pc else 1 }}">
         </div>
       </div>
-      <div class="cf-grid cf-grid-2">
+      <div class="cf-grid cf-grid-2" style="margin-bottom:.6rem;">
         <div class="cf-field">
           <label>Experience Points (XP)</label>
           <input type="number" name="xp" min="0" value="{{ pc.xp if pc else 0 }}">
@@ -116,36 +116,9 @@
           <input type="file" name="portrait" accept="image/*" onchange="previewPortrait(this)">
         </div>
       </div>
-    </div>
-
-    <!-- Combat -->
-    <div class="cf-section">
-      <div class="cf-section-title"><span>Combat &amp; Vitals</span></div>
-      <div class="cf-grid cf-grid-3" style="margin-bottom:.6rem;">
-        <div class="cf-field"><label>Max HP</label>
-          <input type="number" name="max_hp" min="1" value="{{ pc.max_hp if pc else 10 }}"></div>
-        <div class="cf-field"><label>Current HP</label>
-          <input type="number" name="current_hp" value="{{ pc.current_hp if pc else 10 }}"></div>
-        <div class="cf-field"><label>Temp HP</label>
-          <input type="number" name="temp_hp" min="0" value="{{ pc.temp_hp if pc else 0 }}"></div>
-        <div class="cf-field"><label>Armor / Defense</label>
-          <input type="number" name="armor_class" min="0" value="{{ pc.armor_class if pc else 10 }}"></div>
-        <div class="cf-field"><label>Speed</label>
-          <input type="number" name="speed" min="0" value="{{ pc.speed if pc else 30 }}"></div>
-        <div class="cf-field"><label>Hit Dice</label>
-          <input type="text" name="hit_dice" value="{{ pc.hit_dice if pc else '1d8' }}" placeholder="e.g. 5d8"></div>
-      </div>
-      <!-- Secondary resource -->
-      <div style="border-top:1px solid var(--border);padding-top:.65rem;margin-top:.35rem;">
-        <div style="font-size:.7rem;color:var(--text-dim);margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.05em;">Secondary Resource (optional — e.g. Mana, Energy, Shields)</div>
-        <div class="cf-grid cf-grid-3">
-          <div class="cf-field"><label>Resource Name</label>
-            <input type="text" name="secondary_resource_name" value="{{ pc.secondary_resource_name if pc else '' }}" placeholder="e.g. Mana"></div>
-          <div class="cf-field"><label>Max</label>
-            <input type="number" name="secondary_resource_max" min="0" value="{{ pc.secondary_resource_max if pc else 0 }}"></div>
-          <div class="cf-field"><label>Current</label>
-            <input type="number" name="secondary_resource_current" min="0" value="{{ pc.secondary_resource_current if pc else 0 }}"></div>
-        </div>
+      <div class="cf-field">
+        <label>Portrait URL (alternative to upload)</label>
+        <input type="text" name="portrait_url_text" value="{{ pc.portrait_url if pc else '' }}" placeholder="https://...">
       </div>
     </div>
 
@@ -155,131 +128,164 @@
         <span>Attributes / Stats</span>
         <button type="button" class="cf-preset-btn" onclick="loadNdStats()">↺ N&amp;D Defaults</button>
       </div>
-      <table class="cf-dynamic-table">
-        <thead>
-          <tr>
-            <th style="width:35%">Label</th>
-            <th style="width:18%">Abbr</th>
-            <th style="width:18%">Value</th>
-            <th style="width:29%"></th>
-          </tr>
-        </thead>
-        <tbody id="stats-body"></tbody>
-      </table>
-      <button type="button" class="cf-add-btn" onclick="addStat()">+ Add Stat</button>
+      <div class="cf-stats-dual">
+        <!-- Physical -->
+        <div class="cf-stats-group">
+          <div class="cf-stats-group-title">Physical</div>
+          <div class="cf-stat-row">
+            <label>Strength</label>
+            <span class="stat-abbr-disp">STR</span>
+            <input type="number" class="stat-input" data-id="str" min="0" max="10" value="3">
+          </div>
+          <div class="cf-stat-row">
+            <label>Dexterity</label>
+            <span class="stat-abbr-disp">DEX</span>
+            <input type="number" class="stat-input" data-id="dex" min="0" max="10" value="3">
+          </div>
+          <div class="cf-stat-row">
+            <label>Body</label>
+            <span class="stat-abbr-disp">BOD</span>
+            <input type="number" class="stat-input" data-id="bod" min="0" max="10" value="3">
+          </div>
+          <div class="cf-stat-row">
+            <label>Perception</label>
+            <span class="stat-abbr-disp">PER</span>
+            <input type="number" class="stat-input" data-id="per" min="0" max="10" value="3">
+          </div>
+        </div>
+        <!-- Mental -->
+        <div class="cf-stats-group">
+          <div class="cf-stats-group-title">Mental</div>
+          <div class="cf-stat-row">
+            <label>Willpower</label>
+            <span class="stat-abbr-disp">WIL</span>
+            <input type="number" class="stat-input" data-id="wil" min="0" max="10" value="2">
+          </div>
+          <div class="cf-stat-row">
+            <label>Intellect</label>
+            <span class="stat-abbr-disp">INT</span>
+            <input type="number" class="stat-input" data-id="int" min="0" max="10" value="2">
+          </div>
+          <div class="cf-stat-row">
+            <label>Charisma</label>
+            <span class="stat-abbr-disp">CHA</span>
+            <input type="number" class="stat-input" data-id="cha" min="0" max="10" value="2">
+          </div>
+          <div class="cf-stat-row">
+            <label>Intuition</label>
+            <span class="stat-abbr-disp">ITU</span>
+            <input type="number" class="stat-input" data-id="itu" min="0" max="10" value="2">
+          </div>
+        </div>
+      </div>
+      <!-- Derived preview -->
+      <div class="cf-derived-preview" id="derived-preview">
+        HP: — | Shock: — | CA: — | Speed: — | PP: — | MP: —
+      </div>
       <input type="hidden" name="stats_json" id="stats_json">
     </div>
 
-    <!-- Skills -->
+    <!-- Resources -->
     <div class="cf-section">
-      <div class="cf-section-title">
-        <span>Skills</span>
-        <button type="button" class="cf-preset-btn" onclick="loadNdSkills()">↺ N&amp;D Defaults</button>
+      <div class="cf-section-title"><span>Resources</span></div>
+      <div class="cf-grid cf-grid-3" style="margin-bottom:.6rem;">
+        <div class="cf-field"><label>Max HP (override; 0 = auto)</label>
+          <input type="number" name="max_hp" min="0" value="{{ pc.max_hp if pc else 0 }}"></div>
+        <div class="cf-field"><label>Current HP</label>
+          <input type="number" name="current_hp" value="{{ pc.current_hp if pc else 0 }}"></div>
+        <div class="cf-field"><label>Shock Max (override; 0 = auto)</label>
+          <input type="number" name="shock_max" min="0" value="{{ pc.shock_max if pc else 0 }}"></div>
       </div>
+      <div class="cf-grid cf-grid-3">
+        <div class="cf-field"><label>Current Shock</label>
+          <input type="number" name="shock_current" min="0" value="{{ pc.shock_current if pc else 0 }}"></div>
+        <div class="cf-field"><label>Current PP (Physical Points)</label>
+          <input type="number" name="pp_current" min="0" value="{{ pc.pp_current if pc else 0 }}"></div>
+        <div class="cf-field"><label>Current MP (Mental Points)</label>
+          <input type="number" name="mp_current" min="0" value="{{ pc.mp_current if pc else 0 }}"></div>
+      </div>
+    </div>
+
+    <!-- Edges -->
+    <div class="cf-section">
+      <div class="cf-section-title"><span>Edges</span></div>
+      <div class="cf-grid cf-grid-2">
+        <div class="cf-field">
+          <label>Minor Edge</label>
+          <textarea name="minor_edge" placeholder="Minor Edge description...">{{ pc.minor_edge if pc else '' }}</textarea>
+        </div>
+        <div class="cf-field">
+          <label>Major Edge</label>
+          <textarea name="major_edge" placeholder="Major Edge description...">{{ pc.major_edge if pc else '' }}</textarea>
+        </div>
+      </div>
+    </div>
+
+    <!-- Feats -->
+    <div class="cf-section">
+      <div class="cf-section-title"><span>Feats</span></div>
       <table class="cf-dynamic-table">
         <thead>
           <tr>
-            <th style="width:40%">Skill</th>
-            <th style="width:25%">Linked Stat</th>
-            <th style="width:18%">Rank/Bonus</th>
-            <th style="width:17%"></th>
+            <th style="width:28%">Feat Name</th>
+            <th style="width:15%">Type</th>
+            <th style="width:10%">Rank</th>
+            <th style="width:37%">Notes / Description</th>
+            <th style="width:10%"></th>
           </tr>
         </thead>
-        <tbody id="skills-body"></tbody>
+        <tbody id="feats-body"></tbody>
       </table>
-      <button type="button" class="cf-add-btn" onclick="addSkill()">+ Add Skill</button>
-      <input type="hidden" name="skills_json" id="skills_json">
+      <button type="button" class="cf-add-btn" onclick="addFeat()">+ Add Feat</button>
+      <input type="hidden" name="feats_json" id="feats_json">
     </div>
 
-    <!-- Proficiencies & Languages -->
+    <!-- Equipment -->
     <div class="cf-section">
-      <div class="cf-section-title"><span>Proficiencies &amp; Languages</span></div>
-      <div class="cf-grid cf-grid-2">
-        <div class="cf-field"><label>Armor Proficiencies</label>
-          <input type="text" name="armor_profs" value="{{ pc.armor_profs if pc else '' }}" placeholder="Light, Medium, Heavy"></div>
-        <div class="cf-field"><label>Weapon Proficiencies</label>
-          <input type="text" name="weapon_profs" value="{{ pc.weapon_profs if pc else '' }}" placeholder="Simple, Martial, Firearms"></div>
-        <div class="cf-field"><label>Tool / Kit Proficiencies</label>
-          <input type="text" name="tool_profs" value="{{ pc.tool_profs if pc else '' }}" placeholder="Hacking Kit, Medic Tools"></div>
-        <div class="cf-field"><label>Languages</label>
-          <input type="text" name="languages" value="{{ pc.languages if pc else '' }}" placeholder="Common, Binary, Corp-speak"></div>
-      </div>
-    </div>
-
-    <!-- Attacks -->
-    <div class="cf-section">
-      <div class="cf-section-title"><span>Attacks &amp; Actions</span></div>
-      <table class="cf-dynamic-table">
-        <thead><tr><th>Name</th><th>Attack Bonus</th><th>Damage</th><th>Type</th><th>Notes</th><th></th></tr></thead>
-        <tbody id="attacks-body"></tbody>
-      </table>
-      <button type="button" class="cf-add-btn" onclick="addAttack()">+ Add Attack</button>
-      <input type="hidden" name="attacks_json" id="attacks_json">
-    </div>
-
-    <!-- Equipment & Currency -->
-    <div class="cf-section">
-      <div class="cf-section-title">
-        <span>Equipment</span>
-      </div>
+      <div class="cf-section-title"><span>Equipment</span></div>
       <table class="cf-dynamic-table">
         <thead><tr><th>Item Name</th><th>Qty</th><th>Weight</th><th>Equipped</th><th>Notes</th><th></th></tr></thead>
         <tbody id="equipment-body"></tbody>
       </table>
       <button type="button" class="cf-add-btn" onclick="addEquipment()">+ Add Item</button>
       <input type="hidden" name="equipment_json" id="equipment_json">
-
-      <div style="border-top:1px solid var(--border);padding-top:.65rem;margin-top:.75rem;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;">
-          <span style="font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-dim);">Currency</span>
-          <button type="button" class="cf-preset-btn" onclick="loadNdCurrency()">↺ N&amp;D Defaults</button>
-        </div>
-        <table class="cf-dynamic-table">
-          <thead><tr><th>Currency Name</th><th>Abbr</th><th>Amount</th><th></th></tr></thead>
-          <tbody id="currency-body"></tbody>
-        </table>
-        <button type="button" class="cf-add-btn" onclick="addCurrency()">+ Add Currency</button>
-        <input type="hidden" name="currency_json" id="currency_json">
-      </div>
     </div>
 
-    <!-- Feats & Features -->
+    <!-- Cyberware -->
     <div class="cf-section">
-      <div class="cf-section-title"><span>Features &amp; Feats</span></div>
+      <div class="cf-section-title"><span>Cyberware</span></div>
       <table class="cf-dynamic-table">
-        <thead><tr><th>Feature Name</th><th>Source</th><th>Description</th><th></th></tr></thead>
-        <tbody id="feats-body"></tbody>
+        <thead>
+          <tr>
+            <th style="width:40%">Implant Name</th>
+            <th style="width:15%">CA Cost</th>
+            <th style="width:35%">Notes</th>
+            <th style="width:10%"></th>
+          </tr>
+        </thead>
+        <tbody id="cyberware-body"></tbody>
       </table>
-      <button type="button" class="cf-add-btn" onclick="addFeat()">+ Add Feature</button>
-      <input type="hidden" name="feats_json" id="feats_json">
+      <button type="button" class="cf-add-btn" onclick="addCyberware()">+ Add Implant</button>
+      <input type="hidden" name="cyberware_json" id="cyberware_json">
     </div>
 
-    <!-- Appearance -->
+    <!-- Currency -->
     <div class="cf-section">
-      <div class="cf-section-title"><span>Appearance</span></div>
-      <div class="cf-grid cf-grid-3">
-        <div class="cf-field"><label>Age</label><input type="text" name="age" value="{{ pc.age if pc else '' }}" placeholder="e.g. 28"></div>
-        <div class="cf-field"><label>Height</label><input type="text" name="height" value="{{ pc.height if pc else '' }}" placeholder="e.g. 5'10&quot;"></div>
-        <div class="cf-field"><label>Weight / Build</label><input type="text" name="weight_app" value="{{ pc.weight_app if pc else '' }}" placeholder="e.g. 165 lbs, lean"></div>
-        <div class="cf-field"><label>Eyes</label><input type="text" name="eyes" value="{{ pc.eyes if pc else '' }}" placeholder="e.g. Neon Blue Cybernetic"></div>
-        <div class="cf-field"><label>Skin</label><input type="text" name="skin" value="{{ pc.skin if pc else '' }}" placeholder="e.g. Pale"></div>
-        <div class="cf-field"><label>Hair</label><input type="text" name="hair" value="{{ pc.hair if pc else '' }}" placeholder="e.g. Black undercut"></div>
+      <div class="cf-section-title">
+        <span>Currency</span>
+        <button type="button" class="cf-preset-btn" onclick="loadNdCurrency()">↺ N&amp;D Defaults</button>
       </div>
+      <table class="cf-dynamic-table">
+        <thead><tr><th>Currency Name</th><th>Abbr</th><th>Amount</th><th></th></tr></thead>
+        <tbody id="currency-body"></tbody>
+      </table>
+      <button type="button" class="cf-add-btn" onclick="addCurrency()">+ Add Currency</button>
+      <input type="hidden" name="currency_json" id="currency_json">
     </div>
 
-    <!-- Personality -->
+    <!-- Backstory & Notes -->
     <div class="cf-section">
-      <div class="cf-section-title"><span>Personality</span></div>
-      <div class="cf-grid cf-grid-2" style="margin-bottom:.6rem;">
-        <div class="cf-field"><label>Personality Traits</label>
-          <textarea name="personality_traits" placeholder="How does your character behave?">{{ pc.personality_traits if pc else '' }}</textarea></div>
-        <div class="cf-field"><label>Ideals / Goals</label>
-          <textarea name="ideals" placeholder="What drives your character?">{{ pc.ideals if pc else '' }}</textarea></div>
-        <div class="cf-field"><label>Bonds / Connections</label>
-          <textarea name="bonds" placeholder="What connections matter to your character?">{{ pc.bonds if pc else '' }}</textarea></div>
-        <div class="cf-field"><label>Flaws / Weaknesses</label>
-          <textarea name="flaws" placeholder="What weaknesses or failings?">{{ pc.flaws if pc else '' }}</textarea></div>
-      </div>
+      <div class="cf-section-title"><span>Backstory &amp; Notes</span></div>
       <div class="cf-field" style="margin-bottom:.6rem;"><label>Backstory (Markdown supported)</label>
         <textarea name="backstory" style="min-height:120px;" placeholder="Character history and origin...">{{ pc.backstory if pc else '' }}</textarea></div>
       <div class="cf-field"><label>Session Notes (Markdown supported)</label>
@@ -295,20 +301,31 @@
 
 <script>
 const ND_DEFAULT_STATS    = {{ nd_default_stats | tojson }};
-const ND_DEFAULT_SKILLS   = {{ nd_default_skills | tojson }};
 const ND_DEFAULT_CURRENCY = {{ nd_default_currency | tojson }};
 
-let _stats    = {{ stats | tojson }};
-let _skills   = {{ skills | tojson }};
-let _currency = {{ currency | tojson }};
-let _attacks  = {{ attacks | tojson }};
-let _equipment = {{ equipment | tojson }};
-let _feats    = {{ feats | tojson }};
+// Stat definitions (fixed — N&D has exactly 8 stats)
+const ND_STATS_DEF = [
+  {id:'str', label:'Strength',   abbr:'STR', group:'phys'},
+  {id:'dex', label:'Dexterity',  abbr:'DEX', group:'phys'},
+  {id:'bod', label:'Body',       abbr:'BOD', group:'phys'},
+  {id:'per', label:'Perception', abbr:'PER', group:'phys'},
+  {id:'wil', label:'Willpower',  abbr:'WIL', group:'ment'},
+  {id:'int', label:'Intellect',  abbr:'INT', group:'ment'},
+  {id:'cha', label:'Charisma',   abbr:'CHA', group:'ment'},
+  {id:'itu', label:'Intuition',  abbr:'ITU', group:'ment'},
+];
 
-// Apply N&D defaults if no existing data
-if (!_stats.length)    _stats    = JSON.parse(JSON.stringify(ND_DEFAULT_STATS));
-if (!_skills.length)   _skills   = JSON.parse(JSON.stringify(ND_DEFAULT_SKILLS));
-if (!_currency.length) _currency = JSON.parse(JSON.stringify(ND_DEFAULT_CURRENCY));
+// Existing character data (for edit mode)
+const _existingStats    = {{ stats | tojson }};
+const _existingCurrency = {{ currency | tojson }};
+const _existingFeats    = {{ feats | tojson }};
+const _existingEquipment = {{ equipment | tojson }};
+const _existingCyberware = {{ cyberware | tojson }};
+
+let _currency  = _existingCurrency.length ? JSON.parse(JSON.stringify(_existingCurrency)) : JSON.parse(JSON.stringify(ND_DEFAULT_CURRENCY));
+let _feats     = JSON.parse(JSON.stringify(_existingFeats));
+let _equipment = JSON.parse(JSON.stringify(_existingEquipment));
+let _cyberware = JSON.parse(JSON.stringify(_existingCyberware));
 
 // ── Utility ───────────────────────────────────────────────────────────────────
 function escVal(s) { return String(s || '').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
@@ -325,116 +342,67 @@ function previewPortrait(input) {
 }
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
-function getStatOptions() {
-  return [...document.querySelectorAll('#stats-body tr')].map(tr => ({
-    id:    tr.querySelector('.stat-id')?.value || '',
-    abbr:  tr.querySelector('.stat-abbr')?.value || '',
-    label: tr.querySelector('.stat-label')?.value || '',
-  })).filter(s => s.label || s.id);
+function getStatVal(id) {
+  const input = document.querySelector(`.stat-input[data-id="${id}"]`);
+  return input ? (parseInt(input.value) || 0) : 0;
 }
 
-function refreshSkillStatDropdowns() {
-  const opts = getStatOptions();
-  document.querySelectorAll('#skills-body .skill-stat-sel').forEach(sel => {
-    const cur = sel.value;
-    sel.innerHTML = opts.map(s =>
-      `<option value="${escVal(s.id)}"${s.id === cur ? ' selected' : ''}>${escVal(s.abbr || s.label)}</option>`
-    ).join('') || '<option value="">—</option>';
-  });
+function calcDerived() {
+  const str = getStatVal('str'), dex = getStatVal('dex'),
+        bod = getStatVal('bod'), per = getStatVal('per');
+  const wil = getStatVal('wil'), int_ = getStatVal('int'),
+        cha = getStatVal('cha'), itu = getStatVal('itu');
+  const phys = str + dex + bod + per;
+  const ment = wil + int_ + cha + itu;
+  const hp    = phys + 10;
+  const shock = ment;
+  const ca    = wil + bod;
+  const speed = dex + itu;
+  document.getElementById('derived-preview').innerHTML =
+    `<strong>HP:</strong> ${hp} &nbsp;|&nbsp; <strong>Shock:</strong> ${shock} &nbsp;|&nbsp; ` +
+    `<strong>CA:</strong> ${ca} &nbsp;|&nbsp; <strong>Speed:</strong> ${speed} &nbsp;|&nbsp; ` +
+    `<strong>PP:</strong> ${phys} &nbsp;|&nbsp; <strong>MP:</strong> ${ment}`;
 }
 
-function renderStats() {
-  const tbody = document.getElementById('stats-body');
-  tbody.innerHTML = _stats.map((s, i) => `
-    <tr>
-      <td><input type="hidden" class="stat-id" value="${escVal(s.id||'')}">
-          <input type="text" class="stat-label" value="${escVal(s.label||'')}" placeholder="Stat name"
-                 oninput="onStatLabelChange(this)"></td>
-      <td><input type="text" class="stat-abbr" value="${escVal(s.abbr||'')}" placeholder="POW" maxlength="5"
-                 style="text-transform:uppercase"></td>
-      <td><input type="number" class="stat-val" value="${s.value !== undefined ? s.value : 10}"></td>
-      <td>${delBtn('delStat('+i+')')}</td>
-    </tr>
-  `).join('');
-  refreshSkillStatDropdowns();
+function initStatValues() {
+  if (_existingStats.length) {
+    const statMap = {};
+    _existingStats.forEach(s => { statMap[s.id] = s.value; });
+    ND_STATS_DEF.forEach(def => {
+      const input = document.querySelector(`.stat-input[data-id="${def.id}"]`);
+      if (input && statMap[def.id] !== undefined) input.value = statMap[def.id];
+    });
+  } else {
+    ND_DEFAULT_STATS.forEach(def => {
+      const input = document.querySelector(`.stat-input[data-id="${def.id}"]`);
+      if (input) input.value = def.value;
+    });
+  }
+  calcDerived();
 }
-
-function onStatLabelChange(input) {
-  // Update hidden id if it was auto-generated (empty or matches slugified old label)
-  const row = input.closest('tr');
-  const hiddenId = row.querySelector('.stat-id');
-  refreshSkillStatDropdowns();
-}
-
-function addStat() {
-  _stats.push({id: '', label: '', abbr: '', value: 10});
-  renderStats();
-  const lastRow = document.querySelector('#stats-body tr:last-child .stat-label');
-  if (lastRow) lastRow.focus();
-}
-function delStat(i) { _stats.splice(i, 1); renderStats(); }
 
 function loadNdStats() {
-  if (_stats.length && !confirm('Replace current stats with N&D defaults?')) return;
-  _stats = JSON.parse(JSON.stringify(ND_DEFAULT_STATS));
-  renderStats();
+  if (!confirm('Reset all stats to N&D defaults?')) return;
+  ND_DEFAULT_STATS.forEach(def => {
+    const input = document.querySelector(`.stat-input[data-id="${def.id}"]`);
+    if (input) input.value = def.value;
+  });
+  calcDerived();
 }
 
 function serializeStats() {
-  return [...document.querySelectorAll('#stats-body tr')].map(tr => {
-    const label = tr.querySelector('.stat-label')?.value || '';
-    const id    = tr.querySelector('.stat-id')?.value || label.toLowerCase().replace(/\W+/g, '_').replace(/^_|_$/g,'');
-    const abbr  = (tr.querySelector('.stat-abbr')?.value || label.slice(0,3)).toUpperCase();
-    const value = parseInt(tr.querySelector('.stat-val')?.value) || 0;
-    return {id: id || label.toLowerCase().replace(/\W+/g, '_'), label, abbr, value};
-  }).filter(s => s.label);
+  return ND_STATS_DEF.map(def => ({
+    id: def.id,
+    label: def.label,
+    abbr: def.abbr,
+    value: parseInt(document.querySelector(`.stat-input[data-id="${def.id}"]`)?.value) || 0,
+  }));
 }
 
-// ── Skills ────────────────────────────────────────────────────────────────────
-function makeStatSelect(curStatId) {
-  const opts = getStatOptions();
-  const html = opts.map(s =>
-    `<option value="${escVal(s.id)}"${s.id === curStatId ? ' selected' : ''}>${escVal(s.abbr || s.label)}</option>`
-  ).join('') || '<option value="">—</option>';
-  return `<select class="skill-stat-sel">${html}</select>`;
-}
-
-function renderSkills() {
-  const tbody = document.getElementById('skills-body');
-  tbody.innerHTML = _skills.map((sk, i) => `
-    <tr>
-      <td><input type="hidden" class="skill-id" value="${escVal(sk.id||'')}">
-          <input type="text" class="skill-label" value="${escVal(sk.label||'')}" placeholder="Skill name"></td>
-      <td>${makeStatSelect(sk.stat_id || '')}</td>
-      <td><input type="number" class="skill-val" value="${sk.value !== undefined ? sk.value : 0}"></td>
-      <td>${delBtn('delSkill('+i+')')}</td>
-    </tr>
-  `).join('');
-}
-
-function addSkill() {
-  _skills.push({id: '', label: '', stat_id: getStatOptions()[0]?.id || '', value: 0});
-  renderSkills();
-  const lastRow = document.querySelector('#skills-body tr:last-child .skill-label');
-  if (lastRow) lastRow.focus();
-}
-function delSkill(i) { _skills.splice(i, 1); renderSkills(); }
-
-function loadNdSkills() {
-  if (_skills.length && !confirm('Replace current skills with N&D defaults?')) return;
-  _skills = JSON.parse(JSON.stringify(ND_DEFAULT_SKILLS));
-  renderSkills();
-}
-
-function serializeSkills() {
-  return [...document.querySelectorAll('#skills-body tr')].map(tr => {
-    const label   = tr.querySelector('.skill-label')?.value || '';
-    const id      = tr.querySelector('.skill-id')?.value || label.toLowerCase().replace(/\W+/g, '_').replace(/^_|_$/g,'');
-    const stat_id = tr.querySelector('.skill-stat-sel')?.value || '';
-    const value   = parseInt(tr.querySelector('.skill-val')?.value) || 0;
-    return {id: id || label.toLowerCase().replace(/\W+/g, '_'), label, stat_id, value};
-  }).filter(s => s.label);
-}
+// Attach live calc to all stat inputs
+document.querySelectorAll('.stat-input').forEach(inp => {
+  inp.addEventListener('input', calcDerived);
+});
 
 // ── Currency ──────────────────────────────────────────────────────────────────
 function renderCurrency() {
@@ -450,11 +418,8 @@ function renderCurrency() {
   `).join('');
 }
 
-function addCurrency() {
-  _currency.push({label: '', abbr: '', value: 0});
-  renderCurrency();
-}
-function delCurrency(i) { _currency.splice(i, 1); renderCurrency(); }
+function addCurrency() { _currency.push({label:'',abbr:'',value:0}); renderCurrency(); }
+function delCurrency(i) { _currency.splice(i,1); renderCurrency(); }
 
 function loadNdCurrency() {
   if (_currency.length && !confirm('Replace current currency with N&D defaults?')) return;
@@ -470,22 +435,41 @@ function serializeCurrency() {
   })).filter(c => c.label);
 }
 
-// ── Attacks ───────────────────────────────────────────────────────────────────
-function renderAttacks() {
-  const tbody = document.getElementById('attacks-body');
-  tbody.innerHTML = _attacks.map((a, i) => `
-    <tr>
-      <td><input type="text" value="${escVal(a.name)}" placeholder="Weapon / Action"></td>
-      <td><input type="text" value="${escVal(a.bonus)}" placeholder="+5" style="width:70px"></td>
-      <td><input type="text" value="${escVal(a.damage)}" placeholder="2d6+3" style="width:90px"></td>
-      <td><input type="text" value="${escVal(a.dmg_type)}" placeholder="Kinetic" style="width:80px"></td>
-      <td><input type="text" value="${escVal(a.notes)}" placeholder="notes"></td>
-      <td>${delBtn('delAttack('+i+')')}</td>
-    </tr>
-  `).join('');
+// ── Feats ─────────────────────────────────────────────────────────────────────
+const FEAT_TYPES = ['Race','Profession','Common','Free'];
+
+function renderFeats() {
+  const tbody = document.getElementById('feats-body');
+  tbody.innerHTML = _feats.map((f, i) => {
+    const typeOpts = FEAT_TYPES.map(t =>
+      `<option value="${t}"${(f.type||f.source||'') === t ? ' selected':''}>${t}</option>`
+    ).join('');
+    return `<tr>
+      <td><input type="text" value="${escVal(f.name)}" placeholder="Feat name"></td>
+      <td><select>${typeOpts}</select></td>
+      <td><input type="number" value="${f.rank||1}" min="1" max="10" style="width:55px;min-width:0"></td>
+      <td><input type="text" value="${escVal(f.notes||f.description||'')}" placeholder="Notes"></td>
+      <td>${delBtn('delFeat('+i+')')}</td>
+    </tr>`;
+  }).join('');
 }
-function addAttack()  { _attacks.push({name:'',bonus:'',damage:'',dmg_type:'',notes:''}); renderAttacks(); }
-function delAttack(i) { _attacks.splice(i,1); renderAttacks(); }
+
+function addFeat()  { _feats.push({name:'',type:'Common',rank:1,notes:''}); renderFeats(); }
+function delFeat(i) { _feats.splice(i,1); renderFeats(); }
+
+function serializeFeats() {
+  return [...document.querySelectorAll('#feats-body tr')].map(row => {
+    const inputs = row.querySelectorAll('input[type=text]');
+    const sel    = row.querySelector('select');
+    const rankIn = row.querySelector('input[type=number]');
+    return {
+      name: inputs[0]?.value || '',
+      type: sel?.value || 'Common',
+      rank: parseInt(rankIn?.value) || 1,
+      notes: inputs[1]?.value || '',
+    };
+  }).filter(f => f.name);
+}
 
 // ── Equipment ─────────────────────────────────────────────────────────────────
 function renderEquipment() {
@@ -496,67 +480,66 @@ function renderEquipment() {
       <td><input type="number" value="${e.qty||1}" style="width:55px;min-width:0"></td>
       <td><input type="number" value="${e.weight||0}" step="0.1" style="width:65px;min-width:0"></td>
       <td style="text-align:center"><input type="checkbox" ${e.equipped?'checked':''} style="width:auto;accent-color:var(--neon)"></td>
-      <td><input type="text" value="${escVal(e.notes)}" placeholder="notes"></td>
+      <td><input type="text" value="${escVal(e.notes||'')}" placeholder="notes"></td>
       <td>${delBtn('delEquipment('+i+')')}</td>
     </tr>
   `).join('');
 }
+
 function addEquipment()  { _equipment.push({name:'',qty:1,weight:0,equipped:false,notes:''}); renderEquipment(); }
 function delEquipment(i) { _equipment.splice(i,1); renderEquipment(); }
 
-// ── Feats ─────────────────────────────────────────────────────────────────────
-function renderFeats() {
-  const tbody = document.getElementById('feats-body');
-  tbody.innerHTML = _feats.map((f, i) => `
+// ── Cyberware ─────────────────────────────────────────────────────────────────
+function renderCyberware() {
+  const tbody = document.getElementById('cyberware-body');
+  tbody.innerHTML = _cyberware.map((c, i) => `
     <tr>
-      <td><input type="text" value="${escVal(f.name)}" placeholder="Feature name"></td>
-      <td><input type="text" value="${escVal(f.source)}" placeholder="Source"></td>
-      <td><input type="text" value="${escVal(f.description)}" placeholder="Description"></td>
-      <td>${delBtn('delFeat('+i+')')}</td>
+      <td><input type="text" value="${escVal(c.name||'')}" placeholder="Implant name"></td>
+      <td><input type="number" value="${c.ca_cost||0}" min="0" style="width:65px;min-width:0"></td>
+      <td><input type="text" value="${escVal(c.notes||'')}" placeholder="Notes"></td>
+      <td>${delBtn('delCyberware('+i+')')}</td>
     </tr>
   `).join('');
 }
-function addFeat()  { _feats.push({name:'',source:'',description:''}); renderFeats(); }
-function delFeat(i) { _feats.splice(i,1); renderFeats(); }
+
+function addCyberware()  { _cyberware.push({name:'',ca_cost:0,notes:''}); renderCyberware(); }
+function delCyberware(i) { _cyberware.splice(i,1); renderCyberware(); }
+
+function serializeCyberware() {
+  return [...document.querySelectorAll('#cyberware-body tr')].map(row => {
+    const texts = row.querySelectorAll('input[type=text]');
+    const num   = row.querySelector('input[type=number]');
+    return {
+      name: texts[0]?.value || '',
+      ca_cost: parseInt(num?.value) || 0,
+      notes: texts[1]?.value || '',
+    };
+  }).filter(c => c.name);
+}
 
 // ── Form submit ───────────────────────────────────────────────────────────────
 document.getElementById('char-form').addEventListener('submit', function() {
   document.getElementById('stats_json').value    = JSON.stringify(serializeStats());
-  document.getElementById('skills_json').value   = JSON.stringify(serializeSkills());
   document.getElementById('currency_json').value = JSON.stringify(serializeCurrency());
-
-  const atbody = document.getElementById('attacks-body');
-  _attacks = [...atbody.querySelectorAll('tr')].map(row => {
-    const inputs = row.querySelectorAll('input[type=text]');
-    return {name:inputs[0]?.value||'',bonus:inputs[1]?.value||'',
-            damage:inputs[2]?.value||'',dmg_type:inputs[3]?.value||'',notes:inputs[4]?.value||''};
-  });
-  document.getElementById('attacks_json').value = JSON.stringify(_attacks);
+  document.getElementById('feats_json').value    = JSON.stringify(serializeFeats());
+  document.getElementById('cyberware_json').value = JSON.stringify(serializeCyberware());
 
   const eqbody = document.getElementById('equipment-body');
-  _equipment = [...eqbody.querySelectorAll('tr')].map(row => {
+  const eqData = [...eqbody.querySelectorAll('tr')].map(row => {
     const texts = row.querySelectorAll('input[type=text]');
     const nums  = row.querySelectorAll('input[type=number]');
     const cb    = row.querySelector('input[type=checkbox]');
     return {name:texts[0]?.value||'',qty:parseInt(nums[0]?.value)||1,
             weight:parseFloat(nums[1]?.value)||0,equipped:cb?.checked||false,notes:texts[1]?.value||''};
   });
-  document.getElementById('equipment_json').value = JSON.stringify(_equipment);
-
-  const ftbody = document.getElementById('feats-body');
-  _feats = [...ftbody.querySelectorAll('tr')].map(row => {
-    const inputs = row.querySelectorAll('input[type=text]');
-    return {name:inputs[0]?.value||'',source:inputs[1]?.value||'',description:inputs[2]?.value||''};
-  });
-  document.getElementById('feats_json').value = JSON.stringify(_feats);
+  document.getElementById('equipment_json').value = JSON.stringify(eqData);
 });
 
-// Initial render
-renderStats();
-renderSkills();
+// ── Initial render ────────────────────────────────────────────────────────────
+initStatValues();
 renderCurrency();
-renderAttacks();
-renderEquipment();
 renderFeats();
+renderEquipment();
+renderCyberware();
 </script>
 {% endblock %}

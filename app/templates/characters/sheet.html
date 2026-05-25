@@ -4,6 +4,8 @@
 <style>
 .cs { max-width:1100px; margin:0 auto; }
 .cs-actions { display:flex;gap:.5rem;justify-content:flex-end;margin-bottom:1rem;flex-wrap:wrap; }
+
+/* ── Header ── */
 .cs-header { display:flex;gap:1.5rem;align-items:flex-start;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem; }
 .cs-portrait { width:110px;height:110px;flex-shrink:0;border-radius:6px;overflow:hidden;border:2px solid var(--neon);background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:2.5rem;color:var(--neon); }
 .cs-portrait img { width:100%;height:100%;object-fit:cover; }
@@ -16,90 +18,95 @@
 .cs-xp-bar-fill { height:100%;background:var(--neon);transition:width .4s; }
 .cs-xp-label { font-size:.8rem;color:var(--text-dim);white-space:nowrap; }
 
-.cs-combat-row { display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem; }
-.cs-stat-box { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.5rem .75rem;text-align:center;flex:1;min-width:80px; }
-.cs-stat-box .val { font-size:1.4rem;font-weight:bold;color:var(--neon); }
-.cs-stat-box .lbl { font-size:.65rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em; }
+/* ── Stats panels ── */
+.cs-stats-row { display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem; }
+.cs-stats-panel { background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.75rem; }
+.cs-stats-panel-title { font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.6rem;border-bottom:1px solid var(--border);padding-bottom:.3rem; }
+.cs-stat-grid { display:grid;grid-template-columns:1fr 1fr;gap:.4rem; }
+.cs-attr-box { background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:.45rem .5rem;text-align:center; }
+.cs-attr-abbr { font-size:.6rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em; }
+.cs-attr-val  { font-size:1.5rem;font-weight:bold;color:var(--neon); }
+.cs-attr-label{ font-size:.6rem;color:var(--text-dim); }
 
-.cs-hp-section { background:var(--bg2);border:1px solid var(--neon);border-radius:8px;padding:1rem;margin-bottom:1rem;display:flex;gap:1.5rem;align-items:center;flex-wrap:wrap; }
-.cs-hp-main { display:flex;align-items:center;gap:.75rem; }
-.cs-hp-btn { background:var(--bg3);border:1px solid var(--border);color:var(--text);width:34px;height:34px;border-radius:4px;font-size:1.2rem;cursor:pointer;display:flex;align-items:center;justify-content:center; }
-.cs-hp-btn:hover { border-color:var(--neon);color:var(--neon); }
-.cs-hp-display { font-size:2rem;font-weight:bold;color:var(--neon);min-width:3ch;text-align:center;cursor:pointer; }
-.cs-hp-max { color:var(--text-dim);font-size:1rem;align-self:flex-end;padding-bottom:.25rem; }
-.cs-hp-fields { display:flex;gap:1rem;flex-wrap:wrap;align-items:center; }
-.cs-hp-field { display:flex;flex-direction:column;gap:.2rem; }
-.cs-hp-field label { font-size:.65rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em; }
-.cs-hp-field input { width:70px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;border-radius:4px;font-family:var(--font);font-size:.9rem;text-align:center; }
-.cs-hp-inline-btn { align-self:flex-end;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .75rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.8rem; }
-.cs-hp-inline-btn:hover { border-color:var(--neon);color:var(--neon); }
+/* ── Derived chips ── */
+.cs-derived-row { display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:1rem; }
+.cs-derived-chip { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.4rem .65rem;text-align:center;flex:1;min-width:80px; }
+.cs-derived-chip .dc-val { font-size:1.25rem;font-weight:bold;color:var(--neon); }
+.cs-derived-chip .dc-lbl { font-size:.58rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.06em; }
 
-.cs-death-saves { display:flex;flex-direction:column;gap:.3rem; }
-.cs-death-row { display:flex;gap:.3rem;align-items:center; }
-.cs-death-label { font-size:.7rem;color:var(--text-dim);width:60px; }
-.cs-death-pip { width:14px;height:14px;border-radius:50%;border:1px solid var(--border);cursor:pointer;background:var(--bg3); }
-.cs-death-pip.filled-success { background:var(--neon);border-color:var(--neon); }
-.cs-death-pip.filled-failure { background:var(--neon2);border-color:var(--neon2); }
+/* ── Resource trackers ── */
+.cs-resources { display:flex;flex-direction:column;gap:.6rem;margin-bottom:1rem; }
+.cs-resource-bar { background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.75rem 1rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap; }
+.cs-resource-bar.hp    { border-color:var(--neon); }
+.cs-resource-bar.shock { border-color:var(--neon3,#a855f7); }
+.cs-resource-bar.pp    { border-color:#e8b84b; }
+.cs-resource-bar.mp    { border-color:var(--neon,#00f0ff); }
+.cs-res-label { font-size:.65rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-dim);white-space:nowrap;min-width:45px; }
+.cs-res-btn { background:var(--bg3);border:1px solid var(--border);color:var(--text);width:34px;height:34px;border-radius:4px;font-size:1.1rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0; }
+.cs-res-btn:hover { border-color:var(--neon);color:var(--neon); }
+.cs-res-current { font-size:2rem;font-weight:bold;min-width:2.5ch;text-align:center;cursor:pointer; }
+.cs-resource-bar.hp    .cs-res-current { color:var(--neon); }
+.cs-resource-bar.shock .cs-res-current { color:var(--neon3,#a855f7); }
+.cs-resource-bar.pp    .cs-res-current { color:#e8b84b; }
+.cs-resource-bar.mp    .cs-res-current { color:var(--neon,#00f0ff); }
+.cs-res-max { color:var(--text-dim);font-size:.9rem;align-self:flex-end;padding-bottom:.25rem; }
+.cs-res-inline-btn { background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .65rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.78rem;white-space:nowrap; }
+.cs-res-inline-btn:hover { border-color:var(--neon);color:var(--neon); }
+.cs-res-delta-input { width:65px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .4rem;border-radius:4px;font-family:var(--font);font-size:.85rem;text-align:center; }
 
-/* Secondary resource bar */
-.cs-secondary { background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap; }
-.cs-secondary-label { font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-dim);white-space:nowrap; }
-.cs-secondary-display { font-size:1.4rem;font-weight:bold;color:var(--neon3);min-width:4ch;text-align:center;cursor:pointer; }
-.cs-secondary-max { color:var(--text-dim);font-size:.9rem; }
+/* ── Edges ── */
+.cs-edges { display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem; }
+.cs-edge-panel { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.75rem; }
+.cs-edge-title { font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon2);margin-bottom:.4rem; }
+.cs-edge-text  { font-size:.9rem;color:var(--text);line-height:1.5; }
 
+/* ── Conditions ── */
+.cs-conditions { background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem; }
+.cs-conditions-title { font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.5rem; }
+.cs-cond-row { display:flex;gap:.4rem;flex-wrap:wrap; }
+.cs-cond-btn { background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.3rem .65rem;border-radius:20px;cursor:pointer;font-family:var(--font);font-size:.78rem;transition:all .15s; }
+.cs-cond-btn.active { background:var(--neon2);border-color:var(--neon2);color:#000;font-weight:bold; }
+.cs-cond-btn:hover:not(.active) { border-color:var(--neon2);color:var(--neon2); }
+
+/* ── Body panels ── */
 .cs-body { display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem; }
 .cs-panel { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.75rem; }
 .cs-panel-title { font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.6rem;border-bottom:1px solid var(--border);padding-bottom:.3rem; }
 
-/* Attribute grid */
-.cs-attr-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:.4rem; }
-.cs-attr-box { background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:.45rem .5rem;text-align:center; }
-.cs-attr-abbr { font-size:.6rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em; }
-.cs-attr-val { font-size:1.3rem;font-weight:bold;color:var(--neon); }
-.cs-attr-label { font-size:.6rem;color:var(--text-dim); }
+.cs-feat-item { padding:.4rem 0;border-bottom:1px solid var(--border); }
+.cs-feat-item:last-child { border-bottom:none; }
+.cs-feat-name   { color:var(--neon);font-size:.85rem; }
+.cs-feat-type   { font-size:.65rem;color:var(--text-dim);display:inline-block;margin-left:.4rem;background:var(--bg3);padding:.1rem .3rem;border-radius:3px; }
+.cs-feat-rank   { font-size:.65rem;color:var(--text-dim);margin-left:.2rem; }
+.cs-feat-notes  { font-size:.8rem;margin-top:.2rem;color:var(--text); }
 
-/* Skills list */
-.cs-skill-list { display:flex;flex-direction:column;gap:.18rem; }
-.cs-skill-item { display:flex;align-items:center;gap:.4rem;font-size:.82rem; }
-.cs-skill-stat { font-size:.6rem;color:var(--text-dim);width:28px;text-align:center;background:var(--bg3);border-radius:3px;padding:.1rem .2rem; }
-.cs-skill-name { flex:1; }
-.cs-skill-val { color:var(--neon);min-width:3ch;text-align:right;font-weight:bold; }
-
-.cs-attacks { width:100%;border-collapse:collapse;font-size:.8rem; }
-.cs-attacks th { color:var(--text-dim);font-size:.65rem;text-transform:uppercase;padding:.3rem .4rem;border-bottom:1px solid var(--border);text-align:left; }
-.cs-attacks td { padding:.35rem .4rem;border-bottom:1px solid var(--border); }
-.cs-attacks tr:last-child td { border-bottom:none; }
-.cs-attacks .atk-bonus { color:var(--neon); }
-.cs-attacks .atk-dmg   { color:var(--yellow); }
-
-.cs-bottom { display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem; }
 .cs-equipment-table { width:100%;border-collapse:collapse;font-size:.8rem; }
 .cs-equipment-table th { color:var(--text-dim);font-size:.65rem;text-transform:uppercase;padding:.3rem .4rem;border-bottom:1px solid var(--border);text-align:left; }
 .cs-equipment-table td { padding:.3rem .4rem;border-bottom:1px solid var(--border); }
 .cs-equipment-table tr:last-child td { border-bottom:none; }
 .cs-equipped-dot { color:var(--neon); }
-.cs-currency { display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem;padding-top:.5rem;border-top:1px solid var(--border); }
-.cs-coin { display:flex;flex-direction:column;align-items:center;gap:.1rem;min-width:48px;background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:.3rem .5rem; }
-.cs-coin-val { font-size:.95rem;font-weight:bold;color:var(--neon); }
+
+/* ── Cyberware ── */
+.cs-cyberware { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.75rem;margin-bottom:1rem; }
+.cs-cyber-table { width:100%;border-collapse:collapse;font-size:.8rem; }
+.cs-cyber-table th { color:var(--text-dim);font-size:.65rem;text-transform:uppercase;padding:.3rem .4rem;border-bottom:1px solid var(--border);text-align:left; }
+.cs-cyber-table td { padding:.3rem .4rem;border-bottom:1px solid var(--border); }
+.cs-cyber-table tr:last-child td { border-bottom:none; }
+.cs-cyber-ca { color:var(--neon3,#a855f7);font-weight:bold; }
+
+/* ── Currency ── */
+.cs-currency-row { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.75rem 1rem;display:flex;gap:.75rem;flex-wrap:wrap;align-items:center;margin-bottom:1rem; }
+.cs-currency-title { font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);white-space:nowrap; }
+.cs-coin { display:flex;flex-direction:column;align-items:center;gap:.1rem;min-width:56px;background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:.3rem .65rem; }
+.cs-coin-val { font-size:1.1rem;font-weight:bold;color:var(--neon); }
 .cs-coin-lbl { font-size:.6rem;color:var(--text-dim); }
-.cs-weight-bar { height:6px;background:var(--bg3);border-radius:3px;overflow:hidden;margin-top:.4rem; }
-.cs-weight-fill { height:100%;background:var(--neon);border-radius:3px; }
 
-.cs-feat-item { padding:.4rem 0;border-bottom:1px solid var(--border); }
-.cs-feat-item:last-child { border-bottom:none; }
-.cs-feat-name { color:var(--neon);font-size:.85rem; }
-.cs-feat-source { font-size:.7rem;color:var(--text-dim); }
-.cs-feat-desc { font-size:.8rem;margin-top:.2rem;color:var(--text); }
-
-.cs-personality { display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1rem; }
-.cs-pers-box { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.75rem; }
-.cs-pers-title { font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon2);margin-bottom:.4rem; }
-.cs-pers-text { font-size:.85rem;color:var(--text);line-height:1.5; }
-
+/* ── Prose ── */
 .cs-prose { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem;margin-bottom:.75rem; }
 .cs-prose-title { font-size:.65rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.5rem; }
 .cs-prose .rendered-md h1,.cs-prose .rendered-md h2,.cs-prose .rendered-md h3 { color:var(--neon);margin:.5rem 0 .25rem; }
 
+/* ── Dice ── */
 .cs-dice-section { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem;margin-bottom:1rem; }
 .cs-dice-row { display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.75rem; }
 .cs-die-btn { background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .7rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.85rem;transition:all .15s; }
@@ -107,32 +114,28 @@
 .cs-dice-controls { display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.75rem; }
 .cs-dice-controls input { background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;border-radius:4px;font-family:var(--font);font-size:.85rem; }
 .cs-dice-controls input[type=number] { width:60px;text-align:center; }
-.cs-dice-controls input[type=text] { width:110px; }
+.cs-dice-controls input[type=text]   { width:110px; }
 .cs-roll-btn { background:var(--neon);color:#000;border:none;padding:.4rem 1rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-weight:bold;font-size:.9rem; }
 .cs-roll-btn:hover { opacity:.85; }
 .cs-dice-log { max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:.3rem; }
 .cs-roll-entry { background:var(--bg3);border-radius:4px;padding:.35rem .6rem;font-size:.82rem;display:flex;justify-content:space-between;align-items:center; }
 .cs-roll-total { font-size:1.1rem;font-weight:bold;color:var(--neon); }
-.cs-roll-total.crit { color:var(--yellow); }
+.cs-roll-total.crit { color:#e8b84b; }
 .cs-roll-total.fumble { color:var(--neon2); }
 .cs-roll-detail { color:var(--text-dim);font-size:.75rem; }
 
-.cs-appear { display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;margin-bottom:1rem; }
-.cs-appear-field { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.5rem .75rem; }
-.cs-appear-label { font-size:.6rem;text-transform:uppercase;color:var(--text-dim);letter-spacing:.05em; }
-.cs-appear-val { font-size:.9rem; }
+/* ── HP compat (used for damage/heal row) ── */
+.cs-hp-inline-btn { align-self:flex-end;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .75rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.8rem; }
+.cs-hp-inline-btn:hover { border-color:var(--neon);color:var(--neon); }
 
 @media (max-width:900px) {
   .cs-body { grid-template-columns:1fr; }
-  .cs-bottom { grid-template-columns:1fr; }
-  .cs-personality { grid-template-columns:1fr 1fr; }
-  .cs-appear { grid-template-columns:repeat(3,1fr); }
+  .cs-stats-row { grid-template-columns:1fr; }
+  .cs-edges { grid-template-columns:1fr; }
 }
 @media (max-width:600px) {
   .cs-header { flex-direction:column;align-items:center;text-align:center; }
-  .cs-combat-row .cs-stat-box { min-width:calc(33% - .5rem); }
-  .cs-personality { grid-template-columns:1fr; }
-  .cs-appear { grid-template-columns:1fr 1fr; }
+  .cs-stat-grid { grid-template-columns:1fr 1fr; }
 }
 </style>
 
@@ -145,7 +148,7 @@
     </form>
   </div>
 
-  <!-- Header -->
+  <!-- Header: portrait | name + profession + race + level | XP -->
   <div class="cs-header">
     <div class="cs-portrait">
       {% if pc.portrait_url %}<img src="{{ pc.portrait_url }}" alt="{{ pc.name }}">
@@ -154,10 +157,8 @@
     <div class="cs-identity">
       <div class="cs-name">{{ pc.name }}</div>
       <div class="cs-class-line">
-        {% if pc.char_class %}<span>{{ pc.char_class }}{% if pc.subclass %} · {{ pc.subclass }}{% endif %}</span>{% endif %}
+        {% if pc.char_class %}<span>{{ pc.char_class }}</span>{% endif %}
         {% if pc.race %} · <span>{{ pc.race }}</span>{% endif %}
-        {% if pc.background %} · <span>{{ pc.background }}</span>{% endif %}
-        {% if pc.alignment %} · <span style="color:var(--text-dim)">{{ pc.alignment }}</span>{% endif %}
       </div>
       <div class="cs-class-line">
         Level <span>{{ pc.level }}</span>
@@ -175,135 +176,173 @@
     </div>
   </div>
 
-  <!-- Combat vitals row -->
-  <div class="cs-combat-row">
-    <div class="cs-stat-box">
-      <div class="val">{{ pc.armor_class }}</div>
-      <div class="lbl">Defense / AC</div>
-    </div>
-    <div class="cs-stat-box">
-      <div class="val">{{ pc.speed }}</div>
-      <div class="lbl">Speed</div>
-    </div>
-    <div class="cs-stat-box">
-      <div class="val">{{ pc.hit_dice }}</div>
-      <div class="lbl">Hit Dice</div>
-    </div>
-    {% if pc.armor_profs %}
-    <div class="cs-stat-box" style="min-width:140px;">
-      <div class="val" style="font-size:.85rem;">{{ pc.armor_profs }}</div>
-      <div class="lbl">Armor Profs</div>
-    </div>
-    {% endif %}
-    {% if pc.weapon_profs %}
-    <div class="cs-stat-box" style="min-width:140px;">
-      <div class="val" style="font-size:.85rem;">{{ pc.weapon_profs }}</div>
-      <div class="lbl">Weapon Profs</div>
-    </div>
-    {% endif %}
-    {% if pc.languages %}
-    <div class="cs-stat-box" style="min-width:120px;">
-      <div class="val" style="font-size:.85rem;">{{ pc.languages }}</div>
-      <div class="lbl">Languages</div>
-    </div>
-    {% endif %}
-  </div>
-
-  <!-- HP tracker -->
-  <div class="cs-hp-section">
-    <div>
-      <div style="font-size:.65rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.3rem;">Hit Points</div>
-      <div class="cs-hp-main">
-        <button class="cs-hp-btn" onclick="changeHp(-1)" title="−1 HP">−</button>
-        <div class="cs-hp-display" id="hp-current" onclick="hpSetDialog()">{{ pc.current_hp }}</div>
-        <div class="cs-hp-max">/ <span id="hp-max">{{ pc.max_hp }}</span></div>
-        <button class="cs-hp-btn" onclick="changeHp(1)" title="+1 HP">+</button>
-      </div>
-    </div>
-    <div class="cs-hp-fields">
-      <div class="cs-hp-field">
-        <label>Damage / Heal</label>
-        <input type="number" id="hp-delta-input" placeholder="5">
-      </div>
-      <button class="cs-hp-inline-btn" onclick="applyDamage()">Damage</button>
-      <button class="cs-hp-inline-btn" onclick="applyHeal()">Heal</button>
-      <div class="cs-hp-field">
-        <label>Temp HP</label>
-        <input type="number" id="hp-temp-input" value="{{ pc.temp_hp }}" placeholder="0">
-      </div>
-      <button class="cs-hp-inline-btn" onclick="setTempHp()">Set Temp</button>
-    </div>
-    <div class="cs-death-saves">
-      <div class="cs-death-row">
-        <span class="cs-death-label" style="color:var(--neon);">Successes</span>
-        {% for i in range(3) %}
-        <div class="cs-death-pip {% if i < pc.death_saves_success %}filled-success{% endif %}" id="ds-s-{{ i }}" onclick="toggleDeath('success', {{ i }})"></div>
-        {% endfor %}
-      </div>
-      <div class="cs-death-row">
-        <span class="cs-death-label" style="color:var(--neon2);">Failures</span>
-        {% for i in range(3) %}
-        <div class="cs-death-pip {% if i < pc.death_saves_failure %}filled-failure{% endif %}" id="ds-f-{{ i }}" onclick="toggleDeath('failure', {{ i }})"></div>
-        {% endfor %}
-      </div>
-    </div>
-  </div>
-
-  <!-- Secondary resource (optional) -->
-  {% if secondary %}
-  <div class="cs-secondary">
-    <span class="cs-secondary-label">{{ secondary.name }}</span>
-    <button class="cs-hp-btn" onclick="secDelta(-1)">−</button>
-    <div class="cs-secondary-display" id="sec-current" onclick="secSetDialog()">{{ secondary.current }}</div>
-    <div class="cs-secondary-max" style="color:var(--text-dim);">/ <span id="sec-max">{{ secondary.max }}</span></div>
-    <button class="cs-hp-btn" onclick="secDelta(1)">+</button>
-  </div>
-  {% endif %}
-
-  <!-- Stats + Skills -->
-  <div class="cs-body">
-
-    <!-- Attributes -->
-    <div class="cs-panel">
-      <div class="cs-panel-title">Attributes</div>
-      {% if stats %}
-      <div class="cs-attr-grid">
-        {% for s in stats %}
+  <!-- Stats: Physical | Mental -->
+  <div class="cs-stats-row">
+    <div class="cs-stats-panel">
+      <div class="cs-stats-panel-title">Physical</div>
+      <div class="cs-stat-grid">
+        {% for s in stats if s.id in ['str','dex','bod','per'] %}
         <div class="cs-attr-box">
-          <div class="cs-attr-abbr">{{ s.abbr or s.label }}</div>
+          <div class="cs-attr-abbr">{{ s.abbr }}</div>
           <div class="cs-attr-val">{{ s.value }}</div>
           <div class="cs-attr-label">{{ s.label }}</div>
         </div>
-        {% endfor %}
-      </div>
-      {% else %}
-      <p style="color:var(--text-dim);font-size:.82rem;">No stats defined. <a href="/characters/{{ pc.id }}/edit">Edit</a> to add.</p>
-      {% endif %}
-    </div>
-
-    <!-- Skills -->
-    <div class="cs-panel">
-      <div class="cs-panel-title">Skills</div>
-      {% if skills %}
-      <div class="cs-skill-list">
-        {% for sk in skills %}
-        <div class="cs-skill-item">
-          <span class="cs-skill-stat" title="{{ sk.stat_label }}">{{ sk.stat_abbr }}</span>
-          <span class="cs-skill-name">{{ sk.label }}</span>
-          <span class="cs-skill-val">{{ '%+d' % sk.value if sk.value != 0 else sk.value }}</span>
+        {% else %}
+        {% for sid, slabel, sabbr in [('str','Strength','STR'),('dex','Dexterity','DEX'),('bod','Body','BOD'),('per','Perception','PER')] %}
+        <div class="cs-attr-box">
+          <div class="cs-attr-abbr">{{ sabbr }}</div>
+          <div class="cs-attr-val">—</div>
+          <div class="cs-attr-label">{{ slabel }}</div>
         </div>
         {% endfor %}
+        {% endfor %}
       </div>
+    </div>
+    <div class="cs-stats-panel">
+      <div class="cs-stats-panel-title">Mental</div>
+      <div class="cs-stat-grid">
+        {% for s in stats if s.id in ['wil','int','cha','itu'] %}
+        <div class="cs-attr-box">
+          <div class="cs-attr-abbr">{{ s.abbr }}</div>
+          <div class="cs-attr-val">{{ s.value }}</div>
+          <div class="cs-attr-label">{{ s.label }}</div>
+        </div>
+        {% else %}
+        {% for sid, slabel, sabbr in [('wil','Willpower','WIL'),('int','Intellect','INT'),('cha','Charisma','CHA'),('itu','Intuition','ITU')] %}
+        <div class="cs-attr-box">
+          <div class="cs-attr-abbr">{{ sabbr }}</div>
+          <div class="cs-attr-val">—</div>
+          <div class="cs-attr-label">{{ slabel }}</div>
+        </div>
+        {% endfor %}
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Derived attributes row -->
+  <div class="cs-derived-row">
+    <div class="cs-derived-chip">
+      <div class="dc-val">{{ hp_max_derived }}</div>
+      <div class="dc-lbl">HP Max</div>
+    </div>
+    <div class="cs-derived-chip">
+      <div class="dc-val">{{ shock_max_derived }}</div>
+      <div class="dc-lbl">Shock Max</div>
+    </div>
+    <div class="cs-derived-chip">
+      <div class="dc-val">{{ ca_derived }}</div>
+      <div class="dc-lbl">Cyber Adapt.</div>
+    </div>
+    <div class="cs-derived-chip">
+      <div class="dc-val">{{ speed_derived }}</div>
+      <div class="dc-lbl">Speed</div>
+    </div>
+    <div class="cs-derived-chip">
+      <div class="dc-val">{{ phys }}</div>
+      <div class="dc-lbl">PP Max</div>
+    </div>
+    <div class="cs-derived-chip">
+      <div class="dc-val">{{ ment }}</div>
+      <div class="dc-lbl">MP Max</div>
+    </div>
+  </div>
+
+  <!-- Resource trackers -->
+  <div class="cs-resources">
+    <!-- HP (green neon) -->
+    <div class="cs-resource-bar hp">
+      <span class="cs-res-label">HP</span>
+      <button class="cs-res-btn" onclick="hpDelta(-1)" title="-1 HP">−</button>
+      <div class="cs-res-current" id="hp-current" onclick="hpSetDialog()">{{ pc.current_hp }}</div>
+      <div class="cs-res-max">/ <span id="hp-max">{{ hp_max }}</span></div>
+      <button class="cs-res-btn" onclick="hpDelta(1)" title="+1 HP">+</button>
+      <input type="number" class="cs-res-delta-input" id="hp-delta-input" placeholder="Amt">
+      <button class="cs-res-inline-btn" onclick="hpApplyDamage()">Damage</button>
+      <button class="cs-res-inline-btn" onclick="hpApplyHeal()">Heal</button>
+    </div>
+    <!-- Shock (purple) -->
+    <div class="cs-resource-bar shock">
+      <span class="cs-res-label">Shock</span>
+      <button class="cs-res-btn" onclick="shockDelta(-1)">−</button>
+      <div class="cs-res-current" id="shock-current" onclick="shockSetDialog()">{{ shock_current }}</div>
+      <div class="cs-res-max">/ <span id="shock-max">{{ shock_max }}</span></div>
+      <button class="cs-res-btn" onclick="shockDelta(1)">+</button>
+      <input type="number" class="cs-res-delta-input" id="shock-delta-input" placeholder="Amt">
+      <button class="cs-res-inline-btn" onclick="shockApply(-1)">Take</button>
+      <button class="cs-res-inline-btn" onclick="shockApply(1)">Clear</button>
+    </div>
+    <!-- PP (yellow) -->
+    <div class="cs-resource-bar pp">
+      <span class="cs-res-label">PP</span>
+      <button class="cs-res-btn" onclick="ppDelta(-1)">−</button>
+      <div class="cs-res-current" id="pp-current" onclick="ppSetDialog()">{{ pp_current }}</div>
+      <div class="cs-res-max">/ <span id="pp-max">{{ phys }}</span></div>
+      <button class="cs-res-btn" onclick="ppDelta(1)">+</button>
+      <button class="cs-res-inline-btn" onclick="ppRest()">Rest (½)</button>
+    </div>
+    <!-- MP (cyan) -->
+    <div class="cs-resource-bar mp">
+      <span class="cs-res-label">MP</span>
+      <button class="cs-res-btn" onclick="mpDelta(-1)">−</button>
+      <div class="cs-res-current" id="mp-current" onclick="mpSetDialog()">{{ mp_current }}</div>
+      <div class="cs-res-max">/ <span id="mp-max">{{ ment }}</span></div>
+      <button class="cs-res-btn" onclick="mpDelta(1)">+</button>
+      <button class="cs-res-inline-btn" onclick="mpRest()">Rest (½)</button>
+    </div>
+  </div>
+
+  <!-- Edges -->
+  {% if minor_edge or major_edge %}
+  <div class="cs-edges">
+    {% if minor_edge %}
+    <div class="cs-edge-panel">
+      <div class="cs-edge-title">Minor Edge</div>
+      <div class="cs-edge-text">{{ minor_edge }}</div>
+    </div>
+    {% endif %}
+    {% if major_edge %}
+    <div class="cs-edge-panel">
+      <div class="cs-edge-title">Major Edge</div>
+      <div class="cs-edge-text">{{ major_edge }}</div>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <!-- Conditions (visual toggles) -->
+  <div class="cs-conditions">
+    <div class="cs-conditions-title">Conditions</div>
+    <div class="cs-cond-row" id="conditions-row">
+      {% for cond in ['Burn','Freeze','Toxin','Bleeding','Blind','Yellow','Charm','Daze','Stunned'] %}
+      <button type="button" class="cs-cond-btn{% if cond in conditions %} active{% endif %}"
+              onclick="toggleCondition(this)">{{ cond }}</button>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Two-column body: Feats | Equipment -->
+  <div class="cs-body">
+    <!-- Feats -->
+    <div class="cs-panel">
+      <div class="cs-panel-title">Feats</div>
+      {% if feats %}
+        {% for feat in feats %}
+        <div class="cs-feat-item">
+          <div class="cs-feat-name">
+            {{ feat.name }}
+            {% if feat.type or feat.source %}<span class="cs-feat-type">{{ feat.type or feat.source }}</span>{% endif %}
+            {% if feat.rank %}<span class="cs-feat-rank">Rank {{ feat.rank }}</span>{% endif %}
+          </div>
+          {% if feat.notes or feat.description %}<div class="cs-feat-notes">{{ feat.notes or feat.description }}</div>{% endif %}
+        </div>
+        {% endfor %}
       {% else %}
-      <p style="color:var(--text-dim);font-size:.82rem;">No skills defined. <a href="/characters/{{ pc.id }}/edit">Edit</a> to add.</p>
+        <p style="color:var(--text-dim);font-size:.82rem;">No feats. <a href="/characters/{{ pc.id }}/edit">Edit</a> to add.</p>
       {% endif %}
     </div>
 
-  </div>
-
-  <!-- Attacks + Equipment + Feats -->
-  <div class="cs-bottom">
-    <!-- Equipment & Currency -->
+    <!-- Equipment -->
     <div class="cs-panel">
       <div class="cs-panel-title">Equipment</div>
       {% if equipment %}
@@ -320,92 +359,51 @@
           {% endfor %}
         </tbody>
       </table>
-      {% set w_pct = [100, (total_weight / (1 + total_weight) * 100)|int]|min if total_weight > 0 else 0 %}
-      <div style="font-size:.75rem;color:var(--text-dim);margin-top:.4rem;">
-        Total weight: {{ total_weight|int }}
-      </div>
+      <div style="font-size:.75rem;color:var(--text-dim);margin-top:.4rem;">Total weight: {{ total_weight|int }}</div>
       {% else %}
-      <p style="color:var(--text-dim);font-size:.82rem;">No equipment. <a href="/characters/{{ pc.id }}/edit">Add items</a>.</p>
+        <p style="color:var(--text-dim);font-size:.82rem;">No equipment. <a href="/characters/{{ pc.id }}/edit">Add items</a>.</p>
       {% endif %}
-      {% if currency %}
-      <div class="cs-currency">
-        {% for c in currency %}
-        <div class="cs-coin">
-          <span class="cs-coin-val">{{ c.value }}</span>
-          <span class="cs-coin-lbl">{{ c.abbr or c.label }}</span>
-        </div>
+    </div>
+  </div>
+
+  <!-- Cyberware (full width) -->
+  {% if cyberware %}
+  <div class="cs-cyberware">
+    <div class="cs-panel-title">Cyberware</div>
+    <table class="cs-cyber-table">
+      <thead><tr><th>Implant</th><th>CA Cost</th><th>Notes</th></tr></thead>
+      <tbody>
+        {% for cw in cyberware %}
+        <tr>
+          <td>{{ cw.name }}</td>
+          <td class="cs-cyber-ca">{{ cw.ca_cost }}</td>
+          <td style="color:var(--text-dim)">{{ cw.notes or '' }}</td>
+        </tr>
         {% endfor %}
-      </div>
-      {% endif %}
+      </tbody>
+    </table>
+    {% set total_ca = cyberware | sum(attribute='ca_cost') %}
+    <div style="font-size:.75rem;color:var(--text-dim);margin-top:.4rem;">
+      Total CA used: <strong style="color:var(--neon3,#a855f7);">{{ total_ca }}</strong>
+      / CA {{ ca_derived }}
     </div>
-
-    <!-- Attacks + Feats -->
-    <div class="cs-panel">
-      {% if attacks %}
-      <div class="cs-panel-title">Attacks &amp; Actions</div>
-      <table class="cs-attacks">
-        <thead><tr><th>Name</th><th>Bonus</th><th>Damage</th><th>Type</th></tr></thead>
-        <tbody>
-          {% for atk in attacks %}
-          <tr>
-            <td>{{ atk.name }}</td>
-            <td class="atk-bonus">{{ atk.bonus }}</td>
-            <td class="atk-dmg">{{ atk.damage }}</td>
-            <td>{{ atk.dmg_type }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% endif %}
-
-      {% if feats %}
-      <div class="cs-panel-title" style="margin-top:.75rem;">Features &amp; Feats</div>
-      {% for feat in feats %}
-      <div class="cs-feat-item">
-        <div class="cs-feat-name">{{ feat.name }}</div>
-        {% if feat.source %}<div class="cs-feat-source">{{ feat.source }}</div>{% endif %}
-        {% if feat.description %}<div class="cs-feat-desc">{{ feat.description }}</div>{% endif %}
-      </div>
-      {% endfor %}
-      {% endif %}
-
-      {% if not attacks and not feats %}
-      <div class="cs-panel-title">Attacks &amp; Feats</div>
-      <p style="color:var(--text-dim);font-size:.82rem;"><a href="/characters/{{ pc.id }}/edit">Add attacks and features</a>.</p>
-      {% endif %}
-    </div>
-  </div>
-
-  <!-- Appearance -->
-  {% if pc.age or pc.height or pc.weight_app or pc.eyes or pc.skin or pc.hair %}
-  <div class="cs-appear">
-    {% if pc.age %}<div class="cs-appear-field"><div class="cs-appear-label">Age</div><div class="cs-appear-val">{{ pc.age }}</div></div>{% endif %}
-    {% if pc.height %}<div class="cs-appear-field"><div class="cs-appear-label">Height</div><div class="cs-appear-val">{{ pc.height }}</div></div>{% endif %}
-    {% if pc.weight_app %}<div class="cs-appear-field"><div class="cs-appear-label">Weight / Build</div><div class="cs-appear-val">{{ pc.weight_app }}</div></div>{% endif %}
-    {% if pc.eyes %}<div class="cs-appear-field"><div class="cs-appear-label">Eyes</div><div class="cs-appear-val">{{ pc.eyes }}</div></div>{% endif %}
-    {% if pc.skin %}<div class="cs-appear-field"><div class="cs-appear-label">Skin</div><div class="cs-appear-val">{{ pc.skin }}</div></div>{% endif %}
-    {% if pc.hair %}<div class="cs-appear-field"><div class="cs-appear-label">Hair</div><div class="cs-appear-val">{{ pc.hair }}</div></div>{% endif %}
   </div>
   {% endif %}
 
-  <!-- Personality -->
-  {% if pc.personality_traits or pc.ideals or pc.bonds or pc.flaws %}
-  <div class="cs-personality">
-    {% if pc.personality_traits %}
-    <div class="cs-pers-box"><div class="cs-pers-title">Personality Traits</div><div class="cs-pers-text">{{ pc.personality_traits }}</div></div>
-    {% endif %}
-    {% if pc.ideals %}
-    <div class="cs-pers-box"><div class="cs-pers-title">Ideals / Goals</div><div class="cs-pers-text">{{ pc.ideals }}</div></div>
-    {% endif %}
-    {% if pc.bonds %}
-    <div class="cs-pers-box"><div class="cs-pers-title">Bonds / Connections</div><div class="cs-pers-text">{{ pc.bonds }}</div></div>
-    {% endif %}
-    {% if pc.flaws %}
-    <div class="cs-pers-box"><div class="cs-pers-title">Flaws / Weaknesses</div><div class="cs-pers-text">{{ pc.flaws }}</div></div>
-    {% endif %}
+  <!-- Currency row -->
+  {% if currency %}
+  <div class="cs-currency-row">
+    <span class="cs-currency-title">Currency</span>
+    {% for c in currency %}
+    <div class="cs-coin">
+      <span class="cs-coin-val">{{ c.value }}</span>
+      <span class="cs-coin-lbl">{{ c.abbr or c.label }}</span>
+    </div>
+    {% endfor %}
   </div>
   {% endif %}
 
+  <!-- Backstory / Notes -->
   {% if pc.backstory %}
   <div class="cs-prose">
     <div class="cs-prose-title">Backstory</div>
@@ -421,7 +419,7 @@
 
   <!-- Dice Roller -->
   <div class="cs-dice-section">
-    <div class="cs-panel-title">🎲 Dice Roller</div>
+    <div class="cs-panel-title">Dice Roller</div>
     <div class="cs-dice-row">
       {% for d in ["d4","d6","d8","d10","d12","d20","d100"] %}
       <button class="cs-die-btn" onclick="quickRoll('{{ d }}')">{{ d }}</button>
@@ -430,13 +428,13 @@
     <div class="cs-dice-controls">
       <input type="number" id="dice-count" value="1" min="1" max="20" title="Number of dice">
       <select id="dice-sides" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;border-radius:4px;font-family:var(--font);">
-        <option>4</option><option>6</option><option>8</option><option>10</option>
-        <option>12</option><option selected>20</option><option>100</option>
+        <option>4</option><option>6</option><option>8</option><option selected>10</option>
+        <option>12</option><option>20</option><option>100</option>
       </select>
       <input type="number" id="dice-modifier" value="0" style="width:70px;" title="Modifier (+/-)">
       <span style="color:var(--text-dim);font-size:.8rem;">mod</span>
       <button class="cs-roll-btn" onclick="doRoll()">Roll!</button>
-      <input type="text" id="dice-expr" placeholder="e.g. 2d6+3" title="Custom expression">
+      <input type="text" id="dice-expr" placeholder="e.g. 1d10+5" title="Custom expression">
       <button class="cs-roll-btn" onclick="doCustomRoll()">Roll Expr</button>
     </div>
     <div class="cs-dice-log" id="dice-log">
@@ -451,54 +449,77 @@ const PC_ID = {{ pc.id }};
 // ── HP ────────────────────────────────────────────────────────────────────────
 async function hpAjax(body) {
   const r = await fetch(`/api/characters/${PC_ID}/hp-async`, {
-    method: 'POST', headers: {'Content-Type':'application/json'},
+    method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify(body)
   });
   const d = await r.json();
   document.getElementById('hp-current').textContent = d.current_hp;
-  document.getElementById('hp-max').textContent = d.max_hp;
-  updateDeathPips('success', d.death_success);
-  updateDeathPips('failure', d.death_failure);
-  if (d.secondary_current !== undefined) {
-    const el = document.getElementById('sec-current');
-    if (el) el.textContent = d.secondary_current;
-  }
+  document.getElementById('hp-max').textContent     = d.max_hp;
 }
 
-function changeHp(delta) { hpAjax({action:'delta', value:delta}); }
-function applyDamage() { hpAjax({action:'delta', value:-Math.abs(parseInt(document.getElementById('hp-delta-input').value)||0)}); }
-function applyHeal()   { hpAjax({action:'delta', value: Math.abs(parseInt(document.getElementById('hp-delta-input').value)||0)}); }
-function setTempHp()   { hpAjax({action:'temp',  value: parseInt(document.getElementById('hp-temp-input').value)||0}); }
+function hpDelta(delta) { hpAjax({action:'delta', value:delta}); }
+function hpApplyDamage() { hpAjax({action:'delta', value:-Math.abs(parseInt(document.getElementById('hp-delta-input').value)||0)}); }
+function hpApplyHeal()   { hpAjax({action:'delta', value: Math.abs(parseInt(document.getElementById('hp-delta-input').value)||0)}); }
 function hpSetDialog() {
   const v = prompt('Set current HP to:', document.getElementById('hp-current').textContent);
   if (v !== null && !isNaN(parseInt(v))) hpAjax({action:'set', value:parseInt(v)});
 }
 
-function updateDeathPips(type, count) {
-  for (let i = 0; i < 3; i++) {
-    const el = document.getElementById(`ds-${type === 'success' ? 's' : 'f'}-${i}`);
-    if (!el) continue;
-    el.className = 'cs-death-pip' + (i < count ? (type === 'success' ? ' filled-success' : ' filled-failure') : '');
-  }
+// ── Shock ─────────────────────────────────────────────────────────────────────
+async function shockAjax(body) {
+  const r = await fetch(`/api/characters/${PC_ID}/shock`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  });
+  const d = await r.json();
+  document.getElementById('shock-current').textContent = d.shock_current;
+  document.getElementById('shock-max').textContent     = d.shock_max;
 }
 
-let _deathSuccess = {{ pc.death_saves_success }};
-let _deathFailure = {{ pc.death_saves_failure }};
-async function toggleDeath(type, idx) {
-  if (type === 'success') {
-    _deathSuccess = _deathSuccess === idx + 1 ? idx : idx + 1;
-    await hpAjax({action:'death_success', value:_deathSuccess});
-  } else {
-    _deathFailure = _deathFailure === idx + 1 ? idx : idx + 1;
-    await hpAjax({action:'death_failure', value:_deathFailure});
-  }
+function shockDelta(delta) { shockAjax({action:'delta', value:delta}); }
+function shockApply(sign) {
+  const amt = parseInt(document.getElementById('shock-delta-input').value) || 0;
+  shockAjax({action:'delta', value: sign * Math.abs(amt)});
+}
+function shockSetDialog() {
+  const v = prompt('Set current Shock to:', document.getElementById('shock-current').textContent);
+  if (v !== null && !isNaN(parseInt(v))) shockAjax({action:'set', value:parseInt(v)});
 }
 
-// ── Secondary resource ────────────────────────────────────────────────────────
-function secDelta(delta) { hpAjax({action:'secondary_delta', value:delta}); }
-function secSetDialog() {
-  const v = prompt('Set {{ pc.secondary_resource_name or "resource" }} to:', document.getElementById('sec-current')?.textContent || '0');
-  if (v !== null && !isNaN(parseInt(v))) hpAjax({action:'secondary_set', value:parseInt(v)});
+// ── PP ────────────────────────────────────────────────────────────────────────
+async function ppAjax(body) {
+  const r = await fetch(`/api/characters/${PC_ID}/pp`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  });
+  const d = await r.json();
+  document.getElementById('pp-current').textContent = d.pp_current;
+  document.getElementById('pp-max').textContent     = d.pp_max;
+}
+
+function ppDelta(delta) { ppAjax({action:'delta', value:delta}); }
+function ppRest()        { ppAjax({action:'rest'}); }
+function ppSetDialog() {
+  const v = prompt('Set current PP to:', document.getElementById('pp-current').textContent);
+  if (v !== null && !isNaN(parseInt(v))) ppAjax({action:'set', value:parseInt(v)});
+}
+
+// ── MP ────────────────────────────────────────────────────────────────────────
+async function mpAjax(body) {
+  const r = await fetch(`/api/characters/${PC_ID}/mp`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  });
+  const d = await r.json();
+  document.getElementById('mp-current').textContent = d.mp_current;
+  document.getElementById('mp-max').textContent     = d.mp_max;
+}
+
+function mpDelta(delta) { mpAjax({action:'delta', value:delta}); }
+function mpRest()        { mpAjax({action:'rest'}); }
+function mpSetDialog() {
+  const v = prompt('Set current MP to:', document.getElementById('mp-current').textContent);
+  if (v !== null && !isNaN(parseInt(v))) mpAjax({action:'set', value:parseInt(v)});
 }
 
 // ── XP ────────────────────────────────────────────────────────────────────────
@@ -512,6 +533,11 @@ async function xpDialog() {
   const d = await r.json();
   document.getElementById('xp-label').textContent = d.xp + ' XP' + (d.xp_hi ? ' / ' + d.xp_hi : '');
   document.getElementById('xp-bar').style.width = d.xp_pct + '%';
+}
+
+// ── Conditions (visual toggle only) ──────────────────────────────────────────
+function toggleCondition(btn) {
+  btn.classList.toggle('active');
 }
 
 // ── Dice ──────────────────────────────────────────────────────────────────────

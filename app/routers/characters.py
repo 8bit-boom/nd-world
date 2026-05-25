@@ -16,7 +16,6 @@ from ..constants import (
     KIND_ICONS, KINDS, SUBTYPES, XP_THRESHOLDS,
     ND_DEFAULT_STATS, ND_DEFAULT_CURRENCY,
 )
-# N&D has no skill list — ND_DEFAULT_SKILLS removed
 from ..database import get_db
 from ..models import PlayerCharacter, World
 
@@ -74,10 +73,12 @@ def _derived(pc: PlayerCharacter) -> dict:
     ca_derived        = stat_val.get("wil", 0) + stat_val.get("bod", 0)
     speed_derived     = stat_val.get("dex", 0) + stat_val.get("itu", 0)
 
-    shock_max     = getattr(pc, "shock_max",     0) or shock_max_derived
-    shock_current = getattr(pc, "shock_current", 0)
-    pp_current    = getattr(pc, "pp_current",    0)
-    mp_current    = getattr(pc, "mp_current",    0)
+    # Use stored override if non-zero, else fall back to derived value
+    hp_max        = pc.max_hp if pc.max_hp > 0 else hp_max_derived
+    shock_max     = (getattr(pc, "shock_max", 0) or 0) if (getattr(pc, "shock_max", 0) or 0) > 0 else shock_max_derived
+    shock_current = getattr(pc, "shock_current", 0) or 0
+    pp_current    = getattr(pc, "pp_current",    0) or 0
+    mp_current    = getattr(pc, "mp_current",    0) or 0
 
     secondary = {
         "name": "Shock",
@@ -96,6 +97,7 @@ def _derived(pc: PlayerCharacter) -> dict:
         "conditions": conditions,
         "phys": phys, "ment": ment,
         "hp_max_derived": hp_max_derived,
+        "hp_max": hp_max,
         "shock_max_derived": shock_max_derived,
         "ca_derived": ca_derived,
         "speed_derived": speed_derived,
@@ -121,8 +123,8 @@ def _apply_form(pc: PlayerCharacter, data: dict):
     pc.backstory   = gs("backstory")
     pc.notes       = gs("notes")
 
-    # HP
-    pc.max_hp     = max(1, gi("max_hp", 10))
+    # HP — max_hp=0 means "use auto-derived value"; store 0 so sheet uses derived
+    pc.max_hp     = max(0, gi("max_hp", 0))
     pc.current_hp = gi("current_hp", pc.max_hp)
 
     # N&D resources
@@ -135,10 +137,11 @@ def _apply_form(pc: PlayerCharacter, data: dict):
     pc.minor_edge = gs("minor_edge")
     pc.major_edge = gs("major_edge")
 
-    # JSON fields
+    # JSON fields (no skills_json in N&D)
     for field in ("stats_json", "skills_json", "currency_json",
                   "equipment_json", "feats_json", "attacks_json",
                   "cyberware_json", "conditions_json"):
+        # skills_json kept for DB compatibility but not used in N&D
         raw = data.get(field, "[]") or "[]"
         try:
             json.loads(raw)
@@ -193,7 +196,7 @@ def character_new_form(request: Request, db: Session = Depends(get_db), active_w
         "nd_default_stats": ND_DEFAULT_STATS,
         "nd_default_currency": ND_DEFAULT_CURRENCY,
         "stats": [], "currency": [],
-        "equipment": [], "feats": [],
+        "equipment": [], "feats": [], "cyberware": [],
     })
 
 
@@ -301,31 +304,106 @@ async def character_hp_async(pc_id: int, request: Request, db: Session = Depends
         raise HTTPException(404)
     action = body.get("action", "set")
     val = int(body.get("value", 0))
+    # Resolve effective HP max (0 stored = auto-derived from physical stats)
+    stats = json.loads(pc.stats_json or "[]")
+    stat_val = {s["id"]: int(s.get("value", 0)) for s in stats}
+    phys = (stat_val.get("str", 0) + stat_val.get("dex", 0)
+            + stat_val.get("bod", 0) + stat_val.get("per", 0))
+    eff_max_hp = pc.max_hp if pc.max_hp > 0 else phys + 10
+    temp_hp = getattr(pc, "temp_hp", 0) or 0
     if action == "delta":
-        pc.current_hp = max(0, min(pc.max_hp + pc.temp_hp, pc.current_hp + val))
+        pc.current_hp = max(0, min(eff_max_hp + temp_hp, pc.current_hp + val))
     elif action == "temp":
         pc.temp_hp = max(0, val)
     elif action == "max":
-        pc.max_hp = max(1, val)
-        pc.current_hp = min(pc.current_hp, pc.max_hp)
-    elif action == "death_success":
-        pc.death_saves_success = max(0, min(3, pc.death_saves_success + val))
-    elif action == "death_failure":
-        pc.death_saves_failure = max(0, min(3, pc.death_saves_failure + val))
-    elif action == "secondary_set":
-        pc.secondary_resource_current = max(0, min(pc.secondary_resource_max, val))
-    elif action == "secondary_delta":
-        pc.secondary_resource_current = max(0, min(pc.secondary_resource_max, pc.secondary_resource_current + val))
+        pc.max_hp = max(0, val)
+        pc.current_hp = min(pc.current_hp, pc.max_hp if pc.max_hp > 0 else eff_max_hp)
     else:
-        pc.current_hp = max(0, min(pc.max_hp + pc.temp_hp, val))
+        pc.current_hp = max(0, min(eff_max_hp + temp_hp, val))
     db.commit()
     return {
-        "current_hp": pc.current_hp, "max_hp": pc.max_hp,
-        "temp_hp": pc.temp_hp,
-        "death_success": pc.death_saves_success,
-        "death_failure": pc.death_saves_failure,
+        "current_hp": pc.current_hp,
+        "max_hp": pc.max_hp if pc.max_hp > 0 else eff_max_hp,
+        "temp_hp": getattr(pc, "temp_hp", 0) or 0,
+        "death_success": getattr(pc, "death_saves_success", 0) or 0,
+        "death_failure": getattr(pc, "death_saves_failure", 0) or 0,
         "secondary_current": getattr(pc, "secondary_resource_current", 0),
     }
+
+
+# ── AJAX: Shock ───────────────────────────────────────────────────────────────
+
+@router.post("/api/characters/{pc_id}/shock")
+async def character_shock_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    body = await request.json()
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    action = body.get("action", "set")
+    val = int(body.get("value", 0))
+    shock_max = getattr(pc, "shock_max", 0) or 0
+    shock_current = getattr(pc, "shock_current", 0) or 0
+    if action == "delta":
+        shock_current = max(0, min(shock_max, shock_current + val))
+    elif action == "set":
+        shock_current = max(0, min(shock_max, val))
+    pc.shock_current = shock_current
+    db.commit()
+    return {"shock_current": pc.shock_current, "shock_max": pc.shock_max}
+
+
+# ── AJAX: PP ──────────────────────────────────────────────────────────────────
+
+@router.post("/api/characters/{pc_id}/pp")
+async def character_pp_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    body = await request.json()
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    action = body.get("action", "set")
+    val = int(body.get("value", 0))
+    # PP max = sum of physical stats
+    stats = json.loads(pc.stats_json or "[]")
+    stat_val = {s["id"]: int(s.get("value", 0)) for s in stats}
+    pp_max = (stat_val.get("str", 0) + stat_val.get("dex", 0)
+              + stat_val.get("bod", 0) + stat_val.get("per", 0))
+    pp_current = getattr(pc, "pp_current", 0) or 0
+    if action == "delta":
+        pp_current = max(0, min(pp_max, pp_current + val))
+    elif action == "set":
+        pp_current = max(0, min(pp_max, val))
+    elif action == "rest":
+        pp_current = min(pp_max, pp_current + pp_max // 2)
+    pc.pp_current = pp_current
+    db.commit()
+    return {"pp_current": pc.pp_current, "pp_max": pp_max}
+
+
+# ── AJAX: MP ──────────────────────────────────────────────────────────────────
+
+@router.post("/api/characters/{pc_id}/mp")
+async def character_mp_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    body = await request.json()
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    action = body.get("action", "set")
+    val = int(body.get("value", 0))
+    # MP max = sum of mental stats
+    stats = json.loads(pc.stats_json or "[]")
+    stat_val = {s["id"]: int(s.get("value", 0)) for s in stats}
+    mp_max = (stat_val.get("wil", 0) + stat_val.get("int", 0)
+              + stat_val.get("cha", 0) + stat_val.get("itu", 0))
+    mp_current = getattr(pc, "mp_current", 0) or 0
+    if action == "delta":
+        mp_current = max(0, min(mp_max, mp_current + val))
+    elif action == "set":
+        mp_current = max(0, min(mp_max, val))
+    elif action == "rest":
+        mp_current = min(mp_max, mp_current + mp_max // 2)
+    pc.mp_current = mp_current
+    db.commit()
+    return {"mp_current": pc.mp_current, "mp_max": mp_max}
 
 
 # ── AJAX: XP ──────────────────────────────────────────────────────────────────
