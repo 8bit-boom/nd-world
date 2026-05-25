@@ -722,11 +722,18 @@
       <div class="ai-section-label">RAG — World lore &amp; Notes</div>
       <div id="ctx-status" style="font-size:.78rem;color:var(--text-dim)">○ Ready</div>
       <div style="display:flex;align-items:center;gap:.4rem;margin-top:.45rem">
-        <label for="ctx-limit" style="font-size:.72rem;color:var(--text-dim);white-space:nowrap">Entities:</label>
+        <label for="ctx-limit" style="font-size:.72rem;color:var(--text-dim);white-space:nowrap" title="Max entities fetched per message">Entities:</label>
         <input type="range" id="ctx-limit" min="5" max="250" step="5" value="25"
                style="flex:1;accent-color:var(--neon);cursor:pointer"
                oninput="document.getElementById('ctx-limit-val').textContent=this.value==250?'max':this.value">
         <span id="ctx-limit-val" style="font-size:.72rem;color:var(--neon);min-width:3ch;text-align:right">25</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:.4rem;margin-top:.3rem">
+        <label for="notes-limit" style="font-size:.72rem;color:var(--text-dim);white-space:nowrap" title="Extra notes included per message (0 = off)">Notes:</label>
+        <input type="range" id="notes-limit" min="0" max="20" step="1" value="5"
+               style="flex:1;accent-color:var(--neon);cursor:pointer"
+               oninput="document.getElementById('notes-limit-val').textContent=this.value==0?'off':this.value">
+        <span id="notes-limit-val" style="font-size:.72rem;color:var(--neon);min-width:3ch;text-align:right">5</span>
       </div>
     </div>
 
@@ -1894,7 +1901,7 @@ async function sendMessage() {
       const cr = await fetch('/api/ai/world-context-smart', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: text, limit: parseInt(document.getElementById('ctx-limit').value) || 25 })
+        body: JSON.stringify({ query: text, limit: parseInt(document.getElementById('ctx-limit').value) || 25, notes_limit: parseInt(document.getElementById('notes-limit').value) || 0 })
       });
       const cd = await cr.json();
       ctx = cd.context || '';
@@ -2197,10 +2204,11 @@ async function igBuildPrompt() {
   ta.value = '';
   try {
     const ctxLimit = document.getElementById('ctx-limit') ? parseInt(document.getElementById('ctx-limit').value) : 10;
+    const notesLimit = document.getElementById('notes-limit') ? parseInt(document.getElementById('notes-limit').value) : 0;
     const ctxR = await fetch('/api/ai/world-context-smart', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: concept, limit: ctxLimit }),
+      body: JSON.stringify({ query: concept, limit: ctxLimit, notes_limit: notesLimit }),
     });
     const ctxD = await ctxR.json();
     const lore = (ctxD.context || '').trim();
@@ -3260,11 +3268,10 @@ function mpRender(models, available) {
     const info = document.createElement('div');
     info.style.cssText = 'flex:1;min-width:0';
     const nameEl = document.createElement('div');
-    nameEl.style.cssText = 'font-size:.88rem;color:' + (isActive ? 'var(--neon)' : 'var(--text)') + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:' + (isActive ? '700' : '400');
+    nameEl.style.cssText = 'font-size:.88rem;color:' + (isActive ? 'var(--neon)' : 'var(--text)') + ';word-break:break-all;font-weight:' + (isActive ? '700' : '400');
     nameEl.textContent = m.label || m.id;
-    nameEl.title = m.id;
     const idEl = document.createElement('div');
-    idEl.style.cssText = 'font-size:.68rem;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:.1rem';
+    idEl.style.cssText = 'font-size:.68rem;color:var(--text-dim);word-break:break-all;margin-top:.1rem';
     idEl.textContent = m.id;
     info.appendChild(nameEl);
     info.appendChild(idEl);

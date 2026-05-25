@@ -784,6 +784,8 @@ def _format_context_from_entities(entities: list) -> str:
 
 class _SmartCtxBody(BaseModel):
     query: str = ""
+    limit: int = 25
+    notes_limit: int = 5
 
 
 @app.post("/api/ai/world-context-smart")
@@ -794,9 +796,28 @@ def ai_world_context_smart(
 ):
     world, _ = _get_world_ctx(db, active_world)
     if not world:
-        return {"context": "", "count": 0}
-    entities = _find_relevant_entities(db, world.id, body.query)
-    return {"context": _format_context_from_entities(entities), "count": len(entities)}
+        return {"context": "", "count": 0, "notes": 0}
+    entities = _find_relevant_entities(db, world.id, body.query, limit=body.limit)
+    notes = [e for e in entities if e.kind == "note"]
+    non_notes = [e for e in entities if e.kind != "note"]
+    # Also search notes separately if notes_limit > 0
+    if body.notes_limit > 0:
+        note_entities = (
+            db.query(Entity)
+            .filter(Entity.world_id == world.id, Entity.kind == "note")
+            .order_by(Entity.name)
+            .limit(body.notes_limit)
+            .all()
+        )
+        seen_ids = {e.id for e in entities}
+        extra_notes = [e for e in note_entities if e.id not in seen_ids]
+        notes = notes + extra_notes
+    combined = non_notes + notes
+    return {
+        "context": _format_context_from_entities(combined),
+        "count": len(non_notes),
+        "notes": len(notes),
+    }
 
 
 class _SaveNoteBody(BaseModel):
