@@ -141,11 +141,30 @@ class PlayerCharacter(Base):
     major_edge    = Column(Text, default='')
     cyberware_json  = Column(Text, default='[]')  # [{name, ca_cost, notes}]
     conditions_json = Column(Text, default='[]')  # list of active condition strings
+    sheet_template_id  = Column(Integer, ForeignKey("sheet_templates.id"), nullable=True)
+    custom_fields_json = Column(Text, default="{}")   # {field_id: value}
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     world = relationship("World")
+
+
+class SheetTemplate(Base):
+    __tablename__ = "sheet_templates"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    world_id    = Column(Integer, ForeignKey("worlds.id"), nullable=True)  # NULL = global/built-in
+    name        = Column(String(256), nullable=False)
+    slug        = Column(String(64), unique=True, nullable=False)
+    description = Column(Text, default="")
+    is_builtin  = Column(Boolean, default=False)
+    # [{id, label, type, section, default_value}]
+    # type: number | resource | text | textarea | table
+    # section: stats | resources | notes | custom
+    fields_json = Column(Text, default="[]")
+    created_at  = Column(DateTime, default=datetime.utcnow)
+    updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class MapOverlay(Base):

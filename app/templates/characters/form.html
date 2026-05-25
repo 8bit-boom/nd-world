@@ -74,6 +74,28 @@
 
   <form method="post" action="{% if pc %}/characters/{{ pc.id }}/edit{% else %}/characters/new{% endif %}" enctype="multipart/form-data" id="char-form">
 
+    <!-- Sheet Template selector -->
+    <div class="cf-section" style="margin-bottom:1rem">
+      <div class="cf-section-title"><span>Sheet Template</span> <a href="/characters/templates" style="font-size:.72rem;color:var(--text-dim)">Manage Templates</a></div>
+      <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
+        <select id="template-sel" onchange="switchTemplate(this.value)"
+                style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .65rem;font-family:var(--font);font-size:.85rem;border-radius:4px;flex:1;min-width:180px;max-width:340px">
+          {% for tpl in sheet_templates %}
+          <option value="{{ tpl.id }}" data-fields="{{ tpl.fields_json | e }}"
+                  {% if chosen_template and chosen_template.id == tpl.id %}selected{% endif %}>
+            {{ tpl.name }}{% if tpl.is_builtin %} ★{% endif %}
+          </option>
+          {% endfor %}
+          <option value="0"{% if not chosen_template %} selected{% endif %}>— No template —</option>
+        </select>
+        <span id="template-desc" style="font-size:.78rem;color:var(--text-dim)">
+          {% if chosen_template %}{{ chosen_template.description }}{% endif %}
+        </span>
+      </div>
+      <input type="hidden" name="sheet_template_id" id="sheet-template-id-hidden"
+             value="{{ chosen_template.id if chosen_template else '' }}"/>
+    </div>
+
     <!-- Identity -->
     <div class="cf-section">
       <div class="cf-section-title"><span>Identity</span></div>
@@ -291,6 +313,14 @@
       <div class="cf-field"><label>Session Notes (Markdown supported)</label>
         <textarea name="notes" style="min-height:100px;" placeholder="Ongoing notes, quests, contacts...">{{ pc.notes if pc else '' }}</textarea></div>
     </div>
+
+    <!-- Custom Fields (from template) -->
+    <div class="cf-section" id="custom-fields-section" style="display:none">
+      <div class="cf-section-title"><span id="custom-fields-title">Custom Fields</span></div>
+      <div id="custom-fields-body"></div>
+    </div>
+
+    <input type="hidden" name="custom_fields_json" id="custom_fields_json" value="{{ custom_fields | tojson }}"/>
 
     <div class="cf-submit-row">
       <a href="{% if pc %}/characters/{{ pc.id }}{% else %}/characters{% endif %}" style="color:var(--text-dim);">Cancel</a>
@@ -517,12 +547,89 @@ function serializeCyberware() {
   }).filter(c => c.name);
 }
 
+// ── Template switching ────────────────────────────────────────────────────────
+let _currentTplFields = {{ tpl_fields | tojson }};
+let _customFieldValues = {{ custom_fields | tojson }};
+
+function switchTemplate(tplId) {
+  document.getElementById('sheet-template-id-hidden').value = tplId === '0' ? '' : tplId;
+  const sel = document.getElementById('template-sel');
+  const opt = sel.options[sel.selectedIndex];
+  try { _currentTplFields = JSON.parse(opt.dataset.fields || '[]'); } catch(e) { _currentTplFields = []; }
+  renderCustomFields();
+}
+
+function renderCustomFields() {
+  const section = document.getElementById('custom-fields-section');
+  const body    = document.getElementById('custom-fields-body');
+  if (!_currentTplFields.length) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  body.innerHTML = '';
+  // Group fields by section
+  const sections = {};
+  _currentTplFields.forEach(f => {
+    const sec = f.section || 'custom';
+    if (!sections[sec]) sections[sec] = [];
+    sections[sec].push(f);
+  });
+  Object.entries(sections).forEach(([secName, fields]) => {
+    const secDiv = document.createElement('div');
+    secDiv.style.cssText = 'margin-bottom:1rem';
+    secDiv.innerHTML = `<div style="font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-dim);margin-bottom:.5rem;padding-bottom:.25rem;border-bottom:1px solid var(--border)">${secName}</div>`;
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.6rem';
+    fields.forEach(f => {
+      const val = _customFieldValues[f.id] ?? f.default_value ?? '';
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'display:flex;flex-direction:column;gap:.25rem';
+      if (f.type === 'resource') {
+        const maxVal = _customFieldValues[f.id + '_max'] ?? (f.default_value || '0');
+        const curVal = _customFieldValues[f.id + '_current'] ?? maxVal;
+        wrap.innerHTML = `
+          <label style="font-size:.7rem;color:var(--text-dim);text-transform:uppercase">${escVal(f.label)}</label>
+          <div style="display:flex;gap:.4rem;align-items:center">
+            <input type="number" data-cf="${f.id}_current" value="${escVal(curVal)}" min="0" placeholder="Current"
+                   style="background:var(--bg3);border:1px solid var(--border);color:var(--neon);padding:.35rem .5rem;border-radius:4px;font-family:var(--font);font-size:.9rem;width:70px">
+            <span style="color:var(--text-dim)">/</span>
+            <input type="number" data-cf="${f.id}_max" value="${escVal(maxVal)}" min="0" placeholder="Max"
+                   style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;border-radius:4px;font-family:var(--font);font-size:.9rem;width:70px">
+          </div>`;
+      } else if (f.type === 'textarea') {
+        wrap.innerHTML = `
+          <label style="font-size:.7rem;color:var(--text-dim);text-transform:uppercase">${escVal(f.label)}</label>
+          <textarea data-cf="${f.id}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;border-radius:4px;font-family:var(--font);font-size:.9rem;min-height:80px;resize:vertical">${escVal(val)}</textarea>`;
+      } else if (f.type === 'number') {
+        wrap.innerHTML = `
+          <label style="font-size:.7rem;color:var(--text-dim);text-transform:uppercase">${escVal(f.label)}</label>
+          <input type="number" data-cf="${f.id}" value="${escVal(val)||0}" style="background:var(--bg3);border:1px solid var(--border);color:var(--neon);padding:.35rem .5rem;border-radius:4px;font-family:var(--font);font-size:.9rem;font-weight:bold">`;
+      } else {
+        wrap.innerHTML = `
+          <label style="font-size:.7rem;color:var(--text-dim);text-transform:uppercase">${escVal(f.label)}</label>
+          <input type="text" data-cf="${f.id}" value="${escVal(val)}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;border-radius:4px;font-family:var(--font);font-size:.9rem">`;
+      }
+      grid.appendChild(wrap);
+    });
+    secDiv.appendChild(grid);
+    body.appendChild(secDiv);
+  });
+}
+
+function serializeCustomFields() {
+  const obj = {};
+  document.querySelectorAll('[data-cf]').forEach(el => {
+    const key = el.dataset.cf;
+    obj[key] = el.value;
+  });
+  return obj;
+}
+
 // ── Form submit ───────────────────────────────────────────────────────────────
 document.getElementById('char-form').addEventListener('submit', function() {
   document.getElementById('stats_json').value    = JSON.stringify(serializeStats());
   document.getElementById('currency_json').value = JSON.stringify(serializeCurrency());
   document.getElementById('feats_json').value    = JSON.stringify(serializeFeats());
   document.getElementById('cyberware_json').value = JSON.stringify(serializeCyberware());
+  document.getElementById('custom_fields_json').value = JSON.stringify(serializeCustomFields());
 
   const eqbody = document.getElementById('equipment-body');
   const eqData = [...eqbody.querySelectorAll('tr')].map(row => {
@@ -541,5 +648,6 @@ renderCurrency();
 renderFeats();
 renderEquipment();
 renderCyberware();
+renderCustomFields();
 </script>
 {% endblock %}

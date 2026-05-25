@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if tpl else 'New' }} Template — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div style="max-width:860px;margin:0 auto;padding:1.5rem 1rem">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:.5rem">
+    <h1 style="color:var(--neon);font-size:1.3rem;margin:0">
+      {{ '✏ Edit Template' if tpl else '+ New Template' }}
+      {% if tpl and tpl.is_builtin %}<span style="font-size:.75rem;color:var(--text-dim);margin-left:.5rem">(built-in)</span>{% endif %}
+    </h1>
+    <a href="/characters/templates" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Templates</a>
+  </div>
+
+  {% if request.query_params.get('saved') %}
+  <div style="background:#1a3a1a;border:1px solid #4f4;color:#4f4;padding:.6rem 1rem;border-radius:4px;margin-bottom:1rem;font-size:.85rem">
+    Template saved.
+  </div>
+  {% endif %}
+
+  <form method="post" id="tpl-form">
+    <!-- Name & description -->
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+      <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">Template Info</h2>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+        <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;color:var(--text-dim)">
+          Name
+          <input name="name" value="{{ tpl.name if tpl else '' }}" placeholder="My Custom Template"
+                 {% if tpl and tpl.is_builtin %}readonly{% endif %}
+                 style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.45rem .65rem;font-family:var(--font);font-size:.85rem;border-radius:3px;{% if tpl and tpl.is_builtin %}opacity:.6{% endif %}"/>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;color:var(--text-dim)">
+          Description
+          <input name="description" value="{{ tpl.description if tpl else '' }}" placeholder="Brief description"
+                 style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.45rem .65rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
+        </label>
+      </div>
+      <p style="color:var(--text-dim);font-size:.75rem;margin:.75rem 0 0">
+        Every character using this template starts with the full N&amp;D sheet (stats, HP, Shock, PP/MP, edges, cyberware, conditions, feats).
+        Fields defined here are <strong style="color:var(--text)">extra</strong> sections added on top.
+      </p>
+    </div>
+
+    <!-- Extra fields editor -->
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.9rem;flex-wrap:wrap;gap:.5rem">
+        <h2 style="color:var(--neon);font-size:.95rem;margin:0">Extra Fields</h2>
+        <button type="button" onclick="addField()" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.3rem .75rem;font-size:.78rem;border-radius:3px;cursor:pointer">+ Add Field</button>
+      </div>
+
+      <div id="fields-list" style="display:flex;flex-direction:column;gap:.6rem;min-height:40px"></div>
+
+      <p id="no-fields-msg" style="color:var(--text-dim);font-size:.8rem;text-align:center;padding:.5rem;font-style:italic;display:none">
+        No extra fields. This template uses the standard N&amp;D sheet.
+      </p>
+
+      <input type="hidden" name="fields_json" id="fields-json-input"/>
+    </div>
+
+    <div style="display:flex;gap:.75rem;justify-content:flex-end;flex-wrap:wrap">
+      <a href="/characters/templates" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Cancel</a>
+      {% if tpl and not tpl.is_builtin %}
+      <a href="/characters/templates/{{ tpl.id }}/delete"
+         onclick="return confirm('Delete this template?')"
+         style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Delete</a>
+      {% endif %}
+      <button type="submit" style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Save Template</button>
+    </div>
+  </form>
+</div>
+
+<style>
+.field-row {
+  display:grid;
+  grid-template-columns:1fr 110px 110px 90px 32px;
+  gap:.4rem;
+  align-items:center;
+  background:var(--bg3);
+  border:1px solid var(--border);
+  border-radius:4px;
+  padding:.5rem .65rem;
+}
+.field-row input, .field-row select {
+  background:var(--bg2);
+  border:1px solid var(--border);
+  color:var(--text);
+  padding:.3rem .5rem;
+  font-family:var(--font);
+  font-size:.8rem;
+  border-radius:3px;
+  width:100%;
+}
+.field-row select { cursor:pointer; }
+.field-del {
+  background:none;
+  border:none;
+  color:#c44;
+  font-size:1.1rem;
+  cursor:pointer;
+  padding:0 .1rem;
+  line-height:1;
+}
+@media (max-width:600px) {
+  .field-row { grid-template-columns:1fr; }
+  .field-del { text-align:right; }
+}
+</style>
+
+<script>
+const INIT_FIELDS = {{ fields | tojson }};
+let _fields = JSON.parse(JSON.stringify(INIT_FIELDS));
+
+function renderFields() {
+  const list = document.getElementById('fields-list');
+  const msg  = document.getElementById('no-fields-msg');
+  list.innerHTML = '';
+  if (_fields.length === 0) { msg.style.display = 'block'; return; }
+  msg.style.display = 'none';
+  _fields.forEach((f, i) => {
+    const row = document.createElement('div');
+    row.className = 'field-row';
+    row.innerHTML = `
+      <input type="text" placeholder="Label (e.g. Hacking)" value="${esc(f.label)}" oninput="updateField(${i},'label',this.value)"/>
+      <select onchange="updateField(${i},'type',this.value)">
+        <option value="number"   ${f.type==='number'   ?'selected':''}>Number</option>
+        <option value="resource" ${f.type==='resource' ?'selected':''}>Resource</option>
+        <option value="text"     ${f.type==='text'     ?'selected':''}>Text</option>
+        <option value="textarea" ${f.type==='textarea' ?'selected':''}>Text Area</option>
+        <option value="table"    ${f.type==='table'    ?'selected':''}>Table</option>
+      </select>
+      <select onchange="updateField(${i},'section',this.value)">
+        <option value="stats"     ${f.section==='stats'     ?'selected':''}>Stats</option>
+        <option value="resources" ${f.section==='resources' ?'selected':''}>Resources</option>
+        <option value="notes"     ${f.section==='notes'     ?'selected':''}>Notes</option>
+        <option value="custom"    ${f.section==='custom'    ?'selected':''}>Custom</option>
+      </select>
+      <input type="text" placeholder="Default" value="${esc(f.default_value??'')}" oninput="updateField(${i},'default_value',this.value)" title="Default value"/>
+      <button type="button" class="field-del" onclick="removeField(${i})" title="Remove">✕</button>
+    `;
+    list.appendChild(row);
+  });
+  syncHidden();
+}
+
+function esc(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+function updateField(i, key, val) {
+  _fields[i][key] = val;
+  syncHidden();
+}
+
+function removeField(i) {
+  _fields.splice(i, 1);
+  renderFields();
+}
+
+function addField() {
+  _fields.push({
+    id: 'field_' + Date.now(),
+    label: '',
+    type: 'number',
+    section: 'custom',
+    default_value: '0',
+  });
+  renderFields();
+  // Focus the last label input
+  const inputs = document.querySelectorAll('#fields-list .field-row input[type="text"]');
+  if (inputs.length) inputs[inputs.length - 4]?.focus();
+}
+
+function syncHidden() {
+  document.getElementById('fields-json-input').value = JSON.stringify(_fields);
+}
+
+document.getElementById('tpl-form').addEventListener('submit', function() {
+  syncHidden();
+});
+
+renderFields();
+syncHidden();
+</script>
+{% endblock %}

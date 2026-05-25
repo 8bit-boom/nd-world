@@ -1,7 +1,7 @@
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
-from .models import Base, World, Schematic, MapOverlay, InvestBoard, PlayerCharacter
+from .models import Base, World, Schematic, MapOverlay, InvestBoard, PlayerCharacter, SheetTemplate
 
 DB_PATH = os.environ.get("DB_PATH", "/data/world.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
@@ -71,11 +71,19 @@ def _migrate():
                 ("major_edge",                  "TEXT DEFAULT ''"),
                 ("cyberware_json",              "TEXT DEFAULT '[]'"),
                 ("conditions_json",             "TEXT DEFAULT '[]'"),
+                ("sheet_template_id",           "INTEGER"),
+                ("custom_fields_json",          "TEXT DEFAULT '{}'"),
             ]
             for col, defn in _pc_extra:
                 if col not in pc_cols:
                     conn.execute(text(f"ALTER TABLE player_characters ADD COLUMN {col} {defn}"))
             conn.commit()
+        # sheet_templates table migration — ensure it exists (Base.metadata handles creation,
+        # but old DBs may lack the table until next create_all call)
+        tpl_exists = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='sheet_templates'"
+        )).fetchone()
+        # table is created by Base.metadata.create_all above; nothing extra needed here
 
 def _seed():
     db = SessionLocal()
@@ -100,6 +108,16 @@ def _seed():
                     world_id=1, name=name, slug=slug, description=desc,
                     is_html=True, html_file=html_file,
                 ))
+        # Seed built-in N&D sheet template
+        if not db.query(SheetTemplate).filter(SheetTemplate.slug == "nd-default").first():
+            db.add(SheetTemplate(
+                world_id=None,
+                name="Neon & Dragons — Default",
+                slug="nd-default",
+                description="Standard N&D character sheet: 8 stats, HP/Shock/PP/MP, edges, cyberware, conditions, feats.",
+                is_builtin=True,
+                fields_json="[]",
+            ))
         db.commit()
     finally:
         db.close()
