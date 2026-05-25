@@ -1021,16 +1021,9 @@ input[type="file"]:hover { border-color: var(--neon); }
     border-bottom: 1px solid var(--border);
   }
 
-  /* AI chat page — stack sidebar above chat */
+  /* AI chat page — hide sidebar on mobile (use Models tab + mobile-model-bar instead) */
   .ai-page { flex-direction: column; height: auto; }
-  .ai-sidebar {
-    width: 100%;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-    max-height: 220px;
-    overflow-y: auto;
-    flex-shrink: 0;
-  }
+  .ai-sidebar { display: none !important; }
   .ai-main { overflow: visible; height: auto; min-height: 60vh; }
 
   /* Two-column form rows → single column */
