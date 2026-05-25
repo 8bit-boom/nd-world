@@ -253,6 +253,11 @@ async def api_imagegen_refiners():
     return {"refiners": await _ai.imagegen_refiners()}
 
 
+@router.get("/imagegen/ipadapter-models")
+async def api_imagegen_ipadapter_models():
+    return {"models": await _ai.imagegen_ipadapter_models()}
+
+
 @router.get("/imagegen/progress")
 async def api_imagegen_progress():
     return await _ai.imagegen_progress()
@@ -608,6 +613,18 @@ class ImagegenBody(BaseModel):
     seamless_y: bool = False
     variation_seed: int = -1
     variation_strength: float = 0.0
+    freeu_enabled: bool = False
+    freeu_b1: float = 1.3
+    freeu_b2: float = 1.4
+    freeu_s1: float = 0.9
+    freeu_s2: float = 0.2
+    dynthresh_enabled: bool = False
+    dynthresh_mimic_scale: float = 7.0
+    dynthresh_percentile: float = 0.999
+    cfg_rescale: float = 0.0
+    ipadapter_image: str = ""
+    ipadapter_strength: float = 0.6
+    ipadapter_model: str = ""
 
 
 @router.post("/imagegen/generate")
@@ -636,6 +653,16 @@ async def api_imagegen_generate(body: ImagegenBody):
             seamless_x=body.seamless_x, seamless_y=body.seamless_y,
             variation_seed=body.variation_seed,
             variation_strength=body.variation_strength,
+            freeu_enabled=body.freeu_enabled,
+            freeu_b1=body.freeu_b1, freeu_b2=body.freeu_b2,
+            freeu_s1=body.freeu_s1, freeu_s2=body.freeu_s2,
+            dynthresh_enabled=body.dynthresh_enabled,
+            dynthresh_mimic_scale=body.dynthresh_mimic_scale,
+            dynthresh_percentile=body.dynthresh_percentile,
+            cfg_rescale=body.cfg_rescale,
+            ipadapter_image=body.ipadapter_image,
+            ipadapter_strength=body.ipadapter_strength,
+            ipadapter_model=body.ipadapter_model,
         )
         return {"url": urls[0] if urls else "", "urls": urls}
     except Exception as exc:
