@@ -605,6 +605,38 @@
   .ig-results-grid { grid-template-columns: 1fr; }
   .ig-settings > * { min-width: 100%; flex: 1 1 100%; }
 }
+
+/* ── Tag autocomplete ── */
+.tag-ac-wrap { position: relative; }
+.tag-ac-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: var(--bg2);
+  border: 1px solid var(--neon);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  z-index: 999;
+  max-height: 220px;
+  overflow-y: auto;
+  box-shadow: 0 6px 20px rgba(0,0,0,.6);
+}
+.tag-ac-item {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .35rem .65rem;
+  cursor: pointer;
+  font-size: .82rem;
+  border-bottom: 1px solid var(--border);
+}
+.tag-ac-item:last-child { border-bottom: none; }
+.tag-ac-item:hover, .tag-ac-item.tag-ac-sel { background: var(--bg3); }
+.tag-ac-name { flex: 1; color: var(--text); font-family: var(--font); }
+.tag-ac-name em { color: var(--neon); font-style: normal; font-weight: bold; }
+.tag-ac-count { font-size: .7rem; color: var(--text-dim); white-space: nowrap; }
+.tag-ac-cat { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 </style>
 
 <div class="ai-tab-bar">
@@ -878,16 +910,24 @@
         </div>
       </div>
 
+      <!-- Tag autocomplete status bar -->
+      <div id="tag-ac-bar" style="display:flex;align-items:center;gap:.5rem;font-size:.75rem;color:var(--text-dim);flex-wrap:wrap">
+        <span id="tag-ac-status">⏳ Checking tag data…</span>
+        <button id="tag-ac-fetch-btn" onclick="igFetchTags()" style="display:none;background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.2rem .55rem;font-size:.72rem;border-radius:3px;cursor:pointer;font-family:inherit">⬇ Download Tags</button>
+      </div>
+
       <!-- Full prompt -->
-      <div class="ig-field" style="flex:1;min-height:0">
+      <div class="ig-field tag-ac-wrap" style="flex:1;min-height:0">
         <label class="ig-label">Full prompt (editable)</label>
-        <textarea id="ig-prompt" rows="4" placeholder="Detailed image generation prompt…"></textarea>
+        <textarea id="ig-prompt" rows="4" placeholder="Detailed image generation prompt… (type a tag to autocomplete)"></textarea>
+        <div class="tag-ac-dropdown" id="tag-ac-pos" style="display:none"></div>
       </div>
 
       <!-- Negative -->
-      <div class="ig-field">
+      <div class="ig-field tag-ac-wrap">
         <label class="ig-label">Negative prompt</label>
         <textarea id="ig-negative" rows="2">blurry, bad anatomy, watermark, text, low quality, deformed</textarea>
+        <div class="tag-ac-dropdown" id="tag-ac-neg" style="display:none"></div>
       </div>
 
       <!-- Img2img -->
@@ -1800,6 +1840,7 @@ function igClearInit() {
     igLoadLoras();
     igLoadUpscalers();
     igLoadHistory();
+    igTagsInit();
   } catch (e) {
     console.warn('igInit error', e);
   }
@@ -2145,6 +2186,184 @@ function igClearHistory() {
   localStorage.removeItem(_HIST_KEY);
   igLoadHistory();
 }
+
+// ── Tag autocomplete ─────────────────────────────────────────────────────────
+
+async function igTagsInit() {
+  try {
+    const st = await fetch('/api/ai/imagegen/tags/status').then(r => r.json());
+    const bar  = document.getElementById('tag-ac-bar');
+    const span = document.getElementById('tag-ac-status');
+    const btn  = document.getElementById('tag-ac-fetch-btn');
+    if (st.loaded) {
+      span.textContent = `🏷 ${st.count.toLocaleString()} tags ready`;
+      span.style.color = '#4f4';
+      btn.style.display = 'none';
+    } else {
+      span.textContent = '🏷 Tag autocomplete: not downloaded yet';
+      btn.style.display = '';
+    }
+  } catch(e) {
+    document.getElementById('tag-ac-status').textContent = '🏷 Tag status unavailable';
+  }
+}
+
+async function igFetchTags() {
+  const btn  = document.getElementById('tag-ac-fetch-btn');
+  const span = document.getElementById('tag-ac-status');
+  btn.disabled = true;
+  btn.textContent = '⏳ Downloading…';
+  span.textContent = '⏳ Downloading tag list (~4 MB)…';
+  try {
+    const r = await fetch('/api/ai/imagegen/tags/fetch', {method:'POST'}).then(r => r.json());
+    if (r.ok) {
+      span.textContent = `🏷 ${r.count.toLocaleString()} tags loaded`;
+      span.style.color = '#4f4';
+      btn.style.display = 'none';
+    } else {
+      span.textContent = `⚠ Download failed: ${r.error}`;
+      span.style.color = '#c44';
+      btn.disabled = false;
+      btn.textContent = '⬇ Retry Download';
+    }
+  } catch(e) {
+    span.textContent = '⚠ Download error — check network';
+    span.style.color = '#c44';
+    btn.disabled = false;
+    btn.textContent = '⬇ Retry Download';
+  }
+}
+
+// Per-textarea autocomplete state
+const _acState = {};
+
+function _acInit(taId, dropId) {
+  const ta   = document.getElementById(taId);
+  const drop = document.getElementById(dropId);
+  let _debounce = null;
+  let _selIdx   = -1;
+  let _items    = [];
+
+  function _currentWord() {
+    const val = ta.value;
+    const pos = ta.selectionStart;
+    // Find the start of the current tag (after last comma/newline)
+    let start = pos - 1;
+    while (start >= 0 && val[start] !== ',' && val[start] !== '\n') start--;
+    start++;
+    return val.slice(start, pos).trim().replace(/\s+/g, '_');
+  }
+
+  function _insertTag(tag) {
+    const val = ta.value;
+    const pos = ta.selectionStart;
+    let start = pos - 1;
+    while (start >= 0 && val[start] !== ',' && val[start] !== '\n') start--;
+    start++;
+    // Strip leading whitespace in the current token
+    while (start < pos && (val[start] === ' ' || val[start] === '\t')) start++;
+    const before = val.slice(0, start);
+    const after  = val.slice(pos);
+    const sep    = (after.trimStart().startsWith(',') || after === '') ? '' : ', ';
+    ta.value = before + tag + sep + after;
+    const newPos = (before + tag + sep).length;
+    ta.setSelectionRange(newPos, newPos);
+    _hideDrop();
+    ta.focus();
+  }
+
+  function _renderItems(tags) {
+    _items = tags;
+    _selIdx = -1;
+    if (!tags.length) { _hideDrop(); return; }
+    const q = _currentWord();
+    drop.innerHTML = tags.map((t, i) =>
+      `<div class="tag-ac-item" data-i="${i}" onmousedown="event.preventDefault()" onclick="_acClick('${taId}',${i})">
+        <span class="tag-ac-cat" style="background:${t.color}"></span>
+        <span class="tag-ac-name">${_acHighlight(t.tag, q)}</span>
+        <span class="tag-ac-count">${_fmtCount(t.count)}</span>
+      </div>`
+    ).join('');
+    drop.style.display = '';
+    _acState[taId] = { items: tags, selIdx: -1, insert: _insertTag };
+  }
+
+  function _hideDrop() {
+    drop.style.display = 'none';
+    drop.innerHTML = '';
+    _items = [];
+    _selIdx = -1;
+    if (_acState[taId]) _acState[taId].selIdx = -1;
+  }
+
+  ta.addEventListener('input', function() {
+    clearTimeout(_debounce);
+    const word = _currentWord();
+    if (word.length < 2) { _hideDrop(); return; }
+    _debounce = setTimeout(async () => {
+      try {
+        const r = await fetch(`/api/ai/imagegen/tags?q=${encodeURIComponent(word)}&limit=20`).then(r => r.json());
+        _renderItems(r.tags || []);
+      } catch(e) { _hideDrop(); }
+    }, 80);
+  });
+
+  ta.addEventListener('keydown', function(e) {
+    if (drop.style.display === 'none') return;
+    const items = _acState[taId]?.items || [];
+    if (!items.length) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      _selIdx = Math.min(_selIdx + 1, items.length - 1);
+      _updateSel(drop, _selIdx);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      _selIdx = Math.max(_selIdx - 1, -1);
+      _updateSel(drop, _selIdx);
+    } else if ((e.key === 'Enter' || e.key === 'Tab') && _selIdx >= 0) {
+      e.preventDefault();
+      _insertTag(items[_selIdx].tag);
+    } else if (e.key === 'Escape') {
+      _hideDrop();
+    }
+    if (_acState[taId]) _acState[taId].selIdx = _selIdx;
+  });
+
+  ta.addEventListener('blur', function() {
+    setTimeout(_hideDrop, 150);
+  });
+
+  _acState[taId] = { items: [], selIdx: -1, insert: _insertTag };
+}
+
+function _acClick(taId, idx) {
+  const state = _acState[taId];
+  if (state && state.items[idx]) state.insert(state.items[idx].tag);
+}
+
+function _updateSel(drop, idx) {
+  drop.querySelectorAll('.tag-ac-item').forEach((el, i) => {
+    el.classList.toggle('tag-ac-sel', i === idx);
+    if (i === idx) el.scrollIntoView({block:'nearest'});
+  });
+}
+
+function _acHighlight(tag, q) {
+  if (!q) return tag;
+  const i = tag.indexOf(q);
+  if (i < 0) return tag;
+  return tag.slice(0, i) + '<em>' + tag.slice(i, i + q.length) + '</em>' + tag.slice(i + q.length);
+}
+
+function _fmtCount(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000)    return (n / 1000).toFixed(0) + 'k';
+  return String(n);
+}
+
+// Initialise autocomplete on both prompt areas
+_acInit('ig-prompt',   'tag-ac-pos');
+_acInit('ig-negative', 'tag-ac-neg');
 
 // ── Models panel ─────────────────────────────────────────────────────────────
 

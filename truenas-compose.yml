@@ -7,12 +7,14 @@ services:
       - "8087:8000"
     volumes:
       - /mnt/DeadPool/apps/nd-world:/data
+      - /mnt/DeadPool/apps/swarmui/data/Autocompletions:/data/swarmui-ac  # shared with swarmui for native tag autocompletions
     environment:
       DB_PATH: /data/world.db
       IMAGEGEN_TYPE: swarmui
       IMAGEGEN_URL: http://swarmui:7801
       # Set to http://<truenas-ip>:7801 to enable the Image Studio iframe inside nd-world
       SWARMUI_EXTERNAL_URL: ""
+      SWARMUI_AC_DIR: /data/swarmui-ac  # shared bind mount → SwarmUI Data/Autocompletions
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: gemma4:26b   # change to whichever model you've pulled
     labels:
