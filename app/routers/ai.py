@@ -1,7 +1,9 @@
 import json as _json
+import csv as _csv
 import logging
 import os as _os
 import ollama as _ollama
+import urllib.request as _urllib
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse as _SR
 from pydantic import BaseModel
@@ -243,6 +245,116 @@ async def api_imagegen_samplers_schedulers():
 @router.get("/imagegen/upscalers")
 async def api_imagegen_upscalers():
     return {"upscalers": await _ai.imagegen_upscalers()}
+
+
+# ── Tag autocomplete ───────────────────────────────────────────────────────────
+
+_TAG_CSV_URL = "https://github.com/BetaDoggo/danbooru-tag-list/releases/download/Model-Tags/ChenkinNoob-XL-V0.3_underscore.csv"
+_TAG_CAT_COLORS = {0: "#aaa", 1: "#c0a060", 3: "#a060c0", 4: "#60a0c0", 5: "#60c080"}
+# in-memory cache: list of [tag, category, count]
+_tags_cache: list[list] = []
+
+
+def _tag_file() -> _Path:
+    data_dir = _Path(_os.environ.get("DB_PATH", "/data/world.db")).parent
+    return data_dir / "tags" / "danbooru_tags.csv"
+
+
+def _swarmui_ac_dir() -> _Path | None:
+    """Directory SwarmUI reads for autocomplete CSVs (shared volume mount)."""
+    d = _os.environ.get("SWARMUI_AC_DIR", "/data/swarmui-ac")
+    return _Path(d) if d else None
+
+
+def _load_tags_from_disk() -> list[list]:
+    global _tags_cache
+    if _tags_cache:
+        return _tags_cache
+    tf = _tag_file()
+    if not tf.exists():
+        return []
+    rows: list[list] = []
+    with open(tf, newline="", encoding="utf-8") as f:
+        for row in _csv.reader(f):
+            if len(row) >= 3:
+                try:
+                    rows.append([row[0], int(row[1]), int(row[2])])
+                except ValueError:
+                    pass
+    _tags_cache = rows
+    return rows
+
+
+@router.get("/imagegen/tags/status")
+async def api_tags_status():
+    tf = _tag_file()
+    if tf.exists():
+        count = len(_load_tags_from_disk())
+        return {"loaded": True, "count": count, "file": tf.name}
+    return {"loaded": False, "count": 0, "file": ""}
+
+
+@router.post("/imagegen/tags/fetch")
+async def api_tags_fetch():
+    global _tags_cache
+    import asyncio
+    tf = _tag_file()
+    tf.parent.mkdir(parents=True, exist_ok=True)
+
+    def _download():
+        opener = _urllib.build_opener()
+        opener.addheaders = [("User-Agent", "nd-world/1.0")]
+        with opener.open(_TAG_CSV_URL, timeout=60) as resp:
+            data = resp.read()
+        tf.write_bytes(data)
+        # Also copy to SwarmUI Data/Autocompletions if the shared volume is mounted
+        ac_dir = _swarmui_ac_dir()
+        if ac_dir and ac_dir.exists():
+            try:
+                ac_dir.mkdir(parents=True, exist_ok=True)
+                (ac_dir / "danbooru.csv").write_bytes(data)
+                _log.info("copied tag CSV to SwarmUI Autocompletions at %s", ac_dir)
+            except Exception as copy_exc:
+                _log.warning("could not copy tags to SwarmUI AC dir: %s", copy_exc)
+        return len(data)
+
+    try:
+        size = await asyncio.get_event_loop().run_in_executor(None, _download)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+    _tags_cache = []          # invalidate cache so it reloads
+    count = len(_load_tags_from_disk())
+    # Report whether SwarmUI copy succeeded
+    ac_dir = _swarmui_ac_dir()
+    swarmui_ok = bool(ac_dir and (ac_dir / "danbooru.csv").exists())
+    return {"ok": True, "bytes": size, "count": count, "swarmui_ac": swarmui_ok}
+
+
+@router.get("/imagegen/tags")
+async def api_tags_search(q: str = "", limit: int = 25):
+    if len(q) < 1:
+        return {"tags": []}
+    tags = _load_tags_from_disk()
+    q_norm = q.lower().replace(" ", "_")
+    exact: list[list] = []
+    prefix: list[list] = []
+    for t in tags:
+        name = t[0]
+        if name == q_norm:
+            exact.append(t)
+        elif name.startswith(q_norm):
+            prefix.append(t)
+        if len(exact) + len(prefix) >= limit * 3:
+            break
+    results = (exact + prefix)[:limit]
+    return {
+        "tags": [
+            {"tag": t[0], "category": t[1], "count": t[2],
+             "color": _TAG_CAT_COLORS.get(t[1], "#aaa")}
+            for t in results
+        ]
+    }
 
 
 class ImagegenBody(BaseModel):

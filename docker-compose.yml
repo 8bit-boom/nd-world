@@ -10,11 +10,13 @@ services:
       - "8080:8000"
     volumes:
       - nd-world-data:/data
+      - swarmui-ac:/data/swarmui-ac   # shared with swarmui for native tag autocompletions
     environment:
       DB_PATH: /data/world.db
       IMAGEGEN_TYPE: swarmui
       IMAGEGEN_URL: http://swarmui:7801
       SWARMUI_EXTERNAL_URL: ""   # set to http://<your-host>:7801 to enable the Image Studio iframe
+      SWARMUI_AC_DIR: /data/swarmui-ac  # shared volume → SwarmUI Data/Autocompletions
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: gemma4:26b   # change to whichever model you've pulled
     depends_on:
@@ -29,6 +31,7 @@ services:
       - "7801:7801"
     volumes:
       - swarmui-data:/SwarmUI/Data
+      - swarmui-ac:/SwarmUI/Data/Autocompletions   # shared with world for tag autocompletions
       - swarmui-models:/SwarmUI/Models
       - swarmui-dlbackend:/SwarmUI/dlbackend
     environment:
@@ -58,6 +61,8 @@ volumes:
   nd-world-data:
     driver: local
   swarmui-data:
+    driver: local
+  swarmui-ac:
     driver: local
   swarmui-models:
     driver: local
