@@ -82,7 +82,7 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if re.match(r"^/entity/\d+$", path):
         return True
-    if path.startswith("/maps/") and not path.startswith("/maps/schematic"):
+    if path.startswith("/maps/") and not path.startswith("/maps/schematic") and path != "/maps/new":
         return True
     if path.startswith("/worlds/switch/"):
         return True
@@ -673,17 +673,13 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
     worlds = _visible_worlds(request, db)
     # collect a few maps for the homepage preview
     preview_maps = []
-    if _MAPS_DIR.exists():
-        _sm = BASE_DIR / "static" / "maps"
-        for jf in sorted(_MAPS_DIR.glob("*.json"))[:6]:
-            try:
-                d = json.loads(jf.read_text(encoding="utf-8"))
-                s = jf.stem; img = None
-                for ext in (".webp", ".jpg", ".jpeg", ".png"):
-                    if (_sm / (s + ext)).exists(): img = f"/static/maps/{s}{ext}"; break
-                    if (UPLOADS_DIR / "maps" / (s + ext)).exists(): img = f"/uploads/maps/{s}{ext}"; break
-                preview_maps.append({"slug": s, "name": d.get("name", s), "image_url": img})
-            except Exception: pass
+    _sm = BASE_DIR / "static" / "maps"
+    for s, d in list(_iter_world_maps(world.id))[:6]:
+        img = None
+        for ext in (".webp", ".jpg", ".jpeg", ".png"):
+            if (_sm / (s + ext)).exists(): img = f"/static/maps/{s}{ext}"; break
+            if (UPLOADS_DIR / "maps" / (s + ext)).exists(): img = f"/uploads/maps/{s}{ext}"; break
+        preview_maps.append({"slug": s, "name": d.get("name", s), "image_url": img})
     # Most-linked entities
     most_linked = []
     if world:
@@ -729,41 +725,94 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
 
 _MAPS_DIR = Path(__file__).parent / "maps"
 
+
+def _map_data(jf: Path) -> Optional[dict]:
+    try:
+        return json.loads(jf.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _iter_world_maps(world_id: int):
+    """Yield (slug, data) for maps belonging to world_id. Legacy map files with no
+    "world_id" key predate multi-world support and belong to world 1 (the original
+    seeded world)."""
+    if not _MAPS_DIR.exists():
+        return
+    for jf in sorted(_MAPS_DIR.glob("*.json")):
+        data = _map_data(jf)
+        if data is not None and data.get("world_id", 1) == world_id:
+            yield jf.stem, data
+
 @app.get("/maps", response_class=HTMLResponse)
 def maps_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world = get_active_world(request, db, active_world)
+    if not world:
+        return RedirectResponse("/worlds")
     worlds = _visible_worlds(request, db)
     maps = []
     _STATIC_MAPS = BASE_DIR / "static" / "maps"
-    if _MAPS_DIR.exists():
-        for jf in sorted(_MAPS_DIR.glob("*.json")):
-            try:
-                data = json.loads(jf.read_text(encoding="utf-8"))
-                slug = jf.stem
-                image_url = None
-                # Check static/maps first (bundled), then uploads/maps (user-uploaded)
-                for ext in (".webp", ".jpg", ".jpeg", ".png"):
-                    if (_STATIC_MAPS / (slug + ext)).exists():
-                        image_url = f"/static/maps/{slug}{ext}"
-                        break
-                    if (UPLOADS_DIR / "maps" / (slug + ext)).exists():
-                        image_url = f"/uploads/maps/{slug}{ext}"
-                        break
-                maps.append({
-                    "slug": slug,
-                    "name": data.get("name", slug),
-                    "width": data.get("width", 0),
-                    "height": data.get("height", 0),
-                    "markers": len(data.get("markers", [])),
-                    "image_url": image_url,
-                })
-            except Exception:
-                pass
+    for slug, data in _iter_world_maps(world.id):
+        image_url = None
+        # Check static/maps first (bundled), then uploads/maps (user-uploaded)
+        for ext in (".webp", ".jpg", ".jpeg", ".png"):
+            if (_STATIC_MAPS / (slug + ext)).exists():
+                image_url = f"/static/maps/{slug}{ext}"
+                break
+            if (UPLOADS_DIR / "maps" / (slug + ext)).exists():
+                image_url = f"/uploads/maps/{slug}{ext}"
+                break
+        maps.append({
+            "slug": slug,
+            "name": data.get("name", slug),
+            "width": data.get("width", 0),
+            "height": data.get("height", 0),
+            "markers": len(data.get("markers", [])),
+            "image_url": image_url,
+        })
     schematics = db.query(Schematic).filter(Schematic.world_id == world.id).order_by(Schematic.name).all()
     return templates.TemplateResponse("maps.html", {
         "request": request, "world": world, "worlds": worlds, "maps": maps,
         "schematics": schematics,
     })
+
+@app.get("/maps/new", response_class=HTMLResponse)
+def map_new_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world = get_active_world(request, db, active_world)
+    if not world:
+        return RedirectResponse("/worlds")
+    worlds = _visible_worlds(request, db)
+    return templates.TemplateResponse("map_form.html", {"request": request, "world": world, "worlds": worlds})
+
+@app.post("/maps/new")
+async def map_new(
+    request: Request,
+    name: str = Form(...),
+    width: int = Form(3072),
+    height: int = Form(3072),
+    image_file: UploadFile = File(None),
+    db: Session = Depends(get_db),
+    active_world: str = Cookie(None),
+):
+    world = get_active_world(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No world selected")
+    slug = _slug_from_name(name)
+    base = slug; i = 2
+    _MAPS_DIR.mkdir(parents=True, exist_ok=True)
+    while (_MAPS_DIR / f"{slug}.json").exists():
+        slug = f"{base}-{i}"; i += 1
+    (_MAPS_DIR / f"{slug}.json").write_text(json.dumps({
+        "name": name, "world_id": world.id, "width": width, "height": height, "markers": [],
+    }), encoding="utf-8")
+    if image_file and image_file.filename:
+        ext = Path(image_file.filename).suffix.lower()
+        if ext in ALLOWED_EXTS:
+            maps_upload_dir = UPLOADS_DIR / "maps"
+            maps_upload_dir.mkdir(parents=True, exist_ok=True)
+            with (maps_upload_dir / (slug + ext)).open("wb") as f:
+                shutil.copyfileobj(image_file.file, f)
+    return RedirectResponse(f"/maps/{slug}", status_code=303)
 
 @app.post("/maps/{slug}/upload")
 async def map_upload_image(slug: str, file: UploadFile = File(...)):
@@ -786,13 +835,17 @@ def map_viewer(slug: str, request: Request, db: Session = Depends(get_db), activ
     jf = _MAPS_DIR / f"{slug}.json"
     if not jf.exists():
         raise HTTPException(404)
-    map_data = json.loads(jf.read_text(encoding="utf-8"))
+    map_data = _map_data(jf)
+    if map_data is None:
+        raise HTTPException(404)
+    world = get_active_world(request, db, active_world)
+    if not world or map_data.get("world_id", 1) != world.id:
+        raise HTTPException(404)
     _sm = BASE_DIR / "static" / "maps"
     image_url = None
     for ext in (".webp", ".jpg", ".jpeg", ".png"):
         if (_sm / (slug + ext)).exists(): image_url = f"/static/maps/{slug}{ext}"; break
         if (UPLOADS_DIR / "maps" / (slug + ext)).exists(): image_url = f"/uploads/maps/{slug}{ext}"; break
-    world = get_active_world(request, db, active_world)
     worlds = _visible_worlds(request, db)
     overlay = db.query(MapOverlay).filter(MapOverlay.slug == slug).first()
     if not overlay:
@@ -1307,14 +1360,10 @@ def world_export_book(request: Request, db: Session = Depends(get_db), active_wo
         edges = json.loads(b.edges_json or "[]")
         boards_export.append({"name": b.name, "description": b.description, "nodes": nodes, "edges": edges})
 
-    maps_export = []
-    if _MAPS_DIR.exists():
-        for jf in sorted(_MAPS_DIR.glob("*.json")):
-            try:
-                d = json.loads(jf.read_text(encoding="utf-8"))
-                maps_export.append({"name": d.get("name", jf.stem), "markers": len(d.get("markers", []))})
-            except Exception:
-                pass
+    maps_export = [
+        {"name": d.get("name", s), "markers": len(d.get("markers", []))}
+        for s, d in _iter_world_maps(world.id)
+    ]
 
     rules_path = Path(__file__).parent / "core_rules.md"
     rules_html = render_md(rules_path.read_text(encoding="utf-8", errors="ignore")) if rules_path.exists() else ""
@@ -1546,6 +1595,7 @@ async def update(
     folder: str = Form(""), tags: str = Form(""), image_url: str = Form(""),
     image_file: UploadFile = File(None), summary: str = Form(""), body: str = Form(""),
     hide_from_players: Optional[str] = Form(None),
+    remove_image: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     entity = db.get(Entity, entity_id)
@@ -1557,7 +1607,17 @@ async def update(
     entity.folder = folder.strip() or None
     entity.name = name
     entity.tags = tags or None
-    entity.image_url = uploaded or (image_url.strip() or None)
+    # A new upload or pasted URL replaces the image; the "Remove image" checkbox
+    # clears it explicitly; otherwise leave the existing image untouched — the
+    # image_url text field is deliberately blank for uploaded images (an internal
+    # /uploads/... path isn't meant to be edited there), so treating "blank" as
+    # "clear the image" would wipe out every uploaded image on every edit.
+    if uploaded:
+        entity.image_url = uploaded
+    elif image_url.strip():
+        entity.image_url = image_url.strip()
+    elif remove_image:
+        entity.image_url = None
     entity.summary = summary or None
     entity.body = body or None
     entity.visible_to_players = not bool(hide_from_players)

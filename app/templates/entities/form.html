@@ -47,6 +47,10 @@
         <img src="{{ entity.image_url }}" alt="current"/>
         <span>Current image — upload a new one to replace</span>
       </div>
+      <div style="display:flex;align-items:center;gap:.4rem;margin-top:.3rem">
+        <input type="checkbox" id="remove-image" name="remove_image" value="1" style="width:auto">
+        <label for="remove-image" style="margin:0;font-size:.82rem">Remove current image</label>
+      </div>
       {% endif %}
       <input type="file" name="image_file" accept="image/*" id="img-file" onchange="previewImage(this)"/>
       <div id="img-preview" style="display:none"><img id="img-preview-img" src="" alt="preview"/></div>

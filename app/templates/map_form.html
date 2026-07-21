@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}New Map — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="form-page">
+  <h1>🗺 New Map</h1>
+  <form method="post" action="/maps/new" class="entity-form" enctype="multipart/form-data">
+    <div class="form-group">
+      <label>Name *</label>
+      <input name="name" required placeholder="e.g. City of Hue, Hughes Station…" autocomplete="off"/>
+    </div>
+    <div class="form-group">
+      <label>Size (pixels)</label>
+      <div style="display:flex;gap:.5rem;align-items:center">
+        <input type="number" name="width" value="3072" min="200" max="8000" style="width:100px"/>
+        <span style="opacity:.5">×</span>
+        <input type="number" name="height" value="3072" min="200" max="8000" style="width:100px"/>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Background Image (optional — you can also add/replace it later from the maps list)</label>
+      <input type="file" name="image_file" accept="image/*"/>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Create Map</button>
+      <a href="/maps" class="btn-cancel">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
