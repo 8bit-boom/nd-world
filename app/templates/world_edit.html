@@ -19,10 +19,110 @@
         <div id="accent-prev" style="width:80px;height:24px;border-radius:4px;background:{{ edit_world.accent or '#00f0ff' }}"></div>
       </div>
     </div>
+    <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+      <input type="checkbox" id="players-see-party" name="players_see_party" value="1"
+             style="width:auto;accent-color:var(--neon)" {% if edit_world.players_see_party %}checked{% endif %}>
+      <label for="players-see-party" style="margin:0">Players can see each other's characters (party roster)</label>
+    </div>
     <div class="form-actions">
       <button type="submit" class="btn-primary">Save changes</button>
       <a href="/worlds" class="btn-cancel">Cancel</a>
     </div>
   </form>
+
+  <h2 style="margin-top:2rem">👥 Players</h2>
+  <div class="cf-section" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem">
+    <div class="cf-section-title" style="font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.75rem">Members</div>
+    {% if members %}
+    <table class="cf-dynamic-table" style="width:100%;border-collapse:collapse">
+      <thead><tr>
+        <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Name</th>
+        <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Email</th>
+        <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Joined</th>
+        <th></th>
+      </tr></thead>
+      <tbody>
+        {% for membership, u in members %}
+        <tr style="border-top:1px solid var(--border)">
+          <td style="padding:.4rem .3rem">{{ u.display_name }}</td>
+          <td style="padding:.4rem .3rem;color:var(--text-dim)">{{ u.email }}</td>
+          <td style="padding:.4rem .3rem;color:var(--text-dim)">{{ membership.joined_at.strftime('%Y-%m-%d') if membership.joined_at else '' }}</td>
+          <td style="padding:.4rem .3rem">
+            <form method="post" action="/worlds/{{ edit_world.id }}/members/{{ u.id }}/remove"
+                  onsubmit="return confirm('Remove {{ u.display_name }} from this world?');" style="display:inline">
+              <button type="submit" style="background:transparent;border:1px solid var(--neon2);color:var(--neon2);padding:.2rem .6rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.78rem">Remove</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:var(--text-dim);font-size:.85rem">No players invited yet.</p>
+    {% endif %}
+  </div>
+
+  <h2 style="margin-top:1.5rem">✉ Invite Links</h2>
+  <div class="cf-section" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem">
+    <form method="post" action="/worlds/{{ edit_world.id }}/invites/new" style="display:flex;gap:.75rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:1rem">
+      <div class="form-group" style="margin:0">
+        <label style="font-size:.7rem;color:var(--text-dim);text-transform:uppercase">Expires (days, blank = never)</label>
+        <input type="number" name="expires_days" min="1" style="width:140px" placeholder="e.g. 7">
+      </div>
+      <div class="form-group" style="margin:0">
+        <label style="font-size:.7rem;color:var(--text-dim);text-transform:uppercase">Max uses (blank = unlimited)</label>
+        <input type="number" name="max_uses" min="1" style="width:140px" placeholder="e.g. 1">
+      </div>
+      <button type="submit" class="btn-primary">+ Create Invite Link</button>
+    </form>
+
+    {% if invites %}
+    <table class="cf-dynamic-table" style="width:100%;border-collapse:collapse">
+      <thead><tr>
+        <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Link</th>
+        <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Uses</th>
+        <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Expires</th>
+        <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Status</th>
+        <th></th>
+      </tr></thead>
+      <tbody>
+        {% for inv in invites %}
+        <tr style="border-top:1px solid var(--border)">
+          <td style="padding:.4rem .3rem">
+            <code class="invite-link" style="color:var(--neon);font-size:.8rem;cursor:pointer" data-link="/join/{{ inv.code }}"
+                  onclick="copyInviteLink(this)" title="Click to copy">/join/{{ inv.code }}</code>
+          </td>
+          <td style="padding:.4rem .3rem;color:var(--text-dim)">{{ inv.uses_count }}{% if inv.max_uses %} / {{ inv.max_uses }}{% endif %}</td>
+          <td style="padding:.4rem .3rem;color:var(--text-dim)">{{ inv.expires_at.strftime('%Y-%m-%d') if inv.expires_at else 'never' }}</td>
+          <td style="padding:.4rem .3rem">
+            {% if inv.revoked %}<span style="color:var(--neon2)">Revoked</span>
+            {% elif inv.max_uses and inv.uses_count >= inv.max_uses %}<span style="color:var(--text-dim)">Used up</span>
+            {% else %}<span style="color:var(--neon3)">Active</span>{% endif %}
+          </td>
+          <td style="padding:.4rem .3rem">
+            {% if not inv.revoked %}
+            <form method="post" action="/worlds/{{ edit_world.id }}/invites/{{ inv.id }}/revoke" style="display:inline">
+              <button type="submit" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.2rem .6rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.78rem">Revoke</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:var(--text-dim);font-size:.85rem">No invite links yet — create one above to invite a player.</p>
+    {% endif %}
+  </div>
 </div>
+<script>
+function copyInviteLink(el) {
+  const url = window.location.origin + el.dataset.link;
+  navigator.clipboard.writeText(url).then(() => {
+    const orig = el.textContent;
+    el.textContent = 'Copied!';
+    setTimeout(() => { el.textContent = orig; }, 1200);
+  });
+}
+</script>
 {% endblock %}

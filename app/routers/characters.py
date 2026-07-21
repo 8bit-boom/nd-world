@@ -12,9 +12,10 @@ import markdown2
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from .. import game_catalog
+from .. import auth, game_catalog
 from ..constants import (
     KIND_ICONS, KINDS, SUBTYPES, XP_THRESHOLDS,
     ND_DEFAULT_STATS, ND_DEFAULT_CURRENCY,
@@ -38,8 +39,13 @@ ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _world_ctx(db: Session, active_world: Optional[str]):
-    worlds = db.query(World).all()
+def _world_ctx(request: Request, db: Session, active_world: Optional[str]):
+    user = getattr(request.state, "user", None)
+    accessible = auth.accessible_world_ids(db, user)
+    q = db.query(World)
+    if accessible is not None:
+        q = q.filter(World.id.in_(accessible)) if accessible else q.filter(World.id.in_([]))
+    worlds = q.order_by(World.id).all()
     world = next((w for w in worlds if w.slug == active_world), None) or (worlds[0] if worlds else None)
     return world, worlds
 
@@ -197,21 +203,51 @@ def _templates_for_world(db: Session, world_id: Optional[int]):
     return q.all()
 
 
+def _current_user(request: Request):
+    return getattr(request.state, "user", None)
+
+
+def _own_character(db: Session, world_id: int, user_id: int) -> Optional[PlayerCharacter]:
+    return db.query(PlayerCharacter).filter(
+        PlayerCharacter.world_id == world_id, PlayerCharacter.owner_user_id == user_id
+    ).first()
+
+
+def _can_manage_character(user, pc: PlayerCharacter) -> bool:
+    """Full edit/delete/export access: the GM, or the player who owns this character."""
+    if not user or not pc:
+        return False
+    return user.is_gm or pc.owner_user_id == user.id
+
+
+def _can_view_character(db: Session, user, pc: PlayerCharacter, world: World) -> bool:
+    if _can_manage_character(user, pc):
+        return True
+    # Party visibility: other players may view (read-only) party members' sheets if the GM allows it.
+    return bool(world and world.players_see_party and pc.owner_user_id is not None)
+
+
 @router.get("/characters", response_class=HTMLResponse)
 def characters_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _world_ctx(db, active_world)
-    pcs = (
-        db.query(PlayerCharacter)
-        .filter(PlayerCharacter.world_id == world.id)
-        .order_by(PlayerCharacter.name)
-        .all()
-    ) if world else []
+    world, worlds = _world_ctx(request, db, active_world)
+    user = _current_user(request)
+    pcs = []
+    if world:
+        q = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == world.id)
+        if user and not user.is_gm:
+            if world.players_see_party:
+                q = q.filter(or_(PlayerCharacter.owner_user_id == user.id, PlayerCharacter.owner_user_id.isnot(None)))
+            else:
+                q = q.filter(PlayerCharacter.owner_user_id == user.id)
+        pcs = q.order_by(PlayerCharacter.name).all()
     derived = {pc.id: _derived(pc) for pc in pcs}
     sheet_templates_list = _templates_for_world(db, world.id if world else None)
+    my_character = _own_character(db, world.id, user.id) if (world and user and not user.is_gm) else None
     return templates.TemplateResponse("characters/list.html", {
         "request": request, "world": world, "worlds": worlds,
         "pcs": pcs, "derived": derived,
         "sheet_templates": sheet_templates_list,
+        "user": user, "my_character": my_character,
     })
 
 
@@ -224,7 +260,15 @@ def character_new_form(
     active_world: str = Cookie(None),
     template_id: Optional[int] = None,
 ):
-    world, worlds = _world_ctx(db, active_world)
+    world, worlds = _world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No world selected")
+    user = _current_user(request)
+    if user and not user.is_gm:
+        existing = _own_character(db, world.id, user.id)
+        if existing:
+            # One character per player per world — go straight to their sheet.
+            return RedirectResponse(f"/characters/{existing.id}", status_code=303)
     # Pre-select template if given
     chosen_tpl = db.query(SheetTemplate).filter(SheetTemplate.id == template_id).first() if template_id else None
     if not chosen_tpl:
@@ -249,12 +293,18 @@ async def character_create(
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
-    world, _ = _world_ctx(db, active_world)
+    world, _ = _world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No world selected")
+    user = _current_user(request)
+    owner_id = None
+    if user and not user.is_gm:
+        if _own_character(db, world.id, user.id):
+            raise HTTPException(400, "You already have a character in this world.")
+        owner_id = user.id
     form = await request.form()
     data = dict(form)
-    pc = PlayerCharacter(world_id=world.id)
+    pc = PlayerCharacter(world_id=world.id, owner_user_id=owner_id)
     _apply_form(pc, data)
     if portrait and portrait.filename:
         url = _upload_portrait(portrait)
@@ -270,7 +320,7 @@ async def character_create(
 
 @router.get("/characters/templates", response_class=HTMLResponse)
 def template_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _world_ctx(db, active_world)
+    world, worlds = _world_ctx(request, db, active_world)
     tpls = _templates_for_world(db, world.id if world else None)
     return templates.TemplateResponse("characters/templates_list.html", {
         "request": request, "world": world, "worlds": worlds, "sheet_templates": tpls,
@@ -279,7 +329,7 @@ def template_list(request: Request, db: Session = Depends(get_db), active_world:
 
 @router.get("/characters/templates/new", response_class=HTMLResponse)
 def template_new_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _world_ctx(db, active_world)
+    world, worlds = _world_ctx(request, db, active_world)
     return templates.TemplateResponse("characters/template_form.html", {
         "request": request, "world": world, "worlds": worlds,
         "tpl": None, "fields": [],
@@ -292,7 +342,7 @@ async def template_create(
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
-    world, _ = _world_ctx(db, active_world)
+    world, _ = _world_ctx(request, db, active_world)
     form = await request.form()
     name = str(form.get("name", "")).strip() or "Unnamed Template"
     desc = str(form.get("description", "")).strip()
@@ -319,7 +369,7 @@ async def template_create(
 
 @router.get("/characters/templates/{tpl_id}/edit", response_class=HTMLResponse)
 def template_edit_form(tpl_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _world_ctx(db, active_world)
+    world, worlds = _world_ctx(request, db, active_world)
     tpl = db.query(SheetTemplate).filter(SheetTemplate.id == tpl_id).first()
     if not tpl:
         raise HTTPException(404)
@@ -367,8 +417,8 @@ def template_delete(tpl_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/api/characters/templates")
-def api_template_list(db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, _ = _world_ctx(db, active_world)
+def api_template_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = _world_ctx(request, db, active_world)
     tpls = _templates_for_world(db, world.id if world else None)
     return [
         {"id": t.id, "name": t.name, "is_builtin": t.is_builtin,
@@ -381,10 +431,14 @@ def api_template_list(db: Session = Depends(get_db), active_world: str = Cookie(
 
 @router.get("/characters/{pc_id}", response_class=HTMLResponse)
 def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _world_ctx(db, active_world)
+    world, worlds = _world_ctx(request, db, active_world)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
+    user = _current_user(request)
+    if not _can_view_character(db, user, pc, db.query(World).filter(World.id == pc.world_id).first()):
+        raise HTTPException(403)
+    can_manage = _can_manage_character(user, pc)
     d = _derived(pc)
     chosen_tpl = db.query(SheetTemplate).filter(
         SheetTemplate.id == pc.sheet_template_id
@@ -397,6 +451,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
         "chosen_template": chosen_tpl,
         "tpl_fields": tpl_fields,
         "custom_fields": custom_fields,
+        "can_manage": can_manage,
     })
 
 
@@ -404,10 +459,12 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
 
 @router.get("/characters/{pc_id}/edit", response_class=HTMLResponse)
 def character_edit_form(pc_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _world_ctx(db, active_world)
+    world, worlds = _world_ctx(request, db, active_world)
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
     sheet_templates_list = _templates_for_world(db, world.id if world else None)
     chosen_tpl = db.query(SheetTemplate).filter(
         SheetTemplate.id == pc.sheet_template_id
@@ -442,6 +499,8 @@ async def character_update(
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
     form = await request.form()
     data = dict(form)
     _apply_form(pc, data)
@@ -456,10 +515,12 @@ async def character_update(
 # ── Delete ────────────────────────────────────────────────────────────────────
 
 @router.post("/characters/{pc_id}/delete")
-def character_delete(pc_id: int, db: Session = Depends(get_db)):
+def character_delete(pc_id: int, request: Request, db: Session = Depends(get_db)):
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
     db.delete(pc)
     db.commit()
     return RedirectResponse("/characters", status_code=303)
@@ -581,10 +642,12 @@ def _pc_to_ndc_dict(pc: PlayerCharacter) -> dict:
 
 
 @router.get("/characters/{pc_id}/export.ndc")
-def character_export_ndc(pc_id: int, db: Session = Depends(get_db)):
+def character_export_ndc(pc_id: int, request: Request, db: Session = Depends(get_db)):
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
     payload = json.dumps([_pc_to_ndc_dict(pc)], ensure_ascii=False, indent=2)
     fname = "".join(c if c.isalnum() or c in " -_" else "" for c in (pc.name or "character")) or "character"
     return StreamingResponse(
@@ -602,6 +665,8 @@ async def character_hp_async(pc_id: int, request: Request, db: Session = Depends
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
     action = body.get("action", "set")
     val = int(body.get("value", 0))
     # Resolve effective HP max (0 stored = auto-derived from physical stats)
@@ -639,6 +704,8 @@ async def character_shock_async(pc_id: int, request: Request, db: Session = Depe
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
     action = body.get("action", "set")
     val = int(body.get("value", 0))
     shock_max = getattr(pc, "shock_max", 0) or 0
@@ -660,6 +727,8 @@ async def character_pp_async(pc_id: int, request: Request, db: Session = Depends
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
     action = body.get("action", "set")
     val = int(body.get("value", 0))
     # PP max = sum of physical stats
@@ -687,6 +756,8 @@ async def character_mp_async(pc_id: int, request: Request, db: Session = Depends
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
     action = body.get("action", "set")
     val = int(body.get("value", 0))
     # MP max = sum of mental stats
@@ -714,6 +785,8 @@ async def character_xp(pc_id: int, request: Request, db: Session = Depends(get_d
     pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
     if not pc:
         raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
     delta = int(body.get("delta", 0))
     pc.xp = max(0, pc.xp + delta)
     db.commit()

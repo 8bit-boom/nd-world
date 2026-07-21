@@ -19,9 +19,54 @@ class World(Base):
     slug = Column(String(64), unique=True, nullable=False)
     description = Column(String(512), nullable=True)
     accent = Column(String(16), default="#00f0ff")
+    # Whether player members can see each other's Player Characters (read-only) or only their own.
+    players_see_party = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     entities = relationship("Entity", back_populates="world", cascade="all, delete-orphan")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(256), unique=True, nullable=False, index=True)
+    password_hash = Column(String(256), nullable=False)
+    display_name = Column(String(256), default="")
+    # GM accounts have full access to every world; player accounts only see worlds
+    # they've been invited to (WorldMembership), and only their own character(s).
+    is_gm = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WorldMembership(Base):
+    """A player's invited access to a specific World. GM accounts don't need a row
+    here — is_gm implies access to every world."""
+    __tablename__ = "world_memberships"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    joined_at = Column(DateTime, default=datetime.utcnow)
+
+    world = relationship("World")
+    user = relationship("User")
+
+
+class InviteCode(Base):
+    __tablename__ = "invite_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(64), unique=True, nullable=False, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    max_uses = Column(Integer, nullable=True)   # NULL = unlimited
+    uses_count = Column(Integer, default=0)
+    revoked = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    world = relationship("World")
 
 class Entity(Base):
     __tablename__ = "entities"
@@ -36,6 +81,8 @@ class Entity(Base):
     image_url = Column(String(512), nullable=True)
     summary = Column(String(512), nullable=True)
     body = Column(Text, nullable=True)
+    # GM can hide spoilers/secrets from invited players; defaults visible so existing content is unaffected.
+    visible_to_players = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -53,6 +100,9 @@ class PlayerCharacter(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, default=1, index=True)
+    # The player account that owns/manages this character (NULL = GM-managed, e.g. NPCs
+    # or characters created before player accounts existed). One character per player per world.
+    owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
 
     # Identity
     name         = Column(String(256), nullable=False)

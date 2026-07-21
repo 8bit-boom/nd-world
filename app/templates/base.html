@@ -23,7 +23,9 @@
         {{ w.name }}
       </a>
       {% endfor %}
+      {% if request.state.user and request.state.user.is_gm %}
       <a href="/worlds" class="world-option manage">⚙ Manage worlds</a>
+      {% endif %}
     </div>
   </div>
 
@@ -39,22 +41,33 @@
     </a>
     {% endfor %}
     <a href="/maps"         class="nav-kind {% if request.url.path == '/maps' %}active{% endif %}">🗺 Maps</a>
+    {% if request.state.user and request.state.user.is_gm %}
     <a href="/boards"       class="nav-kind {% if request.url.path.startswith('/boards') %}active{% endif %}">📌 Boards</a>
     <a href="/export"       class="nav-kind">⬇ Export</a>
+    {% endif %}
     <a href="/rules"        class="nav-kind {% if request.url.path == '/rules' %}active{% endif %}">📖 Rules</a>
     <a href="/characters"   class="nav-kind {% if request.url.path.startswith('/characters') %}active{% endif %}">🎲 Characters</a>
+    {% if request.state.user and request.state.user.is_gm %}
     <a href="/ai"           class="nav-kind {% if request.url.path == '/ai' %}active{% endif %}">🤖 AI</a>
     <a href="/imagestudio"  class="nav-kind {% if request.url.path == '/imagestudio' %}active{% endif %}">🎨 Image Studio</a>
     <a href="/new" class="btn-new">+ New</a>
     <span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.4rem;vertical-align:middle"></span>
+    {% endif %}
+    {% if request.state.user %}
+    <span class="nav-kind" style="color:var(--text-dim);cursor:default">
+      {{ '⚡ GM' if request.state.user.is_gm else '🎭 ' + request.state.user.display_name }}
+    </span>
+    <a href="/logout" class="nav-kind">⏻ Logout</a>
+    {% endif %}
   </div>
 </nav>
 <script>
 (function(){
+  var dot=document.getElementById('ai-dot');
+  if(!dot) return;
   fetch('/api/ai/status',{method:'POST'})
     .then(r=>r.json())
     .then(d=>{
-      var dot=document.getElementById('ai-dot');
       if(d.status==='ok'){dot.style.background='#4f4';dot.title='AI ready — '+d.model;}
       else{dot.style.background='#888';dot.title='AI unavailable';}
     }).catch(()=>{});

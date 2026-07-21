@@ -1,7 +1,10 @@
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
-from .models import Base, World, Schematic, MapOverlay, InvestBoard, PlayerCharacter, SheetTemplate, StarredImage
+from .models import (
+    Base, World, Schematic, MapOverlay, InvestBoard, PlayerCharacter, SheetTemplate,
+    StarredImage, User, WorldMembership, InviteCode,
+)
 
 DB_PATH = os.environ.get("DB_PATH", "/data/world.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
@@ -21,6 +24,9 @@ def _migrate():
             conn.commit()
         if "folder" not in cols:
             conn.execute(text("ALTER TABLE entities ADD COLUMN folder VARCHAR(256)"))
+            conn.commit()
+        if "visible_to_players" not in cols:
+            conn.execute(text("ALTER TABLE entities ADD COLUMN visible_to_players BOOLEAN DEFAULT 1"))
             conn.commit()
         # Clean up literal "None" strings stored by early import runs
         conn.execute(text("UPDATE entities SET folder  = NULL WHERE folder  = 'None'"))
@@ -77,6 +83,7 @@ def _migrate():
                 ("profession_id",                "VARCHAR(128) DEFAULT ''"),
                 ("minor_edge_count",             "INTEGER DEFAULT 0"),
                 ("major_edge_count",             "INTEGER DEFAULT 0"),
+                ("owner_user_id",                "INTEGER"),
             ]
             for col, defn in _pc_extra:
                 if col not in pc_cols:
@@ -88,6 +95,15 @@ def _migrate():
             "SELECT name FROM sqlite_master WHERE type='table' AND name='sheet_templates'"
         )).fetchone()
         # table is created by Base.metadata.create_all above; nothing extra needed here
+        # worlds table — add players_see_party if missing
+        w_exists = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='worlds'"
+        )).fetchone()
+        if w_exists:
+            w_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(worlds)")).fetchall()]
+            if "players_see_party" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN players_see_party BOOLEAN DEFAULT 1"))
+                conn.commit()
 
 def _seed():
     db = SessionLocal()
@@ -123,6 +139,26 @@ def _seed():
                 fields_json="[]",
             ))
         db.commit()
+
+        # Bootstrap the GM account from env vars if no GM account exists yet.
+        # This is the only way to create a GM account — there's no open signup;
+        # players only ever join via GM-issued invite codes.
+        from . import auth as _auth  # deferred: auth.py imports get_db from this module
+        gm_email = (os.environ.get("GM_EMAIL") or "").strip().lower()
+        gm_password = os.environ.get("GM_PASSWORD") or ""
+        if gm_email and gm_password and not db.query(User).filter(User.is_gm == True).first():  # noqa: E712
+            existing = db.query(User).filter(User.email == gm_email).first()
+            if existing:
+                existing.is_gm = True
+                existing.password_hash = _auth.hash_password(gm_password)
+            else:
+                db.add(User(
+                    email=gm_email,
+                    password_hash=_auth.hash_password(gm_password),
+                    display_name=os.environ.get("GM_NAME", "GM"),
+                    is_gm=True,
+                ))
+            db.commit()
     finally:
         db.close()
 

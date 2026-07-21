@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Sign in — N&amp;D World</title>
+  <link rel="stylesheet" href="/static/style.css?v=5"/>
+  <style>
+    .auth-wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:1.5rem; }
+    .auth-card { width:100%; max-width:360px; background:var(--bg2); border:1px solid var(--border);
+      border-radius:8px; padding:1.6rem; }
+    .auth-logo { text-align:center; font-size:1.2rem; margin-bottom:1.2rem; color:var(--neon); }
+    .auth-logo span { color:var(--neon2); }
+    .auth-field { display:flex; flex-direction:column; gap:.3rem; margin-bottom:.9rem; }
+    .auth-field label { font-size:.7rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; }
+    .auth-field input { background:var(--bg3); border:1px solid var(--border); color:var(--text);
+      padding:.5rem .7rem; border-radius:4px; font-family:var(--font); font-size:.9rem; }
+    .auth-error { color:var(--neon2); font-size:.82rem; margin-bottom:.9rem; }
+    .auth-submit { width:100%; margin-top:.4rem; }
+  </style>
+</head>
+<body>
+  <div class="auth-wrap">
+    <form class="auth-card" method="post" action="/login">
+      <div class="auth-logo">N&amp;D <span>WORLD</span></div>
+      {% if error %}<div class="auth-error">{{ error }}</div>{% endif %}
+      <input type="hidden" name="next" value="{{ next }}">
+      <div class="auth-field">
+        <label>Email</label>
+        <input type="email" name="email" required autofocus>
+      </div>
+      <div class="auth-field">
+        <label>Password</label>
+        <input type="password" name="password" required>
+      </div>
+      <button type="submit" class="btn-primary auth-submit">Sign In</button>
+    </form>
+  </div>
+</body>
+</html>

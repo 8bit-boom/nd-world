@@ -7,7 +7,7 @@ services:
     container_name: nd-world
     restart: unless-stopped
     ports:
-      - "8080:8000"
+      - "${APP_PORT:-8080}:8000"
     volumes:
       - nd-world-data:/data
       - swarmui-ac:/data/swarmui-ac   # shared with swarmui for native tag autocompletions
@@ -19,6 +19,14 @@ services:
       SWARMUI_AC_DIR: /data/swarmui-ac  # shared volume → SwarmUI Data/Autocompletions
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: gemma4:26b   # change to whichever model you've pulled
+      # Auth — see .env.example. GM_EMAIL/GM_PASSWORD bootstrap the one GM account;
+      # everyone else joins as a player via a GM-issued invite link.
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env — see scripts/setup.sh or .env.example}
+      GM_EMAIL: ${GM_EMAIL:-}
+      GM_PASSWORD: ${GM_PASSWORD:-}
+      GM_NAME: ${GM_NAME:-GM}
+      # Set to true once served over HTTPS (e.g. behind a Cloudflare Tunnel) — see docs/DEPLOYMENT.md
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
     depends_on:
       - swarmui
       - ollama

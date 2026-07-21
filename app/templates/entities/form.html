@@ -79,6 +79,15 @@
       <textarea name="body" id="body-field" rows="16" placeholder="# History&#10;…">{{ entity.body if entity else '' }}</textarea>
     </div>
 
+    <div style="display:flex;align-items:center;gap:.5rem;margin:.6rem 0 1rem">
+      <input type="checkbox" id="hide-from-players" name="hide_from_players" value="1"
+             style="width:auto;accent-color:var(--neon2)"
+             {% if entity and not entity.visible_to_players %}checked{% endif %}>
+      <label for="hide-from-players" style="font-size:.82rem;color:var(--text-dim)">
+        🔒 Hide from players (GM-only — spoilers, secrets, unrevealed content)
+      </label>
+    </div>
+
     <div class="form-actions">
       <button type="submit" class="btn-save">Save</button>
       {% if entity %}

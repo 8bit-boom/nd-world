@@ -1,15 +1,18 @@
 from fastapi import FastAPI, Request, Depends, Form, HTTPException, UploadFile, File, Cookie
 from pydantic import BaseModel
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 from typing import Optional
+from urllib.parse import quote
 import re
 import markdown2
 import os
+import secrets
 import uuid
 import shutil
 import json
@@ -17,11 +20,13 @@ import base64
 import io
 from pathlib import Path
 
-from .database import init_db, get_db
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links
+from .database import init_db, get_db, SessionLocal
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, User, InviteCode, WorldMembership
 from .routers.ai import router as ai_router
 from .routers.characters import router as characters_router
+from .routers.auth import router as auth_router
 from . import ai as _ai_module
+from . import auth as _auth
 from .constants import KINDS, SUBTYPES, KIND_ICONS
 
 BASE_DIR = Path(__file__).parent.parent
@@ -33,6 +38,7 @@ _allowed = [h.strip() for h in os.getenv("ND_ALLOWED_HOSTS", "*").split(",") if 
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed)
 app.include_router(ai_router)
 app.include_router(characters_router)
+app.include_router(auth_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
@@ -45,6 +51,87 @@ ENTITY_COLS = {"kind", "subtype", "folder", "name", "tags", "summary", "body", "
 def startup():
     init_db()
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+# ── Auth gate ──────────────────────────────────────────────────────────────────
+# Everything requires login by default. Non-GM (player) accounts are additionally
+# restricted to a explicit allowlist of "player-safe" paths — world/lore browsing
+# (read-only, further filtered to visible_to_players inside the handlers) and their
+# own character(s). Anything not allowlisted is GM-only. New routes are therefore
+# GM-only by default unless deliberately added to _is_player_safe.
+
+_PUBLIC_PATHS = {"/login", "/logout", "/health", "/favicon.ico"}
+_PUBLIC_PREFIXES = ("/join/", "/static/")
+
+
+def _is_player_safe(method: str, path: str) -> bool:
+    if path.startswith("/characters/templates"):
+        return False
+    if path.startswith("/characters") or path.startswith("/api/characters/"):
+        return True
+    if method != "GET":
+        return False
+    if path in ("/", "/rules", "/search", "/maps"):
+        return True
+    if path.startswith("/kind/") or path.startswith("/uploads/"):
+        return True
+    if re.match(r"^/entity/\d+$", path):
+        return True
+    if path.startswith("/maps/") and not path.startswith("/maps/schematic"):
+        return True
+    if path.startswith("/worlds/switch/"):
+        return True
+    return False
+
+
+@app.middleware("http")
+async def auth_gate(request: Request, call_next):
+    path = request.url.path
+    if path in _PUBLIC_PATHS or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+        return await call_next(request)
+
+    user_id = request.session.get("user_id")
+    if not user_id:
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "Login required"}, status_code=401)
+        return RedirectResponse(f"/login?next={quote(path)}", status_code=303)
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+    finally:
+        db.close()
+    if not user:
+        request.session.clear()
+        return RedirectResponse("/login", status_code=303)
+
+    if not user.is_gm and not _is_player_safe(request.method, path):
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "GM access required"}, status_code=403)
+        return HTMLResponse(
+            "<body style='background:#0a0a0f;color:#c8d0e0;font-family:monospace;padding:2rem'>"
+            "<h1 style='color:#ff2d78'>403 — GM access required</h1>"
+            "<p><a href='/' style='color:#00f0ff'>&larr; Back</a></p></body>",
+            status_code=403,
+        )
+
+    request.state.user = user
+    return await call_next(request)
+
+
+# SessionMiddleware must be added AFTER auth_gate above (Starlette wraps middleware
+# in reverse-of-addition order, so the *last* added middleware runs *first* per
+# request — this makes SessionMiddleware run before auth_gate, so request.session
+# is already populated when auth_gate reads it).
+SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").strip().lower() == "true"
+app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, https_only=COOKIE_SECURE, same_site="lax")
+
 
 def render_md(text):
     return markdown2.markdown(text, extras=["fenced-code-blocks", "tables", "strike"]) if text else ""
@@ -226,12 +313,41 @@ templates.env.filters["entry_text"] = entry_text
 
 DEFAULT_WORLD_COOKIE = "active_world"
 
-def get_active_world(db: Session, active_world: str = Cookie(None)) -> World:
+def get_active_world(request: Request, db: Session, active_world: str = Cookie(None)) -> World:
+    user = getattr(request.state, "user", None)
+    accessible = _auth.accessible_world_ids(db, user)  # None = GM (all worlds)
+
     if active_world:
         w = db.query(World).filter(World.slug == active_world).first()
-        if w:
+        if w and (accessible is None or w.id in accessible):
             return w
-    return db.query(World).order_by(World.id).first()
+
+    q = db.query(World)
+    if accessible is not None:
+        if not accessible:
+            return None
+        q = q.filter(World.id.in_(accessible))
+    return q.order_by(World.id).first()
+
+
+def _filter_visible_entities(q, request: Request):
+    """Restrict an Entity query to visible_to_players rows for non-GM viewers."""
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        q = q.filter(Entity.visible_to_players.isnot(False))
+    return q
+
+
+def _visible_worlds(request: Request, db: Session):
+    """Worlds list for the nav world-switcher — GMs see all worlds, players only
+    see worlds they've been invited to (so world names/existence aren't leaked)."""
+    user = getattr(request.state, "user", None)
+    accessible = _auth.accessible_world_ids(db, user)
+    if accessible is None:
+        return db.query(World).order_by(World.id).all()
+    if not accessible:
+        return []
+    return db.query(World).filter(World.id.in_(accessible)).order_by(World.id).all()
 
 # ── Uploads ───────────────────────────────────────────────────────────────────
 
@@ -246,8 +362,8 @@ def serve_upload(filepath: str):
 
 @app.get("/worlds", response_class=HTMLResponse)
 def worlds_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    worlds = db.query(World).order_by(World.id).all()
-    current = get_active_world(db, active_world)
+    worlds = _visible_worlds(request, db)
+    current = get_active_world(request, db, active_world)
     return templates.TemplateResponse("worlds.html", {"request": request, "worlds": worlds, "current": current})
 
 @app.post("/worlds/new")
@@ -279,7 +395,10 @@ def world_delete(world_id: int, db: Session = Depends(get_db)):
     return resp
 
 @app.get("/worlds/switch/{slug}")
-def world_switch(slug: str):
+def world_switch(slug: str, request: Request, db: Session = Depends(get_db)):
+    w = db.query(World).filter(World.slug == slug).first()
+    if not w or not _auth.user_can_access_world(db, getattr(request.state, "user", None), w):
+        raise HTTPException(404)
     resp = RedirectResponse("/", status_code=303)
     resp.set_cookie(DEFAULT_WORLD_COOKIE, slug, max_age=60*60*24*365)
     return resp
@@ -290,9 +409,18 @@ def world_edit_form(world_id: int, request: Request, db: Session = Depends(get_d
     if not w:
         raise HTTPException(404)
     world, worlds = _get_world_ctx(db, active_world)
+    invites = db.query(InviteCode).filter(InviteCode.world_id == world_id).order_by(InviteCode.created_at.desc()).all()
+    members = (
+        db.query(WorldMembership, User)
+        .join(User, User.id == WorldMembership.user_id)
+        .filter(WorldMembership.world_id == world_id)
+        .order_by(User.display_name)
+        .all()
+    )
     return templates.TemplateResponse("world_edit.html", {
         "request": request, "world": world, "worlds": worlds,
         "edit_world": w, "kinds": KINDS, "kind_icons": KIND_ICONS,
+        "invites": invites, "members": members,
     })
 
 @app.post("/worlds/{world_id}/edit")
@@ -301,6 +429,7 @@ def world_edit_post(
     name: str = Form(...),
     description: str = Form(""),
     accent: str = Form("#00f0ff"),
+    players_see_party: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     w = db.get(World, world_id)
@@ -309,8 +438,60 @@ def world_edit_post(
     w.name = name.strip() or w.name
     w.description = description
     w.accent = accent
+    w.players_see_party = bool(players_see_party)
     db.commit()
     return RedirectResponse("/worlds", status_code=303)
+
+
+# ── Invites & Members ──────────────────────────────────────────────────────────
+
+@app.post("/worlds/{world_id}/invites/new")
+def invite_create(
+    world_id: int,
+    request: Request,
+    expires_days: str = Form(""),
+    max_uses: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    w = db.get(World, world_id)
+    if not w:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    from datetime import datetime as _dt, timedelta
+    expires_at = None
+    if expires_days.strip().isdigit() and int(expires_days) > 0:
+        expires_at = _dt.utcnow() + timedelta(days=int(expires_days))
+    invite = InviteCode(
+        code=_auth.generate_invite_code(),
+        world_id=world_id,
+        created_by_id=user.id if user else None,
+        expires_at=expires_at,
+        max_uses=int(max_uses) if max_uses.strip().isdigit() and int(max_uses) > 0 else None,
+    )
+    db.add(invite)
+    db.commit()
+    return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
+
+
+@app.post("/worlds/{world_id}/invites/{invite_id}/revoke")
+def invite_revoke(world_id: int, invite_id: int, db: Session = Depends(get_db)):
+    invite = db.query(InviteCode).filter(InviteCode.id == invite_id, InviteCode.world_id == world_id).first()
+    if not invite:
+        raise HTTPException(404)
+    invite.revoked = True
+    db.commit()
+    return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
+
+
+@app.post("/worlds/{world_id}/members/{user_id}/remove")
+def member_remove(world_id: int, user_id: int, db: Session = Depends(get_db)):
+    m = db.query(WorldMembership).filter(
+        WorldMembership.world_id == world_id, WorldMembership.user_id == user_id
+    ).first()
+    if m:
+        db.delete(m)
+        db.commit()
+    return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
 
 @app.post("/folders/rename")
 def folder_rename(
@@ -423,12 +604,12 @@ async def world_import(world_id: int, file: UploadFile = File(...), db: Session 
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world = get_active_world(db, active_world)
+    world = get_active_world(request, db, active_world)
     if not world:
         return RedirectResponse("/worlds")
-    counts = {k: db.query(Entity).filter(Entity.kind == k, Entity.world_id == world.id).count() for k in KINDS}
-    recent = db.query(Entity).filter(Entity.world_id == world.id).order_by(Entity.updated_at.desc()).limit(8).all()
-    worlds = db.query(World).order_by(World.id).all()
+    counts = {k: _filter_visible_entities(db.query(Entity).filter(Entity.kind == k, Entity.world_id == world.id), request).count() for k in KINDS}
+    recent = _filter_visible_entities(db.query(Entity).filter(Entity.world_id == world.id), request).order_by(Entity.updated_at.desc()).limit(8).all()
+    worlds = _visible_worlds(request, db)
     # collect a few maps for the homepage preview
     preview_maps = []
     if _MAPS_DIR.exists():
@@ -445,11 +626,14 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
     # Most-linked entities
     most_linked = []
     if world:
-        most_linked = (
+        most_linked_q = (
             db.query(Entity, func.count(entity_links.c.source_id).label('link_count'))
             .join(entity_links, entity_links.c.target_id == Entity.id)
             .filter(Entity.world_id == world.id)
-            .group_by(Entity.id)
+        )
+        most_linked_q = _filter_visible_entities(most_linked_q, request)
+        most_linked = (
+            most_linked_q.group_by(Entity.id)
             .order_by(func.count(entity_links.c.source_id).desc())
             .limit(6).all()
         )
@@ -457,9 +641,9 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
     # Tag cloud
     top_tags = []
     if world:
-        raw_tags = db.query(Entity.tags).filter(
+        raw_tags = _filter_visible_entities(db.query(Entity.tags).filter(
             Entity.world_id == world.id, Entity.tags.isnot(None)
-        ).all()
+        ), request).all()
         tag_counts: dict = {}
         for (ts,) in raw_tags:
             for t in (ts or '').split(','):
@@ -486,8 +670,8 @@ _MAPS_DIR = Path(__file__).parent / "maps"
 
 @app.get("/maps", response_class=HTMLResponse)
 def maps_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world = get_active_world(db, active_world)
-    worlds = db.query(World).order_by(World.id).all()
+    world = get_active_world(request, db, active_world)
+    worlds = _visible_worlds(request, db)
     maps = []
     _STATIC_MAPS = BASE_DIR / "static" / "maps"
     if _MAPS_DIR.exists():
@@ -547,8 +731,8 @@ def map_viewer(slug: str, request: Request, db: Session = Depends(get_db), activ
     for ext in (".webp", ".jpg", ".jpeg", ".png"):
         if (_sm / (slug + ext)).exists(): image_url = f"/static/maps/{slug}{ext}"; break
         if (UPLOADS_DIR / "maps" / (slug + ext)).exists(): image_url = f"/uploads/maps/{slug}{ext}"; break
-    world = get_active_world(db, active_world)
-    worlds = db.query(World).order_by(World.id).all()
+    world = get_active_world(request, db, active_world)
+    worlds = _visible_worlds(request, db)
     overlay = db.query(MapOverlay).filter(MapOverlay.slug == slug).first()
     if not overlay:
         overlay = MapOverlay(slug=slug, custom_markers_json="[]", custom_regions_json="[]")
@@ -577,8 +761,8 @@ async def save_map_overlay(slug: str, request: Request, db: Session = Depends(ge
 
 @app.get("/rules", response_class=HTMLResponse)
 def rules_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world = get_active_world(db, active_world)
-    worlds = db.query(World).order_by(World.id).all()
+    world = get_active_world(request, db, active_world)
+    worlds = _visible_worlds(request, db)
     rules_path = Path(__file__).parent / "core_rules.md"
     content, toc = _rules_toc(render_md(rules_path.read_text(encoding="utf-8", errors="ignore")) if rules_path.exists() else "<p>Rules file not found.</p>")
     return templates.TemplateResponse("rules.html", {
@@ -594,8 +778,8 @@ def _slug_from_name(name: str) -> str:
 
 @app.get("/maps/schematic/new", response_class=HTMLResponse)
 def schematic_new_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world = get_active_world(db, active_world)
-    worlds = db.query(World).order_by(World.id).all()
+    world = get_active_world(request, db, active_world)
+    worlds = _visible_worlds(request, db)
     return templates.TemplateResponse("schematic_form.html", {
         "request": request, "world": world, "worlds": worlds, "schematic": None,
     })
@@ -611,7 +795,7 @@ async def schematic_new(
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
-    world = get_active_world(db, active_world)
+    world = get_active_world(request, db, active_world)
     slug = _slug_from_name(name)
     base = slug; i = 2
     while db.query(Schematic).filter(Schematic.slug == slug).first():
@@ -633,8 +817,8 @@ def schematic_view(slug: str, request: Request, db: Session = Depends(get_db), a
         if html_path.exists():
             return HTMLResponse(html_path.read_text(encoding="utf-8", errors="ignore"))
         raise HTTPException(404, "HTML schematic file not found")
-    world = get_active_world(db, active_world)
-    worlds = db.query(World).order_by(World.id).all()
+    world = get_active_world(request, db, active_world)
+    worlds = _visible_worlds(request, db)
     elements = json.loads(s.elements_json or "[]")
     _BG = {"dark": "#111111", "blueprint": "#0d1b2a", "grid-light": "#1a1a2e", "light": "#f0f0f0"}
     canvas_bg_color = _BG.get(s.canvas_bg or "dark", "#111111")
@@ -1111,10 +1295,11 @@ _COL_PRIORITY_IDX = {c.lower(): i for i, c in enumerate(_COL_PRIORITY)}
 @app.get("/kind/{kind}", response_class=HTMLResponse)
 def list_entities(request: Request, kind: str, q: str = "", folder: Optional[str] = None,
                   view: str = "", db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world = get_active_world(db, active_world)
+    world = get_active_world(request, db, active_world)
 
     # Base searchable query (no folder filter — used for counts/sidebar)
     base_q = db.query(Entity).filter(Entity.kind == kind, Entity.world_id == world.id)
+    base_q = _filter_visible_entities(base_q, request)
     if q:
         base_q = base_q.filter(or_(
             Entity.name.ilike(f"%{q}%"), Entity.tags.ilike(f"%{q}%"),
@@ -1211,7 +1396,7 @@ def list_entities(request: Request, kind: str, q: str = "", folder: Optional[str
     if not view:
         view = "table" if folder is not None else "grid"
 
-    worlds = db.query(World).order_by(World.id).all()
+    worlds = _visible_worlds(request, db)
     return templates.TemplateResponse("entities/list.html", {
         "request": request, "kind": kind, "entities": entities,
         "grouped": grouped, "folders": folders, "active_folder": folder,
@@ -1229,16 +1414,20 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
     entity = db.get(Entity, entity_id)
     if not entity:
         raise HTTPException(404)
-    world = get_active_world(db, active_world)
-    all_entities = db.query(Entity).filter(Entity.id != entity_id, Entity.world_id == entity.world_id).order_by(Entity.name).all()
-    worlds = db.query(World).order_by(World.id).all()
-    backlinks = (
+    user = getattr(request.state, "user", None)
+    if not entity.visible_to_players and not (user and user.is_gm):
+        raise HTTPException(404)
+    world = get_active_world(request, db, active_world)
+    all_entities = _filter_visible_entities(
+        db.query(Entity).filter(Entity.id != entity_id, Entity.world_id == entity.world_id), request
+    ).order_by(Entity.name).all()
+    worlds = _visible_worlds(request, db)
+    backlinks = _filter_visible_entities(
         db.query(Entity)
         .join(entity_links, entity_links.c.source_id == Entity.id)
-        .filter(entity_links.c.target_id == entity_id)
-        .order_by(Entity.kind, Entity.name)
-        .all()
-    )
+        .filter(entity_links.c.target_id == entity_id),
+        request,
+    ).order_by(Entity.kind, Entity.name).all()
     return templates.TemplateResponse("entities/detail.html", {
         "request": request, "entity": entity, "all_entities": all_entities,
         "world": world, "worlds": worlds, "backlinks": backlinks,
@@ -1248,8 +1437,8 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
 
 @app.get("/new", response_class=HTMLResponse)
 def new_form(request: Request, kind: str = "character", db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world = get_active_world(db, active_world)
-    worlds = db.query(World).order_by(World.id).all()
+    world = get_active_world(request, db, active_world)
+    worlds = _visible_worlds(request, db)
     return templates.TemplateResponse("entities/form.html", {
         "request": request, "entity": None, "kind": kind,
         "world": world, "worlds": worlds,
@@ -1261,13 +1450,15 @@ async def create(
     kind: str = Form(...), subtype: str = Form(""), name: str = Form(...),
     folder: str = Form(""), tags: str = Form(""), image_url: str = Form(""),
     image_file: UploadFile = File(None), summary: str = Form(""), body: str = Form(""),
+    hide_from_players: Optional[str] = Form(None),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
-    world = get_active_world(db, active_world)
+    world = get_active_world(request, db, active_world)
     final_image = save_upload(image_file) or (image_url.strip() or None)
     e = Entity(world_id=world.id, kind=kind, subtype=subtype or None, name=name,
                folder=folder.strip() or None, tags=tags or None,
-               image_url=final_image, summary=summary or None, body=body or None)
+               image_url=final_image, summary=summary or None, body=body or None,
+               visible_to_players=not bool(hide_from_players))
     db.add(e)
     db.commit()
     db.refresh(e)
@@ -1280,8 +1471,8 @@ def edit_form(request: Request, entity_id: int, db: Session = Depends(get_db), a
     entity = db.get(Entity, entity_id)
     if not entity:
         raise HTTPException(404)
-    world = get_active_world(db, active_world)
-    worlds = db.query(World).order_by(World.id).all()
+    world = get_active_world(request, db, active_world)
+    worlds = _visible_worlds(request, db)
     return templates.TemplateResponse("entities/form.html", {
         "request": request, "entity": entity, "kind": entity.kind,
         "world": world, "worlds": worlds,
@@ -1293,6 +1484,7 @@ async def update(
     kind: str = Form(...), subtype: str = Form(""), name: str = Form(...),
     folder: str = Form(""), tags: str = Form(""), image_url: str = Form(""),
     image_file: UploadFile = File(None), summary: str = Form(""), body: str = Form(""),
+    hide_from_players: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     entity = db.get(Entity, entity_id)
@@ -1307,6 +1499,7 @@ async def update(
     entity.image_url = uploaded or (image_url.strip() or None)
     entity.summary = summary or None
     entity.body = body or None
+    entity.visible_to_players = not bool(hide_from_players)
     db.commit()
     return RedirectResponse(f"/entity/{entity_id}", status_code=303)
 
@@ -1365,7 +1558,7 @@ def _snippet(text: str, q: str, window: int = 120) -> str:
 @app.get("/search", response_class=HTMLResponse)
 def search(request: Request, q: str = "", kind: str = "",
            db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world = get_active_world(db, active_world)
+    world = get_active_world(request, db, active_world)
     results = []
     grouped: dict[str, list] = {}
     snippets: dict[int, str] = {}
@@ -1380,6 +1573,7 @@ def search(request: Request, q: str = "", kind: str = "",
                 Entity.body.ilike(f"%{q}%"),
             )
         )
+        query = _filter_visible_entities(query, request)
         if kind:
             query = query.filter(Entity.kind == kind)
         results = query.order_by(Entity.kind, Entity.name).all()
@@ -1390,7 +1584,7 @@ def search(request: Request, q: str = "", kind: str = "",
             if q.lower() not in (e.name or "").lower() and q.lower() not in (e.summary or "").lower():
                 snippets[e.id] = _snippet(e.body or "", q)
 
-    worlds = db.query(World).order_by(World.id).all()
+    worlds = _visible_worlds(request, db)
     return templates.TemplateResponse("search.html", {
         "request": request, "results": results, "grouped": grouped,
         "snippets": snippets, "q": q, "kind_filter": kind,

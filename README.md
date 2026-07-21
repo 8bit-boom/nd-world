@@ -22,6 +22,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - **Universal character sheets** — fully configurable stats, skills, and currency (N&D defaults: POW/AGI/FOR/INT/PER/SOC); optional secondary resource tracker
 - **Rules-driven Player Character creation wizard** — guided Race → Profession → Stats (point-buy) → Feats → Equipment flow implementing the Neon & Dragons Core Rules character creation procedure, backed by the same race/profession/feat/equipment catalog used by the NeonDragonsApp Android app and NeonDragonsEditor desktop tool
 - **`.ndc` character export** — export any Player Character as a `.ndc` file importable directly into both the NeonDragonsApp Android app and the NeonDragonsEditor desktop editor (see [Character creation wizard & export](#character-creation-wizard--export))
+- **GM & player accounts** — one GM account per deployment; invite players by link, each managing their own character. GMs can hide spoiler content and toggle party-wide character visibility per world (see [Accounts, Invites & Going Public](#accounts-invites--going-public))
 - **Full-text search** — across names, tags, summaries, and body text
 - **JSON export / import** — complete world backup and restore with embedded images
 - **Mobile-responsive UI** — hamburger nav, touch-friendly targets, stacking layouts on phones and tablets
@@ -38,6 +39,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - [AI Setup](#ai-setup)
 - [Data & Backups](#data--backups)
 - [Character Creation Wizard & Export](#character-creation-wizard--export)
+- [Accounts, Invites & Going Public](#accounts-invites--going-public)
 - [Project Structure](#project-structure)
 - [Ports Reference](#ports-reference)
 - [Troubleshooting](#troubleshooting)
@@ -59,6 +61,11 @@ Ollama and SwarmUI are **included in the Docker stack** — no separate installa
 ## Install on Linux
 
 These instructions work on **Ubuntu 22.04/24.04**, **Debian 12**, and most other modern distros.
+
+> **Fast path:** if Docker is already installed, `bash scripts/setup.sh` does Steps 2–6
+> below for you (creates `.env`, sets up your GM login, starts the stack) — see
+> [Accounts, Invites & Going Public](#accounts-invites--going-public) and
+> [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ### Step 1 — Install Docker
 
@@ -407,6 +414,10 @@ The script auto-detects the correct path and installs ComfyUI-Manager into `cust
 | `IMAGEGEN_URL` | `http://swarmui:7801` | Internal URL of the image generator API |
 | `SWARMUI_EXTERNAL_URL` | _(empty)_ | Browser-accessible SwarmUI URL for the Image Studio iframe |
 | `ND_ALLOWED_HOSTS` | `*` | Comma-separated allowed `Host` headers (security hardening) |
+| `SECRET_KEY` | _(random each restart)_ | Signs session cookies — set a fixed value in production (`openssl rand -hex 32`), or logins won't survive a restart |
+| `GM_EMAIL` / `GM_PASSWORD` | _(empty)_ | Bootstraps the GM account on first start. Leave blank if the GM account already exists |
+| `GM_NAME` | `GM` | Display name for the bootstrapped GM account |
+| `COOKIE_SECURE` | `false` | Set `true` once served over HTTPS (see [Accounts, Invites & Going Public](#accounts-invites--going-public)) |
 
 ---
 
@@ -557,6 +568,40 @@ cp /path/to/UoY-Neon-Dragons/NeonDragonsApp/app/src/main/assets/data/*.json app/
 
 ---
 
+## Accounts, Invites & Going Public
+
+There is no public signup. One **GM account** runs the whole deployment, bootstrapped
+from the `GM_EMAIL`/`GM_PASSWORD` environment variables on first start (`bash
+scripts/setup.sh` prompts for these interactively and writes them to `.env`). Every
+other account is a **player**, created by redeeming a GM-issued invite link — there's
+no way to sign up otherwise.
+
+**As the GM**, open a world's Edit page (world switcher → ⚙ Manage worlds → Edit) to:
+- Create/revoke **Invite Links** (optionally time- or use-limited) and share the
+  `/join/<code>` URL with a player — opening it lets them create an account (or log
+  in) and joins them to that world
+- View and remove **Members**
+- Toggle whether **players can see each other's characters** (party roster, read-only)
+  for that world
+
+**As a player**, once joined to a world you can:
+- Browse its lore (anything the GM hasn't marked "🔒 Hide from players" on the
+  entity's edit page — spoilers, secrets, and unrevealed content stay GM-only)
+- Create and manage **one character** via the [creation wizard](#character-creation-wizard--export),
+  including live HP/Shock/PP/MP tracking and `.ndc` export
+- View party members' characters read-only, if the GM has enabled that
+
+GM-only tools (AI chat, image generation, world/entity editing, maps, schematics,
+investigation boards) stay restricted to the GM account regardless.
+
+**Going public:** nd-world is private by default (every page requires login) — see
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full walkthrough of running it
+locally and then exposing it to the internet via a **Cloudflare Tunnel** (recommended
+— no router changes needed) so you can send invite links to players who aren't on
+your home network.
+
+---
+
 ## Project Structure
 
 ```
@@ -567,19 +612,27 @@ nd-world/
 │   ├── database.py          # DB init and migrations
 │   ├── ai.py                # Ollama + image gen integration
 │   ├── constants.py         # N&D default stats, skills, currency
+│   ├── auth.py              # Password hashing, session/permission dependencies
 │   ├── game_catalog.py      # Race/profession/feat/equipment catalog loader for the PC wizard
 │   ├── game_data/           # Bundled races/professions/feats/equipment JSON (from UoY-Neon-Dragons)
 │   ├── routers/
 │   │   ├── ai.py            # /api/ai/* endpoints
+│   │   ├── auth.py          # /login, /logout, /join/{code} (invite redemption)
 │   │   └── characters.py    # /api/characters/* endpoints, .ndc export
 │   └── templates/           # Jinja2 HTML templates
 │       ├── ai_chat.html     # AI chat + Image Gen + Models tabs
 │       ├── imagestudio.html # SwarmUI iframe page
+│       ├── auth/            # Login, join/signup pages
 │       └── characters/      # Character sheet, list, creation wizard, edit form
 ├── static/
 │   └── style.css            # All app styles
+├── scripts/
+│   └── setup.sh             # One-command install: Docker check, .env + GM account, start stack
+├── docs/
+│   └── DEPLOYMENT.md        # Local setup + Cloudflare Tunnel walkthrough
 ├── docker-compose.yml       # Linux / Windows stack (named volumes)
 ├── truenas-compose.yml      # TrueNAS SCALE stack (bind mounts)
+├── .env.example             # SECRET_KEY / GM_EMAIL / GM_PASSWORD / COOKIE_SECURE template
 ├── Dockerfile
 ├── requirements.txt
 └── install-comfyui-manager.sh

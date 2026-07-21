@@ -17,6 +17,14 @@ services:
       SWARMUI_AC_DIR: /data/swarmui-ac  # shared bind mount → SwarmUI Data/Autocompletions
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: gemma4:26b   # change to whichever model you've pulled
+      # Auth — see .env.example. GM_EMAIL/GM_PASSWORD bootstrap the one GM account;
+      # everyone else joins as a player via a GM-issued invite link.
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env — see scripts/setup.sh or .env.example}
+      GM_EMAIL: ${GM_EMAIL:-}
+      GM_PASSWORD: ${GM_PASSWORD:-}
+      GM_NAME: ${GM_NAME:-GM}
+      # Set to true once served over HTTPS (e.g. behind a Cloudflare Tunnel) — see docs/DEPLOYMENT.md
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
     labels:
       net.ix-portals.nd-world.scheme: "http"
       net.ix-portals.nd-world.port: "8087"
