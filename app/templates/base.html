@@ -47,6 +47,10 @@
     {% endif %}
     <a href="/rules"        class="nav-kind {% if request.url.path == '/rules' %}active{% endif %}">📖 Rules</a>
     <a href="/characters"   class="nav-kind {% if request.url.path.startswith('/characters') %}active{% endif %}">🎲 Characters</a>
+    {% if world and request.state.user and not request.state.user.is_gm %}
+    <a href="/worlds/{{ world.id }}/notes/{{ request.state.user.id }}"
+       class="nav-kind {% if request.url.path.startswith('/worlds/'+world.id|string+'/notes/') %}active{% endif %}">🔒 My Notes</a>
+    {% endif %}
     {% if request.state.user and request.state.user.is_gm %}
     <a href="/ai"           class="nav-kind {% if request.url.path == '/ai' %}active{% endif %}">🤖 AI</a>
     <a href="/imagestudio"  class="nav-kind {% if request.url.path == '/imagestudio' %}active{% endif %}">🎨 Image Studio</a>

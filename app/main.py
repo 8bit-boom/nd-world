@@ -21,7 +21,7 @@ import io
 from pathlib import Path
 
 from .database import init_db, get_db, SessionLocal
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, User, InviteCode, WorldMembership
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, User, InviteCode, WorldMembership, PrivateNote
 from .routers.ai import router as ai_router
 from .routers.characters import router as characters_router
 from .routers.auth import router as auth_router
@@ -85,6 +85,8 @@ def _is_player_safe(method: str, path: str) -> bool:
     if path.startswith("/maps/") and not path.startswith("/maps/schematic"):
         return True
     if path.startswith("/worlds/switch/"):
+        return True
+    if re.match(r"^/worlds/\d+/notes/\d+$", path):
         return True
     return False
 
@@ -492,6 +494,65 @@ def member_remove(world_id: int, user_id: int, db: Session = Depends(get_db)):
         db.delete(m)
         db.commit()
     return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
+
+
+# ── Private Notes (GM ↔ one player) ─────────────────────────────────────────────
+
+@app.get("/worlds/{world_id}/notes/{user_id}", response_class=HTMLResponse)
+def private_notes_view(
+    world_id: int, user_id: int, request: Request,
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    w = db.get(World, world_id)
+    if not w:
+        raise HTTPException(404)
+    viewer = getattr(request.state, "user", None)
+    is_gm = bool(viewer and viewer.is_gm)
+    if not is_gm and (not viewer or viewer.id != user_id or not _auth.user_can_access_world(db, viewer, w)):
+        raise HTTPException(403)
+    target_user = db.get(User, user_id)
+    if not target_user:
+        raise HTTPException(404)
+    notes = (
+        db.query(PrivateNote)
+        .filter(PrivateNote.world_id == world_id, PrivateNote.player_user_id == user_id)
+        .order_by(PrivateNote.created_at.desc())
+        .all()
+    )
+    worlds = _visible_worlds(request, db)
+    return templates.TemplateResponse("private_notes.html", {
+        "request": request, "world": w, "worlds": worlds,
+        "target_user": target_user, "notes": notes, "can_manage": is_gm,
+    })
+
+
+@app.post("/worlds/{world_id}/notes/{user_id}/new")
+def private_note_create(
+    world_id: int, user_id: int, request: Request,
+    title: str = Form(""), content: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    if not db.get(World, world_id) or not db.get(User, user_id):
+        raise HTTPException(404)
+    author = getattr(request.state, "user", None)
+    note = PrivateNote(
+        world_id=world_id, player_user_id=user_id, author_id=author.id if author else None,
+        title=title.strip(), content=content,
+    )
+    db.add(note)
+    db.commit()
+    return RedirectResponse(f"/worlds/{world_id}/notes/{user_id}", status_code=303)
+
+
+@app.post("/worlds/{world_id}/notes/{user_id}/{note_id}/delete")
+def private_note_delete(world_id: int, user_id: int, note_id: int, db: Session = Depends(get_db)):
+    note = db.query(PrivateNote).filter(
+        PrivateNote.id == note_id, PrivateNote.world_id == world_id, PrivateNote.player_user_id == user_id
+    ).first()
+    if note:
+        db.delete(note)
+        db.commit()
+    return RedirectResponse(f"/worlds/{world_id}/notes/{user_id}", status_code=303)
 
 @app.post("/folders/rename")
 def folder_rename(

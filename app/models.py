@@ -68,6 +68,22 @@ class InviteCode(Base):
 
     world = relationship("World")
 
+
+class PrivateNote(Base):
+    """A private note from the GM to one specific player about their character/arc —
+    visible to the GM and that one player only, never to other party members."""
+    __tablename__ = "private_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    player_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # the GM who wrote it
+    title = Column(String(256), default="")
+    content = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Entity(Base):
     __tablename__ = "entities"
 
