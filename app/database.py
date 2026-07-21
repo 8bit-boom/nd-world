@@ -139,36 +139,71 @@ def _seed():
                 is_builtin=True,
                 fields_json="[]",
             ))
-        # Seed built-in Game of Gods (Asterion) sheet template — adds the dice-pool,
-        # Spark Shield/Flesh/Ichor, and Glory/Reputation trackers used by the
-        # Asterion Unified Rulebook on top of the base N&D sheet fields.
-        if not db.query(SheetTemplate).filter(SheetTemplate.slug == "game-of-gods").first():
-            _gog_fields = [
-                {"id": "origin_lineage", "label": "Origin / Lineage", "type": "text", "section": "stats", "default_value": ""},
-                {"id": "divine_spark", "label": "Divine Spark", "type": "text", "section": "stats", "default_value": ""},
-                {"id": "epic_deed_curse", "label": "Epic Deed / Curse", "type": "text", "section": "stats", "default_value": ""},
-                {"id": "role", "label": "Role", "type": "text", "section": "stats", "default_value": ""},
-                {"id": "standard_pool", "label": "Standard Pool", "type": "text", "section": "stats", "default_value": "2d10"},
-                {"id": "domain_pool", "label": "Domain Pool", "type": "text", "section": "stats", "default_value": "3d10"},
-                {"id": "movement", "label": "Movement", "type": "text", "section": "stats", "default_value": "30 ft / 6 hexes"},
-                {"id": "domain_rank", "label": "Domain Rank (0-3)", "type": "number", "section": "stats", "default_value": "0"},
-                {"id": "spark_shield", "label": "Spark Shield", "type": "resource", "section": "resources", "default_value": "3"},
-                {"id": "flesh", "label": "Flesh", "type": "resource", "section": "resources", "default_value": "5"},
-                {"id": "ichor", "label": "Ichor", "type": "resource", "section": "resources", "default_value": "5"},
-                {"id": "glory", "label": "Glory Available (unspent)", "type": "number", "section": "resources", "default_value": "0"},
-                {"id": "reputation", "label": "Reputation", "type": "number", "section": "resources", "default_value": "0"},
-                {"id": "divine_ambition", "label": "Divine Ambition", "type": "textarea", "section": "notes", "default_value": ""},
-                {"id": "abilities", "label": "Abilities (name · type · tier · cost — effect, one per line)", "type": "textarea", "section": "notes", "default_value": ""},
-                {"id": "trade_offs", "label": "Trade-Offs", "type": "textarea", "section": "notes", "default_value": ""},
-            ]
+        # Seed (and keep up to date) the built-in Game of Gods (Asterion) sheet
+        # template — mirrors the sections of the standalone Asterion Character
+        # Sheet (Identity / Core Stats / Abilities / Inventory / Progression /
+        # Campaign Log / Relationships), layered on top of the base N&D sheet
+        # fields (Player Name, Backstory, and Notes are already native columns
+        # there, so they aren't duplicated here).
+        _gog_fields = [
+            # Identity
+            {"id": "origin_lineage", "label": "Origin (Gods) / Lineage (Mythborn)", "type": "text", "section": "1. Identity", "default_value": ""},
+            {"id": "divine_spark", "label": "Divine Spark / Domain", "type": "text", "section": "1. Identity", "default_value": ""},
+            {"id": "character_sentence", "label": "Character Sentence", "type": "text", "section": "1. Identity", "default_value": ""},
+            # Core Stats
+            {"id": "spark_shield", "label": "Spark Shield", "type": "resource", "section": "2. Core Stats", "default_value": "3"},
+            {"id": "flesh", "label": "Flesh", "type": "resource", "section": "2. Core Stats", "default_value": "5"},
+            {"id": "ichor", "label": "Ichor", "type": "resource", "section": "2. Core Stats", "default_value": "5"},
+            {"id": "armor", "label": "Armor", "type": "number", "section": "2. Core Stats", "default_value": "0"},
+            {"id": "attacker_pool", "label": "Attacker Pool", "type": "text", "section": "2. Core Stats", "default_value": "2d10"},
+            {"id": "defender_pool", "label": "Defender Pool", "type": "text", "section": "2. Core Stats", "default_value": "2d10"},
+            {"id": "movement", "label": "Movement", "type": "text", "section": "2. Core Stats", "default_value": "30 ft / 6 hexes"},
+            # Abilities
+            {"id": "origin_ability_name", "label": "Origin/Lineage Ability — Name & Tier/Type", "type": "text", "section": "3. Abilities", "default_value": ""},
+            {"id": "origin_ability_effect", "label": "Origin/Lineage Ability — Effect", "type": "textarea", "section": "3. Abilities", "default_value": ""},
+            {"id": "spark_ability_name", "label": "Spark Ability — Name & Tier/Type", "type": "text", "section": "3. Abilities", "default_value": ""},
+            {"id": "spark_ability_effect", "label": "Spark Ability — Effect", "type": "textarea", "section": "3. Abilities", "default_value": ""},
+            {"id": "deed_ability_name", "label": "Deed/Curse Ability — Name & Tier/Type", "type": "text", "section": "3. Abilities", "default_value": ""},
+            {"id": "deed_ability_effect", "label": "Deed/Curse Ability — Effect", "type": "textarea", "section": "3. Abilities", "default_value": ""},
+            {"id": "additional_abilities", "label": "Additional Abilities (name · tier/type · Ichor cost — effect, one per line)", "type": "textarea", "section": "3. Abilities", "default_value": ""},
+            # Inventory & Equipment
+            {"id": "drachma", "label": "Drachma (Currency)", "type": "number", "section": "4. Inventory & Equipment", "default_value": "0"},
+            {"id": "weapon_equipped", "label": "Weapon Equipped", "type": "text", "section": "4. Inventory & Equipment", "default_value": ""},
+            {"id": "armor_equipped", "label": "Armor Equipped", "type": "text", "section": "4. Inventory & Equipment", "default_value": ""},
+            {"id": "consumables", "label": "Consumables (max 3, one per line)", "type": "textarea", "section": "4. Inventory & Equipment", "default_value": ""},
+            {"id": "artifacts", "label": "Artifacts / Notable Items", "type": "textarea", "section": "4. Inventory & Equipment", "default_value": ""},
+            # Progression
+            {"id": "glory", "label": "Glory (XP) Available", "type": "number", "section": "5. Progression", "default_value": "0"},
+            {"id": "domain_rank", "label": "Domain Rank (0-3)", "type": "number", "section": "5. Progression", "default_value": "0"},
+            {"id": "reputation", "label": "Reputation", "type": "number", "section": "5. Progression", "default_value": "0"},
+            {"id": "titles", "label": "Titles / Reputation Notes", "type": "text", "section": "5. Progression", "default_value": ""},
+            {"id": "milestones", "label": "Milestones Achieved (one per line)", "type": "textarea", "section": "5. Progression", "default_value": ""},
+            # Campaign Log
+            {"id": "session_num", "label": "Current Session #", "type": "text", "section": "6. Campaign Log", "default_value": ""},
+            {"id": "session_log", "label": "Session Notes (one entry per line: Session/Date — Summary)", "type": "textarea", "section": "6. Campaign Log", "default_value": ""},
+            # Relationships
+            {"id": "relationships", "label": "Relationships & Allies (Name — relation/notes, one per line)", "type": "textarea", "section": "7. Relationships", "default_value": ""},
+        ]
+        _gog_tpl = db.query(SheetTemplate).filter(SheetTemplate.slug == "game-of-gods").first()
+        _gog_desc = ("Identity, Core Stats (Spark Shield/Flesh/Ichor/Armor/dice pools), the three starting "
+                     "Abilities plus Additional Abilities, Inventory & Equipment, Progression (Glory/Domain "
+                     "Rank/Reputation), Campaign Log, and Relationships — mirrors the standalone Asterion "
+                     "Character Sheet, layered on top of the base sheet.")
+        if not _gog_tpl:
             db.add(SheetTemplate(
                 world_id=None,
                 name="Game of Gods — Asterion",
                 slug="game-of-gods",
-                description="Dice pools, Spark Shield/Flesh/Ichor, Glory, Reputation, and ability/Trade-Off trackers for the Asterion Unified Rulebook, layered on top of the base sheet.",
+                description=_gog_desc,
                 is_builtin=True,
                 fields_json=json.dumps(_gog_fields),
             ))
+        elif _gog_tpl.is_builtin:
+            # Keep the built-in template's field list current on upgrade; leaves
+            # any already-filled-in custom_fields_json on existing characters
+            # untouched (values are keyed by field id, which stays stable).
+            _gog_tpl.description = _gog_desc
+            _gog_tpl.fields_json = json.dumps(_gog_fields)
         db.commit()
 
         # Bootstrap the GM account from env vars if no GM account exists yet.
