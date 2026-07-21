@@ -1,3 +1,4 @@
+import json
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -137,6 +138,36 @@ def _seed():
                 description="Standard N&D character sheet: 8 stats, HP/Shock/PP/MP, edges, cyberware, conditions, feats.",
                 is_builtin=True,
                 fields_json="[]",
+            ))
+        # Seed built-in Game of Gods (Asterion) sheet template — adds the dice-pool,
+        # Spark Shield/Flesh/Ichor, and Glory/Reputation trackers used by the
+        # Asterion Unified Rulebook on top of the base N&D sheet fields.
+        if not db.query(SheetTemplate).filter(SheetTemplate.slug == "game-of-gods").first():
+            _gog_fields = [
+                {"id": "origin_lineage", "label": "Origin / Lineage", "type": "text", "section": "stats", "default_value": ""},
+                {"id": "divine_spark", "label": "Divine Spark", "type": "text", "section": "stats", "default_value": ""},
+                {"id": "epic_deed_curse", "label": "Epic Deed / Curse", "type": "text", "section": "stats", "default_value": ""},
+                {"id": "role", "label": "Role", "type": "text", "section": "stats", "default_value": ""},
+                {"id": "standard_pool", "label": "Standard Pool", "type": "text", "section": "stats", "default_value": "2d10"},
+                {"id": "domain_pool", "label": "Domain Pool", "type": "text", "section": "stats", "default_value": "3d10"},
+                {"id": "movement", "label": "Movement", "type": "text", "section": "stats", "default_value": "30 ft / 6 hexes"},
+                {"id": "domain_rank", "label": "Domain Rank (0-3)", "type": "number", "section": "stats", "default_value": "0"},
+                {"id": "spark_shield", "label": "Spark Shield", "type": "resource", "section": "resources", "default_value": "3"},
+                {"id": "flesh", "label": "Flesh", "type": "resource", "section": "resources", "default_value": "5"},
+                {"id": "ichor", "label": "Ichor", "type": "resource", "section": "resources", "default_value": "5"},
+                {"id": "glory", "label": "Glory Available (unspent)", "type": "number", "section": "resources", "default_value": "0"},
+                {"id": "reputation", "label": "Reputation", "type": "number", "section": "resources", "default_value": "0"},
+                {"id": "divine_ambition", "label": "Divine Ambition", "type": "textarea", "section": "notes", "default_value": ""},
+                {"id": "abilities", "label": "Abilities (name · type · tier · cost — effect, one per line)", "type": "textarea", "section": "notes", "default_value": ""},
+                {"id": "trade_offs", "label": "Trade-Offs", "type": "textarea", "section": "notes", "default_value": ""},
+            ]
+            db.add(SheetTemplate(
+                world_id=None,
+                name="Game of Gods — Asterion",
+                slug="game-of-gods",
+                description="Dice pools, Spark Shield/Flesh/Ichor, Glory, Reputation, and ability/Trade-Off trackers for the Asterion Unified Rulebook, layered on top of the base sheet.",
+                is_builtin=True,
+                fields_json=json.dumps(_gog_fields),
             ))
         db.commit()
 
