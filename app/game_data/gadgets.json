@@ -1,0 +1,350 @@
+[
+  {
+    "id": "ar_glasses",
+    "name": "AR Glasses",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Allows you to see augmented reality, useful for hackers.\n* **Cost**: 550\n* **Difficulty to craft**: 9\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/ar-glasses_7499113.md",
+    "bonuses": {}
+  },
+  {
+    "id": "binoculars",
+    "name": "Binoculars",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: It's binoculars\n* **Cost**: 150\n* **Difficulty to craft**: 6\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/binoculars_7499100.md",
+    "bonuses": {}
+  },
+  {
+    "id": "blocker",
+    "name": "Blocker",
+    "type": "",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: Blocks listening devices and other bugs.\n* **Cost**: 1000\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/blocker_7499164.md",
+    "bonuses": {}
+  },
+  {
+    "id": "camera",
+    "name": "Camera",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Camera\n* **Cost**: 400\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/camera_7499152.md",
+    "bonuses": {}
+  },
+  {
+    "id": "compact_shield",
+    "name": "Compact Shield",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: When activated it takes physical damage instead of you, and has 5 Health. Action\n* **Cost**: 700\n* **Difficulty to craft**: 9\n* **Special conditions**: Can be concealed."
+    },
+    "filepath": "equipment/items/gadgets/compact-shield_7524139.md",
+    "bonuses": {}
+  },
+  {
+    "id": "digital_eyes",
+    "name": "Digital Eyes",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: You can put digital eyes retina on those lenses. Lasts 8 hours. Action.\n* **Cost**: 700\n* **Difficulty to craft**: 9\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/digital-eyes_7541170.md",
+    "bonuses": {}
+  },
+  {
+    "id": "digital_fingerprints",
+    "name": "Digital Fingerprints",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: You can put digital fingerprints on those lenses. Lasts for 8 hours. Action.\n* **Cost**: 650\n* **Difficulty to craft**: 9\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/digital-fingerprints_7541165.md",
+    "bonuses": {}
+  },
+  {
+    "id": "explosive_glasses",
+    "name": "Explosive Glasses",
+    "type": "",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: Can be blown up for 1d6+2 damage. Action.\n* **Cost**: 600\n* **Difficulty to craft**: 8\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/explosive-glasses_7524327.md",
+    "bonuses": {}
+  },
+  {
+    "id": "grapple_gun",
+    "name": "Grapple Gun",
+    "type": "Tools",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: Can be used to traverse vertical surfaces\n* **Cost**: 400\n* **Difficulty to craft**: 7\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/grapple-gun_7019143.md",
+    "bonuses": {}
+  },
+  {
+    "id": "holo_disk",
+    "name": "Holo Disk",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Creates holographic image that distracts enemies.\n* **Cost**: 700\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/holo-disk_7499183.md",
+    "bonuses": {}
+  },
+  {
+    "id": "holo_mask",
+    "name": "Holo Mask",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Mask yourself as somebody else. Lasts 1 hour. Enemies roll Perception vs difficulty 10. \n* **Cost**: 650\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/holo-mask_7499204.md",
+    "bonuses": {}
+  },
+  {
+    "id": "listening_device",
+    "name": "Listening device",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Device used to spy and listen on conversations. \n* **Cost**: 700\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/listening-device_7499162.md",
+    "bonuses": {}
+  },
+  {
+    "id": "mine",
+    "name": "Mine",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: This mine burrows down. Deals 1d8+4 damage. Action.\n* **Cost**: 600\n* **Difficulty to craft**: 8\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/mine_7524371.md",
+    "bonuses": {}
+  },
+  {
+    "id": "mithril_laced_shield",
+    "name": "Mithril Laced Shield",
+    "type": "",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: When activated, it takes damage from physical attacks and has 30 Health. Heals 2 Health each turn. Action. \n* **Cost**: 5000\n* **Difficulty to craft**: 13\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/mithril-laced-shield_7541215.md",
+    "bonuses": {}
+  },
+  {
+    "id": "mounted_turret",
+    "name": "Mounted Turret",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Has 20 Health and deals 1d6+3 damage.\n* **Cost**: 1250\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/mounted-turret_7499155.md",
+    "bonuses": {}
+  },
+  {
+    "id": "neuroflash",
+    "name": "NeuroFLASH",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Contains memories, can be connected to tech.\n* **Cost**: 800\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/neuroflash_7499179.md",
+    "bonuses": {}
+  },
+  {
+    "id": "night_vision_goggles",
+    "name": "Night Vision Goggles",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Lets you see in the dark.\n* **Cost**: 450\n* **Difficulty to craft**: 9\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/night-vision-goggles_7499109.md",
+    "bonuses": {}
+  },
+  {
+    "id": "police_shield",
+    "name": "Police Shield",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: When activated it takes damage from physical attacks, and has 10 Health. Action.\n* **Cost**: 800\n* **Difficulty to craft**: 10\n* **Special conditions**: It takes one hand to wield it."
+    },
+    "filepath": "equipment/items/gadgets/police-shield_7524127.md",
+    "bonuses": {}
+  },
+  {
+    "id": "taser",
+    "name": "Taser",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Deals 1d4+2 damage, short range.\n* **Cost**: 200\n* **Difficulty to craft**: 6\n* **Special conditions**: Has 3 shots, reload takes 5 minutes."
+    },
+    "filepath": "equipment/items/gadgets/taser_7534305.md",
+    "bonuses": {}
+  },
+  {
+    "id": "void_scanner",
+    "name": "Void Scanner",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Used to scan about everything from QR codes to retinas and fingerprints \n* **Cost**: 1200\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/void-scanner_7541198.md",
+    "bonuses": {}
+  },
+  {
+    "id": "x_ray_goggles",
+    "name": "X-ray Goggles",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: You can see through wall with thickness up to 20 cm.\n* **Cost**: 750\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/gadgets/x-ray-goggles_7499147.md",
+    "bonuses": {}
+  },
+  {
+    "id": "dasmius_grenade",
+    "name": "Dasmius Grenade",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Disables Psy Powers for 1d4+1 rounds. \n* **Cost**: 1500\n* **Difficulty to craft**: 13\n* **Special conditions**: Restricted"
+    },
+    "filepath": "equipment/items/grenades/dasmius-grenade_7499086.md",
+    "bonuses": {}
+  },
+  {
+    "id": "emp_grenade",
+    "name": "EMP Grenade",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Deal 1d6+1 Shock damage, also disables augments and tech for 1d4+1 rounds.\n* **Cost**: 1000\n* **Difficulty to craft**: 12\n* **Special conditions**: Restricted"
+    },
+    "filepath": "equipment/items/grenades/emp-grenade_7499083.md",
+    "bonuses": {}
+  },
+  {
+    "id": "explosives",
+    "name": "Explosives",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Deal heavy structure damage in very long range. Deals 1d20+5 damage to characters. \n* **Cost**: 3000\n* **Difficulty to craft**: 12\n* **Special conditions**: Restricted"
+    },
+    "filepath": "equipment/items/grenades/explosives_7499098.md",
+    "bonuses": {}
+  },
+  {
+    "id": "fire_grenade",
+    "name": "Fire Grenade",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Deals 1d8+1 fire damage to enemies in Zone, must roll Body vs difficulty 10; on a failure, gain the Burn condition.\n* **Cost**: 400\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/grenades/fire-grenade_7499078.md",
+    "bonuses": {}
+  },
+  {
+    "id": "flashbang_grenade",
+    "name": "Flashbang Grenade",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Deals 1d4+1 Shock damage and adds -1 penalty to hit and dodge rolls for 1d4 rounds.\n* **Cost**: 500\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/grenades/flashbang-grenade_7499087.md",
+    "bonuses": {}
+  },
+  {
+    "id": "land_mine",
+    "name": "Land Mine",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Deals 1d8+4 damage that ignores 2 points of armor. Deals damage to everyone in current Zone. On roll of 12 for Dexterity, deals only half damage rounded down.\n* **Cost**: 800\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/grenades/land-mine_7637754.md",
+    "bonuses": {}
+  },
+  {
+    "id": "plasma_grenade",
+    "name": "Plasma Grenade",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Deal 1d8+4 damage that ignores armor\n* **Cost**: 1200\n* **Difficulty to craft**: 13\n* **Special conditions**: Restricted"
+    },
+    "filepath": "equipment/items/grenades/plasma-grenade_7499080.md",
+    "bonuses": {}
+  },
+  {
+    "id": "shrapnel_grenade",
+    "name": "Shrapnel Grenade",
+    "type": "Grenade",
+    "tags": "",
+    "description": "\\*\\*Effect\\*\\* = deals 1d6+2 damage to primary target and targets in immediate range  \n\\*\\*Cost\\*\\* =  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\n---",
+    "sections": {
+      "Attributes": "* **Effect**: Deals 1d6+2 damage to primary target and targets in immediate range\n* **Cost**: 200\n* **Difficulty to craft**: 7\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/grenades/shrapnel-grenade_7019144.md",
+    "bonuses": {}
+  }
+]

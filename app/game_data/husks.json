@@ -1,0 +1,80 @@
+[
+  {
+    "id": "auto_tank_baddy",
+    "name": "Auto Tank \"Baddy\"",
+    "strength": 7,
+    "body": 7,
+    "dexterity": 3,
+    "perception": 6,
+    "armor": 5,
+    "augmentSlots": 10,
+    "specialConditions": "Can't use Arms augments.\nHas a long-range attack dealing 1d10+4 damage to target and everyone in immediate range of target. Roll Perception vs difficulty. Action",
+    "cost": 33000,
+    "craftDifficulty": 15
+  },
+  {
+    "id": "bodyguard_barny",
+    "name": "Bodyguard \"Barny\"",
+    "strength": 5,
+    "body": 4,
+    "dexterity": 3,
+    "perception": 5,
+    "armor": 3,
+    "augmentSlots": 8,
+    "specialConditions": "",
+    "cost": 9500,
+    "craftDifficulty": 12
+  },
+  {
+    "id": "dog_doggy",
+    "name": "Dog \"Doggy\"",
+    "strength": 3,
+    "body": 4,
+    "dexterity": 2,
+    "perception": 3,
+    "armor": 1,
+    "augmentSlots": 2,
+    "specialConditions": "Can't use Arms augments. Has Speed +3 bonus. Can move to adjacent Zone using Reaction.",
+    "cost": 2400,
+    "craftDifficulty": 10
+  },
+  {
+    "id": "drone_firefly",
+    "name": "Drone \"Firefly\"",
+    "strength": 2,
+    "body": 3,
+    "dexterity": 4,
+    "perception": 6,
+    "armor": 2,
+    "augmentSlots": 6,
+    "specialConditions": "Can't use Arms and Legs augments. Has a +4 Speed bonus. Can fly.",
+    "cost": 11000,
+    "craftDifficulty": 12
+  },
+  {
+    "id": "experimental_police_unit_lawkeeper",
+    "name": "Experimental Police Unit \"Lawkeeper\"",
+    "strength": 6,
+    "body": 5,
+    "dexterity": 5,
+    "perception": 7,
+    "armor": 4,
+    "augmentSlots": 10,
+    "specialConditions": "You have bonus +1 to intimidate lawbreakers.",
+    "cost": 16500,
+    "craftDifficulty": 13
+  },
+  {
+    "id": "servant_alfred",
+    "name": "Servant \"Alfred\"",
+    "strength": 4,
+    "body": 3,
+    "dexterity": 3,
+    "perception": 5,
+    "armor": 2,
+    "augmentSlots": 4,
+    "specialConditions": "",
+    "cost": 6800,
+    "craftDifficulty": 12
+  }
+]

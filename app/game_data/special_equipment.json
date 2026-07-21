@@ -1,0 +1,102 @@
+[
+  {
+    "id": "crimson_tree",
+    "name": "Crimson Tree",
+    "type": "",
+    "tags": "",
+    "description": "It is very durable and fireproof, and its leaves have a powerful hallucinogenic effect. Hard to grow.\n\n---",
+    "sections": {},
+    "filepath": "equipment/oddities/crimson-tree_6993279.md",
+    "bonuses": {}
+  },
+  {
+    "id": "tatters_of_the_king",
+    "name": "Tatters of The King",
+    "type": "",
+    "tags": "",
+    "description": "Divine tatter of [The King In Yellow](characters/the-king-in-yellow_7659564).\n\n---",
+    "sections": {},
+    "filepath": "equipment/oddities/tatters-of-the-king_7961016.md",
+    "bonuses": {}
+  },
+  {
+    "id": "the_yellow",
+    "name": "The Yellow",
+    "type": "",
+    "tags": "",
+    "description": "The [Yellow](https://d3a4xjr8r2ldhu.cloudfront.net/w/230046/cQesNbGoAV6FMmq9ti9o27Z8dtoSamKfoIpHKxEE.gif) - liquid of yellow color or color of yellow liquid, only known substance that poses real danger to Dragons. It consumes them alive, weakens their immune system and stops regeneration. Harmless to anything else.\n\n---",
+    "sections": {},
+    "filepath": "equipment/oddities/the-yellow_6993278.md",
+    "bonuses": {}
+  },
+  {
+    "id": "adamantite",
+    "name": "Adamantite",
+    "type": "Ore",
+    "tags": "",
+    "description": "Very sharp metal, can cut almost through anything.\n\n---",
+    "sections": {},
+    "filepath": "equipment/metals/adamantite_6989098.md",
+    "bonuses": {}
+  },
+  {
+    "id": "cyberdex",
+    "name": "Cyberdex",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {},
+    "filepath": "equipment/metals/cyberdex_6993430.md",
+    "bonuses": {}
+  },
+  {
+    "id": "dirium",
+    "name": "Dirium",
+    "type": "Ore",
+    "tags": "",
+    "description": "Dirium - crystals with ability to amplify psyonic powers. Addictive. Rare and illegal.\n\n---",
+    "sections": {},
+    "filepath": "equipment/metals/dirium_6989105.md",
+    "bonuses": {}
+  },
+  {
+    "id": "mithril",
+    "name": "Mithril",
+    "type": "Ore",
+    "tags": "",
+    "description": "Durable metal, can stop Adamantite blade.\n\n---",
+    "sections": {},
+    "filepath": "equipment/metals/mithril_6989102.md",
+    "bonuses": {}
+  },
+  {
+    "id": "orichalcum",
+    "name": "Orichalcum",
+    "type": "Ore",
+    "tags": "",
+    "description": "Exotic metal, very durable and rare. All around best metal. Used in nukes.\n\n---",
+    "sections": {},
+    "filepath": "equipment/metals/orichalcum_6989094.md",
+    "bonuses": {}
+  },
+  {
+    "id": "s75m",
+    "name": "S75MA",
+    "type": "",
+    "tags": "",
+    "description": "High end military steel. Used in high end weapons, augs, machines and so on.\n\nHardness: Edge-phase 68–70 HRC equivalent, bulk spine ~64–66 HRC for impact safety.\n\nEdge retention: Outperforms legacy “super steels” by a full class; where they dull, MITHRIL-ADAMANTITE™ is still in working edge territory.\n\nToughness: Mithril-stabilized lattice gives tool-steel-level toughness despite the hardness, staying in the same use class as high-end cold work steels designed for abusive cutting.\n\nCorrosion behavior: Functionally near-stainless in urban atmospheres and body fluids; maintenance is measured in months of field use, not days, better than corrosion-resistant vanadium steels.\n\nCutting behavior: The adamantite-enriched edge forms ultra-hard nano-carbides, so the blade bites into other metals the way old steels bit into cardboard; it keeps a “working sharp” edge through thousands of abrasive cuts where normal steels are dead.\n\nEdge stability: At sane edge angles, it resists rolling and denting under lateral loads better than conventional ultra-hard steels, so you get both thin, aggressive geometry and survivable impact performance.\n\nField maintenance: Conventional abrasives skate; you need diamond or factory nano-hone rigs, like existing high-vanadium steels but worse—users trade easy sharpening for almost never needing to sharpen at all.\n\n    Carbon: 2.3%\n\n    Chromium: 14.5%\n\n    Vanadium: 8.5%\n\n    Niobium: 2.5%\n\n    Molybdenum: 1.2%\n\n    Cobalt: 2.0%\n\n    Tungsten: 1.0%\n\n    Mithril: 1.0%\n\n    Adamantite: 0.8%\n\n---",
+    "sections": {},
+    "filepath": "equipment/metals/s75m_7541236.md",
+    "bonuses": {}
+  },
+  {
+    "id": "yellow_ore",
+    "name": "Yellow ore",
+    "type": "Ore",
+    "tags": "",
+    "description": "Liquid ore that can be forced to take any form by will.\n\n---",
+    "sections": {},
+    "filepath": "equipment/metals/yellow-ore_6989104.md",
+    "bonuses": {}
+  }
+]

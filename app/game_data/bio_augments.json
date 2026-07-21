@@ -1,0 +1,38 @@
+[
+  {
+    "id": "alpha_bio",
+    "name": "Alpha (Bio)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 2  \n\\*\\*Number of feats\\*\\* = 6  \n\\*\\*Cost\\*\\* = 10000  \n\\*\\*Difficulty to craft\\*\\* = 12  \n\\*\\*Special conditions\\*\\*\n\nYou gain +1 to Health and Shock. You can transfer up to 3 points between Health and Shock once per combat.\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 2\n* **Number of feats**: 6\n* **Cost**: 15000\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/bio augmentation/alpha-bio_6993443.md",
+    "bonuses": {}
+  },
+  {
+    "id": "beta_bio",
+    "name": "Beta (Bio)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 4  \n\\*\\*Number of feats\\*\\* = 12  \n\\*\\*Cost\\*\\* = 15000  \n\\*\\*Difficulty to craft\\*\\* = 14  \n\\*\\*Special conditions\\*\\*\n\nYou gain +2 to Health and Shock. You can transfer up to 5 points between Health and Shock once per combat.\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 4\n* **Number of feats**: 12\n* **Cost**: 30000\n* **Difficulty to craft**: 15\n* **Special conditions**:"
+    },
+    "filepath": "equipment/bio augmentation/beta-bio_6993450.md",
+    "bonuses": {}
+  },
+  {
+    "id": "lambda_bio",
+    "name": "Lambda (Bio)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 6  \n\\*\\*Number of feats\\*\\* = 18  \n\\*\\*Cost\\*\\* = 20000  \n\\*\\*Difficulty to craft\\*\\* = 16  \n\\*\\*Special conditions\\*\\*\n\nYou gain +3 to Health and Shock. You can transfer up to 5 points between Health and Shock once per combat. Also you can transfer up to 4 points between PP and MP once per combat.\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 6\n* **Number of feats**: 18\n* **Cost**: 45000\n* **Difficulty to craft**: 18\n* **Special conditions**:"
+    },
+    "filepath": "equipment/bio augmentation/lambda-bio_6993458.md",
+    "bonuses": {}
+  }
+]

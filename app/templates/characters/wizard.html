@@ -1,0 +1,714 @@
+{% extends "base.html" %}
+{% block title %}New Character — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<style>
+.wiz { max-width:960px; margin:0 auto; }
+.wiz-progress { display:flex; gap:.4rem; margin-bottom:1.2rem; flex-wrap:wrap; }
+.wiz-progress-step { flex:1; min-width:80px; text-align:center; font-size:.65rem; text-transform:uppercase;
+  letter-spacing:.06em; color:var(--text-dim); padding:.4rem .3rem; border-bottom:2px solid var(--border); }
+.wiz-progress-step.active { color:var(--neon); border-color:var(--neon); }
+.wiz-progress-step.done { color:var(--neon3); border-color:var(--neon3); }
+.wiz-step { display:none; }
+.wiz-step.active { display:block; }
+.wiz-panel { background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:1.2rem; margin-bottom:1rem; }
+.wiz-title { font-size:.75rem; text-transform:uppercase; letter-spacing:.08em; color:var(--neon); margin-bottom:.9rem;
+  border-bottom:1px solid var(--border); padding-bottom:.4rem; }
+.wiz-nav { display:flex; justify-content:space-between; align-items:center; gap:.75rem; }
+.wiz-nav .spacer { flex:1; }
+.wiz-warn { color:var(--neon2); font-size:.78rem; margin-top:.5rem; }
+.wiz-ok { color:var(--neon3); font-size:.78rem; margin-top:.5rem; }
+
+.wiz-cardgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:.6rem; }
+.wiz-card { background:var(--bg3); border:1px solid var(--border); border-radius:6px; padding:.6rem .75rem; cursor:pointer; }
+.wiz-card:hover { border-color:var(--neon); }
+.wiz-card.selected { border-color:var(--neon); box-shadow:0 0 0 1px var(--neon) inset; }
+.wiz-card-name { font-weight:bold; color:var(--text); font-size:.9rem; }
+.wiz-card-sub { font-size:.68rem; color:var(--text-dim); text-transform:uppercase; margin-top:.15rem; }
+.wiz-tier-label { font-size:.7rem; text-transform:uppercase; color:var(--text-dim); margin:.8rem 0 .4rem; letter-spacing:.06em; }
+.wiz-tier-label:first-child { margin-top:0; }
+.wiz-desc-box { background:var(--bg3); border:1px solid var(--border); border-radius:6px; padding:.75rem; margin-top:.8rem;
+  font-size:.82rem; color:var(--text-dim); max-height:220px; overflow-y:auto; white-space:pre-wrap; }
+
+.wiz-field { display:flex; flex-direction:column; gap:.25rem; margin-bottom:.6rem; }
+.wiz-field label { font-size:.7rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; }
+.wiz-field input, .wiz-field select { background:var(--bg3); border:1px solid var(--border); color:var(--text);
+  padding:.4rem .6rem; border-radius:4px; font-family:var(--font); font-size:.9rem; width:100%; box-sizing:border-box; }
+.wiz-portrait-preview { width:90px; height:90px; border-radius:6px; border:2px solid var(--border); object-fit:cover; display:block; margin-top:.4rem; }
+
+.wiz-split-opts { display:flex; gap:.6rem; flex-wrap:wrap; margin-bottom:.9rem; }
+.wiz-split-opt { background:var(--bg3); border:1px solid var(--border); border-radius:5px; padding:.4rem .8rem;
+  cursor:pointer; font-size:.82rem; }
+.wiz-split-opt.selected { border-color:var(--neon); color:var(--neon); }
+.wiz-stats-dual { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
+.wiz-stats-group { background:var(--bg3); border:1px solid var(--border); border-radius:6px; padding:.6rem; }
+.wiz-stats-group-title { font-size:.65rem; text-transform:uppercase; letter-spacing:.08em; color:var(--text-dim); margin-bottom:.5rem; }
+.wiz-stat-row { display:flex; align-items:center; gap:.5rem; margin-bottom:.35rem; }
+.wiz-stat-row label { font-size:.78rem; flex:1; }
+.wiz-stat-row .stat-total-disp { font-size:.72rem; color:var(--text-dim); width:56px; text-align:right; }
+.wiz-stat-row button { width:26px; height:26px; background:var(--bg2); border:1px solid var(--border); color:var(--neon);
+  border-radius:4px; cursor:pointer; font-family:var(--font); }
+.wiz-points-remain { font-size:.85rem; font-weight:bold; margin:.6rem 0; }
+.wiz-derived-preview { background:var(--bg3); border:1px solid var(--border); border-radius:5px; padding:.5rem .75rem;
+  font-size:.8rem; color:var(--text-dim); margin-top:.6rem; }
+.wiz-derived-preview strong { color:var(--neon); }
+
+.wiz-feat-slot { margin-bottom:.9rem; }
+.wiz-feat-slot-label { font-size:.75rem; color:var(--text-dim); margin-bottom:.3rem; }
+.wiz-feat-picked { color:var(--neon); font-size:.85rem; margin-bottom:.3rem; }
+.wiz-feat-list { max-height:220px; overflow-y:auto; border:1px solid var(--border); border-radius:5px; }
+.wiz-feat-opt { padding:.4rem .6rem; font-size:.82rem; cursor:pointer; border-bottom:1px solid var(--border); }
+.wiz-feat-opt:last-child { border-bottom:none; }
+.wiz-feat-opt:hover { background:var(--bg3); }
+.wiz-feat-opt.selected { background:var(--bg3); color:var(--neon); }
+.wiz-auto-feats { font-size:.78rem; color:var(--text-dim); margin-top:.6rem; line-height:1.5; }
+
+.wiz-equip-tabs { display:flex; gap:.4rem; flex-wrap:wrap; margin-bottom:.6rem; }
+.wiz-equip-tab { background:var(--bg3); border:1px solid var(--border); border-radius:4px; padding:.3rem .7rem;
+  cursor:pointer; font-size:.75rem; text-transform:uppercase; }
+.wiz-equip-tab.active { border-color:var(--neon); color:var(--neon); }
+.wiz-equip-search { margin-bottom:.6rem; }
+.wiz-equip-list { max-height:300px; overflow-y:auto; }
+.wiz-equip-row { display:flex; align-items:center; gap:.6rem; padding:.4rem .5rem; border-bottom:1px solid var(--border); font-size:.82rem; }
+.wiz-equip-row .name { flex:1; }
+.wiz-equip-row .cost { color:var(--text-dim); width:70px; text-align:right; }
+.wiz-equip-row.owned { background:var(--bg3); }
+.wiz-equip-row button { background:transparent; border:1px solid var(--border); color:var(--text-dim); border-radius:4px;
+  padding:.2rem .6rem; cursor:pointer; font-family:var(--font); font-size:.75rem; }
+.wiz-equip-row.owned button { border-color:var(--neon); color:var(--neon); }
+.wiz-budget { font-size:.9rem; font-weight:bold; margin-bottom:.6rem; }
+
+@media (max-width:640px) { .wiz-stats-dual { grid-template-columns:1fr; } }
+</style>
+
+<div class="wiz">
+  <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem;">
+    <a href="/characters" style="color:var(--text-dim);font-size:.85rem;">←</a>
+    <h1 style="color:var(--neon);font-size:1.3rem;">New Character</h1>
+  </div>
+
+  <div class="wiz-progress" id="wiz-progress"></div>
+
+  <form method="post" action="/characters/new" enctype="multipart/form-data" id="wiz-form">
+    <input type="hidden" name="sheet_template_id" value="{{ chosen_template.id if chosen_template else '' }}">
+    <input type="hidden" name="race" id="f_race">
+    <input type="hidden" name="race_id" id="f_race_id">
+    <input type="hidden" name="char_class" id="f_char_class">
+    <input type="hidden" name="profession_id" id="f_profession_id">
+    <input type="hidden" name="level" value="1">
+    <input type="hidden" name="xp" value="0">
+    <input type="hidden" name="stats_json" id="f_stats_json">
+    <input type="hidden" name="feats_json" id="f_feats_json">
+    <input type="hidden" name="equipment_json" id="f_equipment_json">
+    <input type="hidden" name="currency_json" id="f_currency_json">
+    <input type="hidden" name="minor_edge_count" id="f_minor_edge_count" value="0">
+    <input type="hidden" name="major_edge_count" id="f_major_edge_count" value="0">
+    <input type="hidden" name="minor_edge" id="f_minor_edge" value="">
+    <input type="hidden" name="major_edge" id="f_major_edge" value="">
+    <input type="hidden" name="max_hp" value="0">
+    <input type="hidden" name="current_hp" id="f_current_hp">
+    <input type="hidden" name="shock_max" value="0">
+    <input type="hidden" name="shock_current" id="f_shock_current">
+    <input type="hidden" name="pp_current" id="f_pp_current">
+    <input type="hidden" name="mp_current" id="f_mp_current">
+    <input type="hidden" name="custom_fields_json" value="{}">
+
+    <!-- Step 0: Name -->
+    <div class="wiz-step active" data-step="0">
+      <div class="wiz-panel">
+        <div class="wiz-title">Identity</div>
+        <div class="wiz-field">
+          <label>Character Name *</label>
+          <input type="text" id="in_name" placeholder="Name">
+        </div>
+        <div class="wiz-field">
+          <label>Player Name</label>
+          <input type="text" id="in_player_name" placeholder="Your name">
+        </div>
+        <div class="wiz-field">
+          <label>Portrait Image</label>
+          <img class="wiz-portrait-preview" id="portrait-preview" style="display:none;">
+          <input type="file" name="portrait" accept="image/*" onchange="previewPortrait(this)">
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 1: Race -->
+    <div class="wiz-step" data-step="1">
+      <div class="wiz-panel">
+        <div class="wiz-title">Race</div>
+        <div id="race-cards">Loading catalog…</div>
+        <div id="race-desc" class="wiz-desc-box" style="display:none"></div>
+        <div id="base-race-section" style="display:none; margin-top:1rem;">
+          <div class="wiz-tier-label">Base Race (Consumed by Yellow)</div>
+          <div id="base-race-cards" class="wiz-cardgrid"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 2: Profession -->
+    <div class="wiz-step" data-step="2">
+      <div class="wiz-panel">
+        <div class="wiz-title">Profession</div>
+        <div id="prof-cards" class="wiz-cardgrid"></div>
+        <div id="prof-desc" class="wiz-desc-box" style="display:none"></div>
+      </div>
+    </div>
+
+    <!-- Step 3: Stats -->
+    <div class="wiz-step" data-step="3">
+      <div class="wiz-panel">
+        <div class="wiz-title">Attributes / Stats</div>
+        <div id="split-opts" class="wiz-split-opts"></div>
+        <div class="wiz-points-remain" id="points-remain"></div>
+        <div class="wiz-stats-dual">
+          <div class="wiz-stats-group">
+            <div class="wiz-stats-group-title">Physical</div>
+            <div id="phys-stats"></div>
+          </div>
+          <div class="wiz-stats-group">
+            <div class="wiz-stats-group-title">Mental</div>
+            <div id="ment-stats"></div>
+          </div>
+        </div>
+        <div class="wiz-derived-preview" id="derived-preview"></div>
+      </div>
+    </div>
+
+    <!-- Step 4: Feats -->
+    <div class="wiz-step" data-step="4">
+      <div class="wiz-panel">
+        <div class="wiz-title">Feats</div>
+        <div class="wiz-feat-slot">
+          <div class="wiz-feat-slot-label">Race Feat (Rank 1) *</div>
+          <div class="wiz-feat-picked" id="race-feat-picked">(none selected)</div>
+          <div class="wiz-feat-list" id="race-feat-list"></div>
+        </div>
+        <div class="wiz-feat-slot">
+          <div class="wiz-feat-slot-label">Profession Feat (Rank 1) *</div>
+          <div class="wiz-feat-picked" id="prof-feat-picked">(none selected)</div>
+          <div class="wiz-feat-list" id="prof-feat-list"></div>
+        </div>
+        <div class="wiz-feat-slot">
+          <div class="wiz-feat-slot-label">Common Feat (Rank 1 or Origin) *</div>
+          <div class="wiz-feat-picked" id="common-feat-picked">(none selected)</div>
+          <div class="wiz-feat-list" id="common-feat-list"></div>
+        </div>
+        <div id="free-feat-slots"></div>
+        <div class="wiz-feat-slot" id="psyonic-feat-slot" style="display:none">
+          <div class="wiz-feat-slot-label">Psyonic Initial Powers — pick 4 (Rank 0) *</div>
+          <div class="wiz-feat-picked" id="psyonic-feat-picked">0 / 4 selected</div>
+          <div class="wiz-feat-list" id="psyonic-feat-list"></div>
+        </div>
+        <div class="wiz-auto-feats" id="auto-feats-info"></div>
+      </div>
+    </div>
+
+    <!-- Step 5: Equipment -->
+    <div class="wiz-step" data-step="5">
+      <div class="wiz-panel">
+        <div class="wiz-title">Equipment</div>
+        <div class="wiz-budget" id="budget-display"></div>
+        <div class="wiz-equip-tabs" id="equip-tabs"></div>
+        <input type="text" class="wiz-equip-search" id="equip-search" placeholder="Search…"
+               style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;border-radius:4px;font-family:var(--font);width:100%;box-sizing:border-box;">
+        <div class="wiz-equip-list" id="equip-list"></div>
+      </div>
+    </div>
+
+    <div class="wiz-nav">
+      <button type="button" class="btn-primary" id="wiz-prev" onclick="wizPrev()" style="display:none">← Previous</button>
+      <div class="spacer"></div>
+      <a href="/characters" style="color:var(--text-dim);">Cancel</a>
+      <button type="button" class="btn-primary" id="wiz-next" onclick="wizNext()">Next →</button>
+      <button type="submit" class="btn-primary" id="wiz-submit" style="display:none">Create Character</button>
+    </div>
+  </form>
+</div>
+
+<script>
+const WIZ_STEPS = ["Name", "Race", "Profession", "Stats", "Feats", "Equipment"];
+const STAT_MAX_BASE = 7, STAT_MAX_TOTAL = 10;
+const ELDRITCH_STAT_MAX_BASE = 8, ELDRITCH_STAT_MAX_TOTAL = 12;
+const STATS_DEF = [
+  {id:'str', label:'Strength',   abbr:'STR', group:'phys'},
+  {id:'dex', label:'Dexterity',  abbr:'DEX', group:'phys'},
+  {id:'bod', label:'Body',       abbr:'BOD', group:'phys'},
+  {id:'per', label:'Perception', abbr:'PER', group:'phys'},
+  {id:'wil', label:'Willpower',  abbr:'WIL', group:'ment'},
+  {id:'int', label:'Intellect',  abbr:'INT', group:'ment'},
+  {id:'cha', label:'Charisma',   abbr:'CHA', group:'ment'},
+  {id:'itu', label:'Intuition',  abbr:'ITU', group:'ment'},
+];
+const EQUIP_TABS = [
+  ['weapons','Weapons'], ['armor','Armor'], ['augments','Augments'], ['bio_augments','Bio Augments'],
+  ['drones','Drones'], ['vehicles','Vehicles'], ['consumables','Consumables'], ['programs','Programs'],
+  ['gadgets','Gadgets'], ['special_equipment','Special'], ['bases','Bases'], ['husks','Husks'],
+];
+
+let CATALOG = null;
+let step = 0;
+let sel = {
+  race: null, baseRace: null, profession: null,
+  splitIdx: 1, statPoints: {}, // points ALLOCATED on top of baseline
+  raceFeat: null, profFeat: null, commonFeat: null, freeFeats: [], psyPowers: [],
+  equipment: [], // list of catalog ids
+  equipTab: 'weapons',
+};
+STATS_DEF.forEach(s => sel.statPoints[s.id] = 0);
+
+function normalizeId(s) { return (s||'').toLowerCase().replace(/_/g,'').replace(/ /g,'').replace(/\//g,''); }
+function matchesAssociation(fullId, associated) {
+  if (!associated) return false;
+  let nf = normalizeId(fullId), na = normalizeId(associated);
+  if (nf.includes(na)) return true;
+  let nfOrc = nf.replace(/orks/g,'orc').replace(/ork/g,'orc');
+  let naOrc = na.replace(/orks/g,'orc').replace(/ork/g,'orc');
+  if (nfOrc.includes(naOrc)) return true;
+  if (!nf.includes('ork') && !nf.includes('drow')) {
+    let nfElf = nf.replace(/elves/g,'elf'), naElf = na.replace(/elves/g,'elf');
+    if (nfElf.includes(naElf)) return true;
+  }
+  return false;
+}
+
+function escVal(s) { return String(s || '').replace(/&/g,'&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+
+function previewPortrait(input) {
+  const prev = document.getElementById('portrait-preview');
+  if (input.files && input.files[0]) {
+    const reader = new FileReader();
+    reader.onload = e => { prev.src = e.target.result; prev.style.display = 'block'; };
+    reader.readAsDataURL(input.files[0]);
+  }
+}
+
+// ── Step navigation ──────────────────────────────────────────────────────────
+function renderProgress() {
+  const el = document.getElementById('wiz-progress');
+  el.innerHTML = WIZ_STEPS.map((label, i) => {
+    const cls = i === step ? 'active' : (i < step ? 'done' : '');
+    return `<div class="wiz-progress-step ${cls}">${i+1}. ${label}</div>`;
+  }).join('');
+}
+
+function showStep(n) {
+  step = n;
+  document.querySelectorAll('.wiz-step').forEach(el => {
+    el.classList.toggle('active', parseInt(el.dataset.step) === n);
+  });
+  document.getElementById('wiz-prev').style.display = n === 0 ? 'none' : '';
+  document.getElementById('wiz-next').style.display = n === WIZ_STEPS.length - 1 ? 'none' : '';
+  document.getElementById('wiz-submit').style.display = n === WIZ_STEPS.length - 1 ? '' : 'none';
+  renderProgress();
+  window.scrollTo(0, 0);
+}
+
+function validateStep(n) {
+  if (n === 0) {
+    if (!document.getElementById('in_name').value.trim()) return 'Enter a character name.';
+  } else if (n === 1) {
+    if (!sel.race) return 'Select a race.';
+    if (sel.race.id === 'consumed_by_yellow' && !sel.baseRace) return 'Select a base race.';
+  } else if (n === 2) {
+    if (!sel.profession) return 'Select a profession.';
+  } else if (n === 3) {
+    const rem = statPointsRemaining();
+    if (rem !== 0) return `Allocate exactly the stat points available (${rem > 0 ? rem + ' remaining' : (-rem) + ' over'}).`;
+  } else if (n === 4) {
+    if (!sel.raceFeat) return 'Select a Race feat.';
+    if (!sel.profFeat) return 'Select a Profession feat.';
+    if (!sel.commonFeat) return 'Select a Common feat.';
+    const freeSlots = isHuman() ? 2 : 1;
+    if (sel.freeFeats.filter(Boolean).length < freeSlots) return 'Fill all Free Feat slots.';
+    if (sel.profession && sel.profession.id === 'psyonic' && sel.psyPowers.length < CATALOG.psyonicInitialPowerCount) {
+      return `Select ${CATALOG.psyonicInitialPowerCount} initial psy powers.`;
+    }
+  }
+  return null;
+}
+
+function wizNext() {
+  const err = validateStep(step);
+  if (err) { alert(err); return; }
+  if (step === 0) { onEnterRaceStep(); }
+  if (step === WIZ_STEPS.length - 1) return;
+  showStep(step + 1);
+  if (step === 3) onEnterStatsStep();
+  if (step === 4) onEnterFeatsStep();
+  if (step === 5) onEnterEquipmentStep();
+}
+function wizPrev() { showStep(Math.max(0, step - 1)); }
+
+// ── Catalog load ──────────────────────────────────────────────────────────────
+fetch('/api/characters/catalog').then(r => r.json()).then(data => {
+  CATALOG = data;
+  sel.splitIdx = 1;
+  renderRaceStep();
+  renderProfessionStep();
+  renderEquipTabs();
+});
+
+// ── Race step ─────────────────────────────────────────────────────────────────
+function renderRaceStep() {
+  const tiers = ['Standard', 'Advanced', 'Exceptional'];
+  let html = '';
+  tiers.forEach(tier => {
+    const races = CATALOG.races.filter(r => r.tier === tier);
+    html += `<div class="wiz-tier-label">${tier} (${races.length})</div><div class="wiz-cardgrid">`;
+    html += races.map(r => `
+      <div class="wiz-card${sel.race && sel.race.id===r.id ? ' selected':''}" onclick="pickRace('${r.id}')">
+        <div class="wiz-card-name">${escVal(r.name)}</div>
+        <div class="wiz-card-sub">${tier}</div>
+      </div>`).join('');
+    html += `</div>`;
+  });
+  document.getElementById('race-cards').innerHTML = html;
+}
+function pickRace(id) {
+  sel.race = CATALOG.races.find(r => r.id === id);
+  sel.baseRace = null;
+  renderRaceStep();
+  const desc = document.getElementById('race-desc');
+  desc.style.display = '';
+  desc.textContent = sel.race.description;
+  const baseSec = document.getElementById('base-race-section');
+  if (sel.race.id === 'consumed_by_yellow') {
+    baseSec.style.display = '';
+    const standard = CATALOG.races.filter(r => r.tier === 'Standard');
+    document.getElementById('base-race-cards').innerHTML = standard.map(r => `
+      <div class="wiz-card${sel.baseRace && sel.baseRace.id===r.id ? ' selected':''}" onclick="pickBaseRace('${r.id}')">
+        <div class="wiz-card-name">${escVal(r.name)}</div>
+      </div>`).join('');
+  } else {
+    baseSec.style.display = 'none';
+  }
+}
+function pickBaseRace(id) {
+  sel.baseRace = CATALOG.races.find(r => r.id === id);
+  pickRace(sel.race.id); // re-render to update selection highlight
+}
+function onEnterRaceStep() {}
+
+function effectiveRaceId() {
+  if (!sel.race) return '';
+  return sel.race.id === 'consumed_by_yellow' && sel.baseRace ? sel.baseRace.id : sel.race.id;
+}
+function isHuman() { return sel.race && sel.race.name.toLowerCase().includes('human'); }
+
+// ── Profession step ───────────────────────────────────────────────────────────
+function renderProfessionStep() {
+  document.getElementById('prof-cards').innerHTML = CATALOG.professions.map(p => `
+    <div class="wiz-card${sel.profession && sel.profession.id===p.id ? ' selected':''}" onclick="pickProfession('${p.id}')">
+      <div class="wiz-card-name">${escVal(p.name)}</div>
+    </div>`).join('');
+}
+function pickProfession(id) {
+  sel.profession = CATALOG.professions.find(p => p.id === id);
+  renderProfessionStep();
+  const desc = document.getElementById('prof-desc');
+  desc.style.display = '';
+  desc.textContent = sel.profession.description || '(no summary)';
+}
+
+// ── Stats step ────────────────────────────────────────────────────────────────
+function usesPool() { return sel.race && (sel.race.id === 'eldritch' || sel.race.id === 'advent_ai'); }
+function poolTotal() {
+  if (sel.race.id === 'eldritch') return 16;
+  if (sel.race.id === 'advent_ai') return 10;
+  return 20;
+}
+function raceBonus(abbr) { return (sel.race && sel.race.bonuses && sel.race.bonuses[abbr]) || 0; }
+function statBaseline(id) {
+  if (sel.race && sel.race.id === 'advent_ai' && STATS_DEF.find(s=>s.id===id).group === 'phys') return 0;
+  return 1;
+}
+function statCap(id) {
+  const maxBase = sel.race && sel.race.id === 'eldritch' ? ELDRITCH_STAT_MAX_BASE : STAT_MAX_BASE;
+  const maxTotal = sel.race && sel.race.id === 'eldritch' ? ELDRITCH_STAT_MAX_TOTAL : STAT_MAX_TOTAL;
+  const abbr = STATS_DEF.find(s=>s.id===id).abbr;
+  return Math.max(statBaseline(id), Math.min(maxBase, maxTotal - raceBonus(abbr)));
+}
+function statValue(id) { return statBaseline(id) + sel.statPoints[id] + raceBonus(STATS_DEF.find(s=>s.id===id).abbr); }
+
+function statPointsSpent(group) {
+  return STATS_DEF.filter(s => s.group === group).reduce((sum, s) => sum + sel.statPoints[s.id], 0);
+}
+function statPointsRemaining() {
+  if (usesPool()) return poolTotal() - (statPointsSpent('phys') + statPointsSpent('ment'));
+  const split = CATALOG.statSplits[sel.splitIdx];
+  const physRem = split.phys - statPointsSpent('phys');
+  const mentRem = split.ment - statPointsSpent('ment');
+  return physRem + mentRem;
+}
+
+function onEnterStatsStep() {
+  STATS_DEF.forEach(s => sel.statPoints[s.id] = 0);
+  renderStatsStep();
+}
+function renderStatsStep() {
+  const splitDiv = document.getElementById('split-opts');
+  if (usesPool()) {
+    splitDiv.innerHTML = `<div style="font-size:.82rem;color:var(--text-dim)">${sel.race.id === 'eldritch' ? 'Eldritch: single pool across all stats' : 'Advent AI: mental stats only (no physical body)'}</div>`;
+  } else {
+    splitDiv.innerHTML = CATALOG.statSplits.map((s, i) => `
+      <div class="wiz-split-opt${sel.splitIdx===i?' selected':''}" onclick="pickSplit(${i})">${s.label}</div>`).join('');
+  }
+  ['phys','ment'].forEach(group => {
+    const container = document.getElementById(group === 'phys' ? 'phys-stats' : 'ment-stats');
+    const locked = sel.race && sel.race.id === 'advent_ai' && group === 'phys';
+    container.innerHTML = STATS_DEF.filter(s => s.group === group).map(s => `
+      <div class="wiz-stat-row">
+        <label>${s.label}</label>
+        <span class="stat-total-disp">${locked ? '0' : statValue(s.id)}</span>
+        ${locked ? '' : `
+        <button type="button" onclick="adjStat('${s.id}',-1)">−</button>
+        <button type="button" onclick="adjStat('${s.id}',1)">+</button>`}
+      </div>`).join('');
+  });
+  updatePointsRemainDisplay();
+  updateDerivedPreview();
+}
+function pickSplit(i) { sel.splitIdx = i; STATS_DEF.forEach(s => sel.statPoints[s.id] = 0); renderStatsStep(); }
+function adjStat(id, delta) {
+  const next = sel.statPoints[id] + delta;
+  if (delta > 0 && statValue(id) + 1 > statCap(id)) return;
+  if (next < 0) return;
+  sel.statPoints[id] = next;
+  renderStatsStep();
+}
+function updatePointsRemainDisplay() {
+  const rem = statPointsRemaining();
+  const el = document.getElementById('points-remain');
+  el.textContent = rem === 0 ? 'All points allocated ✓' : (rem > 0 ? `${rem} points remaining` : `${-rem} points over budget`);
+  el.style.color = rem === 0 ? 'var(--neon3)' : (rem > 0 ? 'var(--text-dim)' : 'var(--neon2)');
+}
+function totals() {
+  const str=statValue('str'), dex=statValue('dex'), bod=statValue('bod'), per=statValue('per');
+  const wil=statValue('wil'), intl=statValue('int'), cha=statValue('cha'), itu=statValue('itu');
+  const phys = str+dex+bod+per, ment = wil+intl+cha+itu;
+  return {str,dex,bod,per,wil,int:intl,cha,itu,phys,ment,
+    hp: phys+10, shock: ment, ca: wil+bod, speed: dex+itu, pp: phys, mp: ment};
+}
+function updateDerivedPreview() {
+  const t = totals();
+  let text;
+  if (sel.race && sel.race.id === 'banshee') {
+    text = `<strong>Ectoplasm:</strong> ${t.phys+t.ment} | <strong>Speed:</strong> ${t.speed} | <strong>CA:</strong> ${t.ca}`;
+  } else {
+    text = `<strong>HP:</strong> ${t.hp} | <strong>Shock:</strong> ${t.shock} | <strong>CA:</strong> ${t.ca} | ` +
+           `<strong>Speed:</strong> ${t.speed} | <strong>PP:</strong> ${t.pp} | <strong>MP:</strong> ${t.mp}`;
+  }
+  document.getElementById('derived-preview').innerHTML = text;
+}
+
+// ── Feats step ────────────────────────────────────────────────────────────────
+function raceFeatPool() {
+  const eff = effectiveRaceId();
+  return CATALOG.feats.filter(f => f.category === 'Race' && f.rank === 'Rank 1'
+    && !CATALOG.powerOfYellowFeatIds.includes(f.id)
+    && (!f.associatedRace || matchesAssociation(eff, f.associatedRace)));
+}
+function profFeatPool() {
+  const pid = sel.profession ? sel.profession.id : '';
+  return CATALOG.feats.filter(f => f.category === 'Profession' && f.rank === 'Rank 1'
+    && (!f.associatedProfession || matchesAssociation(pid, f.associatedProfession)));
+}
+function commonFeatPool() {
+  return CATALOG.feats.filter(f => f.category === 'Common' && (f.rank === 'Rank 1' || f.rank === 'Origin'));
+}
+function freeFeatPool(excludeIds) {
+  return [...raceFeatPool(), ...profFeatPool(), ...commonFeatPool()]
+    .filter(f => !excludeIds.includes(f.id));
+}
+function psyPowerPool() {
+  return CATALOG.feats.filter(f => ['Psy Power','Psy Powers','Yellow Power'].includes(f.category) && f.rank === 'Rank 0');
+}
+
+function renderFeatList(containerId, pool, selectedId, onPick) {
+  document.getElementById(containerId).innerHTML = pool.map(f => `
+    <div class="wiz-feat-opt${f.id===selectedId?' selected':''}" onclick="${onPick}('${f.id}')" title="${escVal((f.description||'').slice(0,300))}">
+      ${escVal(f.name)}
+    </div>`).join('') || '<div class="wiz-feat-opt">No eligible feats</div>';
+}
+
+function onEnterFeatsStep() {
+  sel.raceFeat = null; sel.profFeat = null; sel.commonFeat = null;
+  sel.freeFeats = isHuman() ? [null, null] : [null];
+  sel.psyPowers = [];
+  renderFeatsStep();
+}
+function renderFeatsStep() {
+  renderFeatList('race-feat-list', raceFeatPool(), sel.raceFeat, 'pickRaceFeat');
+  renderFeatList('prof-feat-list', profFeatPool(), sel.profFeat, 'pickProfFeat');
+  renderFeatList('common-feat-list', commonFeatPool(), sel.commonFeat, 'pickCommonFeat');
+
+  const picked = (id) => { const f = CATALOG.feats.find(x=>x.id===id); return f ? f.name : '(none selected)'; };
+  document.getElementById('race-feat-picked').textContent = sel.raceFeat ? picked(sel.raceFeat) : '(none selected)';
+  document.getElementById('prof-feat-picked').textContent = sel.profFeat ? picked(sel.profFeat) : '(none selected)';
+  document.getElementById('common-feat-picked').textContent = sel.commonFeat ? picked(sel.commonFeat) : '(none selected)';
+
+  const already = [sel.raceFeat, sel.profFeat, sel.commonFeat].filter(Boolean);
+  const freeDiv = document.getElementById('free-feat-slots');
+  const slots = isHuman() ? 2 : 1;
+  let html = '';
+  for (let i = 0; i < slots; i++) {
+    const excl = [...already, ...sel.freeFeats.filter((f,idx)=>f && idx!==i)];
+    const pool = freeFeatPool(excl);
+    html += `<div class="wiz-feat-slot">
+      <div class="wiz-feat-slot-label">Free Feat ${i+1} *</div>
+      <div class="wiz-feat-picked">${sel.freeFeats[i] ? picked(sel.freeFeats[i]) : '(none selected)'}</div>
+      <div class="wiz-feat-list" id="free-feat-list-${i}"></div>
+    </div>`;
+  }
+  freeDiv.innerHTML = html;
+  for (let i = 0; i < slots; i++) {
+    const excl = [...already, ...sel.freeFeats.filter((f,idx)=>f && idx!==i)];
+    renderFeatList(`free-feat-list-${i}`, freeFeatPool(excl), sel.freeFeats[i], `pickFreeFeat${i}`);
+    window[`pickFreeFeat${i}`] = (id) => { sel.freeFeats[i] = id; renderFeatsStep(); };
+  }
+
+  const isPsyonic = sel.profession && sel.profession.id === 'psyonic';
+  document.getElementById('psyonic-feat-slot').style.display = isPsyonic ? '' : 'none';
+  if (isPsyonic) {
+    document.getElementById('psyonic-feat-picked').textContent = `${sel.psyPowers.length} / ${CATALOG.psyonicInitialPowerCount} selected`;
+    renderFeatList('psyonic-feat-list', psyPowerPool(), null, 'togglePsyPower');
+    document.querySelectorAll('#psyonic-feat-list .wiz-feat-opt').forEach(el => {
+      const name = el.textContent.trim();
+      const f = psyPowerPool().find(p => p.name === name);
+      if (f && sel.psyPowers.includes(f.id)) el.classList.add('selected');
+    });
+  }
+
+  // Auto-granted feats info
+  const eff = effectiveRaceId();
+  const raceEdges = sel.race && sel.race.id !== 'consumed_by_yellow'
+    ? CATALOG.feats.filter(f => f.rank === 'Edge' && f.category === 'Race' && f.associatedRace && matchesAssociation(eff, f.associatedRace))
+    : [];
+  const profEdges = sel.profession
+    ? CATALOG.feats.filter(f => f.rank === 'Edge' && f.category === 'Profession' && f.associatedProfession && matchesAssociation(sel.profession.id, f.associatedProfession))
+    : [];
+  let lines = [];
+  if (raceEdges.length) lines.push('Auto-granted Race Edge feats: ' + raceEdges.map(f=>f.name).join(', '));
+  if (profEdges.length) lines.push('Auto-granted Profession Edge feats: ' + profEdges.map(f=>f.name).join(', '));
+  if (sel.race && sel.race.id === 'child_of_the_black_goat') lines.push('Auto-granted all 16 Ritual feats.');
+  document.getElementById('auto-feats-info').innerHTML = lines.join('<br>');
+}
+function pickRaceFeat(id) { sel.raceFeat = id; renderFeatsStep(); }
+function pickProfFeat(id) { sel.profFeat = id; renderFeatsStep(); }
+function pickCommonFeat(id) { sel.commonFeat = id; renderFeatsStep(); }
+function togglePsyPower(id) {
+  const i = sel.psyPowers.indexOf(id);
+  if (i >= 0) sel.psyPowers.splice(i, 1);
+  else if (sel.psyPowers.length < CATALOG.psyonicInitialPowerCount) sel.psyPowers.push(id);
+  renderFeatsStep();
+}
+
+function autoGrantedFeatIds() {
+  const eff = effectiveRaceId();
+  let ids = [];
+  if (sel.race && sel.race.id !== 'consumed_by_yellow') {
+    ids.push(...CATALOG.feats.filter(f => f.rank === 'Edge' && f.category === 'Race' && f.associatedRace && matchesAssociation(eff, f.associatedRace)).map(f=>f.id));
+  }
+  if (sel.profession) {
+    ids.push(...CATALOG.feats.filter(f => f.rank === 'Edge' && f.category === 'Profession' && f.associatedProfession && matchesAssociation(sel.profession.id, f.associatedProfession)).map(f=>f.id));
+  }
+  if (sel.race && sel.race.id === 'child_of_the_black_goat') ids.push(...CATALOG.ritualFeatIds);
+  return ids;
+}
+
+// ── Equipment step ────────────────────────────────────────────────────────────
+function renderEquipTabs() {
+  document.getElementById('equip-tabs').innerHTML = EQUIP_TABS.map(([id,label]) => `
+    <div class="wiz-equip-tab${sel.equipTab===id?' active':''}" onclick="pickEquipTab('${id}')">${label}</div>`).join('');
+}
+function pickEquipTab(id) { sel.equipTab = id; renderEquipTabs(); renderEquipList(); }
+document.addEventListener('input', e => { if (e.target && e.target.id === 'equip-search') renderEquipList(); });
+
+function spentCredits() {
+  return sel.equipment.reduce((sum, id) => {
+    const it = CATALOG.equipment.find(e => e.id === id);
+    return sum + (it ? it.cost : 0);
+  }, 0);
+}
+function onEnterEquipmentStep() { renderEquipTabs(); renderEquipList(); updateBudgetDisplay(); }
+function updateBudgetDisplay() {
+  const remaining = CATALOG.creationBudget - spentCredits();
+  const el = document.getElementById('budget-display');
+  el.textContent = `Credits: ${remaining} / ${CATALOG.creationBudget}`;
+  el.style.color = remaining >= 0 ? 'var(--neon3)' : 'var(--neon2)';
+}
+function renderEquipList() {
+  const search = (document.getElementById('equip-search').value || '').toLowerCase();
+  let items = CATALOG.equipment.filter(e => e.category === sel.equipTab);
+  if (['weapons','armor'].includes(sel.equipTab)) {
+    items = items.filter(e => CATALOG.creationEquipmentRarities.includes(e.rarity || ''));
+  }
+  if (search) items = items.filter(e => e.name.toLowerCase().includes(search));
+  document.getElementById('equip-list').innerHTML = items.map(e => {
+    const owned = sel.equipment.includes(e.id);
+    return `<div class="wiz-equip-row${owned?' owned':''}">
+      <span class="name">${escVal(e.name)}${e.rarity ? ` <span style="color:var(--text-dim);font-size:.72rem">(${escVal(e.rarity)})</span>` : ''}</span>
+      <span class="cost">${e.cost || 0}cr</span>
+      <button type="button" onclick="toggleEquip('${e.id}')">${owned ? 'Remove' : 'Add'}</button>
+    </div>`;
+  }).join('') || '<div class="wiz-equip-row">No items</div>';
+}
+function toggleEquip(id) {
+  const i = sel.equipment.indexOf(id);
+  if (i >= 0) sel.equipment.splice(i, 1); else sel.equipment.push(id);
+  renderEquipList();
+  updateBudgetDisplay();
+}
+
+// ── Submit ────────────────────────────────────────────────────────────────────
+document.getElementById('wiz-form').addEventListener('submit', function(e) {
+  const err = validateStep(4) || validateStep(3) || validateStep(2) || validateStep(1) || validateStep(0);
+  if (err) { e.preventDefault(); alert(err); return; }
+
+  document.getElementById('in_name').value = document.getElementById('in_name').value.trim();
+  document.querySelector('#wiz-form').insertAdjacentHTML('beforeend',
+    `<input type="hidden" name="name" value="${escVal(document.getElementById('in_name').value)}">
+     <input type="hidden" name="player_name" value="${escVal(document.getElementById('in_player_name').value)}">`);
+
+  document.getElementById('f_race').value = sel.race.name;
+  document.getElementById('f_race_id').value = sel.race.id;
+  document.getElementById('f_char_class').value = sel.profession.name;
+  document.getElementById('f_profession_id').value = sel.profession.id;
+
+  const t = totals();
+  document.getElementById('f_stats_json').value = JSON.stringify(STATS_DEF.map(s => ({
+    id: s.id, label: s.label, abbr: s.abbr, value: statValue(s.id),
+  })));
+  document.getElementById('f_current_hp').value = t.hp;
+  document.getElementById('f_shock_current').value = t.shock;
+  document.getElementById('f_pp_current').value = t.pp;
+  document.getElementById('f_mp_current').value = t.mp;
+
+  const allFeatIds = [sel.raceFeat, sel.profFeat, sel.commonFeat, ...sel.freeFeats, ...sel.psyPowers, ...autoGrantedFeatIds()]
+    .filter(Boolean);
+  const uniqueFeatIds = [...new Set(allFeatIds)];
+  document.getElementById('f_feats_json').value = JSON.stringify(uniqueFeatIds.map(id => {
+    const f = CATALOG.feats.find(x => x.id === id);
+    return { id, name: f ? f.name : id, type: f ? f.category : 'Common', rank: f ? f.rank : 1, notes: '' };
+  }));
+
+  document.getElementById('f_equipment_json').value = JSON.stringify(sel.equipment.map(id => {
+    const it = CATALOG.equipment.find(e => e.id === id);
+    return { id, name: it ? it.name : id, category: it ? it.category : '', qty: 1, weight: 0, equipped: true, notes: '', cost: it ? it.cost : 0 };
+  }));
+
+  const remaining = Math.max(0, CATALOG.creationBudget - spentCredits());
+  document.getElementById('f_currency_json').value = JSON.stringify([
+    { label: 'Creds', abbr: 'CR', value: remaining }, { label: 'Tokens', abbr: 'TK', value: 0 },
+  ]);
+
+  const edgeFeats = autoGrantedFeatIds().map(id => CATALOG.feats.find(f=>f.id===id)).filter(f => f && f.rank === 'Edge');
+  document.getElementById('f_major_edge_count').value = edgeFeats.length;
+  document.getElementById('f_minor_edge_count').value = 0;
+  document.getElementById('f_major_edge').value = edgeFeats.map(f=>f.name).join(', ');
+});
+
+showStep(0);
+renderProgress();
+</script>
+{% endblock %}

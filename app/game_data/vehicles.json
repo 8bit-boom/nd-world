@@ -1,0 +1,134 @@
+[
+  {
+    "id": "attack_helicopter_mx_67",
+    "name": "Attack Helicopter MX-67",
+    "type": "Vehicle",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Min Dexterity to drive**: 6\n* **Health**: 20\n* **Speed**: 27\n* **Armor**: 4\n* **Damage**: 1d6+3\n* **Cost**: 65000\n* **Difficulty to craft**: 15\n* **Special conditions**:"
+    },
+    "filepath": "equipment/vehicles/attack-helicopter-mx-67_7019309.md",
+    "bonuses": {}
+  },
+  {
+    "id": "boat_farer_d7",
+    "name": "Boat FARER-D7",
+    "type": "Vehicle",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Min Dexterity to drive**: 3\n* **Health**: 20\n* **Speed**: 15\n* **Armor**: 3\n* **Damage**: \n* **Cost**: 19000\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/vehicles/boat-farer-d7_7019305.md",
+    "bonuses": {}
+  },
+  {
+    "id": "dig",
+    "name": "DIG",
+    "type": "Vehicle",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Min Dexterity to drive**: 6\n* **Health**: 55\n* **Speed**: 9\n* **Armor**: 10\n* **Damage**: \n* **Cost**: 78000\n* **Difficulty to craft**: 18\n* **Special conditions**:"
+    },
+    "filepath": "equipment/vehicles/dig_7019307.md",
+    "bonuses": {}
+  },
+  {
+    "id": "helicopter_mate",
+    "name": "Helicopter MATE",
+    "type": "Vehicle",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Min Dexterity to drive**: 5\n* **Health**: 16\n* **Speed**: 26\n* **Armor**: 1\n* **Damage**: \n* **Cost**: 30000\n* **Difficulty to craft**: 13\n* **Special conditions**:"
+    },
+    "filepath": "equipment/vehicles/helicopter-mate_7019303.md",
+    "bonuses": {}
+  },
+  {
+    "id": "mini_tank_tr_73",
+    "name": "Mini Tank TR-73",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Min Dexterity to drive**: 5\n* **Health**: 41\n* **Speed**: 9\n* **Armor**: 7\n* **Damage**: 1d10+7\n* **Cost**: 95000\n* **Difficulty to craft**: 17\n* **Special conditions**:"
+    },
+    "filepath": "equipment/vehicles/mini-tank-tr-73_7548651.md",
+    "bonuses": {}
+  },
+  {
+    "id": "minivan_grurgrur_a",
+    "name": "Minivan GRUR/GRUR-A",
+    "type": "Vehicle",
+    "tags": "",
+    "description": "\\*\\*Min Dexterity to drive\\*\\* = 3  \n\\*\\*Health\\*\\* = 24  \n\\*\\*Speed\\*\\* = 13  \n\\*\\*Armor\\*\\* = 5  \n\\*\\*Damage\\*\\* = 0/1D8+2  \n\\*\\*Cost\\*\\* = 6500/8500  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\n---",
+    "sections": {
+      "Attributes": "* **Min Dexterity to drive**: 3\n* **Health**: 24\n* **Speed**: 13\n* **Armor**: 5\n* **Damage**: 0/1d8+2\n* **Cost**: 12500/17500\n* **Difficulty to craft**: 14/15\n* **Special conditions**:"
+    },
+    "filepath": "equipment/vehicles/minivan-grurgrur-a_7019308.md",
+    "bonuses": {}
+  },
+  {
+    "id": "minivan_urt_2000",
+    "name": "Minivan URT-2000",
+    "type": "Vehicle",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Min Dexterity to drive**: 2\n* **Health**: 22\n* **Speed**: 16\n* **Armor**: 2\n* **Damage**: \n* **Cost**: 7100\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/vehicles/minivan-urt-2000_7019301.md",
+    "bonuses": {}
+  },
+  {
+    "id": "motorcycle_froz_79",
+    "name": "Motorcycle Froz-79’",
+    "type": "Vehicle",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Min Dexterity to drive**: 3\n* **Health**: 14\n* **Speed**: 18\n* **Armor**: 3\n* **Damage**: \n* **Cost**: 5200\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/vehicles/motorcycle-froz-79_7019300.md",
+    "bonuses": {}
+  },
+  {
+    "id": "skyspire",
+    "name": "Skyspire",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Min Dexterity to drive**: 7\n* **Health**: 250\n* **Speed**: 10\n* **Armor**: 5\n* **Damage**: \n* **Cost**: 950000\n* **Difficulty to craft**: 19\n* **Special conditions**: Need Intellect of 6 or higher to operate"
+    },
+    "filepath": "equipment/vehicles/skyspire_7846535.md",
+    "bonuses": {}
+  },
+  {
+    "id": "sportscar_f_75z",
+    "name": "Sportscar F-75Z",
+    "type": "Vehicle",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Min Dexterity to drive**: 4\n* **Health**: 18\n* **Speed**: 25\n* **Armor**: 2\n* **Damage**: \n* **Cost**: 19000\n* **Difficulty to craft**: 14\n* **Special conditions**:"
+    },
+    "filepath": "equipment/vehicles/sportscar-f-75z_7019302.md",
+    "bonuses": {}
+  },
+  {
+    "id": "yacht_gt_9000",
+    "name": "Yacht GT-9000",
+    "type": "Vehicle",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Min Dexterity to drive**: 4\n* **Health**: 38\n* **Speed**: 12\n* **Armor**: 6\n* **Damage**: \n* **Cost**: 48000\n* **Difficulty to craft**: 15\n* **Special conditions**:"
+    },
+    "filepath": "equipment/vehicles/yacht-gt-9000_7019306.md",
+    "bonuses": {}
+  }
+]

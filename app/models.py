@@ -58,7 +58,9 @@ class PlayerCharacter(Base):
     name         = Column(String(256), nullable=False)
     player_name  = Column(String(256), default="")
     race         = Column(String(128), default="")
+    race_id      = Column(String(128), default="")  # catalog id (races.json), set by creation wizard
     char_class   = Column(String(128), default="")
+    profession_id = Column(String(128), default="")  # catalog id (professions.json), set by creation wizard
     subclass     = Column(String(128), default="")
     level        = Column(Integer, default=1)
     xp           = Column(Integer, default=0)
@@ -139,6 +141,8 @@ class PlayerCharacter(Base):
     mp_current    = Column(Integer, default=0)
     minor_edge    = Column(Text, default='')
     major_edge    = Column(Text, default='')
+    minor_edge_count = Column(Integer, default=0)  # Major/Minor Edge counts for .ndc export
+    major_edge_count = Column(Integer, default=0)
     cyberware_json  = Column(Text, default='[]')  # [{name, ca_cost, notes}]
     conditions_json = Column(Text, default='[]')  # list of active condition strings
     sheet_template_id  = Column(Integer, ForeignKey("sheet_templates.id"), nullable=True)

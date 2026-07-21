@@ -1,0 +1,122 @@
+[
+  {
+    "id": "armored_attack_drone",
+    "name": "Armored Attack Drone",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Difficulty to operate**: 12\n* **Health**: 23\n* **Armor**: 4\n* **Damage**: 1d6+5\n* **Cost**: 6000\n* **Difficulty to craft**: 13\n* **Special conditions**: Can make attack with long range plasma cannon dealing 1d8+3 damage that ignores armor up to 3 enemies in Zone."
+    },
+    "filepath": "equipment/drone/armored-attack-drone_7548385.md",
+    "bonuses": {}
+  },
+  {
+    "id": "cat_drone",
+    "name": "Cat Drone",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Difficulty to operate**: 0\n* **Health**: 8\n* **Armor**: 1\n* **Damage**: 1d4+2\n* **Cost**: 4000\n* **Difficulty to craft**: 13\n* **Special conditions**: Fully autonomous, limited AI. Have same Stats as Psy-Cat."
+    },
+    "filepath": "equipment/drone/cat-drone_7583567.md",
+    "bonuses": {}
+  },
+  {
+    "id": "crab_drone",
+    "name": "Crab Drone",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Difficulty to operate**: 9\n* **Health**: 13\n* **Armor**: 2\n* **Damage**: 1d6+4 Shock\n* **Cost**: 3000\n* **Difficulty to craft**: 10\n* **Special conditions**: Small. Have +2 bonus to Stealth rolls. Can climb walls and ceilings."
+    },
+    "filepath": "equipment/drone/crab-drone_7548419.md",
+    "bonuses": {}
+  },
+  {
+    "id": "military_mobile_tank_drone",
+    "name": "Military Mobile Tank-Drone",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Difficulty to operate**: 14\n* **Health**: 48\n* **Armor**: 6\n* **Damage**: 1d12+6\n* **Cost**: 16000\n* **Difficulty to craft**: 15\n* **Special conditions**: Can fire long range rockets dealing 1d8+8 damage to all enemies in Zone."
+    },
+    "filepath": "equipment/drone/military-mobile-tank-drone_7548371.md",
+    "bonuses": {}
+  },
+  {
+    "id": "mobile_turret",
+    "name": "Mobile turret",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Difficulty to operate**: 10\n* **Health**: 25\n* **Armor**: 3\n* **Damage**: 1d6+4\n* **Cost**: 2000\n* **Difficulty to craft**: 12\n* **Special conditions**:"
+    },
+    "filepath": "equipment/drone/mobile-turret_7499153.md",
+    "bonuses": {}
+  },
+  {
+    "id": "scorpion_drone",
+    "name": "Scorpion Drone",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Difficulty to operate**: 11\n* **Health**: 20\n* **Armor**: 3\n* **Damage**: 1d4+4\n* **Cost**: 3800\n* **Difficulty to craft**: 11\n* **Special conditions**: It's tail can be loaded with Toxins. Can climb walls."
+    },
+    "filepath": "equipment/drone/scorpion-drone_7548412.md",
+    "bonuses": {}
+  },
+  {
+    "id": "scout",
+    "name": "Scout",
+    "type": "Drone",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Difficulty to operate**: 6\n* **Health**: 10\n* **Armor**: \n* **Damage**: \n* **Cost**: 550\n* **Difficulty to craft**: 6\n* **Special conditions**: Can move up to 2 adjusted Zones"
+    },
+    "filepath": "equipment/drone/scout_7019086.md",
+    "bonuses": {}
+  },
+  {
+    "id": "shocker",
+    "name": "Shocker",
+    "type": "Drone",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Difficulty to operate**: 6\n* **Health**: 12\n* **Armor**: \n* **Damage**: 1d6\n* **Cost**: 650\n* **Difficulty to craft**: 7\n* **Special conditions**: Damage is dealt to Shock"
+    },
+    "filepath": "equipment/drone/shocker_7019090.md",
+    "bonuses": {}
+  },
+  {
+    "id": "shoota",
+    "name": "Shoota",
+    "type": "Drone",
+    "tags": "",
+    "description": "\\*\\*Difficulty to operate\\*\\* =  \n\\*\\*Health\\*\\* = 12  \n\\*\\*Armor\\*\\* = 1  \n\\*\\*Damage\\*\\* = 1D6  \n\\*\\*Cost\\*\\* =  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\n---",
+    "sections": {
+      "Attributes": "* **Difficulty to operate**: 5\n* **Health**: 12\n* **Armor**: 1\n* **Damage**: 1d6\n* **Cost**: 700\n* **Difficulty to craft**: 8\n* **Special conditions**:"
+    },
+    "filepath": "equipment/drone/shoota_7019088.md",
+    "bonuses": {}
+  },
+  {
+    "id": "thief",
+    "name": "Thief",
+    "type": "Drone",
+    "tags": "",
+    "description": "\\*\\*Difficulty to operate\\*\\* =  \n\\*\\*Health\\*\\* = 10  \n\\*\\*Armor\\*\\* = 0  \n\\*\\*Damage\\*\\* = 0  \n\\*\\*Cost\\*\\* =  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*  \nCan picklocks and steal items up to half his size\n\n---",
+    "sections": {
+      "Attributes": "* **Difficulty to operate**: 5\n* **Health**: 10\n* **Armor**: \n* **Damage**: \n* **Cost**: 600\n* **Difficulty to craft**: 7\n* **Special conditions**: Can picklocks and steal items up to half his size"
+    },
+    "filepath": "equipment/drone/thief_7019089.md",
+    "bonuses": {}
+  }
+]

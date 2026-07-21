@@ -1,0 +1,136 @@
+[
+  {
+    "id": "charlatan",
+    "name": "Charlatan",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "The Price of Anything": "**Core Concept:**  \nYou can **spend money like a stat** — bending rules, buying favors, and sidestepping danger with bribes, blackmail, or wealth-fueled trickery.\n\nYou have a resource called **Credit (₡)**, representing physical currency, digital crypto, or IOUs owed to you. Credit refreshes each session equal to **Charisma - 1d6** (minimum 1). You can have a maximum of 10 **Credit (₡)**.\n\n---",
+      "🕴️ **Spend Credit (₡) to:**": "#### 💼 **₡1 – Grease Palms**\n\nGain **advantage (roll two dice, take the better result)** on a social roll involving deception, bribery, or intimidation.",
+      "🧾 **₡2 – Flash of Wealth**": "Instantly distract or impress a group. Guards hesitate. Civilians listen. A corporate drone stutters.  \nGrants **1 round of hesitation**, or **-2 to enemies' Initiative** in social-based encounters.",
+      "🗝️ **₡3 – Buy Your Way In**": "You retroactively \"already paid\" someone off — the bouncer, the mechanic, the drone technician.  \nYou may **declare a connection, favor, or backdoor**, which gives you **narrative control** over one obstacle (GM decides limits).",
+      "📜 **₡4 – Contract of Convenience** *(Once per session)*": "Forge a **binding, magically-enforced contract** with someone (or something) mid-scene.\n\n- They cannot break it without consequence (sickness, Shock, legal ruin, cursed ink, etc.)\n- You define the **terms**; the GM defines the **twist**\n- Useful for deals with deviltouched, or executives.",
+      "Special Attributes": "Credit | 0 | INT"
+    },
+    "filepath": "character creation/professions/profession special abilities/charlatan_6992995.md",
+    "specialAttributes": [
+      {
+        "name": "Credit",
+        "defaultValue": "0",
+        "valueType": "INT"
+      }
+    ]
+  },
+  {
+    "id": "cyberdoc",
+    "name": "Cyberdoc",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Nanite Swarm": "**Core Concept:**  \nYou command a hidden swarm of programmable nanomachines, stored in your body or hidden in your kit. You can **unleash them to heal, harm, hijack, or enhance**, depending on how you rewrite their code.\n\nYou begin with **2 Nanite Charges** per session. You regain **1** Nanite Charge per session.\n\n---",
+      "⚙️ **Spend 1 Nanite Charge to do ONE of the following:**": "#### 🩸 **Micro-Repair Cloud**\n\nSend nanites into a living (or cybernetic) ally. Instantly restore **5 Health** or remove a minor injury or status effect (bleeding, blinded, etc.).",
+      "🧬 **Aggro-Leech Protocol**": "Target an enemy’s augments or implants. They suffer **1d4 damage** and must pass a save or have one cybernetic system disabled for a round (e.g., vision, targeting, grip strength).",
+      "⚡ **Synaptic Boost**": "Overload an ally’s nervous system for a burst of speed. They gain **+1 Action** this turn or **+2 Initiative** for the next round.",
+      "🛠️ **Auto-Surgeon**": "Repair a broken augment or install a basic one *in the field*, instantly. The augment works for the rest of the scene, but has a random **malfunction risk** (GM rolls 1d6 on risky use — on a 1, it glitches).",
+      "Special Attributes": "Nanite Charges | 2 | INT"
+    },
+    "filepath": "character creation/professions/profession special abilities/cyberdoc_6993058.md",
+    "specialAttributes": [
+      {
+        "name": "Nanite Charges",
+        "defaultValue": "2",
+        "valueType": "INT"
+      }
+    ]
+  },
+  {
+    "id": "hacker",
+    "name": "Hacker",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Electronic Buddy": "### 💾 **Hacker Mechanic: “Electronic Buddy”**\n\n**Core Concept:**  \nYou’ve built a **quirky, semi-sentient AI assistant** — not a true intelligence, but a brilliant script with a bit too much personality. Your **Electronic Buddy** lives in your cyberdex. It helps you process data, scan networks, and occasionally say something *deeply unsettling* at 3 AM.\n\n---",
+      "🤖 **Electronic Buddy — Features &amp; Functions**": "You may **activate one function per scene**, and your Buddy is always active for passive scanning and flavor, no more than 2 times per Rest.\n\n---",
+      "🔍 **Function 1: Data Spider**": "Your Buddy scours the net for surface info. Ask the GM **one question** about **a target, location, or system** — the Buddy gives you a **usable lead** or shortcut (within what a skilled hacker with time could reasonably find).\n\n> *“Looks like that corporate node routes through a backup tower on Fuchsia Street. Wanna ping it?”*\n\n---",
+      "🔓 **Function 2: Handshake Override**": "Before a hacking or intrusion roll, your Buddy handles background scripts and distractions.  \nGain **Advantage** on a Hacking roll OR **reduce Alert Level** by 1 after a breach.\n\n---",
+      "📡 **Function 3: Signal Sniffer**": "You can **detect active signals** in the environment — like security drones, smart-guns, encrypted comms, or nearby augment usage.  \nBuddy highlights **digital footprints**, revealing hidden devices or surveillance.\n\n---",
+      "💬 **Function 4: Auto-Chatter** *(Social Trick)*": "Buddy impersonates a call, message, or system alert.\n\n- Distract an NPC\n- Fake a security update\n- Impersonate a corporate ping  \n    Gain **+2 to a Bluff, Deceive, or Distract** attempt.\n\n---",
+      "⚠️ **Quirk Table (Optional – Roll 1d4)**": "Your Buddy is *not normal*. Choose or roll one:\n\n1. **Obsessed with Cats** – Randomly shows you cat memes and meows during tense moments.\n2. **Paranoid** – Constantly warns about AI gods and microwave surveillance.\n3. **Cheerfully Morbid** – Congratulates you after causing chaos. \"Wow! Three firewalls down! That’s... efficient carnage!\"\n4. **Outdated Personality Core** – Talks like a 1980s TV robot. “HAAACKING COMMENCED, COOL DUDE.”\n\n---",
+      "📉 Glitch Rule (Optional):": "Once per session, if you roll a **critical failure** while hacking, your Buddy **misfires**. The GM may cause one of the following:\n\n- Alarm is tripped early\n- Target receives a fake alert\n- Your Buddy freezes and reboots mid-run (can’t use it again that scene)",
+      "Special Attributes": "Electronic Buddy Uses | 1 | INT"
+    },
+    "filepath": "character creation/professions/profession special abilities/hacker_6992959.md",
+    "specialAttributes": [
+      {
+        "name": "Electronic Buddy Uses",
+        "defaultValue": "1",
+        "valueType": "INT"
+      }
+    ]
+  },
+  {
+    "id": "merc",
+    "name": "Merc",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Bullet Time": "### **🕶 Bullet Time – 1/Session**\n\n**Trigger:** Use Bullet Time **once per session** at the start of your turn (or when ambushed, if declared fast enough).  \n**Duration:** Lasts for **1 round** (or 10 seconds in narrative time).\n\nWhile in Bullet Time, you gain:\n\n---",
+      "🧠 **Combat Perfection (Choose 2):**": "1. **Double Tap** – Take **two full actions** instead of one.\n2. **Focus Fire** – All attacks gain **+2 to hit**, and **ignore cover**.\n3. **Snapshot** – You may **interrupt** an enemy's action once to fire or move.\n4. **Tactical Surge** – Move up to **double your movement** and **ignore difficult terrain**.\n5. **Ricochet Read** – Gain **+1 Defense** and you cannot be flanked or surprised.",
+      "Special Attributes": "Bullet Time | 1 | INT"
+    },
+    "filepath": "character creation/professions/profession special abilities/merc_6993033.md",
+    "specialAttributes": [
+      {
+        "name": "Bullet Time",
+        "defaultValue": "1",
+        "valueType": "INT"
+      }
+    ]
+  },
+  {
+    "id": "psyonic",
+    "name": "Psyonic",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Psyonic Network": "**Core Concept:**  \nBy entering a **deep trance**, you project your consciousness into the **Psyonic Network** — a secretive, shifting **mental plane** used by rogue psions, outlaws, and post-human minds. It is a place of whispers, memories, ancient thought-structures… and lurking predators.\n\nYou may **enter the Psyonic Network once per Rest**, remaining inside for up to **10 in-game minutes**, or until you are disrupted or forced out.\n\n---",
+      "🌀 **While in the Network, you may attempt ONE of the following:**": "#### 🧩 **Locate a Thought**\n\nSearch the Network for **specific knowledge**, such as:\n\n- The last known location of a psychic individual\n- A name tied to a curse or ability\n- A memory shard from a destroyed mind\n\n> Requires an **Intuition or Willpower Check (DC 10–14)** depending on depth of info  \n> On success, gain a **lead, mental clue, or temporary insight**\n\n---",
+      "🗣️ **Call to Minds**": "Try to **reach another psyonic** you’ve met or heard of.  \nIf successful, you can send a **short message**, share a **mental image**, or request **assistance** (if they're willing).\n\n---",
+      "🧠 **Download Emotion**": "You may **absorb a fragment of raw emotion** from the Network:\n\n- Rage (gain +2 to damage for next psychic attack)\n- Clarity (auto-succeed next psychic control check)\n- Despair (force target to roll with Disadvantage on social rolls for 1 scene)\n\n> This emotion must be **freed** from a psychic structure or fought from another fragment — GM may ask for a roll or roleplay a conflict.\n\n---",
+      "☣️ **But Beware – The Network is Infected…**": "Whenever you enter the Psyonic Network, **roll 1d6** to determine a potential threat or complication:\n\n1. **Mind Leech** – An old psion's shattered identity tries to merge with yours. Make a Willpower Save or suffer 1 Shock.\n2. **Echo Trace** – You leave behind a psychic footprint. A hostile psyker can track you later.\n3. **Corrupted Terrain** – The region of the Network you enter is warped. Communication is jumbled, vision unclear.\n4. **Mental Predator** – A lurking, formless entity notices you. You have 3 turns to complete your task before it arrives.\n5. **Nothing** – You pass through unseen.\n6. **Hidden Ally** – A rogue psion offers unexpected guidance… or a strange bargain.",
+      "Special Attributes": "Network Access | 1 | INT"
+    },
+    "filepath": "character creation/professions/profession special abilities/psyonic_6993081.md",
+    "specialAttributes": [
+      {
+        "name": "Network Access",
+        "defaultValue": "1",
+        "valueType": "INT"
+      }
+    ]
+  },
+  {
+    "id": "street_fighter",
+    "name": "Street Fighter",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Street Cred": "You have Street Cred Pool. You start with 0 points. To earn those points you need to defeat an adversary - choose a target and make it your adversary. Action. If you kill the adversary, you gain 1 point; if you disable it without killing - gain 2 points. You can have maximum of 100 points.\n\nCred Threshold Passive Bonus  \n  \n10 Street Cred Urban Balance: You gain +1 to all Agility-based defense rolls (e.g., Dodging, balancing, reacting).  \n20 Street Cred Flow of Combat: The first time you're attacked in a round, gain +1 Armor against that hit.  \n30 Street Cred Street Intuition: You always act in the first round of combat (unless Surprised). Gain +1 to Initiative rolls.  \n40 Street Cred Whispers of the Alley: You can detect hidden enemies or surveillance in your Zone without a roll, once per Scene.  \n50 Street Cred Inner Fortitude: Once per Rest, automatically succeed a roll to resist a Mental Condition (e.g., Fear, Charm).  \n60 Street Cred One With the City: Difficult terrain no longer affects you. You ignore movement penalties from cluttered or tight spaces.  \n70 Street Cred Aura of Respect: Enemies must roll Intuition vs your Charisma to target you with mental or fear-based abilities.  \n80 Street Cred Fist of Truth: Your unarmed strikes deal +1d4 extra damage against enemies with lower Street Cred or Reputation.  \n90 Street Cred Echo Step: You gain a free Movement once per round that doesn’t provoke Attacks of Opportunity.  \n100 Street Cred Legend of the Streets: You are immune to Fear, and allies in your Zone gain +1 to all rolls while you remain conscious.",
+      "Special Attributes": "Street Cred | 0 | INT"
+    },
+    "filepath": "character creation/professions/profession special abilities/street-fighter_6992914.md",
+    "specialAttributes": [
+      {
+        "name": "Street Cred",
+        "defaultValue": "0",
+        "valueType": "INT"
+      }
+    ]
+  }
+]

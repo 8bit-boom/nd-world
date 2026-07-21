@@ -1,0 +1,794 @@
+[
+  {
+    "id": "flamethrower",
+    "name": "Flamethrower",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 1d6+3\n* **Rounds**: 5\n* **Feats**: \n* **Cost**: 4000\n* **Difficulty to craft**: 11\n* **Special conditions**: It's a medium range weapon. It deals fire damage to the entire Zone. Targets gain the Burn condition on a failed Body vs 8 roll, dealing 1d4+3 damage. It lasts 3 rounds."
+    },
+    "filepath": "equipment/weapons/exotic/flamethrower_7114570.md",
+    "bonuses": {}
+  },
+  {
+    "id": "rocket_launcher_mg_4",
+    "name": "Rocket Launcher MG-4",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Simple\n* **Damage**: 1d12\n* **Rounds**: 1\n* **Feats**: \n* **Cost**: 3000\n* **Difficulty to craft**: 9\n* **Special conditions**: On a roll of 1, it's a misfire on you. It deals damage to everyone in the Zone. It has long range."
+    },
+    "filepath": "equipment/weapons/exotic/rocket-launcher-mg-4_7019228.md",
+    "bonuses": {}
+  },
+  {
+    "id": "ads",
+    "name": "ADS",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d8+1\n* **Rounds**: 12\n* **Feats**: Scope\n* **Cost**: 6800\n* **Difficulty to craft**: 14\n* **Special conditions**: When you miss with this weapon, you gain a +1 bonus to hit the same target with this weapon. This bonus stacks. After you hit this target, the bonus is no more."
+    },
+    "filepath": "equipment/weapons/handguns/ads_7113593.md",
+    "bonuses": {}
+  },
+  {
+    "id": "crowd_pleaser",
+    "name": "Crowd Pleaser",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d6+3\n* **Rounds**: 15\n* **Feats**: Red Dot\n* **Cost**: 3000\n* **Difficulty to craft**: 13\n* **Special conditions**: Uses Reaction instead of Action to shoot"
+    },
+    "filepath": "equipment/weapons/handguns/crowd-pleaser_7113545.md",
+    "bonuses": {}
+  },
+  {
+    "id": "death",
+    "name": "Death",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d10+4 ignores armor\n* **Rounds**: 6\n* **Feats**: \n* **Cost**: 13500\n* **Difficulty to craft**: 15\n* **Special conditions**: On a hit, it kills targets with Body<=3. On a critical hit, it kills targets with Body<=6"
+    },
+    "filepath": "equipment/weapons/handguns/death_7583338.md",
+    "bonuses": {}
+  },
+  {
+    "id": "double_revolver",
+    "name": "Double Revolver",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d6+3\n* **Rounds**: 6\n* **Feats**: \n* **Cost**: 3000\n* **Difficulty to craft**: 13\n* **Special conditions**: It shoots two rounds per Action\nRevolver"
+    },
+    "filepath": "equipment/weapons/handguns/double-revolver_7112783.md",
+    "bonuses": {}
+  },
+  {
+    "id": "fast_shot",
+    "name": "Fast Shot",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 1d6+1\n* **Rounds**: 14\n* **Feats**: \n* **Cost**: 1850\n* **Difficulty to craft**: 11\n* **Special conditions**: Reloading this weapon is free"
+    },
+    "filepath": "equipment/weapons/handguns/fast-shot_7113470.md",
+    "bonuses": {}
+  },
+  {
+    "id": "fury",
+    "name": "Fury",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d6*4 + 1d4*4 fire damage\n* **Rounds**: 3\n* **Feats**: \n* **Cost**: 9500\n* **Difficulty to craft**: 14\n* **Special conditions**: On a critical hit, it sets the target on fire, dealing 1d8 damage at the end of every turn. The target must roll Body vs 13 to put out the fire."
+    },
+    "filepath": "equipment/weapons/handguns/fury_7583165.md",
+    "bonuses": {}
+  },
+  {
+    "id": "glock_25",
+    "name": "Glock 25",
+    "type": "Weapon",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 1d4+1\n* **Rounds**: 15\n* **Feats**: Burst fire \n* **Cost**: 150\n* **Difficulty to craft**: 8\n* **Special conditions**:"
+    },
+    "filepath": "equipment/weapons/handguns/glock-25_7019217.md",
+    "bonuses": {}
+  },
+  {
+    "id": "handcannon",
+    "name": "Handcannon",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 1d10+1\n* **Rounds**: 1\n* **Feats**: \n* **Cost**: 1200\n* **Difficulty to craft**: 9\n* **Special conditions**: Revolver"
+    },
+    "filepath": "equipment/weapons/handguns/handcannon_7112804.md",
+    "bonuses": {}
+  },
+  {
+    "id": "hunter_revolver",
+    "name": "Hunter Revolver",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 1d8+2\n* **Rounds**: 5\n* **Feats**: Scope\n* **Cost**: 1500\n* **Difficulty to craft**: 11\n* **Special conditions**: Revolver"
+    },
+    "filepath": "equipment/weapons/handguns/hunter-revolver_7112738.md",
+    "bonuses": {}
+  },
+  {
+    "id": "lazer_revolver",
+    "name": "Lazer Revolver",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d8+2\n* **Rounds**: 10\n* **Feats**: \n* **Cost**: 4000\n* **Difficulty to craft**: 12\n* **Special conditions**: Ignores 2 points of armor"
+    },
+    "filepath": "equipment/weapons/handguns/lazer-revolver_7112811.md",
+    "bonuses": {}
+  },
+  {
+    "id": "mercy",
+    "name": "Mercy",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d12+2\n* **Rounds**: 6\n* **Feats**: Ricochet\n* **Cost**: 8000\n* **Difficulty to craft**: 14\n* **Special conditions**: Ignores cover and walls up to advanced, also ignores 1 point of armor"
+    },
+    "filepath": "equipment/weapons/handguns/mercy_7113223.md",
+    "bonuses": {}
+  },
+  {
+    "id": "old_revolver",
+    "name": "Old revolver",
+    "type": "Weapon",
+    "tags": "",
+    "description": "\\*\\*Rarity\\*\\* = Simple  \n\\*\\*Damage\\*\\* = 1d6  \n\\*\\*Rounds\\*\\* = 6  \n\\*\\*Cost\\*\\* = 200  \n\\*\\*Special conditions\\*\\*\nRevolver\n\n---",
+    "sections": {
+      "Attributes": "* **Rarity**: Simple\n* **Damage**: 1d6\n* **Rounds**: 6\n* **Feats**: \n* **Cost**: 200\n* **Difficulty to craft**: 6\n* **Special conditions**: Revolver"
+    },
+    "filepath": "equipment/weapons/handguns/old-revolver_7019214.md",
+    "bonuses": {}
+  },
+  {
+    "id": "plasma_revolver",
+    "name": "Plasma Revolver",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d10+2\n* **Rounds**: 4\n* **Feats**: \n* **Cost**: 5000\n* **Difficulty to craft**: 12\n* **Special conditions**: It deals an additional 1d10+2 damage to structures, vehicles, walls, and covers."
+    },
+    "filepath": "equipment/weapons/handguns/plasma-revolver_7113297.md",
+    "bonuses": {}
+  },
+  {
+    "id": "punished",
+    "name": "Punished",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d6+3\n* **Rounds**: 20\n* **Feats**: Red dot\n* **Cost**: 5800\n* **Difficulty to craft**: 13\n* **Special conditions**: Absolutely silent. Stealth attacks with it are automatic crit."
+    },
+    "filepath": "equipment/weapons/handguns/punished_7113649.md",
+    "bonuses": {}
+  },
+  {
+    "id": "sweethheart",
+    "name": "SweetHheart",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d8+3\n* **Rounds**: 5\n* **Feats**: \n* **Cost**: 7300\n* **Difficulty to craft**: 12\n* **Special conditions**: You can shoot up to 5 bullets in one swift motion. It's an Action."
+    },
+    "filepath": "equipment/weapons/handguns/sweethheart_7583353.md",
+    "bonuses": {}
+  },
+  {
+    "id": "toxic",
+    "name": "Toxic",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d8+2\n* **Rounds**: 6\n* **Feats**: \n* **Cost**: 8100\n* **Difficulty to craft**: 13\n* **Special conditions**: As part of attack you can use your Reaction to fire poisoned spike, choose Toxin before firing (except Yellow). On hit target must roll against Toxin with -2 penalty."
+    },
+    "filepath": "equipment/weapons/handguns/toxic_7583332.md",
+    "bonuses": {}
+  },
+  {
+    "id": "wild",
+    "name": "Wild",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d8+4\n* **Rounds**: 4\n* **Feats**: Dragon Breath\n* **Cost**: 6500\n* **Difficulty to craft**: 13\n* **Special conditions**: Dragon Breath difficulty is 10 now"
+    },
+    "filepath": "equipment/weapons/handguns/wild_7113291.md",
+    "bonuses": {}
+  },
+  {
+    "id": "devastator_pistol",
+    "name": "Devastator Pistol",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 1d6+8\n* **Rounds**: 10\n* **Feats**: \n* **Cost**: 4600\n* **Difficulty to craft**: 11\n* **Special conditions**: On a critical hit, the round ricochets to the nearest character. The character rolls Intuition vs 10."
+    },
+    "filepath": "equipment/weapons/heavy/devastator-pistol_7686554.md",
+    "bonuses": {}
+  },
+  {
+    "id": "energy_hammer",
+    "name": "Energy Hammer",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Simple\n* **Damage**: 1d8+6\n* **Rounds**: \n* **Feats**: \n* **Cost**: 3000\n* **Difficulty to craft**: 10\n* **Special conditions**: You can make a reckless attack, which deals an extra 1d4+2 damage, but you have a -2 penalty to hit. This is a melee weapon."
+    },
+    "filepath": "equipment/weapons/heavy/energy-hammer_7686558.md",
+    "bonuses": {}
+  },
+  {
+    "id": "gravity",
+    "name": "Gravity",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 2d12+5\n* **Rounds**: 3\n* **Feats**: \n* **Cost**: 14500\n* **Difficulty to craft**: 13\n* **Special conditions**: This weapon has medium range. After you hit a target, choose one target in every adjusted Zone (one target for each Zone). The bullet tries to hit those targets on the next turns. If a target leaves its current Zone, the bullet can't hit the target and tries to hit the next target. Use the same roll to determine if the bullet hits."
+    },
+    "filepath": "equipment/weapons/heavy/gravity_7686578.md",
+    "bonuses": {}
+  },
+  {
+    "id": "great_glaive",
+    "name": "Great Glaive",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d12+5\n* **Rounds**: \n* **Feats**: \n* **Cost**: 6750\n* **Difficulty to craft**: 11\n* **Special conditions**: You can make a spin attack, dealing damage to enemies in the current Zone with a -1 penalty to hit. Once per turn. It is a melee weapon."
+    },
+    "filepath": "equipment/weapons/heavy/great-glaive_7686569.md",
+    "bonuses": {}
+  },
+  {
+    "id": "lava_thrower",
+    "name": "Lava Thrower",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 1d12+6 ignores 3 points of armor\n* **Rounds**: 4\n* **Feats**: \n* **Cost**: 4000\n* **Difficulty to craft**: 11\n* **Special conditions**: Has medium range. Choose a Zone; this weapon deals damage to everyone in the Zone."
+    },
+    "filepath": "equipment/weapons/heavy/lava-thrower_7686540.md",
+    "bonuses": {}
+  },
+  {
+    "id": "mega_gun",
+    "name": "Mega Gun",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d4\n* **Rounds**: 100\n* **Feats**: \n* **Cost**: 8000\n* **Difficulty to craft**: 12\n* **Special conditions**: You can spend up to 20 bullets in one shot. If you hit, add the number of bullets as additional damage."
+    },
+    "filepath": "equipment/weapons/heavy/mega-gun_7686594.md",
+    "bonuses": {}
+  },
+  {
+    "id": "multi_rocket_launcher",
+    "name": "Multi Rocket Launcher",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d8+6\n* **Rounds**: 2\n* **Feats**: \n* **Cost**: 6800\n* **Difficulty to craft**: 12\n* **Special conditions**: Choose up to 4 targets in long range."
+    },
+    "filepath": "equipment/weapons/heavy/multi-rocket-launcher_7686544.md",
+    "bonuses": {}
+  },
+  {
+    "id": "psy_nullifier",
+    "name": "Psy Nullifier",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 2D8+10\n* **Rounds**: 6\n* **Feats**: \n* **Cost**: 14000\n* **Difficulty to craft**: 14\n* **Special conditions**: Deals damage to Psy Powers users. On hit, target has a -2 penalty to cast Psy Powers."
+    },
+    "filepath": "equipment/weapons/heavy/psy-nullifier_7686581.md",
+    "bonuses": {}
+  },
+  {
+    "id": "super_heavy_sniper_rifle",
+    "name": "Super Heavy Sniper Rifle",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d20+4\n* **Rounds**: 5\n* **Feats**: \n* **Cost**: 8800\n* **Difficulty to craft**: 12\n* **Special conditions**: If you hit a target with those rounds, the target's armor loses 5 points of armor until the end of combat, and it doesn't stack."
+    },
+    "filepath": "equipment/weapons/heavy/super-heavy-sniper-rifle_7686546.md",
+    "bonuses": {}
+  },
+  {
+    "id": "brass_knuckles",
+    "name": "Brass Knuckles",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Simple\n* **Damage**: 1d6\n* **Rounds**: \n* **Feats**: \n* **Cost**: 400\n* **Difficulty to craft**: 8\n* **Special conditions**: Count as unarmed weapon"
+    },
+    "filepath": "equipment/weapons/melee/brass-knuckles_7114574.md",
+    "bonuses": {}
+  },
+  {
+    "id": "drow_pickaxe",
+    "name": "Drow Pickaxe",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 1d6+2\n* **Rounds**: \n* **Feats**: \n* **Cost**: 1350\n* **Difficulty to craft**: 9\n* **Special conditions**: Gives +2 bonus to mining ore"
+    },
+    "filepath": "equipment/weapons/melee/drow-pickaxe_7583483.md",
+    "bonuses": {}
+  },
+  {
+    "id": "dwarf_axe",
+    "name": "Dwarf Axe",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d8+3\n* **Rounds**: \n* **Feats**: \n* **Cost**: 3400\n* **Difficulty to craft**: 11\n* **Special conditions**: First 8 attacks deal extra +3 damage"
+    },
+    "filepath": "equipment/weapons/melee/dwarf-axe_7583480.md",
+    "bonuses": {}
+  },
+  {
+    "id": "heat_knuckles",
+    "name": "Heat Knuckles",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 0\n* **Rounds**: \n* **Feats**: \n* **Cost**: 2500\n* **Difficulty to craft**: 11\n* **Special conditions**: It deals an extra 1d6 fire damage on a critical hit with unarmed attacks"
+    },
+    "filepath": "equipment/weapons/melee/heat-knuckles_7583391.md",
+    "bonuses": {}
+  },
+  {
+    "id": "hot_spear",
+    "name": "Hot Spear",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d10+2 fire damage\n* **Rounds**: \n* **Feats**: \n* **Cost**: 4000\n* **Difficulty to craft**: 11\n* **Special conditions**: Deals 1d8+2 damage if target immune to fire damage"
+    },
+    "filepath": "equipment/weapons/melee/hot-spear_7583256.md",
+    "bonuses": {}
+  },
+  {
+    "id": "knife",
+    "name": "Knife",
+    "type": "Weapon",
+    "tags": "",
+    "description": "\\*\\*Rarity\\*\\* = Simple  \n\\*\\*Damage\\*\\* = 1d4+1  \n\\*\\*Feats\\*\\* =  \n\\*\\*Cost\\*\\* =  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\nEasy to use, +1 to hit rolls\n\n---",
+    "sections": {
+      "Attributes": "* **Rarity**: Simple\n* **Damage**: 1d4+1\n* **Rounds**: \n* **Feats**: \n* **Cost**: 100\n* **Difficulty to craft**: 4\n* **Special conditions**: Easy to use, +1 to hit rolls\nCan roll Dexterity for hits"
+    },
+    "filepath": "equipment/weapons/melee/knife_7019231.md",
+    "bonuses": {}
+  },
+  {
+    "id": "neon_sword",
+    "name": "Neon Sword",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d8+3\n* **Rounds**: \n* **Feats**: \n* **Cost**: 3400\n* **Difficulty to craft**: 13\n* **Special conditions**: Ignores 2 points of armor"
+    },
+    "filepath": "equipment/weapons/melee/neon-sword_7114576.md",
+    "bonuses": {}
+  },
+  {
+    "id": "police_baton",
+    "name": "Police Baton",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 1d6+1\n* **Rounds**: \n* **Feats**: \n* **Cost**: 850\n* **Difficulty to craft**: 10\n* **Special conditions**: Deals Shock damage"
+    },
+    "filepath": "equipment/weapons/melee/police-baton_7124852.md",
+    "bonuses": {}
+  },
+  {
+    "id": "shock_knuckles",
+    "name": "Shock Knuckles",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: It deals 1d4 damage or more\n* **Rounds**: \n* **Feats**: \n* **Cost**: 600\n* **Difficulty to craft**: 9\n* **Special conditions**: Converts your unarmed damage to Shock damage"
+    },
+    "filepath": "equipment/weapons/melee/shock-knuckles_7548786.md",
+    "bonuses": {}
+  },
+  {
+    "id": "sword",
+    "name": "Sword",
+    "type": "Weapon",
+    "tags": "",
+    "description": "\\*\\*Rarity\\*\\* = Simple  \n\\*\\*Damage\\*\\* = 1d8  \n\\*\\*Feats\\*\\* =  \n\\*\\*Cost\\*\\* =  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\n---",
+    "sections": {
+      "Attributes": "* **Rarity**: Simple\n* **Damage**: 1d8\n* **Rounds**: \n* **Feats**: \n* **Cost**: 800\n* **Difficulty to craft**: 7\n* **Special conditions**:"
+    },
+    "filepath": "equipment/weapons/melee/sword_7019233.md",
+    "bonuses": {}
+  },
+  {
+    "id": "web",
+    "name": "Web",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d12+1\n* **Rounds**: \n* **Feats**: \n* **Cost**: 10000\n* **Difficulty to craft**: 15\n* **Special conditions**: Ignores all armor."
+    },
+    "filepath": "equipment/weapons/melee/web_7114588.md",
+    "bonuses": {}
+  },
+  {
+    "id": "xox",
+    "name": "XOX",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d8+3\n* **Rounds**: \n* **Feats**: Boomerang\n* **Cost**: 6500\n* **Difficulty to craft**: 13\n* **Special conditions**: Choose up to 3 targets that aren't in immediate range. You throw the hammer. Roll Perception vs difficulty. On a hit, the targets take 1d8+3 damage. After that, you need to use an Action to recall the hammer back to you. You can target targets up to adjacent Zones. It's an Action."
+    },
+    "filepath": "equipment/weapons/melee/xox_7124904.md",
+    "bonuses": {}
+  },
+  {
+    "id": "combat_rifle",
+    "name": "Combat Rifle",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 1d4+3\n* **Rounds**: 25\n* **Feats**: Full Auto\n* **Cost**: 1200\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/weapons/rifles/combat-rifle_7114030.md",
+    "bonuses": {}
+  },
+  {
+    "id": "fate",
+    "name": "Fate",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d12+4 Shock or 1d8+4 damage that ignores armor\n* **Rounds**: 7\n* **Feats**: \n* **Cost**: 9400\n* **Difficulty to craft**: 14\n* **Special conditions**:"
+    },
+    "filepath": "equipment/weapons/rifles/fate_7583231.md",
+    "bonuses": {}
+  },
+  {
+    "id": "fun_times",
+    "name": "Fun Times",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d6+3\n* **Rounds**: 25\n* **Feats**: Full Auto\nSilencer\nRed Dot \n* **Cost**: 3000\n* **Difficulty to craft**: 12\n* **Special conditions**: It doesn't have a penalty if firing in immediate range"
+    },
+    "filepath": "equipment/weapons/rifles/fun-times_7114278.md",
+    "bonuses": {}
+  },
+  {
+    "id": "greed",
+    "name": "Greed",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d10+2\n* **Rounds**: 30\n* **Feats**: Full Auto\nScope\n* **Cost**: 8500\n* **Difficulty to craft**: 14\n* **Special conditions**: When you use Full Auto, you don't have a penalty and can target up to 5 targets."
+    },
+    "filepath": "equipment/weapons/rifles/greed_7114311.md",
+    "bonuses": {}
+  },
+  {
+    "id": "high_caliber_rifle",
+    "name": "High Caliber Rifle",
+    "type": "Weapon",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d6+4\n* **Rounds**: 10\n* **Feats**: Full Auto\nRed Dot\n* **Cost**: 2800\n* **Difficulty to craft**: 12\n* **Special conditions**:"
+    },
+    "filepath": "equipment/weapons/rifles/high-caliber-rifle_7114247.md",
+    "bonuses": {}
+  },
+  {
+    "id": "old_assault_rifle",
+    "name": "Old Assault Rifle",
+    "type": "Weapon",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Simple\n* **Damage**: 1d6+1\n* **Rounds**: 30\n* **Feats**: Full Auto\n* **Cost**: 500\n* **Difficulty to craft**: 6\n* **Special conditions**:"
+    },
+    "filepath": "equipment/weapons/rifles/old-assault-rifle_7019225.md",
+    "bonuses": {}
+  },
+  {
+    "id": "old_loyal",
+    "name": "Old Loyal",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d20+4\n* **Rounds**: 1\n* **Feats**: \n* **Cost**: 8600\n* **Difficulty to craft**: 14\n* **Special conditions**: Ignores 2 points of armor"
+    },
+    "filepath": "equipment/weapons/rifles/old-loyal_7583358.md",
+    "bonuses": {}
+  },
+  {
+    "id": "smg",
+    "name": "SMG",
+    "type": "Weapon",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 1d4+2\n* **Rounds**: 20\n* **Feats**: Full Auto\n* **Cost**: 750\n* **Difficulty to craft**: 8\n* **Special conditions**: Can be used with one hand."
+    },
+    "filepath": "equipment/weapons/rifles/smg_7019223.md",
+    "bonuses": {}
+  },
+  {
+    "id": "stop",
+    "name": "Stop",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d8+2\n* **Rounds**: 20\n* **Feats**: Scope\nFull Auto\n* **Cost**: 7500\n* **Difficulty to craft**: 13\n* **Special conditions**: It deals an extra 1d6+1 Shock damage"
+    },
+    "filepath": "equipment/weapons/rifles/stop_7120791.md",
+    "bonuses": {}
+  },
+  {
+    "id": "street_cred",
+    "name": "Street Cred",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 1d6+1\n* **Rounds**: 40\n* **Feats**: Full Auto\n* **Cost**: 1250\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/weapons/rifles/street-cred_7114102.md",
+    "bonuses": {}
+  },
+  {
+    "id": "anarchy",
+    "name": "Anarchy",
+    "type": "Weapon",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d12+7\n* **Rounds**: 1\n* **Feats**: \n* **Cost**: 9000\n* **Difficulty to craft**: 14\n* **Special conditions**: This is a long-distance weapon. On roll of 1 you can't handle recoil and you drop this weapon on the ground."
+    },
+    "filepath": "equipment/weapons/shotguns/anarchy_7113924.md",
+    "bonuses": {}
+  },
+  {
+    "id": "automatic_shotgun",
+    "name": "Automatic Shotgun",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 1d8+2\n* **Rounds**: 11\n* **Feats**: \n* **Cost**: 1350\n* **Difficulty to craft**: 11\n* **Special conditions**: Once per combat, you can reload for free"
+    },
+    "filepath": "equipment/weapons/shotguns/automatic-shotgun_7113658.md",
+    "bonuses": {}
+  },
+  {
+    "id": "deliverance",
+    "name": "Deliverance",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d10+1 to target, 1d6+1 to all enemies in the same Zone as target\n* **Rounds**: 8\n* **Feats**: \n* **Cost**: 8600\n* **Difficulty to craft**: 13\n* **Special conditions**:"
+    },
+    "filepath": "equipment/weapons/shotguns/deliverance_7583314.md",
+    "bonuses": {}
+  },
+  {
+    "id": "double_barrel_shotgun",
+    "name": "Double Barrel Shotgun",
+    "type": "Weapon",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 1d8+2\n* **Rounds**: 2\n* **Feats**: \n* **Cost**: 2000\n* **Difficulty to craft**: 11\n* **Special conditions**: You can fire two shots at once, but it has a -2 penalty to hit. It deals x2 damage on hit. It's an Action."
+    },
+    "filepath": "equipment/weapons/shotguns/double-barrel-shotgun_7114009.md",
+    "bonuses": {}
+  },
+  {
+    "id": "old_batty",
+    "name": "Old Batty",
+    "type": "Weapon",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Simple\n* **Damage**: 1d8\n* **Rounds**: 2\n* **Feats**: \n* **Cost**: 400\n* **Difficulty to craft**: 5\n* **Special conditions**:"
+    },
+    "filepath": "equipment/weapons/shotguns/old-batty_7019218.md",
+    "bonuses": {}
+  },
+  {
+    "id": "plasma_shotgun",
+    "name": "Plasma Shotgun",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d10+4\n* **Rounds**: 5\n* **Feats**: \n* **Cost**: 6000\n* **Difficulty to craft**: 13\n* **Special conditions**: It deals an additional 1d10+4 damage to structures, vehicles, walls, and covers."
+    },
+    "filepath": "equipment/weapons/shotguns/plasma-shotgun_7113907.md",
+    "bonuses": {}
+  },
+  {
+    "id": "pump_action",
+    "name": "Pump Action",
+    "type": "Weapon",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Simple\n* **Damage**: 1d6+2\n* **Rounds**: 7\n* **Feats**: \n* **Cost**: 500\n* **Difficulty to craft**: 6\n* **Special conditions**:"
+    },
+    "filepath": "equipment/weapons/shotguns/pump-action_7019219.md",
+    "bonuses": {}
+  },
+  {
+    "id": "rage",
+    "name": "Rage",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: depends\n* **Rounds**: 5\n* **Feats**: \n* **Cost**: 10000\n* **Difficulty to craft**: 14\n* **Special conditions**: Choose a Zone, then roll 1d4 to determine the effect:\n1. Deals 1d8+2 fire damage\n2. Deals 1d6+3 Shock damage\n3. Targets roll Body vs 13, on a failure they take 5 Toxin damage for the next 3 rounds\n4. Choose one target, it takes 2d8+4 damage"
+    },
+    "filepath": "equipment/weapons/shotguns/rage_7583304.md",
+    "bonuses": {}
+  },
+  {
+    "id": "stomper_shotgun",
+    "name": "Stomper Shotgun",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d8+2\n* **Rounds**: 7\n* **Feats**: \n* **Cost**: 3500\n* **Difficulty to craft**: 12\n* **Special conditions**: It has 4 underbarrel rockets. They deal 1d10+1 damage to the entire Zone. It has long range. It has 4 charges. It's an Action."
+    },
+    "filepath": "equipment/weapons/shotguns/stomper-shotgun_7113660.md",
+    "bonuses": {}
+  },
+  {
+    "id": "trifecta",
+    "name": "Trifecta",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d10+2\n* **Rounds**: 3\n* **Feats**: \n* **Cost**: 7900\n* **Difficulty to craft**: 14\n* **Special conditions**: You can choose to fire up to 3 rounds at a single target. If you hit, you deal either x2 or x3 damage."
+    },
+    "filepath": "equipment/weapons/shotguns/trifecta_7113770.md",
+    "bonuses": {}
+  },
+  {
+    "id": "care",
+    "name": "Care",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d12+4\n* **Rounds**: 6\n* **Feats**: \n* **Cost**: 9000\n* **Difficulty to craft**: 14\n* **Special conditions**: Re-roll failed roll once per shot."
+    },
+    "filepath": "equipment/weapons/sniper rifles/care_7583191.md",
+    "bonuses": {}
+  },
+  {
+    "id": "dmg_v",
+    "name": "DMG-V",
+    "type": "Weapon",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage**: 1d8+1\n* **Rounds**: 5\n* **Feats**: Red Dot\n* **Cost**: 2000\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/weapons/sniper rifles/dmg-v_7019226.md",
+    "bonuses": {}
+  },
+  {
+    "id": "old_rifle",
+    "name": "Old Rifle",
+    "type": "Weapon",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Simple\n* **Damage**: 1d8\n* **Rounds**: 1\n* **Feats**: \n* **Cost**: 800\n* **Difficulty to craft**: 7\n* **Special conditions**:"
+    },
+    "filepath": "equipment/weapons/sniper rifles/old-rifle_7019227.md",
+    "bonuses": {}
+  },
+  {
+    "id": "siin",
+    "name": "Siin",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d10+3\n* **Rounds**: 3\n* **Feats**: \n* **Cost**: 9200\n* **Difficulty to craft**: 14\n* **Special conditions**: If you miss with this weapon, your bullet is not wasted; for the next 2 rounds, it tries to hit its mark."
+    },
+    "filepath": "equipment/weapons/sniper rifles/siin_7114483.md",
+    "bonuses": {}
+  },
+  {
+    "id": "vertigo_sniper_rifle",
+    "name": "Vertigo Sniper Rifle",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage**: 1d10+1\n* **Rounds**: 6\n* **Feats**: \n* **Cost**: 3700\n* **Difficulty to craft**: 12\n* **Special conditions**: The scope of this rifle can see through walls and other barricades up to 1m thick."
+    },
+    "filepath": "equipment/weapons/sniper rifles/vertigo-sniper-rifle_7114318.md",
+    "bonuses": {}
+  },
+  {
+    "id": "widow",
+    "name": "Widow",
+    "type": "Weapon",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage**: 1d12+1\n* **Rounds**: 5\n* **Feats**: \n* **Cost**: 8800\n* **Difficulty to craft**: 14\n* **Special conditions**: When you hit with this weapon, enemy must roll Body vs 14 or gain the Burn condition for the next 4 rounds."
+    },
+    "filepath": "equipment/weapons/sniper rifles/widow_7114324.md",
+    "bonuses": {}
+  }
+]

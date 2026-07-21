@@ -73,6 +73,10 @@ def _migrate():
                 ("conditions_json",             "TEXT DEFAULT '[]'"),
                 ("sheet_template_id",           "INTEGER"),
                 ("custom_fields_json",          "TEXT DEFAULT '{}'"),
+                ("race_id",                     "VARCHAR(128) DEFAULT ''"),
+                ("profession_id",                "VARCHAR(128) DEFAULT ''"),
+                ("minor_edge_count",             "INTEGER DEFAULT 0"),
+                ("major_edge_count",             "INTEGER DEFAULT 0"),
             ]
             for col, defn in _pc_extra:
                 if col not in pc_cols:

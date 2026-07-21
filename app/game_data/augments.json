@@ -1,0 +1,182 @@
+[
+  {
+    "id": "alpha_arms",
+    "name": "Alpha (Arms)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 1  \n\\*\\*Number of feats\\*\\* = 2  \n\\*\\*Cost\\*\\* = 7000  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\nYou deal extra 1d4 damage with unarmed attacks\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 1\n* **Number of feats**: 2\n* **Cost**: 8000\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/augments/arms/alpha-arms_6993475.md",
+    "bonuses": {}
+  },
+  {
+    "id": "beta_arms",
+    "name": "Beta (Arms)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 2  \n\\*\\*Number of feats\\*\\* = 4  \n\\*\\*Cost\\*\\* = 11500  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\nYou deal extra 1d4+1 damage with unarmed attacks\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 2\n* **Number of feats**: 4\n* **Cost**: 20000\n* **Difficulty to craft**: 14\n* **Special conditions**:"
+    },
+    "filepath": "equipment/augments/arms/beta-arms_6993477.md",
+    "bonuses": {}
+  },
+  {
+    "id": "lambda_arms",
+    "name": "Lambda (Arms)",
+    "type": "",
+    "tags": "",
+    "description": "**\\*\\*Toughness penalty\\*\\* = 3  \n\\*\\*Number of feats\\*\\* = 6  \n\\*\\*Cost\\*\\* = 14000  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\***\n\nYou deal extra 1d4+2 damage that ignores 1 point of armor with unarmed attacks\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 3\n* **Number of feats**: 6\n* **Cost**: 35000\n* **Difficulty to craft**: 17\n* **Special conditions**:"
+    },
+    "filepath": "equipment/augments/arms/lambda-arms_6993479.md",
+    "bonuses": {}
+  },
+  {
+    "id": "alpha_frame",
+    "name": "Alpha (Frame)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 1  \n\\*\\*Number of feats\\*\\* = 2  \n\\*\\*Cost\\*\\* = 7500  \n\\*\\*Difficulty to craft\\*\\* = 11  \n\\*\\*Special conditions\\*\\*\n\nYou have 2 points of temporal Health at start of combat. They are deducted at the end of combat.\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 1\n* **Number of feats**: 2\n* **Cost**: 9000\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/augments/frame/alpha-frame_6993490.md",
+    "bonuses": {}
+  },
+  {
+    "id": "beta_frame",
+    "name": "Beta (Frame)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 2  \n\\*\\*Number of feats\\*\\* = 4  \n\\*\\*Cost\\*\\* = 11500  \n\\*\\*Difficulty to craft\\*\\* = 13  \n\\*\\*Special conditions\\*\\*\n\nYou have 4 points of temporal Health at start of combat. They are deducted at the end of combat.\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 2\n* **Number of feats**: 4\n* **Cost**: 22000\n* **Difficulty to craft**: 15\n* **Special conditions**:"
+    },
+    "filepath": "equipment/augments/frame/beta-frame_6993492.md",
+    "bonuses": {}
+  },
+  {
+    "id": "lambda_frame",
+    "name": "Lambda (Frame)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 3  \n\\*\\*Number of feats\\*\\* = 6  \n\\*\\*Cost\\*\\* = 14500  \n\\*\\*Difficulty to craft\\*\\* = 15  \n\\*\\*Special conditions\\*\\*\n\nYou have 5 points of temporal Health and Shock at start of combat. They are deducted at the end of combat.\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 3\n* **Number of feats**: 6\n* **Cost**: 38000\n* **Difficulty to craft**: 18\n* **Special conditions**:"
+    },
+    "filepath": "equipment/augments/frame/lambda-frame_6993494.md",
+    "bonuses": {}
+  },
+  {
+    "id": "alpha_head",
+    "name": "Alpha (Head)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 1  \n\\*\\*Number of feats\\*\\* = 2  \n\\*\\*Cost\\*\\* = 7000  \n\\*\\*Difficulty to craft\\*\\* = 12  \n\\*\\*Special conditions\\*\\*\n\nYou can retry stat check with -1 penalty. Applies to Mental Stats.\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 1\n* **Number of feats**: 2\n* **Cost**: 8000\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/augments/head/alpha-head_6993464.md",
+    "bonuses": {}
+  },
+  {
+    "id": "beta_head",
+    "name": "Beta (Head)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 2  \n\\*\\*Number of feats\\*\\* = 4  \n\\*\\*Cost\\*\\* = 11500  \n\\*\\*Difficulty to craft\\*\\* = 13  \n\\*\\*Special conditions\\*\\*\n\nYou can retry stat check with 0 penalty. Applies to Mental Stats.\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 2\n* **Number of feats**: 4\n* **Cost**: 20000\n* **Difficulty to craft**: 14\n* **Special conditions**:"
+    },
+    "filepath": "equipment/augments/head/beta-head_6993466.md",
+    "bonuses": {}
+  },
+  {
+    "id": "lambda_head",
+    "name": "Lambda (Head)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 3  \n\\*\\*Number of feats\\*\\* = 6  \n\\*\\*Cost\\*\\* = 13800  \n\\*\\*Difficulty to craft\\*\\* = 14  \n\\*\\*Special conditions\\*\\*\n\nYou can retry stat check with 0 penalty.\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 3\n* **Number of feats**: 6\n* **Cost**: 35000\n* **Difficulty to craft**: 17\n* **Special conditions**:"
+    },
+    "filepath": "equipment/augments/head/lambda-head_6993468.md",
+    "bonuses": {}
+  },
+  {
+    "id": "alpha_legs",
+    "name": "Alpha (Legs)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 1  \n\\*\\*Number of feats\\*\\* = 2  \n\\*\\*Cost\\*\\* = 7000  \n\\*\\*Difficulty to craft\\*\\* = 12  \n\\*\\*Special conditions\\*\\*\n\nOnce per combat you can use a Reaction to move to an adjacent Zone\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 1\n* **Number of feats**: 2\n* **Cost**: 8000\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/augments/legs/alpha-legs_6993484.md",
+    "bonuses": {}
+  },
+  {
+    "id": "beta_legs",
+    "name": "Beta (Legs)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 2  \n\\*\\*Number of feats\\*\\* = 4  \n\\*\\*Cost\\*\\* = 11000  \n\\*\\*Difficulty to craft\\*\\* = 13  \n\\*\\*Special conditions\\*\\*\n\nTwice per combat you can use a Reaction to move to an adjacent Zone\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 2\n* **Number of feats**: 4\n* **Cost**: 20000\n* **Difficulty to craft**: 14\n* **Special conditions**:"
+    },
+    "filepath": "equipment/augments/legs/beta-legs_6993486.md",
+    "bonuses": {}
+  },
+  {
+    "id": "lambda_legs",
+    "name": "Lambda (Legs)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 3  \n\\*\\*Number of feats\\*\\* = 6  \n\\*\\*Cost\\*\\* = 13000  \n\\*\\*Difficulty to craft\\*\\* = 15  \n\\*\\*Special conditions\\*\\*\n\nTwice per combat you can use a Reaction to move to an adjacent Zone or once per combat use a Reaction to move up to two adjacent Zones.\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 3\n* **Number of feats**: 6\n* **Cost**: 35000\n* **Difficulty to craft**: 17\n* **Special conditions**:"
+    },
+    "filepath": "equipment/augments/legs/lambda-legs_6993487.md",
+    "bonuses": {}
+  },
+  {
+    "id": "alpha_torso",
+    "name": "Alpha (Torso)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 1  \n\\*\\*Number of feats\\*\\* = 2  \n\\*\\*Cost\\*\\* = 7800  \n\\*\\*Difficulty to craft\\*\\* = 13  \n\\*\\*Special conditions\\*\\*\n\nGain +1 armor against first physical attack in combat.\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 1\n* **Number of feats**: 2\n* **Cost**: 8000\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/augments/torso/alpha-torso_6993471.md",
+    "bonuses": {}
+  },
+  {
+    "id": "beta_torso",
+    "name": "Beta (Torso)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 2  \n\\*\\*Number of feats\\*\\* = 4  \n\\*\\*Cost\\*\\* = 11300  \n\\*\\*Difficulty to craft\\*\\* = 14  \n\\*\\*Special conditions\\*\\*\n\nGain +2 armor against first physical attack in combat.\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 2\n* **Number of feats**: 4\n* **Cost**: 20000\n* **Difficulty to craft**: 14\n* **Special conditions**:"
+    },
+    "filepath": "equipment/augments/torso/beta-torso_6993472.md",
+    "bonuses": {}
+  },
+  {
+    "id": "lambda_torso",
+    "name": "Lambda (Torso)",
+    "type": "",
+    "tags": "",
+    "description": "\\*\\*Toughness penalty\\*\\* = 3  \n\\*\\*Number of feats\\*\\* = 6  \n\\*\\*Cost\\*\\* = 14800  \n\\*\\*Difficulty to craft\\*\\* = 15  \n\\*\\*Special conditions\\*\\*\n\nGain +3 armor against first physical attack in combat.\n\n---",
+    "sections": {
+      "Attributes": "* **CA penalty**: 3\n* **Number of feats**: 6\n* **Cost**: 35000\n* **Difficulty to craft**: 17\n* **Special conditions**:"
+    },
+    "filepath": "equipment/augments/torso/lambda-torso_6993473.md",
+    "bonuses": {}
+  }
+]

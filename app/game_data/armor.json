@@ -1,0 +1,194 @@
+[
+  {
+    "id": "exoskeleton",
+    "name": "Exoskeleton",
+    "type": "Armor",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage reduction**: 7\n* **Intuition and Dexterity penalty**: 4\n* **Feats**: \n* **Cost**: 15000\n* **Difficulty to craft**: 15\n* **Special conditions**: +1 bonus to athletic and break rolls. Exosuit."
+    },
+    "filepath": "equipment/armor/heavy armor/exoskeleton_7019282.md",
+    "bonuses": {}
+  },
+  {
+    "id": "fullbody_armor",
+    "name": "Fullbody armor",
+    "type": "Armor",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Simple\n* **Damage reduction**: 5\n* **Intuition and Dexterity penalty**: 2\n* **Feats**: \n* **Cost**: 4500\n* **Difficulty to craft**: 13\n* **Special conditions**:"
+    },
+    "filepath": "equipment/armor/heavy armor/fullbody-armor_7019279.md",
+    "bonuses": {}
+  },
+  {
+    "id": "heavy_riot_gear",
+    "name": "Heavy Riot Gear",
+    "type": "Armor",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage reduction**: 6\n* **Intuition and Dexterity penalty**: 3\n* **Feats**: \n* **Cost**: 6800\n* **Difficulty to craft**: 13\n* **Special conditions**:"
+    },
+    "filepath": "equipment/armor/heavy armor/heavy-riot-gear_7198587.md",
+    "bonuses": {}
+  },
+  {
+    "id": "stormguard_exosuit",
+    "name": "Stormguard Exosuit",
+    "type": "Armor",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage reduction**: 8\n* **Intuition and Dexterity penalty**: 4\n* **Feats**: \n* **Cost**: 19000\n* **Difficulty to craft**: 16\n* **Special conditions**: Immune to all environmental damage. +1 bonus to athletic and break rolls. Exosuit."
+    },
+    "filepath": "equipment/armor/heavy armor/stormguard-exosuit_7198591.md",
+    "bonuses": {}
+  },
+  {
+    "id": "ark_bodysuit",
+    "name": "ARK Bodysuit",
+    "type": "Armor",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage reduction**: 3\n* **Intuition and Dexterity penalty**: \n* **Feats**: \n* **Cost**: 9500\n* **Difficulty to craft**: 13\n* **Special conditions**: This bodysuit has a personal energy shield with 10 Health, it regains 1 Health at the start of each turn."
+    },
+    "filepath": "equipment/armor/light armor/ark-bodysuit_7198441.md",
+    "bonuses": {}
+  },
+  {
+    "id": "flexible_plates",
+    "name": "Flexible Plates",
+    "type": "Armor",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage reduction**: 1\n* **Intuition and Dexterity penalty**: \n* **Feats**: \n* **Cost**: 900\n* **Difficulty to craft**: 9\n* **Special conditions**: Easy to hide, have +1 bonus for this."
+    },
+    "filepath": "equipment/armor/light armor/flexible-plates_7019274.md",
+    "bonuses": {}
+  },
+  {
+    "id": "kevlar_robe",
+    "name": "Kevlar Robe",
+    "type": "Armor",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Simple\n* **Damage reduction**: 2\n* **Intuition and Dexterity penalty**: \n* **Feats**: \n* **Cost**: 1400\n* **Difficulty to craft**: 8\n* **Special conditions**:"
+    },
+    "filepath": "equipment/armor/light armor/kevlar-robe_7019275.md",
+    "bonuses": {}
+  },
+  {
+    "id": "light_exosuit",
+    "name": "Light Exosuit",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage reduction**: 4\n* **Intuition and Dexterity penalty**: 1\n* **Feats**: \n* **Cost**: 10000\n* **Difficulty to craft**: 14\n* **Special conditions**: Exosuit"
+    },
+    "filepath": "equipment/armor/light armor/light-exosuit_7615267.md",
+    "bonuses": {}
+  },
+  {
+    "id": "nanocoated_bodysuit",
+    "name": "Nanocoated bodysuit",
+    "type": "Armor",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage reduction**: 2\n* **Intuition and Dexterity penalty**: \n* **Feats**: \n* **Cost**: 4500\n* **Difficulty to craft**: 12\n* **Special conditions**: +1 bonus to rolls against Conditions"
+    },
+    "filepath": "equipment/armor/light armor/nanocoated-bodysuit_7198423.md",
+    "bonuses": {}
+  },
+  {
+    "id": "protected_jacket",
+    "name": "Protected Jacket",
+    "type": "Armor",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Simple\n* **Damage reduction**: 1\n* **Intuition and Dexterity penalty**: \n* **Feats**: \n* **Cost**: 500\n* **Difficulty to craft**: 6\n* **Special conditions**:"
+    },
+    "filepath": "equipment/armor/light armor/protected-jacket_7019269.md",
+    "bonuses": {}
+  },
+  {
+    "id": "adaptive_armor_plates",
+    "name": "Adaptive Armor Plates",
+    "type": "Armor",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage reduction**: 4\n* **Intuition and Dexterity penalty**: 2\n* **Feats**: \n* **Cost**: 5500\n* **Difficulty to craft**: 12\n* **Special conditions**: Reduce damage from explosives by half rounded down."
+    },
+    "filepath": "equipment/armor/medium armor/adaptive-armor-plates_7198518.md",
+    "bonuses": {}
+  },
+  {
+    "id": "biofiber_armor",
+    "name": "Biofiber Armor",
+    "type": "Armor",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage reduction**: 3\n* **Intuition and Dexterity penalty**: \n* **Feats**: \n* **Cost**: 5000\n* **Difficulty to craft**: 12\n* **Special conditions**: Requires Bio Augmentation"
+    },
+    "filepath": "equipment/armor/medium armor/biofiber-armor_7198501.md",
+    "bonuses": {}
+  },
+  {
+    "id": "bulletproof_vest",
+    "name": "Bulletproof Vest",
+    "type": "Armor",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Rarity**: Simple\n* **Damage reduction**: 3\n* **Intuition and Dexterity penalty**: 1\n* **Feats**: \n* **Cost**: 2800\n* **Difficulty to craft**: 9\n* **Special conditions**:"
+    },
+    "filepath": "equipment/armor/medium armor/bulletproof-vest_7019278.md",
+    "bonuses": {}
+  },
+  {
+    "id": "kinetic_absorption_armor",
+    "name": "Kinetic Absorption Armor",
+    "type": "Armor",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Exceptional\n* **Damage reduction**: 4\n* **Intuition and Dexterity penalty**: 1\n* **Feats**: \n* **Cost**: 10800\n* **Difficulty to craft**: 13\n* **Special conditions**: Every time you get hit by projectile or melee attack while wearing this armor, you can target enemy in immediate range and deal 1d4 Shock damage. Can be used 2 times per round."
+    },
+    "filepath": "equipment/armor/medium armor/kinetic-absorption-armor_7198552.md",
+    "bonuses": {}
+  },
+  {
+    "id": "medium_exosuit",
+    "name": "Medium Exosuit",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Advanced\n* **Damage reduction**: 5\n* **Intuition and Dexterity penalty**: 3\n* **Feats**: \n* **Cost**: 12500\n* **Difficulty to craft**: 14\n* **Special conditions**: Exosuit"
+    },
+    "filepath": "equipment/armor/medium armor/medium-exosuit_7615276.md",
+    "bonuses": {}
+  },
+  {
+    "id": "reinforced_cyberweave",
+    "name": "Reinforced Cyberweave",
+    "type": "Armor",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Rarity**: Standard\n* **Damage reduction**: 4\n* **Intuition and Dexterity penalty**: 2\n* **Feats**: \n* **Cost**: 3600\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/armor/medium armor/reinforced-cyberweave_7198538.md",
+    "bonuses": {}
+  }
+]

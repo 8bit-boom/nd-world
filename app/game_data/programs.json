@@ -1,0 +1,194 @@
+[
+  {
+    "id": "attacker_20",
+    "name": "Attacker 2.0",
+    "type": "Programmz",
+    "tags": "",
+    "description": "\\*\\*Effect\\*\\* = deals 1D6+3 damage  \n\\*\\*MP Cost\\*\\* = 0  \n\\*\\*Cost\\*\\* = 1850  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\n---",
+    "sections": {
+      "Attributes": "* **Effect**: Deals 1D6+3 damage\n* **MP Cost**: \n* **Type**: Action\n* **Cost**: 1850\n* **Difficulty to craft**: 9\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/programmz/attacker-20_7019132.md",
+    "bonuses": {}
+  },
+  {
+    "id": "attacker",
+    "name": "Attacker",
+    "type": "Programmz",
+    "tags": "",
+    "description": "\\*\\*Effect\\*\\* = deals 1D4+3 damage  \n\\*\\*MP Cost\\*\\* = 0  \n\\*\\*Type\\*\\* = Action  \n\\*\\*Cost\\*\\* = 285  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\n---",
+    "sections": {
+      "Attributes": "* **Effect**: Deals 1D4+3 damage\n* **MP Cost**: \n* **Type**: Action\n* **Cost**: 285\n* **Difficulty to craft**: 6\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/programmz/attacker_7019127.md",
+    "bonuses": {}
+  },
+  {
+    "id": "berserk",
+    "name": "Berserk",
+    "type": "Programmz",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Target rolls Willpower vs 13. On a failure, the target goes berserk and attacks the nearest NPC or PC. Lasts 1d4+2 rounds\n* **MP Cost**: 2\n* **Type**: Active\n* **Cost**: 3000\n* **Difficulty to craft**: 12\n* **Special conditions**: Red programmz\nCan only be used on augmented opponents"
+    },
+    "filepath": "equipment/items/programmz/berserk_7548668.md",
+    "bonuses": {}
+  },
+  {
+    "id": "black_cat",
+    "name": "Black Cat",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: This proggramz infiltrates system and goes random shit to your advantage(DM decision what it does).\n* **MP Cost**: \n* **Type**: Active\n* **Cost**: 2000\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/programmz/black-cat_7548718.md",
+    "bonuses": {}
+  },
+  {
+    "id": "camera_worm",
+    "name": "Camera Worm",
+    "type": "Programmz",
+    "tags": "",
+    "description": "\\*\\*Effect\\*\\* = You use AI to take control of remote cameras in the system  \n\\*\\*MP Cost\\*\\* = 2  \n\\*\\*Cost\\*\\* = 1400  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\n---",
+    "sections": {
+      "Attributes": "* **Effect**: You use AI to take control of remote cameras in the system\n* **MP Cost**: 2\n* **Type**: Action\n* **Cost**: 1400\n* **Difficulty to craft**: 8\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/programmz/camera-worm_7019134.md",
+    "bonuses": {}
+  },
+  {
+    "id": "defender_20",
+    "name": "Defender 2.0",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Raise your firewall by 4 till start of your next turn \n* **MP Cost**: \n* **Type**: Active\n* **Cost**: 1100\n* **Difficulty to craft**: 9\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/programmz/defender-20_7548699.md",
+    "bonuses": {}
+  },
+  {
+    "id": "defender",
+    "name": "Defender",
+    "type": "Programmz",
+    "tags": "",
+    "description": "\\*\\*Effect\\*\\* = raise your firewall by 2 till start of your next turn  \n\\*\\*MP Cost\\*\\* = 0  \n\\*\\*Type\\*\\* = Action  \n\\*\\*Cost\\*\\* = 350  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\n---",
+    "sections": {
+      "Attributes": "* **Effect**: Raise your firewall by 2 till start of your next turn\n* **MP Cost**: \n* **Type**: Action\n* **Cost**: 350\n* **Difficulty to craft**: 6\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/programmz/defender_7019125.md",
+    "bonuses": {}
+  },
+  {
+    "id": "disable_augs",
+    "name": "Disable Augs",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Target rolls Body vs 13. On a failure, the target's augments become disabled for 3 rounds.\n* **MP Cost**: 2\n* **Type**: Active\n* **Cost**: 2800\n* **Difficulty to craft**: 12\n* **Special conditions**: Red programmz\nCan only be used on augmented opponents"
+    },
+    "filepath": "equipment/items/programmz/disable-augs_7548693.md",
+    "bonuses": {}
+  },
+  {
+    "id": "eraser",
+    "name": "Eraser",
+    "type": "Programmz",
+    "tags": "",
+    "description": "\\*\\*Effect\\*\\* = You confuse a person for 1D4+1 rounds  \n\\*\\*MP Cost\\*\\* = 1  \n\\*\\*Cost\\*\\* = 1600  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*  \nCan only be used on augmented opponents\n\nRed programmz\n\n---",
+    "sections": {
+      "Attributes": "* **Effect**: You confuse a person for 1D4+1 rounds. Target rolls Willpower vs 12.\n* **MP Cost**: 1\n* **Cost**: 1600\n* **Difficulty to craft**: 11\n* **Special conditions**: Red programmz\nCan only be used on augmented opponents"
+    },
+    "filepath": "equipment/items/programmz/eraser_7019142.md",
+    "bonuses": {}
+  },
+  {
+    "id": "escape",
+    "name": "Escape",
+    "type": "Programmz",
+    "tags": "",
+    "description": "\\*\\*Effect\\*\\* = You immediately leave cyberspace without suffering damage  \n\\*\\*MP Cost\\*\\* = 1  \n\\*\\*Cost\\*\\* = 1550  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\n---",
+    "sections": {
+      "Attributes": "* **Effect**: You immediately leave cyberspace without suffering damage\n* **MP Cost**: 1\n* **Type**: Action\n* **Cost**: 1550\n* **Difficulty to craft**: 9\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/programmz/escape_7019133.md",
+    "bonuses": {}
+  },
+  {
+    "id": "frendly_fire",
+    "name": "Friendly Fire",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Target rolls Intellect vs your Intellect roll. On a failure, the target will attack its allies next turn.\n* **MP Cost**: 1\n* **Type**: Active\n* **Cost**: 1300\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/programmz/frendly-fire_7548704.md",
+    "bonuses": {}
+  },
+  {
+    "id": "ghost",
+    "name": "Ghost 👻",
+    "type": "Programmz",
+    "tags": "",
+    "description": "\\*\\*Effect\\*\\* = lowers alert level by 1  \n\\*\\*MP Cost\\*\\* = 1  \n\\*\\*Type\\*\\* = Action  \n\\*\\*Cost\\*\\* = 800  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*  \nOnce per hack\n\n---",
+    "sections": {
+      "Attributes": "* **Effect**: Lowers alert level by 1\n* **MP Cost**: 1\n* **Type**: Action\n* **Cost**: 800\n* **Difficulty to craft**: 8\n* **Special conditions**: Once per hack"
+    },
+    "filepath": "equipment/items/programmz/ghost_7019130.md",
+    "bonuses": {}
+  },
+  {
+    "id": "interrupter",
+    "name": "Interrupter",
+    "type": "Programmz",
+    "tags": "",
+    "description": "\\*\\*Effect\\*\\* = You steal turn from your enemy, makes you first in initiative order  \n\\*\\*MP Cost\\*\\* = 1  \n\\*\\*Type\\*\\* = Reaction  \n\\*\\*Cost\\*\\* = 450  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\n---",
+    "sections": {
+      "Attributes": "* **Effect**: You steal turn from your enemy, makes you first in initiative order\n* **MP Cost**: 1\n* **Type**: Reaction\n* **Cost**: 450\n* **Difficulty to craft**: 7\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/programmz/interrupter_7019131.md",
+    "bonuses": {}
+  },
+  {
+    "id": "scanner",
+    "name": "Scanner",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Scans if there are any hostile ICE\n* **MP Cost**: 1\n* **Type**: Active\n* **Cost**: 1000\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/programmz/scanner_7582750.md",
+    "bonuses": {}
+  },
+  {
+    "id": "short_circuit",
+    "name": "Short Circuit",
+    "type": "Programmz",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: Target rolls Willpower vs 15. On a failure, it takes 1d20+6 damage that ignores armor; on a critical failure, the target dies.\n* **MP Cost**: 3\n* **Type**: Active\n* **Cost**: 5500\n* **Difficulty to craft**: 14\n* **Special conditions**: Red programmz\nCan only be used on augmented opponents"
+    },
+    "filepath": "equipment/items/programmz/short-circuit_7548676.md",
+    "bonuses": {}
+  },
+  {
+    "id": "turret_worm",
+    "name": "Turret Worm",
+    "type": "Programmz",
+    "tags": "",
+    "description": "\\*\\*Effect\\*\\* = You use AI to take over turrets  \n\\*\\*MP Cost\\*\\* = 2  \n\\*\\*Cost\\*\\* = 2000  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\n---",
+    "sections": {
+      "Attributes": "* **Effect**: You use AI to take over turrets\n* **MP Cost**: 2\n* **Type**: Action\n* **Cost**: 2000\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/programmz/turret-worm_7019135.md",
+    "bonuses": {}
+  }
+]

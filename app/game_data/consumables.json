@@ -1,0 +1,458 @@
+[
+  {
+    "id": "fluk23",
+    "name": "FLUK23",
+    "type": "Cyberdex",
+    "tags": "",
+    "description": "\\*\\*Max programmz capacity\\*\\* = 4  \n\\*\\*Firewall\\*\\* = 1  \n\\*\\*Cost\\*\\* = 4500  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*  \nCan use red programmz\n\nIllegal to own and use\n\n---",
+    "sections": {
+      "Attributes": "* **Max programmz capacity**: 4\n* **Firewall**: 1\n* **Cost**: 4500\n* **Difficulty to craft**: 11\n* **Special conditions**: Can use red programmz"
+    },
+    "filepath": "equipment/items/cyberdex/fluk23_7019123.md",
+    "bonuses": {}
+  },
+  {
+    "id": "mx_2",
+    "name": "MX-2",
+    "type": "Cyberdex",
+    "tags": "",
+    "description": "\\*\\*Max programmz capacity\\*\\* = 3  \n\\*\\*Firewall\\*\\* = 1  \n\\*\\*Cost\\*\\* = 800  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\n---",
+    "sections": {
+      "Attributes": "* **Max programmz capacity**: 3\n* **Firewall**: 1\n* **Cost**: 800\n* **Difficulty to craft**: 6\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/cyberdex/mx-2_7019115.md",
+    "bonuses": {}
+  },
+  {
+    "id": "mx_3",
+    "name": "MX-3",
+    "type": "Cyberdex",
+    "tags": "",
+    "description": "\\*\\*Max programmz capacity\\*\\* = 4  \n\\*\\*Firewall\\*\\* = 2  \n\\*\\*Cost\\*\\* = 2200  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\n---",
+    "sections": {
+      "Attributes": "* **Max programmz capacity**: 4\n* **Firewall**: 2\n* **Cost**: 2200\n* **Difficulty to craft**: 9\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/cyberdex/mx-3_7019122.md",
+    "bonuses": {}
+  },
+  {
+    "id": "mx_5",
+    "name": "MX-5",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Max programmz capacity**: 7\n* **Firewall**: 3\n* **Cost**: 8500\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/cyberdex/mx-5_7548328.md",
+    "bonuses": {}
+  },
+  {
+    "id": "raze_2000",
+    "name": "Raze 2000",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Max programmz capacity**: 5\n* **Firewall**: 4\n* **Cost**: 8000\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/cyberdex/raze-2000_7548339.md",
+    "bonuses": {}
+  },
+  {
+    "id": "raze_550",
+    "name": "Raze 550",
+    "type": "Cyberdex",
+    "tags": "",
+    "description": "\\*\\*Max programmz capacity\\*\\* = 3  \n\\*\\*Firewall\\*\\* = 2  \n\\*\\*Cost\\*\\* = 1100  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\n---",
+    "sections": {
+      "Attributes": "* **Max programmz capacity**: 3\n* **Firewall**: 2\n* **Cost**: 1100\n* **Difficulty to craft**: 7\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/cyberdex/raze-550_7019117.md",
+    "bonuses": {}
+  },
+  {
+    "id": "skullcracker",
+    "name": "SkullCracker",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Max programmz capacity**: 6\n* **Firewall**: 3\n* **Cost**: 9000\n* **Difficulty to craft**: 13\n* **Special conditions**: Can use red programmz"
+    },
+    "filepath": "equipment/items/cyberdex/skullcracker_7548291.md",
+    "bonuses": {}
+  },
+  {
+    "id": "used_cyberdex",
+    "name": "Used Cyberdex",
+    "type": "Cyberdex",
+    "tags": "",
+    "description": "\\*\\*Max programmz capacity\\*\\* = 2  \n\\*\\*Firewall\\*\\* = 0  \n\\*\\*Cost\\*\\* = 380  \n\\*\\*Difficulty to craft\\*\\* =  \n\\*\\*Special conditions\\*\\*\n\n---",
+    "sections": {
+      "Attributes": "* **Max programmz capacity**: 2\n* **Firewall**: \n* **Cost**: 380\n* **Difficulty to craft**: 5\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/cyberdex/used-cyberdex_7019112.md",
+    "bonuses": {}
+  },
+  {
+    "id": "voiddex",
+    "name": "VoidDex",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Max programmz capacity**: 9\n* **Firewall**: 5\n* **Cost**: 14000\n* **Difficulty to craft**: 14\n* **Special conditions**: Can use red programmz"
+    },
+    "filepath": "equipment/items/cyberdex/voiddex_7548298.md",
+    "bonuses": {}
+  },
+  {
+    "id": "coke",
+    "name": "Coke",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Gain +1 to athletic rolls and rolls to resist being tired. Lasts 20 minutes.\n* **Cost**: 350\n* **Difficulty to craft**: 9\n* **Special conditions**: If you are psyonic, you instead gain +1 to rolls related to Arcanist psy powers. You also have sound hallucinations."
+    },
+    "filepath": "equipment/items/drugs/coke_7499136.md",
+    "bonuses": {}
+  },
+  {
+    "id": "crimson_dust",
+    "name": "Crimson Dust",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: You gain +1 to hit and dodge rolls. Lasts 20 minutes.\n* **Cost**: 850\n* **Difficulty to craft**: 11\n* **Special conditions**: If you are psyonic, you instead gain +1 to rolls related to All psy powers. You also have sound, smell and visual hallucinations."
+    },
+    "filepath": "equipment/items/drugs/crimson-dust_7499143.md",
+    "bonuses": {}
+  },
+  {
+    "id": "flux",
+    "name": "Flux",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: You gain +1 to persuasion rolls and balance rolls. Lasts 20 minutes.\n* **Cost**: 380\n* **Difficulty to craft**: 9\n* **Special conditions**: If you are psyonic, you instead gain +1 to rolls related to Yellow Priest psy powers. You also have smell hallucinations."
+    },
+    "filepath": "equipment/items/drugs/flux_7499142.md",
+    "bonuses": {}
+  },
+  {
+    "id": "snork",
+    "name": "Snork",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: You gain +1 to awareness rolls and rolls involving smell. Lasts 20 minutes.\n* **Cost**: 400\n* **Difficulty to craft**: 9\n* **Special conditions**: If you are psyonic, you instead gain +1 to rolls related to Curser psy powers. You also have visual hallucinations."
+    },
+    "filepath": "equipment/items/drugs/snork_7499139.md",
+    "bonuses": {}
+  },
+  {
+    "id": "casual_clothes",
+    "name": "Casual Clothes",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Casual Clothes\n* **Cost**: 200\n* **Difficulty to craft**: 5\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/misc/casual-clothes_7531565.md",
+    "bonuses": {}
+  },
+  {
+    "id": "electric_cigarette",
+    "name": "Electric Cigarette",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Electric Cigarette\n* **Cost**: 35\n* **Difficulty to craft**: 4\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/misc/electric-cigarette_7533431.md",
+    "bonuses": {}
+  },
+  {
+    "id": "expensive_clothes",
+    "name": "Expensive Clothes",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Expensive Clothes\n* **Cost**: 1000\n* **Difficulty to craft**: 8\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/misc/expensive-clothes_7531576.md",
+    "bonuses": {}
+  },
+  {
+    "id": "fuel",
+    "name": "Fuel",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Fuel for non electric vehicles \n* **Cost**: 200\n* **Difficulty to craft**: 8\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/misc/fuel_7548366.md",
+    "bonuses": {}
+  },
+  {
+    "id": "gaming_console",
+    "name": "Gaming Console",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: You can play it\n* **Cost**: 500\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/misc/gaming-console_7499156.md",
+    "bonuses": {}
+  },
+  {
+    "id": "notebook",
+    "name": "Notebook",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: It's a notebook\n* **Cost**: 1500\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/misc/notebook_7499151.md",
+    "bonuses": {}
+  },
+  {
+    "id": "pack_of_cigarettes",
+    "name": "Pack of Cigarettes",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Cigarettes\n* **Cost**: 150\n* **Difficulty to craft**: 4\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/misc/pack-of-cigarettes_7533443.md",
+    "bonuses": {}
+  },
+  {
+    "id": "phone",
+    "name": "Phone",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: It's a mobile phone\n* **Cost**: 500\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/misc/phone_7499150.md",
+    "bonuses": {}
+  },
+  {
+    "id": "style_augmentation",
+    "name": "Style Augmentation",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Change your style with augs! Change your eyes, hair, skin and so on.\n* **Cost**: 500\n* **Difficulty to craft**: 8\n* **Special conditions**: Can be more expensive or cheaper depending on difficulty of aug."
+    },
+    "filepath": "equipment/items/misc/style-augmentation_7534325.md",
+    "bonuses": {}
+  },
+  {
+    "id": "stylish_clothes",
+    "name": "Stylish Clothes",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Stylish Clothes\n* **Cost**: 500\n* **Difficulty to craft**: 6\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/misc/stylish-clothes_7531570.md",
+    "bonuses": {}
+  },
+  {
+    "id": "vr_glasses",
+    "name": "VR Glasses",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Allows use of virtual reality\n* **Cost**: 350\n* **Difficulty to craft**: 8\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/misc/vr-glasses_7499117.md",
+    "bonuses": {}
+  },
+  {
+    "id": "adrenaline_booster",
+    "name": "Adrenaline booster",
+    "type": "Stims",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: Heals 4 Health\n* **Cost**: 300\n* **Difficulty to craft**: 7\n* **Special conditions**: Can't be used more than 3 times per Rest. If used more than 3 times, roll Body vs Difficulty. \nIf the target has 0 Health, use of this gives it 1 Health"
+    },
+    "filepath": "equipment/items/stims/adrenaline-booster_7019145.md",
+    "bonuses": {}
+  },
+  {
+    "id": "enhancer_stim",
+    "name": "Enhancer Stim",
+    "type": "Stims",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: Choose Stat, you gain +1 to this Stat for 1 hour. If it is Physical Stat, then you gain -1 to random Mental Stat and vice versa.\n* **Cost**: 700\n* **Difficulty to craft**: 10\n* **Special conditions**: Stim"
+    },
+    "filepath": "equipment/items/stims/enhancer-stim_7116247.md",
+    "bonuses": {}
+  },
+  {
+    "id": "mental_stabilizer",
+    "name": "Mental Stabilizer",
+    "type": "Stims",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: Heals 2 Shock\n* **Cost**: 200\n* **Difficulty to craft**: 7\n* **Special conditions**: Can't be used more than 3 times per Rest. If used more than 3 times, roll Body vs Difficulty. \nIf the target has 0 Shock, use of this gives it 1 Shock"
+    },
+    "filepath": "equipment/items/stims/mental-stabilizer_7019146.md",
+    "bonuses": {}
+  },
+  {
+    "id": "pain_inhibitor",
+    "name": "Pain Inhibitor",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Gain +10 temporary Health for 30 minutes.\n* **Cost**: 650\n* **Difficulty to craft**: 10\n* **Special conditions**: Stim"
+    },
+    "filepath": "equipment/items/stims/pain-inhibitor_7499188.md",
+    "bonuses": {}
+  },
+  {
+    "id": "medkit",
+    "name": "Medkit",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Used by Cyberdoc to restore Health or Shock. Has 3 uses per kit.\n* **Cost**: 600\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/tools/medkit_7499207.md",
+    "bonuses": {}
+  },
+  {
+    "id": "repairkit",
+    "name": "Repairkit",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Used to repair vehicles and tech. Has 2 uses.\n* **Cost**: 500\n* **Difficulty to craft**: 9\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/tools/repairkit_7499213.md",
+    "bonuses": {}
+  },
+  {
+    "id": "black_eater",
+    "name": "Black Eater",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Enemy rolls Body vs 14. On a failure, the target takes 3 Health and Shock damage every turn until it rolls a success; it rolls every turn. \n* **Cost**: 400\n* **Difficulty to craft**: 12\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/toxins/black-eater_7548517.md",
+    "bonuses": {}
+  },
+  {
+    "id": "classic",
+    "name": "Classic",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Enemy rolls Body vs 10. On a failure, the target takes 1d4+1 damage for the next 3 rounds.\n* **Cost**: 160\n* **Difficulty to craft**: 7\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/toxins/classic_7548494.md",
+    "bonuses": {}
+  },
+  {
+    "id": "corrosion",
+    "name": "Corrosion",
+    "type": "",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: Enemy rolls Body vs 13. On a failure, the target takes 1d8+4 damage.\n* **Cost**: 280\n* **Difficulty to craft**: 8\n* **Special conditions**: Works only on inorganic targets"
+    },
+    "filepath": "equipment/items/toxins/corrosion_7548505.md",
+    "bonuses": {}
+  },
+  {
+    "id": "flask_of_the_yellow",
+    "name": "Flask of The Yellow",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Enemy rolls Body vs 20. On a failure, the target takes 1 Health and Shock damage each turn. Can't be cured by normal methods.\n* **Cost**: 2000\n* **Difficulty to craft**: 20\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/toxins/flask-of-the-yellow_7548530.md",
+    "bonuses": {}
+  },
+  {
+    "id": "love_potion",
+    "name": "Love Potion",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Enemy rolls Body vs 12. On a failure, the target becomes charmed by you and more willing to help you.\n* **Cost**: 240\n* **Difficulty to craft**: 8\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/toxins/love-potion_7548500.md",
+    "bonuses": {}
+  },
+  {
+    "id": "paralyzer",
+    "name": "Paralyzer",
+    "type": "",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: Enemy rolls Body vs 12. On a failure, the target is paralyzed for 1d4 rounds.\n* **Cost**: 330\n* **Difficulty to craft**: 11\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/toxins/paralyzer_7548522.md",
+    "bonuses": {}
+  },
+  {
+    "id": "psy_blocker",
+    "name": "Psy Blocker",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Enemy rolls Body vs 12. On a failure, the user can't use Psy Powers for 3 rounds.\n* **Cost**: 300\n* **Difficulty to craft**: 10\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/toxins/psy-blocker_7548511.md",
+    "bonuses": {}
+  },
+  {
+    "id": "rager",
+    "name": "Rager",
+    "type": "",
+    "tags": "",
+    "description": "",
+    "sections": {
+      "Attributes": "* **Effect**: Enemy rolls Body vs 12. On a failure, the target becomes enraged and attacks the nearest target. Lasts 4 rounds.\n* **Cost**: 270\n* **Difficulty to craft**: 9\n* **Special conditions**:"
+    },
+    "filepath": "equipment/items/toxins/rager_7548513.md",
+    "bonuses": {}
+  }
+]

@@ -1,0 +1,86 @@
+[
+  {
+    "id": "augmentation_station",
+    "name": "Augmentation Station",
+    "type": "Base of Operations",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: You now can make and install augments\n* **Cost**: 7500\n* **Special conditions**:"
+    },
+    "filepath": "equipment/base of operations/augmentation-station_7019321.md",
+    "bonuses": {}
+  },
+  {
+    "id": "luxury_upgrade",
+    "name": "Luxury Upgrade",
+    "type": "Base of Operations",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: BoO has new nice rooms for rest\n* **Cost**: 4800\n* **Special conditions**:"
+    },
+    "filepath": "equipment/base of operations/luxury-upgrade_7019326.md",
+    "bonuses": {}
+  },
+  {
+    "id": "open_for_business",
+    "name": "Open for Business",
+    "type": "Base of Operations",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: BoO now makes money and adds additional contacts\n* **Cost**: 16000\n* **Special conditions**: BoO needs to be Repaired"
+    },
+    "filepath": "equipment/base of operations/open-for-business_7019327.md",
+    "bonuses": {}
+  },
+  {
+    "id": "repair",
+    "name": "Repair",
+    "type": "Base of Operations",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: Your BoO is repaired\n* **Cost**: 1700\n* **Special conditions**:"
+    },
+    "filepath": "equipment/base of operations/repair_7019324.md",
+    "bonuses": {}
+  },
+  {
+    "id": "secret_compartment",
+    "name": "Secret Compartment",
+    "type": "Base of Operations",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: Your BoO gets a secret compartment that is safe from search\n* **Cost**: 3800\n* **Special conditions**:"
+    },
+    "filepath": "equipment/base of operations/secret-compartment_7019317.md",
+    "bonuses": {}
+  },
+  {
+    "id": "underground_garage",
+    "name": "Underground Garage",
+    "type": "Base of Operations",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: BoO now has an underground garage with space for transport\n* **Cost**: 8000\n* **Special conditions**:"
+    },
+    "filepath": "equipment/base of operations/underground-garage_7019319.md",
+    "bonuses": {}
+  },
+  {
+    "id": "unremarkable",
+    "name": "Unremarkable",
+    "type": "Base of Operations",
+    "tags": "",
+    "description": "---",
+    "sections": {
+      "Attributes": "* **Effect**: Your Wanted level is decreased by 1 after completion of the Job\n* **Cost**: 20000\n* **Special conditions**:"
+    },
+    "filepath": "equipment/base of operations/unremarkable_7019318.md",
+    "bonuses": {}
+  }
+]

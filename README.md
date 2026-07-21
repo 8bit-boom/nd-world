@@ -20,6 +20,8 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - **AI image generation** — SwarmUI or ComfyUI backend with sampler/scheduler, LoRA, VAE, CLIP skip, upscaling, img2img, batch output, and generation history with parameter reuse
 - **Image Studio** — embedded SwarmUI iframe at `/imagestudio`
 - **Universal character sheets** — fully configurable stats, skills, and currency (N&D defaults: POW/AGI/FOR/INT/PER/SOC); optional secondary resource tracker
+- **Rules-driven Player Character creation wizard** — guided Race → Profession → Stats (point-buy) → Feats → Equipment flow implementing the Neon & Dragons Core Rules character creation procedure, backed by the same race/profession/feat/equipment catalog used by the NeonDragonsApp Android app and NeonDragonsEditor desktop tool
+- **`.ndc` character export** — export any Player Character as a `.ndc` file importable directly into both the NeonDragonsApp Android app and the NeonDragonsEditor desktop editor (see [Character creation wizard & export](#character-creation-wizard--export))
 - **Full-text search** — across names, tags, summaries, and body text
 - **JSON export / import** — complete world backup and restore with embedded images
 - **Mobile-responsive UI** — hamburger nav, touch-friendly targets, stacking layouts on phones and tablets
@@ -35,6 +37,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - [Environment Variables](#environment-variables)
 - [AI Setup](#ai-setup)
 - [Data & Backups](#data--backups)
+- [Character Creation Wizard & Export](#character-creation-wizard--export)
 - [Project Structure](#project-structure)
 - [Ports Reference](#ports-reference)
 - [Troubleshooting](#troubleshooting)
@@ -507,6 +510,53 @@ cp -r /mnt/DeadPool/apps/nd-world ./backup-$(date +%Y%m%d)
 
 ---
 
+## Character Creation Wizard & Export
+
+`/characters/new` is a guided, rules-driven Player Character creation wizard implementing the
+Neon & Dragons Core Rules character creation procedure:
+
+1. **Name** — character/player name, portrait
+2. **Race** — pick from the Standard / Advanced / Exceptional tiers (Consumed by Yellow also picks a Base Race)
+3. **Profession** — one of the six N&D professions
+4. **Stats** — 20-point allocation across the 8 stats using one of the three Physical/Mental splits
+   (Eldritch uses a single 16-point pool; Advent AI allocates 10 points across mental stats only,
+   with physical stats locked at 0), with a live derived-stats preview (HP/Shock/CA/Speed/PP/MP)
+5. **Feats** — required Race, Profession, and Common feat picks plus Free Feat slot(s) (2 for Humans),
+   auto-granted Edge-rank Race/Profession feats, Child of the Black Goat's 16 Ritual feats, and
+   Psyonic's 4 initial Rank 0 psy powers
+6. **Equipment** — spend a 5000-credit starting budget, with Weapons/Armor restricted to
+   creation-eligible rarities (Simple/Standard)
+
+The wizard is backed by a bundled copy of the same race/profession/feat/equipment catalog
+(`app/game_data/*.json`) used by the **NeonDragonsApp** Android app and **NeonDragonsEditor**
+desktop tool (from the sibling `UoY-Neon-Dragons` rules repo), so characters created here use the
+same content IDs as those two apps.
+
+### Exporting to NeonDragonsApp / NeonDragonsEditor
+
+Every character sheet has an **⬇ Export .ndc** button (`GET /characters/{id}/export.ndc`) that
+downloads a `.ndc` file — the same interchange format used by NeonDragonsApp and NeonDragonsEditor
+for their own character import/export. The file can be imported directly into:
+
+- **NeonDragonsApp** (Android) — Character List → import, or via the app's file share/open intent
+- **NeonDragonsEditor** (desktop) — Manage Characters → Import
+
+No changes are required in either app — both already accept a bare JSON array of character objects
+in this schema (NeonDragonsApp's legacy decode path, NeonDragonsEditor's native multi-character
+format), so nd-world only needs to produce a matching file.
+
+### Refreshing the bundled game-data catalog
+
+`app/game_data/*.json` is a point-in-time copy of `NeonDragonsApp/app/src/main/assets/data/*.json`
+from the `UoY-Neon-Dragons` repo. When race/profession/feat/equipment content changes there
+(after running `extract_all_data.py`), refresh the copy here:
+
+```bash
+cp /path/to/UoY-Neon-Dragons/NeonDragonsApp/app/src/main/assets/data/*.json app/game_data/
+```
+
+---
+
 ## Project Structure
 
 ```
@@ -517,13 +567,15 @@ nd-world/
 │   ├── database.py          # DB init and migrations
 │   ├── ai.py                # Ollama + image gen integration
 │   ├── constants.py         # N&D default stats, skills, currency
+│   ├── game_catalog.py      # Race/profession/feat/equipment catalog loader for the PC wizard
+│   ├── game_data/           # Bundled races/professions/feats/equipment JSON (from UoY-Neon-Dragons)
 │   ├── routers/
 │   │   ├── ai.py            # /api/ai/* endpoints
-│   │   └── characters.py    # /api/characters/* endpoints
+│   │   └── characters.py    # /api/characters/* endpoints, .ndc export
 │   └── templates/           # Jinja2 HTML templates
 │       ├── ai_chat.html     # AI chat + Image Gen + Models tabs
 │       ├── imagestudio.html # SwarmUI iframe page
-│       └── characters/      # Character sheet, list, form
+│       └── characters/      # Character sheet, list, creation wizard, edit form
 ├── static/
 │   └── style.css            # All app styles
 ├── docker-compose.yml       # Linux / Windows stack (named volumes)

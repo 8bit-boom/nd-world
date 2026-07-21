@@ -1,3 +1,5 @@
+import base64
+import io
 import json
 import os
 import uuid
@@ -8,10 +10,11 @@ from typing import Optional
 
 import markdown2
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
+from .. import game_catalog
 from ..constants import (
     KIND_ICONS, KINDS, SUBTYPES, XP_THRESHOLDS,
     ND_DEFAULT_STATS, ND_DEFAULT_CURRENCY,
@@ -118,7 +121,9 @@ def _apply_form(pc: PlayerCharacter, data: dict):
     pc.name        = gs("name") or "Unnamed"
     pc.player_name = gs("player_name")
     pc.race        = gs("race")
+    pc.race_id     = gs("race_id", pc.race_id or "")
     pc.char_class  = gs("char_class")   # profession in N&D
+    pc.profession_id = gs("profession_id", pc.profession_id or "")
     pc.level       = max(1, min(20, gi("level", 1)))
     pc.xp          = max(0, gi("xp"))
     pc.backstory   = gs("backstory")
@@ -137,6 +142,8 @@ def _apply_form(pc: PlayerCharacter, data: dict):
     # Edges
     pc.minor_edge = gs("minor_edge")
     pc.major_edge = gs("major_edge")
+    pc.minor_edge_count = max(0, gi("minor_edge_count", pc.minor_edge_count or 0))
+    pc.major_edge_count = max(0, gi("major_edge_count", pc.major_edge_count or 0))
 
     # Sheet template
     tpl_id = data.get("sheet_template_id")
@@ -218,25 +225,21 @@ def character_new_form(
     template_id: Optional[int] = None,
 ):
     world, worlds = _world_ctx(db, active_world)
-    sheet_templates_list = _templates_for_world(db, world.id if world else None)
     # Pre-select template if given
     chosen_tpl = db.query(SheetTemplate).filter(SheetTemplate.id == template_id).first() if template_id else None
     if not chosen_tpl:
         # Default to N&D template
         chosen_tpl = db.query(SheetTemplate).filter(SheetTemplate.slug == "nd-default").first()
-    tpl_fields = json.loads(chosen_tpl.fields_json) if chosen_tpl else []
-    return templates.TemplateResponse("characters/form.html", {
+    return templates.TemplateResponse("characters/wizard.html", {
         "request": request, "world": world, "worlds": worlds,
-        "pc": None,
-        "nd_default_stats": ND_DEFAULT_STATS,
-        "nd_default_currency": ND_DEFAULT_CURRENCY,
-        "stats": [], "currency": [],
-        "equipment": [], "feats": [], "cyberware": [],
-        "sheet_templates": sheet_templates_list,
         "chosen_template": chosen_tpl,
-        "tpl_fields": tpl_fields,
-        "custom_fields": {},
     })
+
+
+@router.get("/api/characters/catalog")
+def api_characters_catalog():
+    """Race/profession/feat/equipment catalog for the creation wizard frontend."""
+    return game_catalog.catalog_payload()
 
 
 @router.post("/characters/new")
@@ -460,6 +463,135 @@ def character_delete(pc_id: int, db: Session = Depends(get_db)):
     db.delete(pc)
     db.commit()
     return RedirectResponse("/characters", status_code=303)
+
+
+# ── Export (.ndc — importable by NeonDragonsApp & NeonDragonsEditor) ─────────
+#
+# Both apps read this exact camelCase field schema (Character.kt / models/character.py
+# in the UoY-Neon-Dragons rules repo). We emit a bare JSON array of character objects:
+# NeonDragonsApp's CharacterCodec.decode() accepts a bare array via its legacy
+# (pre-envelope) path, and NeonDragonsEditor's data/character_io.py::load_all_characters()
+# treats a top-level array as its native multi-character format — so one file
+# imports cleanly into both, with no changes needed in either app.
+
+def _pc_to_ndc_dict(pc: PlayerCharacter) -> dict:
+    stats = json.loads(pc.stats_json or "[]")
+    stat_val = {s["id"]: int(s.get("value", 0)) for s in stats}
+    feats = json.loads(pc.feats_json or "[]")
+    equipment = json.loads(pc.equipment_json or "[]")
+    currency = json.loads(pc.currency_json or "[]")
+    d = _derived(pc)
+
+    selected_feats, custom_feats = [], {}
+    for f in feats:
+        fid = f.get("id")
+        if fid:
+            selected_feats.append(fid)
+        else:
+            name = f.get("name") or ""
+            if name:
+                custom_feats[name] = f.get("notes") or f.get("description") or ""
+
+    buckets = {
+        "weapons": [], "armor": [], "augments": [], "bio_augments": [],
+        "drones": [], "vehicles": [], "bases": [], "husks": [], "inventory": [],
+    }
+    custom_equipment = {}
+    for e in equipment:
+        eid = e.get("id")
+        cat = e.get("category") or game_catalog.EQUIPMENT_CATEGORY_OF.get(eid, "")
+        if eid and cat in buckets:
+            buckets[cat].append(eid)
+        elif eid:
+            buckets["inventory"].append(eid)
+        else:
+            name = e.get("name") or ""
+            if name:
+                custom_equipment[name] = e.get("notes") or ""
+
+    credits = next((int(c.get("value", 0)) for c in currency if (c.get("abbr") or "").upper() == "CR"), 0)
+
+    portrait_b64 = ""
+    if pc.portrait_url and pc.portrait_url.startswith("/uploads/"):
+        img_path = UPLOADS_DIR / Path(pc.portrait_url).name
+        if img_path.exists():
+            portrait_b64 = base64.b64encode(img_path.read_bytes()).decode()
+
+    notes = {}
+    if pc.backstory:
+        notes["Backstory"] = pc.backstory
+    if pc.notes:
+        notes["Session Notes"] = pc.notes
+
+    race_id = pc.race_id or ""
+    max_ectoplasm = current_ectoplasm = 0
+    if race_id == "banshee":
+        max_ectoplasm = current_ectoplasm = d["phys"] + d["ment"]
+
+    return {
+        "id": 0,
+        "name": pc.name or "",
+        "raceId": race_id, "raceName": pc.race or "",
+        "baseRaceId": "", "baseRaceName": "",
+        "professionId": pc.profession_id or "", "professionName": pc.char_class or "",
+        "strength": stat_val.get("str", 0), "dexterity": stat_val.get("dex", 0),
+        "body": stat_val.get("bod", 0), "perception": stat_val.get("per", 0),
+        "willpower": stat_val.get("wil", 0), "intellect": stat_val.get("int", 0),
+        "charisma": stat_val.get("cha", 0), "intuition": stat_val.get("itu", 0),
+        "strengthBonus": 0, "dexterityBonus": 0, "bodyBonus": 0, "perceptionBonus": 0,
+        "willpowerBonus": 0, "intellectBonus": 0, "charismaBonus": 0, "intuitionBonus": 0,
+        "maxHealth": d["hp_max"], "currentHealth": pc.current_hp or 0,
+        "temporaryHP": getattr(pc, "temp_hp", 0) or 0, "healthBonus": 0,
+        "maxShock": d["shock_max"], "currentShock": d["shock_current"],
+        "temporaryShock": 0, "shockBonus": 0,
+        "cyberAdaptivity": d["ca_derived"], "speed": d["speed_derived"],
+        "physicalPoints": d["phys"], "currentPP": d["pp_current"], "ppBonus": 0,
+        "mentalPoints": d["ment"], "currentMP": d["mp_current"], "mpBonus": 0,
+        "speedBonus": 0, "caBonus": 0,
+        "maxEctoplasm": max_ectoplasm, "currentEctoplasm": current_ectoplasm,
+        "selectedFeats": selected_feats, "creationFeats": list(selected_feats),
+        "customFeats": custom_feats,
+        "psyPowerSelections": {}, "jackOfTradeSelections": {},
+        "linguistLanguages": [], "masterLinguistLanguages": [],
+        "infectedVirus": "", "jackOfAllTradesSelections": [], "statPickerSelections": {},
+        "equippedWeapons": buckets["weapons"], "customWeapons": {}, "weaponFeats": {},
+        "activeWeapons": list(buckets["weapons"]),
+        "equippedArmor": buckets["armor"], "armorFeats": {}, "activeArmor": list(buckets["armor"]),
+        "installedAugments": buckets["augments"], "customAugments": {}, "augmentFeats": {},
+        "activeAugments": list(buckets["augments"]),
+        "installedBioAugments": buckets["bio_augments"], "customBioAugments": {}, "bioAugmentFeats": {},
+        "activeBioAugments": list(buckets["bio_augments"]),
+        "ownedDrones": buckets["drones"], "droneFeats": {},
+        "ownedVehicles": buckets["vehicles"], "vehicleFeats": {},
+        "inventory": buckets["inventory"], "customEquipment": custom_equipment,
+        "ownedBases": buckets["bases"], "customBases": {},
+        "ownedHusks": buckets["husks"], "equippedHuskId": "",
+        "huskCurrentHealth": 0, "huskCurrentPP": 0,
+        "craftedItems": [], "credits": credits,
+        "yellowSat": 0, "transcendPts": 0, "transcendencePts": 0, "heartPres": 0,
+        "dragonBlood": "", "dragonbloodedStatGroup": "", "fleshGraftPts": 0, "flashGraftsPts": 0,
+        "crimsonBoost1": "", "crimsonBoost2": "", "crimsonPenalty": "", "mentalCond": "", "ahCharges": 0,
+        "currentXP": pc.xp or 0, "xpSpent": 0,
+        "majorEdges": getattr(pc, "major_edge_count", 0) or 0,
+        "minorEdges": getattr(pc, "minor_edge_count", 0) or 0,
+        "portraitBase64": portrait_b64,
+        "notes": notes,
+        "featSpecialAttrValues": {}, "professionSpecialAttrValues": {}, "raceSpecialAttrValues": {},
+    }
+
+
+@router.get("/characters/{pc_id}/export.ndc")
+def character_export_ndc(pc_id: int, db: Session = Depends(get_db)):
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    payload = json.dumps([_pc_to_ndc_dict(pc)], ensure_ascii=False, indent=2)
+    fname = "".join(c if c.isalnum() or c in " -_" else "" for c in (pc.name or "character")) or "character"
+    return StreamingResponse(
+        io.BytesIO(payload.encode("utf-8")),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{fname}.ndc"'},
+    )
 
 
 # ── AJAX: HP ──────────────────────────────────────────────────────────────────
