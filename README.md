@@ -22,6 +22,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - **Image Studio** — embedded SwarmUI iframe at `/imagestudio`
 - **Universal character sheets** — fully configurable stats, skills, and currency (N&D defaults: POW/AGI/FOR/INT/PER/SOC); optional secondary resource tracker
 - **Rules-driven Player Character creation wizard** — guided Race → Profession → Stats (point-buy) → Feats → Equipment flow implementing the Neon & Dragons Core Rules character creation procedure, backed by the same race/profession/feat/equipment catalog used by the NeonDragonsApp Android app and NeonDragonsEditor desktop tool
+- **Custom character systems** — not locked into N&D: a Sheet Template can fully replace the N&D sheet with its own fields (including repeatable lists like abilities or a session log) for running a different TTRPG entirely in the same world — ships with a built-in **Asterion** system alongside N&D (see [Custom Character Systems](#custom-character-systems))
 - **`.ndc` character export** — export any Player Character as a `.ndc` file importable directly into both the NeonDragonsApp Android app and the NeonDragonsEditor desktop editor (see [Character creation wizard & export](#character-creation-wizard--export))
 - **GM & player accounts** — one GM account per deployment; invite players by link, each managing their own character. GMs can hide spoiler content (from everyone, or from all but a hand-picked subset of players), toggle party-wide character visibility per world, and send private per-player notes (see [Accounts, Invites & Going Public](#accounts-invites--going-public))
 - **Full-text search** — across names, tags, summaries, and body text
@@ -40,6 +41,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - [AI Setup](#ai-setup)
 - [Data & Backups](#data--backups)
 - [Character Creation Wizard & Export](#character-creation-wizard--export)
+- [Custom Character Systems](#custom-character-systems)
 - [Accounts, Invites & Going Public](#accounts-invites--going-public)
 - [Project Structure](#project-structure)
 - [Ports Reference](#ports-reference)
@@ -580,6 +582,40 @@ from the `UoY-Neon-Dragons` repo. When race/profession/feat/equipment content ch
 ```bash
 cp /path/to/UoY-Neon-Dragons/NeonDragonsApp/app/src/main/assets/data/*.json app/game_data/
 ```
+
+---
+
+## Custom Character Systems
+
+The Neon & Dragons wizard above isn't the only option — nd-world can run a completely
+different TTRPG system alongside (or instead of) N&D, using **Sheet Templates**
+(world switcher → **🗒 Systems & Templates**, or `/characters/templates`).
+
+A template is one of two modes:
+
+- **Extends the N&D sheet** (the original behavior) — every character still has the
+  full N&D sheet (stats, HP, Shock, PP/MP, edges, cyberware, conditions); the
+  template's fields are extra sections layered on top.
+- **Fully custom system** — the N&D sheet isn't used at all. The character *is*
+  whatever fields the template defines, rendered on its own page instead of the
+  N&D wizard. Fields can be single values (number/text/text area) or a **list**
+  field — a repeatable group of sub-fields, for things like a variable-length
+  ability list, inventory, or session log.
+
+A built-in **Asterion** template (a d10 dice-pool system of Gods and Mythborn —
+Spark Shield/Flesh/Ichor, Glory, Domain Reclamation) ships as a working example of
+a fully custom system. To create a character with it, or with any custom-mode
+template, open **🗒 Systems & Templates** and click **+ Create Character** on that
+template's card — the plain **+ New Character** button on the Characters page
+always goes to the standard N&D wizard, so existing N&D worlds are unaffected.
+
+To build your own homebrew system: **+ New Template**, choose **Fully custom
+system**, then add fields — pick **List (repeatable group)** as a field's type to
+define a group of sub-fields (e.g. an "Abilities" list where each entry has a
+Name, Tier, and Effect). GM-authored templates can be scoped to one world or left
+global (available everywhere), same as N&D's extra-field templates always were.
+Custom-system characters skip N&D-only features that don't apply to them (`.ndc`
+export, the HP/Speed/CA card badges) since those are Neon & Dragons–specific.
 
 ---
 
