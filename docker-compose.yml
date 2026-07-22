@@ -13,6 +13,9 @@ services:
       - swarmui-ac:/data/swarmui-ac   # shared with swarmui for native tag autocompletions
     environment:
       DB_PATH: /data/world.db
+      # AI chat / image generation are optional (see the "ollama"/"swarmui" Compose
+      # profiles below) — nd-world runs fine without them and just shows AI features
+      # as unavailable. These URLs only matter if you've enabled those profiles.
       IMAGEGEN_TYPE: swarmui
       IMAGEGEN_URL: http://swarmui:7801
       SWARMUI_EXTERNAL_URL: ""   # set to http://<your-host>:7801 to enable the Image Studio iframe
@@ -27,26 +30,15 @@ services:
       GM_NAME: ${GM_NAME:-GM}
       # Set to true once served over HTTPS (e.g. behind a Cloudflare Tunnel) — see docs/DEPLOYMENT.md
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
-    depends_on:
-      - swarmui
-      - ollama
+    # No depends_on on swarmui/ollama — both are optional (see profiles below) and
+    # the app already degrades gracefully (AI features just show as unavailable)
+    # when they aren't running.
 
-  swarmui:
-    image: ghcr.io/mcmonkeyprojects/swarmui:latest
-    container_name: swarmui
-    restart: unless-stopped
-    ports:
-      - "7801:7801"
-    volumes:
-      - swarmui-data:/SwarmUI/Data
-      - swarmui-ac:/SwarmUI/Data/Autocompletions   # shared with world for tag autocompletions
-      - swarmui-models:/SwarmUI/Models
-      - swarmui-dlbackend:/SwarmUI/dlbackend
-    environment:
-      SWARMUI_NETWORK_BIND_ADDRESS: "0.0.0.0"
-      SWARMUI_NETWORK_PORT: "7801"
-
+  # Optional: local AI chat. Only starts if the "ollama" profile is active —
+  # set COMPOSE_PROFILES=ollama (or ollama,swarmui) in .env, or run
+  # `docker compose --profile ollama up -d`.
   ollama:
+    profiles: ["ollama"]
     image: ollama/ollama
     container_name: ollama
     restart: unless-stopped
@@ -64,6 +56,25 @@ services:
     #         - driver: nvidia
     #           count: all
     #           capabilities: [gpu]
+
+  # Optional: local AI image generation. Only starts if the "swarmui" profile is
+  # active — set COMPOSE_PROFILES=swarmui (or ollama,swarmui) in .env, or run
+  # `docker compose --profile swarmui up -d`.
+  swarmui:
+    profiles: ["swarmui"]
+    image: ghcr.io/mcmonkeyprojects/swarmui:latest
+    container_name: swarmui
+    restart: unless-stopped
+    ports:
+      - "7801:7801"
+    volumes:
+      - swarmui-data:/SwarmUI/Data
+      - swarmui-ac:/SwarmUI/Data/Autocompletions   # shared with world for tag autocompletions
+      - swarmui-models:/SwarmUI/Models
+      - swarmui-dlbackend:/SwarmUI/dlbackend
+    environment:
+      SWARMUI_NETWORK_BIND_ADDRESS: "0.0.0.0"
+      SWARMUI_NETWORK_PORT: "7801"
 
 volumes:
   nd-world-data:

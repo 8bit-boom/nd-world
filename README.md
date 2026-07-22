@@ -54,7 +54,8 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 | Git | For cloning the repository |
 | GPU | Optional — CPU-only mode works for Ollama and SwarmUI |
 
-Ollama and SwarmUI are **included in the Docker stack** — no separate installation needed.
+Ollama and SwarmUI are **included in the Docker stack but off by default** — see
+[AI Setup](#ai-setup) to enable one or both; no separate installation needed either way.
 
 ---
 
@@ -135,14 +136,17 @@ services:
 docker compose up -d
 ```
 
-This starts three services: **nd-world** (app), **SwarmUI** (image gen), and **Ollama** (AI chat).
+By default this starts just **nd-world** (the app) — **SwarmUI** (image gen) and
+**Ollama** (AI chat) are optional and skipped unless enabled (see
+[AI Setup](#ai-setup) — set `COMPOSE_PROFILES` in `.env`, or use `bash
+scripts/setup.sh`, which asks).
 
 Watch the logs:
 ```bash
 docker compose logs -f
 ```
 
-SwarmUI performs a first-run setup on initial boot (downloads the ComfyUI backend). This can take **5–15 minutes** depending on your connection.
+If you enabled SwarmUI, it performs a first-run setup on initial boot (downloads the ComfyUI backend). This can take **5–15 minutes** depending on your connection.
 
 ### Step 5 — Download an AI model
 
@@ -418,14 +422,23 @@ The script auto-detects the correct path and installs ComfyUI-Manager into `cust
 | `GM_EMAIL` / `GM_PASSWORD` | _(empty)_ | Bootstraps the GM account on first start. Leave blank if the GM account already exists |
 | `GM_NAME` | `GM` | Display name for the bootstrapped GM account |
 | `COOKIE_SECURE` | `false` | Set `true` once served over HTTPS (see [Accounts, Invites & Going Public](#accounts-invites--going-public)) |
+| `COMPOSE_PROFILES` | _(empty)_ | Not read by the app itself — Docker Compose reads it to decide which optional services to start. Empty starts just `world`; set `ollama`, `swarmui`, or `ollama,swarmui` to also start those containers |
 
 ---
 
 ## AI Setup
 
+Ollama (AI chat) and SwarmUI (AI image generation) are **optional** — nd-world runs
+fine without either and just shows those features as unavailable (grey status dot,
+"AI unavailable"). They're skipped by default; `bash scripts/setup.sh` asks whether
+to enable them, or set `COMPOSE_PROFILES` in `.env` yourself (see table above) and
+run `docker compose up -d`. Both are sizeable downloads and Ollama in particular
+wants a decent CPU/GPU, so it's worth leaving off if you don't plan to use AI chat.
+
 ### Ollama (chat)
 
-Ollama is included in both `docker-compose.yml` and `truenas-compose.yml` and starts automatically with the stack. No separate installation needed.
+Ollama is defined in both `docker-compose.yml` and `truenas-compose.yml` behind the
+`ollama` Compose profile — it only starts if that profile is active.
 
 **Downloading models:**
 
@@ -474,7 +487,8 @@ AMD GPU support requires the ROCm image: change `image: ollama/ollama` to `image
 
 ### SwarmUI (image generation)
 
-SwarmUI is included in all compose files and starts automatically. On first boot it downloads the ComfyUI backend — this takes **5–15 minutes** the first time.
+SwarmUI is defined in all compose files behind the `swarmui` Compose profile — see
+[AI Setup](#ai-setup) above to enable it. On first boot it downloads the ComfyUI backend — this takes **5–15 minutes** the first time.
 
 Set `SWARMUI_EXTERNAL_URL` to your host's accessible URL to enable the **Image Studio** embedded iframe view.
 
