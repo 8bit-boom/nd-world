@@ -4,8 +4,16 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>{% block title %}{{ world.name if world else 'N&D World' }} — World{% endblock %}</title>
-  <link rel="stylesheet" href="/static/style.css?v=5"/>
-  {% if world %}<style>:root { --neon: {{ world.accent }}; }</style>{% endif %}
+  <script>
+    // Applied before first paint so there's no flash of the wrong theme.
+    (function(){
+      try {
+        document.documentElement.dataset.theme = localStorage.getItem('nd_theme') || 'dark';
+      } catch(e) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/style.css?v=6"/>
+  {% if world %}<style>:root { --neon: {{ world.accent }} !important; }</style>{% endif %}
 </head>
 <body>
 <nav class="topbar">
@@ -57,6 +65,7 @@
     <a href="/new" class="btn-new">+ New</a>
     <span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.4rem;vertical-align:middle"></span>
     {% endif %}
+    <button type="button" id="theme-toggle" class="nav-kind" title="Switch theme" style="cursor:pointer;background:none;border:none;font-family:inherit;font-size:inherit"></button>
     {% if request.state.user %}
     <span class="nav-kind" style="color:var(--text-dim);cursor:default">
       {{ '⚡ GM' if request.state.user.is_gm else '🎭 ' + request.state.user.display_name }}
@@ -75,6 +84,21 @@
       if(d.status==='ok'){dot.style.background='#4f4';dot.title='AI ready — '+d.model;}
       else{dot.style.background='#888';dot.title='AI unavailable';}
     }).catch(()=>{});
+  var THEMES=['dark','dim','light'];
+  var THEME_LABELS={dark:'🌑 Dark',dim:'🌗 Dim',light:'☀ Light'};
+  var themeBtn=document.getElementById('theme-toggle');
+  if(themeBtn){
+    var setTheme=function(t){
+      document.documentElement.dataset.theme=t;
+      try{localStorage.setItem('nd_theme',t);}catch(e){}
+      themeBtn.textContent=THEME_LABELS[t]||THEME_LABELS.dark;
+    };
+    setTheme(document.documentElement.dataset.theme||'dark');
+    themeBtn.addEventListener('click',function(){
+      var idx=THEMES.indexOf(document.documentElement.dataset.theme);
+      setTheme(THEMES[(idx+1)%THEMES.length]);
+    });
+  }
   var toggle=document.getElementById('nav-toggle');
   var nav=document.getElementById('nav-kinds');
   if(toggle&&nav){
