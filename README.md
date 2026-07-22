@@ -10,7 +10,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - **8 entity types** — Characters, Locations, Organizations, Creatures, Events, Items, Feats, Notes — each with TTRPG-specific subtypes
 - **Entity relationships** — link any entity to any other; navigate connections from the detail page
 - **Entity notes** — attach multiple discrete notes to any entity, each independently hideable/un-hideable from players regardless of the entity's own visibility (e.g. reveal one detail about a location while keeping the rest secret)
-- **Folder organization** — hierarchical folders per entity type for large lore collections
+- **Folder organization** — hierarchical folders per entity type for large lore collections; the entity form offers a picker of existing folders (still free-text for new ones), and any folder you're browsing can be renamed/moved or removed (entities become Unfiled) from its breadcrumb
 - **Image attachments** — upload JPG/PNG/GIF/WebP/SVG images to any entity
 - **Rules viewer** — built-in core rules rendered from Markdown with auto-generated table of contents
 - **Interactive maps** — add custom markers and region overlays to map images
