@@ -47,6 +47,46 @@
   </div>
   {% endif %}
 
+  <section class="entity-notes">
+    <h2>// NOTES</h2>
+    {% if entity_notes %}
+    <div class="en-list">
+      {% for n in entity_notes %}
+      <div class="en-note{% if not n.visible_to_players %} en-hidden{% endif %}">
+        <div class="en-note-content">{{ n.content }}</div>
+        <div class="en-note-footer">
+          <span class="en-note-date">{{ n.created_at.strftime('%Y-%m-%d %H:%M') if n.created_at else '' }}</span>
+          {% if request.state.user and request.state.user.is_gm %}
+          <span class="en-note-vis">{% if n.visible_to_players %}👁 visible to players{% else %}🔒 GM only{% endif %}</span>
+          <form action="/entity/{{ entity.id }}/notes/{{ n.id }}/toggle" method="post" class="en-inline-form">
+            <button type="submit" class="en-btn">{% if n.visible_to_players %}Hide from players{% else %}Un-hide{% endif %}</button>
+          </form>
+          <form action="/entity/{{ entity.id }}/notes/{{ n.id }}/delete" method="post" class="en-inline-form" onsubmit="return confirm('Delete this note?')">
+            <button type="submit" class="en-btn en-btn-del">Delete</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-small">No notes yet.</p>
+    {% endif %}
+
+    {% if request.state.user and request.state.user.is_gm %}
+    <form action="/entity/{{ entity.id }}/notes/new" method="post" class="en-add-form">
+      <textarea name="content" rows="2" placeholder="Add a note about this entity…" required></textarea>
+      <div class="en-add-row">
+        <label class="en-vis-check">
+          <input type="checkbox" name="visible" value="1" style="width:auto">
+          Visible to players
+        </label>
+        <button type="submit" class="btn-add-attr">+ Add note</button>
+      </div>
+    </form>
+    {% endif %}
+  </section>
+
   <section class="relations">
     <h2>// CONNECTIONS</h2>
     {% if entity.related %}
@@ -118,6 +158,21 @@
 </article>
 
 <style>
+.entity-notes { margin-top: 1.5rem; }
+.en-list { display:flex; flex-direction:column; gap:.5rem; margin-bottom:.75rem; }
+.en-note { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:.6rem .75rem; }
+.en-note.en-hidden { border-color:var(--neon2); border-style:dashed; }
+.en-note-content { font-size:.87rem; white-space:pre-wrap; }
+.en-note-footer { display:flex; align-items:center; flex-wrap:wrap; gap:.6rem; margin-top:.4rem; font-size:.72rem; color:var(--text-dim); }
+.en-note-vis { color:var(--neon2); }
+.en-inline-form { display:inline; }
+.en-btn { background:transparent; border:1px solid var(--border); color:var(--text-dim); padding:.15rem .5rem; border-radius:4px; cursor:pointer; font-family:var(--font); font-size:.72rem; }
+.en-btn:hover { border-color:var(--neon); color:var(--neon); }
+.en-btn-del:hover { border-color:#ff2d78; color:#ff2d78; }
+.en-add-form { display:flex; flex-direction:column; gap:.4rem; }
+.en-add-form textarea { background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:5px; padding:.5rem .65rem; font-family:inherit; font-size:.85rem; resize:vertical; }
+.en-add-row { display:flex; align-items:center; justify-content:space-between; gap:.6rem; }
+.en-vis-check { display:flex; align-items:center; gap:.35rem; font-size:.78rem; color:var(--text-dim); }
 .conn-section { margin-top: 1rem; }
 .conn-section summary { cursor:pointer; font-size:.9rem; color:#aaa; padding:.25rem 0; }
 .rel-grid { display:flex; flex-wrap:wrap; gap:.5rem; margin-top:.5rem; }

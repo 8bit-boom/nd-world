@@ -122,6 +122,25 @@ class Entity(Base):
         backref="referenced_by",
     )
 
+class EntityNote(Base):
+    """A discrete note attached to an entity, separate from its main body —
+    the GM can jot several of these and hide/un-hide each independently of
+    the entity's own visibility (e.g. reveal one detail about a location
+    while keeping others secret)."""
+    __tablename__ = "entity_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    entity_id = Column(Integer, ForeignKey("entities.id"), nullable=False, index=True)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    content = Column(Text, nullable=False)
+    # GM notes are hidden by default — un-hide to reveal to the party.
+    visible_to_players = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    entity = relationship("Entity", backref="notes")
+
+
 class PlayerCharacter(Base):
     __tablename__ = "player_characters"
 

@@ -21,7 +21,7 @@ import io
 from pathlib import Path
 
 from .database import init_db, get_db, SessionLocal
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote
 from .routers.ai import router as ai_router
 from .routers.characters import router as characters_router
 from .routers.auth import router as auth_router
@@ -1569,9 +1569,14 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         .filter(entity_links.c.target_id == entity_id),
         request,
     ).order_by(Entity.kind, Entity.name).all()
+    notes_q = db.query(EntityNote).filter(EntityNote.entity_id == entity_id)
+    if not (user and user.is_gm):
+        notes_q = notes_q.filter(EntityNote.visible_to_players.is_(True))
+    entity_notes = notes_q.order_by(EntityNote.created_at).all()
     return templates.TemplateResponse("entities/detail.html", {
         "request": request, "entity": entity, "all_entities": all_entities,
         "world": world, "worlds": worlds, "backlinks": backlinks,
+        "entity_notes": entity_notes,
     })
 
 # ── Create ────────────────────────────────────────────────────────────────────
@@ -1678,6 +1683,7 @@ def delete(entity_id: int, db: Session = Depends(get_db)):
         (entity_links.c.source_id == entity_id) | (entity_links.c.target_id == entity_id)
     ))
     db.execute(entity_player_access.delete().where(entity_player_access.c.entity_id == entity_id))
+    db.query(EntityNote).filter(EntityNote.entity_id == entity_id).delete()
     db.delete(entity)
     db.commit()
     return RedirectResponse("/", status_code=303)
@@ -1701,6 +1707,44 @@ def unlink(entity_id: int, target_id: int, db: Session = Depends(get_db)):
     tgt = db.get(Entity, target_id)
     if src and tgt and tgt in src.related:
         src.related.remove(tgt)
+        db.commit()
+    return RedirectResponse(f"/entity/{entity_id}", status_code=303)
+
+# ── Entity notes (GM-only management; hide/un-hide independent of the entity) ──
+
+@app.post("/entity/{entity_id}/notes/new")
+def add_entity_note(
+    entity_id: int, request: Request,
+    content: str = Form(...), visible: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    entity = db.get(Entity, entity_id)
+    if not entity:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    content = content.strip()
+    if content:
+        db.add(EntityNote(
+            entity_id=entity_id, author_id=user.id if user else None,
+            content=content, visible_to_players=bool(visible),
+        ))
+        db.commit()
+    return RedirectResponse(f"/entity/{entity_id}", status_code=303)
+
+@app.post("/entity/{entity_id}/notes/{note_id}/toggle")
+def toggle_entity_note(entity_id: int, note_id: int, db: Session = Depends(get_db)):
+    note = db.get(EntityNote, note_id)
+    if not note or note.entity_id != entity_id:
+        raise HTTPException(404)
+    note.visible_to_players = not note.visible_to_players
+    db.commit()
+    return RedirectResponse(f"/entity/{entity_id}", status_code=303)
+
+@app.post("/entity/{entity_id}/notes/{note_id}/delete")
+def delete_entity_note(entity_id: int, note_id: int, db: Session = Depends(get_db)):
+    note = db.get(EntityNote, note_id)
+    if note and note.entity_id == entity_id:
+        db.delete(note)
         db.commit()
     return RedirectResponse(f"/entity/{entity_id}", status_code=303)
 
