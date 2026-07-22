@@ -4,7 +4,7 @@
 <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:1.5rem;">
   <h1 style="color:var(--neon);font-size:1.4rem;letter-spacing:.05em;">🎲 Player Characters</h1>
   <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-    <a href="/characters/templates" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;text-decoration:none">🗒 Templates</a>
+    <a href="/characters/templates" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;text-decoration:none">🗒 Systems &amp; Templates</a>
     <a href="/characters/new" class="btn-primary">+ New Character</a>
   </div>
 </div>
@@ -30,6 +30,9 @@
     </div>
     <div class="pc-card-body">
       <div class="pc-card-name">{{ pc.name }}</div>
+      {% if pc.sheet_template_id in custom_tpl_ids %}
+      <div class="pc-card-meta">{{ pc.sheet_template.name if pc.sheet_template else 'Custom system' }}</div>
+      {% else %}
       <div class="pc-card-meta">
         Lvl {{ pc.level }}
         {% if pc.char_class %} {{ pc.char_class }}{% endif %}
@@ -54,6 +57,7 @@
         <div class="pc-xp-bar" style="width:{{ d.xp_pct }}%"></div>
         <span class="pc-card-xp-label">{{ pc.xp }} XP</span>
       </div>
+      {% endif %}
     </div>
     {% if pc.player_name %}
     <div class="pc-card-player">{{ pc.player_name }}</div>

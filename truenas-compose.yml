@@ -10,6 +10,9 @@ services:
       - /mnt/DeadPool/apps/swarmui/data/Autocompletions:/data/swarmui-ac  # shared with swarmui for native tag autocompletions
     environment:
       DB_PATH: /data/world.db
+      # AI chat / image generation are optional (see the "ollama"/"swarmui" Compose
+      # profiles below) — nd-world runs fine without them and just shows AI features
+      # as unavailable. These URLs only matter if you've enabled those profiles.
       IMAGEGEN_TYPE: swarmui
       IMAGEGEN_URL: http://swarmui:7801
       # Set to http://<truenas-ip>:7801 to enable the Image Studio iframe inside nd-world
@@ -30,11 +33,15 @@ services:
       net.ix-portals.nd-world.port: "8087"
       net.ix-portals.nd-world.path: "/"
       net.ix-portals.nd-world.host: ""
-    depends_on:
-      - swarmui
-      - ollama
+    # No depends_on on swarmui/ollama — both are optional (see profiles below) and
+    # the app already degrades gracefully (AI features just show as unavailable)
+    # when they aren't running.
 
+  # Optional: local AI image generation. Only starts if the "swarmui" profile is
+  # active — set COMPOSE_PROFILES=swarmui (or ollama,swarmui) in .env, or run
+  # `docker compose -f truenas-compose.yml --profile swarmui up -d`.
   swarmui:
+    profiles: ["swarmui"]
     image: ghcr.io/mcmonkeyprojects/swarmui:latest
     restart: unless-stopped
     ports:
@@ -52,7 +59,11 @@ services:
       net.ix-portals.swarmui.path: "/"
       net.ix-portals.swarmui.host: ""
 
+  # Optional: local AI chat. Only starts if the "ollama" profile is active —
+  # set COMPOSE_PROFILES=ollama (or ollama,swarmui) in .env, or run
+  # `docker compose -f truenas-compose.yml --profile ollama up -d`.
   ollama:
+    profiles: ["ollama"]
     image: ollama/ollama
     restart: unless-stopped
     ports:

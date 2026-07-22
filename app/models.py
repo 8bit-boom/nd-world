@@ -11,6 +11,17 @@ entity_links = Table(
     Column("target_id", Integer, ForeignKey("entities.id"), primary_key=True),
 )
 
+# Which specific player accounts can see an entity that's marked hidden
+# (visible_to_players=False). Only consulted when the entity is hidden — an
+# entity with visible_to_players=True is visible to every world member and
+# never needs rows here.
+entity_player_access = Table(
+    "entity_player_access",
+    Base.metadata,
+    Column("entity_id", Integer, ForeignKey("entities.id"), primary_key=True),
+    Column("user_id", Integer, ForeignKey("users.id"), primary_key=True),
+)
+
 class World(Base):
     __tablename__ = "worlds"
 
@@ -110,6 +121,25 @@ class Entity(Base):
         secondaryjoin=id == entity_links.c.target_id,
         backref="referenced_by",
     )
+
+class EntityNote(Base):
+    """A discrete note attached to an entity, separate from its main body —
+    the GM can jot several of these and hide/un-hide each independently of
+    the entity's own visibility (e.g. reveal one detail about a location
+    while keeping others secret)."""
+    __tablename__ = "entity_notes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    entity_id = Column(Integer, ForeignKey("entities.id"), nullable=False, index=True)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    content = Column(Text, nullable=False)
+    # GM notes are hidden by default — un-hide to reveal to the party.
+    visible_to_players = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    entity = relationship("Entity", backref="notes")
+
 
 class PlayerCharacter(Base):
     __tablename__ = "player_characters"
@@ -212,12 +242,13 @@ class PlayerCharacter(Base):
     cyberware_json  = Column(Text, default='[]')  # [{name, ca_cost, notes}]
     conditions_json = Column(Text, default='[]')  # list of active condition strings
     sheet_template_id  = Column(Integer, ForeignKey("sheet_templates.id"), nullable=True)
-    custom_fields_json = Column(Text, default="{}")   # {field_id: value}
+    custom_fields_json = Column(Text, default="{}")   # {field_id: value or [ {...}, ... ] for list fields}
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     world = relationship("World")
+    sheet_template = relationship("SheetTemplate")
 
 
 class SheetTemplate(Base):
@@ -229,9 +260,15 @@ class SheetTemplate(Base):
     slug        = Column(String(64), unique=True, nullable=False)
     description = Column(Text, default="")
     is_builtin  = Column(Boolean, default=False)
-    # [{id, label, type, section, default_value}]
-    # type: number | resource | text | textarea | table
-    # section: stats | resources | notes | custom
+    # "nd" (default): the full N&D sheet (stats/HP/Shock/PP-MP/edges/cyberware/feats)
+    # plus these fields layered on top. "custom": an entirely different system —
+    # the N&D sheet is not shown at all, the character *is* these fields.
+    sheet_mode  = Column(String(16), default="nd")
+    # [{id, label, type, section, default_value}] for simple fields, or
+    # [{id, label, type:"list", section, item_fields:[{id,label,type}]}] for a
+    # repeatable group (e.g. a list of abilities, each with name/tier/effect).
+    # type: number | resource | text | textarea | table | list
+    # section: freeform label used to group fields on the sheet
     fields_json = Column(Text, default="[]")
     created_at  = Column(DateTime, default=datetime.utcnow)
     updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

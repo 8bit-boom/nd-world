@@ -203,6 +203,20 @@ def _templates_for_world(db: Session, world_id: Optional[int]):
     return q.all()
 
 
+def _group_by_section(tpl_fields):
+    """Groups template fields by their `section` label, preserving both field
+    order and first-seen section order (Jinja's groupby filter re-sorts
+    alphabetically, which would scramble an intentionally-ordered sheet)."""
+    sections, lookup = [], {}
+    for f in tpl_fields:
+        sec = f.get("section") or "Custom"
+        if sec not in lookup:
+            lookup[sec] = []
+            sections.append((sec, lookup[sec]))
+        lookup[sec].append(f)
+    return sections
+
+
 def _current_user(request: Request):
     return getattr(request.state, "user", None)
 
@@ -242,11 +256,13 @@ def characters_list(request: Request, db: Session = Depends(get_db), active_worl
         pcs = q.order_by(PlayerCharacter.name).all()
     derived = {pc.id: _derived(pc) for pc in pcs}
     sheet_templates_list = _templates_for_world(db, world.id if world else None)
+    custom_tpl_ids = {t.id for t in sheet_templates_list if t.sheet_mode == "custom"}
     my_character = _own_character(db, world.id, user.id) if (world and user and not user.is_gm) else None
     return templates.TemplateResponse("characters/list.html", {
         "request": request, "world": world, "worlds": worlds,
         "pcs": pcs, "derived": derived,
         "sheet_templates": sheet_templates_list,
+        "custom_tpl_ids": custom_tpl_ids,
         "user": user, "my_character": my_character,
     })
 
@@ -274,6 +290,16 @@ def character_new_form(
     if not chosen_tpl:
         # Default to N&D template
         chosen_tpl = db.query(SheetTemplate).filter(SheetTemplate.slug == "nd-default").first()
+    if chosen_tpl and chosen_tpl.sheet_mode == "custom":
+        tpl_fields = json.loads(chosen_tpl.fields_json or "[]")
+        return templates.TemplateResponse("characters/custom_sheet.html", {
+            "request": request, "world": world, "worlds": worlds,
+            "pc": None, "can_manage": True,
+            "chosen_template": chosen_tpl,
+            "sections": _group_by_section(tpl_fields),
+            "tpl_fields": tpl_fields,
+            "custom_fields": {},
+        })
     return templates.TemplateResponse("characters/wizard.html", {
         "request": request, "world": world, "worlds": worlds,
         "chosen_template": chosen_tpl,
@@ -346,6 +372,7 @@ async def template_create(
     form = await request.form()
     name = str(form.get("name", "")).strip() or "Unnamed Template"
     desc = str(form.get("description", "")).strip()
+    sheet_mode = "custom" if str(form.get("sheet_mode", "nd")) == "custom" else "nd"
     raw_fields = str(form.get("fields_json", "[]") or "[]")
     try:
         json.loads(raw_fields)
@@ -359,7 +386,7 @@ async def template_create(
     tpl = SheetTemplate(
         world_id=world.id if world else None,
         name=name, slug=slug, description=desc,
-        is_builtin=False, fields_json=raw_fields,
+        is_builtin=False, sheet_mode=sheet_mode, fields_json=raw_fields,
     )
     db.add(tpl)
     db.commit()
@@ -393,6 +420,7 @@ async def template_update(
     if not tpl.is_builtin:
         tpl.name = str(form.get("name", tpl.name)).strip() or tpl.name
         tpl.description = str(form.get("description", "")).strip()
+        tpl.sheet_mode = "custom" if str(form.get("sheet_mode", "nd")) == "custom" else "nd"
     raw_fields = str(form.get("fields_json", "[]") or "[]")
     try:
         json.loads(raw_fields)
@@ -439,10 +467,23 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
     if not _can_view_character(db, user, pc, db.query(World).filter(World.id == pc.world_id).first()):
         raise HTTPException(403)
     can_manage = _can_manage_character(user, pc)
-    d = _derived(pc)
     chosen_tpl = db.query(SheetTemplate).filter(
         SheetTemplate.id == pc.sheet_template_id
     ).first() if pc.sheet_template_id else None
+
+    if chosen_tpl and chosen_tpl.sheet_mode == "custom":
+        tpl_fields = json.loads(chosen_tpl.fields_json or "[]")
+        custom_fields = json.loads(getattr(pc, "custom_fields_json", None) or "{}")
+        return templates.TemplateResponse("characters/custom_sheet.html", {
+            "request": request, "world": world, "worlds": worlds,
+            "pc": pc, "can_manage": can_manage,
+            "chosen_template": chosen_tpl,
+            "sections": _group_by_section(tpl_fields),
+            "tpl_fields": tpl_fields,
+            "custom_fields": custom_fields,
+        })
+
+    d = _derived(pc)
     tpl_fields = json.loads(chosen_tpl.fields_json) if chosen_tpl else []
     custom_fields = json.loads(getattr(pc, "custom_fields_json", None) or "{}")
     return templates.TemplateResponse("characters/sheet.html", {
@@ -465,10 +506,13 @@ def character_edit_form(pc_id: int, request: Request, db: Session = Depends(get_
         raise HTTPException(404)
     if not _can_manage_character(_current_user(request), pc):
         raise HTTPException(403)
-    sheet_templates_list = _templates_for_world(db, world.id if world else None)
     chosen_tpl = db.query(SheetTemplate).filter(
         SheetTemplate.id == pc.sheet_template_id
     ).first() if pc.sheet_template_id else None
+    if chosen_tpl and chosen_tpl.sheet_mode == "custom":
+        # Custom-mode sheets are always-editable in place — no separate edit page.
+        return RedirectResponse(f"/characters/{pc_id}", status_code=303)
+    sheet_templates_list = _templates_for_world(db, world.id if world else None)
     tpl_fields = json.loads(chosen_tpl.fields_json) if chosen_tpl else []
     custom_fields = json.loads(getattr(pc, "custom_fields_json", None) or "{}")
     return templates.TemplateResponse("characters/form.html", {

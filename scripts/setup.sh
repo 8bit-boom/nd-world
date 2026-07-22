@@ -53,6 +53,18 @@ else
     echo
     sedi "s|^GM_EMAIL=.*|GM_EMAIL=${GM_EMAIL_VALUE}|"
     sedi "s|^GM_PASSWORD=.*|GM_PASSWORD=${GM_PASSWORD_VALUE}|"
+
+    echo
+    info "AI chat (Ollama) and AI image generation (SwarmUI) are optional —"
+    info "both are large downloads and Ollama in particular wants a decent GPU/CPU."
+    read -r -p "  Enable AI chat (Ollama)? [y/N] " ENABLE_OLLAMA
+    read -r -p "  Enable AI image generation (SwarmUI)? [y/N] " ENABLE_SWARMUI
+    PROFILES=""
+    [[ "$ENABLE_OLLAMA" =~ ^[Yy] ]] && PROFILES="ollama"
+    if [[ "$ENABLE_SWARMUI" =~ ^[Yy] ]]; then
+      PROFILES="${PROFILES:+$PROFILES,}swarmui"
+    fi
+    sedi "s|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=${PROFILES}|"
   else
     info "No terminal input available — leaving GM_EMAIL/GM_PASSWORD blank."
     info "Edit .env and set them before first start, or after: fill them in,"
@@ -100,6 +112,13 @@ if grep -qE '^GM_EMAIL=.+' .env && grep -qE '^GM_PASSWORD=.+' .env; then
   info "Log in with the GM email/password you just set."
 else
   info "GM_EMAIL/GM_PASSWORD aren't set yet — edit .env, then run 'docker compose up -d' again."
+fi
+CURRENT_PROFILES="$(grep -E '^COMPOSE_PROFILES=' .env 2>/dev/null | cut -d= -f2)"
+if [ -n "$CURRENT_PROFILES" ]; then
+  info "AI features enabled: ${CURRENT_PROFILES}"
+else
+  info "AI chat/image generation are off. Enable later by setting COMPOSE_PROFILES"
+  info "in .env (e.g. COMPOSE_PROFILES=ollama,swarmui), then 'docker compose up -d'."
 fi
 echo
 info "To invite players: log in as the GM, open a world's Edit page, and create"

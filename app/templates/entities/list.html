@@ -17,7 +17,7 @@
          class="view-btn {% if view == 'table' %}active{% endif %}" title="Table view">≡</a>
     </div>
     {% endif %}
-    <a href="/new?kind={{ kind }}" class="btn-new">+ New {{ kind }}</a>
+    <a href="/new?kind={{ kind }}{% if active_folder %}&folder={{ active_folder|urlencode }}{% endif %}" class="btn-new">+ New {{ kind }}</a>
   </div>
 </div>
 
@@ -30,11 +30,13 @@
     <span class="bc-sep">›</span>
     {% if loop.last %}
     <span class="bc-current">{{ part }}</span>
+    <button type="button" class="folder-rename-tog" id="bc-manage-btn" title="Rename or remove this folder">✏</button>
     {% else %}
     <a href="/kind/{{ kind }}?folder={{ ns.path|urlencode }}{% if q %}&q={{ q }}{% endif %}">{{ part }}</a>
     {% endif %}
   {% endfor %}
 </nav>
+<div id="bc-manage-wrap" style="display:none;margin:.3rem 0 .6rem"></div>
 {% endif %}
 
 <div class="list-layout">
@@ -170,6 +172,12 @@
 <style>
 .folder-rename-tog { font-size:.7rem; background:none; border:none; color:#555; cursor:pointer; padding:.1rem .3rem; border-radius:3px; flex-shrink:0; }
 .folder-rename-tog:hover { color:var(--neon); }
+.folder-rename-form { display:flex; flex-wrap:wrap; gap:4px; margin:.3rem 0 .3rem .5rem; align-items:center; }
+.folder-rename-input { font-size:.75rem; width:160px; background:#1a1a1a; border:1px solid #333; border-radius:3px; padding:3px 6px; color:#e0e0e0; }
+.folder-rename-ok, .folder-rename-del { font-size:.72rem; border:none; border-radius:3px; padding:3px 8px; cursor:pointer; }
+.folder-rename-ok { background:var(--neon); color:#000; }
+.folder-rename-del { background:transparent; border:1px solid #a33; color:#e07; }
+.folder-rename-del:hover { background:#a33; color:#fff; }
 </style>
 <script>
 const FOLDERS = {{ folders | tojson }};
@@ -191,6 +199,55 @@ function recursiveCount(path) {
     if (k.startsWith(prefix)) n += v;
   }
   return n;
+}
+
+// Builds a rename-or-remove form for a given folder path (used by the sidebar
+// and the current-folder breadcrumb). Built via DOM APIs, not innerHTML, so
+// folder names with quotes/HTML in them can't break the markup.
+function buildFolderManageForm(fullPath) {
+  const form = document.createElement('form');
+  form.method = 'post';
+  form.action = '/folders/rename';
+  form.className = 'folder-rename-form';
+
+  const kindInput = document.createElement('input');
+  kindInput.type = 'hidden'; kindInput.name = 'kind'; kindInput.value = KIND;
+  form.appendChild(kindInput);
+
+  const oldInput = document.createElement('input');
+  oldInput.type = 'hidden'; oldInput.name = 'old_path'; oldInput.value = fullPath;
+  form.appendChild(oldInput);
+
+  const newInput = document.createElement('input');
+  newInput.name = 'new_path'; newInput.value = fullPath; newInput.autocomplete = 'off';
+  newInput.className = 'folder-rename-input';
+  form.appendChild(newInput);
+
+  const okBtn = document.createElement('button');
+  okBtn.type = 'submit'; okBtn.className = 'folder-rename-ok'; okBtn.textContent = 'Rename / Move';
+  form.appendChild(okBtn);
+
+  const delBtn = document.createElement('button');
+  delBtn.type = 'button'; delBtn.className = 'folder-rename-del'; delBtn.textContent = '🗑 Remove';
+  delBtn.onclick = function() {
+    if (!confirm('Remove folder "' + fullPath + '"? Its entities (and any subfolders’) become Unfiled.')) return;
+    newInput.value = '';
+    form.submit();
+  };
+  form.appendChild(delBtn);
+
+  return form;
+}
+
+// Wires an "✏" toggle button to lazily build+show/hide a manage form for fullPath
+// inside wrap.
+function attachFolderManageToggle(btn, wrap, fullPath) {
+  let built = false;
+  btn.onclick = function(e) {
+    e.preventDefault();
+    if (!built) { wrap.appendChild(buildFolderManageForm(fullPath)); built = true; }
+    wrap.style.display = wrap.style.display === 'none' ? '' : 'none';
+  };
 }
 
 // Sidebar: flat list of top-level folders with recursive counts
@@ -230,28 +287,16 @@ function renderSidebar() {
       a.appendChild(badge);
     }
     row.appendChild(a);
-    // Rename toggle button
+    // Rename/remove toggle button
     const togBtn = document.createElement('button');
     togBtn.className = 'folder-rename-tog';
-    togBtn.title = 'Rename folder';
+    togBtn.title = 'Rename or remove folder';
     togBtn.textContent = '✏';
-    togBtn.onclick = function(e) {
-      e.preventDefault();
-      const wrap = li.querySelector('.folder-rename-wrap');
-      if (wrap) wrap.style.display = wrap.style.display === 'none' ? '' : 'none';
-    };
     row.appendChild(togBtn);
     li.appendChild(row);
-    // Rename form
     const wrap = document.createElement('div');
-    wrap.className = 'folder-rename-wrap';
     wrap.style.display = 'none';
-    wrap.innerHTML = `<form method="post" action="/folders/rename" style="display:flex;flex-wrap:wrap;gap:2px;margin:.2rem 0 .2rem .5rem;align-items:center">
-      <input type="hidden" name="kind" value="${KIND}"/>
-      <input type="hidden" name="old_path" value="${name}"/>
-      <input name="new_path" value="${name}" style="font-size:.75rem;width:140px;background:#1a1a1a;border:1px solid #333;border-radius:3px;padding:2px 5px;color:#e0e0e0" autocomplete="off"/>
-      <button type="submit" style="font-size:.72rem;background:var(--neon);color:#000;border:none;border-radius:3px;padding:2px 6px;cursor:pointer">OK</button>
-    </form>`;
+    attachFolderManageToggle(togBtn, wrap, name);
     li.appendChild(wrap);
     tree.appendChild(li);
   }
@@ -305,8 +350,19 @@ function renderRootFolders() {
   }
 }
 
+// Current-folder breadcrumb: rename/remove the folder you're actually inside
+// (works at any nesting depth, not just top-level — reach a nested folder via
+// the subfolder cards, then manage it here).
+function renderBreadcrumbManage() {
+  const btn = document.getElementById('bc-manage-btn');
+  const wrap = document.getElementById('bc-manage-wrap');
+  if (!btn || !wrap || ACTIVE === null || !ACTIVE) return;
+  attachFolderManageToggle(btn, wrap, ACTIVE);
+}
+
 renderSidebar();
 renderSubfolderStrip();
 renderRootFolders();
+renderBreadcrumbManage();
 </script>
 {% endblock %}

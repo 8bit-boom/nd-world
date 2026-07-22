@@ -9,7 +9,8 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - **Multi-world support** — create and switch between separate game worlds, each with its own colour accent
 - **8 entity types** — Characters, Locations, Organizations, Creatures, Events, Items, Feats, Notes — each with TTRPG-specific subtypes
 - **Entity relationships** — link any entity to any other; navigate connections from the detail page
-- **Folder organization** — hierarchical folders per entity type for large lore collections
+- **Entity notes** — attach multiple discrete notes to any entity, each independently hideable/un-hideable from players regardless of the entity's own visibility (e.g. reveal one detail about a location while keeping the rest secret)
+- **Folder organization** — hierarchical folders per entity type for large lore collections; the entity form offers a picker of existing folders (still free-text for new ones), and any folder you're browsing can be renamed/moved or removed (entities become Unfiled) from its breadcrumb
 - **Image attachments** — upload JPG/PNG/GIF/WebP/SVG images to any entity
 - **Rules viewer** — built-in core rules rendered from Markdown with auto-generated table of contents
 - **Interactive maps** — add custom markers and region overlays to map images
@@ -21,8 +22,9 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - **Image Studio** — embedded SwarmUI iframe at `/imagestudio`
 - **Universal character sheets** — fully configurable stats, skills, and currency (N&D defaults: POW/AGI/FOR/INT/PER/SOC); optional secondary resource tracker
 - **Rules-driven Player Character creation wizard** — guided Race → Profession → Stats (point-buy) → Feats → Equipment flow implementing the Neon & Dragons Core Rules character creation procedure, backed by the same race/profession/feat/equipment catalog used by the NeonDragonsApp Android app and NeonDragonsEditor desktop tool
+- **Custom character systems** — not locked into N&D: a Sheet Template can fully replace the N&D sheet with its own fields (including repeatable lists like abilities or a session log) for running a different TTRPG entirely in the same world — ships with a built-in **Asterion** system alongside N&D (see [Custom Character Systems](#custom-character-systems))
 - **`.ndc` character export** — export any Player Character as a `.ndc` file importable directly into both the NeonDragonsApp Android app and the NeonDragonsEditor desktop editor (see [Character creation wizard & export](#character-creation-wizard--export))
-- **GM & player accounts** — one GM account per deployment; invite players by link, each managing their own character. GMs can hide spoiler content, toggle party-wide character visibility per world, and send private per-player notes (see [Accounts, Invites & Going Public](#accounts-invites--going-public))
+- **GM & player accounts** — one GM account per deployment; invite players by link, each managing their own character. GMs can hide spoiler content (from everyone, or from all but a hand-picked subset of players), toggle party-wide character visibility per world, and send private per-player notes (see [Accounts, Invites & Going Public](#accounts-invites--going-public))
 - **Full-text search** — across names, tags, summaries, and body text
 - **JSON export / import** — complete world backup and restore with embedded images
 - **Mobile-responsive UI** — hamburger nav, touch-friendly targets, stacking layouts on phones and tablets
@@ -39,6 +41,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - [AI Setup](#ai-setup)
 - [Data & Backups](#data--backups)
 - [Character Creation Wizard & Export](#character-creation-wizard--export)
+- [Custom Character Systems](#custom-character-systems)
 - [Accounts, Invites & Going Public](#accounts-invites--going-public)
 - [Project Structure](#project-structure)
 - [Ports Reference](#ports-reference)
@@ -54,7 +57,8 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 | Git | For cloning the repository |
 | GPU | Optional — CPU-only mode works for Ollama and SwarmUI |
 
-Ollama and SwarmUI are **included in the Docker stack** — no separate installation needed.
+Ollama and SwarmUI are **included in the Docker stack but off by default** — see
+[AI Setup](#ai-setup) to enable one or both; no separate installation needed either way.
 
 ---
 
@@ -135,14 +139,17 @@ services:
 docker compose up -d
 ```
 
-This starts three services: **nd-world** (app), **SwarmUI** (image gen), and **Ollama** (AI chat).
+By default this starts just **nd-world** (the app) — **SwarmUI** (image gen) and
+**Ollama** (AI chat) are optional and skipped unless enabled (see
+[AI Setup](#ai-setup) — set `COMPOSE_PROFILES` in `.env`, or use `bash
+scripts/setup.sh`, which asks).
 
 Watch the logs:
 ```bash
 docker compose logs -f
 ```
 
-SwarmUI performs a first-run setup on initial boot (downloads the ComfyUI backend). This can take **5–15 minutes** depending on your connection.
+If you enabled SwarmUI, it performs a first-run setup on initial boot (downloads the ComfyUI backend). This can take **5–15 minutes** depending on your connection.
 
 ### Step 5 — Download an AI model
 
@@ -418,14 +425,23 @@ The script auto-detects the correct path and installs ComfyUI-Manager into `cust
 | `GM_EMAIL` / `GM_PASSWORD` | _(empty)_ | Bootstraps the GM account on first start. Leave blank if the GM account already exists |
 | `GM_NAME` | `GM` | Display name for the bootstrapped GM account |
 | `COOKIE_SECURE` | `false` | Set `true` once served over HTTPS (see [Accounts, Invites & Going Public](#accounts-invites--going-public)) |
+| `COMPOSE_PROFILES` | _(empty)_ | Not read by the app itself — Docker Compose reads it to decide which optional services to start. Empty starts just `world`; set `ollama`, `swarmui`, or `ollama,swarmui` to also start those containers |
 
 ---
 
 ## AI Setup
 
+Ollama (AI chat) and SwarmUI (AI image generation) are **optional** — nd-world runs
+fine without either and just shows those features as unavailable (grey status dot,
+"AI unavailable"). They're skipped by default; `bash scripts/setup.sh` asks whether
+to enable them, or set `COMPOSE_PROFILES` in `.env` yourself (see table above) and
+run `docker compose up -d`. Both are sizeable downloads and Ollama in particular
+wants a decent CPU/GPU, so it's worth leaving off if you don't plan to use AI chat.
+
 ### Ollama (chat)
 
-Ollama is included in both `docker-compose.yml` and `truenas-compose.yml` and starts automatically with the stack. No separate installation needed.
+Ollama is defined in both `docker-compose.yml` and `truenas-compose.yml` behind the
+`ollama` Compose profile — it only starts if that profile is active.
 
 **Downloading models:**
 
@@ -474,7 +490,8 @@ AMD GPU support requires the ROCm image: change `image: ollama/ollama` to `image
 
 ### SwarmUI (image generation)
 
-SwarmUI is included in all compose files and starts automatically. On first boot it downloads the ComfyUI backend — this takes **5–15 minutes** the first time.
+SwarmUI is defined in all compose files behind the `swarmui` Compose profile — see
+[AI Setup](#ai-setup) above to enable it. On first boot it downloads the ComfyUI backend — this takes **5–15 minutes** the first time.
 
 Set `SWARMUI_EXTERNAL_URL` to your host's accessible URL to enable the **Image Studio** embedded iframe view.
 
@@ -568,6 +585,40 @@ cp /path/to/UoY-Neon-Dragons/NeonDragonsApp/app/src/main/assets/data/*.json app/
 
 ---
 
+## Custom Character Systems
+
+The Neon & Dragons wizard above isn't the only option — nd-world can run a completely
+different TTRPG system alongside (or instead of) N&D, using **Sheet Templates**
+(world switcher → **🗒 Systems & Templates**, or `/characters/templates`).
+
+A template is one of two modes:
+
+- **Extends the N&D sheet** (the original behavior) — every character still has the
+  full N&D sheet (stats, HP, Shock, PP/MP, edges, cyberware, conditions); the
+  template's fields are extra sections layered on top.
+- **Fully custom system** — the N&D sheet isn't used at all. The character *is*
+  whatever fields the template defines, rendered on its own page instead of the
+  N&D wizard. Fields can be single values (number/text/text area) or a **list**
+  field — a repeatable group of sub-fields, for things like a variable-length
+  ability list, inventory, or session log.
+
+A built-in **Asterion** template (a d10 dice-pool system of Gods and Mythborn —
+Spark Shield/Flesh/Ichor, Glory, Domain Reclamation) ships as a working example of
+a fully custom system. To create a character with it, or with any custom-mode
+template, open **🗒 Systems & Templates** and click **+ Create Character** on that
+template's card — the plain **+ New Character** button on the Characters page
+always goes to the standard N&D wizard, so existing N&D worlds are unaffected.
+
+To build your own homebrew system: **+ New Template**, choose **Fully custom
+system**, then add fields — pick **List (repeatable group)** as a field's type to
+define a group of sub-fields (e.g. an "Abilities" list where each entry has a
+Name, Tier, and Effect). GM-authored templates can be scoped to one world or left
+global (available everywhere), same as N&D's extra-field templates always were.
+Custom-system characters skip N&D-only features that don't apply to them (`.ndc`
+export, the HP/Speed/CA card badges) since those are Neon & Dragons–specific.
+
+---
+
 ## Accounts, Invites & Going Public
 
 There is no public signup. One **GM account** runs the whole deployment, bootstrapped
@@ -587,8 +638,14 @@ no way to sign up otherwise.
   for that world
 
 **As a player**, once joined to a world you can:
-- Browse its lore (anything the GM hasn't marked "🔒 Hide from players" on the
-  entity's edit page — spoilers, secrets, and unrevealed content stay GM-only)
+- Browse its lore, minus whatever the GM has hidden from you — each entity's edit
+  page has a **Visibility** control with three modes: **Everyone** (default), **GM
+  only** (spoilers, secrets, unrevealed content), or **Specific players**, which
+  hides the entity from the party except for a hand-picked list of players (handy
+  for per-character secrets, faction intel only one PC has access to, etc.)
+- See any **notes** the GM has attached to a visible entity and un-hidden — the
+  entity's own visibility and each note's visibility are independent, so the GM can
+  show you a location while still keeping a couple of secret notes on it GM-only
 - Create and manage **one character** via the [creation wizard](#character-creation-wizard--export),
   including live HP/Shock/PP/MP tracking and `.ndc` export
 - View party members' characters read-only, if the GM has enabled that
@@ -598,7 +655,7 @@ GM-only tools (AI chat, image generation, world/entity editing, maps, schematics
 investigation boards) stay restricted to the GM account regardless. Session logs and
 campaign-wide notes shared with players don't need a separate feature — use a
 **Note** entity (kind "note", subtype "session note"/"lore"/etc.) like any other piece
-of world content; toggle "Hide from players" off to share it with the party.
+of world content, with visibility set to **Everyone** or restricted to a subset of the party.
 
 **Going public:** nd-world is private by default (every page requires login) — see
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full walkthrough of running it
