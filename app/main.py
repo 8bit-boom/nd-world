@@ -7,7 +7,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
-from typing import Optional
+from typing import List, Optional
 from urllib.parse import quote
 import re
 import markdown2
@@ -21,7 +21,7 @@ import io
 from pathlib import Path
 
 from .database import init_db, get_db, SessionLocal
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, User, InviteCode, WorldMembership, PrivateNote
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote
 from .routers.ai import router as ai_router
 from .routers.characters import router as characters_router
 from .routers.auth import router as auth_router
@@ -333,11 +333,37 @@ def get_active_world(request: Request, db: Session, active_world: str = Cookie(N
 
 
 def _filter_visible_entities(q, request: Request):
-    """Restrict an Entity query to visible_to_players rows for non-GM viewers."""
+    """Restrict an Entity query to visible_to_players rows for non-GM viewers,
+    plus any hidden entities specifically shared with this player."""
     user = getattr(request.state, "user", None)
     if not (user and user.is_gm):
-        q = q.filter(Entity.visible_to_players.isnot(False))
+        if user:
+            shared = q.session.query(entity_player_access.c.entity_id).filter(
+                entity_player_access.c.user_id == user.id
+            )
+            q = q.filter(or_(Entity.visible_to_players.isnot(False), Entity.id.in_(shared)))
+        else:
+            q = q.filter(Entity.visible_to_players.isnot(False))
     return q
+
+
+def _world_player_list(db: Session, world_id: int):
+    """Player accounts with membership in this world, for the per-entity visibility checklist."""
+    return (
+        db.query(User)
+        .join(WorldMembership, WorldMembership.user_id == User.id)
+        .filter(WorldMembership.world_id == world_id)
+        .order_by(User.display_name)
+        .all()
+    )
+
+
+def _sync_entity_access(db: Session, entity_id: int, player_ids):
+    """Replace the set of players explicitly allowed to see a hidden entity."""
+    db.execute(entity_player_access.delete().where(entity_player_access.c.entity_id == entity_id))
+    for uid in {int(uid) for uid in player_ids}:
+        db.execute(entity_player_access.insert().values(entity_id=entity_id, user_id=uid))
+    db.commit()
 
 
 def _visible_worlds(request: Request, db: Session):
@@ -1526,7 +1552,12 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         raise HTTPException(404)
     user = getattr(request.state, "user", None)
     if not entity.visible_to_players and not (user and user.is_gm):
-        raise HTTPException(404)
+        shared = user and db.query(entity_player_access).filter(
+            entity_player_access.c.entity_id == entity.id,
+            entity_player_access.c.user_id == user.id,
+        ).first()
+        if not shared:
+            raise HTTPException(404)
     world = get_active_world(request, db, active_world)
     all_entities = _filter_visible_entities(
         db.query(Entity).filter(Entity.id != entity_id, Entity.world_id == entity.world_id), request
@@ -1549,9 +1580,11 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
 def new_form(request: Request, kind: str = "character", db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world = get_active_world(request, db, active_world)
     worlds = _visible_worlds(request, db)
+    world_players = _world_player_list(db, world.id) if world else []
     return templates.TemplateResponse("entities/form.html", {
         "request": request, "entity": None, "kind": kind,
         "world": world, "worlds": worlds,
+        "world_players": world_players, "allowed_player_ids": set(),
     })
 
 @app.post("/new")
@@ -1560,7 +1593,8 @@ async def create(
     kind: str = Form(...), subtype: str = Form(""), name: str = Form(...),
     folder: str = Form(""), tags: str = Form(""), image_url: str = Form(""),
     image_file: UploadFile = File(None), summary: str = Form(""), body: str = Form(""),
-    hide_from_players: Optional[str] = Form(None),
+    visibility_mode: str = Form("everyone"),
+    allowed_player_ids: List[int] = Form([]),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     world = get_active_world(request, db, active_world)
@@ -1568,10 +1602,11 @@ async def create(
     e = Entity(world_id=world.id, kind=kind, subtype=subtype or None, name=name,
                folder=folder.strip() or None, tags=tags or None,
                image_url=final_image, summary=summary or None, body=body or None,
-               visible_to_players=not bool(hide_from_players))
+               visible_to_players=(visibility_mode == "everyone"))
     db.add(e)
     db.commit()
     db.refresh(e)
+    _sync_entity_access(db, e.id, allowed_player_ids if visibility_mode == "players" else [])
     return RedirectResponse(f"/entity/{e.id}", status_code=303)
 
 # ── Edit ──────────────────────────────────────────────────────────────────────
@@ -1583,9 +1618,15 @@ def edit_form(request: Request, entity_id: int, db: Session = Depends(get_db), a
         raise HTTPException(404)
     world = get_active_world(request, db, active_world)
     worlds = _visible_worlds(request, db)
+    world_players = _world_player_list(db, entity.world_id)
+    allowed_player_ids = {
+        r[0] for r in db.query(entity_player_access.c.user_id)
+        .filter(entity_player_access.c.entity_id == entity_id).all()
+    }
     return templates.TemplateResponse("entities/form.html", {
         "request": request, "entity": entity, "kind": entity.kind,
         "world": world, "worlds": worlds,
+        "world_players": world_players, "allowed_player_ids": allowed_player_ids,
     })
 
 @app.post("/entity/{entity_id}/edit")
@@ -1594,7 +1635,8 @@ async def update(
     kind: str = Form(...), subtype: str = Form(""), name: str = Form(...),
     folder: str = Form(""), tags: str = Form(""), image_url: str = Form(""),
     image_file: UploadFile = File(None), summary: str = Form(""), body: str = Form(""),
-    hide_from_players: Optional[str] = Form(None),
+    visibility_mode: str = Form("everyone"),
+    allowed_player_ids: List[int] = Form([]),
     remove_image: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
@@ -1620,8 +1662,9 @@ async def update(
         entity.image_url = None
     entity.summary = summary or None
     entity.body = body or None
-    entity.visible_to_players = not bool(hide_from_players)
+    entity.visible_to_players = (visibility_mode == "everyone")
     db.commit()
+    _sync_entity_access(db, entity_id, allowed_player_ids if visibility_mode == "players" else [])
     return RedirectResponse(f"/entity/{entity_id}", status_code=303)
 
 # ── Delete ────────────────────────────────────────────────────────────────────
@@ -1634,6 +1677,7 @@ def delete(entity_id: int, db: Session = Depends(get_db)):
     db.execute(entity_links.delete().where(
         (entity_links.c.source_id == entity_id) | (entity_links.c.target_id == entity_id)
     ))
+    db.execute(entity_player_access.delete().where(entity_player_access.c.entity_id == entity_id))
     db.delete(entity)
     db.commit()
     return RedirectResponse("/", status_code=303)

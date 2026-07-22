@@ -83,13 +83,51 @@
       <textarea name="body" id="body-field" rows="16" placeholder="# History&#10;…">{{ entity.body if entity else '' }}</textarea>
     </div>
 
-    <div style="display:flex;align-items:center;gap:.5rem;margin:.6rem 0 1rem">
-      <input type="checkbox" id="hide-from-players" name="hide_from_players" value="1"
-             style="width:auto;accent-color:var(--neon2)"
-             {% if entity and not entity.visible_to_players %}checked{% endif %}>
-      <label for="hide-from-players" style="font-size:.82rem;color:var(--text-dim)">
-        🔒 Hide from players (GM-only — spoilers, secrets, unrevealed content)
-      </label>
+    <div class="form-group" style="margin:.6rem 0 1rem">
+      <label>Visibility</label>
+      <div style="display:flex;flex-direction:column;gap:.4rem;margin-top:.3rem">
+        <div style="display:flex;align-items:center;gap:.5rem">
+          <input type="radio" id="vis-everyone" name="visibility_mode" value="everyone"
+                 style="width:auto;accent-color:var(--neon2)"
+                 {% if not entity or entity.visible_to_players %}checked{% endif %}
+                 onchange="updateVisibilityUI()">
+          <label for="vis-everyone" style="margin:0;font-size:.82rem;color:var(--text-dim)">
+            🌐 Everyone (all party members)
+          </label>
+        </div>
+        <div style="display:flex;align-items:center;gap:.5rem">
+          <input type="radio" id="vis-gm" name="visibility_mode" value="gm"
+                 style="width:auto;accent-color:var(--neon2)"
+                 {% if entity and not entity.visible_to_players and not allowed_player_ids %}checked{% endif %}
+                 onchange="updateVisibilityUI()">
+          <label for="vis-gm" style="margin:0;font-size:.82rem;color:var(--text-dim)">
+            🔒 GM only (spoilers, secrets, unrevealed content)
+          </label>
+        </div>
+        <div style="display:flex;align-items:center;gap:.5rem">
+          <input type="radio" id="vis-players" name="visibility_mode" value="players"
+                 style="width:auto;accent-color:var(--neon2)"
+                 {% if entity and not entity.visible_to_players and allowed_player_ids %}checked{% endif %}
+                 onchange="updateVisibilityUI()">
+          <label for="vis-players" style="margin:0;font-size:.82rem;color:var(--text-dim)">
+            👥 Specific players only
+          </label>
+        </div>
+      </div>
+      <div id="player-picker" style="display:none;margin:.5rem 0 0 1.7rem;padding:.5rem;border:1px solid rgba(255,255,255,.15);border-radius:4px">
+        {% if world_players %}
+        {% for p in world_players %}
+        <div style="display:flex;align-items:center;gap:.4rem;margin:.15rem 0">
+          <input type="checkbox" id="player-{{ p.id }}" name="allowed_player_ids" value="{{ p.id }}"
+                 style="width:auto;accent-color:var(--neon2)"
+                 {% if p.id in allowed_player_ids %}checked{% endif %}>
+          <label for="player-{{ p.id }}" style="margin:0;font-size:.82rem">{{ p.display_name or p.email }}</label>
+        </div>
+        {% endfor %}
+        {% else %}
+        <span style="font-size:.8rem;color:var(--text-dim)">No players have joined this world yet.</span>
+        {% endif %}
+      </div>
     </div>
 
     <div class="form-actions">
@@ -203,8 +241,15 @@ document.querySelector('.entity-form').addEventListener('submit', function() {
   bodyField.value = body;
 });
 
+function updateVisibilityUI() {
+  const picker = document.getElementById('player-picker');
+  const checked = document.querySelector('input[name="visibility_mode"]:checked');
+  picker.style.display = (checked && checked.value === 'players') ? 'block' : 'none';
+}
+
 updateSubtypes();
 parseBodyIntoEditor();
+updateVisibilityUI();
 
 async function aiGenerate() {
   const btn = document.getElementById('ai-gen-btn');

@@ -11,6 +11,17 @@ entity_links = Table(
     Column("target_id", Integer, ForeignKey("entities.id"), primary_key=True),
 )
 
+# Which specific player accounts can see an entity that's marked hidden
+# (visible_to_players=False). Only consulted when the entity is hidden — an
+# entity with visible_to_players=True is visible to every world member and
+# never needs rows here.
+entity_player_access = Table(
+    "entity_player_access",
+    Base.metadata,
+    Column("entity_id", Integer, ForeignKey("entities.id"), primary_key=True),
+    Column("user_id", Integer, ForeignKey("users.id"), primary_key=True),
+)
+
 class World(Base):
     __tablename__ = "worlds"
 
