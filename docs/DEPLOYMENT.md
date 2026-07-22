@@ -118,9 +118,11 @@ Once nd-world is reachable (locally or over the internet):
    it lets them create their own account (or log in, if they already have
    one) and joins them to that world as a player.
 
-Players only see worlds they've been invited to, and only the lore you haven't
-marked "Hide from players" — see the visibility checkbox on any entity's edit
-page. They manage one character each (via the character creation wizard, or
+Players only see worlds they've been invited to, and lore is filtered by each
+entity's **Visibility** setting (on the entity's edit page): **Everyone**,
+**GM only**, or **Specific players** — pick the last one to share a secret
+with just one or two party members instead of the whole table. They manage
+one character each (via the character creation wizard, or
 directly on their sheet), and — if you leave **Players can see each other's
 characters** checked on the world's Edit page — can see the rest of the party
 read-only.

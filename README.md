@@ -22,7 +22,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - **Universal character sheets** — fully configurable stats, skills, and currency (N&D defaults: POW/AGI/FOR/INT/PER/SOC); optional secondary resource tracker
 - **Rules-driven Player Character creation wizard** — guided Race → Profession → Stats (point-buy) → Feats → Equipment flow implementing the Neon & Dragons Core Rules character creation procedure, backed by the same race/profession/feat/equipment catalog used by the NeonDragonsApp Android app and NeonDragonsEditor desktop tool
 - **`.ndc` character export** — export any Player Character as a `.ndc` file importable directly into both the NeonDragonsApp Android app and the NeonDragonsEditor desktop editor (see [Character creation wizard & export](#character-creation-wizard--export))
-- **GM & player accounts** — one GM account per deployment; invite players by link, each managing their own character. GMs can hide spoiler content, toggle party-wide character visibility per world, and send private per-player notes (see [Accounts, Invites & Going Public](#accounts-invites--going-public))
+- **GM & player accounts** — one GM account per deployment; invite players by link, each managing their own character. GMs can hide spoiler content (from everyone, or from all but a hand-picked subset of players), toggle party-wide character visibility per world, and send private per-player notes (see [Accounts, Invites & Going Public](#accounts-invites--going-public))
 - **Full-text search** — across names, tags, summaries, and body text
 - **JSON export / import** — complete world backup and restore with embedded images
 - **Mobile-responsive UI** — hamburger nav, touch-friendly targets, stacking layouts on phones and tablets
@@ -601,8 +601,11 @@ no way to sign up otherwise.
   for that world
 
 **As a player**, once joined to a world you can:
-- Browse its lore (anything the GM hasn't marked "🔒 Hide from players" on the
-  entity's edit page — spoilers, secrets, and unrevealed content stay GM-only)
+- Browse its lore, minus whatever the GM has hidden from you — each entity's edit
+  page has a **Visibility** control with three modes: **Everyone** (default), **GM
+  only** (spoilers, secrets, unrevealed content), or **Specific players**, which
+  hides the entity from the party except for a hand-picked list of players (handy
+  for per-character secrets, faction intel only one PC has access to, etc.)
 - Create and manage **one character** via the [creation wizard](#character-creation-wizard--export),
   including live HP/Shock/PP/MP tracking and `.ndc` export
 - View party members' characters read-only, if the GM has enabled that
@@ -612,7 +615,7 @@ GM-only tools (AI chat, image generation, world/entity editing, maps, schematics
 investigation boards) stay restricted to the GM account regardless. Session logs and
 campaign-wide notes shared with players don't need a separate feature — use a
 **Note** entity (kind "note", subtype "session note"/"lore"/etc.) like any other piece
-of world content; toggle "Hide from players" off to share it with the party.
+of world content, with visibility set to **Everyone** or restricted to a subset of the party.
 
 **Going public:** nd-world is private by default (every page requires login) — see
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full walkthrough of running it
