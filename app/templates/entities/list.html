@@ -250,26 +250,49 @@ function attachFolderManageToggle(btn, wrap, fullPath) {
   };
 }
 
-// Sidebar: flat list of top-level folders with recursive counts
-function renderSidebar() {
-  const tree = document.getElementById('folder-tree');
-  if (!tree) return;
-  const seen = new Set();
-  const topLevel = [];
-  for (const f of FOLDERS) {
-    const top = f.split('/')[0];
-    if (!seen.has(top)) { seen.add(top); topLevel.push(top); }
+// Builds a nested tree from flat "A/B/C" folder paths: { name, fullPath,
+// children: { segment: node } }, so the sidebar can show real nesting
+// instead of only top-level folders.
+function buildFolderTree(paths) {
+  const root = { children: {} };
+  for (const p of paths) {
+    const parts = p.split('/');
+    let node = root;
+    let cur = '';
+    for (const part of parts) {
+      cur = cur ? cur + '/' + part : part;
+      if (!node.children[part]) node.children[part] = { name: part, fullPath: cur, children: {} };
+      node = node.children[part];
+    }
   }
-  topLevel.sort();
-  for (const name of topLevel) {
-    const count = recursiveCount(name);
-    const isActive = ACTIVE === name || (ACTIVE !== null && ACTIVE.startsWith(name + '/'));
+  return root;
+}
+
+// Renders one level of the tree into `container` (a <ul>), recursing into
+// children. Ancestors of the currently active folder start expanded;
+// everything else starts collapsed so a large tree stays manageable.
+function renderFolderNode(node, container, depth) {
+  const names = Object.keys(node.children).sort();
+  for (const name of names) {
+    const child = node.children[name];
+    const hasChildren = Object.keys(child.children).length > 0;
+    const isActive = ACTIVE === child.fullPath;
+    const isAncestorOfActive = ACTIVE !== null && ACTIVE.startsWith(child.fullPath + '/');
+
     const li = document.createElement('li');
     li.style.cssText = 'display:flex;flex-direction:column;gap:0';
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:.2rem';
+    row.style.cssText = 'display:flex;align-items:center;gap:.15rem;padding-left:' + (depth * .7) + 'rem';
+
+    const expandBtn = document.createElement('button');
+    expandBtn.className = 'folder-expand-tog';
+    expandBtn.style.cssText = 'font-size:.65rem;background:none;border:none;color:#666;cursor:pointer;width:14px;flex-shrink:0;padding:0';
+    expandBtn.textContent = hasChildren ? (isAncestorOfActive ? '▾' : '▸') : '';
+    if (!hasChildren) expandBtn.style.visibility = 'hidden';
+    row.appendChild(expandBtn);
+
     const a = document.createElement('a');
-    a.href = folderUrl(name);
+    a.href = folderUrl(child.fullPath);
     a.className = 'folder-item' + (isActive ? ' active' : '');
     a.style.flex = '1';
     const icon = document.createElement('span');
@@ -280,6 +303,7 @@ function renderSidebar() {
     label.textContent = name;
     a.appendChild(icon);
     a.appendChild(label);
+    const count = recursiveCount(child.fullPath);
     if (count) {
       const badge = document.createElement('span');
       badge.className = 'folder-count';
@@ -287,19 +311,43 @@ function renderSidebar() {
       a.appendChild(badge);
     }
     row.appendChild(a);
-    // Rename/remove toggle button
+
     const togBtn = document.createElement('button');
     togBtn.className = 'folder-rename-tog';
     togBtn.title = 'Rename or remove folder';
     togBtn.textContent = '✏';
     row.appendChild(togBtn);
     li.appendChild(row);
-    const wrap = document.createElement('div');
-    wrap.style.display = 'none';
-    attachFolderManageToggle(togBtn, wrap, name);
-    li.appendChild(wrap);
-    tree.appendChild(li);
+
+    const manageWrap = document.createElement('div');
+    manageWrap.style.display = 'none';
+    attachFolderManageToggle(togBtn, manageWrap, child.fullPath);
+    li.appendChild(manageWrap);
+
+    if (hasChildren) {
+      const childUl = document.createElement('ul');
+      childUl.style.cssText = 'list-style:none;margin:0;padding:0';
+      childUl.style.display = isAncestorOfActive ? '' : 'none';
+      expandBtn.onclick = function (e) {
+        e.preventDefault();
+        const open = childUl.style.display !== 'none';
+        childUl.style.display = open ? 'none' : '';
+        expandBtn.textContent = open ? '▸' : '▾';
+      };
+      renderFolderNode(child, childUl, depth + 1);
+      li.appendChild(childUl);
+    }
+
+    container.appendChild(li);
   }
+}
+
+// Sidebar: full nested folder tree with recursive counts
+function renderSidebar() {
+  const tree = document.getElementById('folder-tree');
+  if (!tree) return;
+  const root = buildFolderTree(FOLDERS);
+  renderFolderNode(root, tree, 0);
 }
 
 // Subfolder strip: direct children of ACTIVE folder
