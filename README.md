@@ -28,6 +28,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - **Full-text search** — across names, tags, summaries, and body text
 - **JSON export / import** — complete world backup and restore with embedded images
 - **Mobile-responsive UI** — hamburger nav, touch-friendly targets, stacking layouts on phones and tablets
+- **Dark / Half-dark / Light themes** — toggle in the nav bar (next to your account badge); choice is remembered per browser. A world's custom accent color still applies on top of whichever theme you pick
 
 ---
 
