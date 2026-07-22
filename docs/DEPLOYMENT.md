@@ -50,6 +50,11 @@ In your server's terminal (replace the port if you changed `APP_PORT`):
 ```bash
 docker run --rm cloudflare/cloudflared:latest tunnel --url http://localhost:8080
 ```
+On TrueNAS SCALE, run this from **System Settings → Shell**, using your
+TrueNAS box's LAN IP and nd-world's mapped port instead of `localhost` (e.g.
+`http://192.168.1.50:8087` — check **Apps → nd-world → Workloads → Ports**
+for the exact port).
+
 After a few seconds you'll see a line containing a web address ending in
 `.trycloudflare.com` — that's a public link to your app, live right now.
 Share it with a player and try logging in (or joining, if you've sent them an
@@ -66,21 +71,53 @@ small yearly fee from any registrar — e.g. Namecheap, Cloudflare Registrar —
 if you don't already have one; a subdomain like `campaign.yourdomain.com`
 works too).
 
-1. Sign up at [cloudflare.com](https://cloudflare.com) (free tier is fine)
-   and add your domain to your account, following Cloudflare's own setup
-   wizard (it will ask you to change your domain's "nameservers" at your
-   registrar — follow their instructions).
-2. In the Cloudflare dashboard, go to **Zero Trust → Networks → Tunnels** and
-   click **Create a tunnel**. Name it something like `nd-world`.
-3. Cloudflare will give you a command starting with
-   `cloudflared service install ...` containing a long token. Copy the whole
-   command and run it on your server.
-4. Back in the Cloudflare dashboard, add a **Public Hostname** for the
-   tunnel: pick a subdomain (e.g. `world`), your domain, and set the service
-   to `http://localhost:8080` (or `http://<your-server-ip>:8080`).
-5. Save. Within a minute or two, `https://world.yourdomain.com` (or whatever
-   you chose) will show the nd-world login page — permanently, with a free
-   HTTPS padlock included.
+1. Sign up at [cloudflare.com](https://cloudflare.com) (free tier is fine).
+   In the dashboard, go to **Domains → Add a domain**, enter your domain, and
+   follow Cloudflare's setup wizard (it will ask you to change your domain's
+   "nameservers" at your registrar — follow their instructions; this can
+   take anywhere from a few minutes to a few hours to take effect).
+2. In the left sidebar, go to **Networks → Tunnels** (or click **Deploy a
+   tunnel** from the account Overview page's "Recommendations" panel) and
+   click **Create a tunnel**. Choose connector type **Cloudflared**, then
+   name it something like `nd-world`.
+3. On the next screen, pick any OS tab — you only need the token, not the
+   full install command shown there. Copy just the long string after
+   `install` (starts with `eyJ...`) — that's your **tunnel token**. Click
+   **Next**.
+4. On the "Public Hostname" screen: pick a subdomain (e.g. `world`), your
+   domain, Service type `HTTP`, and URL `localhost:8080` (or
+   `<your-server-ip>:8080` if cloudflared will run on a different machine —
+   e.g. as its own TrueNAS app, see below). Click **Save**.
+5. Run cloudflared with that token (see below for your platform). Within
+   about 30 seconds the tunnel shows **Healthy** in the Cloudflare
+   dashboard, and `https://world.yourdomain.com` (or whatever you chose)
+   shows the nd-world login page — permanently, with a free HTTPS padlock
+   included.
+
+**Running cloudflared:**
+
+- **Plain Docker host** (same machine as nd-world):
+  ```bash
+  docker run -d --name cloudflared --restart unless-stopped \
+    cloudflare/cloudflared:latest tunnel run --token <your-tunnel-token>
+  ```
+- **TrueNAS SCALE:** run it as its own app, separate from nd-world — go to
+  **Apps → Discover Apps → Custom App**, name it `cloudflared`, and paste
+  this into Custom Config:
+  ```yaml
+  services:
+    cloudflared:
+      image: cloudflare/cloudflared:latest
+      container_name: cloudflared
+      restart: unless-stopped
+      command: tunnel run
+      environment:
+        TUNNEL_TOKEN: "<your-tunnel-token>"
+  ```
+  Since cloudflared and nd-world are separate apps, use your TrueNAS box's
+  LAN IP (not `localhost`) for the Public Hostname's Service URL in step 4
+  above — e.g. `192.168.1.50:8087`, matching nd-world's host port from
+  **Apps → nd-world → Workloads → Ports**.
 
 **Once this is live**, edit `.env` and set `COOKIE_SECURE=true`, then run
 `docker compose up -d` again to apply it. (This matters — without it, logins
