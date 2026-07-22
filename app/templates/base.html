@@ -77,13 +77,14 @@
 <script>
 (function(){
   var dot=document.getElementById('ai-dot');
-  if(!dot) return;
-  fetch('/api/ai/status',{method:'POST'})
-    .then(r=>r.json())
-    .then(d=>{
-      if(d.status==='ok'){dot.style.background='#4f4';dot.title='AI ready — '+d.model;}
-      else{dot.style.background='#888';dot.title='AI unavailable';}
-    }).catch(()=>{});
+  if(dot){
+    fetch('/api/ai/status',{method:'POST'})
+      .then(r=>r.json())
+      .then(d=>{
+        if(d.status==='ok'){dot.style.background='#4f4';dot.title='AI ready — '+d.model;}
+        else{dot.style.background='#888';dot.title='AI unavailable';}
+      }).catch(()=>{});
+  }
   var THEMES=['dark','dim','light'];
   var THEME_LABELS={dark:'🌑 Dark',dim:'🌗 Dim',light:'☀ Light'};
   var themeBtn=document.getElementById('theme-toggle');
