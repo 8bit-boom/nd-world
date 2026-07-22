@@ -17,7 +17,18 @@
 
   <!-- Rules content -->
   <div style="flex:1;padding:2rem;max-width:860px">
-    <h1>📖 Core Rules</h1>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+      <h1>📖 {{ 'Rules' if is_custom_rules else 'Core Rules' }}</h1>
+      {% if can_edit and world %}
+      <a href="/worlds/{{ world.id }}/rules/edit" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.3rem .8rem;font-size:.8rem;border-radius:4px;text-decoration:none">✏ Edit Rules</a>
+      {% endif %}
+    </div>
+    {% if not is_custom_rules %}
+    <p style="color:var(--text-dim);font-size:.8rem;margin:.3rem 0 1rem">
+      Showing the default Neon &amp; Dragons rules — no custom rules have been set for this world.
+      {% if can_edit and world %}<a href="/worlds/{{ world.id }}/rules/edit">Add your own</a> if this world runs a different system.{% endif %}
+    </p>
+    {% endif %}
     <div class="rules-body prose">{{ content|safe }}</div>
   </div>
 

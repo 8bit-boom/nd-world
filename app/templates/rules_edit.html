@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Edit Rules — {{ edit_world.name }}{% endblock %}
+{% block content %}
+<div class="form-page">
+  <h1>✏ Edit Rules — {{ edit_world.name }}</h1>
+  <p style="color:var(--text-dim);font-size:.85rem;margin:.3rem 0 1rem">
+    Markdown shown on this world's <a href="/rules">Rules</a> page, with an auto-generated
+    table of contents from <code>##</code>/<code>###</code> headings. Leave blank to fall
+    back to the default Neon &amp; Dragons core rules.
+  </p>
+  <form method="post" action="/worlds/{{ edit_world.id }}/rules/edit" class="entity-form">
+    <div class="form-group">
+      <textarea name="rules_md" rows="28" placeholder="# My System&#10;&#10;## Core Mechanic&#10;…" style="font-family:var(--font);font-size:.85rem">{{ edit_world.rules_md or '' }}</textarea>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn-save">Save</button>
+      <a href="/rules" class="btn-cancel">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

@@ -32,6 +32,10 @@ class World(Base):
     accent = Column(String(16), default="#00f0ff")
     # Whether player members can see each other's Player Characters (read-only) or only their own.
     players_see_party = Column(Boolean, default=True)
+    # Per-world rules text (Markdown) shown on the /rules page. NULL = fall back
+    # to the bundled Neon & Dragons core_rules.md, for worlds actually running
+    # N&D and any world created before this field existed.
+    rules_md = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     entities = relationship("Entity", back_populates="world", cascade="all, delete-orphan")

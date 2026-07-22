@@ -940,15 +940,49 @@ async def save_map_overlay(slug: str, request: Request, db: Session = Depends(ge
     db.commit()
     return {"ok": True}
 
+def _world_rules_markdown(world) -> str:
+    """This world's own rules if the GM has set any, else the bundled N&D
+    core rules — so a world running a different system doesn't show N&D's
+    stats/feats/psionics by default."""
+    if world and (world.rules_md or "").strip():
+        return world.rules_md
+    rules_path = Path(__file__).parent / "core_rules.md"
+    return rules_path.read_text(encoding="utf-8", errors="ignore") if rules_path.exists() else ""
+
+
 @app.get("/rules", response_class=HTMLResponse)
 def rules_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world = get_active_world(request, db, active_world)
     worlds = _visible_worlds(request, db)
-    rules_path = Path(__file__).parent / "core_rules.md"
-    content, toc = _rules_toc(render_md(rules_path.read_text(encoding="utf-8", errors="ignore")) if rules_path.exists() else "<p>Rules file not found.</p>")
+    md = _world_rules_markdown(world)
+    content, toc = _rules_toc(render_md(md) if md else "<p>No rules have been added for this world yet.</p>")
+    user = getattr(request.state, "user", None)
+    is_custom = bool(world and (world.rules_md or "").strip())
     return templates.TemplateResponse("rules.html", {
         "request": request, "world": world, "worlds": worlds, "content": content, "toc": toc,
+        "is_custom_rules": is_custom, "can_edit": bool(user and user.is_gm),
     })
+
+
+@app.get("/worlds/{world_id}/rules/edit", response_class=HTMLResponse)
+def world_rules_edit_form(world_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    w = db.get(World, world_id)
+    if not w:
+        raise HTTPException(404)
+    world, worlds = _get_world_ctx(db, active_world)
+    return templates.TemplateResponse("rules_edit.html", {
+        "request": request, "world": world, "worlds": worlds, "edit_world": w,
+    })
+
+
+@app.post("/worlds/{world_id}/rules/edit")
+def world_rules_edit_post(world_id: int, rules_md: str = Form(""), db: Session = Depends(get_db)):
+    w = db.get(World, world_id)
+    if not w:
+        raise HTTPException(404)
+    w.rules_md = rules_md.strip() or None
+    db.commit()
+    return RedirectResponse("/rules", status_code=303)
 
 # ── Schematics ────────────────────────────────────────────────────────────────
 
@@ -1432,8 +1466,8 @@ def world_export_book(request: Request, db: Session = Depends(get_db), active_wo
         for s, d in _iter_world_maps(world.id)
     ]
 
-    rules_path = Path(__file__).parent / "core_rules.md"
-    rules_html = render_md(rules_path.read_text(encoding="utf-8", errors="ignore")) if rules_path.exists() else ""
+    rules_md = _world_rules_markdown(world)
+    rules_html = render_md(rules_md) if rules_md else ""
 
     html = templates.env.get_template("world_export.html").render(
         world=world, worlds=worlds, kinds=KINDS, kind_icons=KIND_ICONS,

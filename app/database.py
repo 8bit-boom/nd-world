@@ -173,6 +173,9 @@ def _migrate():
             if "players_see_party" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN players_see_party BOOLEAN DEFAULT 1"))
                 conn.commit()
+            if "rules_md" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN rules_md TEXT"))
+                conn.commit()
 
 def _seed():
     db = SessionLocal()
