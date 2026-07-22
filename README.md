@@ -9,6 +9,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - **Multi-world support** — create and switch between separate game worlds, each with its own colour accent
 - **8 entity types** — Characters, Locations, Organizations, Creatures, Events, Items, Feats, Notes — each with TTRPG-specific subtypes
 - **Entity relationships** — link any entity to any other; navigate connections from the detail page
+- **Entity notes** — attach multiple discrete notes to any entity, each independently hideable/un-hideable from players regardless of the entity's own visibility (e.g. reveal one detail about a location while keeping the rest secret)
 - **Folder organization** — hierarchical folders per entity type for large lore collections
 - **Image attachments** — upload JPG/PNG/GIF/WebP/SVG images to any entity
 - **Rules viewer** — built-in core rules rendered from Markdown with auto-generated table of contents
@@ -606,6 +607,9 @@ no way to sign up otherwise.
   only** (spoilers, secrets, unrevealed content), or **Specific players**, which
   hides the entity from the party except for a hand-picked list of players (handy
   for per-character secrets, faction intel only one PC has access to, etc.)
+- See any **notes** the GM has attached to a visible entity and un-hidden — the
+  entity's own visibility and each note's visibility are independent, so the GM can
+  show you a location while still keeping a couple of secret notes on it GM-only
 - Create and manage **one character** via the [creation wizard](#character-creation-wizard--export),
   including live HP/Shock/PP/MP tracking and `.ndc` export
 - View party members' characters read-only, if the GM has enabled that
