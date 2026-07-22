@@ -295,6 +295,7 @@ function renderFolderNode(node, container, depth) {
     a.href = folderUrl(child.fullPath);
     a.className = 'folder-item' + (isActive ? ' active' : '');
     a.style.flex = '1';
+    a.title = name; // full name on hover — nesting can truncate it quite tight
     const icon = document.createElement('span');
     icon.className = 'fi-icon';
     icon.textContent = '📁';

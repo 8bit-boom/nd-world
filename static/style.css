@@ -689,6 +689,10 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
 .folder-item {
   display: flex;
   align-items: center;
+  min-width: 0; /* let this shrink below its text's natural width when it's a flex
+                   child (nested tree rows, subfolder cards) — otherwise the name
+                   just gets hard-clipped by an ancestor's overflow:hidden instead
+                   of the ellipsis on .fi-name ever kicking in */
   padding: .5rem .75rem;
   font-size: .82rem;
   color: var(--text);
