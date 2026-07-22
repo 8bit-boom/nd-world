@@ -347,6 +347,15 @@ def _filter_visible_entities(q, request: Request):
     return q
 
 
+def _kind_folders(db: Session, world_id: int, kind: str):
+    """Distinct folder paths already in use for this world+kind, for the folder
+    picker on the entity form (existing folders to choose from)."""
+    rows = db.query(Entity.folder).filter(
+        Entity.world_id == world_id, Entity.kind == kind, Entity.folder.isnot(None)
+    ).distinct().all()
+    return sorted({r[0] for r in rows if r[0]})
+
+
 def _world_player_list(db: Session, world_id: int):
     """Player accounts with membership in this world, for the per-entity visibility checklist."""
     return (
@@ -584,24 +593,36 @@ def private_note_delete(world_id: int, user_id: int, note_id: int, db: Session =
 def folder_rename(
     kind: str = Form(...),
     old_path: str = Form(...),
-    new_path: str = Form(...),
+    new_path: str = Form(""),
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
     world, _ = _get_world_ctx(db, active_world)
-    if not world or not old_path.strip() or not new_path.strip():
+    old_path = old_path.strip()
+    new_path = new_path.strip()
+    if not world or not old_path:
         raise HTTPException(400)
+    # Scoped to this kind — folders are namespaced per entity kind, so renaming
+    # "Locations/East" must never touch an unrelated "Items/East" folder.
     ents = db.query(Entity).filter(
-        Entity.world_id == world.id,
+        Entity.world_id == world.id, Entity.kind == kind,
         or_(Entity.folder == old_path, Entity.folder.like(old_path + "/%"))
     ).all()
     for e in ents:
-        if e.folder == old_path:
+        if not new_path:
+            # Blank new_path = delete/ungroup the folder — its entities (and any
+            # subfolder's) become Unfiled, rather than trying to guess where else
+            # a half-renamed path should live.
+            e.folder = None
+        elif e.folder == old_path:
             e.folder = new_path
-        elif e.folder:
+        else:
             e.folder = new_path + e.folder[len(old_path):]
     db.commit()
-    return RedirectResponse(f"/kind/{kind}", status_code=303)
+    redirect_url = f"/kind/{kind}"
+    if new_path:
+        redirect_url += f"?folder={quote(new_path)}"
+    return RedirectResponse(redirect_url, status_code=303)
 
 @app.get("/worlds/{world_id}/export")
 def world_export(world_id: int, db: Session = Depends(get_db)):
@@ -1582,14 +1603,17 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
 # ── Create ────────────────────────────────────────────────────────────────────
 
 @app.get("/new", response_class=HTMLResponse)
-def new_form(request: Request, kind: str = "character", db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def new_form(request: Request, kind: str = "character", folder: str = "",
+             db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world = get_active_world(request, db, active_world)
     worlds = _visible_worlds(request, db)
     world_players = _world_player_list(db, world.id) if world else []
+    folder_options = _kind_folders(db, world.id, kind) if world else []
     return templates.TemplateResponse("entities/form.html", {
         "request": request, "entity": None, "kind": kind,
         "world": world, "worlds": worlds,
         "world_players": world_players, "allowed_player_ids": set(),
+        "folder_options": folder_options, "prefill_folder": folder,
     })
 
 @app.post("/new")
@@ -1628,10 +1652,12 @@ def edit_form(request: Request, entity_id: int, db: Session = Depends(get_db), a
         r[0] for r in db.query(entity_player_access.c.user_id)
         .filter(entity_player_access.c.entity_id == entity_id).all()
     }
+    folder_options = _kind_folders(db, entity.world_id, entity.kind)
     return templates.TemplateResponse("entities/form.html", {
         "request": request, "entity": entity, "kind": entity.kind,
         "world": world, "worlds": worlds,
         "world_players": world_players, "allowed_player_ids": allowed_player_ids,
+        "folder_options": folder_options, "prefill_folder": "",
     })
 
 @app.post("/entity/{entity_id}/edit")

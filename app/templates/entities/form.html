@@ -59,8 +59,13 @@
     </div>
 
     <div class="form-group">
-      <label>Folder <small>(for grouping, e.g. "Main Characters" or "East/Megacorps")</small></label>
-      <input name="folder" value="{{ entity.folder if entity else '' }}" placeholder="e.g. Allies, Antagonists/Megacorps…"/>
+      <label>Folder <small>(pick an existing folder or type a new one — use "Parent/Child" to nest)</small></label>
+      <input name="folder" list="folder-options" autocomplete="off"
+             value="{{ entity.folder if entity else prefill_folder }}"
+             placeholder="e.g. Allies, Antagonists/Megacorps…"/>
+      <datalist id="folder-options">
+        {% for f in folder_options %}<option value="{{ f }}">{% endfor %}
+      </datalist>
     </div>
 
     <div class="form-group">
