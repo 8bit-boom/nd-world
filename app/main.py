@@ -31,6 +31,14 @@ from .constants import KINDS, SUBTYPES, KIND_ICONS
 
 BASE_DIR = Path(__file__).parent.parent
 UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+# GM-created maps must live under /data (the persistent volume) — the app
+# image itself is rebuilt/replaced on every update, so anything written to a
+# path inside the app source tree (like the old `app/maps/`) is silently
+# wiped the next time the container is recreated from a fresh image.
+_MAPS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "maps"
+# The maps bundled with the repo (default city maps) — read-only reference
+# copies used to seed _MAPS_DIR on first boot, or when a new one is added.
+_BUNDLED_MAPS_DIR = Path(__file__).parent / "maps"
 SWARMUI_EXTERNAL_URL = os.getenv("SWARMUI_EXTERNAL_URL", "").rstrip("/")
 
 app = FastAPI(title="N&D World")
@@ -51,6 +59,21 @@ ENTITY_COLS = {"kind", "subtype", "folder", "name", "tags", "summary", "body", "
 def startup():
     init_db()
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    _seed_bundled_maps()
+
+
+def _seed_bundled_maps():
+    """Copy any bundled default map (app/maps/*.json) into the persistent maps
+    directory if it isn't there yet — never overwrites an existing file, so
+    this is safe to run on every startup and only fills in what's missing
+    (first boot, or a new bundled map added in a later update)."""
+    if not _BUNDLED_MAPS_DIR.exists():
+        return
+    _MAPS_DIR.mkdir(parents=True, exist_ok=True)
+    for jf in _BUNDLED_MAPS_DIR.glob("*.json"):
+        dest = _MAPS_DIR / jf.name
+        if not dest.exists():
+            shutil.copyfile(jf, dest)
 
 
 @app.get("/health")
@@ -769,9 +792,6 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
         "most_linked": most_linked, "top_tags": top_tags,
         "recent_boards": recent_boards, "recent_schematics": recent_schematics,
     })
-
-_MAPS_DIR = Path(__file__).parent / "maps"
-
 
 def _map_data(jf: Path) -> Optional[dict]:
     try:
