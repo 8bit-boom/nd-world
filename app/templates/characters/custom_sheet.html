@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}{{ pc.name if pc else 'New Character' }} — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<style>
+.cx { max-width:900px; margin:0 auto; }
+.cx-actions { display:flex;gap:.5rem;justify-content:flex-end;margin-bottom:1rem;flex-wrap:wrap; }
+.cx-header { display:flex;gap:1.25rem;align-items:flex-start;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem;flex-wrap:wrap; }
+.cx-portrait { width:96px;height:96px;flex-shrink:0;border-radius:6px;overflow:hidden;border:2px solid var(--neon);background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:2.2rem;color:var(--neon); }
+.cx-portrait img { width:100%;height:100%;object-fit:cover; }
+.cx-identity { flex:1;min-width:220px;display:flex;flex-direction:column;gap:.5rem; }
+.cx-system-badge { font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--neon2); }
+.cx-section { background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem; }
+.cx-section-title { font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.75rem;border-bottom:1px solid var(--border);padding-bottom:.4rem; }
+.cx-field-grid { display:grid;grid-template-columns:1fr 1fr;gap:0 1rem; }
+.cx-field { margin-bottom:.75rem; }
+.cx-field.wide { grid-column:1 / -1; }
+.cx-field label { display:block;font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.03em;margin-bottom:.3rem; }
+.cx-field input, .cx-field textarea {
+  width:100%; box-sizing:border-box; background:var(--bg3); border:1px solid var(--border); color:var(--text);
+  border-radius:5px; padding:.5rem .65rem; font-family:var(--font); font-size:.88rem;
+}
+.cx-field textarea { resize:vertical; min-height:70px; }
+.cx-field input:disabled, .cx-field textarea:disabled { opacity:.85; cursor:default; }
+.cx-list { display:flex;flex-direction:column;gap:.6rem;margin-top:.4rem; }
+.cx-list-item { background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:.65rem;position:relative; }
+.cx-list-remove { position:absolute;top:.5rem;right:.5rem;background:transparent;border:1px solid var(--neon2);color:var(--neon2);padding:.15rem .5rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.7rem; }
+.cx-list-add { background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.3rem .75rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.78rem;margin-top:.3rem; }
+@media (max-width:600px) {
+  .cx-field-grid { grid-template-columns:1fr; }
+  .cx-header { flex-direction:column;align-items:center;text-align:center; }
+}
+</style>
+
+<div class="cx">
+  <div class="cx-actions">
+    <a href="/characters" style="color:var(--text-dim);font-size:.85rem;">← All Characters</a>
+    {% if pc and can_manage %}
+    <form method="post" action="/characters/{{ pc.id }}/delete" onsubmit="return confirm('Delete {{ pc.name }}?');" style="display:inline;">
+      <button type="submit" style="background:transparent;border:1px solid var(--neon2);color:var(--neon2);padding:.35rem .75rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.85rem;">Delete</button>
+    </form>
+    {% endif %}
+  </div>
+
+  {% if can_manage %}
+  <form method="post" action="{% if pc %}/characters/{{ pc.id }}/edit{% else %}/characters/new{% endif %}" enctype="multipart/form-data" id="char-form">
+  {% endif %}
+
+  <div class="cx-header">
+    <div class="cx-portrait">
+      {% if pc and pc.portrait_url %}<img src="{{ pc.portrait_url }}" id="portrait-preview-img" alt="{{ pc.name }}">
+      {% else %}<span id="portrait-preview-placeholder">{{ (pc.name[0] if pc and pc.name else '?') | upper }}</span>
+      <img id="portrait-preview-img" src="" alt="" style="display:none">{% endif %}
+    </div>
+    <div class="cx-identity">
+      <div class="cx-system-badge">{{ chosen_template.name if chosen_template else 'Custom' }}</div>
+      {% if can_manage %}
+      <div class="cx-field" style="margin-bottom:0">
+        <label>Character Name</label>
+        <input type="text" name="name" required value="{{ pc.name if pc else '' }}"/>
+      </div>
+      <div class="cx-field" style="margin-bottom:0">
+        <label>Player Name</label>
+        <input type="text" name="player_name" value="{{ pc.player_name if pc else '' }}"/>
+      </div>
+      <div class="cx-field" style="margin-bottom:0">
+        <label>Portrait</label>
+        <input type="file" name="portrait" accept="image/*" onchange="previewPortrait(this)"/>
+      </div>
+      {% else %}
+      <div style="font-size:1.4rem;font-weight:bold;color:var(--neon)">{{ pc.name }}</div>
+      {% if pc.player_name %}<div style="font-size:.85rem;color:var(--text-dim)">Player: {{ pc.player_name }}</div>{% endif %}
+      {% endif %}
+    </div>
+  </div>
+
+  {% for section_name, fields in sections %}
+  <div class="cx-section">
+    <div class="cx-section-title">{{ section_name }}</div>
+    <div class="cx-field-grid">
+      {% for f in fields %}
+        {% if f.type == 'list' %}
+        <div class="cx-field wide">
+          <label>{{ f.label }}</label>
+          <div class="cx-list" id="list-{{ f.id }}"></div>
+          {% if can_manage %}
+          <button type="button" class="cx-list-add" onclick="addListItem('{{ f.id }}')">+ Add</button>
+          {% endif %}
+        </div>
+        {% elif f.type == 'textarea' %}
+        <div class="cx-field wide">
+          <label>{{ f.label }}</label>
+          <textarea data-cf-id="{{ f.id }}" {% if not can_manage %}disabled{% endif %}>{{ custom_fields.get(f.id, f.default_value or '') }}</textarea>
+        </div>
+        {% elif f.type == 'number' %}
+        <div class="cx-field">
+          <label>{{ f.label }}</label>
+          <input type="number" data-cf-id="{{ f.id }}" value="{{ custom_fields.get(f.id, f.default_value or '0') }}" {% if not can_manage %}disabled{% endif %}/>
+        </div>
+        {% else %}
+        <div class="cx-field">
+          <label>{{ f.label }}</label>
+          <input type="text" data-cf-id="{{ f.id }}" value="{{ custom_fields.get(f.id, f.default_value or '') }}" {% if not can_manage %}disabled{% endif %}/>
+        </div>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+
+  {% if can_manage %}
+  <input type="hidden" name="custom_fields_json" id="custom_fields_json"/>
+  <input type="hidden" name="sheet_template_id" value="{{ chosen_template.id if chosen_template else '' }}"/>
+  <div class="cx-actions" style="justify-content:flex-start">
+    <button type="submit" class="btn-primary">Save</button>
+  </div>
+  </form>
+  {% endif %}
+</div>
+
+<script>
+const CAN_MANAGE = {{ 'true' if can_manage else 'false' }};
+const TPL_FIELDS = {{ tpl_fields | tojson }};
+const LIST_FIELDS = TPL_FIELDS.filter(f => f.type === 'list');
+const EXISTING = {{ custom_fields | tojson }};
+
+function previewPortrait(input) {
+  if (!input.files || !input.files[0]) return;
+  const img = document.getElementById('portrait-preview-img');
+  const placeholder = document.getElementById('portrait-preview-placeholder');
+  img.src = URL.createObjectURL(input.files[0]);
+  img.style.display = 'block';
+  if (placeholder) placeholder.style.display = 'none';
+}
+
+function buildListItem(fieldDef, data) {
+  data = data || {};
+  const item = document.createElement('div');
+  item.className = 'cx-list-item';
+  if (CAN_MANAGE) {
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'cx-list-remove';
+    rm.textContent = '✕';
+    rm.title = 'Remove';
+    rm.onclick = function () { item.remove(); };
+    item.appendChild(rm);
+  }
+  (fieldDef.item_fields || []).forEach(function (sf) {
+    const label = document.createElement('label');
+    label.style.cssText = 'display:block;font-size:.68rem;color:var(--text-dim);text-transform:uppercase;margin:.3rem 0 .25rem';
+    label.textContent = sf.label;
+    item.appendChild(label);
+    let input;
+    if (sf.type === 'textarea') {
+      input = document.createElement('textarea');
+      input.rows = 2;
+      input.style.cssText = 'width:100%;box-sizing:border-box;background:var(--bg2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:.4rem .55rem;font-family:var(--font);font-size:.85rem;resize:vertical';
+      input.value = data[sf.id] || '';
+    } else {
+      input = document.createElement('input');
+      input.type = 'text';
+      input.style.cssText = 'width:100%;box-sizing:border-box;background:var(--bg2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:.4rem .55rem;font-family:var(--font);font-size:.85rem';
+      input.value = data[sf.id] || '';
+    }
+    input.className = 'cx-item-field';
+    input.dataset.sub = sf.id;
+    if (!CAN_MANAGE) input.disabled = true;
+    item.appendChild(input);
+  });
+  return item;
+}
+
+function addListItem(fieldId) {
+  const fieldDef = LIST_FIELDS.find(function (f) { return f.id === fieldId; });
+  if (!fieldDef) return;
+  document.getElementById('list-' + fieldId).appendChild(buildListItem(fieldDef, {}));
+}
+
+function initLists() {
+  LIST_FIELDS.forEach(function (fieldDef) {
+    const container = document.getElementById('list-' + fieldDef.id);
+    if (!container) return;
+    const existing = EXISTING[fieldDef.id];
+    (Array.isArray(existing) ? existing : []).forEach(function (row) {
+      container.appendChild(buildListItem(fieldDef, row));
+    });
+  });
+}
+
+function collectListValues(fieldId) {
+  const items = [];
+  document.querySelectorAll('#list-' + fieldId + ' .cx-list-item').forEach(function (itemEl) {
+    const obj = {};
+    itemEl.querySelectorAll('.cx-item-field').forEach(function (inputEl) {
+      obj[inputEl.dataset.sub] = inputEl.value;
+    });
+    items.push(obj);
+  });
+  return items;
+}
+
+function buildCustomFieldsJson() {
+  const obj = {};
+  document.querySelectorAll('[data-cf-id]').forEach(function (el) {
+    obj[el.dataset.cfId] = el.value;
+  });
+  LIST_FIELDS.forEach(function (fieldDef) {
+    obj[fieldDef.id] = collectListValues(fieldDef.id);
+  });
+  return obj;
+}
+
+const charForm = document.getElementById('char-form');
+if (charForm) {
+  charForm.addEventListener('submit', function () {
+    document.getElementById('custom_fields_json').value = JSON.stringify(buildCustomFieldsJson());
+  });
+}
+
+initLists();
+</script>
+{% endblock %}

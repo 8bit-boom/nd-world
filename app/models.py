@@ -242,12 +242,13 @@ class PlayerCharacter(Base):
     cyberware_json  = Column(Text, default='[]')  # [{name, ca_cost, notes}]
     conditions_json = Column(Text, default='[]')  # list of active condition strings
     sheet_template_id  = Column(Integer, ForeignKey("sheet_templates.id"), nullable=True)
-    custom_fields_json = Column(Text, default="{}")   # {field_id: value}
+    custom_fields_json = Column(Text, default="{}")   # {field_id: value or [ {...}, ... ] for list fields}
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     world = relationship("World")
+    sheet_template = relationship("SheetTemplate")
 
 
 class SheetTemplate(Base):
@@ -259,9 +260,15 @@ class SheetTemplate(Base):
     slug        = Column(String(64), unique=True, nullable=False)
     description = Column(Text, default="")
     is_builtin  = Column(Boolean, default=False)
-    # [{id, label, type, section, default_value}]
-    # type: number | resource | text | textarea | table
-    # section: stats | resources | notes | custom
+    # "nd" (default): the full N&D sheet (stats/HP/Shock/PP-MP/edges/cyberware/feats)
+    # plus these fields layered on top. "custom": an entirely different system —
+    # the N&D sheet is not shown at all, the character *is* these fields.
+    sheet_mode  = Column(String(16), default="nd")
+    # [{id, label, type, section, default_value}] for simple fields, or
+    # [{id, label, type:"list", section, item_fields:[{id,label,type}]}] for a
+    # repeatable group (e.g. a list of abilities, each with name/tier/effect).
+    # type: number | resource | text | textarea | table | list
+    # section: freeform label used to group fields on the sheet
     fields_json = Column(Text, default="[]")
     created_at  = Column(DateTime, default=datetime.utcnow)
     updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

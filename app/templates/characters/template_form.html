@@ -33,10 +33,25 @@
                  style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.45rem .65rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
         </label>
       </div>
-      <p style="color:var(--text-dim);font-size:.75rem;margin:.75rem 0 0">
-        Every character using this template starts with the full N&amp;D sheet (stats, HP, Shock, PP/MP, edges, cyberware, conditions, feats).
-        Fields defined here are <strong style="color:var(--text)">extra</strong> sections added on top.
-      </p>
+      <div style="margin-top:1rem">
+        <div style="font-size:.7rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.03em;margin-bottom:.4rem">Sheet type</div>
+        <div style="display:flex;flex-direction:column;gap:.4rem">
+          <label style="display:flex;align-items:center;gap:.5rem;font-size:.83rem;{% if tpl and tpl.is_builtin %}opacity:.6{% endif %}">
+            <input type="radio" name="sheet_mode" value="nd" style="width:auto"
+                   {% if not tpl or tpl.sheet_mode != 'custom' %}checked{% endif %}
+                   {% if tpl and tpl.is_builtin %}disabled{% endif %}>
+            Extends the N&amp;D sheet — every character still has N&amp;D stats, HP, Shock, PP/MP, edges,
+            cyberware &amp; conditions; fields below are added on top.
+          </label>
+          <label style="display:flex;align-items:center;gap:.5rem;font-size:.83rem;{% if tpl and tpl.is_builtin %}opacity:.6{% endif %}">
+            <input type="radio" name="sheet_mode" value="custom" style="width:auto"
+                   {% if tpl and tpl.sheet_mode == 'custom' %}checked{% endif %}
+                   {% if tpl and tpl.is_builtin %}disabled{% endif %}>
+            Fully custom system — the N&amp;D sheet is not used at all; the character
+            <strong style="color:var(--text)">is</strong> the fields below. Use this for a different TTRPG system.
+          </label>
+        </div>
+      </div>
     </div>
 
     <!-- Extra fields editor -->
@@ -98,9 +113,18 @@
   padding:0 .1rem;
   line-height:1;
 }
+.field-entry { display:flex; flex-direction:column; gap:.35rem; }
+.subfield-editor { margin-left:1rem; padding:.5rem .65rem; border-left:2px solid var(--border); display:flex; flex-direction:column; gap:.35rem; }
+.subfield-row { display:grid; grid-template-columns:1fr 1fr 100px 28px; gap:.35rem; align-items:center; }
+.subfield-row input, .subfield-row select {
+  background:var(--bg2); border:1px solid var(--border); color:var(--text);
+  padding:.25rem .45rem; font-family:var(--font); font-size:.76rem; border-radius:3px; width:100%;
+}
+.subfield-add { align-self:flex-start; background:none; border:1px dashed var(--border); color:var(--text-dim); padding:.2rem .6rem; font-size:.75rem; border-radius:3px; cursor:pointer; }
 @media (max-width:600px) {
   .field-row { grid-template-columns:1fr; }
   .field-del { text-align:right; }
+  .subfield-row { grid-template-columns:1fr; }
 }
 </style>
 
@@ -115,36 +139,90 @@ function renderFields() {
   if (_fields.length === 0) { msg.style.display = 'block'; return; }
   msg.style.display = 'none';
   _fields.forEach((f, i) => {
+    const entry = document.createElement('div');
+    entry.className = 'field-entry';
+
     const row = document.createElement('div');
     row.className = 'field-row';
     row.innerHTML = `
-      <input type="text" placeholder="Label (e.g. Hacking)" value="${esc(f.label)}" oninput="updateField(${i},'label',this.value)"/>
+      <input type="text" placeholder="Label (e.g. Hacking, Additional Abilities)" value="${esc(f.label)}" oninput="updateField(${i},'label',this.value)"/>
       <select onchange="updateField(${i},'type',this.value)">
         <option value="number"   ${f.type==='number'   ?'selected':''}>Number</option>
         <option value="resource" ${f.type==='resource' ?'selected':''}>Resource</option>
         <option value="text"     ${f.type==='text'     ?'selected':''}>Text</option>
         <option value="textarea" ${f.type==='textarea' ?'selected':''}>Text Area</option>
-        <option value="table"    ${f.type==='table'    ?'selected':''}>Table</option>
+        <option value="list"     ${f.type==='list'     ?'selected':''}>List (repeatable group)</option>
       </select>
-      <select onchange="updateField(${i},'section',this.value)">
-        <option value="stats"     ${f.section==='stats'     ?'selected':''}>Stats</option>
-        <option value="resources" ${f.section==='resources' ?'selected':''}>Resources</option>
-        <option value="notes"     ${f.section==='notes'     ?'selected':''}>Notes</option>
-        <option value="custom"    ${f.section==='custom'    ?'selected':''}>Custom</option>
-      </select>
-      <input type="text" placeholder="Default" value="${esc(f.default_value??'')}" oninput="updateField(${i},'default_value',this.value)" title="Default value"/>
+      <input type="text" placeholder="Section (e.g. Stats)" value="${esc(f.section||'')}" oninput="updateField(${i},'section',this.value)" title="Groups fields under a heading on the sheet"/>
+      <input type="text" placeholder="Default" value="${esc(f.default_value??'')}" oninput="updateField(${i},'default_value',this.value)" title="Default value" ${f.type==='list'?'disabled style="opacity:.4"':''}/>
       <button type="button" class="field-del" onclick="removeField(${i})" title="Remove">✕</button>
     `;
-    list.appendChild(row);
+    entry.appendChild(row);
+
+    if (f.type === 'list') {
+      entry.appendChild(renderSubfieldEditor(f, i));
+    }
+
+    list.appendChild(entry);
   });
   syncHidden();
+}
+
+function renderSubfieldEditor(f, i) {
+  if (!Array.isArray(f.item_fields)) f.item_fields = [];
+  const wrap = document.createElement('div');
+  wrap.className = 'subfield-editor';
+  const label = document.createElement('div');
+  label.style.cssText = 'font-size:.7rem;color:var(--text-dim);text-transform:uppercase';
+  label.textContent = 'Fields inside each ' + (f.label || 'item') + ' entry';
+  wrap.appendChild(label);
+  f.item_fields.forEach((sf, si) => {
+    const row = document.createElement('div');
+    row.className = 'subfield-row';
+    row.innerHTML = `
+      <input type="text" placeholder="Sub-field id (e.g. name)" value="${esc(sf.id||'')}" oninput="updateSubfield(${i},${si},'id',this.value)"/>
+      <input type="text" placeholder="Label (e.g. Name)" value="${esc(sf.label||'')}" oninput="updateSubfield(${i},${si},'label',this.value)"/>
+      <select onchange="updateSubfield(${i},${si},'type',this.value)">
+        <option value="text"     ${sf.type==='text'     ?'selected':''}>Text</option>
+        <option value="textarea" ${sf.type==='textarea' ?'selected':''}>Text Area</option>
+      </select>
+      <button type="button" class="field-del" onclick="removeSubfield(${i},${si})" title="Remove">✕</button>
+    `;
+    wrap.appendChild(row);
+  });
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'subfield-add';
+  addBtn.textContent = '+ Add sub-field';
+  addBtn.onclick = () => addSubfield(i);
+  wrap.appendChild(addBtn);
+  return wrap;
 }
 
 function esc(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
 function updateField(i, key, val) {
   _fields[i][key] = val;
+  if (key === 'type' && val === 'list' && !Array.isArray(_fields[i].item_fields)) {
+    _fields[i].item_fields = [];
+  }
+  if (key === 'type') { renderFields(); return; }
   syncHidden();
+}
+
+function updateSubfield(i, si, key, val) {
+  _fields[i].item_fields[si][key] = val;
+  syncHidden();
+}
+
+function addSubfield(i) {
+  _fields[i].item_fields.push({ id: 'sub_' + Date.now(), label: '', type: 'text' });
+  renderFields();
+}
+
+function removeSubfield(i, si) {
+  _fields[i].item_fields.splice(si, 1);
+  renderFields();
 }
 
 function removeField(i) {
@@ -157,7 +235,7 @@ function addField() {
     id: 'field_' + Date.now(),
     label: '',
     type: 'number',
-    section: 'custom',
+    section: 'Custom',
     default_value: '0',
   });
   renderFields();

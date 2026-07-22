@@ -6,8 +6,10 @@
     <div>
       <h1 style="color:var(--neon);font-size:1.4rem;margin:0">🗒 Sheet Templates</h1>
       <p style="color:var(--text-dim);font-size:.82rem;margin:.25rem 0 0">
-        Templates add extra custom fields on top of the N&amp;D base sheet.
-        Every character always has N&amp;D stats, HP, Shock, PP/MP, edges, cyberware &amp; conditions.
+        A template either adds extra fields on top of the standard N&amp;D sheet
+        (stats, HP, Shock, PP/MP, edges, cyberware &amp; conditions), or — if marked
+        "Custom system" — replaces it entirely with its own fields, for running a
+        different TTRPG system in this world.
       </p>
     </div>
     <div style="display:flex;gap:.5rem">
@@ -24,6 +26,9 @@
           <span style="color:var(--neon);font-weight:bold;font-size:1rem">{{ tpl.name }}</span>
           {% if tpl.is_builtin %}
           <span style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);font-size:.68rem;padding:.1rem .4rem;border-radius:3px">BUILT-IN</span>
+          {% endif %}
+          {% if tpl.sheet_mode == 'custom' %}
+          <span style="background:var(--bg3);border:1px solid var(--neon2);color:var(--neon2);font-size:.68rem;padding:.1rem .4rem;border-radius:3px">CUSTOM SYSTEM</span>
           {% endif %}
         </div>
         {% if tpl.description %}
@@ -43,6 +48,7 @@
         {% endif %}
       </div>
       <div style="display:flex;gap:.5rem;flex-shrink:0">
+        <a href="/characters/new?template_id={{ tpl.id }}" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.3rem .7rem;font-size:.78rem;border-radius:3px;text-decoration:none">+ Create Character</a>
         <a href="/characters/templates/{{ tpl.id }}/edit" style="background:var(--bg3);border:1px solid var(--border);color:var(--neon);padding:.3rem .7rem;font-size:.78rem;border-radius:3px;text-decoration:none">Edit</a>
         {% if not tpl.is_builtin %}
         <form method="post" action="/characters/templates/{{ tpl.id }}/delete" onsubmit="return confirm('Delete template \'{{ tpl.name }}\'?')">

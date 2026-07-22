@@ -1,3 +1,4 @@
+import json
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -5,6 +6,70 @@ from .models import (
     Base, World, Schematic, MapOverlay, InvestBoard, PlayerCharacter, SheetTemplate,
     StarredImage, User, WorldMembership, InviteCode,
 )
+
+def _f(id, label, type="text", section="", default_value=""):
+    return {"id": id, "label": label, "type": type, "section": section, "default_value": default_value}
+
+def _list_f(id, label, section, item_fields):
+    return {"id": id, "label": label, "type": "list", "section": section, "item_fields": item_fields}
+
+_ASTERION_FIELDS = [
+    _f("origin", "Origin (Gods) / Lineage (Mythborn)", "text", "Identity"),
+    _f("spark", "Divine Spark / Domain", "text", "Identity"),
+    _f("sentence", "Character Sentence", "text", "Identity"),
+    _f("appearance", "Appearance & Personality", "textarea", "Identity"),
+
+    _f("sparkShield", "Spark Shield", "number", "Core Stats", "3"),
+    _f("flesh", "Flesh", "number", "Core Stats", "5"),
+    _f("ichor", "Ichor", "number", "Core Stats", "5"),
+    _f("armor", "Armor", "number", "Core Stats", "0"),
+    _f("attackPool", "Attacker Pool", "text", "Core Stats"),
+    _f("defensePool", "Defender Pool", "text", "Core Stats"),
+    _f("movement", "Movement", "text", "Core Stats", "30 ft / 6 hexes"),
+
+    _f("abOriginName", "Origin/Lineage Ability — Name", "text", "Abilities"),
+    _f("abOriginTier", "Origin/Lineage Ability — Tier/Type", "text", "Abilities"),
+    _f("abOriginText", "Origin/Lineage Ability — Effect", "textarea", "Abilities"),
+    _f("abSparkName", "Spark Ability — Name", "text", "Abilities"),
+    _f("abSparkTier", "Spark Ability — Tier/Type", "text", "Abilities"),
+    _f("abSparkText", "Spark Ability — Effect", "textarea", "Abilities"),
+    _f("abDeedName", "Deed/Curse Ability — Name", "text", "Abilities"),
+    _f("abDeedTier", "Deed/Curse Ability — Tier/Type", "text", "Abilities"),
+    _f("abDeedText", "Deed/Curse Ability — Effect", "textarea", "Abilities"),
+    _list_f("extraAbilities", "Additional Abilities", "Abilities", [
+        {"id": "name", "label": "Name", "type": "text"},
+        {"id": "tier", "label": "Tier / Type", "type": "text"},
+        {"id": "text", "label": "Effect", "type": "textarea"},
+    ]),
+
+    _f("drachma", "Drachma (Currency)", "number", "Inventory & Equipment", "0"),
+    _f("weapon", "Weapon Equipped", "text", "Inventory & Equipment"),
+    _f("armorItem", "Armor Equipped", "text", "Inventory & Equipment"),
+    _list_f("consumables", "Consumables (max 3)", "Inventory & Equipment", [
+        {"id": "name", "label": "Item", "type": "text"},
+    ]),
+    _f("artifacts", "Artifacts / Notable Items", "textarea", "Inventory & Equipment"),
+
+    _f("glory", "Glory (XP)", "number", "Progression", "0"),
+    _f("domainRank", "Domain Rank", "text", "Progression"),
+    _f("reputation", "Reputation / Titles", "text", "Progression"),
+    _list_f("milestones", "Milestones Achieved", "Progression", [
+        {"id": "name", "label": "Milestone", "type": "text"},
+    ]),
+
+    _f("sessionNum", "Current Session #", "text", "Campaign Log"),
+    _list_f("sessionLog", "Session Notes", "Campaign Log", [
+        {"id": "session", "label": "Session / Date", "type": "text"},
+        {"id": "text", "label": "Summary", "type": "textarea"},
+    ]),
+
+    _list_f("relationships", "Relationships & Allies", "Relationships & Allies", [
+        {"id": "name", "label": "Name", "type": "text"},
+        {"id": "text", "label": "Relation / Notes", "type": "textarea"},
+    ]),
+
+    _f("freeNotes", "GM / Free Notes", "textarea", "Notes"),
+]
 
 DB_PATH = os.environ.get("DB_PATH", "/data/world.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
@@ -94,7 +159,11 @@ def _migrate():
         tpl_exists = conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='sheet_templates'"
         )).fetchone()
-        # table is created by Base.metadata.create_all above; nothing extra needed here
+        if tpl_exists:
+            tpl_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(sheet_templates)")).fetchall()]
+            if "sheet_mode" not in tpl_cols:
+                conn.execute(text("ALTER TABLE sheet_templates ADD COLUMN sheet_mode VARCHAR(16) DEFAULT 'nd'"))
+                conn.commit()
         # worlds table — add players_see_party if missing
         w_exists = conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='worlds'"
@@ -136,7 +205,20 @@ def _seed():
                 slug="nd-default",
                 description="Standard N&D character sheet: 8 stats, HP/Shock/PP/MP, edges, cyberware, conditions, feats.",
                 is_builtin=True,
+                sheet_mode="nd",
                 fields_json="[]",
+            ))
+        # Seed built-in Asterion sheet template (fully custom — no N&D stats/mechanics)
+        if not db.query(SheetTemplate).filter(SheetTemplate.slug == "asterion").first():
+            db.add(SheetTemplate(
+                world_id=None,
+                name="Asterion",
+                slug="asterion",
+                description="City of Nine Thousand Shrines — Gods & Mythborn dice-pool system "
+                             "(Spark Shield/Flesh/Ichor, Glory, Domain Reclamation).",
+                is_builtin=True,
+                sheet_mode="custom",
+                fields_json=json.dumps(_ASTERION_FIELDS),
             ))
         db.commit()
 
