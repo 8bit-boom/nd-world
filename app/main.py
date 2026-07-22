@@ -984,6 +984,26 @@ def world_rules_edit_post(world_id: int, rules_md: str = Form(""), db: Session =
     db.commit()
     return RedirectResponse("/rules", status_code=303)
 
+
+@app.post("/worlds/{world_id}/rules/import")
+async def world_rules_import(world_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Import rules from a JSON file shaped {"rules_md": "...markdown..."} (a
+    "name" key is accepted too but only rules_md is used) — an alternative to
+    pasting the whole document into the textarea by hand."""
+    w = db.get(World, world_id)
+    if not w:
+        raise HTTPException(404)
+    try:
+        payload = json.loads((await file.read()).decode("utf-8"))
+    except Exception:
+        raise HTTPException(400, "Not valid JSON")
+    md = str(payload.get("rules_md", "")).strip()
+    if not md:
+        raise HTTPException(400, 'JSON must have a non-empty "rules_md" string field')
+    w.rules_md = md
+    db.commit()
+    return RedirectResponse("/rules", status_code=303)
+
 # ── Schematics ────────────────────────────────────────────────────────────────
 
 def _slug_from_name(name: str) -> str:

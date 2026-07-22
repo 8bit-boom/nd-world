@@ -8,6 +8,13 @@
     table of contents from <code>##</code>/<code>###</code> headings. Leave blank to fall
     back to the default Neon &amp; Dragons core rules.
   </p>
+  <form method="post" action="/worlds/{{ edit_world.id }}/rules/import" enctype="multipart/form-data"
+        style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-bottom:1.25rem;padding:.75rem 1rem;background:var(--bg2);border:1px solid var(--border);border-radius:6px">
+    <label style="font-size:.82rem;color:var(--text-dim)">Import from JSON <small>(<code>{"rules_md": "..."}</code>)</small></label>
+    <input type="file" name="file" accept="application/json,.json" required/>
+    <button type="submit" class="btn-cancel">Upload &amp; Replace</button>
+  </form>
+
   <form method="post" action="/worlds/{{ edit_world.id }}/rules/edit" class="entity-form">
     <div class="form-group">
       <textarea name="rules_md" rows="28" placeholder="# My System&#10;&#10;## Core Mechanic&#10;…" style="font-family:var(--font);font-size:.85rem">{{ edit_world.rules_md or '' }}</textarea>

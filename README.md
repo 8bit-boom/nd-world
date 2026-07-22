@@ -618,6 +618,17 @@ global (available everywhere), same as N&D's extra-field templates always were.
 Custom-system characters skip N&D-only features that don't apply to them (`.ndc`
 export, the HP/Speed/CA card badges) since those are Neon & Dragons–specific.
 
+### Rules content is per-world too
+
+The **Rules** page is per-world, not global — a world falls back to the bundled
+N&D core rules until its GM sets something else. On a world's Edit page, click
+**📖 Edit Rules** to paste in Markdown directly, or upload a JSON file shaped
+`{"rules_md": "...markdown..."}` via the import box on that same page (handy
+for reusing a ruleset across worlds/installs without re-pasting). `docs/asterion_rules.md`
+/ `docs/asterion_rules.json` in this repo are the full Asterion rules in both
+formats, ready to paste or upload for any world using the built-in Asterion
+character system.
+
 ---
 
 ## Accounts, Invites & Going Public
