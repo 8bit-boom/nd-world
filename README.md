@@ -10,6 +10,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - **8 entity types** — Characters, Locations, Organizations, Creatures, Events, Items, Feats, Notes — each with TTRPG-specific subtypes
 - **Entity relationships** — link any entity to any other; navigate connections from the detail page
 - **Entity notes** — attach multiple discrete notes to any entity, each independently hideable/un-hideable from players regardless of the entity's own visibility (e.g. reveal one detail about a location while keeping the rest secret)
+- **Custom entity fields & stat blocks** — Field Templates add structured data (age, title, alive/dead/missing status, a repeatable combat stat block, or any fields you define) to Characters, Creatures, or any other entity kind, on top of the usual free-text body — ships with built-in "NPC Details" and "Stat Block" templates (see [Entity Field Templates](#entity-field-templates))
 - **Folder organization** — hierarchical folders per entity type for large lore collections; the entity form offers a picker of existing folders (still free-text for new ones), and any folder you're browsing can be renamed/moved or removed (entities become Unfiled) from its breadcrumb
 - **Image attachments** — upload JPG/PNG/GIF/WebP/SVG images to any entity
 - **Rules viewer** — built-in core rules rendered from Markdown with auto-generated table of contents
@@ -43,6 +44,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - [Data & Backups](#data--backups)
 - [Character Creation Wizard & Export](#character-creation-wizard--export)
 - [Custom Character Systems](#custom-character-systems)
+- [Entity Field Templates](#entity-field-templates)
 - [Accounts, Invites & Going Public](#accounts-invites--going-public)
 - [Project Structure](#project-structure)
 - [Ports Reference](#ports-reference)
@@ -628,6 +630,38 @@ for reusing a ruleset across worlds/installs without re-pasting). `docs/asterion
 / `docs/asterion_rules.json` in this repo are the full Asterion rules in both
 formats, ready to paste or upload for any world using the built-in Asterion
 character system.
+
+---
+
+## Entity Field Templates
+
+Character Sheet Templates (above) are for Player Characters specifically. **Field
+Templates** are the equivalent for lore Entities — Characters, Creatures,
+Locations, Organizations, or any other kind — letting you attach structured data
+on top of the usual name/summary/body, instead of hand-writing it into the body
+text.
+
+Manage them at **🗒 Field Templates** (top of any entity list page). A template
+has a **Kind** it applies to (one specific kind, e.g. Creature, or "Any kind" to
+use it anywhere) and a list of fields:
+
+- **Text / Number / Text Area** — simple values
+- **Dropdown** — a constrained set of options (e.g. Status: Alive/Dead/Missing/Unknown)
+- **List (repeatable group)** — a variable-length group of sub-fields, e.g. a
+  stat block's "Abilities" list (each entry has its own Name and Effect)
+
+Two built-in templates ship out of the box:
+
+- **NPC Details** (Characters) — Title, Age, Gender, Status (Alive/Dead/Missing/Unknown)
+- **Stat Block** (any kind) — Attack Pool, Defense Pool, Health, Armor, Speed, and
+  a repeatable Abilities list — usable on Characters, Creatures, or anything else
+  that needs quick combat stats
+
+On an entity's create/edit form, pick a template from the **Template** dropdown
+(filtered to templates that apply to the currently-selected Kind) and its fields
+appear immediately — no page reload, and switching templates doesn't lose
+anything else you've already typed. Filled-in fields show on the entity's detail
+page, grouped under the section headings the template defines.
 
 ---
 
