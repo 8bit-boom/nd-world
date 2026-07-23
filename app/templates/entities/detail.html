@@ -4,7 +4,8 @@
 <article class="detail kind-{{ entity.kind }}">
   <header class="detail-header">
     {% if entity.image_url %}
-    <img class="detail-img" src="{{ entity.image_url }}" alt="{{ entity.name }}"/>
+    <img class="detail-img" src="{{ entity.image_url }}" alt="{{ entity.name }}"
+         onclick="openLightbox(this.src, this.alt)"/>
     {% endif %}
     <div class="detail-meta">
       <span class="entity-kind">{{ kind_icons[entity.kind] }} {{ entity.kind }}</span>
@@ -309,6 +310,15 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
 
   window.epKey = function(e) { if (e.key==='Enter'&&!e.shiftKey){e.preventDefault();epSend();} };
   window.epResize = function(el) { el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,100)+'px'; };
+
+  // Images embedded in the entity's body text (markdown ![]()) pop up too.
+  var body = document.querySelector('.detail-body');
+  if (body) {
+    body.querySelectorAll('img').forEach(function (img) {
+      img.style.cursor = 'zoom-in';
+      img.addEventListener('click', function () { openLightbox(img.src, img.alt); });
+    });
+  }
 })();
 </script>
 {% endblock %}

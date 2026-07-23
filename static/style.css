@@ -288,7 +288,46 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
   object-fit: cover;
   border-radius: 4px;
   border: 1px solid var(--border);
+  cursor: zoom-in;
 }
+
+/* ── Lightbox ── */
+.lightbox-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .88);
+  z-index: 1000;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 1.5rem;
+  cursor: zoom-out;
+}
+.lightbox-overlay.open { display: flex; }
+.lightbox-overlay img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 0 60px rgba(0, 0, 0, .6);
+}
+.lightbox-close {
+  position: absolute;
+  top: 1rem;
+  right: 1.2rem;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lightbox-close:hover { border-color: var(--neon); color: var(--neon); }
 .detail-meta h1 { font-size: 1.6rem; margin: .3rem 0 .6rem; }
 .detail-summary { color: var(--text-dim); font-style: italic; margin-bottom: .5rem; }
 .detail-date { font-size: .72rem; color: var(--text-dim); margin-top: .5rem; }
