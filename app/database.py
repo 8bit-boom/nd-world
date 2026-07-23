@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from .models import (
     Base, World, Schematic, MapOverlay, InvestBoard, PlayerCharacter, SheetTemplate,
-    StarredImage, User, WorldMembership, InviteCode,
+    StarredImage, User, WorldMembership, InviteCode, EntityTemplate,
 )
 
 def _f(id, label, type="text", section="", default_value=""):
@@ -12,6 +12,29 @@ def _f(id, label, type="text", section="", default_value=""):
 
 def _list_f(id, label, section, item_fields):
     return {"id": id, "label": label, "type": "list", "section": section, "item_fields": item_fields}
+
+def _select_f(id, label, section, options, default_value=""):
+    return {"id": id, "label": label, "type": "select", "section": section,
+            "options": options, "default_value": default_value}
+
+_NPC_DETAILS_FIELDS = [
+    _f("title", "Title", "text", "Details"),
+    _f("age", "Age", "text", "Details"),
+    _f("gender", "Gender", "text", "Details"),
+    _select_f("status", "Status", "Details", ["Alive", "Dead", "Missing", "Unknown"], "Alive"),
+]
+
+_STAT_BLOCK_FIELDS = [
+    _f("attackPool", "Attack Pool", "text", "Stat Block", "1d10"),
+    _f("defensePool", "Defense Pool", "text", "Stat Block", "1d10"),
+    _f("health", "Health / HP", "number", "Stat Block", "5"),
+    _f("armor", "Armor", "number", "Stat Block", "0"),
+    _f("speed", "Speed", "text", "Stat Block"),
+    _list_f("abilities", "Abilities", "Stat Block", [
+        {"id": "name", "label": "Name", "type": "text"},
+        {"id": "effect", "label": "Effect", "type": "textarea"},
+    ]),
+]
 
 _ASTERION_FIELDS = [
     _f("origin", "Origin (Gods) / Lineage (Mythborn)", "text", "Identity"),
@@ -92,6 +115,12 @@ def _migrate():
             conn.commit()
         if "visible_to_players" not in cols:
             conn.execute(text("ALTER TABLE entities ADD COLUMN visible_to_players BOOLEAN DEFAULT 1"))
+            conn.commit()
+        if "template_id" not in cols:
+            conn.execute(text("ALTER TABLE entities ADD COLUMN template_id INTEGER"))
+            conn.commit()
+        if "custom_fields_json" not in cols:
+            conn.execute(text("ALTER TABLE entities ADD COLUMN custom_fields_json TEXT DEFAULT '{}'"))
             conn.commit()
         # Clean up literal "None" strings stored by early import runs
         conn.execute(text("UPDATE entities SET folder  = NULL WHERE folder  = 'None'"))
@@ -222,6 +251,20 @@ def _seed():
                 is_builtin=True,
                 sheet_mode="custom",
                 fields_json=json.dumps(_ASTERION_FIELDS),
+            ))
+        # Seed built-in entity field templates
+        if not db.query(EntityTemplate).filter(EntityTemplate.slug == "npc-details").first():
+            db.add(EntityTemplate(
+                world_id=None, name="NPC Details", slug="npc-details", kind="character",
+                description="Title, age, gender, and alive/dead/missing status for an NPC.",
+                is_builtin=True, fields_json=json.dumps(_NPC_DETAILS_FIELDS),
+            ))
+        if not db.query(EntityTemplate).filter(EntityTemplate.slug == "stat-block").first():
+            db.add(EntityTemplate(
+                world_id=None, name="Stat Block", slug="stat-block", kind=None,
+                description="Quick combat stats — attack/defense pools, health, armor, speed, abilities. "
+                             "Usable on characters, creatures, or anything else that fights.",
+                is_builtin=True, fields_json=json.dumps(_STAT_BLOCK_FIELDS),
             ))
         db.commit()
 

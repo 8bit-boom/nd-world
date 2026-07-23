@@ -17,6 +17,7 @@
          class="view-btn {% if view == 'table' %}active{% endif %}" title="Table view">≡</a>
     </div>
     {% endif %}
+    <a href="/entity-templates" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;text-decoration:none;display:inline-flex;align-items:center">🗒 Field Templates</a>
     <a href="/new?kind={{ kind }}{% if active_folder %}&folder={{ active_folder|urlencode }}{% endif %}" class="btn-new">+ New {{ kind }}</a>
   </div>
 </div>

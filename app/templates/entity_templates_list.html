@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Field Templates — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div style="max-width:860px;margin:0 auto;padding:1.5rem 1rem">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:.75rem">
+    <div>
+      <h1 style="color:var(--neon);font-size:1.4rem;margin:0">🗒 Entity Field Templates</h1>
+      <p style="color:var(--text-dim);font-size:.82rem;margin:.25rem 0 0">
+        Add structured fields (age, title, status, stat blocks…) to any entity — Characters,
+        Creatures, Locations, and so on — instead of only free-text body. Pick a template on the
+        entity's edit page, or from "+ New" once a template exists here.
+      </p>
+    </div>
+    <div style="display:flex;gap:.5rem">
+      <a href="/" class="btn-cancel" style="padding:.4rem .9rem;font-size:.82rem">← Home</a>
+      <a href="/entity-templates/new" class="btn-save" style="padding:.4rem .9rem;font-size:.82rem">+ New Template</a>
+    </div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:.75rem">
+    {% for tpl in tpls %}
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem;display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+          <span style="color:var(--neon);font-weight:bold;font-size:1rem">{{ tpl.name }}</span>
+          {% if tpl.is_builtin %}
+          <span style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);font-size:.68rem;padding:.1rem .4rem;border-radius:3px">BUILT-IN</span>
+          {% endif %}
+          <span style="background:var(--bg3);border:1px solid var(--neon3,#a855f7);color:var(--neon3,#a855f7);font-size:.68rem;padding:.1rem .4rem;border-radius:3px">
+            {{ (kind_icons[tpl.kind] ~ ' ' ~ tpl.kind|capitalize) if tpl.kind else 'ANY KIND' }}
+          </span>
+        </div>
+        {% if tpl.description %}
+        <p style="color:var(--text-dim);font-size:.8rem;margin:.35rem 0 0">{{ tpl.description }}</p>
+        {% endif %}
+        {% set fields = tpl_fields_map.get(tpl.id, []) %}
+        {% if fields %}
+        <div style="margin-top:.5rem;display:flex;flex-wrap:wrap;gap:.3rem">
+          {% for f in fields %}
+          <span style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);font-size:.72rem;padding:.15rem .45rem;border-radius:3px">
+            {{ f.label }} <span style="color:var(--neon3,#a855f7);font-size:.65rem">({{ f.type }})</span>
+          </span>
+          {% endfor %}
+        </div>
+        {% else %}
+        <p style="color:var(--text-dim);font-size:.78rem;margin:.35rem 0 0;font-style:italic">No fields yet</p>
+        {% endif %}
+      </div>
+      <div style="display:flex;gap:.5rem;flex-shrink:0">
+        <a href="/new?kind={{ tpl.kind or 'character' }}" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.3rem .7rem;font-size:.78rem;border-radius:3px;text-decoration:none">+ New Entity</a>
+        <a href="/entity-templates/{{ tpl.id }}/edit" style="background:var(--bg3);border:1px solid var(--border);color:var(--neon);padding:.3rem .7rem;font-size:.78rem;border-radius:3px;text-decoration:none">Edit</a>
+        {% if not tpl.is_builtin %}
+        <form method="post" action="/entity-templates/{{ tpl.id }}/delete" onsubmit="return confirm('Delete template \'{{ tpl.name }}\'? Entities using it keep their field values but lose the template link.')">
+          <button type="submit" style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.3rem .7rem;font-size:.78rem;border-radius:3px;cursor:pointer">Delete</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    {% else %}
+    <p style="color:var(--text-dim);text-align:center;padding:2rem">No templates yet. <a href="/entity-templates/new">Create one</a>.</p>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

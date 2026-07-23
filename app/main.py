@@ -21,7 +21,7 @@ import io
 from pathlib import Path
 
 from .database import init_db, get_db, SessionLocal
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate
 from .routers.ai import router as ai_router
 from .routers.characters import router as characters_router
 from .routers.auth import router as auth_router
@@ -396,6 +396,41 @@ def _sync_entity_access(db: Session, entity_id: int, player_ids):
     for uid in {int(uid) for uid in player_ids}:
         db.execute(entity_player_access.insert().values(entity_id=entity_id, user_id=uid))
     db.commit()
+
+
+def _entity_templates_for(db: Session, world_id: int, kind: str = None):
+    """Templates visible to this world (global + world-scoped), optionally
+    narrowed to ones usable on a given entity kind (a template with kind=NULL
+    is usable on any kind)."""
+    q = db.query(EntityTemplate).filter(
+        (EntityTemplate.world_id.is_(None)) | (EntityTemplate.world_id == world_id)
+    )
+    if kind:
+        q = q.filter((EntityTemplate.kind.is_(None)) | (EntityTemplate.kind == kind))
+    return q.order_by(EntityTemplate.is_builtin.desc(), EntityTemplate.name).all()
+
+
+def _entity_templates_payload(db: Session, world_id: int):
+    """JSON-serializable form of _entity_templates_for, for the entity
+    form's Jinja dropdown loop and its embedded JS data in one shot."""
+    return [
+        {"id": t.id, "name": t.name, "kind": t.kind, "fields": json.loads(t.fields_json or "[]")}
+        for t in _entity_templates_for(db, world_id)
+    ]
+
+
+def _group_by_section(tpl_fields):
+    """Groups template fields by their `section` label, preserving both field
+    order and first-seen section order (Jinja's groupby filter re-sorts
+    alphabetically, which would scramble an intentionally-ordered layout)."""
+    sections, lookup = [], {}
+    for f in tpl_fields:
+        sec = f.get("section") or "Custom"
+        if sec not in lookup:
+            lookup[sec] = []
+            sections.append((sec, lookup[sec]))
+        lookup[sec].append(f)
+    return sections
 
 
 def _visible_worlds(request: Request, db: Session):
@@ -1668,11 +1703,120 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
     if not (user and user.is_gm):
         notes_q = notes_q.filter(EntityNote.visible_to_players.is_(True))
     entity_notes = notes_q.order_by(EntityNote.created_at).all()
+    custom_sections = []
+    if entity.template_id:
+        tpl_fields = json.loads(entity.template.fields_json or "[]") if entity.template else []
+        custom_fields = json.loads(entity.custom_fields_json or "{}")
+        custom_sections = _group_by_section(tpl_fields)
+    else:
+        custom_fields = {}
     return templates.TemplateResponse("entities/detail.html", {
         "request": request, "entity": entity, "all_entities": all_entities,
         "world": world, "worlds": worlds, "backlinks": backlinks,
         "entity_notes": entity_notes,
+        "custom_sections": custom_sections, "custom_fields": custom_fields,
     })
+
+# ── Entity Field Templates ──────────────────────────────────────────────────
+
+@app.get("/entity-templates", response_class=HTMLResponse)
+def entity_templates_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world = get_active_world(request, db, active_world)
+    worlds = _visible_worlds(request, db)
+    tpls = _entity_templates_for(db, world.id if world else None)
+    tpl_fields_map = {tpl.id: json.loads(tpl.fields_json or "[]") for tpl in tpls}
+    return templates.TemplateResponse("entity_templates_list.html", {
+        "request": request, "world": world, "worlds": worlds, "tpls": tpls, "kinds": KINDS,
+        "tpl_fields_map": tpl_fields_map,
+    })
+
+
+@app.get("/entity-templates/new", response_class=HTMLResponse)
+def entity_template_new_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world = get_active_world(request, db, active_world)
+    worlds = _visible_worlds(request, db)
+    return templates.TemplateResponse("entity_template_form.html", {
+        "request": request, "world": world, "worlds": worlds, "kinds": KINDS,
+        "tpl": None, "fields": [],
+    })
+
+
+@app.post("/entity-templates/new")
+async def entity_template_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world = get_active_world(request, db, active_world)
+    form = await request.form()
+    name = str(form.get("name", "")).strip() or "Unnamed Template"
+    desc = str(form.get("description", "")).strip()
+    kind = str(form.get("kind", "")).strip() or None
+    if kind not in KINDS:
+        kind = None
+    raw_fields = str(form.get("fields_json", "[]") or "[]")
+    try:
+        json.loads(raw_fields)
+    except Exception:
+        raw_fields = "[]"
+    base_slug = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')[:50] or "template"
+    slug = base_slug
+    n = 1
+    while db.query(EntityTemplate).filter(EntityTemplate.slug == slug).first():
+        slug = f"{base_slug}-{n}"; n += 1
+    tpl = EntityTemplate(
+        world_id=world.id if world else None, name=name, slug=slug, kind=kind,
+        description=desc, is_builtin=False, fields_json=raw_fields,
+    )
+    db.add(tpl)
+    db.commit()
+    db.refresh(tpl)
+    return RedirectResponse(f"/entity-templates/{tpl.id}/edit", status_code=303)
+
+
+@app.get("/entity-templates/{tpl_id}/edit", response_class=HTMLResponse)
+def entity_template_edit_form(tpl_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world = get_active_world(request, db, active_world)
+    worlds = _visible_worlds(request, db)
+    tpl = db.query(EntityTemplate).filter(EntityTemplate.id == tpl_id).first()
+    if not tpl:
+        raise HTTPException(404)
+    fields = json.loads(tpl.fields_json or "[]")
+    return templates.TemplateResponse("entity_template_form.html", {
+        "request": request, "world": world, "worlds": worlds, "kinds": KINDS,
+        "tpl": tpl, "fields": fields,
+    })
+
+
+@app.post("/entity-templates/{tpl_id}/edit")
+async def entity_template_update(tpl_id: int, request: Request, db: Session = Depends(get_db)):
+    tpl = db.query(EntityTemplate).filter(EntityTemplate.id == tpl_id).first()
+    if not tpl:
+        raise HTTPException(404)
+    form = await request.form()
+    if not tpl.is_builtin:
+        tpl.name = str(form.get("name", tpl.name)).strip() or tpl.name
+        tpl.description = str(form.get("description", "")).strip()
+        kind = str(form.get("kind", "")).strip() or None
+        tpl.kind = kind if kind in KINDS else None
+    raw_fields = str(form.get("fields_json", "[]") or "[]")
+    try:
+        json.loads(raw_fields)
+    except Exception:
+        raw_fields = "[]"
+    tpl.fields_json = raw_fields
+    db.commit()
+    return RedirectResponse(f"/entity-templates/{tpl_id}/edit?saved=1", status_code=303)
+
+
+@app.post("/entity-templates/{tpl_id}/delete")
+def entity_template_delete(tpl_id: int, db: Session = Depends(get_db)):
+    tpl = db.query(EntityTemplate).filter(EntityTemplate.id == tpl_id).first()
+    if not tpl:
+        raise HTTPException(404)
+    if tpl.is_builtin:
+        raise HTTPException(403, "Cannot delete built-in templates")
+    db.query(Entity).filter(Entity.template_id == tpl_id).update({"template_id": None})
+    db.delete(tpl)
+    db.commit()
+    return RedirectResponse("/entity-templates", status_code=303)
+
 
 # ── Create ────────────────────────────────────────────────────────────────────
 
@@ -1683,11 +1827,13 @@ def new_form(request: Request, kind: str = "character", folder: str = "",
     worlds = _visible_worlds(request, db)
     world_players = _world_player_list(db, world.id) if world else []
     folder_options = _kind_folders(db, world.id, kind) if world else []
+    entity_templates = _entity_templates_payload(db, world.id) if world else []
     return templates.TemplateResponse("entities/form.html", {
         "request": request, "entity": None, "kind": kind,
         "world": world, "worlds": worlds,
         "world_players": world_players, "allowed_player_ids": set(),
         "folder_options": folder_options, "prefill_folder": folder,
+        "entity_templates": entity_templates, "custom_fields": {},
     })
 
 @app.post("/new")
@@ -1698,14 +1844,22 @@ async def create(
     image_file: UploadFile = File(None), summary: str = Form(""), body: str = Form(""),
     visibility_mode: str = Form("everyone"),
     allowed_player_ids: List[int] = Form([]),
+    template_id: Optional[str] = Form(None),
+    custom_fields_json: str = Form("{}"),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     world = get_active_world(request, db, active_world)
     final_image = save_upload(image_file) or (image_url.strip() or None)
+    try:
+        json.loads(custom_fields_json)
+    except Exception:
+        custom_fields_json = "{}"
     e = Entity(world_id=world.id, kind=kind, subtype=subtype or None, name=name,
                folder=folder.strip() or None, tags=tags or None,
                image_url=final_image, summary=summary or None, body=body or None,
-               visible_to_players=(visibility_mode == "everyone"))
+               visible_to_players=(visibility_mode == "everyone"),
+               template_id=int(template_id) if template_id and template_id.isdigit() else None,
+               custom_fields_json=custom_fields_json)
     db.add(e)
     db.commit()
     db.refresh(e)
@@ -1727,11 +1881,14 @@ def edit_form(request: Request, entity_id: int, db: Session = Depends(get_db), a
         .filter(entity_player_access.c.entity_id == entity_id).all()
     }
     folder_options = _kind_folders(db, entity.world_id, entity.kind)
+    entity_templates = _entity_templates_payload(db, entity.world_id)
+    custom_fields = json.loads(entity.custom_fields_json or "{}")
     return templates.TemplateResponse("entities/form.html", {
         "request": request, "entity": entity, "kind": entity.kind,
         "world": world, "worlds": worlds,
         "world_players": world_players, "allowed_player_ids": allowed_player_ids,
         "folder_options": folder_options, "prefill_folder": "",
+        "entity_templates": entity_templates, "custom_fields": custom_fields,
     })
 
 @app.post("/entity/{entity_id}/edit")
@@ -1743,6 +1900,8 @@ async def update(
     visibility_mode: str = Form("everyone"),
     allowed_player_ids: List[int] = Form([]),
     remove_image: Optional[str] = Form(None),
+    template_id: Optional[str] = Form(None),
+    custom_fields_json: str = Form("{}"),
     db: Session = Depends(get_db),
 ):
     entity = db.get(Entity, entity_id)
@@ -1768,6 +1927,12 @@ async def update(
     entity.summary = summary or None
     entity.body = body or None
     entity.visible_to_players = (visibility_mode == "everyone")
+    entity.template_id = int(template_id) if template_id and template_id.isdigit() else None
+    try:
+        json.loads(custom_fields_json)
+        entity.custom_fields_json = custom_fields_json
+    except Exception:
+        entity.custom_fields_json = "{}"
     db.commit()
     _sync_entity_access(db, entity_id, allowed_player_ids if visibility_mode == "players" else [])
     return RedirectResponse(f"/entity/{entity_id}", status_code=303)

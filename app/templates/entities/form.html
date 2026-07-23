@@ -73,6 +73,14 @@
       <input name="tags" value="{{ entity.tags if entity else '' }}" placeholder="yellow, corp, nox, …"/>
     </div>
 
+    <div class="form-group">
+      <label>Template <small>(adds structured fields like age, status, or a stat block — <a href="/entity-templates" target="_blank">manage templates</a>)</small></label>
+      <select id="template-select" onchange="rebuildCustomFields()"></select>
+    </div>
+    <div id="custom-fields-container"></div>
+    <input type="hidden" name="template_id" id="template_id"/>
+    <input type="hidden" name="custom_fields_json" id="custom_fields_json"/>
+
     <div class="form-group" id="attrs-section" style="display:none">
       <label>Attributes <small>(key-value stats that appear in table columns)</small></label>
       <div id="attr-rows"></div>
@@ -146,6 +154,21 @@
   </form>
 </div>
 
+<style>
+.cf-section { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.85rem 1rem;margin:.6rem 0 1rem; }
+.cf-section-title { font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.6rem;border-bottom:1px solid var(--border);padding-bottom:.35rem; }
+.cf-field { margin-bottom:.65rem; }
+.cf-field label { display:block;font-size:.75rem;color:var(--text-dim);margin-bottom:.25rem; }
+.cf-field input, .cf-field textarea, .cf-field select {
+  width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);color:var(--text);
+  border-radius:4px;padding:.45rem .6rem;font-family:var(--font);font-size:.85rem;
+}
+.cf-field textarea { resize:vertical;min-height:60px; }
+.cf-list { display:flex;flex-direction:column;gap:.5rem;margin-top:.3rem; }
+.cf-list-item { background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:.55rem;position:relative; }
+.cf-list-remove { position:absolute;top:.4rem;right:.4rem;background:transparent;border:1px solid var(--neon2);color:var(--neon2);padding:.1rem .45rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.68rem; }
+.cf-list-add { background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.25rem .65rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.75rem;margin-top:.2rem; }
+</style>
 <script>
 function previewImage(input) {
   const preview = document.getElementById('img-preview');
@@ -171,6 +194,168 @@ function updateSubtypes() {
   // show/hide attributes section for item/feat
   const show = kind === 'item' || kind === 'feat';
   document.getElementById('attrs-section').style.display = show ? '' : 'none';
+  rebuildTemplateOptions(true);
+}
+
+// ── Custom field templates ──────────────────────────────────────────────────
+
+const ENTITY_TEMPLATES = {{ entity_templates | tojson }};
+const EXISTING_CUSTOM_FIELDS = {{ custom_fields | tojson }};
+const INITIAL_TEMPLATE_ID = {{ (entity.template_id if entity and entity.template_id else '') | tojson }};
+
+function rebuildTemplateOptions(preserveSelection) {
+  const kind = document.getElementById('kind-select').value;
+  const sel = document.getElementById('template-select');
+  const prevValue = preserveSelection ? sel.value : '';
+  sel.innerHTML = '';
+  const noneOpt = document.createElement('option');
+  noneOpt.value = '';
+  noneOpt.textContent = '— None —';
+  sel.appendChild(noneOpt);
+  ENTITY_TEMPLATES.filter(t => !t.kind || t.kind === kind).forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t.id;
+    opt.textContent = t.name + (t.kind ? '' : ' (any kind)');
+    sel.appendChild(opt);
+  });
+  const wanted = prevValue || (INITIAL_TEMPLATE_ID ? String(INITIAL_TEMPLATE_ID) : '');
+  if (wanted && [...sel.options].some(o => o.value === wanted)) {
+    sel.value = wanted;
+  }
+  rebuildCustomFields();
+}
+
+function groupBySection(fields) {
+  const sections = [];
+  const lookup = {};
+  fields.forEach(f => {
+    const sec = f.section || 'Custom';
+    if (!lookup[sec]) { lookup[sec] = []; sections.push([sec, lookup[sec]]); }
+    lookup[sec].push(f);
+  });
+  return sections;
+}
+
+function cfBuildListItem(fieldDef, data) {
+  data = data || {};
+  const item = document.createElement('div');
+  item.className = 'cf-list-item';
+  const rm = document.createElement('button');
+  rm.type = 'button';
+  rm.className = 'cf-list-remove';
+  rm.textContent = '✕';
+  rm.onclick = function () { item.remove(); };
+  item.appendChild(rm);
+  (fieldDef.item_fields || []).forEach(sf => {
+    const label = document.createElement('label');
+    label.style.cssText = 'display:block;font-size:.7rem;color:var(--text-dim);margin:.3rem 0 .2rem';
+    label.textContent = sf.label;
+    item.appendChild(label);
+    let input;
+    if (sf.type === 'textarea') {
+      input = document.createElement('textarea');
+      input.rows = 2;
+    } else {
+      input = document.createElement('input');
+      input.type = 'text';
+    }
+    input.value = data[sf.id] || '';
+    input.className = 'cf-item-field';
+    input.dataset.sub = sf.id;
+    input.style.cssText = 'width:100%;box-sizing:border-box;background:var(--bg2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:.35rem .5rem;font-family:var(--font);font-size:.82rem';
+    item.appendChild(input);
+  });
+  return item;
+}
+
+function cfAddListItem(fieldId) {
+  const tplId = document.getElementById('template-select').value;
+  const tpl = ENTITY_TEMPLATES.find(t => String(t.id) === String(tplId));
+  if (!tpl) return;
+  const fieldDef = tpl.fields.find(f => f.id === fieldId);
+  if (!fieldDef) return;
+  document.getElementById('cf-list-' + fieldId).appendChild(cfBuildListItem(fieldDef, {}));
+}
+
+function rebuildCustomFields() {
+  const container = document.getElementById('custom-fields-container');
+  container.innerHTML = '';
+  const tplId = document.getElementById('template-select').value;
+  const tpl = ENTITY_TEMPLATES.find(t => String(t.id) === String(tplId));
+  if (!tpl) return;
+  const existing = (String(tplId) === String(INITIAL_TEMPLATE_ID)) ? EXISTING_CUSTOM_FIELDS : {};
+  const sections = groupBySection(tpl.fields);
+  sections.forEach(([sectionName, fields]) => {
+    const section = document.createElement('div');
+    section.className = 'cf-section';
+    const title = document.createElement('div');
+    title.className = 'cf-section-title';
+    title.textContent = sectionName;
+    section.appendChild(title);
+    fields.forEach(f => {
+      const wrap = document.createElement('div');
+      wrap.className = 'cf-field';
+      const label = document.createElement('label');
+      label.textContent = f.label;
+      wrap.appendChild(label);
+      if (f.type === 'list') {
+        const listDiv = document.createElement('div');
+        listDiv.className = 'cf-list';
+        listDiv.id = 'cf-list-' + f.id;
+        (existing[f.id] || []).forEach(row => listDiv.appendChild(cfBuildListItem(f, row)));
+        wrap.appendChild(listDiv);
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'cf-list-add';
+        addBtn.textContent = '+ Add';
+        addBtn.onclick = function () { cfAddListItem(f.id); };
+        wrap.appendChild(addBtn);
+      } else if (f.type === 'select') {
+        const sel = document.createElement('select');
+        sel.dataset.cfId = f.id;
+        (f.options || []).forEach(optVal => {
+          const opt = document.createElement('option');
+          opt.value = optVal;
+          opt.textContent = optVal;
+          sel.appendChild(opt);
+        });
+        sel.value = existing[f.id] !== undefined ? existing[f.id] : (f.default_value || '');
+        wrap.appendChild(sel);
+      } else if (f.type === 'textarea') {
+        const ta = document.createElement('textarea');
+        ta.dataset.cfId = f.id;
+        ta.value = existing[f.id] !== undefined ? existing[f.id] : (f.default_value || '');
+        wrap.appendChild(ta);
+      } else {
+        const inp = document.createElement('input');
+        inp.type = (f.type === 'number') ? 'number' : 'text';
+        inp.dataset.cfId = f.id;
+        inp.value = existing[f.id] !== undefined ? existing[f.id] : (f.default_value || '');
+        wrap.appendChild(inp);
+      }
+      section.appendChild(wrap);
+    });
+    container.appendChild(section);
+  });
+}
+
+function collectCustomFieldsJson() {
+  const obj = {};
+  document.querySelectorAll('#custom-fields-container [data-cf-id]').forEach(el => {
+    obj[el.dataset.cfId] = el.value;
+  });
+  const tplId = document.getElementById('template-select').value;
+  const tpl = ENTITY_TEMPLATES.find(t => String(t.id) === String(tplId));
+  (tpl ? tpl.fields.filter(f => f.type === 'list') : []).forEach(f => {
+    const items = [];
+    document.querySelectorAll('#cf-list-' + f.id + ' .cf-list-item').forEach(itemEl => {
+      const o = {};
+      itemEl.querySelectorAll('.cf-item-field').forEach(inputEl => { o[inputEl.dataset.sub] = inputEl.value; });
+      items.push(o);
+    });
+    obj[f.id] = items;
+  });
+  return obj;
 }
 
 // ── Attribute row editor ──────────────────────────────────────────────────────
@@ -244,6 +429,12 @@ document.querySelector('.entity-form').addEventListener('submit', function() {
     body = '## Attributes\n' + pairs.join('\n') + (body ? '\n\n' + body : '');
   }
   bodyField.value = body;
+});
+
+document.querySelector('.entity-form').addEventListener('submit', function() {
+  const tplSel = document.getElementById('template-select');
+  document.getElementById('template_id').value = tplSel.value || '';
+  document.getElementById('custom_fields_json').value = JSON.stringify(collectCustomFieldsJson());
 });
 
 function updateVisibilityUI() {

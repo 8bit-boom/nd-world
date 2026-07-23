@@ -48,6 +48,47 @@
   </div>
   {% endif %}
 
+  {% if custom_sections %}
+  <section class="entity-fields">
+    {% for section_name, fields in custom_sections %}
+    <div class="ef-section">
+      <div class="ef-section-title">{{ section_name }}</div>
+      <div class="ef-field-grid">
+        {% for f in fields %}
+          {% if f.type == 'list' %}
+            {% set rows = custom_fields.get(f.id, []) %}
+            {% if rows %}
+            <div class="ef-field wide">
+              <div class="ef-label">{{ f.label }}</div>
+              <div class="ef-list">
+                {% for row in rows %}
+                <div class="ef-list-item">
+                  {% for sf in f.item_fields %}
+                    {% if row.get(sf.id) %}
+                    <div class="ef-list-row"><strong>{{ sf.label }}:</strong> {{ row.get(sf.id) }}</div>
+                    {% endif %}
+                  {% endfor %}
+                </div>
+                {% endfor %}
+              </div>
+            </div>
+            {% endif %}
+          {% else %}
+            {% set val = custom_fields.get(f.id) %}
+            {% if val %}
+            <div class="ef-field">
+              <div class="ef-label">{{ f.label }}</div>
+              <div class="ef-val">{{ val }}</div>
+            </div>
+            {% endif %}
+          {% endif %}
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
   <section class="entity-notes">
     <h2>// NOTES</h2>
     {% if entity_notes %}
@@ -159,6 +200,18 @@
 </article>
 
 <style>
+.entity-fields { margin-top: 1.5rem; display:flex; flex-direction:column; gap: .75rem; }
+.ef-section { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:.85rem 1rem; }
+.ef-section-title { font-size:.72rem; text-transform:uppercase; letter-spacing:.08em; color:var(--neon); margin-bottom:.6rem; border-bottom:1px solid var(--border); padding-bottom:.35rem; }
+.ef-field-grid { display:grid; grid-template-columns:1fr 1fr; gap:.6rem 1.2rem; }
+.ef-field.wide { grid-column:1 / -1; }
+.ef-label { font-size:.68rem; text-transform:uppercase; letter-spacing:.03em; color:var(--text-dim); margin-bottom:.15rem; }
+.ef-val { font-size:.88rem; white-space:pre-wrap; }
+.ef-list { display:flex; flex-direction:column; gap:.4rem; margin-top:.2rem; }
+.ef-list-item { background:var(--bg3); border:1px solid var(--border); border-radius:5px; padding:.5rem .65rem; }
+.ef-list-row { font-size:.85rem; margin:.15rem 0; }
+.ef-list-row strong { color:var(--text-dim); font-weight:normal; font-size:.75rem; text-transform:uppercase; margin-right:.3rem; }
+@media (max-width:600px) { .ef-field-grid { grid-template-columns:1fr; } }
 .entity-notes { margin-top: 1.5rem; }
 .en-list { display:flex; flex-direction:column; gap:.5rem; margin-bottom:.75rem; }
 .en-note { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:.6rem .75rem; }

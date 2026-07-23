@@ -114,10 +114,15 @@ class Entity(Base):
     body = Column(Text, nullable=True)
     # GM can hide spoilers/secrets from invited players; defaults visible so existing content is unaffected.
     visible_to_players = Column(Boolean, default=True)
+    # Optional structured fields (age/title/gender/status, stat blocks, etc.) on
+    # top of the free-text body — see EntityTemplate for the field definitions.
+    template_id = Column(Integer, ForeignKey("entity_templates.id"), nullable=True)
+    custom_fields_json = Column(Text, default="{}")  # {field_id: value or [ {...}, ... ] for list fields}
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     world = relationship("World", back_populates="entities")
+    template = relationship("EntityTemplate")
     related = relationship(
         "Entity",
         secondary=entity_links,
@@ -273,6 +278,29 @@ class SheetTemplate(Base):
     # repeatable group (e.g. a list of abilities, each with name/tier/effect).
     # type: number | resource | text | textarea | table | list
     # section: freeform label used to group fields on the sheet
+    fields_json = Column(Text, default="[]")
+    created_at  = Column(DateTime, default=datetime.utcnow)
+    updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class EntityTemplate(Base):
+    """Reusable custom-field / stat-block definitions for lore Entities (NPCs,
+    creatures, locations, etc.) — separate from SheetTemplate, which is only
+    for Player Character sheets."""
+    __tablename__ = "entity_templates"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    world_id    = Column(Integer, ForeignKey("worlds.id"), nullable=True)  # NULL = global/built-in
+    name        = Column(String(256), nullable=False)
+    slug        = Column(String(64), unique=True, nullable=False)
+    kind        = Column(String(32), nullable=True)  # one of KINDS, or NULL = usable on any kind
+    description = Column(Text, default="")
+    is_builtin  = Column(Boolean, default=False)
+    # [{id, label, type, section, default_value}] for simple fields,
+    # [{id, label, type:"select", section, options:["Alive","Dead",...]}] for a dropdown,
+    # or [{id, label, type:"list", section, item_fields:[{id,label,type}]}] for a
+    # repeatable group (e.g. a stat block's list of abilities).
+    # type: number | text | textarea | select | list
     fields_json = Column(Text, default="[]")
     created_at  = Column(DateTime, default=datetime.utcnow)
     updated_at  = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
