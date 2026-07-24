@@ -214,15 +214,18 @@ def _migrate():
             if "location_json" not in p_cols:
                 conn.execute(text("ALTER TABLE parties ADD COLUMN location_json TEXT DEFAULT '{}'"))
                 conn.commit()
-        # random_tables table — some installs ended up with a table missing
-        # columns declared on the model (e.g. slug), which crashes _seed() on
-        # every boot since create_all() never alters an existing table. Patch
-        # in whatever's missing.
+        # random_tables table — some installs ended up with a table that
+        # doesn't match the model: missing columns (e.g. slug), and/or
+        # world_id incorrectly marked NOT NULL (the model allows NULL there
+        # for global/built-in tables). Both crash _seed() on every boot,
+        # since create_all() never alters an existing table. Patch in
+        # whatever's missing first...
         rt_exists = conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='random_tables'"
         )).fetchone()
         if rt_exists:
-            rt_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(random_tables)")).fetchall()]
+            rt_info = conn.execute(text("PRAGMA table_info(random_tables)")).fetchall()
+            rt_cols = [r[1] for r in rt_info]
             _rt_extra = [
                 ("world_id",     "INTEGER"),
                 ("name",         "VARCHAR(256)"),
@@ -238,6 +241,32 @@ def _migrate():
                 if col not in rt_cols:
                     conn.execute(text(f"ALTER TABLE random_tables ADD COLUMN {col} {defn}"))
             conn.commit()
+            # ...then check for a world_id NOT NULL constraint left over from
+            # however this table was first created. SQLite can't drop a NOT
+            # NULL constraint via ALTER TABLE, so rebuild the table properly
+            # (the standard SQLite "12-step" approach) if that's the case.
+            rt_info = conn.execute(text("PRAGMA table_info(random_tables)")).fetchall()
+            world_id_notnull = any(r[1] == "world_id" and r[3] == 1 for r in rt_info)
+            if world_id_notnull:
+                conn.execute(text("ALTER TABLE random_tables RENAME TO random_tables_old"))
+                conn.execute(text("""
+                    CREATE TABLE random_tables (
+                        id INTEGER PRIMARY KEY,
+                        world_id INTEGER,
+                        name VARCHAR(256),
+                        slug VARCHAR(64) UNIQUE,
+                        category VARCHAR(64) DEFAULT 'general',
+                        description TEXT DEFAULT '',
+                        is_builtin BOOLEAN DEFAULT 0,
+                        entries_json TEXT DEFAULT '[]',
+                        created_at DATETIME,
+                        updated_at DATETIME
+                    )
+                """))
+                cols = "id, world_id, name, slug, category, description, is_builtin, entries_json, created_at, updated_at"
+                conn.execute(text(f"INSERT INTO random_tables ({cols}) SELECT {cols} FROM random_tables_old"))
+                conn.execute(text("DROP TABLE random_tables_old"))
+                conn.commit()
             # slug has a UNIQUE index on the model but a column added via ALTER
             # TABLE can't carry that constraint retroactively — backfill any
             # NULL slugs (from rows that predate the column) so the app's own
