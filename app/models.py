@@ -389,6 +389,10 @@ class Party(Base):
     member_entity_ids_json = Column(Text, default="[]")  # [Entity.id, ...] companions/hirelings
     loot_json = Column(Text, default="[]")                # [{name, qty, notes}]
     notes = Column(Text, default="")
+    # Where this party currently is, for GM tracking. {} = not placed anywhere.
+    # Map:       {"kind": "map", "slug": <map slug>, "lat": .., "lng": ..}
+    # Schematic: {"kind": "schematic", "slug": <schematic slug>, "x": .., "y": ..}
+    location_json = Column(Text, default="{}")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

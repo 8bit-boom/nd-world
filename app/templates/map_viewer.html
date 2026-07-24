@@ -14,6 +14,7 @@
     <div id="edit-tools" style="display:none">
       <button id="btn-add-m" class="tb-btn" onclick="setTool('marker')">+ Marker</button>
       <button id="btn-add-r" class="tb-btn" onclick="setTool('region')">✦ Region</button>
+      <button id="btn-add-p" class="tb-btn" onclick="setTool('party')">🧑‍🤝‍🧑 Party</button>
       <button id="btn-move" class="tb-btn" onclick="setTool('move')">↔ Move</button>
       <button id="btn-del" class="tb-btn" onclick="setTool('delete')">🗑 Delete</button>
       <button id="btn-finish-r" class="tb-btn" style="display:none" onclick="finishRegion()">✓ Done</button>
@@ -44,10 +45,27 @@
     </div>
     <label>Note (optional)</label>
     <textarea id="dlg-m-note" rows="2" placeholder="Short description…"></textarea>
+    <label>Link to Schematic (optional)</label>
+    <select id="dlg-m-link">
+      <option value="">— none —</option>
+    </select>
     <div class="dlg-actions">
       <button class="btn-primary" onclick="confirmMarker()">OK</button>
       <button class="btn-cancel" onclick="closeDlg('dlg-marker')">Cancel</button>
       <button id="dlg-m-del" class="btn-delete-sm" style="display:none" onclick="deleteMarker()">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Dialog: place party -->
+<div id="dlg-party" class="map-dlg" style="display:none">
+  <div class="map-dlg-box">
+    <h3>Place Party</h3>
+    <label>Party</label>
+    <select id="dlg-p-select"></select>
+    <div class="dlg-actions">
+      <button class="btn-primary" onclick="confirmPartyPlacement()">Place Here</button>
+      <button class="btn-cancel" onclick="closeDlg('dlg-party')">Cancel</button>
     </div>
   </div>
 </div>
@@ -138,8 +156,21 @@ const IMG_URL = {{ image_url | tojson }};
 const SLUG = {{ slug | tojson }};
 const KANKA_MARKERS = {{ map_data.markers | tojson }};
 const ENAME_MAP = {{ ename_map | safe }};
+const SCHEMATICS = {{ schematics_json | safe }};
+const WORLD_PARTIES = {{ world_parties_json | safe }};
 let customMarkers = {{ overlay.custom_markers_json | safe }};
 let customRegions = {{ overlay.custom_regions_json | safe }};
+let partyPins = {{ party_pins_json | safe }};
+
+// Populate the "link to schematic" dropdown on the marker dialog
+(function () {
+  const sel = document.getElementById('dlg-m-link');
+  SCHEMATICS.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.slug; opt.textContent = s.name;
+    sel.appendChild(opt);
+  });
+})();
 
 // ── Leaflet setup ──────────────────────────────────────────────────────────────
 const map = L.map('map', {
@@ -196,12 +227,46 @@ function renderCustomMarkers() {
     const lm = L.marker(ll, {icon: makeCustomIcon(m.color || '#ff4466'), draggable: false})
       .addTo(customMarkersLayer);
     const note = m.note ? `<div class="pop-desc">${m.note}</div>` : '';
-    lm.bindPopup(`<div class="map-popup"><b>${m.label || '?'}</b>${note}</div>`);
+    const schem = SCHEMATICS.find(s => s.slug === m.link_schematic);
+    const link = schem ? `<br><a href="/maps/schematic/${schem.slug}">🔗 Open ${schem.name} →</a>` : '';
+    lm.bindPopup(`<div class="map-popup"><b>${m.label || '?'}</b>${note}${link}</div>`);
     lm.bindTooltip(m.label || '', {direction:'right', opacity:.9});
     lm.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removeCustomMarker(i); } else if (editMode && (tool === 'marker' || tool === 'move')) { L.DomEvent.stop(e); editCustomMarker(i); } });
   });
 }
 renderCustomMarkers();
+
+// ── Party pins ────────────────────────────────────────────────────────────────
+const partyPinsLayer = L.layerGroup().addTo(map);
+
+function makePartyIcon() {
+  return L.divIcon({
+    className: 'kanka-pin',
+    html: `<svg width="24" height="26" viewBox="0 0 24 26"><rect x="1" y="1" width="22" height="22" rx="4" fill="#ffcc00" fill-opacity=".92" stroke="#fff" stroke-width="1.5"/><text x="12" y="17" font-size="13" text-anchor="middle">🧑‍🤝‍🧑</text><line x1="12" y1="23" x2="12" y2="26" stroke="#ffcc00" stroke-width="2"/></svg>`,
+    iconSize: [24,26], iconAnchor: [12,26],
+  });
+}
+
+function renderPartyPins() {
+  partyPinsLayer.clearLayers();
+  partyPins.forEach(p => {
+    const ll = L.latLng(p.lat, p.lng);
+    const pm = L.marker(ll, {icon: makePartyIcon()}).addTo(partyPinsLayer);
+    pm.bindPopup(`<div class="map-popup"><b>🧑‍🤝‍🧑 ${p.name}</b><div class="pop-desc">${p.member_count} member${p.member_count===1?'':'s'}</div><a href="/parties/${p.id}">Open Party →</a><br><a href="#" onclick="removePartyPin(${p.id});return false;">Remove from map</a></div>`);
+    pm.bindTooltip(p.name, {direction:'right', opacity:.9});
+    pm.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removePartyPin(p.id); } });
+  });
+}
+renderPartyPins();
+
+async function removePartyPin(partyId) {
+  await fetch(`/api/parties/${partyId}/location`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ kind: null }),
+  });
+  partyPins = partyPins.filter(p => p.id !== partyId);
+  map.closePopup();
+  renderPartyPins();
+}
 
 // ── Custom regions ────────────────────────────────────────────────────────────
 function renderCustomRegions() {
@@ -236,17 +301,18 @@ function toggleEdit() {
 
 function setTool(t) {
   tool = t;
-  ['btn-add-m','btn-add-r','btn-move','btn-del'].forEach(id => {
+  ['btn-add-m','btn-add-r','btn-add-p','btn-move','btn-del'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.classList.toggle('active', id === 'btn-' + (t==='marker'?'add-m':t==='region'?'add-r':t==='move'?'move':'del'));
+    if (el) el.classList.toggle('active', id === 'btn-' + (t==='marker'?'add-m':t==='region'?'add-r':t==='party'?'add-p':t==='move'?'move':'del'));
   });
-  map.getContainer().style.cursor = t === 'region' ? 'crosshair' : t === 'delete' ? 'not-allowed' : t === 'marker' ? 'crosshair' : '';
+  map.getContainer().style.cursor = (t === 'region' || t === 'party' || t === 'marker') ? 'crosshair' : t === 'delete' ? 'not-allowed' : '';
 }
 
 // Map click handler
 map.on('click', function(e) {
   if (!editMode) return;
   if (tool === 'marker') { pendingLL = e.latlng; editingMarkerIdx = null; openMarkerDlg(); }
+  else if (tool === 'party') { pendingLL = e.latlng; openPartyDlg(); }
   else if (tool === 'region') {
     polyPoints.push(e.latlng);
     updatePolyPreview();
@@ -273,11 +339,13 @@ function openMarkerDlg(edit) {
     const m = customMarkers[edit];
     document.getElementById('dlg-m-label').value = m.label;
     document.getElementById('dlg-m-note').value = m.note || '';
+    document.getElementById('dlg-m-link').value = m.link_schematic || '';
     pickMColor(m.color || '#ff4466');
     document.getElementById('dlg-m-del').style.display = '';
   } else {
     document.getElementById('dlg-m-label').value = '';
     document.getElementById('dlg-m-note').value = '';
+    document.getElementById('dlg-m-link').value = '';
     pickMColor('#ff4466');
     document.getElementById('dlg-m-del').style.display = 'none';
   }
@@ -299,13 +367,37 @@ function pickRColor(c) {
 function confirmMarker() {
   const label = document.getElementById('dlg-m-label').value.trim();
   const note = document.getElementById('dlg-m-note').value.trim();
+  const link_schematic = document.getElementById('dlg-m-link').value;
   if (editingMarkerIdx !== null) {
-    customMarkers[editingMarkerIdx] = { ...customMarkers[editingMarkerIdx], label, note, color: mColor };
+    customMarkers[editingMarkerIdx] = { ...customMarkers[editingMarkerIdx], label, note, color: mColor, link_schematic };
   } else if (pendingLL) {
-    customMarkers.push({ lat: pendingLL.lat, lng: pendingLL.lng, label, note, color: mColor });
+    customMarkers.push({ lat: pendingLL.lat, lng: pendingLL.lng, label, note, color: mColor, link_schematic });
   }
   closeDlg('dlg-marker'); pendingLL = null; editingMarkerIdx = null;
   renderCustomMarkers();
+}
+
+// ── Party placement dialog ───────────────────────────────────────────────────
+function openPartyDlg() {
+  const sel = document.getElementById('dlg-p-select');
+  sel.innerHTML = WORLD_PARTIES.map(p => `<option value="${p.id}">${p.name} (${p.member_count} member${p.member_count===1?'':'s'})</option>`).join('') || '<option value="">No parties in this world yet</option>';
+  document.getElementById('dlg-party').style.display = 'flex';
+}
+
+async function confirmPartyPlacement() {
+  const partyId = parseInt(document.getElementById('dlg-p-select').value, 10);
+  if (!partyId || !pendingLL) { closeDlg('dlg-party'); return; }
+  const res = await fetch(`/api/parties/${partyId}/location`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ kind: 'map', slug: SLUG, lat: pendingLL.lat, lng: pendingLL.lng }),
+  });
+  const data = await res.json();
+  const party = WORLD_PARTIES.find(p => p.id === partyId);
+  partyPins = partyPins.filter(p => p.id !== partyId);
+  partyPins.push({ id: partyId, name: party ? party.name : '?', lat: data.location.lat, lng: data.location.lng,
+    member_count: party ? party.member_count : 0 });
+  closeDlg('dlg-party'); pendingLL = null;
+  renderPartyPins();
 }
 
 function deleteMarker() {

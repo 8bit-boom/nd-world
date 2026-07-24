@@ -205,6 +205,15 @@ def _migrate():
             if "rules_md" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN rules_md TEXT"))
                 conn.commit()
+        # parties table — add location_json if missing (added after initial ship)
+        p_exists = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='parties'"
+        )).fetchone()
+        if p_exists:
+            p_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(parties)")).fetchall()]
+            if "location_json" not in p_cols:
+                conn.execute(text("ALTER TABLE parties ADD COLUMN location_json TEXT DEFAULT '{}'"))
+                conn.commit()
 
 def _seed():
     db = SessionLocal()

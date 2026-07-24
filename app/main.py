@@ -21,7 +21,7 @@ import io
 from pathlib import Path
 
 from .database import init_db, get_db, SessionLocal
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party
 from .routers.ai import router as ai_router
 from .routers.characters import router as characters_router
 from .routers.auth import router as auth_router
@@ -951,6 +951,36 @@ async def map_upload_image(slug: str, file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, f)
     return RedirectResponse("/maps", status_code=303)
 
+def _world_parties_payload(db: Session, world_id: int):
+    """[{id, name, member_count}] for the world's parties, for the "place party
+    here" pickers on maps and schematics."""
+    return [
+        {
+            "id": p.id, "name": p.name,
+            "member_count": len(json.loads(p.member_pc_ids_json or "[]")) + len(json.loads(p.member_entity_ids_json or "[]")),
+        }
+        for p in db.query(Party).filter(Party.world_id == world_id).order_by(Party.name).all()
+    ]
+
+
+def _party_pins_for(db: Session, world_id: int, kind: str, slug: str):
+    """Parties currently located on this specific map/schematic, with member
+    counts, for rendering as pins/markers."""
+    pins = []
+    for p in db.query(Party).filter(Party.world_id == world_id).all():
+        loc = json.loads(p.location_json or "{}")
+        if loc.get("kind") != kind or loc.get("slug") != slug:
+            continue
+        member_count = len(json.loads(p.member_pc_ids_json or "[]")) + len(json.loads(p.member_entity_ids_json or "[]"))
+        pin = {"id": p.id, "name": p.name, "member_count": member_count}
+        if kind == "map":
+            pin["lat"] = loc.get("lat"); pin["lng"] = loc.get("lng")
+        else:
+            pin["x"] = loc.get("x"); pin["y"] = loc.get("y")
+        pins.append(pin)
+    return pins
+
+
 @app.get("/maps/{slug}", response_class=HTMLResponse)
 def map_viewer(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     jf = _MAPS_DIR / f"{slug}.json"
@@ -977,10 +1007,14 @@ def map_viewer(slug: str, request: Request, db: Session = Depends(get_db), activ
     if world:
         for e in db.query(Entity.name, Entity.id).filter(Entity.world_id == world.id).all():
             ename_map[e.name.lower()] = e.id
+    schematics = db.query(Schematic).filter(Schematic.world_id == world.id).order_by(Schematic.name).all()
     return templates.TemplateResponse("map_viewer.html", {
         "request": request, "world": world, "worlds": worlds,
         "map_data": map_data, "image_url": image_url or "", "slug": slug,
         "overlay": overlay, "ename_map": json.dumps(ename_map),
+        "schematics_json": json.dumps([{"slug": s.slug, "name": s.name} for s in schematics]),
+        "world_parties_json": json.dumps(_world_parties_payload(db, world.id)),
+        "party_pins_json": json.dumps(_party_pins_for(db, world.id, "map", slug)),
     })
 
 @app.post("/api/maps/{slug}/overlay")
@@ -1115,6 +1149,8 @@ def schematic_view(slug: str, request: Request, db: Session = Depends(get_db), a
         "request": request, "world": world, "worlds": worlds,
         "schematic": s, "elements_json": json.dumps(elements),
         "canvas_bg_color": canvas_bg_color,
+        "world_parties_json": json.dumps(_world_parties_payload(db, s.world_id)),
+        "party_pins_json": json.dumps(_party_pins_for(db, s.world_id, "schematic", slug)),
     })
 
 @app.post("/maps/schematic/{slug}/elements")

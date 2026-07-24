@@ -119,6 +119,36 @@ async def party_loot(party_id: int, request: Request, db: Session = Depends(get_
     return {"loot": loot}
 
 
+@router.post("/api/parties/{party_id}/location")
+async def party_set_location(party_id: int, request: Request, db: Session = Depends(get_db)):
+    party = db.query(Party).filter(Party.id == party_id).first()
+    if not party:
+        raise HTTPException(404)
+    body = await request.json()
+    kind = body.get("kind")
+    if kind not in ("map", "schematic"):
+        party.location_json = "{}"
+    else:
+        slug = str(body.get("slug", "")).strip()
+        if not slug:
+            raise HTTPException(400, "Missing slug")
+        try:
+            if kind == "map":
+                party.location_json = json.dumps({
+                    "kind": "map", "slug": slug,
+                    "lat": float(body.get("lat")), "lng": float(body.get("lng")),
+                })
+            else:
+                party.location_json = json.dumps({
+                    "kind": "schematic", "slug": slug,
+                    "x": float(body.get("x")), "y": float(body.get("y")),
+                })
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Missing or invalid coordinates")
+    db.commit()
+    return {"location": json.loads(party.location_json)}
+
+
 @router.post("/api/parties/{party_id}/launch-combat")
 def party_launch_combat(party_id: int, db: Session = Depends(get_db)):
     party = db.query(Party).filter(Party.id == party_id).first()

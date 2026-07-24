@@ -17,6 +17,7 @@
     <button class="tb"    id="t-poly"    onclick="setTool('poly')"    title="Polygon · P  (dblclick=finish)">⬡</button>
     <button class="tb"    id="t-text"    onclick="setTool('text')"    title="Text · T">T</button>
     <button class="tb"    id="t-pin"     onclick="setTool('pin')"     title="Pin · N">📍</button>
+    <button class="tb"    id="t-party"   onclick="setTool('party')"   title="Place Party">🧑‍🤝‍🧑</button>
     <button class="tb"    id="t-pencil"  onclick="setTool('pencil')"  title="Pencil · K">✏</button>
     <button class="tb"    id="t-measure" onclick="setTool('measure')" title="Measure · M">📏</button>
     <button class="tb"    id="t-image"   onclick="pickImage()"        title="Embed image · I">🖼</button>
@@ -102,6 +103,7 @@
         <rect id="hit" width="100%" height="100%" fill="transparent"/>
         <g id="sel-layer"   pointer-events="none"></g>
         <g id="guide-layer" pointer-events="none"></g>
+        <g id="party-layer"></g>
       </svg>
     </div>
 
@@ -191,6 +193,18 @@
     <div style="display:flex;gap:.5rem;margin-top:.8rem">
       <button class="btn-primary" onclick="confirmText()">Place</button>
       <button class="btn-cancel"  onclick="hideDlg('text-dlg')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Place party dialog ───────────────────────────────────────────────── -->
+<div id="party-dlg" class="dlg-back">
+  <div class="dlg-box">
+    <h3 style="margin:0 0 .6rem">Place Party</h3>
+    <select id="pdlg-select" style="width:100%;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.18);border-radius:4px;padding:.4rem .6rem;color:inherit;font-size:.88rem;font-family:var(--font)"></select>
+    <div style="display:flex;gap:.5rem;margin-top:.8rem">
+      <button class="btn-primary" onclick="confirmPartyPlacement()">Place Here</button>
+      <button class="btn-cancel"  onclick="hideDlg('party-dlg')">Cancel</button>
     </div>
   </div>
 </div>
@@ -304,8 +318,11 @@ const SLUG = {{ schematic.slug | tojson }};
 const CW   = {{ schematic.canvas_width  or 2000 }};
 const CH   = {{ schematic.canvas_height or 1500 }};
 let elements = JSON.parse({{ elements_json | tojson }});
+const WORLD_PARTIES = {{ world_parties_json | safe }};
+let partyPins = {{ party_pins_json | safe }};
 
 const svg        = document.getElementById('sch-svg');
+const partyLayer = document.getElementById('party-layer');
 const elLayer    = document.getElementById('el-layer');
 const prevLayer  = document.getElementById('prev-layer');
 const selLayer   = document.getElementById('sel-layer');
@@ -330,6 +347,7 @@ let measurePt = null;
 let stampSpec = null;               // currently active stamp template
 let wpDrag    = null;               // {elId, idx} for waypoint drag
 let activeWpHandle = null;          // {elId, idx} for waypoint delete
+let pendingPartyPt = null;          // {x,y} awaiting party-placement dialog confirm
 
 let clipboard = [];
 
@@ -959,6 +977,7 @@ hit.addEventListener('mousedown', e => {
   }
   if (tool === 'text')   { pendingTextPt=pt; openTextDlg(); return; }
   if (tool === 'pin')    { addPin(pt); return; }
+  if (tool === 'party')  { pendingPartyPt=pt; openPartyDlg(); return; }
   if (tool === 'poly')   { if(!drawing){drawing=true;polyPts=[pt];}else polyPts.push(pt); drawPolyPrev(); return; }
   if (tool === 'pencil') { drawing=true; pencilPts=[[svgXYRaw(e).x, svgXYRaw(e).y]]; return; }
   if (tool === 'measure'){
@@ -1114,6 +1133,73 @@ function simplifyPoints(pts, tol) {
 function addPin(pt) {
   const el={...def(),id:uid(),type:'pin',x:pt.x,y:pt.y,stroke:'#ff4466',layer:activeLayer};
   elements.push(el); selIds.clear(); selIds.add(el.id); redraw(); snapshot();
+}
+
+// ── Party pins (live tracking, saved separately from elements/undo history) ──
+function renderPartyPins() {
+  partyLayer.innerHTML = '';
+  partyPins.forEach(p => {
+    const g = svgEl('g', { class:'party-pin', style:'cursor:pointer' });
+    g.appendChild(svgEl('rect', { x:p.x-13, y:p.y-28, width:26, height:26, rx:5, fill:'#ffcc00', 'fill-opacity':.92, stroke:'#fff', 'stroke-width':1.5 }));
+    const t = svgEl('text', { x:p.x, y:p.y-11, 'font-size':14, 'text-anchor':'middle' });
+    t.textContent = '🧑‍🤝‍🧑'; g.appendChild(t);
+    g.appendChild(svgEl('line', { x1:p.x, y1:p.y-2, x2:p.x, y2:p.y+4, stroke:'#ffcc00', 'stroke-width':2 }));
+    const lbl = svgEl('text', { x:p.x+16, y:p.y-14, 'font-size':12, 'font-family':'monospace', fill:'#fff', 'pointer-events':'none' });
+    lbl.textContent = p.name; g.appendChild(lbl);
+    g.addEventListener('mousedown', e => { e.stopPropagation(); });
+    g.addEventListener('click', e => {
+      e.stopPropagation();
+      if (tool === 'party') return; // avoid accidental popup while placing another party
+      showPartyPopup(e, p);
+    });
+    partyLayer.appendChild(g);
+  });
+}
+renderPartyPins();
+
+function openPartyDlg() {
+  const sel = document.getElementById('pdlg-select');
+  sel.innerHTML = WORLD_PARTIES.map(p => `<option value="${p.id}">${p.name} (${p.member_count} member${p.member_count===1?'':'s'})</option>`).join('') || '<option value="">No parties in this world yet</option>';
+  showDlg('party-dlg');
+}
+
+async function confirmPartyPlacement() {
+  const partyId = parseInt(document.getElementById('pdlg-select').value, 10);
+  hideDlg('party-dlg');
+  if (!partyId || !pendingPartyPt) { pendingPartyPt = null; return; }
+  const res = await fetch(`/api/parties/${partyId}/location`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ kind: 'schematic', slug: SLUG, x: pendingPartyPt.x, y: pendingPartyPt.y }),
+  });
+  const data = await res.json();
+  const party = WORLD_PARTIES.find(p => p.id === partyId);
+  partyPins = partyPins.filter(p => p.id !== partyId);
+  partyPins.push({ id: partyId, name: party ? party.name : '?', x: data.location.x, y: data.location.y,
+    member_count: party ? party.member_count : 0 });
+  pendingPartyPt = null;
+  renderPartyPins();
+}
+
+function showPartyPopup(e, p) {
+  hidePartyPopup();
+  const menu = document.createElement('div');
+  menu.id = 'party-popup';
+  menu.style.cssText = 'position:fixed;left:' + e.clientX + 'px;top:' + e.clientY + 'px;background:#1a1a1a;border:1px solid rgba(255,255,255,.18);border-radius:5px;padding:.3rem;z-index:9500;font-family:var(--font);font-size:.8rem;min-width:160px;box-shadow:0 4px 14px rgba(0,0,0,.5)';
+  menu.innerHTML = `<div style="padding:.2rem .5rem .4rem;opacity:.7">🧑‍🤝‍🧑 ${p.name} · ${p.member_count} member${p.member_count===1?'':'s'}</div>
+    <a href="/parties/${p.id}" class="ctx-btn" style="display:block;text-decoration:none">Open Party →</a>
+    <button class="ctx-btn ctx-del" onclick="removePartyPin(${p.id})">🗑 Remove from here</button>`;
+  document.body.appendChild(menu);
+  setTimeout(() => document.addEventListener('click', hidePartyPopup, { once:true }), 0);
+}
+function hidePartyPopup() { const m = document.getElementById('party-popup'); if (m) m.remove(); }
+
+async function removePartyPin(partyId) {
+  await fetch(`/api/parties/${partyId}/location`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ kind: null }),
+  });
+  partyPins = partyPins.filter(p => p.id !== partyId);
+  hidePartyPopup();
+  renderPartyPins();
 }
 function addMeasure(a, b) {
   const el={id:uid(),type:'measure',x1:a.x,y1:a.y,x2:b.x,y2:b.y,opacity:1,layer:activeLayer};
