@@ -7,6 +7,38 @@ from .models import (
     StarredImage, User, WorldMembership, InviteCode, EntityTemplate, RandomTable,
 )
 
+def _heal_table(conn, table, columns):
+    """Self-heal a table against its model's expected columns: add whatever's
+    missing, and rebuild (SQLite can't ALTER to drop a NOT NULL constraint)
+    if any column the model marks nullable ended up NOT NULL in the DB —
+    the same class of issue seen on random_tables/game_sessions after some
+    installs ended up with tables that don't fully match their models.
+    `columns` is [(name, add_column_sql_defn, nullable), ...], excluding id.
+    """
+    exists = conn.execute(text(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=:t"
+    ), {"t": table}).fetchone()
+    if not exists:
+        return
+    info = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+    existing = {r[1]: r[3] for r in info}  # name -> notnull flag
+    for name, defn, _nullable in columns:
+        if name not in existing:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {defn}"))
+    conn.commit()
+    info = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+    existing = {r[1]: r[3] for r in info}
+    if any(nullable and existing.get(name) == 1 for name, _, nullable in columns):
+        tmp = f"{table}_old"
+        conn.execute(text(f"ALTER TABLE {table} RENAME TO {tmp}"))
+        col_sql = ",\n                ".join(f"{name} {defn}" for name, defn, _ in columns)
+        conn.execute(text(f"CREATE TABLE {table} (\n                id INTEGER PRIMARY KEY,\n                {col_sql}\n            )"))
+        col_names = ", ".join(["id"] + [c[0] for c in columns])
+        conn.execute(text(f"INSERT INTO {table} ({col_names}) SELECT {col_names} FROM {tmp}"))
+        conn.execute(text(f"DROP TABLE {tmp}"))
+        conn.commit()
+
+
 def _f(id, label, type="text", section="", default_value=""):
     return {"id": id, "label": label, "type": type, "section": section, "default_value": default_value}
 
@@ -205,15 +237,6 @@ def _migrate():
             if "rules_md" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN rules_md TEXT"))
                 conn.commit()
-        # parties table — add location_json if missing (added after initial ship)
-        p_exists = conn.execute(text(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='parties'"
-        )).fetchone()
-        if p_exists:
-            p_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(parties)")).fetchall()]
-            if "location_json" not in p_cols:
-                conn.execute(text("ALTER TABLE parties ADD COLUMN location_json TEXT DEFAULT '{}'"))
-                conn.commit()
         # random_tables table — some installs ended up with a table that
         # doesn't match the model: missing columns (e.g. slug), and/or
         # world_id incorrectly marked NOT NULL (the model allows NULL there
@@ -275,6 +298,73 @@ def _migrate():
                 "UPDATE random_tables SET slug = 'table-' || id WHERE slug IS NULL"
             ))
             conn.commit()
+
+        # Other campaign-management tables shipped in the same batch as
+        # random_tables turned out to have the same class of issue on some
+        # installs (missing columns / stray NOT NULL constraints — see
+        # random_tables above for why). Self-heal all of them the same way.
+        _heal_table(conn, "combat_sessions", [
+            ("world_id",         "INTEGER", False),
+            ("name",             "VARCHAR(256)", False),
+            ("combatants_json",  "TEXT DEFAULT '[]'", True),
+            ("round_num",        "INTEGER DEFAULT 1", True),
+            ("active_idx",       "INTEGER DEFAULT 0", True),
+            ("game_session_id",  "INTEGER", True),
+            ("created_at",       "DATETIME", True),
+            ("updated_at",       "DATETIME", True),
+        ])
+        _heal_table(conn, "parties", [
+            ("world_id",                "INTEGER", False),
+            ("name",                    "VARCHAR(256)", False),
+            ("member_pc_ids_json",      "TEXT DEFAULT '[]'", True),
+            ("member_entity_ids_json",  "TEXT DEFAULT '[]'", True),
+            ("loot_json",               "TEXT DEFAULT '[]'", True),
+            ("notes",                   "TEXT DEFAULT ''", True),
+            ("location_json",           "TEXT DEFAULT '{}'", True),
+            ("created_at",              "DATETIME", True),
+            ("updated_at",              "DATETIME", True),
+        ])
+        _heal_table(conn, "quests", [
+            ("world_id",              "INTEGER", False),
+            ("title",                 "VARCHAR(256)", False),
+            ("status",                "VARCHAR(32) DEFAULT 'active'", True),
+            ("category",              "VARCHAR(32) DEFAULT 'main'", True),
+            ("summary",               "VARCHAR(512) DEFAULT ''", True),
+            ("body",                  "TEXT DEFAULT ''", True),
+            ("linked_entities_json",  "TEXT DEFAULT '[]'", True),
+            ("parent_id",             "INTEGER", True),
+            ("assigned_party_id",     "INTEGER", True),
+            ("created_at",            "DATETIME", True),
+            ("updated_at",            "DATETIME", True),
+        ])
+        _heal_table(conn, "game_sessions", [
+            ("world_id",      "INTEGER", False),
+            ("title",         "VARCHAR(256)", False),
+            ("session_num",   "INTEGER DEFAULT 1", True),
+            ("session_date",  "VARCHAR(32)", True),
+            ("summary",       "TEXT DEFAULT ''", True),
+            ("prep_json",     "TEXT DEFAULT '[]'", True),
+            ("npcs_json",     "TEXT DEFAULT '[]'", True),
+            ("loot_json",     "TEXT DEFAULT '[]'", True),
+            ("xp_awarded",    "INTEGER DEFAULT 0", True),
+            ("party_id",      "INTEGER", True),
+            ("created_at",    "DATETIME", True),
+            ("updated_at",    "DATETIME", True),
+        ])
+        _heal_table(conn, "world_calendars", [
+            ("world_id",     "INTEGER", False),
+            ("config_json",  "TEXT DEFAULT '{}'", True),
+            ("updated_at",   "DATETIME", True),
+        ])
+        _heal_table(conn, "calendar_events", [
+            ("world_id",    "INTEGER", False),
+            ("day",         "INTEGER", False),
+            ("title",       "VARCHAR(256)", False),
+            ("notes",       "TEXT DEFAULT ''", True),
+            ("entity_id",   "INTEGER", True),
+            ("color",       "VARCHAR(16) DEFAULT '#4488ff'", True),
+            ("created_at",  "DATETIME", True),
+        ])
 
 def _seed():
     db = SessionLocal()
