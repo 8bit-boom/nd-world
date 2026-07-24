@@ -214,6 +214,38 @@ def _migrate():
             if "location_json" not in p_cols:
                 conn.execute(text("ALTER TABLE parties ADD COLUMN location_json TEXT DEFAULT '{}'"))
                 conn.commit()
+        # random_tables table — some installs ended up with a table missing
+        # columns declared on the model (e.g. slug), which crashes _seed() on
+        # every boot since create_all() never alters an existing table. Patch
+        # in whatever's missing.
+        rt_exists = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='random_tables'"
+        )).fetchone()
+        if rt_exists:
+            rt_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(random_tables)")).fetchall()]
+            _rt_extra = [
+                ("world_id",     "INTEGER"),
+                ("name",         "VARCHAR(256)"),
+                ("slug",         "VARCHAR(64)"),
+                ("category",     "VARCHAR(64) DEFAULT 'general'"),
+                ("description",  "TEXT DEFAULT ''"),
+                ("is_builtin",   "BOOLEAN DEFAULT 0"),
+                ("entries_json", "TEXT DEFAULT '[]'"),
+                ("created_at",   "DATETIME"),
+                ("updated_at",   "DATETIME"),
+            ]
+            for col, defn in _rt_extra:
+                if col not in rt_cols:
+                    conn.execute(text(f"ALTER TABLE random_tables ADD COLUMN {col} {defn}"))
+            conn.commit()
+            # slug has a UNIQUE index on the model but a column added via ALTER
+            # TABLE can't carry that constraint retroactively — backfill any
+            # NULL slugs (from rows that predate the column) so the app's own
+            # slug-uniqueness checks still work going forward.
+            conn.execute(text(
+                "UPDATE random_tables SET slug = 'table-' || id WHERE slug IS NULL"
+            ))
+            conn.commit()
 
 def _seed():
     db = SessionLocal()
