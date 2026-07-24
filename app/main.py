@@ -1008,10 +1008,12 @@ def map_viewer(slug: str, request: Request, db: Session = Depends(get_db), activ
         for e in db.query(Entity.name, Entity.id).filter(Entity.world_id == world.id).all():
             ename_map[e.name.lower()] = e.id
     schematics = db.query(Schematic).filter(Schematic.world_id == world.id).order_by(Schematic.name).all()
+    user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
     return templates.TemplateResponse("map_viewer.html", {
         "request": request, "world": world, "worlds": worlds,
         "map_data": map_data, "image_url": image_url or "", "slug": slug,
-        "overlay": overlay, "ename_map": json.dumps(ename_map),
+        "overlay": overlay, "ename_map": json.dumps(ename_map), "is_gm": is_gm,
         "schematics_json": json.dumps([{"slug": s.slug, "name": s.name} for s in schematics]),
         "world_parties_json": json.dumps(_world_parties_payload(db, world.id)),
         "party_pins_json": json.dumps(_party_pins_for(db, world.id, "map", slug)),

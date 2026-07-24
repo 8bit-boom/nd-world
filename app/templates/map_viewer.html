@@ -10,6 +10,7 @@
     <span id="map-title">{{ map_data.name }}</span>
     <div class="tb-spacer"></div>
     <button id="btn-toggle-kanka" class="tb-btn active" onclick="toggleLayer('kanka')" title="Toggle imported pins">📍 Pins</button>
+    {% if is_gm %}
     <button id="btn-edit" class="tb-btn" onclick="toggleEdit()">✏ Edit</button>
     <div id="edit-tools" style="display:none">
       <button id="btn-add-m" class="tb-btn" onclick="setTool('marker')">+ Marker</button>
@@ -20,6 +21,7 @@
       <button id="btn-finish-r" class="tb-btn" style="display:none" onclick="finishRegion()">✓ Done</button>
       <button class="tb-btn tb-save" onclick="saveOverlay()">💾 Save</button>
     </div>
+    {% endif %}
   </div>
 
   {% if not image_url %}
@@ -158,6 +160,7 @@ const KANKA_MARKERS = {{ map_data.markers | tojson }};
 const ENAME_MAP = {{ ename_map | safe }};
 const SCHEMATICS = {{ schematics_json | safe }};
 const WORLD_PARTIES = {{ world_parties_json | safe }};
+const IS_GM = {{ is_gm | tojson }};
 let customMarkers = {{ overlay.custom_markers_json | safe }};
 let customRegions = {{ overlay.custom_regions_json | safe }};
 let partyPins = {{ party_pins_json | safe }};
@@ -228,7 +231,7 @@ function renderCustomMarkers() {
       .addTo(customMarkersLayer);
     const note = m.note ? `<div class="pop-desc">${m.note}</div>` : '';
     const schem = SCHEMATICS.find(s => s.slug === m.link_schematic);
-    const link = schem ? `<br><a href="/maps/schematic/${schem.slug}">🔗 Open ${schem.name} →</a>` : '';
+    const link = (schem && IS_GM) ? `<br><a href="/maps/schematic/${schem.slug}">🔗 Open ${schem.name} →</a>` : '';
     lm.bindPopup(`<div class="map-popup"><b>${m.label || '?'}</b>${note}${link}</div>`);
     lm.bindTooltip(m.label || '', {direction:'right', opacity:.9});
     lm.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removeCustomMarker(i); } else if (editMode && (tool === 'marker' || tool === 'move')) { L.DomEvent.stop(e); editCustomMarker(i); } });
@@ -252,7 +255,8 @@ function renderPartyPins() {
   partyPins.forEach(p => {
     const ll = L.latLng(p.lat, p.lng);
     const pm = L.marker(ll, {icon: makePartyIcon()}).addTo(partyPinsLayer);
-    pm.bindPopup(`<div class="map-popup"><b>🧑‍🤝‍🧑 ${p.name}</b><div class="pop-desc">${p.member_count} member${p.member_count===1?'':'s'}</div><a href="/parties/${p.id}">Open Party →</a><br><a href="#" onclick="removePartyPin(${p.id});return false;">Remove from map</a></div>`);
+    const gmActions = IS_GM ? `<a href="/parties/${p.id}">Open Party →</a><br><a href="#" onclick="removePartyPin(${p.id});return false;">Remove from map</a>` : '';
+    pm.bindPopup(`<div class="map-popup"><b>🧑‍🤝‍🧑 ${p.name}</b><div class="pop-desc">${p.member_count} member${p.member_count===1?'':'s'}</div>${gmActions}</div>`);
     pm.bindTooltip(p.name, {direction:'right', opacity:.9});
     pm.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removePartyPin(p.id); } });
   });
