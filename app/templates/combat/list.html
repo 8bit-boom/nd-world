@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Combat Tracker — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="list-header">
+  <h1>⚔ Combat Tracker</h1>
+  <div class="list-actions">
+    <form method="post" action="/combat/new" style="display:flex;gap:.4rem;align-items:center">
+      <input name="name" placeholder="Encounter name…" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .65rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
+      <button type="submit" class="btn-new">+ New Encounter</button>
+    </form>
+  </div>
+</div>
+
+{% if sessions %}
+<div class="card-grid">
+  {% for s in sessions %}
+  <a href="/combat/{{ s.id }}" class="entity-card">
+    <div class="entity-card-body">
+      <span class="entity-kind">⚔ Round {{ s.round_num }}</span>
+      <h3>{{ s.name }}</h3>
+      <p>{{ combatant_counts.get(s.id, 0) }} combatant{{ 's' if combatant_counts.get(s.id, 0) != 1 }}</p>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p style="color:var(--text-dim);text-align:center;padding:2rem">No encounters yet. Name one above and hit "+ New Encounter".</p>
+{% endif %}
+{% endblock %}

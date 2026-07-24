@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Sessions — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="list-header">
+  <h1>📓 Sessions</h1>
+  <div class="list-actions">
+    <a href="/sessions/new" class="btn-new">+ New Session</a>
+  </div>
+</div>
+
+{% if sessions %}
+<div class="card-grid">
+  {% for s in sessions %}
+  <a href="/sessions/{{ s.id }}" class="entity-card">
+    <div class="entity-card-body">
+      <span class="entity-kind">📓 Session #{{ s.session_num }}</span>
+      <h3>{{ s.title }}</h3>
+      {% if s.session_date %}<p>{{ s.session_date }}</p>{% endif %}
+      {% if s.xp_awarded %}<p style="color:var(--text-dim);font-size:.78rem">{{ s.xp_awarded }} XP awarded</p>{% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p style="color:var(--text-dim);text-align:center;padding:2rem">No sessions logged yet. <a href="/sessions/new" style="color:var(--neon)">Log your first one</a>.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+{% block title %}{{ gsession.title if gsession else 'New Session' }} — Sessions{% endblock %}
+{% block content %}
+<div style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+    <h1 style="color:var(--neon);font-size:1.3rem;margin:0">{{ '📓 #' + gsession.session_num|string + ' ' + gsession.title if gsession else '+ New Session' }}</h1>
+    <a href="/sessions" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Sessions</a>
+  </div>
+
+  {% if request.query_params.get('saved') %}
+  <div style="background:#1a3a1a;border:1px solid #4f4;color:#4f4;padding:.6rem 1rem;border-radius:4px;margin-bottom:1rem;font-size:.85rem">Session saved.</div>
+  {% endif %}
+
+  <!-- Recap block (GM-editable now, natural split-point for a future player-facing view) -->
+  <form method="post" action="{% if gsession %}/sessions/{{ gsession.id }}/edit{% else %}/sessions/new{% endif %}">
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+      <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">Recap</h2>
+      <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:.75rem">
+        <div class="form-group">
+          <label>Title</label>
+          <input name="title" value="{{ gsession.title if gsession else '' }}" required/>
+        </div>
+        <div class="form-group">
+          <label>Session #</label>
+          <input type="number" name="session_num" value="{{ gsession.session_num if gsession else next_num }}"/>
+        </div>
+        <div class="form-group">
+          <label>Date</label>
+          <input name="session_date" value="{{ gsession.session_date if gsession and gsession.session_date else '' }}" placeholder="YYYY-MM-DD"/>
+        </div>
+      </div>
+      <div class="form-group" style="margin-top:.75rem">
+        <label>Party</label>
+        <select name="party_id">
+          <option value="">— none —</option>
+          {% for p in parties %}<option value="{{ p.id }}" {% if gsession and gsession.party_id == p.id %}selected{% endif %}>{{ p.name }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="form-group" style="margin-top:.75rem">
+        <label>Summary <small>(Markdown)</small></label>
+        <textarea name="summary" rows="8" style="font-family:var(--font);font-size:.85rem">{{ gsession.summary if gsession else '' }}</textarea>
+      </div>
+      {% if not gsession %}
+      <div class="form-group" style="margin-top:.75rem">
+        <label>XP Awarded (initial)</label>
+        <input type="number" name="xp_awarded" value="0"/>
+      </div>
+      {% endif %}
+      {% if gsession %}
+      <div class="form-group" style="margin-top:.75rem">
+        <label>NPCs Featured</label>
+        <div style="display:flex;flex-direction:column;gap:.2rem;max-height:160px;overflow-y:auto;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.5rem">
+          {% for e in all_entities %}
+          <label style="display:flex;align-items:center;gap:.5rem;font-size:.82rem">
+            <input type="checkbox" name="npc_entity_ids" value="{{ e.id }}" {% if e.id in (npcs|map(attribute='entity_id')|list) %}checked{% endif %} style="width:auto"/>
+            {{ e.name }}
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+    <div style="display:flex;gap:.75rem;justify-content:flex-end;margin-bottom:1.5rem">
+      <a href="/sessions" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Cancel</a>
+      {% if gsession %}
+      <a href="#" onclick="event.preventDefault(); if(confirm('Delete this session?')) document.getElementById('del-form').submit();"
+         style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Delete</a>
+      <form id="del-form" method="post" action="/sessions/{{ gsession.id }}/delete" style="display:none"></form>
+      {% endif %}
+      <button type="submit" style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Save</button>
+    </div>
+  </form>
+
+  {% if gsession %}
+  <!-- Prep checklist -->
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">✅ Prep Checklist</h2>
+    <div id="prep-list" style="display:flex;flex-direction:column;gap:.3rem;margin-bottom:.6rem"></div>
+    <div style="display:flex;gap:.4rem">
+      <input id="prep-input" placeholder="New prep task…" style="flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
+      <button type="button" id="prep-add-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem .9rem;font-size:.82rem;border-radius:3px;cursor:pointer">+ Add</button>
+    </div>
+  </div>
+
+  <!-- Loot -->
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">💰 Loot Given</h2>
+    <div id="loot-list" style="display:flex;flex-direction:column;gap:.4rem;margin-bottom:.6rem"></div>
+    <div style="display:flex;gap:.4rem;flex-wrap:wrap">
+      <input id="loot-name" placeholder="Item name" style="flex:1;min-width:120px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
+      <input id="loot-qty" type="number" value="1" min="1" style="width:60px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
+      <button type="button" id="loot-add-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem .9rem;font-size:.82rem;border-radius:3px;cursor:pointer">+ Add</button>
+    </div>
+    {% if not gsession.party_id %}<p style="color:var(--text-dim);font-size:.78rem;margin-top:.5rem;font-style:italic">Assign a party above to enable transferring loot to the party ledger.</p>{% endif %}
+  </div>
+
+  <!-- XP -->
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">⭐ XP</h2>
+    <p style="font-size:.85rem;margin:0 0 .6rem">Total awarded this session: <strong id="xp-total">{{ gsession.xp_awarded }}</strong></p>
+    {% if party_pcs %}
+    <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+      <input id="xp-delta" type="number" value="0" style="width:90px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
+      <button type="button" id="xp-award-btn" style="background:var(--neon);color:#000;border:none;padding:.4rem 1rem;font-size:.82rem;font-weight:bold;border-radius:3px;cursor:pointer">Award to Party ({{ party_pcs|map(attribute='name')|join(', ') }})</button>
+    </div>
+    {% else %}
+    <p style="color:var(--text-dim);font-size:.82rem;font-style:italic">Assign a party with members to award XP directly from here.</p>
+    {% endif %}
+  </div>
+
+  {% if linked_combats %}
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .75rem">⚔ Linked Combats</h2>
+    {% for c in linked_combats %}
+    <a href="/combat/{{ c.id }}" style="display:block;padding:.3rem 0;color:var(--text);font-size:.85rem;text-decoration:none">→ {{ c.name }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+
+<script>
+{% if gsession %}
+const SESSION_ID = {{ gsession.id }};
+let prep = {{ prep | tojson }};
+let loot = {{ loot | tojson }};
+
+function esc(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+function renderPrep() {
+  const list = document.getElementById('prep-list');
+  list.innerHTML = prep.length ? '' : '<p style="color:var(--text-dim);font-size:.82rem;font-style:italic">No prep tasks yet.</p>';
+  prep.forEach((item, i) => {
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex;align-items:center;gap:.5rem;font-size:.85rem;padding:.15rem 0';
+    row.innerHTML = `<input type="checkbox" ${item.done ? 'checked' : ''} data-i="${i}" style="width:auto"/>
+      <span style="${item.done ? 'text-decoration:line-through;color:var(--text-dim)' : ''}">${esc(item.task)}</span>
+      <button type="button" data-i="${i}" style="margin-left:auto;background:none;border:none;color:#c44;cursor:pointer">✕</button>`;
+    row.querySelector('input').addEventListener('change', () => togglePrep(i));
+    row.querySelector('button').addEventListener('click', () => deletePrep(i));
+    list.appendChild(row);
+  });
+}
+
+async function togglePrep(i) {
+  const res = await fetch('/api/sessions/' + SESSION_ID + '/prep/toggle', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ index: i }),
+  });
+  prep = (await res.json()).prep; renderPrep();
+}
+async function deletePrep(i) {
+  const res = await fetch('/api/sessions/' + SESSION_ID + '/prep/' + i + '/delete', { method: 'POST' });
+  prep = (await res.json()).prep; renderPrep();
+}
+document.getElementById('prep-add-btn').addEventListener('click', async () => {
+  const input = document.getElementById('prep-input');
+  const task = input.value.trim();
+  if (!task) return;
+  const res = await fetch('/api/sessions/' + SESSION_ID + '/prep/add', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ task }),
+  });
+  prep = (await res.json()).prep;
+  input.value = '';
+  renderPrep();
+});
+
+function renderLoot() {
+  const list = document.getElementById('loot-list');
+  list.innerHTML = loot.length ? '' : '<p style="color:var(--text-dim);font-size:.82rem;font-style:italic">No loot logged yet.</p>';
+  loot.forEach((item, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:.5rem;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.4rem .6rem;font-size:.85rem';
+    row.innerHTML = `<span style="flex:1">${esc(item.name)} <span style="color:var(--text-dim)">×${item.qty}</span></span>
+      {% if gsession.party_id %}<button type="button" data-i="${i}" data-action="transfer" style="background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:3px;padding:.1rem .5rem;font-size:.72rem;cursor:pointer">→ party</button>{% endif %}
+      <button type="button" data-i="${i}" data-action="remove" style="background:none;border:none;color:#c44;cursor:pointer">✕</button>`;
+    row.querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => lootAction(i, btn.dataset.action)));
+    list.appendChild(row);
+  });
+}
+
+async function lootAction(i, action) {
+  const res = await fetch('/api/sessions/' + SESSION_ID + '/loot/transfer', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ action: action === 'transfer' ? 'transfer' : 'remove', index: i }),
+  });
+  loot = (await res.json()).loot; renderLoot();
+}
+
+document.getElementById('loot-add-btn').addEventListener('click', async () => {
+  const name = document.getElementById('loot-name').value.trim();
+  if (!name) return;
+  const qty = parseInt(document.getElementById('loot-qty').value, 10) || 1;
+  const res = await fetch('/api/sessions/' + SESSION_ID + '/loot/transfer', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ action: 'add', name, qty }),
+  });
+  loot = (await res.json()).loot;
+  document.getElementById('loot-name').value = '';
+  document.getElementById('loot-qty').value = 1;
+  renderLoot();
+});
+
+const xpBtn = document.getElementById('xp-award-btn');
+if (xpBtn) {
+  xpBtn.addEventListener('click', async () => {
+    const delta = parseInt(document.getElementById('xp-delta').value, 10) || 0;
+    const res = await fetch('/api/sessions/' + SESSION_ID + '/xp', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ delta }),
+    });
+    const data = await res.json();
+    document.getElementById('xp-total').textContent = data.xp_awarded;
+  });
+}
+
+renderPrep();
+renderLoot();
+{% endif %}
+</script>
+{% endblock %}

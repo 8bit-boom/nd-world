@@ -79,7 +79,7 @@
 </section>
 {% endif %}
 
-{% if recent_boards or recent_schematics %}
+{% if recent_boards or recent_schematics or recent_sessions or active_quests %}
 <section class="dash-section">
   <h2 class="dash-heading">🛠 Recent Tools</h2>
   <div style="display:flex;gap:2rem;flex-wrap:wrap">
@@ -96,6 +96,22 @@
       <div class="tool-label">✏ Schematics</div>
       {% for s in recent_schematics %}
       <a href="/schematics/{{ s.slug }}" class="tool-item">{{ s.name }}<span class="tool-date">{{ s.updated_at.strftime('%b %d') if s.updated_at }}</span></a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if recent_sessions %}
+    <div>
+      <div class="tool-label">📓 Sessions</div>
+      {% for s in recent_sessions %}
+      <a href="/sessions/{{ s.id }}" class="tool-item">#{{ s.session_num }} {{ s.title }}<span class="tool-date">{{ s.updated_at.strftime('%b %d') if s.updated_at }}</span></a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if active_quests %}
+    <div>
+      <div class="tool-label">📜 Active Quests</div>
+      {% for q in active_quests %}
+      <a href="/quests/{{ q.id }}" class="tool-item">{{ q.title }}<span class="tool-date">{{ q.updated_at.strftime('%b %d') if q.updated_at }}</span></a>
       {% endfor %}
     </div>
     {% endif %}

@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if tbl else 'New' }} Table — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div style="max-width:760px;margin:0 auto;padding:1.5rem 1rem">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;flex-wrap:wrap;gap:.5rem">
+    <h1 style="color:var(--neon);font-size:1.3rem;margin:0">
+      {{ '✏ Edit Table' if tbl else '+ New Table' }}
+      {% if tbl and tbl.is_builtin %}<span style="font-size:.75rem;color:var(--text-dim);margin-left:.5rem">(built-in)</span>{% endif %}
+    </h1>
+    <a href="/tables" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Random Tables</a>
+  </div>
+
+  {% if request.query_params.get('saved') %}
+  <div style="background:#1a3a1a;border:1px solid #4f4;color:#4f4;padding:.6rem 1rem;border-radius:4px;margin-bottom:1rem;font-size:.85rem">
+    Table saved.
+  </div>
+  {% endif %}
+
+  <form method="post" id="tbl-form" action="{% if tbl %}/tables/{{ tbl.id }}/edit{% else %}/tables/new{% endif %}">
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+      <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">Table Info</h2>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+        <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;color:var(--text-dim)">
+          Name
+          <input name="name" value="{{ tbl.name if tbl else '' }}" placeholder="e.g. Random Encounter"
+                 {% if tbl and tbl.is_builtin %}readonly{% endif %}
+                 style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.45rem .65rem;font-family:var(--font);font-size:.85rem;border-radius:3px;{% if tbl and tbl.is_builtin %}opacity:.6{% endif %}"/>
+        </label>
+        <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;color:var(--text-dim)">
+          Category
+          <input name="category" value="{{ tbl.category if tbl else 'general' }}" placeholder="encounter, loot, npc, weather, location, general"
+                 {% if tbl and tbl.is_builtin %}readonly{% endif %}
+                 style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.45rem .65rem;font-family:var(--font);font-size:.85rem;border-radius:3px;{% if tbl and tbl.is_builtin %}opacity:.6{% endif %}"/>
+        </label>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;color:var(--text-dim);margin-top:.75rem">
+        Description
+        <input name="description" value="{{ tbl.description if tbl else '' }}" placeholder="Brief description"
+               {% if tbl and tbl.is_builtin %}readonly{% endif %}
+               style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.45rem .65rem;font-family:var(--font);font-size:.85rem;border-radius:3px;{% if tbl and tbl.is_builtin %}opacity:.6{% endif %}"/>
+      </label>
+    </div>
+
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.9rem;flex-wrap:wrap;gap:.5rem">
+        <h2 style="color:var(--neon);font-size:.95rem;margin:0">Entries</h2>
+        <button type="button" onclick="addEntry()" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.3rem .75rem;font-size:.78rem;border-radius:3px;cursor:pointer">+ Add Entry</button>
+      </div>
+      <div id="entries-list" style="display:flex;flex-direction:column;gap:.5rem;min-height:40px"></div>
+      <p id="no-entries-msg" style="color:var(--text-dim);font-size:.8rem;text-align:center;padding:.5rem;font-style:italic;display:none">No entries yet.</p>
+      <input type="hidden" name="entries_json" id="entries-json-input"/>
+    </div>
+
+    <div style="display:flex;gap:.75rem;justify-content:flex-end;flex-wrap:wrap">
+      <a href="/tables" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Cancel</a>
+      {% if tbl and not tbl.is_builtin %}
+      <a href="/tables/{{ tbl.id }}/delete"
+         onclick="event.preventDefault(); if(confirm('Delete this table?')) document.getElementById('del-form').submit();"
+         style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Delete</a>
+      <form id="del-form" method="post" action="/tables/{{ tbl.id }}/delete" style="display:none"></form>
+      {% endif %}
+      <button type="submit" style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Save Table</button>
+    </div>
+  </form>
+</div>
+
+<style>
+.entry-row {
+  display:grid;
+  grid-template-columns:1fr 90px 32px;
+  gap:.4rem;
+  align-items:center;
+  background:var(--bg3);
+  border:1px solid var(--border);
+  border-radius:4px;
+  padding:.5rem .65rem;
+}
+.entry-row input {
+  background:var(--bg2);
+  border:1px solid var(--border);
+  color:var(--text);
+  padding:.3rem .5rem;
+  font-family:var(--font);
+  font-size:.82rem;
+  border-radius:3px;
+  width:100%;
+}
+.entry-del { background:none; border:none; color:#c44; font-size:1.1rem; cursor:pointer; padding:0 .1rem; line-height:1; }
+</style>
+
+<script>
+const INIT_ENTRIES = {{ entries | tojson }};
+let _entries = JSON.parse(JSON.stringify(INIT_ENTRIES));
+
+function esc(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+function renderEntries() {
+  const list = document.getElementById('entries-list');
+  const msg = document.getElementById('no-entries-msg');
+  list.innerHTML = '';
+  if (_entries.length === 0) { msg.style.display = 'block'; syncHidden(); return; }
+  msg.style.display = 'none';
+  _entries.forEach((e, i) => {
+    const row = document.createElement('div');
+    row.className = 'entry-row';
+    row.innerHTML = `
+      <input type="text" placeholder="Result label" value="${esc(e.label||'')}" oninput="updateEntry(${i},'label',this.value)"/>
+      <input type="number" min="0" placeholder="Weight" value="${e.weight ?? 1}" oninput="updateEntry(${i},'weight',this.value)"/>
+      <button type="button" class="entry-del" onclick="removeEntry(${i})" title="Remove">✕</button>
+    `;
+    list.appendChild(row);
+  });
+  syncHidden();
+}
+
+function updateEntry(i, key, val) {
+  _entries[i][key] = key === 'weight' ? (parseInt(val, 10) || 0) : val;
+  syncHidden();
+}
+
+function removeEntry(i) { _entries.splice(i, 1); renderEntries(); }
+
+function addEntry() {
+  _entries.push({ label: '', weight: 1 });
+  renderEntries();
+  const inputs = document.querySelectorAll('#entries-list .entry-row input[type="text"]');
+  if (inputs.length) inputs[inputs.length - 1].focus();
+}
+
+function syncHidden() {
+  document.getElementById('entries-json-input').value = JSON.stringify(_entries);
+}
+
+document.getElementById('tbl-form').addEventListener('submit', syncHidden);
+
+renderEntries();
+</script>
+{% endblock %}

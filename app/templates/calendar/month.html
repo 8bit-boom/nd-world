@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Calendar — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div style="max-width:900px;margin:0 auto;padding:1.5rem 1rem">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+    <div>
+      <h1 style="color:var(--neon);font-size:1.3rem;margin:0">🗓 {{ era_name }}</h1>
+      <div style="color:var(--text-dim);font-size:.82rem;margin-top:.2rem">
+        Today: {{ months[cur_month_idx].name }} {{ cur_dom }}, Year {{ cur_year }} <span style="opacity:.6">(day {{ current_day }})</span>
+      </div>
+    </div>
+    <a href="/calendar/config" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">⚙ Configure</a>
+  </div>
+
+  {% if request.query_params.get('saved') %}
+  <div style="background:#1a3a1a;border:1px solid #4f4;color:#4f4;padding:.6rem 1rem;border-radius:4px;margin-bottom:1rem;font-size:.85rem">Calendar settings saved.</div>
+  {% endif %}
+
+  <div style="display:flex;gap:.6rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap">
+    <input id="advance-days" type="number" value="1" style="width:70px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
+    <button type="button" id="advance-btn" style="background:var(--neon);color:#000;border:none;padding:.45rem 1rem;font-size:.82rem;font-weight:bold;border-radius:3px;cursor:pointer">⏭ Advance Days</button>
+  </div>
+
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
+    <a href="/calendar?year={{ prev_year }}&month={{ prev_month }}" style="color:var(--text-dim);text-decoration:none;font-size:.85rem">← {{ months[prev_month].name }}</a>
+    <h2 style="color:var(--neon);font-size:1rem;margin:0">{{ month.name }}, Year {{ year }}</h2>
+    <a href="/calendar?year={{ next_year }}&month={{ next_month }}" style="color:var(--text-dim);text-decoration:none;font-size:.85rem">{{ months[next_month].name }} →</a>
+  </div>
+
+  <div class="cal-grid">
+    {% for d in days %}
+    <div class="cal-cell {% if d.is_current %}today{% endif %}" data-day="{{ d.day_num }}">
+      <div class="cal-daynum">{{ d.dom }}</div>
+      {% for e in d.events %}
+      <div class="cal-event" style="background:{{ e.color }}22;border-left:3px solid {{ e.color }}" title="{{ e.title }}{% if e.notes %} — {{ e.notes }}{% endif %}">{{ e.title }}</div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <div id="day-panel" style="display:none;margin-top:1rem;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem"></div>
+</div>
+
+<style>
+.cal-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(90px,1fr)); gap:.4rem; }
+.cal-cell { background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.4rem; min-height:60px; cursor:pointer; display:flex; flex-direction:column; gap:.2rem; }
+.cal-cell:hover { border-color:var(--neon); }
+.cal-cell.today { border-color:var(--neon); box-shadow:0 0 0 1px var(--neon); }
+.cal-daynum { font-size:.8rem; color:var(--text-dim); }
+.cal-cell.today .cal-daynum { color:var(--neon); font-weight:bold; }
+.cal-event { font-size:.68rem; padding:.1rem .3rem; border-radius:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+</style>
+
+<script>
+const ENTITIES = {{ entities | tojson }};
+const DAYS_DATA = {{ days | tojson }};
+function esc(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+document.querySelectorAll('.cal-cell').forEach(cell => {
+  cell.addEventListener('click', () => openDayPanel(parseInt(cell.dataset.day, 10)));
+});
+
+function openDayPanel(dayNum) {
+  const panel = document.getElementById('day-panel');
+  panel.style.display = 'block';
+  panel.innerHTML = `
+    <h3 style="color:var(--neon);font-size:.9rem;margin:0 0 .6rem">Day ${dayNum}</h3>
+    <div id="day-events" style="display:flex;flex-direction:column;gap:.3rem;margin-bottom:.75rem"></div>
+    <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+      <input id="ev-title" placeholder="Event title" style="flex:1;min-width:120px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
+      <select id="ev-entity" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
+        <option value="">— no linked entity —</option>
+        ${ENTITIES.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}
+      </select>
+      <input id="ev-color" type="color" value="#4488ff" style="width:40px;background:var(--bg3);border:1px solid var(--border);border-radius:3px"/>
+      <button type="button" id="ev-add-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem .9rem;font-size:.82rem;border-radius:3px;cursor:pointer">+ Add Event</button>
+    </div>
+  `;
+  renderDayEvents(dayNum);
+  document.getElementById('ev-add-btn').addEventListener('click', () => addEvent(dayNum));
+}
+
+function renderDayEvents(dayNum) {
+  const dayData = DAYS_DATA.find(d => d.day_num === dayNum);
+  const evs = dayData ? dayData.events : [];
+  const container = document.getElementById('day-events');
+  container.innerHTML = evs.length ? '' : '<p style="color:var(--text-dim);font-size:.8rem;font-style:italic">No events yet.</p>';
+  evs.forEach(e => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:.5rem;font-size:.82rem;background:var(--bg3);border-left:3px solid ' + e.color + ';padding:.3rem .5rem;border-radius:3px';
+    row.innerHTML = `<span style="flex:1">${esc(e.title)}${e.notes ? ' — <span style=\"color:var(--text-dim)\">'+esc(e.notes)+'</span>' : ''}</span>
+      <button type="button" style="background:none;border:none;color:#c44;cursor:pointer">✕</button>`;
+    row.querySelector('button').addEventListener('click', async () => {
+      await fetch('/api/calendar/events/' + e.id + '/delete', { method: 'POST' });
+      window.location.reload();
+    });
+    container.appendChild(row);
+  });
+}
+
+async function addEvent(dayNum) {
+  const title = document.getElementById('ev-title').value.trim();
+  if (!title) return;
+  const entity_id = document.getElementById('ev-entity').value || null;
+  const color = document.getElementById('ev-color').value;
+  await fetch('/api/calendar/events', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ day: dayNum, title, entity_id, color }),
+  });
+  window.location.reload();
+}
+
+document.getElementById('advance-btn').addEventListener('click', async () => {
+  const days = parseInt(document.getElementById('advance-days').value, 10) || 1;
+  await fetch('/api/calendar/advance', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ days }),
+  });
+  window.location.reload();
+});
+</script>
+{% endblock %}

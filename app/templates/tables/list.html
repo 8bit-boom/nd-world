@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Random Tables — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="list-header">
+  <h1>🎲 Random Tables</h1>
+  <div class="list-actions">
+    <a href="/tables/export" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;text-decoration:none">⬇ Export</a>
+    <form action="/tables/import" method="post" enctype="multipart/form-data" style="display:flex;align-items:center;gap:.4rem">
+      <input type="file" name="file" accept="application/json,.json" required style="font-size:.78rem;max-width:160px"/>
+      <button type="submit" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;cursor:pointer">Import</button>
+    </form>
+    <a href="/tables/new" class="btn-new">+ New Table</a>
+  </div>
+</div>
+
+{% if grouped %}
+{% for category, tables in grouped.items() %}
+<div class="folder-section-label">{{ category|capitalize }}</div>
+<div class="card-grid" style="margin-bottom:1.5rem">
+  {% for t in tables %}
+  <div class="entity-card" style="cursor:default">
+    <div class="entity-card-body">
+      <span class="entity-kind">🎲 {{ t.category }}{% if t.is_builtin %} · built-in{% endif %}</span>
+      <h3>{{ t.name }}</h3>
+      {% if t.description %}<p>{{ t.description }}</p>{% endif %}
+      <div style="display:flex;gap:.5rem;margin-top:.6rem;flex-wrap:wrap;align-items:center">
+        <button type="button" class="roll-btn" data-id="{{ t.id }}" style="background:var(--neon);color:#000;border:none;padding:.35rem .8rem;font-size:.8rem;font-weight:bold;border-radius:3px;cursor:pointer">🎲 Roll</button>
+        <a href="/tables/{{ t.id }}/edit" style="color:var(--text-dim);font-size:.8rem;text-decoration:none">Edit →</a>
+      </div>
+      <div class="roll-result" id="roll-result-{{ t.id }}" style="display:none;margin-top:.6rem;padding:.5rem .65rem;background:var(--bg3);border:1px solid var(--neon);border-radius:3px;font-size:.85rem"></div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endfor %}
+{% else %}
+<p style="color:var(--text-dim);text-align:center;padding:2rem">No random tables yet. <a href="/tables/new" style="color:var(--neon)">Create your first one</a>.</p>
+{% endif %}
+
+<script>
+document.querySelectorAll('.roll-btn').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const id = btn.dataset.id;
+    const out = document.getElementById('roll-result-' + id);
+    out.style.display = 'block';
+    out.textContent = 'Rolling…';
+    try {
+      const res = await fetch('/api/tables/' + id + '/roll', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) { out.textContent = data.detail || 'Error'; return; }
+      out.innerHTML = '<strong>' + data.result + '</strong> <span style="color:var(--text-dim)">(rolled ' + data.roll + '/' + data.total + ')</span>';
+    } catch (e) {
+      out.textContent = 'Error rolling table.';
+    }
+  });
+});
+</script>
+{% endblock %}

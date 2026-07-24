@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Parties — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="list-header">
+  <h1>🛡 Parties</h1>
+  <div class="list-actions">
+    <form method="post" action="/parties/new" style="display:flex;gap:.4rem;align-items:center">
+      <input name="name" placeholder="Party name…" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .65rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
+      <button type="submit" class="btn-new">+ New Party</button>
+    </form>
+  </div>
+</div>
+
+{% if parties %}
+<div class="card-grid">
+  {% for p in parties %}
+  <a href="/parties/{{ p.id }}" class="entity-card">
+    <div class="entity-card-body">
+      <span class="entity-kind">🛡 Party</span>
+      <h3>{{ p.name }}</h3>
+      <p>{{ member_counts.get(p.id, 0) }} member{{ 's' if member_counts.get(p.id, 0) != 1 }}</p>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<p style="color:var(--text-dim);text-align:center;padding:2rem">No parties yet. Name one above to get started.</p>
+{% endif %}
+{% endblock %}

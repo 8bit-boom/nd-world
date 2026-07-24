@@ -21,10 +21,16 @@ import io
 from pathlib import Path
 
 from .database import init_db, get_db, SessionLocal
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest
 from .routers.ai import router as ai_router
 from .routers.characters import router as characters_router
 from .routers.auth import router as auth_router
+from .routers.tables import router as tables_router
+from .routers.combat import router as combat_router
+from .routers.parties import router as parties_router
+from .routers.quests import router as quests_router
+from .routers.sessions import router as sessions_router
+from .routers.calendar import router as calendar_router
 from . import ai as _ai_module
 from . import auth as _auth
 from .constants import KINDS, SUBTYPES, KIND_ICONS
@@ -47,6 +53,12 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed)
 app.include_router(ai_router)
 app.include_router(characters_router)
 app.include_router(auth_router)
+app.include_router(tables_router)
+app.include_router(combat_router)
+app.include_router(parties_router)
+app.include_router(quests_router)
+app.include_router(sessions_router)
+app.include_router(calendar_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
@@ -820,12 +832,19 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
     recent_schematics = db.query(Schematic).filter(
         Schematic.world_id == world.id
     ).order_by(Schematic.updated_at.desc()).limit(3).all() if world else []
+    recent_sessions = db.query(GameSession).filter(
+        GameSession.world_id == world.id
+    ).order_by(GameSession.session_num.desc()).limit(3).all() if world else []
+    active_quests = db.query(Quest).filter(
+        Quest.world_id == world.id, Quest.status == "active"
+    ).order_by(Quest.updated_at.desc()).limit(3).all() if world else []
 
     return templates.TemplateResponse("index.html", {
         "request": request, "counts": counts, "recent": recent,
         "world": world, "worlds": worlds, "preview_maps": preview_maps,
         "most_linked": most_linked, "top_tags": top_tags,
         "recent_boards": recent_boards, "recent_schematics": recent_schematics,
+        "recent_sessions": recent_sessions, "active_quests": active_quests,
     })
 
 def _map_data(jf: Path) -> Optional[dict]:

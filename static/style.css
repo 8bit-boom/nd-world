@@ -913,6 +913,44 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
 .world-option.active { border-left-color: var(--w-accent, var(--neon)); color: var(--w-accent, var(--neon)); }
 .world-option.manage { color: var(--text-dim); border-top: 1px solid var(--border); margin-top: .2rem; }
 
+/* ── Tools switcher (Combat/Parties/Quests/Sessions/Calendar/Tables) ── */
+.tools-switcher { position: relative; display: inline-block; }
+.tools-btn {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: .3rem .6rem;
+  cursor: pointer;
+  font-family: var(--font);
+  font-size: .82rem;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.tools-btn:hover { border-color: var(--neon); color: var(--neon); }
+.tools-dropdown {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  min-width: 180px;
+  z-index: 200;
+  overflow: hidden;
+}
+.tools-switcher.open .tools-dropdown { display: block; }
+.tools-option {
+  display: block;
+  padding: .5rem .9rem;
+  font-size: .82rem;
+  color: var(--text);
+  text-decoration: none;
+  border-left: 3px solid transparent;
+}
+.tools-option:hover { background: var(--bg3); color: var(--neon); text-decoration: none; }
+.tools-option.active { border-left-color: var(--neon); color: var(--neon); }
+
 /* ── Worlds page ── */
 .worlds-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
 .world-card {

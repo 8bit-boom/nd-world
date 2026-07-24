@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}{{ quest.title if quest else 'New Quest' }} — Quests{% endblock %}
+{% block content %}
+<div style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+    <h1 style="color:var(--neon);font-size:1.3rem;margin:0">{{ '📜 ' + quest.title if quest else '+ New Quest' }}</h1>
+    <a href="/quests" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Quests</a>
+  </div>
+
+  {% if request.query_params.get('saved') %}
+  <div style="background:#1a3a1a;border:1px solid #4f4;color:#4f4;padding:.6rem 1rem;border-radius:4px;margin-bottom:1rem;font-size:.85rem">Quest saved.</div>
+  {% endif %}
+
+  {% if quest and quest.parent %}
+  <div style="margin-bottom:.75rem;font-size:.82rem">
+    <a href="/quests/{{ quest.parent.id }}" style="color:var(--text-dim)">↖ {{ quest.parent.title }}</a>
+  </div>
+  {% endif %}
+
+  <form method="post" action="{% if quest %}/quests/{{ quest.id }}/edit{% else %}/quests/new{% endif %}" id="quest-form">
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+      <div class="form-group" style="margin-bottom:.75rem">
+        <label>Title</label>
+        <input name="title" value="{{ quest.title if quest else '' }}" required/>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem">
+        <div class="form-group">
+          <label>Status</label>
+          <select name="status">
+            {% for s in statuses %}<option value="{{ s }}" {% if quest and quest.status == s %}selected{% endif %}>{{ s|capitalize }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Category</label>
+          <select name="category">
+            {% for c in categories %}<option value="{{ c }}" {% if quest and quest.category == c %}selected{% endif %}>{{ c|capitalize }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Assigned Party</label>
+          <select name="assigned_party_id">
+            <option value="">— none —</option>
+            {% for p in parties %}<option value="{{ p.id }}" {% if quest and quest.assigned_party_id == p.id %}selected{% endif %}>{{ p.name }}</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="form-group" style="margin-top:.75rem">
+        <label>Parent Quest <small>(makes this a sub-quest)</small></label>
+        <select name="parent_id">
+          <option value="">— none, top-level —</option>
+          {% for q in quests %}<option value="{{ q.id }}" {% if quest and quest.parent_id == q.id %}selected{% endif %}>{{ q.title }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="form-group" style="margin-top:.75rem">
+        <label>Summary</label>
+        <input name="summary" value="{{ quest.summary if quest else '' }}" placeholder="One-line summary"/>
+      </div>
+      <div class="form-group" style="margin-top:.75rem">
+        <label>Details <small>(Markdown)</small></label>
+        <textarea name="body" rows="10" style="font-family:var(--font);font-size:.85rem">{{ quest.body if quest else '' }}</textarea>
+      </div>
+    </div>
+
+    <!-- Linked entities -->
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.9rem">
+        <h2 style="color:var(--neon);font-size:.95rem;margin:0">Linked Entities</h2>
+        <button type="button" onclick="addLink()" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.3rem .75rem;font-size:.78rem;border-radius:3px;cursor:pointer">+ Add Link</button>
+      </div>
+      <div id="links-list" style="display:flex;flex-direction:column;gap:.4rem"></div>
+      <input type="hidden" name="linked_entities_json" id="links-json-input"/>
+      <datalist id="entity-options">
+        {% for e in entities %}<option value="{{ e.name }}" data-id="{{ e.id }}">{% endfor %}
+      </datalist>
+    </div>
+
+    <div style="display:flex;gap:.75rem;justify-content:flex-end;flex-wrap:wrap">
+      <a href="/quests" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Cancel</a>
+      {% if quest %}
+      <a href="#" onclick="event.preventDefault(); if(confirm('Delete this quest?')) document.getElementById('del-form').submit();"
+         style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Delete</a>
+      <form id="del-form" method="post" action="/quests/{{ quest.id }}/delete" style="display:none"></form>
+      {% endif %}
+      <button type="submit" style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Save Quest</button>
+    </div>
+  </form>
+
+  {% if quest and quest.sub_quests %}
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-top:1.5rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .75rem">Sub-Quests</h2>
+    {% for sq in quest.sub_quests %}
+    <a href="/quests/{{ sq.id }}" style="display:block;padding:.3rem 0;color:var(--text);font-size:.85rem;text-decoration:none">→ {{ sq.title }} <span style="color:var(--text-dim);font-size:.78rem">({{ sq.status }})</span></a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+<style>
+.link-row { display:grid; grid-template-columns:1fr 1fr 32px; gap:.4rem; align-items:center; background:var(--bg3); border:1px solid var(--border); border-radius:4px; padding:.5rem .65rem; }
+.link-row input { background:var(--bg2); border:1px solid var(--border); color:var(--text); padding:.3rem .5rem; font-family:var(--font); font-size:.8rem; border-radius:3px; width:100%; }
+.link-del { background:none; border:none; color:#c44; font-size:1.1rem; cursor:pointer; padding:0 .1rem; line-height:1; }
+</style>
+
+<script>
+const INIT_LINKS = {{ linked_entities | tojson }};
+const ENTITY_NAME_TO_ID = {};
+document.querySelectorAll('#entity-options option').forEach(o => { ENTITY_NAME_TO_ID[o.value] = parseInt(o.dataset.id, 10); });
+let _links = INIT_LINKS.map(l => ({ entity_id: l.entity.id, name: l.entity.name, role: l.role }));
+
+function esc(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+function renderLinks() {
+  const list = document.getElementById('links-list');
+  list.innerHTML = '';
+  _links.forEach((l, i) => {
+    const row = document.createElement('div');
+    row.className = 'link-row';
+    row.innerHTML = `
+      <input type="text" list="entity-options" placeholder="Entity name" value="${esc(l.name||'')}" oninput="updateLinkName(${i},this.value)"/>
+      <input type="text" placeholder="Role (e.g. quest giver, target)" value="${esc(l.role||'')}" oninput="updateLink(${i},'role',this.value)"/>
+      <button type="button" class="link-del" onclick="removeLink(${i})" title="Remove">✕</button>
+    `;
+    list.appendChild(row);
+  });
+  syncHidden();
+}
+
+function updateLinkName(i, val) {
+  _links[i].name = val;
+  _links[i].entity_id = ENTITY_NAME_TO_ID[val] || null;
+  syncHidden();
+}
+function updateLink(i, key, val) { _links[i][key] = val; syncHidden(); }
+function removeLink(i) { _links.splice(i, 1); renderLinks(); }
+function addLink() { _links.push({ entity_id: null, name: '', role: '' }); renderLinks(); }
+
+function syncHidden() {
+  document.getElementById('links-json-input').value = JSON.stringify(
+    _links.filter(l => l.entity_id).map(l => ({ entity_id: l.entity_id, role: l.role }))
+  );
+}
+
+document.getElementById('quest-form').addEventListener('submit', syncHidden);
+renderLinks();
+</script>
+{% endblock %}

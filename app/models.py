@@ -342,6 +342,130 @@ class InvestBoard(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+class RandomTable(Base):
+    """A weighted roll table (encounters, loot, NPCs, etc). world_id=NULL is a
+    global/built-in table available to every world, same pattern as
+    EntityTemplate/SheetTemplate."""
+    __tablename__ = "random_tables"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=True, index=True)
+    name = Column(String(256), nullable=False)
+    slug = Column(String(64), unique=True, nullable=False)
+    category = Column(String(64), default="general")
+    description = Column(Text, default="")
+    is_builtin = Column(Boolean, default=False)
+    entries_json = Column(Text, default="[]")  # [{label, weight}]
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CombatSession(Base):
+    """A live encounter: initiative order, HP/Shock/conditions per combatant."""
+    __tablename__ = "combat_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    name = Column(String(256), nullable=False)
+    # [{id, name, source:"pc"|"entity"|"manual", pc_id, entity_id, initiative,
+    #   max_hp, hp, max_shock, shock, armor, conditions:[str], notes}]
+    combatants_json = Column(Text, default="[]")
+    round_num = Column(Integer, default=1)
+    active_idx = Column(Integer, default=0)
+    game_session_id = Column(Integer, ForeignKey("game_sessions.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Party(Base):
+    """A named group of PlayerCharacters (and optionally GM-run companion
+    Entities) — shared loot ledger and a one-click launch into combat."""
+    __tablename__ = "parties"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    name = Column(String(256), nullable=False)
+    member_pc_ids_json = Column(Text, default="[]")      # [PlayerCharacter.id, ...]
+    member_entity_ids_json = Column(Text, default="[]")  # [Entity.id, ...] companions/hirelings
+    loot_json = Column(Text, default="[]")                # [{name, qty, notes}]
+    notes = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Quest(Base):
+    """A structured quest/plot log entry, with optional sub-quests, linked
+    lore entities, and an assigned party."""
+    __tablename__ = "quests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    title = Column(String(256), nullable=False)
+    status = Column(String(32), default="active")   # active/complete/failed/secret (freeform)
+    category = Column(String(32), default="main")   # main/side/personal (freeform)
+    summary = Column(String(512), default="")
+    body = Column(Text, default="")                  # markdown
+    linked_entities_json = Column(Text, default="[]")  # [{entity_id, role}]
+    parent_id = Column(Integer, ForeignKey("quests.id"), nullable=True, index=True)
+    assigned_party_id = Column(Integer, ForeignKey("parties.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    parent = relationship("Quest", remote_side=[id], backref="sub_quests")
+    party = relationship("Party")
+
+
+class GameSession(Base):
+    """A per-session prep/recap log: prep checklist, NPCs featured, loot
+    given, XP awarded. Named GameSession (not Session) to avoid colliding
+    with SQLAlchemy's own Session type used throughout the app."""
+    __tablename__ = "game_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    title = Column(String(256), nullable=False)
+    session_num = Column(Integer, default=1)
+    session_date = Column(String(32), nullable=True)
+    summary = Column(Text, default="")    # recap, markdown
+    prep_json = Column(Text, default="[]")   # [{task, done}]
+    npcs_json = Column(Text, default="[]")   # [{entity_id, name}]
+    loot_json = Column(Text, default="[]")   # [{name, qty, notes}]
+    xp_awarded = Column(Integer, default=0)
+    party_id = Column(Integer, ForeignKey("parties.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    party = relationship("Party")
+
+
+class WorldCalendar(Base):
+    """One custom in-world calendar per world — era name, current day, and
+    configurable month lengths. Lazily created on first /calendar visit."""
+    __tablename__ = "world_calendars"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, unique=True, index=True)
+    config_json = Column(Text, default="{}")  # {era_name, current_day, months:[{name,days}]}
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CalendarEvent(Base):
+    """A single pinned event on a world's calendar, optionally linked to a
+    lore Entity (e.g. an NPC's birthday, a holiday tied to a location)."""
+    __tablename__ = "calendar_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    day = Column(Integer, nullable=False)
+    title = Column(String(256), nullable=False)
+    notes = Column(Text, default="")
+    entity_id = Column(Integer, ForeignKey("entities.id"), nullable=True, index=True)
+    color = Column(String(16), default="#4488ff")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    entity = relationship("Entity")
+
+
 class Schematic(Base):
     __tablename__ = "schematics"
 

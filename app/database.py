@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from .models import (
     Base, World, Schematic, MapOverlay, InvestBoard, PlayerCharacter, SheetTemplate,
-    StarredImage, User, WorldMembership, InviteCode, EntityTemplate,
+    StarredImage, User, WorldMembership, InviteCode, EntityTemplate, RandomTable,
 )
 
 def _f(id, label, type="text", section="", default_value=""):
@@ -265,6 +265,30 @@ def _seed():
                 description="Quick combat stats — attack/defense pools, health, armor, speed, abilities. "
                              "Usable on characters, creatures, or anything else that fights.",
                 is_builtin=True, fields_json=json.dumps(_STAT_BLOCK_FIELDS),
+            ))
+        # Seed built-in random tables
+        if not db.query(RandomTable).filter(RandomTable.slug == "loot-rarity").first():
+            db.add(RandomTable(
+                world_id=None, name="Loot Rarity", slug="loot-rarity", category="loot",
+                description="Quick rarity roll for a found item.", is_builtin=True,
+                entries_json=json.dumps([
+                    {"label": "Common", "weight": 50},
+                    {"label": "Uncommon", "weight": 30},
+                    {"label": "Rare", "weight": 15},
+                    {"label": "Legendary", "weight": 5},
+                ]),
+            ))
+        if not db.query(RandomTable).filter(RandomTable.slug == "random-encounter").first():
+            db.add(RandomTable(
+                world_id=None, name="Random Encounter", slug="random-encounter", category="encounter",
+                description="Generic encounter-pressure roll while traveling or exploring.", is_builtin=True,
+                entries_json=json.dumps([
+                    {"label": "Nothing happens", "weight": 40},
+                    {"label": "Signs of danger ahead (tracks, wreckage, warnings)", "weight": 20},
+                    {"label": "Hostile encounter", "weight": 20},
+                    {"label": "Friendly or neutral encounter", "weight": 15},
+                    {"label": "Rare/notable event", "weight": 5},
+                ]),
             ))
         db.commit()
 
