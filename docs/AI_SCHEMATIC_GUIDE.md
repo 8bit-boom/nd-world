@@ -81,6 +81,46 @@ curl -s -b $COOKIE -X POST https://your-nd-world/maps/schematic/old-warehouse/el
   -d '{"elements": [ ... ]}'
 ```
 
+### Alternative: the general importer (`/import`)
+
+nd-world also has a general-purpose JSON importer (`/import` in the UI, but
+fully scriptable too) that can create the schematic *and* populate it in one
+call, instead of the two-step flow above:
+
+```bash
+# Optional: confirm how a JSON blob gets classified before importing it
+curl -s -b $COOKIE -X POST https://your-nd-world/api/import/detect \
+  -H "Content-Type: application/json" \
+  -d '{"json_text": "[{\"id\":\"r1\",\"type\":\"rect\",\"x\":0,\"y\":0,\"w\":100,\"h\":50}]"}'
+# → {"kind":"schematic_elements","summary":"1 schematic element(s)","count":1,"needs":["schematic_slug"]}
+
+# Create a brand-new schematic and populate it in one call:
+curl -s -b $COOKIE -X POST https://your-nd-world/api/import/execute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "json_text": "[{\"id\":\"r1\",\"type\":\"rect\",\"x\":0,\"y\":0,\"w\":100,\"h\":50}]",
+    "kind": "schematic_elements",
+    "params": {"schematic_slug":"__new__","new_schematic_name":"Old Warehouse","new_canvas_width":"1200","new_canvas_height":"900"}
+  }'
+# → {"ok":true,"redirect":"/maps/schematic/old-warehouse"}
+
+# Or target an EXISTING schematic instead of creating one:
+#   "params": {"schematic_slug":"old-warehouse"}
+```
+
+This is a genuine improvement over the raw `/elements` endpoint for one
+important reason: it **merges elements by `id`** into whatever's already on
+the schematic (a matching `id` gets replaced in place, a new `id` gets
+appended) instead of wholesale-replacing the array. That means it's safe to
+re-run the same import — unlike the raw endpoint, which requires you to
+fetch-and-merge yourself first (see "Editing an existing schematic" below)
+or you'll wipe out everything already there.
+
+Stick with the raw two-call API when you need `canvas_bg`/`canvas_width`
+control beyond the importer's basic new-schematic params, or when your data
+isn't a plain elements array (the importer only recognizes that one shape
+for this kind — see `docs/AI_ENTITY_GUIDE.md` for what else it recognizes).
+
 ---
 
 ## API reference

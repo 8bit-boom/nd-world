@@ -32,6 +32,64 @@ similar but are not interchangeable.
 
 ---
 
+## Alternative: the general importer (`/import`)
+
+Entities and field templates (not PlayerCharacters — see the limitation
+note below) can also go through nd-world's general JSON importer instead of
+the type-specific routes in the rest of this doc. Paste/POST raw JSON and it
+auto-detects what it is:
+
+```bash
+curl -s -b $COOKIE -X POST https://your-nd-world/api/import/detect \
+  -H "Content-Type: application/json" \
+  -d '{"json_text": "<your json, as a string>"}'
+# → {"kind": "...", "summary": "...", "count": N, "needs": [...]}
+
+curl -s -b $COOKIE -X POST https://your-nd-world/api/import/execute \
+  -H "Content-Type: application/json" \
+  -d '{"json_text": "<your json>", "kind": "<from detect, or override it>", "params": {...}}'
+# → {"ok": true, "redirect": "/entity/123"}
+```
+
+Detected kinds relevant to this doc, and what goes in `params`:
+
+| Your JSON | Detected `kind` | `params` needed |
+|---|---|---|
+| `{"kind":"creature","name":"...", ...}` | `entity_single` | none |
+| `[{"kind":..., "name":...}, ...]` | `entity_bulk` | none |
+| bare `[{"id","label","type"}, ...]`, or `{"fields":[...], ...}` | `field_template` | `template_kind` (`"entity"` or `"sheet"`), `name` (falls back to the JSON's own `name` if present), optionally `description`, `entity_kind` (entity templates only — restricts to one of the 8 kinds), `sheet_mode` (sheet templates only — `"nd"` or `"custom"`, default `"nd"`) |
+
+Two real advantages over the type-specific routes covered in the rest of
+this doc:
+
+1. **`template_id` doesn't have to be a real id.** For entity import, the
+   importer also accepts `template_slug` (matches `EntityTemplate.slug`) or
+   `template` (matches `EntityTemplate.name`, case-insensitive) as
+   alternatives to a numeric `template_id` — genuinely useful since an
+   AI-authored import file has no way to know this instance's actual
+   template ids ahead of time (verified: `"template_slug":"stat-block"`
+   correctly resolves to that built-in template's id). This lookup is
+   **only** in the importer — `POST /new` and `POST /entity/{id}/edit`
+   still require a literal numeric `template_id`.
+2. **Bulk entity import is all-or-nothing.** If any entity in an
+   `entity_bulk` array fails validation, the whole batch rolls back rather
+   than silently creating some and skipping others.
+
+`custom_fields_json` on an entity in the JSON can also just be spelled
+`custom_fields` — the importer accepts either key.
+
+**Limitation:** the importer has no `PlayerCharacter` detection case at
+all — §3/§4 below (character creation, sheet templates as applied *to* a
+character) still need the routes in this doc directly. It also always
+creates world-scoped (non-builtin) templates/entities in the active world —
+there's no way to import a global (`world_id: null`) template through it.
+
+Everything else — the field-type schema, `custom_fields_json` mapping, what
+`sheet_mode` means, etc. — is exactly as documented in the sections below;
+the importer just handles getting the JSON in, not the underlying shapes.
+
+---
+
 ## 1. Entities (lore content)
 
 ### Model fields (`Entity`, `app/models.py`)
