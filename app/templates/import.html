@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block title %}Import — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
+  <h1 style="color:var(--neon);font-size:1.3rem;margin:0 0 .3rem">📥 Import</h1>
+  <p style="color:var(--text-dim);font-size:.85rem;margin:0 0 1.25rem">
+    Paste or upload a JSON file. It'll figure out what kind of content it is —
+    schematic elements, entities, stat-block/sheet templates, random tables,
+    map markers, or world rules — and import it accordingly.
+  </p>
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem">
+      <label style="font-size:.82rem;color:var(--text-dim)">JSON content</label>
+      <input type="file" id="file-input" accept=".json,application/json" style="font-size:.78rem;max-width:220px"/>
+    </div>
+    <textarea id="json-input" rows="14" placeholder="Paste JSON here, or choose a file above…"
+      style="width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.6rem .75rem;font-family:monospace;font-size:.8rem;border-radius:3px"></textarea>
+    <div style="display:flex;gap:.75rem;margin-top:.75rem;align-items:center">
+      <button type="button" id="analyze-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem 1rem;font-size:.85rem;border-radius:3px;cursor:pointer">Analyze</button>
+      <span id="analyze-result" style="font-size:.85rem;color:var(--text-dim)"></span>
+    </div>
+  </div>
+
+  <div id="params-box" style="display:none;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.9rem;margin:0 0 .9rem">Details</h2>
+    <div id="params-fields" style="display:flex;flex-direction:column;gap:.75rem"></div>
+  </div>
+
+  <div style="display:flex;gap:.75rem;align-items:center">
+    <button type="button" id="import-btn" disabled style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer;opacity:.5">Import</button>
+    <span id="import-result" style="font-size:.85rem"></span>
+  </div>
+</div>
+
+<style>
+#params-fields label { display:flex; flex-direction:column; gap:.3rem; font-size:.82rem; color:var(--text-dim); }
+#params-fields input, #params-fields select, #params-fields textarea {
+  background:var(--bg3); border:1px solid var(--border); color:var(--text);
+  padding:.4rem .6rem; font-family:var(--font); font-size:.85rem; border-radius:3px;
+}
+</style>
+
+<script>
+const SCHEMATICS = {{ schematics_json | safe }};
+const MAPS = {{ maps_json | safe }};
+const KINDS = ["character","location","organization","creature","event","item","feat","note"];
+const NEEDS_BY_KIND = {
+  world_rules: [], map_overlay: ["map_slug"], schematic_elements: ["schematic_slug"],
+  random_table: [], field_template: ["template_kind","name"],
+  entity_bulk: [], entity_single: [],
+};
+const KIND_LABELS = {
+  world_rules: "World Rules", map_overlay: "Map Markers/Regions", schematic_elements: "Schematic Elements",
+  random_table: "Random Table(s)", field_template: "Field Template (stat block / sheet)",
+  entity_bulk: "Entities (multiple)", entity_single: "Entity (single)",
+};
+
+let lastDetected = null;
+let lastData = null;
+
+document.getElementById('file-input').addEventListener('change', (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = ev => { document.getElementById('json-input').value = ev.target.result; };
+  reader.readAsText(f);
+});
+
+document.getElementById('analyze-btn').addEventListener('click', async () => {
+  const jsonText = document.getElementById('json-input').value;
+  const resEl = document.getElementById('analyze-result');
+  let parsed;
+  try { parsed = JSON.parse(jsonText); } catch (e) {
+    resEl.textContent = 'Not valid JSON: ' + e.message;
+    disableImport();
+    return;
+  }
+  lastData = parsed;
+  const res = await fetch('/api/import/detect', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ json_text: jsonText }),
+  });
+  const detected = await res.json();
+  lastDetected = detected;
+  resEl.textContent = (KIND_LABELS[detected.kind] || detected.kind) + ' — ' + detected.summary;
+  renderParams(detected.kind, detected.needs || []);
+});
+
+function renderParams(kind, needs) {
+  const box = document.getElementById('params-box');
+  const fields = document.getElementById('params-fields');
+  fields.innerHTML = '';
+  const allNeeds = kind === 'unknown' ? ['forced_kind'] : needs;
+  if (allNeeds.length === 0) { box.style.display = 'none'; enableImport(); return; }
+  box.style.display = 'block';
+
+  allNeeds.forEach(need => {
+    if (need === 'forced_kind') {
+      fields.appendChild(buildLabel('What is this JSON?', buildSelect('forced_kind',
+        Object.keys(KIND_LABELS).map(k => [k, KIND_LABELS[k]]), '', (val) => {
+          renderParams(val, NEEDS_BY_KIND[val] || []);
+        })));
+    } else if (need === 'map_slug') {
+      fields.appendChild(buildLabel('Add markers to which map?', buildSelect('map_slug',
+        MAPS.map(m => [m.slug, m.name]))));
+    } else if (need === 'schematic_slug') {
+      const sel = buildSelect('schematic_slug',
+        [['__new__', '+ Create new schematic']].concat(SCHEMATICS.map(s => [s.slug, s.name])),
+        SCHEMATICS.length ? SCHEMATICS[0].slug : '__new__',
+        (val) => { document.getElementById('new-schematic-fields').style.display = val === '__new__' ? 'flex' : 'none'; });
+      fields.appendChild(buildLabel('Add elements to which schematic?', sel));
+      const newBox = document.createElement('div');
+      newBox.id = 'new-schematic-fields';
+      newBox.style.cssText = 'display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.3rem;' + (SCHEMATICS.length ? 'display:none' : '');
+      newBox.appendChild(buildLabel('New schematic name', buildInput('new_schematic_name', (lastData && lastData.name) || 'Imported Schematic')));
+      newBox.appendChild(buildLabel('Width', buildInput('new_canvas_width', '2000', 'number')));
+      newBox.appendChild(buildLabel('Height', buildInput('new_canvas_height', '1500', 'number')));
+      fields.appendChild(newBox);
+    } else if (need === 'template_kind') {
+      fields.appendChild(buildLabel('Import as', buildSelect('template_kind', [
+        ['entity', 'Entity Template (stat block / custom fields for lore entities)'],
+        ['sheet', 'Sheet Template (player character sheet)'],
+      ], 'entity', (val) => {
+        document.getElementById('entity-kind-field').style.display = val === 'entity' ? '' : 'none';
+        document.getElementById('sheet-mode-field').style.display = val === 'sheet' ? '' : 'none';
+      })));
+      const ek = document.createElement('div'); ek.id = 'entity-kind-field';
+      ek.appendChild(buildLabel('Restrict to kind (optional)', buildSelect('entity_kind',
+        [['', 'Any kind']].concat(KINDS.map(k => [k, k])))));
+      fields.appendChild(ek);
+      const sm = document.createElement('div'); sm.id = 'sheet-mode-field'; sm.style.display = 'none';
+      sm.appendChild(buildLabel('Sheet mode', buildSelect('sheet_mode', [
+        ['nd', 'nd (layered on the standard N&D sheet)'],
+        ['custom', 'custom (entirely separate system)'],
+      ])));
+      fields.appendChild(sm);
+    } else if (need === 'name') {
+      fields.appendChild(buildLabel('Template name', buildInput('name', (lastData && lastData.name) || '')));
+      fields.appendChild(buildLabel('Description (optional)', buildInput('description', (lastData && lastData.description) || '')));
+    }
+  });
+  enableImport();
+}
+
+function buildLabel(text, inputEl) {
+  const label = document.createElement('label');
+  const span = document.createElement('span');
+  span.textContent = text;
+  label.appendChild(span);
+  label.appendChild(inputEl);
+  return label;
+}
+function buildInput(name, value, type) {
+  const input = document.createElement('input');
+  input.type = type || 'text';
+  input.name = name;
+  input.value = value || '';
+  input.dataset.param = name;
+  return input;
+}
+function buildSelect(name, options, selected, onChange) {
+  const sel = document.createElement('select');
+  sel.name = name;
+  sel.dataset.param = name;
+  options.forEach(([val, label]) => {
+    const opt = document.createElement('option');
+    opt.value = val; opt.textContent = label;
+    if (val === selected) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  if (onChange) { sel.addEventListener('change', () => onChange(sel.value)); }
+  return sel;
+}
+
+function enableImport() {
+  const btn = document.getElementById('import-btn');
+  btn.disabled = false; btn.style.opacity = '1';
+}
+function disableImport() {
+  const btn = document.getElementById('import-btn');
+  btn.disabled = true; btn.style.opacity = '.5';
+}
+
+document.getElementById('import-btn').addEventListener('click', async () => {
+  const resEl = document.getElementById('import-result');
+  const jsonText = document.getElementById('json-input').value;
+  const params = {};
+  document.querySelectorAll('#params-fields [data-param]').forEach(el => { params[el.dataset.param] = el.value; });
+  const kind = params.forced_kind || (lastDetected && lastDetected.kind);
+  if (!kind || kind === 'unknown' || kind === 'invalid') {
+    resEl.style.color = '#c44'; resEl.textContent = 'Click Analyze first, and pick what this JSON is if it couldn\'t tell.';
+    return;
+  }
+  resEl.style.color = 'var(--text-dim)'; resEl.textContent = 'Importing…';
+  try {
+    const res = await fetch('/api/import/execute', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ json_text: jsonText, kind, params }),
+    });
+    const data = await res.json();
+    if (!res.ok) { resEl.style.color = '#c44'; resEl.textContent = data.detail || 'Import failed.'; return; }
+    resEl.style.color = '#4f4'; resEl.textContent = 'Imported! Redirecting…';
+    setTimeout(() => { window.location.href = data.redirect; }, 600);
+  } catch (e) {
+    resEl.style.color = '#c44'; resEl.textContent = 'Import failed: ' + e.message;
+  }
+});
+</script>
+{% endblock %}
