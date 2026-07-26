@@ -171,13 +171,19 @@
       <input type="color" id="tp-color" oninput="setTokenPropLive('color',this.value)" onchange="snapshot()"/>
       <label>Size</label>
       <input type="number" class="pnum" id="tp-size" min="6" max="120" oninput="setTokenPropLive('r',+this.value)" onchange="snapshot()"/>
-      <label>HP</label>
-      <input type="number" class="pnum" id="tp-hp" oninput="setTokenPropLive('hp',+this.value)" onchange="snapshot()"/>
-      <span style="opacity:.4">/</span>
-      <input type="number" class="pnum" id="tp-maxhp" oninput="setTokenPropLive('max_hp',+this.value)" onchange="snapshot()"/>
-      <label>Conditions</label>
-      <input type="text" id="tp-cond-input" placeholder="add + Enter…" style="width:100px" onkeydown="if(event.key==='Enter'){event.preventDefault();addTokenCondition(this.value);this.value='';}"/>
-      <span id="tp-conditions" style="display:flex;gap:.2rem;flex-wrap:wrap"></span>
+      <span id="tp-hp-group" style="display:flex;align-items:center;gap:.25rem">
+        <label>HP</label>
+        <input type="number" class="pnum" id="tp-hp" oninput="setTokenPropLive('hp',+this.value)" onchange="snapshot()"/>
+        <span style="opacity:.4">/</span>
+        <input type="number" class="pnum" id="tp-maxhp" oninput="setTokenPropLive('max_hp',+this.value)" onchange="snapshot()"/>
+        <label>Conditions</label>
+        <input type="text" id="tp-cond-input" placeholder="add + Enter…" style="width:100px" onkeydown="if(event.key==='Enter'){event.preventDefault();addTokenCondition(this.value);this.value='';}"/>
+        <span id="tp-conditions" style="display:flex;gap:.2rem;flex-wrap:wrap"></span>
+      </span>
+      <span id="tp-qty-group" style="display:none;align-items:center;gap:.25rem">
+        <label>Qty</label>
+        <input type="number" class="pnum" id="tp-qty" min="1" oninput="setTokenPropLive('qty',+this.value)" onchange="snapshot()"/>
+      </span>
       <button class="tb" style="color:var(--neon2);margin-left:.3rem" onclick="delSelected()">🗑</button>
     </div>
     <span id="status-xy" style="margin-left:auto;opacity:.35;font-size:.72rem;font-family:monospace"></span>
@@ -231,11 +237,12 @@
 
 <!-- ── Place token dialog ───────────────────────────────────────────────── -->
 <div id="token-dlg" class="dlg-back">
-  <div class="dlg-box" style="min-width:320px;max-width:400px">
+  <div class="dlg-box" style="min-width:320px;max-width:460px">
     <h3 style="margin:0 0 .6rem">Place Token</h3>
     <div style="display:flex;gap:.3rem;margin-bottom:.5rem">
       <button type="button" class="tb on" id="tk-tab-pc"     onclick="setTokenTab('pc')"     style="flex:1">Players</button>
-      <button type="button" class="tb"    id="tk-tab-entity" onclick="setTokenTab('entity')" style="flex:1">NPCs/Creatures</button>
+      <button type="button" class="tb"    id="tk-tab-entity" onclick="setTokenTab('entity')" style="flex:1">Creatures</button>
+      <button type="button" class="tb"    id="tk-tab-item"   onclick="setTokenTab('item')"   style="flex:1">Items</button>
       <button type="button" class="tb"    id="tk-tab-manual" onclick="setTokenTab('manual')" style="flex:1">Manual</button>
     </div>
     <div id="tk-pane-pc">
@@ -243,6 +250,16 @@
     </div>
     <div id="tk-pane-entity" style="display:none">
       <select id="tkdlg-entity-select" style="width:100%;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.18);border-radius:4px;padding:.4rem .6rem;color:inherit;font-size:.88rem;font-family:var(--font)"></select>
+    </div>
+    <div id="tk-pane-item" style="display:none">
+      <select id="tkdlg-item-select" style="width:100%;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.18);border-radius:4px;padding:.4rem .6rem;color:inherit;font-size:.88rem;font-family:var(--font)" onchange="onItemSelectChange()">
+        <option value="">— custom item (type below) —</option>
+      </select>
+      <input id="tkdlg-item-name" placeholder="Item name…" style="margin-top:.4rem"/>
+      <div style="display:flex;align-items:center;gap:.5rem;margin-top:.4rem">
+        <label style="font-size:.8rem;opacity:.6">Qty</label>
+        <input type="number" id="tkdlg-item-qty" value="1" min="1" class="pnum"/>
+      </div>
     </div>
     <div id="tk-pane-manual" style="display:none">
       <input id="tkdlg-manual-name" placeholder="Name…"/>
@@ -414,6 +431,7 @@ let gridType   = {{ grid_type | tojson }};
 let gridConfig = JSON.parse({{ grid_config_json | tojson }});
 const PC_PAYLOAD     = {{ pc_payload_json | safe }};
 const ENTITY_PAYLOAD = {{ entity_payload_json | safe }};
+const ITEM_PAYLOAD   = {{ item_payload_json | safe }};
 
 const svg        = document.getElementById('sch-svg');
 const partyLayer = document.getElementById('party-layer');
@@ -751,7 +769,8 @@ function makeElSVG(el) {
     }
     case 'token': {
       const r = el.r || 20;
-      const dead = el.max_hp > 0 && el.hp <= 0;
+      const isItem = el.source === 'item';
+      const dead = !isItem && el.max_hp > 0 && el.hp <= 0;
       const clipId = 'tk-clip-' + el.id;
       if (el.image_url) {
         const clip = svgEl('clipPath', { id: clipId });
@@ -761,7 +780,7 @@ function makeElSVG(el) {
           href:el.image_url, preserveAspectRatio:'xMidYMid slice', 'clip-path':`url(#${clipId})` }));
       } else {
         const t = svgEl('text', { x:el.x, y:el.y+r*0.35, 'text-anchor':'middle', 'font-size':r*1.1, 'pointer-events':'none' });
-        t.textContent = el.source === 'pc' ? '🧑' : (el.source === 'entity' ? '👹' : '❖');
+        t.textContent = isItem ? '📦' : (el.source === 'pc' ? '🧑' : (el.source === 'entity' ? '👹' : '❖'));
         g.appendChild(svgEl('circle', { cx:el.x, cy:el.y, r, fill:el.color||'#4488ff', opacity:0.35 }));
         g.appendChild(t);
       }
@@ -773,7 +792,14 @@ function makeElSVG(el) {
           style:'paint-order:stroke;stroke:#000;stroke-width:3px' });
         lt.textContent = el.name; g.appendChild(lt);
       }
-      if (el.max_hp) {
+      if (isItem) {
+        if (el.qty > 1) {
+          const qt = svgEl('text', { x:el.x, y:el.y+r+27, 'text-anchor':'middle', 'font-size':10,
+            'font-family':'monospace', fill:'#f0c040', 'pointer-events':'none',
+            style:'paint-order:stroke;stroke:#000;stroke-width:3px' });
+          qt.textContent = `×${el.qty}`; g.appendChild(qt);
+        }
+      } else if (el.max_hp) {
         const hpt = svgEl('text', { x:el.x, y:el.y+r+27, 'text-anchor':'middle', 'font-size':10,
           'font-family':'monospace', fill: dead ? '#ff6666' : '#9dffb0', 'pointer-events':'none',
           style:'paint-order:stroke;stroke:#000;stroke-width:3px' });
@@ -829,7 +855,8 @@ function updateElList() {
     d.className = 'el-item' + (selIds.has(el.id) ? ' sel' : '');
     const name = document.createElement('span');
     name.className = 'el-name';
-    name.textContent = `${ICONS[el.type]||'?'} ${el.label||el.text||el.name||el.type}`;
+    const icon = el.type === 'token' && el.source === 'item' ? '📦' : (ICONS[el.type] || '?');
+    name.textContent = `${icon} ${el.label||el.text||el.name||el.type}`;
     name.title = el.type + (el.label ? ': '+el.label : el.text ? ': '+el.text : '');
     name.addEventListener('click', e => {
       if (e.shiftKey) { selIds.has(el.id) ? selIds.delete(el.id) : selIds.add(el.id); }
@@ -1011,9 +1038,16 @@ function showTokenProps(show, el) {
   document.getElementById('tp-name').textContent = el.name || '(token)';
   document.getElementById('tp-color').value  = el.color || '#4488ff';
   document.getElementById('tp-size').value   = el.r ?? 20;
-  document.getElementById('tp-hp').value     = el.hp ?? 0;
-  document.getElementById('tp-maxhp').value  = el.max_hp ?? 0;
-  renderTokenConditions(el);
+  const isItem = el.source === 'item';
+  document.getElementById('tp-hp-group').style.display  = isItem ? 'none' : 'flex';
+  document.getElementById('tp-qty-group').style.display = isItem ? 'flex' : 'none';
+  if (isItem) {
+    document.getElementById('tp-qty').value = el.qty ?? 1;
+  } else {
+    document.getElementById('tp-hp').value     = el.hp ?? 0;
+    document.getElementById('tp-maxhp').value  = el.max_hp ?? 0;
+    renderTokenConditions(el);
+  }
 }
 function setTokenPropLive(k, v) {
   const el = primary(); if (!el || el.type !== 'token') return;
@@ -1475,10 +1509,15 @@ async function removePartyPin(partyId) {
 // ── Token placement dialog ────────────────────────────────────────────────────
 function setTokenTab(t) {
   tokenTab = t;
-  ['pc','entity','manual'].forEach(k => {
+  ['pc','entity','item','manual'].forEach(k => {
     document.getElementById('tk-tab-'+k).classList.toggle('on', k===t);
     document.getElementById('tk-pane-'+k).style.display = k===t ? '' : 'none';
   });
+}
+function onItemSelectChange() {
+  const id = parseInt(document.getElementById('tkdlg-item-select').value, 10);
+  const it = ITEM_PAYLOAD.find(x => x.id === id);
+  if (it) document.getElementById('tkdlg-item-name').value = it.name;
 }
 function openTokenDlg() {
   const pcSel = document.getElementById('tkdlg-pc-select');
@@ -1489,6 +1528,11 @@ function openTokenDlg() {
   enSel.innerHTML = ENTITY_PAYLOAD.map(en =>
     `<option value="${en.id}">${en.name} (${en.kind}, HP ${en.max_hp})</option>`
   ).join('') || '<option value="">No creatures/characters in this world</option>';
+  const itSel = document.getElementById('tkdlg-item-select');
+  itSel.innerHTML = '<option value="">— custom item (type below) —</option>' +
+    ITEM_PAYLOAD.map(it => `<option value="${it.id}">${it.name}</option>`).join('');
+  document.getElementById('tkdlg-item-name').value = '';
+  document.getElementById('tkdlg-item-qty').value = 1;
   document.getElementById('tkdlg-manual-name').value = '';
   setTokenTab('pc');
   showDlg('token-dlg');
@@ -1511,6 +1555,14 @@ function confirmTokenPlacement() {
     if (!en) { pendingTokenPt=null; return; }
     el = { ...base, source:'entity', pc_id:null, entity_id:en.id, name:en.name,
       color:'#e63946', hp:en.max_hp, max_hp:en.max_hp };
+  } else if (tokenTab === 'item') {
+    const id = parseInt(document.getElementById('tkdlg-item-select').value, 10);
+    const it = ITEM_PAYLOAD.find(x => x.id === id);
+    const name = (it ? it.name : document.getElementById('tkdlg-item-name').value.trim());
+    if (!name) { pendingTokenPt=null; return; }
+    const qty = Math.max(1, parseInt(document.getElementById('tkdlg-item-qty').value, 10) || 1);
+    el = { ...base, source:'item', pc_id:null, entity_id: it ? it.id : null, name,
+      color:'#f0c040', r:16, qty };
   } else {
     const name = document.getElementById('tkdlg-manual-name').value.trim();
     if (!name) { pendingTokenPt=null; return; }

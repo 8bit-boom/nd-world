@@ -1151,6 +1151,10 @@ def schematic_view(slug: str, request: Request, db: Session = Depends(get_db), a
     _BG = {"dark": "#111111", "blueprint": "#0d1b2a", "grid-light": "#1a1a2e", "light": "#f0f0f0"}
     canvas_bg_color = _BG.get(s.canvas_bg or "dark", "#111111")
     _, _, pc_payload, entity_payload = _combat_candidates(db, s.world_id)
+    item_entities = db.query(Entity).filter(
+        Entity.world_id == s.world_id, Entity.kind == "item"
+    ).order_by(Entity.name).all()
+    item_payload = [{"id": e.id, "name": e.name, "summary": e.summary or ""} for e in item_entities]
     return templates.TemplateResponse("schematic.html", {
         "request": request, "world": world, "worlds": worlds,
         "schematic": s, "elements_json": json.dumps(elements),
@@ -1161,6 +1165,7 @@ def schematic_view(slug: str, request: Request, db: Session = Depends(get_db), a
         "grid_config_json": s.grid_config_json or "{}",
         "pc_payload_json": json.dumps(pc_payload),
         "entity_payload_json": json.dumps(entity_payload),
+        "item_payload_json": json.dumps(item_payload),
     })
 
 @app.post("/maps/schematic/{slug}/grid")
