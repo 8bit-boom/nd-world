@@ -51,6 +51,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - [Project Structure](#project-structure)
 - [Ports Reference](#ports-reference)
 - [Troubleshooting](#troubleshooting)
+- [License](#license)
 
 ---
 
@@ -810,3 +811,21 @@ nd-world/
 **SwarmUI models directory is empty after restart (TrueNAS)**
 - Make sure the models bind mount is correct in `truenas-compose.yml`
 - The bind path must exist on the host before the container starts: `mkdir -p /mnt/DeadPool/apps/swarmui/models/Stable-Diffusion`
+
+---
+
+## License
+
+This repository uses two separate licenses:
+
+- **Application code** — [MIT](LICENSE). Use it, fork it, self-host it, build
+  on it, no restrictions.
+- **Game/lore content** (`lore/`, the core rules, Asterion's rules, the
+  races/professions/feats/equipment catalog, world maps, and schematics) —
+  [CC BY-NC-ND 4.0](LICENSE-CONTENT.md). Free to read and use at your own
+  table with attribution; no commercial use, no redistributing modified
+  versions. This content is planned for future commercial TTRPG book
+  releases for these settings.
+
+See [LICENSE](LICENSE) and [LICENSE-CONTENT.md](LICENSE-CONTENT.md) for the
+exact scope and full terms.

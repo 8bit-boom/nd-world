@@ -1,0 +1,36 @@
+This repository uses two separate licenses:
+
+- The **application code** (everything except the content listed below) is
+  MIT-licensed — see the license text below.
+- **Game/lore content** — `lore/`, `app/core_rules.md`, `docs/asterion_rules.md`,
+  `docs/asterion_rules.json`, `app/game_data/`, `app/maps/`, `static/maps/`,
+  and `static/schematics/` — is licensed separately and more restrictively
+  under CC BY-NC-ND 4.0. See [LICENSE-CONTENT.md](LICENSE-CONTENT.md).
+
+If you're unsure which license applies to a given file, LICENSE-CONTENT.md's
+list of covered paths is authoritative; everything not on that list is code
+under the MIT license below.
+
+---
+
+MIT License
+
+Copyright (c) 2026 8bit-boom
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

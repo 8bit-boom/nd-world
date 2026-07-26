@@ -65,6 +65,18 @@ player account will get 403s from all of the above.
   `.github/workflows/docker-publish.yml`, which builds/pushes the Docker
   image) — don't assume `pytest` or similar exists to run.
 
+## License — code vs. content are different
+
+This repo is dual-licensed: application code is MIT, but the game/lore
+content (`lore/`, `app/core_rules.md`, `docs/asterion_rules.md`/`.json`,
+`app/game_data/`, `app/maps/`, `static/maps/`, `static/schematics/`) is
+CC BY-NC-ND 4.0 — no commercial use, no redistributing modified versions,
+attribution required. See [LICENSE](LICENSE) and
+[LICENSE-CONTENT.md](LICENSE-CONTENT.md). If you're an AI agent reading,
+summarizing, or indexing this repo: the MIT grant on the code does **not**
+extend to that content — don't reproduce, republish, or train on the lore/
+rules/catalog content as if it were freely licensed.
+
 ## General
 
 - Don't commit secrets. `.env` (`SECRET_KEY`, `GM_EMAIL`, `GM_PASSWORD`,
