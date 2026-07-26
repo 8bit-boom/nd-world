@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -9,9 +10,10 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from ..constants import KINDS
+from ..constants import KINDS, ND_DEFAULT_CURRENCY, ND_DEFAULT_STATS
 from ..database import get_db
-from ..models import Entity, EntityTemplate, MapOverlay, RandomTable, Schematic, SheetTemplate, World
+from ..models import Entity, EntityTemplate, MapOverlay, PlayerCharacter, RandomTable, Schematic, SheetTemplate, World
+from .characters import _apply_form
 from .tables import _slugify as _table_slugify
 
 router = APIRouter()
@@ -76,11 +78,46 @@ def _looks_like_entity(d) -> bool:
     return isinstance(d, dict) and d.get("kind") in KINDS and isinstance(d.get("name"), str) and bool(d.get("name"))
 
 
+# Keys that only ever show up on a player character — used to tell a bare PC
+# object apart from an Entity (which always carries "kind") or any other blob
+# that merely happens to have a "name".
+PC_MARKER_KEYS = {
+    "player_name", "race", "race_id", "char_class", "profession_id", "level", "xp",
+    "max_hp", "current_hp", "shock_max", "shock_current", "pp_current", "mp_current",
+    "stats", "stats_json", "equipment", "equipment_json", "feats", "feats_json",
+    "attacks", "attacks_json", "cyberware", "cyberware_json", "conditions", "conditions_json",
+    "sheet_template_id", "backstory", "minor_edge", "major_edge",
+}
+
+
+def _looks_like_pc(d) -> bool:
+    return (
+        isinstance(d, dict) and "kind" not in d
+        and isinstance(d.get("name"), str) and bool(d.get("name"))
+        and any(k in d for k in PC_MARKER_KEYS)
+    )
+
+
+def _resolve_batch_item(item):
+    """An `imports` array entry is either an explicit {"kind","data","params"}
+    envelope (needed whenever that kind requires params, e.g. schematic_slug),
+    or a bare self-describing blob run through the normal auto-detection."""
+    if isinstance(item, dict) and "kind" in item and "data" in item:
+        return item.get("kind"), item.get("data"), item.get("params") or {}
+    return detect_kind(item)["kind"], item, {}
+
+
 def detect_kind(data) -> dict:
     """Best-effort sniff of what a parsed JSON blob is meant for. Returns
     {kind, summary, count, needs} — `needs` lists extra param keys the UI
     must collect before the import can run (e.g. which schematic to attach
     elements to)."""
+    if isinstance(data, dict) and isinstance(data.get("imports"), list) and data["imports"]:
+        items = data["imports"]
+        kinds = [_resolve_batch_item(it)[0] for it in items]
+        breakdown = ", ".join(f"{n} {k}" for k, n in Counter(kinds).most_common())
+        return {"kind": "batch", "summary": f"{len(items)} item(s): {breakdown}", "count": len(items), "needs": []}
+
     if isinstance(data, dict) and isinstance(data.get("rules_md"), str):
         return {"kind": "world_rules", "summary": "World rules document", "count": 1, "needs": []}
 
@@ -139,10 +176,45 @@ def detect_kind(data) -> dict:
     if _looks_like_entity(data):
         return {"kind": "entity_single", "summary": f'1 entity: "{data.get("name")}" ({data.get("kind")})', "count": 1, "needs": []}
 
+    if isinstance(data, list) and data and all(_looks_like_pc(e) for e in data):
+        return {"kind": "player_character_bulk", "summary": f"{len(data)} player character(s)", "count": len(data), "needs": []}
+    if _looks_like_pc(data):
+        return {"kind": "player_character", "summary": f'1 player character: "{data.get("name")}"', "count": 1, "needs": []}
+
     return {"kind": "unknown", "summary": "Couldn't tell what this JSON is meant for — pick manually below.", "count": 0, "needs": ["forced_kind"]}
 
 
 # ── Execution ────────────────────────────────────────────────────────────────
+
+_PC_JSON_ALIASES = {
+    "stats": "stats_json", "skills": "skills_json", "currency": "currency_json",
+    "equipment": "equipment_json", "feats": "feats_json", "attacks": "attacks_json",
+    "cyberware": "cyberware_json", "conditions": "conditions_json",
+    "custom_fields": "custom_fields_json",
+}
+
+
+def _normalize_pc_data(row: dict) -> dict:
+    """_apply_form is shared with the real character create/edit forms, so it
+    expects every *_json field pre-encoded as a JSON string (HTML forms only
+    ever send strings). Import JSON naturally carries these as real arrays/
+    objects, and may use friendlier names without the _json suffix — accept
+    both and coerce to what _apply_form needs. Missing stats/currency default
+    to the standard N&D starting spread so an import that only sets identity
+    fields still renders a usable sheet."""
+    out = dict(row)
+    for alias, field in _PC_JSON_ALIASES.items():
+        if field not in out and alias in out:
+            out[field] = out[alias]
+    for field in set(_PC_JSON_ALIASES.values()):
+        if field in out and not isinstance(out[field], str):
+            out[field] = json.dumps(out[field])
+    if "stats_json" not in out:
+        out["stats_json"] = json.dumps(ND_DEFAULT_STATS)
+    if "currency_json" not in out:
+        out["currency_json"] = json.dumps(ND_DEFAULT_CURRENCY)
+    return out
+
 
 def _resolve_entity_template(db: Session, world_id: int, ent: dict) -> Optional[int]:
     """Best-effort template lookup: template_id (int) > template_slug > template
@@ -325,7 +397,64 @@ def execute_import(db: Session, world: World, kind: str, data, params: dict):
         db.refresh(e)
         return True, f"/entity/{e.id}"
 
+    if kind == "player_character_bulk":
+        if not isinstance(data, list) or not data:
+            return False, 'Expected a non-empty array of player characters ({"name",...})'
+        last = None
+        for i, row in enumerate(data):
+            if not isinstance(row, dict) or not str(row.get("name") or "").strip():
+                db.rollback()
+                return False, f'Character #{i + 1}: needs at least a "name"'
+            pc = PlayerCharacter(world_id=world.id, owner_user_id=None)
+            _apply_form(pc, _normalize_pc_data(row))
+            if row.get("portrait_url"):
+                pc.portrait_url = str(row["portrait_url"]).strip()
+            db.add(pc)
+            last = pc
+        db.commit()
+        db.refresh(last)
+        return True, f"/characters/{last.id}" if len(data) == 1 else "/characters"
+
+    if kind == "player_character":
+        if not isinstance(data, dict) or not str(data.get("name") or "").strip():
+            return False, 'Expected an object with at least a "name"'
+        pc = PlayerCharacter(world_id=world.id, owner_user_id=None)
+        _apply_form(pc, _normalize_pc_data(data))
+        if data.get("portrait_url"):
+            pc.portrait_url = str(data["portrait_url"]).strip()
+        db.add(pc)
+        db.commit()
+        db.refresh(pc)
+        return True, f"/characters/{pc.id}"
+
     return False, f"Unrecognized kind: {kind}"
+
+
+def execute_batch_import(db: Session, world: World, items: list) -> list:
+    """Runs each item of an {"imports": [...]} envelope through the normal
+    single-kind execute_import, best-effort — a mixed batch touches several
+    tables and each kind branch above already commits on its own, so there's
+    no realistic way to make the whole batch atomic. Report per-item results
+    instead of all-or-nothing rollback."""
+    results = []
+    for i, item in enumerate(items):
+        kind, item_data, item_params = _resolve_batch_item(item)
+        if kind == "batch":
+            results.append({"index": i, "kind": "batch", "ok": False, "message": "Nested batches are not supported"})
+            continue
+        if kind in (None, "unknown", "invalid"):
+            results.append({
+                "index": i, "kind": kind or "unknown", "ok": False,
+                "message": 'Could not tell what this item is — use an explicit {"kind": ..., "data": ..., "params": {...}} wrapper',
+            })
+            continue
+        try:
+            ok, result = execute_import(db, world, kind, item_data, item_params)
+        except Exception as e:
+            db.rollback()
+            ok, result = False, str(e)
+        results.append({"index": i, "kind": kind, "ok": ok, "message": result})
+    return results
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -366,6 +495,14 @@ async def import_execute(request: Request, db: Session = Depends(get_db), active
         raise HTTPException(400, f"Not valid JSON: {e}")
     kind = body.get("kind") or detect_kind(data)["kind"]
     params = body.get("params") or {}
+
+    if kind == "batch":
+        items = data.get("imports") if isinstance(data, dict) else None
+        if not isinstance(items, list) or not items:
+            raise HTTPException(400, 'Expected {"imports": [...]}')
+        results = execute_batch_import(db, world, items)
+        return {"ok": True, "batch": True, "results": results}
+
     ok, result = execute_import(db, world, kind, data, params)
     if not ok:
         raise HTTPException(400, result)

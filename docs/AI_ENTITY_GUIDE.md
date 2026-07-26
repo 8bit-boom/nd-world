@@ -34,10 +34,9 @@ similar but are not interchangeable.
 
 ## Alternative: the general importer (`/import`)
 
-Entities and field templates (not PlayerCharacters — see the limitation
-note below) can also go through nd-world's general JSON importer instead of
-the type-specific routes in the rest of this doc. Paste/POST raw JSON and it
-auto-detects what it is:
+Entities, field templates, and player characters can also go through
+nd-world's general JSON importer instead of the type-specific routes in the
+rest of this doc. Paste/POST raw JSON and it auto-detects what it is:
 
 ```bash
 curl -s -b $COOKIE -X POST https://your-nd-world/api/import/detect \
@@ -58,6 +57,9 @@ Detected kinds relevant to this doc, and what goes in `params`:
 | `{"kind":"creature","name":"...", ...}` | `entity_single` | none |
 | `[{"kind":..., "name":...}, ...]` | `entity_bulk` | none |
 | bare `[{"id","label","type"}, ...]`, or `{"fields":[...], ...}` | `field_template` | `template_kind` (`"entity"` or `"sheet"`), `name` (falls back to the JSON's own `name` if present), optionally `description`, `entity_kind` (entity templates only — restricts to one of the 8 kinds), `sheet_mode` (sheet templates only — `"nd"` or `"custom"`, default `"nd"`) |
+| `{"name":"...", ...one of the §3 PC fields below...}` (no `"kind"` key) | `player_character` | none |
+| `[{"name":..., ...}, ...]` (no `"kind"` key on any item) | `player_character_bulk` | none |
+| `{"imports": [ ...items... ]}` | `batch` | none — see below |
 
 Two real advantages over the type-specific routes covered in the rest of
 this doc:
@@ -76,17 +78,95 @@ this doc:
    than silently creating some and skipping others.
 
 `custom_fields_json` on an entity in the JSON can also just be spelled
-`custom_fields` — the importer accepts either key.
+`custom_fields` — the importer accepts either key (and the same dual-spelling
+applies to every `*_json` field on a player character, see below).
 
-**Limitation:** the importer has no `PlayerCharacter` detection case at
-all — §3/§4 below (character creation, sheet templates as applied *to* a
-character) still need the routes in this doc directly. It also always
-creates world-scoped (non-builtin) templates/entities in the active world —
-there's no way to import a global (`world_id: null`) template through it.
+**Limitation:** it always creates world-scoped (non-builtin) templates/
+entities/characters in the active world — there's no way to import a global
+(`world_id: null`) template through it.
 
 Everything else — the field-type schema, `custom_fields_json` mapping, what
 `sheet_mode` means, etc. — is exactly as documented in the sections below;
 the importer just handles getting the JSON in, not the underlying shapes.
+
+### Importing player characters (`player_character` / `player_character_bulk`)
+
+Detection distinguishes a PC from an Entity purely by the absence of a
+`"kind"` key (Entities always have one) plus the presence of at least one
+PC-specific field (`race`, `char_class`, `level`, `stats`, `equipment`, etc.
+— anything from the §3 field list below). A bare `{"name": "..."}` with none
+of those is `unknown`, not silently guessed as a PC.
+
+The importer reuses the exact same `_apply_form()` as `POST /characters/new`
+— see §3 below for the full field contract (which fields exist, what
+`stats_json`/`equipment_json`/etc. actually mean). Two conveniences the raw
+route doesn't have:
+- Every `*_json` field (`stats_json`, `equipment_json`, `feats_json`,
+  `attacks_json`, `cyberware_json`, `conditions_json`, `custom_fields_json`,
+  `skills_json`, `currency_json`) can be given as a real JSON array/object
+  (not a JSON-encoded string) and/or under the shorter alias without the
+  `_json` suffix (`"stats"` instead of `"stats_json"`, etc.) — the importer
+  encodes it correctly either way.
+- If `stats_json`/`stats` is omitted entirely, it defaults to
+  `ND_DEFAULT_STATS` (the standard 8-stat N&D starting spread); same for
+  `currency_json`/`currency` → `ND_DEFAULT_CURRENCY`. Every other field
+  keeps the model's own default when omitted (e.g. `level` → `1`).
+- `portrait_url` sets the character's portrait directly from an image URL —
+  the raw `/characters/new` route only accepts an uploaded file, no URL field.
+
+Imported characters always get `owner_user_id: NULL` (GM-managed), exactly
+like a character the GM creates by hand through the wizard.
+
+```bash
+curl -s -b $COOKIE -X POST https://your-nd-world/api/import/execute \
+  -H "Content-Type: application/json" \
+  -d '{"json_text": "{\"name\":\"Nyx Kessler\",\"race\":\"Corp-Enhanced Human\",\"char_class\":\"Fixer\",\"level\":3,\"xp\":900,\"backstory\":\"Former corpo runner gone independent.\",\"stats\":[{\"id\":\"str\",\"label\":\"Strength\",\"abbr\":\"STR\",\"value\":4},{\"id\":\"dex\",\"label\":\"Dexterity\",\"abbr\":\"DEX\",\"value\":5}],\"equipment\":[{\"name\":\"Monoblade\",\"qty\":1,\"equipped\":true}]}", "kind": "player_character"}'
+# → {"ok": true, "redirect": "/characters/{new id}"}
+```
+
+### Importing several different kinds at once (`{"imports": [...]}`)
+
+Wrap multiple items — of any mix of kinds — in a top-level `imports` array
+and POST it as one call instead of one `/api/import/execute` round-trip per
+item:
+
+```json
+{
+  "imports": [
+    {"kind": "creature", "name": "Vault Wyrm", "summary": "..."},
+    {"name": "Loot Table", "entries": [{"label": "Credchip"}, {"label": "Nothing"}]},
+    {"name": "Nyx Kessler", "race": "Human", "char_class": "Fixer", "level": 3}
+  ]
+}
+```
+
+Each entry can be a **bare blob** — run through the same auto-detection as a
+standalone import (works for any kind whose `needs` list is empty: entities,
+tables, player characters) — or an **explicit envelope**
+`{"kind": "...", "data": {...}, "params": {...}}`, which is required for any
+kind that needs `params` (e.g. `schematic_elements` needs `schematic_slug`,
+`field_template` needs `template_kind`/`name`).
+
+`POST /api/import/execute` with a detected/forced `kind` of `"batch"`
+returns a different shape — no single `redirect`, since a mixed batch has no
+one sensible destination:
+
+```json
+{"ok": true, "batch": true, "results": [
+  {"index": 0, "kind": "entity_single", "ok": true, "message": "/entity/42"},
+  {"index": 1, "kind": "random_table", "ok": true, "message": "/tables"},
+  {"index": 2, "kind": "player_character", "ok": true, "message": "/characters/7"}
+]}
+```
+
+`message` is the redirect path on success, or an error string on failure.
+This always returns HTTP 200 (not 400) as long as the `imports` array itself
+is well-formed — **each item is applied best-effort and independently**, so
+one bad item doesn't block the rest. This is a deliberate difference from
+`entity_bulk`'s all-or-nothing rollback: a batch spans multiple unrelated
+tables that each already commit on their own as they're written, so there's
+no realistic way to make the whole thing atomic. Nested `{"imports": [...]}`
+inside a batch item is rejected (reported as a failed item, not a crash).
 
 ---
 

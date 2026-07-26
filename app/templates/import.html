@@ -5,8 +5,11 @@
   <h1 style="color:var(--neon);font-size:1.3rem;margin:0 0 .3rem">📥 Import</h1>
   <p style="color:var(--text-dim);font-size:.85rem;margin:0 0 1.25rem">
     Paste or upload a JSON file. It'll figure out what kind of content it is —
-    schematic elements, entities, stat-block/sheet templates, random tables,
-    map markers, or world rules — and import it accordingly.
+    schematic elements, entities, player characters, stat-block/sheet templates,
+    random tables, map markers, or world rules — and import it accordingly.
+    To import several different kinds of things at once, wrap them in
+    <code>{"imports": [...]}</code> — each entry can be a bare blob (auto-detected)
+    or an explicit <code>{"kind","data","params"}</code> for kinds that need extra details.
   </p>
 
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
@@ -49,11 +52,15 @@ const NEEDS_BY_KIND = {
   world_rules: [], map_overlay: ["map_slug"], schematic_elements: ["schematic_slug"],
   random_table: [], field_template: ["template_kind","name"],
   entity_bulk: [], entity_single: [],
+  player_character_bulk: [], player_character: [],
+  batch: [],
 };
 const KIND_LABELS = {
   world_rules: "World Rules", map_overlay: "Map Markers/Regions", schematic_elements: "Schematic Elements",
   random_table: "Random Table(s)", field_template: "Field Template (stat block / sheet)",
   entity_bulk: "Entities (multiple)", entity_single: "Entity (single)",
+  player_character_bulk: "Player Characters (multiple)", player_character: "Player Character (single)",
+  batch: "Mixed batch (multiple kinds)",
 };
 
 let lastDetected = null;
@@ -200,6 +207,21 @@ document.getElementById('import-btn').addEventListener('click', async () => {
     });
     const data = await res.json();
     if (!res.ok) { resEl.style.color = '#c44'; resEl.textContent = data.detail || 'Import failed.'; return; }
+    if (data.batch) {
+      const okCount = data.results.filter(r => r.ok).length;
+      resEl.style.color = okCount === data.results.length ? '#4f4' : '#e8a94a';
+      resEl.textContent = `${okCount}/${data.results.length} imported.`;
+      const list = document.createElement('ul');
+      list.style.cssText = 'margin:.5rem 0 0 1.2rem;padding:0';
+      data.results.forEach(r => {
+        const li = document.createElement('li');
+        li.style.color = r.ok ? '#4f4' : '#c44';
+        li.textContent = `#${r.index + 1} ${KIND_LABELS[r.kind] || r.kind}: ${r.ok ? 'ok' : r.message}`;
+        list.appendChild(li);
+      });
+      resEl.appendChild(list);
+      return;
+    }
     resEl.style.color = '#4f4'; resEl.textContent = 'Imported! Redirecting…';
     setTimeout(() => { window.location.href = data.redirect; }, 600);
   } catch (e) {
