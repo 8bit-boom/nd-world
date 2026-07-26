@@ -27,6 +27,7 @@ from .routers.characters import router as characters_router
 from .routers.auth import router as auth_router
 from .routers.tables import router as tables_router
 from .routers.combat import router as combat_router
+from .routers.combat import _candidates as _combat_candidates
 from .routers.parties import router as parties_router
 from .routers.quests import router as quests_router
 from .routers.sessions import router as sessions_router
@@ -1149,13 +1150,31 @@ def schematic_view(slug: str, request: Request, db: Session = Depends(get_db), a
     elements = json.loads(s.elements_json or "[]")
     _BG = {"dark": "#111111", "blueprint": "#0d1b2a", "grid-light": "#1a1a2e", "light": "#f0f0f0"}
     canvas_bg_color = _BG.get(s.canvas_bg or "dark", "#111111")
+    _, _, pc_payload, entity_payload = _combat_candidates(db, s.world_id)
     return templates.TemplateResponse("schematic.html", {
         "request": request, "world": world, "worlds": worlds,
         "schematic": s, "elements_json": json.dumps(elements),
         "canvas_bg_color": canvas_bg_color,
         "world_parties_json": json.dumps(_world_parties_payload(db, s.world_id)),
         "party_pins_json": json.dumps(_party_pins_for(db, s.world_id, "schematic", slug)),
+        "grid_type": s.grid_type or "none",
+        "grid_config_json": s.grid_config_json or "{}",
+        "pc_payload_json": json.dumps(pc_payload),
+        "entity_payload_json": json.dumps(entity_payload),
     })
+
+@app.post("/maps/schematic/{slug}/grid")
+async def schematic_save_grid(slug: str, request: Request, db: Session = Depends(get_db)):
+    s = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not s:
+        raise HTTPException(404)
+    body = await request.json()
+    grid_type = body.get("grid_type") if body.get("grid_type") in ("none", "hex", "square") else "none"
+    config = body.get("config") if isinstance(body.get("config"), dict) else {}
+    s.grid_type = grid_type
+    s.grid_config_json = json.dumps(config)
+    db.commit()
+    return {"ok": True}
 
 @app.post("/maps/schematic/{slug}/elements")
 async def schematic_save_elements(slug: str, request: Request, db: Session = Depends(get_db)):

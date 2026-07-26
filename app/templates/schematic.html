@@ -18,6 +18,7 @@
     <button class="tb"    id="t-text"    onclick="setTool('text')"    title="Text · T">T</button>
     <button class="tb"    id="t-pin"     onclick="setTool('pin')"     title="Pin · N">📍</button>
     <button class="tb"    id="t-party"   onclick="setTool('party')"   title="Place Party">🧑‍🤝‍🧑</button>
+    <button class="tb"    id="t-token"   onclick="setTool('token')"   title="Token (PC/creature/NPC) · G">🧙</button>
     <button class="tb"    id="t-pencil"  onclick="setTool('pencil')"  title="Pencil · K">✏</button>
     <button class="tb"    id="t-measure" onclick="setTool('measure')" title="Measure · M">📏</button>
     <button class="tb"    id="t-image"   onclick="pickImage()"        title="Embed image · I">🖼</button>
@@ -27,6 +28,8 @@
     <label class="tb-check"><input type="checkbox" id="cb-grid"   onchange="setGrid()"/> Grid</label>
     <label class="tb-check"><input type="checkbox" id="cb-snap"   checked/> Snap</label>
     <label class="tb-check"><input type="checkbox" id="cb-guides" checked/> Guides</label>
+    <div class="tb-sep"></div>
+    <button class="tb" id="battle-grid-btn" onclick="openGridDlg()" title="Battle grid setup (hex/square)">⬡ Battle Grid</button>
     <div class="tb-sep"></div>
     <button class="tb" onclick="doZoom(1.2)">＋</button>
     <button class="tb" onclick="fitZoom()" title="Fit · F">⊡ Fit</button>
@@ -99,11 +102,13 @@
         <rect id="bg" width="100%" height="100%" fill="{{ canvas_bg_color }}"/>
         <rect id="grid-layer" width="100%" height="100%" fill="url(#major-grid)" display="none" pointer-events="none"/>
         <g id="el-layer"></g>
+        <g id="battle-grid-layer" pointer-events="none"></g>
         <g id="prev-layer" pointer-events="none"></g>
         <rect id="hit" width="100%" height="100%" fill="transparent"/>
         <g id="sel-layer"   pointer-events="none"></g>
         <g id="guide-layer" pointer-events="none"></g>
         <g id="party-layer"></g>
+        <g id="token-layer"></g>
       </svg>
     </div>
 
@@ -160,6 +165,21 @@
       <span id="p-pos" style="opacity:.4;font-size:.72rem;margin-left:.3rem"></span>
       <button class="tb" style="color:var(--neon2);margin-left:.3rem" onclick="delSelected()">🗑</button>
     </div>
+    <div id="prop-row-token" style="display:none">
+      <span id="tp-name" style="font-size:.8rem;font-weight:bold;color:var(--neon,#00f0ff);margin-right:.3rem"></span>
+      <label>Color</label>
+      <input type="color" id="tp-color" oninput="setTokenPropLive('color',this.value)" onchange="snapshot()"/>
+      <label>Size</label>
+      <input type="number" class="pnum" id="tp-size" min="6" max="120" oninput="setTokenPropLive('r',+this.value)" onchange="snapshot()"/>
+      <label>HP</label>
+      <input type="number" class="pnum" id="tp-hp" oninput="setTokenPropLive('hp',+this.value)" onchange="snapshot()"/>
+      <span style="opacity:.4">/</span>
+      <input type="number" class="pnum" id="tp-maxhp" oninput="setTokenPropLive('max_hp',+this.value)" onchange="snapshot()"/>
+      <label>Conditions</label>
+      <input type="text" id="tp-cond-input" placeholder="add + Enter…" style="width:100px" onkeydown="if(event.key==='Enter'){event.preventDefault();addTokenCondition(this.value);this.value='';}"/>
+      <span id="tp-conditions" style="display:flex;gap:.2rem;flex-wrap:wrap"></span>
+      <button class="tb" style="color:var(--neon2);margin-left:.3rem" onclick="delSelected()">🗑</button>
+    </div>
     <span id="status-xy" style="margin-left:auto;opacity:.35;font-size:.72rem;font-family:monospace"></span>
   </div>
 </div>
@@ -205,6 +225,76 @@
     <div style="display:flex;gap:.5rem;margin-top:.8rem">
       <button class="btn-primary" onclick="confirmPartyPlacement()">Place Here</button>
       <button class="btn-cancel"  onclick="hideDlg('party-dlg')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Place token dialog ───────────────────────────────────────────────── -->
+<div id="token-dlg" class="dlg-back">
+  <div class="dlg-box" style="min-width:320px;max-width:400px">
+    <h3 style="margin:0 0 .6rem">Place Token</h3>
+    <div style="display:flex;gap:.3rem;margin-bottom:.5rem">
+      <button type="button" class="tb on" id="tk-tab-pc"     onclick="setTokenTab('pc')"     style="flex:1">Players</button>
+      <button type="button" class="tb"    id="tk-tab-entity" onclick="setTokenTab('entity')" style="flex:1">NPCs/Creatures</button>
+      <button type="button" class="tb"    id="tk-tab-manual" onclick="setTokenTab('manual')" style="flex:1">Manual</button>
+    </div>
+    <div id="tk-pane-pc">
+      <select id="tkdlg-pc-select" style="width:100%;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.18);border-radius:4px;padding:.4rem .6rem;color:inherit;font-size:.88rem;font-family:var(--font)"></select>
+    </div>
+    <div id="tk-pane-entity" style="display:none">
+      <select id="tkdlg-entity-select" style="width:100%;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.18);border-radius:4px;padding:.4rem .6rem;color:inherit;font-size:.88rem;font-family:var(--font)"></select>
+    </div>
+    <div id="tk-pane-manual" style="display:none">
+      <input id="tkdlg-manual-name" placeholder="Name…"/>
+      <div style="display:flex;align-items:center;gap:.5rem;margin-top:.4rem">
+        <label style="font-size:.8rem;opacity:.6">Color</label>
+        <input type="color" id="tkdlg-manual-color" value="#e63946"/>
+        <label style="font-size:.8rem;opacity:.6">HP</label>
+        <input type="number" id="tkdlg-manual-hp" value="10" min="0" class="pnum"/>
+      </div>
+    </div>
+    <div style="display:flex;gap:.5rem;margin-top:.8rem">
+      <button class="btn-primary" onclick="confirmTokenPlacement()">Place Here</button>
+      <button class="btn-cancel"  onclick="hideDlg('token-dlg')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Battle grid setup dialog ─────────────────────────────────────────── -->
+<div id="grid-dlg" class="dlg-back">
+  <div class="dlg-box">
+    <h3 style="margin:0 0 .6rem">Battle Grid</h3>
+    <label style="font-size:.8rem;opacity:.6">Type</label>
+    <select id="gdlg-type" style="width:100%;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.18);border-radius:4px;padding:.4rem .6rem;color:inherit;font-size:.88rem;font-family:var(--font)" onchange="onGridDlgChange()">
+      <option value="none">None</option>
+      <option value="hex">Hex (Game of Gods)</option>
+      <option value="square">Square</option>
+    </select>
+    <div id="gdlg-hex-orientation" style="display:none;margin-top:.4rem">
+      <label style="font-size:.8rem;opacity:.6">Orientation</label>
+      <select id="gdlg-orientation" style="width:100%;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.18);border-radius:4px;padding:.4rem .6rem;color:inherit;font-size:.88rem;font-family:var(--font)" onchange="onGridDlgChange()">
+        <option value="pointy">Pointy-top</option>
+        <option value="flat">Flat-top</option>
+      </select>
+    </div>
+    <div style="display:flex;align-items:center;gap:.5rem;margin-top:.5rem">
+      <label style="font-size:.8rem;opacity:.6">Cell size (px)</label>
+      <input type="number" id="gdlg-size" value="50" min="5" max="1000" class="pnum" oninput="onGridDlgChange()"/>
+    </div>
+    <div style="display:flex;align-items:center;gap:.5rem;margin-top:.4rem">
+      <label style="font-size:.8rem;opacity:.6">Offset X</label>
+      <input type="number" id="gdlg-ox" value="0" class="pnum" oninput="onGridDlgChange()"/>
+      <label style="font-size:.8rem;opacity:.6">Y</label>
+      <input type="number" id="gdlg-oy" value="0" class="pnum" oninput="onGridDlgChange()"/>
+    </div>
+    <p style="font-size:.75rem;opacity:.55;margin:.6rem 0 0">
+      Upload your map image with 🖼 Embed Image first, resize it to fit the canvas,
+      then adjust cell size/offset here until the grid lines up with the art.
+      Changes preview live; click Save to keep them.
+    </p>
+    <div style="display:flex;gap:.5rem;margin-top:.8rem">
+      <button class="btn-primary" onclick="saveGridConfig()">Save</button>
+      <button class="btn-cancel"  onclick="cancelGridDlg()">Cancel</button>
     </div>
   </div>
 </div>
@@ -292,7 +382,7 @@
   background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.18);
   border-radius:3px; padding:.15rem .35rem; color:inherit; font-size:.76rem; font-family:var(--font);
 }
-#prop-row { display:flex; align-items:center; gap:.25rem; flex-wrap:wrap; }
+#prop-row, #prop-row-token { display:flex; align-items:center; gap:.25rem; flex-wrap:wrap; }
 
 #ctx-menu {
   display:none; position:fixed; z-index:9999;
@@ -320,9 +410,15 @@ const CH   = {{ schematic.canvas_height or 1500 }};
 let elements = JSON.parse({{ elements_json | tojson }});
 const WORLD_PARTIES = {{ world_parties_json | safe }};
 let partyPins = {{ party_pins_json | safe }};
+let gridType   = {{ grid_type | tojson }};
+let gridConfig = JSON.parse({{ grid_config_json | tojson }});
+const PC_PAYLOAD     = {{ pc_payload_json | safe }};
+const ENTITY_PAYLOAD = {{ entity_payload_json | safe }};
 
 const svg        = document.getElementById('sch-svg');
 const partyLayer = document.getElementById('party-layer');
+const battleGridLayer = document.getElementById('battle-grid-layer');
+const tokenLayer = document.getElementById('token-layer');
 const elLayer    = document.getElementById('el-layer');
 const prevLayer  = document.getElementById('prev-layer');
 const selLayer   = document.getElementById('sel-layer');
@@ -348,6 +444,8 @@ let stampSpec = null;               // currently active stamp template
 let wpDrag    = null;               // {elId, idx} for waypoint drag
 let activeWpHandle = null;          // {elId, idx} for waypoint delete
 let pendingPartyPt = null;          // {x,y} awaiting party-placement dialog confirm
+let pendingTokenPt = null;          // {x,y} awaiting token-placement dialog confirm
+let tokenTab = 'pc';                // active tab in the token placement dialog
 
 let clipboard = [];
 
@@ -394,6 +492,82 @@ function svgXY(e) {
 function svgXYRaw(e) {
   const r = svg.getBoundingClientRect();
   return { x:(e.clientX-r.left)/zoom, y:(e.clientY-r.top)/zoom };
+}
+
+// ── Battle grid (hex/square) ──────────────────────────────────────────────────
+// Hex math follows the standard axial-coordinate reference (Red Blob Games):
+// https://www.redblobgames.com/grids/hexagons/ — "size" below is the
+// center-to-vertex radius, same value the GM enters as "Cell size".
+function hexRound(q, r) {
+  let x=q, z=r, y=-x-z;
+  let rx=Math.round(x), ry=Math.round(y), rz=Math.round(z);
+  const dx=Math.abs(rx-x), dy=Math.abs(ry-y), dz=Math.abs(rz-z);
+  if (dx>dy && dx>dz) rx=-ry-rz; else if (dy>dz) ry=-rx-rz; else rz=-rx-ry;
+  return { q:rx, r:rz };
+}
+function hexToPixel(q, r, size, orientation) {
+  if (orientation === 'flat') {
+    return { x: size*(3/2*q), y: size*(Math.sqrt(3)/2*q + Math.sqrt(3)*r) };
+  }
+  return { x: size*(Math.sqrt(3)*q + Math.sqrt(3)/2*r), y: size*(3/2*r) };
+}
+function pixelToHex(x, y, size, orientation) {
+  if (orientation === 'flat') {
+    return hexRound((2/3*x)/size, (-1/3*x + Math.sqrt(3)/3*y)/size);
+  }
+  return hexRound((Math.sqrt(3)/3*x - 1/3*y)/size, (2/3*y)/size);
+}
+function snapToGrid(x, y) {
+  const cs = gridConfig.cell_size || 50;
+  const ox = gridConfig.offset_x || 0, oy = gridConfig.offset_y || 0;
+  if (gridType === 'square') {
+    return {
+      x: Math.round((x-ox)/cs - 0.5)*cs + ox + cs/2,
+      y: Math.round((y-oy)/cs - 0.5)*cs + oy + cs/2,
+    };
+  }
+  if (gridType === 'hex') {
+    const orientation = gridConfig.orientation === 'flat' ? 'flat' : 'pointy';
+    const {q, r} = pixelToHex(x-ox, y-oy, cs, orientation);
+    const p = hexToPixel(q, r, cs, orientation);
+    return { x: p.x+ox, y: p.y+oy };
+  }
+  return { x, y };
+}
+function renderBattleGrid() {
+  battleGridLayer.innerHTML = '';
+  if (gridType === 'none') return;
+  const cs = Math.max(5, gridConfig.cell_size || 50);
+  const ox = gridConfig.offset_x || 0, oy = gridConfig.offset_y || 0;
+  const stroke = 'rgba(0,240,255,0.4)';
+  if (gridType === 'square') {
+    let startX = ox % cs; if (startX < 0) startX += cs;
+    let startY = oy % cs; if (startY < 0) startY += cs;
+    for (let x = startX; x <= CW; x += cs) battleGridLayer.appendChild(svgEl('line', {x1:x,y1:0,x2:x,y2:CH,stroke,'stroke-width':1}));
+    for (let y = startY; y <= CH; y += cs) battleGridLayer.appendChild(svgEl('line', {x1:0,y1:y,x2:CW,y2:y,stroke,'stroke-width':1}));
+    return;
+  }
+  // hex
+  const orientation = gridConfig.orientation === 'flat' ? 'flat' : 'pointy';
+  const w = orientation==='flat' ? cs*2 : Math.sqrt(3)*cs;
+  const h = orientation==='flat' ? Math.sqrt(3)*cs : cs*2;
+  const hexPts = (cx,cy) => {
+    const pts = [];
+    for (let i=0;i<6;i++) {
+      const angle = Math.PI/180 * (60*i + (orientation==='flat'?0:30));
+      pts.push([cx+cs*Math.cos(angle), cy+cs*Math.sin(angle)]);
+    }
+    return pts.map(p=>p.join(',')).join(' ');
+  };
+  const qLo=-2, qHi=Math.ceil(CW/w)+2, rLo=-2, rHi=Math.ceil(CH/h)+2;
+  for (let r=rLo; r<=rHi; r++) {
+    for (let q=qLo; q<=qHi; q++) {
+      const p = hexToPixel(q, r, cs, orientation);
+      const cx = p.x+ox, cy = p.y+oy;
+      if (cx < -w || cx > CW+w || cy < -h || cy > CH+h) continue;
+      battleGridLayer.appendChild(svgEl('polygon', {points:hexPts(cx,cy), fill:'none', stroke, 'stroke-width':1}));
+    }
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -445,6 +619,7 @@ function getBounds(el) {
     case 'text':  return {x:el.x, y:el.y-(el.size||20), w:180, h:(el.size||20)+4};
     case 'pin':   return {x:el.x-12, y:el.y-22, w:130, h:34};
     case 'image': return {x:el.x, y:el.y, w:el.w, h:el.h};
+    case 'token': { const r=el.r||20; return {x:el.x-r, y:el.y-r, w:r*2, h:r*2}; }
   }
   return null;
 }
@@ -460,10 +635,11 @@ function getBoundsMulti(els) {
 }
 
 // ── Render ───────────────────────────────────────────────────────────────────
-const ICONS = { rect:'▭', circle:'○', line:'―', arrow:'→', poly:'⬡', text:'T', pin:'📍', path:'✏', image:'🖼', measure:'📏' };
+const ICONS = { rect:'▭', circle:'○', line:'―', arrow:'→', poly:'⬡', text:'T', pin:'📍', path:'✏', image:'🖼', measure:'📏', token:'🧙' };
 
 function redraw() {
   elLayer.innerHTML = '';
+  tokenLayer.innerHTML = '';
   elements.forEach(el => {
     if (el.hidden) return;
     const g = makeElSVG(el);
@@ -477,8 +653,16 @@ function redraw() {
         showCtx(e); redraw();
       });
     }
-    elLayer.appendChild(g);
+    // Tokens render in their own layer, above the hit-testing rect (#hit) —
+    // el-layer sits *below* #hit in paint order, so an ordinary element's own
+    // mousedown listener never wins the hit-test against #hit sitting on top
+    // of it (confirmed pre-existing for every element type, not token-specific).
+    // Tokens need reliable click/drag for a battle map to be usable, so they
+    // go in a layer after #hit instead, the same trick #party-layer already
+    // relies on for its own click handling.
+    (el.type === 'token' ? tokenLayer : elLayer).appendChild(g);
   });
+  renderBattleGrid();
   drawSel();
   updateElList();
   renderMinimap();
@@ -565,6 +749,44 @@ function makeElSVG(el) {
       }
       return g;
     }
+    case 'token': {
+      const r = el.r || 20;
+      const dead = el.max_hp > 0 && el.hp <= 0;
+      const clipId = 'tk-clip-' + el.id;
+      if (el.image_url) {
+        const clip = svgEl('clipPath', { id: clipId });
+        clip.appendChild(svgEl('circle', { cx:el.x, cy:el.y, r:r-2 }));
+        g.appendChild(clip);
+        g.appendChild(svgEl('image', { x:el.x-r+2, y:el.y-r+2, width:(r-2)*2, height:(r-2)*2,
+          href:el.image_url, preserveAspectRatio:'xMidYMid slice', 'clip-path':`url(#${clipId})` }));
+      } else {
+        const t = svgEl('text', { x:el.x, y:el.y+r*0.35, 'text-anchor':'middle', 'font-size':r*1.1, 'pointer-events':'none' });
+        t.textContent = el.source === 'pc' ? '🧑' : (el.source === 'entity' ? '👹' : '❖');
+        g.appendChild(svgEl('circle', { cx:el.x, cy:el.y, r, fill:el.color||'#4488ff', opacity:0.35 }));
+        g.appendChild(t);
+      }
+      g.appendChild(svgEl('circle', { cx:el.x, cy:el.y, r, fill:'none',
+        stroke: dead ? '#666' : (el.color||'#4488ff'), 'stroke-width':2.5, opacity: dead?0.6:1 }));
+      if (el.name) {
+        const lt = svgEl('text', { x:el.x, y:el.y+r+14, 'text-anchor':'middle', 'font-size':12,
+          'font-family':'monospace', fill:'#fff', 'pointer-events':'none',
+          style:'paint-order:stroke;stroke:#000;stroke-width:3px' });
+        lt.textContent = el.name; g.appendChild(lt);
+      }
+      if (el.max_hp) {
+        const hpt = svgEl('text', { x:el.x, y:el.y+r+27, 'text-anchor':'middle', 'font-size':10,
+          'font-family':'monospace', fill: dead ? '#ff6666' : '#9dffb0', 'pointer-events':'none',
+          style:'paint-order:stroke;stroke:#000;stroke-width:3px' });
+        hpt.textContent = `${el.hp ?? 0}/${el.max_hp}`; g.appendChild(hpt);
+      }
+      if (el.conditions && el.conditions.length) {
+        const ct = svgEl('text', { x:el.x, y:el.y-r-8, 'text-anchor':'middle', 'font-size':9,
+          'font-family':'monospace', fill:'#ffcc66', 'pointer-events':'none',
+          style:'paint-order:stroke;stroke:#000;stroke-width:3px' });
+        ct.textContent = el.conditions.join(', '); g.appendChild(ct);
+      }
+      return g;
+    }
   }
   if (!main) return null;
   const isLineLike = ['line','arrow','measure'].includes(el.type);
@@ -607,7 +829,7 @@ function updateElList() {
     d.className = 'el-item' + (selIds.has(el.id) ? ' sel' : '');
     const name = document.createElement('span');
     name.className = 'el-name';
-    name.textContent = `${ICONS[el.type]||'?'} ${el.label||el.text||el.type}`;
+    name.textContent = `${ICONS[el.type]||'?'} ${el.label||el.text||el.name||el.type}`;
     name.title = el.type + (el.label ? ': '+el.label : el.text ? ': '+el.text : '');
     name.addEventListener('click', e => {
       if (e.shiftKey) { selIds.has(el.id) ? selIds.delete(el.id) : selIds.add(el.id); }
@@ -691,9 +913,11 @@ function drawSel() {
         });
       }
     }
-    showProps(true, el); updatePosDisplay(el);
+    if (el.type === 'token') { showTokenProps(true, el); }
+    else { showTokenProps(false); showProps(true, el); updatePosDisplay(el); }
   } else {
     // Multi-select: minimal props
+    showTokenProps(false);
     showProps(true, sel[sel.length-1]);
     document.getElementById('p-pos').textContent = `${sel.length} selected`;
   }
@@ -751,6 +975,7 @@ function updatePosDisplay(el) {
 function showProps(show, el) {
   document.getElementById('hint').style.display     = show ? 'none' : '';
   document.getElementById('prop-row').style.display = show ? 'flex' : 'none';
+  if (!show) document.getElementById('prop-row-token').style.display = 'none';
   if (!show || !el) return;
   document.getElementById('p-fill').value   = el.fill   || '#334455';
   document.getElementById('p-stroke').value = el.stroke || '#00f0ff';
@@ -775,6 +1000,42 @@ function delSelected() {
   if (!selIds.size) return;
   elements = elements.filter(e => !selIds.has(e.id));
   selIds.clear(); redraw(); snapshot();
+}
+
+// ── Token props panel ─────────────────────────────────────────────────────────
+function showTokenProps(show, el) {
+  document.getElementById('hint').style.display          = show ? 'none' : '';
+  document.getElementById('prop-row-token').style.display = show ? 'flex' : 'none';
+  if (!show) return;
+  document.getElementById('prop-row').style.display = 'none';
+  document.getElementById('tp-name').textContent = el.name || '(token)';
+  document.getElementById('tp-color').value  = el.color || '#4488ff';
+  document.getElementById('tp-size').value   = el.r ?? 20;
+  document.getElementById('tp-hp').value     = el.hp ?? 0;
+  document.getElementById('tp-maxhp').value  = el.max_hp ?? 0;
+  renderTokenConditions(el);
+}
+function setTokenPropLive(k, v) {
+  const el = primary(); if (!el || el.type !== 'token') return;
+  el[k] = v; redraw();
+}
+function renderTokenConditions(el) {
+  const box = document.getElementById('tp-conditions');
+  box.innerHTML = '';
+  (el.conditions || []).forEach((c, i) => {
+    const chip = document.createElement('span');
+    chip.style.cssText = 'background:rgba(255,204,102,.15);border:1px solid #ffcc66;color:#ffcc66;border-radius:3px;padding:0 .3rem;font-size:.72rem;cursor:pointer';
+    chip.textContent = c + ' ✕';
+    chip.title = 'Remove';
+    chip.onclick = () => { el.conditions.splice(i,1); redraw(); renderTokenConditions(el); snapshot(); };
+    box.appendChild(chip);
+  });
+}
+function addTokenCondition(v) {
+  const el = primary(); if (!el || el.type !== 'token' || !v.trim()) return;
+  el.conditions = el.conditions || [];
+  el.conditions.push(v.trim());
+  redraw(); renderTokenConditions(el); snapshot();
 }
 
 // ── Pick & drag (multi) ───────────────────────────────────────────────────────
@@ -848,7 +1109,7 @@ function moveEl(el, o, dx, dy) {
       break;
     case 'poly': el.points = o.points.map(p=>[p[0]+dx,p[1]+dy]); break;
     case 'path': el.pts    = o.pts.map(p=>[p[0]+dx,p[1]+dy]); break;
-    case 'text': case 'pin': el.x=o.x+dx; el.y=o.y+dy; break;
+    case 'text': case 'pin': case 'token': el.x=o.x+dx; el.y=o.y+dy; break;
   }
 }
 
@@ -913,15 +1174,23 @@ document.addEventListener('mousemove', e => {
       moveEl(el, o, dx, dy);
       return el;
     });
-    // smart guides
-    const g = computeGuides(movedEls);
-    if (g.dx || g.dy) {
-      movedEls.forEach(el => {
-        const o = origMap[el.id];
-        moveEl(el, o, dx + g.dx, dy + g.dy);
-      });
+    // Single token on an active battle grid: snap to nearest cell instead of
+    // smart guides (guides are for aligning diagram elements, not tokens).
+    if (movedEls.length === 1 && movedEls[0].type === 'token' && gridType !== 'none') {
+      const snapped = snapToGrid(movedEls[0].x, movedEls[0].y);
+      movedEls[0].x = snapped.x; movedEls[0].y = snapped.y;
+      guideLayer.innerHTML = '';
+    } else {
+      // smart guides
+      const g = computeGuides(movedEls);
+      if (g.dx || g.dy) {
+        movedEls.forEach(el => {
+          const o = origMap[el.id];
+          moveEl(el, o, dx + g.dx, dy + g.dy);
+        });
+      }
+      drawGuides(g.lines);
     }
-    drawGuides(g.lines);
     redraw();
     return;
   }
@@ -978,6 +1247,7 @@ hit.addEventListener('mousedown', e => {
   if (tool === 'text')   { pendingTextPt=pt; openTextDlg(); return; }
   if (tool === 'pin')    { addPin(pt); return; }
   if (tool === 'party')  { pendingPartyPt=pt; openPartyDlg(); return; }
+  if (tool === 'token')  { pendingTokenPt = gridType==='none' ? pt : snapToGrid(pt.x, pt.y); openTokenDlg(); return; }
   if (tool === 'poly')   { if(!drawing){drawing=true;polyPts=[pt];}else polyPts.push(pt); drawPolyPrev(); return; }
   if (tool === 'pencil') { drawing=true; pencilPts=[[svgXYRaw(e).x, svgXYRaw(e).y]]; return; }
   if (tool === 'measure'){
@@ -1201,6 +1471,93 @@ async function removePartyPin(partyId) {
   hidePartyPopup();
   renderPartyPins();
 }
+
+// ── Token placement dialog ────────────────────────────────────────────────────
+function setTokenTab(t) {
+  tokenTab = t;
+  ['pc','entity','manual'].forEach(k => {
+    document.getElementById('tk-tab-'+k).classList.toggle('on', k===t);
+    document.getElementById('tk-pane-'+k).style.display = k===t ? '' : 'none';
+  });
+}
+function openTokenDlg() {
+  const pcSel = document.getElementById('tkdlg-pc-select');
+  pcSel.innerHTML = PC_PAYLOAD.map(pc =>
+    `<option value="${pc.id}">${pc.name} (HP ${pc.hp}/${pc.max_hp})</option>`
+  ).join('') || '<option value="">No player characters in this world</option>';
+  const enSel = document.getElementById('tkdlg-entity-select');
+  enSel.innerHTML = ENTITY_PAYLOAD.map(en =>
+    `<option value="${en.id}">${en.name} (${en.kind}, HP ${en.max_hp})</option>`
+  ).join('') || '<option value="">No creatures/characters in this world</option>';
+  document.getElementById('tkdlg-manual-name').value = '';
+  setTokenTab('pc');
+  showDlg('token-dlg');
+}
+function confirmTokenPlacement() {
+  hideDlg('token-dlg');
+  if (!pendingTokenPt) return;
+  let el = null;
+  const base = { id:uid(), type:'token', x:pendingTokenPt.x, y:pendingTokenPt.y, r:20,
+    conditions:[], layer:activeLayer };
+  if (tokenTab === 'pc') {
+    const id = parseInt(document.getElementById('tkdlg-pc-select').value, 10);
+    const pc = PC_PAYLOAD.find(p => p.id === id);
+    if (!pc) { pendingTokenPt=null; return; }
+    el = { ...base, source:'pc', pc_id:pc.id, entity_id:null, name:pc.name,
+      color:'#4488ff', hp:pc.hp, max_hp:pc.max_hp, conditions:[...(pc.conditions||[])] };
+  } else if (tokenTab === 'entity') {
+    const id = parseInt(document.getElementById('tkdlg-entity-select').value, 10);
+    const en = ENTITY_PAYLOAD.find(x => x.id === id);
+    if (!en) { pendingTokenPt=null; return; }
+    el = { ...base, source:'entity', pc_id:null, entity_id:en.id, name:en.name,
+      color:'#e63946', hp:en.max_hp, max_hp:en.max_hp };
+  } else {
+    const name = document.getElementById('tkdlg-manual-name').value.trim();
+    if (!name) { pendingTokenPt=null; return; }
+    const hp = parseInt(document.getElementById('tkdlg-manual-hp').value, 10) || 10;
+    el = { ...base, source:'manual', pc_id:null, entity_id:null, name,
+      color:document.getElementById('tkdlg-manual-color').value, hp, max_hp:hp };
+  }
+  elements.push(el); selIds.clear(); selIds.add(el.id); redraw(); snapshot();
+  pendingTokenPt = null;
+}
+
+// ── Battle grid dialog ────────────────────────────────────────────────────────
+let gridDlgBackup = null;
+function openGridDlg() {
+  gridDlgBackup = { type: gridType, config: JSON.parse(JSON.stringify(gridConfig)) };
+  document.getElementById('gdlg-type').value = gridType;
+  document.getElementById('gdlg-size').value = gridConfig.cell_size || 50;
+  document.getElementById('gdlg-ox').value   = gridConfig.offset_x || 0;
+  document.getElementById('gdlg-oy').value   = gridConfig.offset_y || 0;
+  document.getElementById('gdlg-orientation').value = gridConfig.orientation || 'pointy';
+  document.getElementById('gdlg-hex-orientation').style.display = gridType==='hex' ? '' : 'none';
+  showDlg('grid-dlg');
+}
+function onGridDlgChange() {
+  gridType = document.getElementById('gdlg-type').value;
+  gridConfig = {
+    cell_size: parseFloat(document.getElementById('gdlg-size').value) || 50,
+    offset_x: parseFloat(document.getElementById('gdlg-ox').value) || 0,
+    offset_y: parseFloat(document.getElementById('gdlg-oy').value) || 0,
+    orientation: document.getElementById('gdlg-orientation').value,
+  };
+  document.getElementById('gdlg-hex-orientation').style.display = gridType==='hex' ? '' : 'none';
+  renderBattleGrid();
+}
+async function saveGridConfig() {
+  onGridDlgChange();
+  hideDlg('grid-dlg');
+  await fetch(`/maps/schematic/${SLUG}/grid`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ grid_type: gridType, config: gridConfig }),
+  });
+}
+function cancelGridDlg() {
+  if (gridDlgBackup) { gridType = gridDlgBackup.type; gridConfig = gridDlgBackup.config; }
+  hideDlg('grid-dlg');
+  renderBattleGrid();
+}
 function addMeasure(a, b) {
   const el={id:uid(),type:'measure',x1:a.x,y1:a.y,x2:b.x,y2:b.y,opacity:1,layer:activeLayer};
   elements.push(el); selIds.clear(); selIds.add(el.id); redraw(); snapshot();
@@ -1423,7 +1780,7 @@ function flipSel(axis) {
           el.x1 = 2*cx - el.x1; el.x2 = 2*cx - el.x2; break;
         case 'poly': el.points = el.points.map(p=>[2*cx-p[0],p[1]]); break;
         case 'path': el.pts    = el.pts.map(p=>[2*cx-p[0],p[1]]); break;
-        case 'text': case 'pin': el.x = 2*cx - el.x; break;
+        case 'text': case 'pin': case 'token': el.x = 2*cx - el.x; break;
       }
     } else {
       switch(el.type) {
@@ -1433,7 +1790,7 @@ function flipSel(axis) {
           el.y1 = 2*cy - el.y1; el.y2 = 2*cy - el.y2; break;
         case 'poly': el.points = el.points.map(p=>[p[0],2*cy-p[1]]); break;
         case 'path': el.pts    = el.pts.map(p=>[p[0],2*cy-p[1]]); break;
-        case 'text': case 'pin': el.y = 2*cy - el.y; break;
+        case 'text': case 'pin': case 'token': el.y = 2*cy - el.y; break;
       }
     }
   });
@@ -1460,7 +1817,7 @@ function rotateSel(deg) {
       }
       case 'poly': el.points = el.points.map(p=>rot(p[0],p[1])); break;
       case 'path': el.pts    = el.pts.map(p=>rot(p[0],p[1])); break;
-      case 'text': case 'pin': { const [nx,ny] = rot(el.x,el.y); el.x=nx; el.y=ny; break; }
+      case 'text': case 'pin': case 'token': { const [nx,ny] = rot(el.x,el.y); el.x=nx; el.y=ny; break; }
     }
   });
   redraw(); snapshot();
@@ -1630,7 +1987,7 @@ document.addEventListener('keydown', e => {
     redraw(); snapshot();
     return;
   }
-  const map={v:'select',r:'rect',c:'circle',l:'line',a:'arrow',p:'poly',t:'text',n:'pin',k:'pencil',m:'measure'};
+  const map={v:'select',r:'rect',c:'circle',l:'line',a:'arrow',p:'poly',t:'text',n:'pin',k:'pencil',m:'measure',g:'token'};
   if (map[e.key.toLowerCase()]) { setTool(map[e.key.toLowerCase()]); return; }
   if (e.key==='o'||e.key==='O') {
     octilinear=!octilinear;

@@ -24,7 +24,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 
 _MAPS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "maps"
 
-SCHEMATIC_ELEMENT_TYPES = {"rect", "circle", "line", "arrow", "poly", "path", "text", "pin", "image", "measure"}
+SCHEMATIC_ELEMENT_TYPES = {"rect", "circle", "line", "arrow", "poly", "path", "text", "pin", "image", "measure", "token"}
 FIELD_TYPES = {"text", "number", "textarea", "select", "list", "resource", "table"}
 
 

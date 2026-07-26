@@ -487,5 +487,11 @@ class Schematic(Base):
     canvas_height = Column(Integer, default=1500)
     canvas_bg = Column(String(32), default="dark")
     elements_json = Column(Text, default="[]")
+    # Battle-map grid overlay — "none" | "hex" | "square". config: {cell_size,
+    # offset_x, offset_y, orientation:"pointy"|"flat" (hex only)}. Purely a
+    # rendering/snapping aid — tokens (elements_json entries with type:"token")
+    # still store raw x/y, not grid coordinates.
+    grid_type = Column(String(16), default="none")
+    grid_config_json = Column(Text, default="{}")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
