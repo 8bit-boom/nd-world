@@ -1186,10 +1186,12 @@ input[type="file"]:hover { border-color: var(--neon); }
 
   /* Prose padding */
   .prose { padding: 1rem; }
+  .prose table { font-size: .78rem; overflow-x: auto; display: block; }
 
   /* Rules page */
   .rules-page { padding: .75rem .5rem; }
   .rules-body table { font-size: .78rem; overflow-x: auto; display: block; }
+  .rendered-md table { font-size: .78rem; overflow-x: auto; display: block; }
 
   /* Breadcrumbs */
   .breadcrumb { font-size: .72rem; }
