@@ -2,6 +2,8 @@
 
 A self-hosted worldbuilding and lore management system for the **Neon & Dragons** tabletop RPG campaign. Organize your entire game world — characters, locations, factions, events, items, creatures, and more — with built-in AI assistance, image generation, interactive maps, and visual relationship boards.
 
+> **AI agents / assistants working with this repo:** see [AGENTS.md](AGENTS.md) first — it covers content-creation via the general importer (`docs/AI_ENTITY_GUIDE.md`, `docs/AI_SCHEMATIC_GUIDE.md`) and conventions to follow if modifying the app code.
+
 ---
 
 ## Features
@@ -738,7 +740,10 @@ nd-world/
 ├── scripts/
 │   └── setup.sh             # One-command install: Docker check, .env + GM account, start stack
 ├── docs/
-│   └── DEPLOYMENT.md        # Local setup + Cloudflare Tunnel walkthrough
+│   ├── DEPLOYMENT.md        # Local setup + Cloudflare Tunnel walkthrough
+│   ├── AI_ENTITY_GUIDE.md   # For AI agents: entities/templates/characters + the general importer
+│   └── AI_SCHEMATIC_GUIDE.md # For AI agents: schematic elements + map overlays
+├── AGENTS.md                # Entry point for AI agents/assistants working with this repo
 ├── docker-compose.yml       # Linux / Windows stack (named volumes)
 ├── truenas-compose.yml      # TrueNAS SCALE stack (bind mounts)
 ├── .env.example             # SECRET_KEY / GM_EMAIL / GM_PASSWORD / COOKIE_SECURE template
