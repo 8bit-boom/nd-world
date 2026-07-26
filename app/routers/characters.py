@@ -21,7 +21,7 @@ from ..constants import (
     ND_DEFAULT_STATS, ND_DEFAULT_CURRENCY,
 )
 from ..database import get_db, get_app_settings
-from ..imaging import convert_to_avif
+from ..imaging import convert_image
 from ..models import PlayerCharacter, SheetTemplate, User, World, WorldMembership
 
 router = APIRouter()
@@ -210,10 +210,10 @@ def _upload_portrait(file: UploadFile, db: Optional[Session] = None) -> Optional
         shutil.copyfileobj(file.file, f)
     if db is not None:
         settings = get_app_settings(db)
-        dest = convert_to_avif(dest, convert_static=settings.convert_images_avif,
-                                convert_animated=settings.convert_animated_avif)
+        dest = convert_image(dest, static_format=settings.static_format,
+                              animated_format=settings.animated_format)
     else:
-        dest = convert_to_avif(dest)
+        dest = convert_image(dest)
     return f"/uploads/portraits/{dest.name}"
 
 

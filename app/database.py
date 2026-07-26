@@ -189,6 +189,29 @@ def _migrate():
             if sch_cols and col not in sch_cols:
                 conn.execute(text(f"ALTER TABLE schematics ADD COLUMN {col} {defn}"))
         conn.commit()
+        # app_settings: the original convert_images_avif/convert_animated_avif
+        # booleans were replaced by static_format/animated_format ("none"/
+        # "avif"/"webp") almost immediately after shipping — heal existing
+        # installs onto the new columns and translate any already-customized
+        # boolean values instead of silently resetting them back to "avif".
+        as_exists = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='app_settings'"
+        )).fetchone()
+        if as_exists:
+            as_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(app_settings)")).fetchall()]
+            added_format_cols = False
+            for col, defn in [("static_format", "VARCHAR(16) DEFAULT 'avif'"), ("animated_format", "VARCHAR(16) DEFAULT 'avif'")]:
+                if col not in as_cols:
+                    conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN {col} {defn}"))
+                    added_format_cols = True
+            if added_format_cols and "convert_images_avif" in as_cols:
+                conn.execute(text(
+                    "UPDATE app_settings SET static_format = CASE WHEN convert_images_avif = 0 THEN 'none' ELSE 'avif' END"
+                ))
+                conn.execute(text(
+                    "UPDATE app_settings SET animated_format = CASE WHEN convert_animated_avif = 0 THEN 'none' ELSE 'avif' END"
+                ))
+            conn.commit()
         # player_characters table — add any missing columns to existing installs
         pc_exists = conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='player_characters'"

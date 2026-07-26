@@ -505,6 +505,6 @@ class AppSettings(Base):
     __tablename__ = "app_settings"
 
     id = Column(Integer, primary_key=True, default=1)
-    convert_images_avif = Column(Boolean, default=True)
-    convert_animated_avif = Column(Boolean, default=True)
+    static_format = Column(String(16), default="avif")    # "none" | "avif" | "webp"
+    animated_format = Column(String(16), default="avif")  # "none" | "avif" | "webp"
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -21,7 +21,7 @@ import io
 from pathlib import Path
 
 from .database import init_db, get_db, SessionLocal, get_app_settings
-from .imaging import convert_to_avif
+from .imaging import convert_image
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party
 from .routers.ai import router as ai_router
 from .routers.characters import router as characters_router
@@ -342,10 +342,10 @@ def save_upload(file: UploadFile, subdir: str = "", db: Optional[Session] = None
         shutil.copyfileobj(file.file, f)
     if db is not None:
         settings = get_app_settings(db)
-        dest = convert_to_avif(dest, convert_static=settings.convert_images_avif,
-                                convert_animated=settings.convert_animated_avif)
+        dest = convert_image(dest, static_format=settings.static_format,
+                              animated_format=settings.animated_format)
     else:
-        dest = convert_to_avif(dest)
+        dest = convert_image(dest)
     url_path = f"/uploads/{subdir}/{dest.name}" if subdir else f"/uploads/{dest.name}"
     return url_path
 
@@ -1468,13 +1468,13 @@ def settings_page(request: Request, db: Session = Depends(get_db), active_world:
 
 @app.post("/settings")
 def settings_save(
-    convert_images_avif: Optional[str] = Form(None),
-    convert_animated_avif: Optional[str] = Form(None),
+    static_format: str = Form("avif"),
+    animated_format: str = Form("avif"),
     db: Session = Depends(get_db),
 ):
     settings = get_app_settings(db)
-    settings.convert_images_avif = bool(convert_images_avif)
-    settings.convert_animated_avif = bool(convert_animated_avif)
+    settings.static_format = static_format if static_format in ("none", "avif", "webp") else "avif"
+    settings.animated_format = animated_format if animated_format in ("none", "avif", "webp") else "avif"
     db.commit()
     return RedirectResponse("/settings", status_code=303)
 
