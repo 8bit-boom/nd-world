@@ -57,8 +57,8 @@ Detected kinds relevant to this doc, and what goes in `params`:
 | `{"kind":"creature","name":"...", ...}` | `entity_single` | none |
 | `[{"kind":..., "name":...}, ...]` | `entity_bulk` | none |
 | bare `[{"id","label","type"}, ...]`, or `{"fields":[...], ...}` | `field_template` | `template_kind` (`"entity"` or `"sheet"`), `name` (falls back to the JSON's own `name` if present), optionally `description`, `entity_kind` (entity templates only — restricts to one of the 8 kinds), `sheet_mode` (sheet templates only — `"nd"` or `"custom"`, default `"nd"`) |
-| `{"name":"...", ...one of the §3 PC fields below...}` (no `"kind"` key) | `player_character` | none |
-| `[{"name":..., ...}, ...]` (no `"kind"` key on any item) | `player_character_bulk` | none |
+| `{"name":"...", ...one of the §3 PC fields below...}` (`"kind"` absent, or present but not one of the 8 Entity kinds) | `player_character` | none |
+| `[{"name":..., ...}, ...]` (same rule, on every item) | `player_character_bulk` | none |
 | `{"imports": [ ...items... ]}` | `batch` | none — see below |
 
 Two real advantages over the type-specific routes covered in the rest of
@@ -91,15 +91,24 @@ the importer just handles getting the JSON in, not the underlying shapes.
 
 ### Importing player characters (`player_character` / `player_character_bulk`)
 
-Detection distinguishes a PC from an Entity purely by the absence of a
-`"kind"` key (Entities always have one) plus the presence of at least one
-PC-specific field (`race`, `char_class`, `level`, `stats`, `equipment`, etc.
-— anything from the §3 field list below). A bare `{"name": "..."}` with none
-of those is `unknown`, not silently guessed as a PC.
+Detection distinguishes a PC from an Entity by checking `"kind"` isn't one of
+the 8 real Entity kinds (a self-declared `"kind":"playercharacter"` or
+`"pc"` — anything not in that list — is fine and ignored, not required)
+*and* the presence of at least one PC-specific field (`race`, `char_class`,
+`level`, `stats`, `equipment`, etc. — anything from the §3 field list
+below, under any spelling — see next paragraph). A bare `{"name": "..."}`
+with none of those is `unknown`, not silently guessed as a PC.
+
+**Field name matching is lenient, but only for the fixed set of native
+fields below** — `char_class`, `charClass`, and `charclass` are all treated
+as the same field (matched by folding to lowercase alphanumerics and
+comparing), so inconsistent underscore/casing conventions from an AI-authored
+file don't silently drop data. This applies to every field name, not just
+the `_json`-suffixed ones.
 
 The importer reuses the exact same `_apply_form()` as `POST /characters/new`
 — see §3 below for the full field contract (which fields exist, what
-`stats_json`/`equipment_json`/etc. actually mean). Two conveniences the raw
+`stats_json`/`equipment_json`/etc. actually mean). Conveniences the raw
 route doesn't have:
 - Every `*_json` field (`stats_json`, `equipment_json`, `feats_json`,
   `attacks_json`, `cyberware_json`, `conditions_json`, `custom_fields_json`,
@@ -113,6 +122,31 @@ route doesn't have:
   keeps the model's own default when omitted (e.g. `level` → `1`).
 - `portrait_url` sets the character's portrait directly from an image URL —
   the raw `/characters/new` route only accepts an uploaded file, no URL field.
+- `sheet_template_id` accepts the template's `slug` or `name` too, not just
+  a literal numeric id (e.g. `"asterion"` resolves to the built-in Asterion
+  template) — same id/slug/name fallback as entity `template_id` above.
+
+**`custom_fields_json`/`custom_fields` is the one place none of this
+leniency applies.** Its keys are opaque to the importer — they're only ever
+looked up by whatever `SheetTemplate.fields_json` the character ends up
+using (see §4), so they must match that template's real field `id`s
+*exactly*, character for character. Sending a plausible-looking key that
+isn't an actual field id doesn't error — the value is just stored and never
+displayed anywhere. For the built-in **Asterion** template (`sheet_mode:
+"custom"`), the real field ids are: `origin`, `spark`, `sentence`,
+`appearance`, `sparkShield`, `flesh`, `ichor`, `armor`, `attackPool`,
+`defensePool`, `movement`, `abOriginName`/`abOriginTier`/`abOriginText`,
+`abSparkName`/`abSparkTier`/`abSparkText`,
+`abDeedName`/`abDeedTier`/`abDeedText`, `extraAbilities` (list of
+`{name,tier,text}`), `drachma`, `weapon`, `armorItem`, `consumables` (list
+of `{name}`), `artifacts`, `glory`, `domainRank`, `reputation`, `milestones`
+(list of `{name}`), `sessionNum`, `sessionLog` (list of `{session,text}`),
+`relationships` (list of `{name,text}`), `freeNotes` — the full source of
+truth is `_ASTERION_FIELDS` in `app/database.py`, or `GET
+/api/characters/templates` → find the `asterion` entry → its `fields_json`
+on a live instance. Each ability only gets 3 slots (name/tier-and-type/
+effect text) — fold anything more granular (a separate cost or range field,
+for instance) into the tier/type string or the effect text.
 
 Imported characters always get `owner_user_id: NULL` (GM-managed), exactly
 like a character the GM creates by hand through the wizard.

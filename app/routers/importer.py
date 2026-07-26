@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..constants import KINDS, ND_DEFAULT_CURRENCY, ND_DEFAULT_STATS
@@ -78,24 +79,45 @@ def _looks_like_entity(d) -> bool:
     return isinstance(d, dict) and d.get("kind") in KINDS and isinstance(d.get("name"), str) and bool(d.get("name"))
 
 
-# Keys that only ever show up on a player character — used to tell a bare PC
-# object apart from an Entity (which always carries "kind") or any other blob
-# that merely happens to have a "name".
-PC_MARKER_KEYS = {
+def _normkey(k) -> str:
+    """Fold a key down to bare lowercase alphanumerics so 'char_class',
+    'charClass', and 'charclass' all compare equal — AI-authored (and
+    hand-typed) import JSON is inconsistent about underscores/casing, and
+    silently dropping a field because of that is worse than being lenient
+    about how it's spelled."""
+    return re.sub(r"[^a-z0-9]", "", str(k).lower())
+
+
+# Native PlayerCharacter field names _apply_form() actually reads (see
+# characters.py) — used both to recognize a PC blob and, on import, to
+# rewrite whatever casing/spelling the author used back to these.
+_PC_SCALAR_FIELDS = (
     "player_name", "race", "race_id", "char_class", "profession_id", "level", "xp",
-    "max_hp", "current_hp", "shock_max", "shock_current", "pp_current", "mp_current",
-    "stats", "stats_json", "equipment", "equipment_json", "feats", "feats_json",
-    "attacks", "attacks_json", "cyberware", "cyberware_json", "conditions", "conditions_json",
-    "sheet_template_id", "backstory", "minor_edge", "major_edge",
+    "backstory", "notes", "max_hp", "current_hp", "shock_max", "shock_current",
+    "pp_current", "mp_current", "minor_edge", "major_edge", "minor_edge_count",
+    "major_edge_count", "sheet_template_id", "portrait_url",
+)
+_PC_JSON_ALIASES = {
+    "stats": "stats_json", "skills": "skills_json", "currency": "currency_json",
+    "equipment": "equipment_json", "feats": "feats_json", "attacks": "attacks_json",
+    "cyberware": "cyberware_json", "conditions": "conditions_json",
+    "custom_fields": "custom_fields_json",
 }
+_PC_CANONICAL_FIELDS = _PC_SCALAR_FIELDS + tuple(_PC_JSON_ALIASES.keys()) + tuple(_PC_JSON_ALIASES.values())
+_PC_KEY_LOOKUP = {_normkey(f): f for f in _PC_CANONICAL_FIELDS}
+_PC_MARKER_KEYS_NORM = set(_PC_KEY_LOOKUP)
 
 
 def _looks_like_pc(d) -> bool:
-    return (
-        isinstance(d, dict) and "kind" not in d
-        and isinstance(d.get("name"), str) and bool(d.get("name"))
-        and any(k in d for k in PC_MARKER_KEYS)
-    )
+    """A PC has a "name" and isn't a recognized Entity kind (Entities always
+    carry a "kind" from the fixed 8-kind list — "playercharacter", "pc", etc.
+    are not among them, so an author's self-declared kind string doesn't
+    need special-casing here, it just falls through to the marker check)."""
+    if not isinstance(d, dict) or not isinstance(d.get("name"), str) or not d.get("name"):
+        return False
+    if d.get("kind") in KINDS:
+        return False
+    return any(_normkey(k) in _PC_MARKER_KEYS_NORM for k in d.keys())
 
 
 def _resolve_batch_item(item):
@@ -186,23 +208,21 @@ def detect_kind(data) -> dict:
 
 # ── Execution ────────────────────────────────────────────────────────────────
 
-_PC_JSON_ALIASES = {
-    "stats": "stats_json", "skills": "skills_json", "currency": "currency_json",
-    "equipment": "equipment_json", "feats": "feats_json", "attacks": "attacks_json",
-    "cyberware": "cyberware_json", "conditions": "conditions_json",
-    "custom_fields": "custom_fields_json",
-}
-
-
 def _normalize_pc_data(row: dict) -> dict:
     """_apply_form is shared with the real character create/edit forms, so it
     expects every *_json field pre-encoded as a JSON string (HTML forms only
-    ever send strings). Import JSON naturally carries these as real arrays/
-    objects, and may use friendlier names without the _json suffix — accept
-    both and coerce to what _apply_form needs. Missing stats/currency default
-    to the standard N&D starting spread so an import that only sets identity
-    fields still renders a usable sheet."""
-    out = dict(row)
+    ever send strings) under its exact snake_case name. Import JSON is
+    naturally looser than that — real arrays/objects instead of encoded
+    strings, friendlier aliases without the _json suffix, and inconsistent
+    casing/underscores (`charClass`, `charclass`, `char_class` all mean the
+    same thing) — so first fold every key back to its canonical name via the
+    same fuzzy match _looks_like_pc uses, then coerce JSON fields to strings.
+    Missing stats/currency default to the standard N&D starting spread so an
+    import that only sets identity fields still renders a usable sheet."""
+    out = {}
+    for k, v in row.items():
+        canon = _PC_KEY_LOOKUP.get(_normkey(k))
+        out.setdefault(canon, v) if canon else out.setdefault(k, v)
     for alias, field in _PC_JSON_ALIASES.items():
         if field not in out and alias in out:
             out[field] = out[alias]
@@ -214,6 +234,22 @@ def _normalize_pc_data(row: dict) -> dict:
     if "currency_json" not in out:
         out["currency_json"] = json.dumps(ND_DEFAULT_CURRENCY)
     return out
+
+
+def _resolve_sheet_template(db: Session, world_id: int, tpl_ref) -> Optional[str]:
+    """id > slug > name fallback, mirroring _resolve_entity_template below —
+    an AI-authored import file can't know this instance's real numeric
+    sheet_template_id ahead of time any more than it can an entity
+    template's, so "asterion" (the built-in Asterion template's slug) needs
+    to work just as well as a literal numeric id."""
+    if not tpl_ref and tpl_ref != 0:
+        return None
+    if isinstance(tpl_ref, int) or (isinstance(tpl_ref, str) and tpl_ref.isdigit()):
+        return str(tpl_ref)
+    t = db.query(SheetTemplate).filter(
+        (SheetTemplate.world_id.is_(None)) | (SheetTemplate.world_id == world_id)
+    ).filter(or_(SheetTemplate.slug == tpl_ref, SheetTemplate.name.ilike(str(tpl_ref)))).first()
+    return str(t.id) if t else None
 
 
 def _resolve_entity_template(db: Session, world_id: int, ent: dict) -> Optional[int]:
@@ -406,7 +442,11 @@ def execute_import(db: Session, world: World, kind: str, data, params: dict):
                 db.rollback()
                 return False, f'Character #{i + 1}: needs at least a "name"'
             pc = PlayerCharacter(world_id=world.id, owner_user_id=None)
-            _apply_form(pc, _normalize_pc_data(row))
+            normalized = _normalize_pc_data(row)
+            resolved_tpl = _resolve_sheet_template(db, world.id, normalized.get("sheet_template_id"))
+            if resolved_tpl:
+                normalized["sheet_template_id"] = resolved_tpl
+            _apply_form(pc, normalized)
             if row.get("portrait_url"):
                 pc.portrait_url = str(row["portrait_url"]).strip()
             db.add(pc)
@@ -419,7 +459,11 @@ def execute_import(db: Session, world: World, kind: str, data, params: dict):
         if not isinstance(data, dict) or not str(data.get("name") or "").strip():
             return False, 'Expected an object with at least a "name"'
         pc = PlayerCharacter(world_id=world.id, owner_user_id=None)
-        _apply_form(pc, _normalize_pc_data(data))
+        normalized = _normalize_pc_data(data)
+        resolved_tpl = _resolve_sheet_template(db, world.id, normalized.get("sheet_template_id"))
+        if resolved_tpl:
+            normalized["sheet_template_id"] = resolved_tpl
+        _apply_form(pc, normalized)
         if data.get("portrait_url"):
             pc.portrait_url = str(data["portrait_url"]).strip()
         db.add(pc)
