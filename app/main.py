@@ -20,7 +20,7 @@ import base64
 import io
 from pathlib import Path
 
-from .database import init_db, get_db, SessionLocal
+from .database import init_db, get_db, SessionLocal, get_app_settings
 from .imaging import convert_to_avif
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party
 from .routers.ai import router as ai_router
@@ -328,7 +328,7 @@ def body_summary(text):
             pairs.append(f"{m.group(1).strip()}: {val}")
     return special or "  ·  ".join(pairs) or entry_text(text)
 
-def save_upload(file: UploadFile, subdir: str = ""):
+def save_upload(file: UploadFile, subdir: str = "", db: Optional[Session] = None):
     if not file or not file.filename:
         return None
     ext = Path(file.filename).suffix.lower()
@@ -340,7 +340,12 @@ def save_upload(file: UploadFile, subdir: str = ""):
     dest = target_dir / filename
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
-    dest = convert_to_avif(dest)
+    if db is not None:
+        settings = get_app_settings(db)
+        dest = convert_to_avif(dest, convert_static=settings.convert_images_avif,
+                                convert_animated=settings.convert_animated_avif)
+    else:
+        dest = convert_to_avif(dest)
     url_path = f"/uploads/{subdir}/{dest.name}" if subdir else f"/uploads/{dest.name}"
     return url_path
 
@@ -1452,6 +1457,27 @@ def imagestudio(request: Request, db: Session = Depends(get_db), active_world: s
         "swarmui_url": SWARMUI_EXTERNAL_URL,
     })
 
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, worlds = _get_world_ctx(db, active_world)
+    settings = get_app_settings(db)
+    return templates.TemplateResponse("settings.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "settings": settings,
+    })
+
+@app.post("/settings")
+def settings_save(
+    convert_images_avif: Optional[str] = Form(None),
+    convert_animated_avif: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    settings = get_app_settings(db)
+    settings.convert_images_avif = bool(convert_images_avif)
+    settings.convert_animated_avif = bool(convert_animated_avif)
+    db.commit()
+    return RedirectResponse("/settings", status_code=303)
+
 @app.get("/boards", response_class=HTMLResponse)
 def boards_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = _get_world_ctx(db, active_world)
@@ -1934,7 +1960,7 @@ async def create(
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     world = get_active_world(request, db, active_world)
-    final_image = save_upload(image_file) or (image_url.strip() or None)
+    final_image = save_upload(image_file, db=db) or (image_url.strip() or None)
     try:
         json.loads(custom_fields_json)
     except Exception:
@@ -1992,7 +2018,7 @@ async def update(
     entity = db.get(Entity, entity_id)
     if not entity:
         raise HTTPException(404)
-    uploaded = save_upload(image_file)
+    uploaded = save_upload(image_file, db=db)
     entity.kind = kind
     entity.subtype = subtype or None
     entity.folder = folder.strip() or None
@@ -2182,8 +2208,8 @@ def api_import(payload: dict, db: Session = Depends(get_db)):
     return {"created": created}
 
 @app.post("/api/upload-image")
-async def api_upload_image(file: UploadFile = File(...)):
-    uploaded = save_upload(file)
+async def api_upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    uploaded = save_upload(file, db=db)
     if not uploaded:
         raise HTTPException(400, "Unsupported file type")
     return {"url": uploaded}

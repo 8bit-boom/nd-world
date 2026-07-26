@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Settings — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="form-page" style="max-width:640px">
+  <h1>⚙ Settings</h1>
+
+  <div class="settings-tab-bar">
+    <button type="button" class="settings-tab active" id="tab-options" onclick="switchSettingsTab('options')">Options</button>
+  </div>
+
+  <div id="pane-options">
+    <form method="post" action="/settings" class="entity-form">
+      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1rem 0 .5rem">Image uploads</h2>
+      <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
+        Portraits and entity images (NPCs, creatures, organizations, locations, and everything
+        else) are converted to AVIF on upload to save storage space, at 90% quality. SVGs are
+        never converted (they're vector, not raster). Animated GIF/WebP uploads are re-encoded
+        as animated AVIF by default, keeping every frame — turn that off below if you'd rather
+        animated uploads stay in their original format.
+      </p>
+      <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+        <input type="checkbox" id="convert-static" name="convert_images_avif" value="1"
+               style="width:auto;accent-color:var(--neon)" {% if settings.convert_images_avif %}checked{% endif %}>
+        <label for="convert-static" style="margin:0">Convert uploaded images to AVIF</label>
+      </div>
+      <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+        <input type="checkbox" id="convert-animated" name="convert_animated_avif" value="1"
+               style="width:auto;accent-color:var(--neon)" {% if settings.convert_animated_avif %}checked{% endif %}>
+        <label for="convert-animated" style="margin:0">Convert animated GIF/WebP to animated AVIF</label>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<style>
+.settings-tab-bar { display:flex; gap:.3rem; margin:1rem 0; border-bottom:1px solid var(--border); padding-bottom:.5rem; }
+.settings-tab {
+  background:var(--bg2); border:1px solid var(--border); color:var(--text-dim);
+  padding:.35rem .9rem; border-radius:4px 4px 0 0; cursor:pointer;
+  font-family:var(--font); font-size:.85rem;
+}
+.settings-tab.active { border-color:var(--neon); color:var(--neon); }
+</style>
+
+<script>
+function switchSettingsTab(t) {
+  document.querySelectorAll('.settings-tab').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + t).classList.add('active');
+  // Only one pane exists today (Options) — this just establishes the
+  // show/hide wiring for whenever a second settings tab shows up.
+}
+</script>
+{% endblock %}

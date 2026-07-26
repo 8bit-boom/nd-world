@@ -5,7 +5,19 @@ from sqlalchemy.orm import sessionmaker
 from .models import (
     Base, World, Schematic, MapOverlay, InvestBoard, PlayerCharacter, SheetTemplate,
     StarredImage, User, WorldMembership, InviteCode, EntityTemplate, RandomTable,
+    AppSettings,
 )
+
+
+def get_app_settings(db):
+    """The single instance-wide settings row, created lazily on first use."""
+    s = db.query(AppSettings).first()
+    if not s:
+        s = AppSettings(id=1)
+        db.add(s)
+        db.commit()
+        db.refresh(s)
+    return s
 
 def _heal_table(conn, table, columns):
     """Self-heal a table against its model's expected columns: add whatever's

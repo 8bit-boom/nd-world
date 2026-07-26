@@ -20,7 +20,7 @@ from ..constants import (
     KIND_ICONS, KINDS, SUBTYPES, XP_THRESHOLDS,
     ND_DEFAULT_STATS, ND_DEFAULT_CURRENCY,
 )
-from ..database import get_db
+from ..database import get_db, get_app_settings
 from ..imaging import convert_to_avif
 from ..models import PlayerCharacter, SheetTemplate, User, World, WorldMembership
 
@@ -195,7 +195,7 @@ def _apply_form(pc: PlayerCharacter, data: dict):
     pc.updated_at = datetime.utcnow()
 
 
-def _upload_portrait(file: UploadFile) -> Optional[str]:
+def _upload_portrait(file: UploadFile, db: Optional[Session] = None) -> Optional[str]:
     if not file or not file.filename:
         return None
     ext = Path(file.filename).suffix.lower()
@@ -208,7 +208,12 @@ def _upload_portrait(file: UploadFile) -> Optional[str]:
     with open(dest, "wb") as f:
         import shutil
         shutil.copyfileobj(file.file, f)
-    dest = convert_to_avif(dest)
+    if db is not None:
+        settings = get_app_settings(db)
+        dest = convert_to_avif(dest, convert_static=settings.convert_images_avif,
+                                convert_animated=settings.convert_animated_avif)
+    else:
+        dest = convert_to_avif(dest)
     return f"/uploads/portraits/{dest.name}"
 
 
@@ -352,7 +357,7 @@ async def character_create(
     pc = PlayerCharacter(world_id=world.id, owner_user_id=owner_id)
     _apply_form(pc, data)
     if portrait and portrait.filename:
-        url = _upload_portrait(portrait)
+        url = _upload_portrait(portrait, db=db)
         if url:
             pc.portrait_url = url
     db.add(pc)
@@ -630,7 +635,7 @@ async def character_update(
     data = dict(form)
     _apply_form(pc, data)
     if portrait and portrait.filename:
-        url = _upload_portrait(portrait)
+        url = _upload_portrait(portrait, db=db)
         if url:
             pc.portrait_url = url
     db.commit()

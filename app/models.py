@@ -495,3 +495,16 @@ class Schematic(Base):
     grid_config_json = Column(Text, default="{}")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AppSettings(Base):
+    """Single-row, instance-wide settings — not per-world, since this
+    controls how the upload pipeline itself behaves. Looked up/created
+    lazily via database.get_app_settings() rather than seeded, so it
+    doesn't need any special-casing in _seed()."""
+    __tablename__ = "app_settings"
+
+    id = Column(Integer, primary_key=True, default=1)
+    convert_images_avif = Column(Boolean, default=True)
+    convert_animated_avif = Column(Boolean, default=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

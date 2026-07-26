@@ -14,25 +14,49 @@ AVIF_QUALITY = 90
 _CONVERTIBLE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
 
-def convert_to_avif(path: Path, quality: int = AVIF_QUALITY) -> Path:
+def _frame_mode(frame: "Image.Image") -> str:
+    if frame.mode in ("RGBA", "LA") or (frame.mode == "P" and "transparency" in frame.info):
+        return "RGBA"
+    return "RGB"
+
+
+def convert_to_avif(
+    path: Path,
+    quality: int = AVIF_QUALITY,
+    convert_static: bool = True,
+    convert_animated: bool = True,
+) -> Path:
     """Convert an uploaded image in place to AVIF and return the new path.
     Returns the original path unchanged if the format isn't convertible, if
-    it's an animated image, or if it fails to decode — a corrupt/unsupported/
-    animated upload shouldn't break the calling upload flow, it just keeps
-    whatever was saved."""
+    the relevant convert_static/convert_animated flag is off, or if the
+    image fails to decode — a corrupt/unsupported upload shouldn't break the
+    calling upload flow, it just keeps whatever was saved."""
     if path.suffix.lower() not in _CONVERTIBLE_EXTS:
         return path
     try:
         img = Image.open(path)
-        if getattr(img, "is_animated", False):
-            return path
-        img.load()
-        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
-            img = img.convert("RGBA")
+        animated = getattr(img, "is_animated", False)
+        if animated:
+            if not convert_animated:
+                return path
+            dest = path.with_suffix(".avif")
+            frames, durations = [], []
+            for i in range(img.n_frames):
+                img.seek(i)
+                frame = img.convert(_frame_mode(img))
+                frames.append(frame.copy())
+                durations.append(img.info.get("duration", 100))
+            frames[0].save(
+                dest, format="AVIF", save_all=True, append_images=frames[1:],
+                duration=durations, loop=img.info.get("loop", 0), quality=quality,
+            )
         else:
-            img = img.convert("RGB")
-        dest = path.with_suffix(".avif")
-        img.save(dest, format="AVIF", quality=quality)
+            if not convert_static:
+                return path
+            img.load()
+            img = img.convert(_frame_mode(img))
+            dest = path.with_suffix(".avif")
+            img.save(dest, format="AVIF", quality=quality)
     except Exception:
         return path
     path.unlink(missing_ok=True)

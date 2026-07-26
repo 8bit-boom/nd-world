@@ -76,6 +76,7 @@
     {% if request.state.user and request.state.user.is_gm %}
     <a href="/ai"           class="nav-kind {% if request.url.path == '/ai' %}active{% endif %}">🤖 AI</a>
     <a href="/imagestudio"  class="nav-kind {% if request.url.path == '/imagestudio' %}active{% endif %}">🎨 Image Studio</a>
+    <a href="/settings"     class="nav-kind {% if request.url.path == '/settings' %}active{% endif %}">⚙ Settings</a>
     <a href="/new" class="btn-new">+ New</a>
     <span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.4rem;vertical-align:middle"></span>
     {% endif %}
