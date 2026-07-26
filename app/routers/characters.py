@@ -50,6 +50,19 @@ def _world_ctx(request: Request, db: Session, active_world: Optional[str]):
     return world, worlds
 
 
+def _num(v, default=0.0):
+    """stats_json/equipment_json used to only ever be written by JS that
+    already coerced numbers (parseFloat(...)||0), so this never needed to be
+    defensive. The general JSON importer can write these fields directly
+    from arbitrary author-supplied JSON now, so a stray "" or missing value
+    must degrade to `default` instead of throwing and 500ing every page that
+    lists characters."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def _derived(pc: PlayerCharacter) -> dict:
     stats     = json.loads(pc.stats_json      or "[]")
     currency  = json.loads(pc.currency_json   or "[]")
@@ -68,12 +81,15 @@ def _derived(pc: PlayerCharacter) -> dict:
         xp_pct = 100
 
     total_weight = sum(
-        float(item.get("weight", 0)) * int(item.get("qty", 1))
-        for item in equipment
+        _num(item.get("weight"), 0) * _num(item.get("qty"), 1)
+        for item in equipment if isinstance(item, dict)
     )
 
     # N&D derived attributes
-    stat_val = {s["id"]: int(s.get("value", 0)) for s in stats}
+    stat_val = {
+        s["id"]: int(_num(s.get("value"), 0))
+        for s in stats if isinstance(s, dict) and s.get("id")
+    }
     phys = (stat_val.get("str", 0) + stat_val.get("dex", 0)
             + stat_val.get("bod", 0) + stat_val.get("per", 0))
     ment = (stat_val.get("wil", 0) + stat_val.get("int", 0)
