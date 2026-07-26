@@ -21,7 +21,7 @@ from ..constants import (
     ND_DEFAULT_STATS, ND_DEFAULT_CURRENCY,
 )
 from ..database import get_db
-from ..models import PlayerCharacter, SheetTemplate, World
+from ..models import PlayerCharacter, SheetTemplate, User, World, WorldMembership
 
 router = APIRouter()
 
@@ -486,6 +486,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
     chosen_tpl = db.query(SheetTemplate).filter(
         SheetTemplate.id == pc.sheet_template_id
     ).first() if pc.sheet_template_id else None
+    world_members = _assignable_members(db, pc.world_id) if user and user.is_gm else []
 
     if chosen_tpl and chosen_tpl.sheet_mode == "custom":
         tpl_fields = json.loads(chosen_tpl.fields_json or "[]")
@@ -497,6 +498,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
             "sections": _group_by_section(tpl_fields),
             "tpl_fields": tpl_fields,
             "custom_fields": custom_fields,
+            "world_members": world_members,
         })
 
     d = _derived(pc)
@@ -509,7 +511,67 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
         "tpl_fields": tpl_fields,
         "custom_fields": custom_fields,
         "can_manage": can_manage,
+        "world_members": world_members,
     })
+
+
+def _assignable_members(db: Session, world_id: int):
+    """Non-GM users invited to this world — the pool a GM can assign a
+    PlayerCharacter's ownership to."""
+    return (
+        db.query(User)
+        .join(WorldMembership, WorldMembership.user_id == User.id)
+        .filter(WorldMembership.world_id == world_id, User.is_gm == False)  # noqa: E712
+        .order_by(User.display_name)
+        .all()
+    )
+
+
+@router.post("/characters/{pc_id}/owner")
+def character_set_owner(
+    pc_id: int, request: Request,
+    owner_user_id: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    """GM-only: link (or unlink) a PlayerCharacter to a connected player's
+    account. Deliberately kept separate from _apply_form/character_update —
+    that route is shared with the owning player's own self-edit, which must
+    never be able to reassign ownership."""
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    user = _current_user(request)
+    if not user or not user.is_gm:
+        raise HTTPException(403)
+
+    owner_user_id = owner_user_id.strip()
+    if not owner_user_id:
+        pc.owner_user_id = None
+    else:
+        if not owner_user_id.isdigit():
+            raise HTTPException(400, "Invalid player")
+        target = db.query(User).filter(User.id == int(owner_user_id), User.is_gm == False).first()  # noqa: E712
+        if not target:
+            raise HTTPException(404, "Player not found")
+        if not db.query(WorldMembership).filter(
+            WorldMembership.world_id == pc.world_id, WorldMembership.user_id == target.id
+        ).first():
+            raise HTTPException(400, "That player isn't invited to this world")
+        other = db.query(PlayerCharacter).filter(
+            PlayerCharacter.world_id == pc.world_id,
+            PlayerCharacter.owner_user_id == target.id,
+            PlayerCharacter.id != pc.id,
+        ).first()
+        if other:
+            raise HTTPException(
+                400,
+                f'{target.display_name or target.email} already owns "{other.name}" in this world — unassign that one first.',
+            )
+        pc.owner_user_id = target.id
+        if not pc.player_name:
+            pc.player_name = target.display_name or target.email
+    db.commit()
+    return RedirectResponse(f"/characters/{pc_id}", status_code=303)
 
 
 # ── Edit ──────────────────────────────────────────────────────────────────────

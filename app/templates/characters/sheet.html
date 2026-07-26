@@ -165,6 +165,18 @@
         Level <span>{{ pc.level }}</span>
         {% if pc.player_name %} · Player: <span>{{ pc.player_name }}</span>{% endif %}
       </div>
+      {% if request.state.user and request.state.user.is_gm %}
+      <form method="post" action="/characters/{{ pc.id }}/owner" style="display:flex;gap:.4rem;align-items:center;margin-top:.2rem;">
+        <label style="font-size:.72rem;color:var(--text-dim)">Owning player</label>
+        <select name="owner_user_id" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;border-radius:4px;font-family:var(--font);font-size:.78rem">
+          <option value="">— unassigned (GM-managed) —</option>
+          {% for m in world_members %}
+          <option value="{{ m.id }}" {% if pc.owner_user_id == m.id %}selected{% endif %}>{{ m.display_name or m.email }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.25rem .6rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.75rem">Set</button>
+      </form>
+      {% endif %}
       <div class="cs-xp-row">
         <div class="cs-xp-bar-wrap">
           <div class="cs-xp-bar-fill" id="xp-bar" style="width:{{ xp_pct }}%"></div>
