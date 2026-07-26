@@ -21,6 +21,7 @@ import io
 from pathlib import Path
 
 from .database import init_db, get_db, SessionLocal
+from .imaging import convert_to_avif
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party
 from .routers.ai import router as ai_router
 from .routers.characters import router as characters_router
@@ -339,7 +340,8 @@ def save_upload(file: UploadFile, subdir: str = ""):
     dest = target_dir / filename
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
-    url_path = f"/uploads/{subdir}/{filename}" if subdir else f"/uploads/{filename}"
+    dest = convert_to_avif(dest)
+    url_path = f"/uploads/{subdir}/{dest.name}" if subdir else f"/uploads/{dest.name}"
     return url_path
 
 templates.env.globals.update(kinds=KINDS, subtypes=SUBTYPES, kind_icons=KIND_ICONS)

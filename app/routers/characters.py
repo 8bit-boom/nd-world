@@ -21,6 +21,7 @@ from ..constants import (
     ND_DEFAULT_STATS, ND_DEFAULT_CURRENCY,
 )
 from ..database import get_db
+from ..imaging import convert_to_avif
 from ..models import PlayerCharacter, SheetTemplate, User, World, WorldMembership
 
 router = APIRouter()
@@ -203,10 +204,12 @@ def _upload_portrait(file: UploadFile) -> Optional[str]:
     portraits_dir = UPLOADS_DIR / "portraits"
     portraits_dir.mkdir(parents=True, exist_ok=True)
     fname = uuid.uuid4().hex + ext
-    with open(portraits_dir / fname, "wb") as f:
+    dest = portraits_dir / fname
+    with open(dest, "wb") as f:
         import shutil
         shutil.copyfileobj(file.file, f)
-    return f"/uploads/portraits/{fname}"
+    dest = convert_to_avif(dest)
+    return f"/uploads/portraits/{dest.name}"
 
 
 # ── List ──────────────────────────────────────────────────────────────────────

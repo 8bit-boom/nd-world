@@ -59,9 +59,9 @@
 
   <div class="cx-header">
     <div class="cx-portrait">
-      {% if pc and pc.portrait_url %}<img src="{{ pc.portrait_url }}" id="portrait-preview-img" alt="{{ pc.name }}">
+      {% if pc and pc.portrait_url %}<img src="{{ pc.portrait_url }}" id="portrait-preview-img" alt="{{ pc.name }}" style="cursor:pointer" onclick="openLightbox(this.src, this.alt)">
       {% else %}<span id="portrait-preview-placeholder">{{ (pc.name[0] if pc and pc.name else '?') | upper }}</span>
-      <img id="portrait-preview-img" src="" alt="" style="display:none">{% endif %}
+      <img id="portrait-preview-img" src="" alt="" style="display:none" onclick="openLightbox(this.src, this.alt)">{% endif %}
     </div>
     <div class="cx-identity">
       <div class="cx-system-badge">{{ chosen_template.name if chosen_template else 'Custom' }}</div>

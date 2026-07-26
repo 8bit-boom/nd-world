@@ -152,7 +152,7 @@
   <!-- Header: portrait | name + profession + race + level | XP -->
   <div class="cs-header">
     <div class="cs-portrait">
-      {% if pc.portrait_url %}<img src="{{ pc.portrait_url }}" alt="{{ pc.name }}">
+      {% if pc.portrait_url %}<img src="{{ pc.portrait_url }}" alt="{{ pc.name }}" style="cursor:pointer" onclick="openLightbox(this.src, this.alt)">
       {% else %}{{ pc.name[0]|upper }}{% endif %}
     </div>
     <div class="cs-identity">
