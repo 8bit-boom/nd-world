@@ -281,7 +281,8 @@ function makeElSVG(el) {
     case 'token': {
       const r = el.r || 20;
       const isItem = el.source === 'item';
-      const dead = !isItem && el.max_hp > 0 && el.hp <= 0;
+      const isMerchant = el.source === 'merchant';
+      const dead = !isItem && !isMerchant && el.max_hp > 0 && el.hp <= 0;
       const clipId = 'tk-clip-' + el.id;
       if (el.image_url) {
         const clip = svgEl('clipPath', { id: clipId });
@@ -291,7 +292,7 @@ function makeElSVG(el) {
           href:el.image_url, preserveAspectRatio:'xMidYMid slice', 'clip-path':`url(#${clipId})` }));
       } else {
         const t = svgEl('text', { x:el.x, y:el.y+r*0.35, 'text-anchor':'middle', 'font-size':r*1.1, 'pointer-events':'none' });
-        t.textContent = isItem ? '📦' : (el.source === 'pc' ? '🧑' : (el.source === 'entity' ? '👹' : '❖'));
+        t.textContent = isItem ? '📦' : isMerchant ? '🛒' : (el.source === 'pc' ? '🧑' : (el.source === 'entity' ? '👹' : '❖'));
         g.appendChild(svgEl('circle', { cx:el.x, cy:el.y, r, fill:el.color||'#4488ff', opacity:0.35 }));
         g.appendChild(t);
       }
@@ -315,6 +316,11 @@ function makeElSVG(el) {
             style:'paint-order:stroke;stroke:#000;stroke-width:3px' });
           qt.textContent = `×${el.qty}`; g.appendChild(qt);
         }
+      } else if (isMerchant) {
+        const st = svgEl('text', { x:el.x, y:el.y+r+27, 'text-anchor':'middle', 'font-size':10,
+          'font-family':'monospace', fill:'#22aa66', 'pointer-events':'none',
+          style:'paint-order:stroke;stroke:#000;stroke-width:3px' });
+        st.textContent = '$ shop'; g.appendChild(st);
       } else if (el.max_hp) {
         const hpt = svgEl('text', { x:el.x, y:el.y+r+27, 'text-anchor':'middle', 'font-size':10,
           'font-family':'monospace', fill: dead ? '#ff6666' : '#9dffb0', 'pointer-events':'none',

@@ -1,4 +1,5 @@
 import base64
+import html
 import io
 import json
 import os
@@ -512,6 +513,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
     d = _derived(pc)
     tpl_fields = json.loads(chosen_tpl.fields_json) if chosen_tpl else []
     custom_fields = json.loads(getattr(pc, "custom_fields_json", None) or "{}")
+    catalog = game_catalog.catalog_payload()
     return templates.TemplateResponse("characters/sheet.html", {
         "request": request, "world": world, "worlds": worlds,
         "pc": pc, **d,
@@ -520,6 +522,8 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
         "custom_fields": custom_fields,
         "can_manage": can_manage,
         "world_members": world_members,
+        "equipment_catalog": catalog["equipment"],
+        "feats_catalog": catalog["feats"],
     })
 
 
@@ -787,6 +791,79 @@ def character_export_ndc(pc_id: int, request: Request, db: Session = Depends(get
     )
 
 
+def _pc_to_foundry_journal(pc: PlayerCharacter) -> dict:
+    """A single Foundry VTT JournalEntry document (v10+ page-based schema).
+    Journal Entries are system-agnostic in Foundry, so this imports cleanly
+    into any world regardless of which game system it runs — there's no
+    "Neon & Dragons" Foundry system to map a real Actor into."""
+    d = _derived(pc)
+    e = html.escape
+
+    sheet_rows = "".join(
+        f"<tr><td>{e(s.get('label') or s.get('id',''))}</td><td>{e(str(s.get('value','')))}</td></tr>"
+        for s in d["stats"] if isinstance(s, dict)
+    )
+    currency_line = ", ".join(f"{c.get('value',0)} {e(c.get('abbr') or c.get('label',''))}" for c in d["currency"])
+    sheet_html = (
+        f"<h1>{e(pc.name or 'Character')}</h1>"
+        f"<p><em>{e(pc.race or '')} {e(pc.char_class or '')}"
+        f"{' — Level ' + str(pc.level) if pc.level else ''}</em></p>"
+        f"<p>HP: {pc.current_hp}/{d['hp_max']}"
+        f"{'  |  Shock: ' + str(d['shock_current']) + '/' + str(d['shock_max']) if d['shock_max'] else ''}</p>"
+        f"<p>Currency: {currency_line or '—'}</p>"
+        + (f"<table><tbody>{sheet_rows}</tbody></table>" if sheet_rows else "")
+        + (f"<h2>Background</h2><p>{e(pc.backstory)}</p>" if pc.backstory else "")
+        + (f"<h2>Notes</h2><p>{e(pc.notes)}</p>" if pc.notes else "")
+    )
+
+    if d["equipment"]:
+        eq_rows = "".join(
+            f"<tr><td>{e(it.get('name',''))}</td><td>{it.get('qty',1)}</td><td>{it.get('weight',0)}</td>"
+            f"<td>{'yes' if it.get('equipped') else ''}</td><td>{e(it.get('notes',''))}</td></tr>"
+            for it in d["equipment"] if isinstance(it, dict)
+        )
+        equipment_html = f"<table><thead><tr><th>Item</th><th>Qty</th><th>Wt</th><th>Eq</th><th>Notes</th></tr></thead><tbody>{eq_rows}</tbody></table>"
+    else:
+        equipment_html = "<p><em>No equipment.</em></p>"
+
+    if d["feats"]:
+        feats_html = "<ul>" + "".join(
+            f"<li><strong>{e(f.get('name',''))}</strong>"
+            f"{' (' + e(f.get('type') or f.get('source') or '') + ')' if (f.get('type') or f.get('source')) else ''}"
+            f"{' — ' + e(f.get('notes') or f.get('description') or '') if (f.get('notes') or f.get('description')) else ''}</li>"
+            for f in d["feats"] if isinstance(f, dict)
+        ) + "</ul>"
+    else:
+        feats_html = "<p><em>No feats.</em></p>"
+
+    return {
+        "name": pc.name or "Character",
+        "folder": None,
+        "pages": [
+            {"name": "Character Sheet", "type": "text", "text": {"format": 1, "content": sheet_html}, "sort": 0},
+            {"name": "Equipment", "type": "text", "text": {"format": 1, "content": equipment_html}, "sort": 100},
+            {"name": "Feats", "type": "text", "text": {"format": 1, "content": feats_html}, "sort": 200},
+        ],
+        "flags": {"nd-world": {"source": "nd-world", "character_id": pc.id}},
+    }
+
+
+@router.get("/characters/{pc_id}/export.foundry.json")
+def character_export_foundry(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
+    payload = json.dumps([_pc_to_foundry_journal(pc)], ensure_ascii=False, indent=2)
+    fname = "".join(c if c.isalnum() or c in " -_" else "" for c in (pc.name or "character")) or "character"
+    return StreamingResponse(
+        io.BytesIO(payload.encode("utf-8")),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{fname}.foundry.json"'},
+    )
+
+
 # ── AJAX: HP ──────────────────────────────────────────────────────────────────
 
 @router.post("/api/characters/{pc_id}/hp-async")
@@ -925,6 +1002,79 @@ async def character_xp(pc_id: int, request: Request, db: Session = Depends(get_d
     xp_hi = XP_THRESHOLDS[lvl] if lvl < 20 else None
     xp_pct = min(100, int(max(0, pc.xp - xp_lo) * 100 / (xp_hi - xp_lo))) if xp_hi and xp_hi > xp_lo else 100
     return {"xp": pc.xp, "xp_lo": xp_lo, "xp_hi": xp_hi, "xp_pct": xp_pct}
+
+
+# ── AJAX: Equipment / Feats (inline sheet quick-add) ───────────────────────────
+
+@router.post("/api/characters/{pc_id}/equipment")
+async def character_equipment_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
+    body = await request.json()
+    equipment = json.loads(pc.equipment_json or "[]")
+    action = body.get("action", "add")
+    if action == "add":
+        item = body.get("item") or {}
+        name = str(item.get("name", "")).strip()
+        if not name:
+            raise HTTPException(400, "Item name is required")
+        entry = {
+            "name": name, "qty": int(_num(item.get("qty"), 1)),
+            "weight": _num(item.get("weight"), 0), "equipped": bool(item.get("equipped")),
+            "notes": str(item.get("notes", "")),
+        }
+        for k in ("id", "category", "cost"):
+            if item.get(k) is not None:
+                entry[k] = item[k]
+        equipment.append(entry)
+    elif action == "remove":
+        index = body.get("index")
+        if not isinstance(index, int) or not (0 <= index < len(equipment)):
+            raise HTTPException(400, "Invalid index")
+        equipment.pop(index)
+    else:
+        raise HTTPException(400, "Unknown action")
+    pc.equipment_json = json.dumps(equipment)
+    db.commit()
+    total_weight = sum(_num(it.get("weight"), 0) * _num(it.get("qty"), 1) for it in equipment if isinstance(it, dict))
+    return {"equipment": equipment, "total_weight": total_weight}
+
+
+@router.post("/api/characters/{pc_id}/feats")
+async def character_feats_async(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
+    body = await request.json()
+    feats = json.loads(pc.feats_json or "[]")
+    action = body.get("action", "add")
+    if action == "add":
+        item = body.get("item") or {}
+        name = str(item.get("name", "")).strip()
+        if not name:
+            raise HTTPException(400, "Feat name is required")
+        entry = {
+            "name": name, "type": str(item.get("type", "")),
+            "rank": str(item.get("rank", "")), "notes": str(item.get("notes", "")),
+        }
+        if item.get("id") is not None:
+            entry["id"] = item["id"]
+        feats.append(entry)
+    elif action == "remove":
+        index = body.get("index")
+        if not isinstance(index, int) or not (0 <= index < len(feats)):
+            raise HTTPException(400, "Invalid index")
+        feats.pop(index)
+    else:
+        raise HTTPException(400, "Unknown action")
+    pc.feats_json = json.dumps(feats)
+    db.commit()
+    return {"feats": feats}
 
 
 # ── AJAX: Dice roll ───────────────────────────────────────────────────────────

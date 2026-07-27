@@ -89,6 +89,7 @@ def _candidates(db: Session, world_id: int):
         "max_hp": pc.max_hp or 0, "hp": pc.current_hp or 0,
         "max_shock": pc.shock_max or 0, "shock": pc.shock_current or 0,
         "conditions": json.loads(pc.conditions_json or "[]"),
+        "portrait_url": pc.portrait_url or "",
     } for pc in pcs]
     entity_payload = []
     for e in entities:
@@ -96,6 +97,7 @@ def _candidates(db: Session, world_id: int):
         entity_payload.append({
             "id": e.id, "name": e.name, "kind": e.kind,
             "max_hp": prefill["max_hp"], "armor": prefill["armor"],
+            "image_url": e.image_url or "",
         })
     return pcs, entities, pc_payload, entity_payload
 

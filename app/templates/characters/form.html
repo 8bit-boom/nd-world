@@ -474,7 +474,9 @@ function renderFeats() {
     const typeOpts = FEAT_TYPES.map(t =>
       `<option value="${t}"${(f.type||f.source||'') === t ? ' selected':''}>${t}</option>`
     ).join('');
-    return `<tr>
+    // data-id preserves a catalog id (from the creation wizard) across saves —
+    // otherwise it's silently dropped since there's no input for it here.
+    return `<tr${f.id ? ` data-id="${escVal(f.id)}"` : ''}>
       <td><input type="text" value="${escVal(f.name)}" placeholder="Feat name"></td>
       <td><select>${typeOpts}</select></td>
       <td><input type="number" value="${f.rank||1}" min="1" max="10" style="width:55px;min-width:0"></td>
@@ -492,20 +494,31 @@ function serializeFeats() {
     const inputs = row.querySelectorAll('input[type=text]');
     const sel    = row.querySelector('select');
     const rankIn = row.querySelector('input[type=number]');
-    return {
+    const feat = {
       name: inputs[0]?.value || '',
       type: sel?.value || 'Common',
       rank: parseInt(rankIn?.value) || 1,
       notes: inputs[1]?.value || '',
     };
+    if (row.dataset.id) feat.id = row.dataset.id;
+    return feat;
   }).filter(f => f.name);
 }
 
 // ── Equipment ─────────────────────────────────────────────────────────────────
 function renderEquipment() {
   const tbody = document.getElementById('equipment-body');
-  tbody.innerHTML = _equipment.map((e, i) => `
-    <tr>
+  tbody.innerHTML = _equipment.map((e, i) => {
+    // data-id/category/cost preserve catalog linkage (from the creation
+    // wizard) across saves — otherwise silently dropped, which also breaks
+    // .ndc export's category bucketing.
+    const extra = [
+      e.id ? ` data-id="${escVal(e.id)}"` : '',
+      e.category ? ` data-category="${escVal(e.category)}"` : '',
+      e.cost !== undefined ? ` data-cost="${escVal(e.cost)}"` : '',
+    ].join('');
+    return `
+    <tr${extra}>
       <td><input type="text" value="${escVal(e.name)}" placeholder="Item name"></td>
       <td><input type="number" value="${e.qty||1}" style="width:55px;min-width:0"></td>
       <td><input type="number" value="${e.weight||0}" step="0.1" style="width:65px;min-width:0"></td>
@@ -513,7 +526,8 @@ function renderEquipment() {
       <td><input type="text" value="${escVal(e.notes||'')}" placeholder="notes"></td>
       <td>${delBtn('delEquipment('+i+')')}</td>
     </tr>
-  `).join('');
+  `;
+  }).join('');
 }
 
 function addEquipment()  { _equipment.push({name:'',qty:1,weight:0,equipped:false,notes:''}); renderEquipment(); }
@@ -636,8 +650,12 @@ document.getElementById('char-form').addEventListener('submit', function() {
     const texts = row.querySelectorAll('input[type=text]');
     const nums  = row.querySelectorAll('input[type=number]');
     const cb    = row.querySelector('input[type=checkbox]');
-    return {name:texts[0]?.value||'',qty:parseInt(nums[0]?.value)||1,
+    const item = {name:texts[0]?.value||'',qty:parseInt(nums[0]?.value)||1,
             weight:parseFloat(nums[1]?.value)||0,equipped:cb?.checked||false,notes:texts[1]?.value||''};
+    if (row.dataset.id) item.id = row.dataset.id;
+    if (row.dataset.category) item.category = row.dataset.category;
+    if (row.dataset.cost !== undefined && row.dataset.cost !== '') item.cost = parseFloat(row.dataset.cost) || 0;
+    return item;
   });
   document.getElementById('equipment_json').value = JSON.stringify(eqData);
 });

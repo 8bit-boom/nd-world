@@ -115,6 +115,10 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if re.match(r"^/api/maps/schematic/[^/]+/move-token$", path):
         return True
+    if re.match(r"^/api/maps/schematic/[^/]+/pickup-item$", path):
+        return True
+    if re.match(r"^/api/maps/schematic/[^/]+/buy-item$", path):
+        return True
     if method != "GET":
         return False
     if path in ("/", "/rules", "/search", "/maps"):
@@ -1165,7 +1169,7 @@ def schematic_view(slug: str, request: Request, db: Session = Depends(get_db), a
     item_entities = db.query(Entity).filter(
         Entity.world_id == s.world_id, Entity.kind == "item"
     ).order_by(Entity.name).all()
-    item_payload = [{"id": e.id, "name": e.name, "summary": e.summary or ""} for e in item_entities]
+    item_payload = [{"id": e.id, "name": e.name, "summary": e.summary or "", "image_url": e.image_url or ""} for e in item_entities]
     combat_sessions = db.query(CombatSession).filter(CombatSession.world_id == s.world_id).order_by(CombatSession.updated_at.desc()).all()
     linked_combat = db.query(CombatSession).filter(CombatSession.id == s.combat_session_id).first() if s.combat_session_id else None
     active_combatant_id, combat_round = None, None
@@ -1294,12 +1298,14 @@ def _schematic_player_payload(db: Session, s: Schematic, user):
         el for el in elements
         if el.get("type") != "token" or el.get("visible_to_players", True)
     ]
-    own_pc_id = None
+    own_pc_id, own_pc_currency = None, []
     if user and not user.is_gm:
         pc = db.query(PlayerCharacter).filter(
             PlayerCharacter.world_id == s.world_id, PlayerCharacter.owner_user_id == user.id
         ).first()
-        own_pc_id = pc.id if pc else None
+        if pc:
+            own_pc_id = pc.id
+            own_pc_currency = json.loads(pc.currency_json or "[]")
     active_combatant_id, combat_round = None, None
     if s.combat_session_id:
         cs = db.query(CombatSession).filter(CombatSession.id == s.combat_session_id).first()
@@ -1309,7 +1315,7 @@ def _schematic_player_payload(db: Session, s: Schematic, user):
             if ordered and 0 <= cs.active_idx < len(ordered):
                 active_combatant_id = ordered[cs.active_idx].get("id")
             combat_round = cs.round_num
-    return elements, visible, own_pc_id, active_combatant_id, combat_round
+    return elements, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round
 
 
 @app.get("/maps/schematic/{slug}/view", response_class=HTMLResponse)
@@ -1322,7 +1328,7 @@ def schematic_player_view(slug: str, request: Request, db: Session = Depends(get
         raise HTTPException(404)
     worlds = _visible_worlds(request, db)
     user = getattr(request.state, "user", None)
-    _, visible, own_pc_id, active_combatant_id, combat_round = _schematic_player_payload(db, s, user)
+    _, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round = _schematic_player_payload(db, s, user)
     _BG = {"dark": "#111111", "blueprint": "#0d1b2a", "grid-light": "#1a1a2e", "light": "#f0f0f0"}
     return templates.TemplateResponse("schematic_view.html", {
         "request": request, "world": world, "worlds": worlds,
@@ -1332,6 +1338,7 @@ def schematic_player_view(slug: str, request: Request, db: Session = Depends(get
         "grid_type": s.grid_type or "none",
         "grid_config_json": s.grid_config_json or "{}",
         "own_pc_id": own_pc_id,
+        "own_pc_currency_json": json.dumps(own_pc_currency),
         "combat_active_combatant_id": active_combatant_id,
         "combat_round": combat_round,
     })
@@ -1346,11 +1353,12 @@ def schematic_player_view_json(slug: str, request: Request, db: Session = Depend
     if not world or s.world_id != world.id:
         raise HTTPException(404)
     user = getattr(request.state, "user", None)
-    _, visible, own_pc_id, active_combatant_id, combat_round = _schematic_player_payload(db, s, user)
+    _, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round = _schematic_player_payload(db, s, user)
     return {
         "elements": visible,
         "party_pins": _party_pins_for(db, s.world_id, "schematic", slug),
         "own_pc_id": own_pc_id,
+        "own_pc_currency": own_pc_currency,
         "combat_active_combatant_id": active_combatant_id,
         "combat_round": combat_round,
     }
@@ -1389,6 +1397,104 @@ async def schematic_move_own_token(slug: str, request: Request, db: Session = De
     s.elements_json = json.dumps(elements)
     db.commit()
     return {"ok": True}
+
+
+def _merge_equipment_item(pc: PlayerCharacter, name: str, qty: int):
+    """Add qty of an item into pc.equipment_json, merging into an existing row
+    with the same name (case-insensitive) rather than duplicating it."""
+    equipment = json.loads(pc.equipment_json or "[]")
+    existing = next((it for it in equipment if (it.get("name") or "").strip().lower() == name.strip().lower()), None)
+    if existing:
+        existing["qty"] = (existing.get("qty") or 0) + qty
+    else:
+        equipment.append({"name": name, "qty": qty, "weight": 0, "equipped": False, "notes": ""})
+    pc.equipment_json = json.dumps(equipment)
+
+
+def _own_pc_for_schematic(db: Session, s: Schematic, user) -> Optional[PlayerCharacter]:
+    return db.query(PlayerCharacter).filter(
+        PlayerCharacter.world_id == s.world_id, PlayerCharacter.owner_user_id == user.id
+    ).first()
+
+
+@app.post("/api/maps/schematic/{slug}/pickup-item")
+async def schematic_pickup_item(slug: str, request: Request, db: Session = Depends(get_db)):
+    """A player picks up an entire item-token stack into their own character's
+    equipment. Ownership of the calling PlayerCharacter is re-derived from the
+    session user server-side, same pattern as move-token."""
+    s = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not s:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(403)
+    body = await request.json()
+    token_id = body.get("token_id")
+    if not token_id:
+        raise HTTPException(400)
+    elements = json.loads(s.elements_json or "[]")
+    el = next((e for e in elements if e.get("id") == token_id and e.get("type") == "token" and e.get("source") == "item"), None)
+    if not el:
+        raise HTTPException(404)
+    if not el.get("visible_to_players", True):
+        raise HTTPException(403)
+    pc = _own_pc_for_schematic(db, s, user)
+    if not pc:
+        raise HTTPException(400, "You don't have a character in this world")
+    qty = int(el.get("qty") or 1)
+    name = el.get("name") or "Item"
+    _merge_equipment_item(pc, name, qty)
+    elements = [e for e in elements if e.get("id") != token_id]
+    s.elements_json = json.dumps(elements)
+    db.commit()
+    return {"ok": True, "name": name, "qty": qty}
+
+
+@app.post("/api/maps/schematic/{slug}/buy-item")
+async def schematic_buy_item(slug: str, request: Request, db: Session = Depends(get_db)):
+    """A player buys one stock row from a merchant token, deducting currency
+    and merging the item into their own equipment. Ownership of the calling
+    PlayerCharacter is re-derived server-side, same pattern as pickup-item."""
+    s = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not s:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(403)
+    body = await request.json()
+    token_id = body.get("token_id")
+    stock_id = body.get("stock_id")
+    if not token_id or not stock_id:
+        raise HTTPException(400)
+    elements = json.loads(s.elements_json or "[]")
+    el = next((e for e in elements if e.get("id") == token_id and e.get("type") == "token" and e.get("source") == "merchant"), None)
+    if not el:
+        raise HTTPException(404)
+    if not el.get("visible_to_players", True):
+        raise HTTPException(403)
+    inventory = el.get("inventory") or []
+    stock = next((row for row in inventory if row.get("id") == stock_id), None)
+    if not stock or stock.get("qty") == 0:
+        raise HTTPException(404, "That item is out of stock")
+    pc = _own_pc_for_schematic(db, s, user)
+    if not pc:
+        raise HTTPException(400, "You don't have a character in this world")
+    price = float(stock.get("price") or 0)
+    abbr = (stock.get("currency_abbr") or "CR").strip().lower()
+    currency = json.loads(pc.currency_json or "[]")
+    entry = next((c for c in currency if (c.get("abbr") or "").strip().lower() == abbr), None)
+    if not entry:
+        raise HTTPException(400, f"Your character doesn't have {stock.get('currency_abbr', 'CR')}")
+    if float(entry.get("value") or 0) < price:
+        raise HTTPException(400, "Insufficient funds")
+    entry["value"] = float(entry.get("value") or 0) - price
+    pc.currency_json = json.dumps(currency)
+    if stock.get("qty", -1) != -1:
+        stock["qty"] = stock["qty"] - 1
+    _merge_equipment_item(pc, stock.get("name") or "Item", 1)
+    s.elements_json = json.dumps(elements)
+    db.commit()
+    return {"ok": True, "item": {"name": stock.get("name"), "qty": 1}, "currency": {"abbr": entry.get("abbr"), "value": entry.get("value")}}
 
 @app.post("/maps/schematic/{slug}/grid")
 async def schematic_save_grid(slug: str, request: Request, db: Session = Depends(get_db)):

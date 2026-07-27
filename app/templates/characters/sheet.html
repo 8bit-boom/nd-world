@@ -85,6 +85,10 @@
 .cs-equipment-table td { padding:.3rem .4rem;border-bottom:1px solid var(--border); }
 .cs-equipment-table tr:last-child td { border-bottom:none; }
 .cs-equipped-dot { color:var(--neon); }
+.cs-remove-btn { background:none;border:none;color:var(--neon2);cursor:pointer;font-size:.85rem;padding:0 .2rem; }
+.cs-quick-add { display:flex;gap:.4rem;margin-top:.6rem;flex-wrap:wrap;align-items:center; }
+.cs-quick-add input { background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;border-radius:4px;font-family:var(--font);font-size:.8rem;flex:1;min-width:100px; }
+.cs-empty-msg { color:var(--text-dim);font-size:.82rem; }
 
 /* ── Cyberware ── */
 .cs-cyberware { background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.75rem;margin-bottom:1rem; }
@@ -142,11 +146,14 @@
 <div class="cs">
   <div class="cs-actions">
     <a href="/characters" style="color:var(--text-dim);font-size:.85rem;">← All Characters</a>
-    <a href="/characters/{{ pc.id }}/edit" class="btn-primary" style="padding:.35rem .9rem;">Edit</a>
+    {% if can_manage %}<a href="/characters/{{ pc.id }}/edit" class="btn-primary" style="padding:.35rem .9rem;">Edit</a>{% endif %}
     <a href="/characters/{{ pc.id }}/export.ndc" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.35rem .75rem;border-radius:4px;font-size:.85rem;text-decoration:none;" title="Export .ndc — importable by the NeonDragonsApp Android app and NeonDragonsEditor">⬇ Export .ndc</a>
+    <a href="/characters/{{ pc.id }}/export.foundry.json" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.35rem .75rem;border-radius:4px;font-size:.85rem;text-decoration:none;" title="Export a FoundryVTT Journal Entry — import via Journal Entries sidebar → Import Data, or drag the file in">⬇ Export for FoundryVTT</a>
+    {% if can_manage %}
     <form method="post" action="/characters/{{ pc.id }}/delete" onsubmit="return confirm('Delete {{ pc.name }}?');" style="display:inline;">
       <button type="submit" style="background:transparent;border:1px solid var(--neon2);color:var(--neon2);padding:.35rem .75rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.85rem;">Delete</button>
     </form>
+    {% endif %}
   </div>
 
   <!-- Header: portrait | name + profession + race + level | XP -->
@@ -339,42 +346,35 @@
     <!-- Feats -->
     <div class="cs-panel">
       <div class="cs-panel-title">Feats</div>
-      {% if feats %}
-        {% for feat in feats %}
-        <div class="cs-feat-item">
-          <div class="cs-feat-name">
-            {{ feat.name }}
-            {% if feat.type or feat.source %}<span class="cs-feat-type">{{ feat.type or feat.source }}</span>{% endif %}
-            {% if feat.rank %}<span class="cs-feat-rank">Rank {{ feat.rank }}</span>{% endif %}
-          </div>
-          {% if feat.notes or feat.description %}<div class="cs-feat-notes">{{ feat.notes or feat.description }}</div>{% endif %}
-        </div>
-        {% endfor %}
-      {% else %}
-        <p style="color:var(--text-dim);font-size:.82rem;">No feats. <a href="/characters/{{ pc.id }}/edit">Edit</a> to add.</p>
+      <div id="feats-list"></div>
+      {% if can_manage %}
+      <div class="cs-quick-add">
+        <input id="qa-feat-name" list="feats-catalog-options" placeholder="Feat name…"/>
+        <button type="button" class="cs-res-inline-btn" onclick="addFeatQuick()">+ Add Feat</button>
+      </div>
+      <datalist id="feats-catalog-options">
+        {% for f in feats_catalog %}<option value="{{ f.name }}">{% endfor %}
+      </datalist>
       {% endif %}
     </div>
 
     <!-- Equipment -->
     <div class="cs-panel">
       <div class="cs-panel-title">Equipment</div>
-      {% if equipment %}
       <table class="cs-equipment-table">
-        <thead><tr><th>Item</th><th>Qty</th><th>Wt</th><th>Eq</th></tr></thead>
-        <tbody>
-          {% for item in equipment %}
-          <tr>
-            <td>{{ item.name }}{% if item.notes %} <span style="color:var(--text-dim);font-size:.75rem;">({{ item.notes }})</span>{% endif %}</td>
-            <td>{{ item.qty or 1 }}</td>
-            <td>{{ item.weight or 0 }}</td>
-            <td>{% if item.equipped %}<span class="cs-equipped-dot">●</span>{% else %}<span style="color:var(--text-dim);">○</span>{% endif %}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
+        <thead><tr><th>Item</th><th>Qty</th><th>Wt</th><th>Eq</th>{% if can_manage %}<th></th>{% endif %}</tr></thead>
+        <tbody id="equipment-list"></tbody>
       </table>
-      <div style="font-size:.75rem;color:var(--text-dim);margin-top:.4rem;">Total weight: {{ total_weight|int }}</div>
-      {% else %}
-        <p style="color:var(--text-dim);font-size:.82rem;">No equipment. <a href="/characters/{{ pc.id }}/edit">Add items</a>.</p>
+      <div style="font-size:.75rem;color:var(--text-dim);margin-top:.4rem;">Total weight: <span id="equipment-total-weight">{{ total_weight|int }}</span></div>
+      {% if can_manage %}
+      <div class="cs-quick-add">
+        <input id="qa-item-name" list="equipment-catalog-options" placeholder="Item name…"/>
+        <input id="qa-item-qty" type="number" value="1" min="1" style="width:50px"/>
+        <button type="button" class="cs-res-inline-btn" onclick="addEquipmentQuick()">+ Add Item</button>
+      </div>
+      <datalist id="equipment-catalog-options">
+        {% for e in equipment_catalog %}<option value="{{ e.name }}">{% endfor %}
+      </datalist>
       {% endif %}
     </div>
   </div>
@@ -493,6 +493,114 @@
 
 <script>
 const PC_ID = {{ pc.id }};
+const CAN_MANAGE = {{ 'true' if can_manage else 'false' }};
+
+// ── Feats / Equipment (inline quick-add) ────────────────────────────────────
+let FEATS = {{ feats | default([]) | tojson }};
+let EQUIPMENT = {{ equipment | default([]) | tojson }};
+const EQUIPMENT_CATALOG_BY_NAME = {};
+({{ equipment_catalog | default([]) | tojson }}).forEach(e => { EQUIPMENT_CATALOG_BY_NAME[e.name] = e; });
+const FEATS_CATALOG_BY_NAME = {};
+({{ feats_catalog | default([]) | tojson }}).forEach(f => { FEATS_CATALOG_BY_NAME[f.name] = f; });
+
+function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+
+function renderFeatsList() {
+  const box = document.getElementById('feats-list');
+  if (!FEATS.length) {
+    box.innerHTML = CAN_MANAGE
+      ? '<p class="cs-empty-msg">No feats yet — add one below.</p>'
+      : '<p class="cs-empty-msg">No feats.</p>';
+    return;
+  }
+  box.innerHTML = FEATS.map((feat, i) => `
+    <div class="cs-feat-item">
+      <div class="cs-feat-name">
+        ${escHtml(feat.name)}
+        ${(feat.type || feat.source) ? `<span class="cs-feat-type">${escHtml(feat.type || feat.source)}</span>` : ''}
+        ${feat.rank ? `<span class="cs-feat-rank">Rank ${escHtml(feat.rank)}</span>` : ''}
+        ${CAN_MANAGE ? `<button type="button" class="cs-remove-btn" onclick="removeFeatQuick(${i})" title="Remove">✕</button>` : ''}
+      </div>
+      ${(feat.notes || feat.description) ? `<div class="cs-feat-notes">${escHtml(feat.notes || feat.description)}</div>` : ''}
+    </div>
+  `).join('');
+}
+function renderEquipmentList() {
+  const box = document.getElementById('equipment-list');
+  if (!EQUIPMENT.length) {
+    box.innerHTML = `<tr><td colspan="5" class="cs-empty-msg">${CAN_MANAGE ? 'No equipment yet — add one below.' : 'No equipment.'}</td></tr>`;
+    return;
+  }
+  box.innerHTML = EQUIPMENT.map((item, i) => `
+    <tr>
+      <td>${escHtml(item.name)}${item.notes ? ` <span style="color:var(--text-dim);font-size:.75rem;">(${escHtml(item.notes)})</span>` : ''}</td>
+      <td>${item.qty || 1}</td>
+      <td>${item.weight || 0}</td>
+      <td>${item.equipped ? '<span class="cs-equipped-dot">●</span>' : '<span style="color:var(--text-dim);">○</span>'}</td>
+      ${CAN_MANAGE ? `<td><button type="button" class="cs-remove-btn" onclick="removeEquipmentQuick(${i})" title="Remove">✕</button></td>` : ''}
+    </tr>
+  `).join('');
+}
+renderFeatsList();
+renderEquipmentList();
+
+async function addFeatQuick() {
+  const input = document.getElementById('qa-feat-name');
+  const name = input.value.trim();
+  if (!name) return;
+  const catalog = FEATS_CATALOG_BY_NAME[name];
+  const item = catalog ? {name, id:catalog.id, type:catalog.category, rank:catalog.rank} : {name};
+  const r = await fetch(`/api/characters/${PC_ID}/feats`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({action:'add', item}),
+  });
+  if (!r.ok) { alert((await r.json()).detail || 'Could not add feat'); return; }
+  const d = await r.json();
+  FEATS = d.feats;
+  input.value = '';
+  renderFeatsList();
+}
+async function removeFeatQuick(index) {
+  const r = await fetch(`/api/characters/${PC_ID}/feats`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({action:'remove', index}),
+  });
+  if (!r.ok) return;
+  const d = await r.json();
+  FEATS = d.feats;
+  renderFeatsList();
+}
+async function addEquipmentQuick() {
+  const nameInput = document.getElementById('qa-item-name');
+  const qtyInput = document.getElementById('qa-item-qty');
+  const name = nameInput.value.trim();
+  if (!name) return;
+  const catalog = EQUIPMENT_CATALOG_BY_NAME[name];
+  const item = { name, qty: parseInt(qtyInput.value, 10) || 1 };
+  if (catalog) { item.id = catalog.id; item.category = catalog.category; item.cost = catalog.cost; item.weight = 0; }
+  const r = await fetch(`/api/characters/${PC_ID}/equipment`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({action:'add', item}),
+  });
+  if (!r.ok) { alert((await r.json()).detail || 'Could not add item'); return; }
+  const d = await r.json();
+  EQUIPMENT = d.equipment;
+  nameInput.value = '';
+  qtyInput.value = 1;
+  renderEquipmentList();
+  document.getElementById('equipment-total-weight').textContent = Math.trunc(d.total_weight);
+}
+async function removeEquipmentQuick(index) {
+  const r = await fetch(`/api/characters/${PC_ID}/equipment`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({action:'remove', index}),
+  });
+  if (!r.ok) return;
+  const d = await r.json();
+  EQUIPMENT = d.equipment;
+  renderEquipmentList();
+  document.getElementById('equipment-total-weight').textContent = Math.trunc(d.total_weight);
+}
 
 // ── HP ────────────────────────────────────────────────────────────────────────
 async function hpAjax(body) {

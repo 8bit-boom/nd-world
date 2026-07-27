@@ -19,6 +19,8 @@
   </div>
 </div>
 
+<div id="sv-popup" class="sv-popup" style="display:none"></div>
+
 <style>
 #sv-wrap { display:flex; flex-direction:column; height:calc(100vh - 50px); }
 #sv-toolbar { display:flex; align-items:center; gap:.6rem; padding:.5rem .8rem; background:var(--bg2,#1a1a2e); border-bottom:1px solid var(--border,#333); font-family:var(--font); }
@@ -28,6 +30,19 @@
 #sch-svg { max-width:100%; max-height:100%; }
 .own-token { cursor:grab; }
 .own-token:active { cursor:grabbing; }
+.clickable-token { cursor:pointer; }
+.sv-popup {
+  position:fixed; z-index:500; background:var(--bg2,#1a1a2e); border:1px solid var(--border,#333);
+  border-radius:8px; padding:.75rem .9rem; min-width:200px; max-width:320px;
+  box-shadow:0 6px 24px rgba(0,0,0,.6); font-family:var(--font); font-size:.85rem;
+}
+.sv-popup h4 { margin:0 0 .4rem; color:var(--neon,#00f0ff); font-size:.9rem; }
+.sv-popup .sv-popup-row { display:flex; align-items:center; justify-content:space-between; gap:.6rem; margin:.3rem 0; }
+.sv-popup button { background:var(--bg3,#222); border:1px solid var(--border,#333); color:var(--text,#eee); padding:.3rem .7rem; border-radius:4px; cursor:pointer; font-family:var(--font); font-size:.8rem; }
+.sv-popup button:hover { border-color:var(--neon,#00f0ff); color:var(--neon,#00f0ff); }
+.sv-popup button:disabled { opacity:.4; cursor:not-allowed; }
+.sv-popup .sv-popup-close { position:absolute; top:.3rem; right:.5rem; background:none; border:none; color:var(--text-dim,#888); font-size:1rem; padding:0; }
+.sv-popup-err { color:#ff6666; font-size:.78rem; margin-top:.3rem; }
 </style>
 
 <script src="/static/js/schematic-render.js"></script>
@@ -41,6 +56,7 @@ let partyPins = {{ party_pins_json | safe }};
 let gridType   = {{ grid_type | tojson }};
 let gridConfig = JSON.parse({{ grid_config_json | tojson }});
 const OWN_PC_ID = {{ own_pc_id | default(none) | tojson }};
+let ownPcCurrency = JSON.parse({{ own_pc_currency_json | default('[]') | tojson }});
 let activeCombatantId = {{ combat_active_combatant_id | default(none) | tojson }};
 let combatRound = {{ combat_round | default(none) | tojson }};
 const layerState = {};
@@ -63,6 +79,12 @@ function redraw() {
       if (OWN_PC_ID && el.pc_id === OWN_PC_ID) {
         g.classList.add('own-token');
         wireDrag(g, el);
+      } else if (el.source === 'item') {
+        g.classList.add('clickable-token');
+        g.addEventListener('click', e => { e.stopPropagation(); showItemPopup(e, el); });
+      } else if (el.source === 'merchant') {
+        g.classList.add('clickable-token');
+        g.addEventListener('click', e => { e.stopPropagation(); showMerchantPopup(e, el); });
       }
       tokenLayer.appendChild(g);
     } else {
@@ -74,6 +96,109 @@ function redraw() {
     document.getElementById('sv-round').style.display = '';
     document.getElementById('sv-round-num').textContent = combatRound;
   }
+}
+
+// ── Popup scaffold (shared by item pickup and merchant shop) ─────────────────
+const popupEl = document.getElementById('sv-popup');
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+function showPopup(e, html) {
+  popupEl.innerHTML = `<button type="button" class="sv-popup-close" onclick="hidePopup()">✕</button>${html}`;
+  popupEl.style.display = 'block';
+  const pad = 12;
+  let left = e.clientX + pad, top = e.clientY + pad;
+  const maxLeft = window.innerWidth - 340, maxTop = window.innerHeight - 200;
+  if (left > maxLeft) left = Math.max(pad, e.clientX - 320);
+  if (top > maxTop) top = Math.max(pad, e.clientY - 200);
+  popupEl.style.left = left + 'px';
+  popupEl.style.top = top + 'px';
+}
+function updatePopupContent(html) {
+  popupEl.innerHTML = `<button type="button" class="sv-popup-close" onclick="hidePopup()">✕</button>${html}`;
+}
+function hidePopup() { popupEl.style.display = 'none'; popupEl.innerHTML = ''; }
+document.addEventListener('click', e => {
+  if (popupEl.style.display !== 'none' && !popupEl.contains(e.target)) hidePopup();
+});
+
+// ── Item pickup ────────────────────────────────────────────────────────────
+function showItemPopup(e, el) {
+  showPopup(e, `
+    <h4>📦 ${esc(el.name)}</h4>
+    <div class="sv-popup-row"><span>Quantity</span><span>${el.qty || 1}</span></div>
+    <div class="sv-popup-row"><button type="button" onclick="confirmPickup('${el.id}', this)">Pick Up</button></div>
+  `);
+}
+async function confirmPickup(tokenId, btn) {
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/maps/schematic/${SLUG}/pickup-item`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token_id: tokenId }),
+    });
+    const data = await r.json();
+    if (!r.ok) { showStatus(data.detail || 'Could not pick up item'); return; }
+    elements = elements.filter(x => x.id !== tokenId);
+    hidePopup();
+    redraw();
+    showStatus(`Picked up ${data.qty}× ${data.name}`);
+  } catch (e) { showStatus('Network error'); }
+}
+function showStatus(msg) {
+  const s = document.getElementById('sv-status');
+  s.textContent = msg;
+  setTimeout(() => { s.textContent = 'live'; }, 3000);
+}
+
+// ── Merchant shop ──────────────────────────────────────────────────────────
+function currencyValue(abbr) {
+  const c = ownPcCurrency.find(x => (x.abbr||'').toLowerCase() === (abbr||'').toLowerCase());
+  return c ? (c.value || 0) : null;
+}
+function merchantPopupHtml(el) {
+  const inv = el.inventory || [];
+  const rows = inv.length ? inv.map(row => {
+    const balance = currencyValue(row.currency_abbr);
+    const outOfStock = row.qty === 0;
+    const afford = balance !== null && balance >= row.price;
+    return `<div class="sv-popup-row">
+      <span>${esc(row.name)}${row.qty >= 0 ? ` <small style="color:var(--text-dim)">(${row.qty} left)</small>` : ''}</span>
+      <button type="button" ${(outOfStock || !afford) ? 'disabled' : ''} onclick="confirmBuy('${el.id}','${row.id}', this)">
+        ${row.price} ${esc(row.currency_abbr)}
+      </button>
+    </div>`;
+  }).join('') : `<p style="color:var(--text-dim);font-size:.8rem">Nothing for sale.</p>`;
+  const balances = ownPcCurrency.map(c => `${c.value} ${c.abbr}`).join(', ') || 'no currency on your character';
+  return `<h4>🛒 ${esc(el.name)}</h4>${rows}<div class="sv-popup-err" id="sv-buy-err"></div>
+    <div style="margin-top:.5rem;font-size:.72rem;color:var(--text-dim)">You have: ${esc(balances)}</div>`;
+}
+function showMerchantPopup(e, el) {
+  if (!OWN_PC_ID) { showPopup(e, `<h4>🛒 ${esc(el.name)}</h4><p style="color:var(--text-dim);font-size:.8rem">You need a character in this world to shop.</p>`); return; }
+  showPopup(e, merchantPopupHtml(el));
+}
+async function confirmBuy(tokenId, stockId, btn) {
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/maps/schematic/${SLUG}/buy-item`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token_id: tokenId, stock_id: stockId }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      const errEl = document.getElementById('sv-buy-err');
+      if (errEl) errEl.textContent = data.detail || 'Purchase failed';
+      btn.disabled = false;
+      return;
+    }
+    const merchant = elements.find(x => x.id === tokenId);
+    if (merchant) {
+      const stock = (merchant.inventory || []).find(s => s.id === stockId);
+      if (stock && stock.qty > 0) stock.qty -= 1;
+    }
+    const c = ownPcCurrency.find(x => (x.abbr||'').toLowerCase() === (data.currency.abbr||'').toLowerCase());
+    if (c) c.value = data.currency.value;
+    showStatus(`Bought ${data.item.name}`);
+    if (merchant) updatePopupContent(merchantPopupHtml(merchant));
+  } catch (e) { showStatus('Network error'); }
 }
 
 function renderPartyPins() {
@@ -130,6 +255,7 @@ async function poll() {
     if (dragEl) return; // don't clobber an in-progress drag
     elements = data.elements;
     partyPins = data.party_pins;
+    ownPcCurrency = data.own_pc_currency || [];
     activeCombatantId = data.combat_active_combatant_id;
     combatRound = data.combat_round;
     redraw();

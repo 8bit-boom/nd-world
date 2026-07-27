@@ -219,6 +219,9 @@
         <label>Qty</label>
         <input type="number" class="pnum" id="tp-qty" min="1" oninput="setTokenPropLive('qty',+this.value)" onchange="snapshot()"/>
       </span>
+      <span id="tp-merchant-group" style="display:none;align-items:center;gap:.25rem">
+        <button type="button" class="tb" onclick="openMerchantInventoryDlg()">🛒 Edit Inventory</button>
+      </span>
       <button class="tb" style="color:var(--neon2);margin-left:.3rem" onclick="delSelected()">🗑</button>
     </div>
     <span id="status-xy" style="margin-left:auto;opacity:.35;font-size:.72rem;font-family:monospace"></span>
@@ -278,6 +281,7 @@
       <button type="button" class="tb on" id="tk-tab-pc"     onclick="setTokenTab('pc')"     style="flex:1">Players</button>
       <button type="button" class="tb"    id="tk-tab-entity" onclick="setTokenTab('entity')" style="flex:1">Creatures</button>
       <button type="button" class="tb"    id="tk-tab-item"   onclick="setTokenTab('item')"   style="flex:1">Items</button>
+      <button type="button" class="tb"    id="tk-tab-merchant" onclick="setTokenTab('merchant')" style="flex:1">Merchant</button>
       <button type="button" class="tb"    id="tk-tab-manual" onclick="setTokenTab('manual')" style="flex:1">Manual</button>
     </div>
     <div id="tk-pane-pc">
@@ -296,6 +300,13 @@
         <input type="number" id="tkdlg-item-qty" value="1" min="1" class="pnum"/>
       </div>
     </div>
+    <div id="tk-pane-merchant" style="display:none">
+      <select id="tkdlg-merchant-entity-select" style="width:100%;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.18);border-radius:4px;padding:.4rem .6rem;color:inherit;font-size:.88rem;font-family:var(--font)">
+        <option value="">— custom merchant (type below) —</option>
+      </select>
+      <input id="tkdlg-merchant-name" placeholder="Merchant name…" style="margin-top:.4rem"/>
+      <p style="font-size:.75rem;opacity:.55;margin:.5rem 0 0">Add stock (items, prices) from the token's props panel after placing it.</p>
+    </div>
     <div id="tk-pane-manual" style="display:none">
       <input id="tkdlg-manual-name" placeholder="Name…"/>
       <div style="display:flex;align-items:center;gap:.5rem;margin-top:.4rem">
@@ -308,6 +319,20 @@
     <div style="display:flex;gap:.5rem;margin-top:.8rem">
       <button class="btn-primary" onclick="confirmTokenPlacement()">Place Here</button>
       <button class="btn-cancel"  onclick="hideDlg('token-dlg')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Merchant inventory dialog ─────────────────────────────────────────── -->
+<div id="merchant-inventory-dlg" class="dlg-back">
+  <div class="dlg-box" style="min-width:420px;max-width:560px">
+    <h3 style="margin:0 0 .6rem" id="minv-title">Merchant Inventory</h3>
+    <datalist id="minv-item-options"></datalist>
+    <div id="minv-rows" style="display:flex;flex-direction:column;gap:.4rem;max-height:340px;overflow-y:auto"></div>
+    <button type="button" class="tb" style="margin-top:.6rem" onclick="addInventoryRow()">+ Add Stock</button>
+    <div style="display:flex;gap:.5rem;margin-top:.8rem">
+      <button class="btn-primary" onclick="saveMerchantInventory()">Save</button>
+      <button class="btn-cancel"  onclick="hideDlg('merchant-inventory-dlg')">Cancel</button>
     </div>
   </div>
 </div>
@@ -816,11 +841,13 @@ function showTokenProps(show, el) {
   document.getElementById('tp-size').value   = el.r ?? 20;
   document.getElementById('tp-visible').checked = el.visible_to_players !== false;
   const isItem = el.source === 'item';
-  document.getElementById('tp-hp-group').style.display  = isItem ? 'none' : 'flex';
-  document.getElementById('tp-qty-group').style.display = isItem ? 'flex' : 'none';
+  const isMerchant = el.source === 'merchant';
+  document.getElementById('tp-hp-group').style.display       = (isItem || isMerchant) ? 'none' : 'flex';
+  document.getElementById('tp-qty-group').style.display      = isItem ? 'flex' : 'none';
+  document.getElementById('tp-merchant-group').style.display = isMerchant ? 'flex' : 'none';
   if (isItem) {
     document.getElementById('tp-qty').value = el.qty ?? 1;
-  } else {
+  } else if (!isMerchant) {
     document.getElementById('tp-hp').value     = el.hp ?? 0;
     document.getElementById('tp-maxhp').value  = el.max_hp ?? 0;
     renderTokenConditions(el);
@@ -1318,7 +1345,7 @@ async function removePartyPin(partyId) {
 // ── Token placement dialog ────────────────────────────────────────────────────
 function setTokenTab(t) {
   tokenTab = t;
-  ['pc','entity','item','manual'].forEach(k => {
+  ['pc','entity','item','merchant','manual'].forEach(k => {
     document.getElementById('tk-tab-'+k).classList.toggle('on', k===t);
     document.getElementById('tk-pane-'+k).style.display = k===t ? '' : 'none';
   });
@@ -1342,6 +1369,10 @@ function openTokenDlg() {
     ITEM_PAYLOAD.map(it => `<option value="${it.id}">${it.name}</option>`).join('');
   document.getElementById('tkdlg-item-name').value = '';
   document.getElementById('tkdlg-item-qty').value = 1;
+  const merSel = document.getElementById('tkdlg-merchant-entity-select');
+  merSel.innerHTML = '<option value="">— custom merchant (type below) —</option>' +
+    ENTITY_PAYLOAD.map(en => `<option value="${en.id}">${en.name} (${en.kind})</option>`).join('');
+  document.getElementById('tkdlg-merchant-name').value = '';
   document.getElementById('tkdlg-manual-name').value = '';
   setTokenTab('pc');
   showDlg('token-dlg');
@@ -1357,13 +1388,15 @@ function confirmTokenPlacement() {
     const pc = PC_PAYLOAD.find(p => p.id === id);
     if (!pc) { pendingTokenPt=null; return; }
     el = { ...base, source:'pc', pc_id:pc.id, entity_id:null, name:pc.name,
-      color:'#4488ff', hp:pc.hp, max_hp:pc.max_hp, conditions:[...(pc.conditions||[])] };
+      color:'#4488ff', hp:pc.hp, max_hp:pc.max_hp, conditions:[...(pc.conditions||[])],
+      image_url: pc.portrait_url || null };
   } else if (tokenTab === 'entity') {
     const id = parseInt(document.getElementById('tkdlg-entity-select').value, 10);
     const en = ENTITY_PAYLOAD.find(x => x.id === id);
     if (!en) { pendingTokenPt=null; return; }
     el = { ...base, source:'entity', pc_id:null, entity_id:en.id, name:en.name,
-      color:'#e63946', hp:en.max_hp, max_hp:en.max_hp, visible_to_players:false };
+      color:'#e63946', hp:en.max_hp, max_hp:en.max_hp, visible_to_players:false,
+      image_url: en.image_url || null };
   } else if (tokenTab === 'item') {
     const id = parseInt(document.getElementById('tkdlg-item-select').value, 10);
     const it = ITEM_PAYLOAD.find(x => x.id === id);
@@ -1371,7 +1404,14 @@ function confirmTokenPlacement() {
     if (!name) { pendingTokenPt=null; return; }
     const qty = Math.max(1, parseInt(document.getElementById('tkdlg-item-qty').value, 10) || 1);
     el = { ...base, source:'item', pc_id:null, entity_id: it ? it.id : null, name,
-      color:'#f0c040', r:16, qty };
+      color:'#f0c040', r:16, qty, image_url: (it && it.image_url) || null };
+  } else if (tokenTab === 'merchant') {
+    const id = parseInt(document.getElementById('tkdlg-merchant-entity-select').value, 10);
+    const en = ENTITY_PAYLOAD.find(x => x.id === id);
+    const name = (en ? en.name : document.getElementById('tkdlg-merchant-name').value.trim());
+    if (!name) { pendingTokenPt=null; return; }
+    el = { ...base, source:'merchant', pc_id:null, entity_id: en ? en.id : null, name,
+      color:'#22aa66', inventory:[], image_url: (en && en.image_url) || null };
   } else {
     const name = document.getElementById('tkdlg-manual-name').value.trim();
     if (!name) { pendingTokenPt=null; return; }
@@ -1381,6 +1421,62 @@ function confirmTokenPlacement() {
   }
   elements.push(el); selIds.clear(); selIds.add(el.id); redraw(); snapshot();
   pendingTokenPt = null;
+}
+
+// ── Merchant inventory dialog ─────────────────────────────────────────────────
+function openMerchantInventoryDlg() {
+  const el = primary(); if (!el || el.source !== 'merchant') return;
+  document.getElementById('minv-title').textContent = `🛒 ${el.name || 'Merchant'} — Inventory`;
+  const opts = document.getElementById('minv-item-options');
+  opts.innerHTML = ITEM_PAYLOAD.map(it => `<option value="${it.name}">`).join('');
+  renderInventoryRows(el.inventory || []);
+  showDlg('merchant-inventory-dlg');
+}
+function renderInventoryRows(rows) {
+  const box = document.getElementById('minv-rows');
+  box.innerHTML = '';
+  rows.forEach((row, i) => {
+    const r = document.createElement('div');
+    r.style.cssText = 'display:flex;gap:.35rem;align-items:center';
+    r.innerHTML = `
+      <input list="minv-item-options" data-i="${i}" data-f="name" value="${(row.name||'').replace(/"/g,'&quot;')}" placeholder="Item name" style="flex:2"/>
+      <input type="number" data-i="${i}" data-f="price" value="${row.price ?? 0}" min="0" class="pnum" title="Price" style="width:60px"/>
+      <input type="text" data-i="${i}" data-f="currency_abbr" value="${row.currency_abbr || 'CR'}" title="Currency abbr" style="width:44px"/>
+      <input type="number" data-i="${i}" data-f="qty" value="${row.qty ?? 1}" min="-1" class="pnum" title="Qty (-1 = unlimited)" style="width:52px"/>
+      <button type="button" class="tb" style="color:var(--neon2)" onclick="removeInventoryRow(${i})">✕</button>
+    `;
+    box.appendChild(r);
+  });
+}
+function addInventoryRow() {
+  const el = primary(); if (!el || el.source !== 'merchant') return;
+  el.inventory = el.inventory || [];
+  el.inventory.push({ id: uid(), name:'', entity_id:null, price:0, currency_abbr:'CR', qty:1 });
+  renderInventoryRows(el.inventory);
+}
+function removeInventoryRow(i) {
+  const el = primary(); if (!el || el.source !== 'merchant') return;
+  el.inventory.splice(i, 1);
+  renderInventoryRows(el.inventory);
+}
+function saveMerchantInventory() {
+  const el = primary(); if (!el || el.source !== 'merchant') return;
+  const rows = [...document.querySelectorAll('#minv-rows > div')];
+  el.inventory = rows.map((r, i) => {
+    const name = r.querySelector('[data-f="name"]').value.trim();
+    const match = ITEM_PAYLOAD.find(it => it.name === name);
+    const existing = (el.inventory || [])[i] || {};
+    return {
+      id: existing.id || uid(),
+      name,
+      entity_id: match ? match.id : (existing.entity_id ?? null),
+      price: Math.max(0, parseFloat(r.querySelector('[data-f="price"]').value) || 0),
+      currency_abbr: (r.querySelector('[data-f="currency_abbr"]').value.trim() || 'CR'),
+      qty: (v => Number.isFinite(v) ? v : 1)(parseInt(r.querySelector('[data-f="qty"]').value, 10)),
+    };
+  }).filter(row => row.name);
+  hideDlg('merchant-inventory-dlg');
+  redraw(); snapshot();
 }
 
 // ── Battle grid dialog ────────────────────────────────────────────────────────
