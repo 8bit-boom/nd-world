@@ -81,6 +81,7 @@
 .cond-chip { background:var(--bg3); border:1px solid var(--border); color:var(--text); font-size:.72rem; padding:.15rem .5rem; border-radius:10px; cursor:pointer; }
 .cond-chip:hover { border-color:#c44; color:#c44; }
 .cond-add { background:var(--bg3); border:1px dashed var(--border); color:var(--text-dim); font-size:.72rem; padding:.15rem .5rem; border-radius:10px; width:90px; }
+.cond-preset { background:var(--bg3); border:1px dashed var(--border); color:var(--text-dim); font-size:.72rem; padding:.1rem .3rem; border-radius:10px; font-family:var(--font); }
 </style>
 
 <script>
@@ -90,6 +91,7 @@ const ENTITIES = {{ entity_payload_json | safe }};
 let combatants = {{ combatants_json | safe }};
 let roundNum = {{ combat.round_num }};
 let activeIdx = {{ combat.active_idx }};
+const CONDITION_PRESETS = ['Burn','Freeze','Toxin','Bleeding','Blind','Charm','Daze','Stunned','Prone','Restrained'];
 
 const addSource = document.getElementById('add-source');
 const pcSelect = document.getElementById('add-pc-select');
@@ -190,6 +192,10 @@ function render() {
       <div class="cond-chips">
         ${(c.conditions||[]).map((cond, ci) => `<span class="cond-chip" data-i="${i}" data-ci="${ci}" data-action="remove-cond">${esc(cond)} ✕</span>`).join('')}
         <input class="cond-add" placeholder="+ condition" data-i="${i}" data-field="add-cond"/>
+        <select class="cond-preset" data-i="${i}" data-action="add-preset-cond">
+          <option value="">+ preset…</option>
+          ${CONDITION_PRESETS.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}
+        </select>
       </div>
     `;
     list.appendChild(row);
@@ -231,6 +237,10 @@ document.getElementById('combatants-list').addEventListener('change', (e) => {
   else if (t.dataset.field === 'add-cond') {
     const val = t.value.trim();
     if (val) { combatants[i].conditions = combatants[i].conditions || []; combatants[i].conditions.push(val); t.value = ''; render(); }
+  } else if (t.dataset.action === 'add-preset-cond') {
+    const val = t.value;
+    if (val) { combatants[i].conditions = combatants[i].conditions || []; combatants[i].conditions.push(val); render(); }
+    save(); return;
   }
   save();
 });

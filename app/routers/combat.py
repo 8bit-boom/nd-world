@@ -141,6 +141,18 @@ def combat_detail(combat_id: int, request: Request, db: Session = Depends(get_db
     })
 
 
+@router.get("/api/combat/{combat_id}/state")
+def combat_get_state(combat_id: int, db: Session = Depends(get_db)):
+    cs = db.query(CombatSession).filter(CombatSession.id == combat_id).first()
+    if not cs:
+        raise HTTPException(404)
+    return {
+        "combatants": json.loads(cs.combatants_json or "[]"),
+        "round_num": cs.round_num,
+        "active_idx": cs.active_idx,
+    }
+
+
 @router.post("/combat/{combat_id}/state")
 async def combat_save_state(combat_id: int, request: Request, db: Session = Depends(get_db)):
     cs = db.query(CombatSession).filter(CombatSession.id == combat_id).first()

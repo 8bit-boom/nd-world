@@ -493,6 +493,7 @@ class Schematic(Base):
     # still store raw x/y, not grid coordinates.
     grid_type = Column(String(16), default="none")
     grid_config_json = Column(Text, default="{}")
+    combat_session_id = Column(Integer, ForeignKey("combat_sessions.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -22,7 +22,7 @@ from pathlib import Path
 
 from .database import init_db, get_db, SessionLocal, get_app_settings
 from .imaging import convert_image
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter
 from .routers.ai import router as ai_router
 from .routers.characters import router as characters_router
 from .routers.auth import router as auth_router
@@ -113,6 +113,8 @@ def _is_player_safe(method: str, path: str) -> bool:
         return False
     if path.startswith("/characters") or path.startswith("/api/characters/"):
         return True
+    if re.match(r"^/api/maps/schematic/[^/]+/move-token$", path):
+        return True
     if method != "GET":
         return False
     if path in ("/", "/rules", "/search", "/maps"):
@@ -122,6 +124,8 @@ def _is_player_safe(method: str, path: str) -> bool:
     if re.match(r"^/entity/\d+$", path):
         return True
     if path.startswith("/maps/") and not path.startswith("/maps/schematic") and path != "/maps/new":
+        return True
+    if re.match(r"^/maps/schematic/[^/]+/view(\.json)?$", path):
         return True
     if path.startswith("/worlds/switch/"):
         return True
@@ -1162,6 +1166,15 @@ def schematic_view(slug: str, request: Request, db: Session = Depends(get_db), a
         Entity.world_id == s.world_id, Entity.kind == "item"
     ).order_by(Entity.name).all()
     item_payload = [{"id": e.id, "name": e.name, "summary": e.summary or ""} for e in item_entities]
+    combat_sessions = db.query(CombatSession).filter(CombatSession.world_id == s.world_id).order_by(CombatSession.updated_at.desc()).all()
+    linked_combat = db.query(CombatSession).filter(CombatSession.id == s.combat_session_id).first() if s.combat_session_id else None
+    active_combatant_id, combat_round = None, None
+    if linked_combat:
+        combatants = json.loads(linked_combat.combatants_json or "[]")
+        ordered = sorted(combatants, key=lambda c: -(c.get("initiative") or 0))
+        if ordered and 0 <= linked_combat.active_idx < len(ordered):
+            active_combatant_id = ordered[linked_combat.active_idx].get("id")
+        combat_round = linked_combat.round_num
     return templates.TemplateResponse("schematic.html", {
         "request": request, "world": world, "worlds": worlds,
         "schematic": s, "elements_json": json.dumps(elements),
@@ -1173,7 +1186,209 @@ def schematic_view(slug: str, request: Request, db: Session = Depends(get_db), a
         "pc_payload_json": json.dumps(pc_payload),
         "entity_payload_json": json.dumps(entity_payload),
         "item_payload_json": json.dumps(item_payload),
+        "combat_sessions": combat_sessions,
+        "linked_combat": linked_combat,
+        "combat_active_combatant_id": active_combatant_id,
+        "combat_round": combat_round,
     })
+
+@app.post("/maps/schematic/{slug}/link-combat")
+def schematic_link_combat(slug: str, combat_session_id: str = Form(""), db: Session = Depends(get_db)):
+    s = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not s:
+        raise HTTPException(404)
+    if combat_session_id.strip():
+        cs = db.query(CombatSession).filter(CombatSession.id == int(combat_session_id), CombatSession.world_id == s.world_id).first()
+        if not cs:
+            raise HTTPException(404, "Combat session not found in this world")
+        s.combat_session_id = cs.id
+    db.commit()
+    return RedirectResponse(f"/maps/schematic/{slug}", status_code=303)
+
+@app.post("/maps/schematic/{slug}/unlink-combat")
+def schematic_unlink_combat(slug: str, db: Session = Depends(get_db)):
+    s = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not s:
+        raise HTTPException(404)
+    s.combat_session_id = None
+    db.commit()
+    return RedirectResponse(f"/maps/schematic/{slug}", status_code=303)
+
+@app.post("/maps/schematic/{slug}/pull-combat")
+def schematic_pull_combat(slug: str, db: Session = Depends(get_db)):
+    """One-way sync Combat → Map: create/refresh tokens for every combatant in
+    the linked CombatSession, matched by the token's combatant_id."""
+    s = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not s or not s.combat_session_id:
+        raise HTTPException(404)
+    cs = db.query(CombatSession).filter(CombatSession.id == s.combat_session_id).first()
+    if not cs:
+        raise HTTPException(404)
+    combatants = json.loads(cs.combatants_json or "[]")
+    elements = json.loads(s.elements_json or "[]")
+    by_combatant_id = {e.get("combatant_id"): e for e in elements if e.get("type") == "token" and e.get("combatant_id")}
+    cx, cy = (s.canvas_width or 2000) / 2, (s.canvas_height or 1500) / 2
+    new_count = 0
+    for combatant in combatants:
+        token = by_combatant_id.get(combatant["id"])
+        if token:
+            token["name"] = combatant.get("name", token.get("name"))
+            token["hp"] = combatant.get("hp", token.get("hp"))
+            token["max_hp"] = combatant.get("max_hp", token.get("max_hp"))
+            token["conditions"] = list(combatant.get("conditions", []))
+        else:
+            source = combatant.get("source", "manual")
+            elements.append({
+                "id": str(uuid.uuid4())[:8], "type": "token",
+                "x": cx + (new_count % 5) * 45 - 90, "y": cy + (new_count // 5) * 45 - 45,
+                "r": 20, "layer": "Tracks", "combatant_id": combatant["id"],
+                "source": source, "pc_id": combatant.get("pc_id"), "entity_id": combatant.get("entity_id"),
+                "name": combatant.get("name", "Combatant"),
+                "color": "#4488ff" if source == "pc" else ("#e63946" if source == "entity" else "#888888"),
+                "hp": combatant.get("hp", 0), "max_hp": combatant.get("max_hp", 0),
+                "conditions": list(combatant.get("conditions", [])),
+                "visible_to_players": source == "pc",
+            })
+            new_count += 1
+    s.elements_json = json.dumps(elements)
+    db.commit()
+    return {"elements": elements}
+
+@app.post("/maps/schematic/{slug}/push-combat")
+def schematic_push_combat(slug: str, db: Session = Depends(get_db)):
+    """One-way sync Map → Combat: write token hp/max_hp/conditions back onto
+    the matching combatant (matched by combatant_id, not pc_id/entity_id, so
+    duplicate entities in one combat stay distinguishable)."""
+    s = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not s or not s.combat_session_id:
+        raise HTTPException(404)
+    cs = db.query(CombatSession).filter(CombatSession.id == s.combat_session_id).first()
+    if not cs:
+        raise HTTPException(404)
+    elements = json.loads(s.elements_json or "[]")
+    combatants = json.loads(cs.combatants_json or "[]")
+    by_id = {c["id"]: c for c in combatants}
+    synced = []
+    for el in elements:
+        if el.get("type") != "token" or not el.get("combatant_id"):
+            continue
+        c = by_id.get(el["combatant_id"])
+        if not c:
+            continue
+        c["hp"] = el.get("hp", c.get("hp"))
+        c["max_hp"] = el.get("max_hp", c.get("max_hp"))
+        c["conditions"] = list(el.get("conditions", []))
+        synced.append(c.get("name"))
+    cs.combatants_json = json.dumps(combatants)
+    db.commit()
+    return {"synced": synced}
+
+
+def _schematic_player_payload(db: Session, s: Schematic, user):
+    """Elements filtered for the player-facing live view: non-token elements
+    always pass through, tokens only if visible_to_players. Also resolves the
+    viewer's own PlayerCharacter (for the draggable-own-token feature) and the
+    linked combat's active-turn combatant, if any."""
+    elements = json.loads(s.elements_json or "[]")
+    visible = [
+        el for el in elements
+        if el.get("type") != "token" or el.get("visible_to_players", True)
+    ]
+    own_pc_id = None
+    if user and not user.is_gm:
+        pc = db.query(PlayerCharacter).filter(
+            PlayerCharacter.world_id == s.world_id, PlayerCharacter.owner_user_id == user.id
+        ).first()
+        own_pc_id = pc.id if pc else None
+    active_combatant_id, combat_round = None, None
+    if s.combat_session_id:
+        cs = db.query(CombatSession).filter(CombatSession.id == s.combat_session_id).first()
+        if cs:
+            combatants = json.loads(cs.combatants_json or "[]")
+            ordered = sorted(combatants, key=lambda c: -(c.get("initiative") or 0))
+            if ordered and 0 <= cs.active_idx < len(ordered):
+                active_combatant_id = ordered[cs.active_idx].get("id")
+            combat_round = cs.round_num
+    return elements, visible, own_pc_id, active_combatant_id, combat_round
+
+
+@app.get("/maps/schematic/{slug}/view", response_class=HTMLResponse)
+def schematic_player_view(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    s = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not s or (s.is_html and s.html_file):
+        raise HTTPException(404)
+    world = get_active_world(request, db, active_world)
+    if not world or s.world_id != world.id:
+        raise HTTPException(404)
+    worlds = _visible_worlds(request, db)
+    user = getattr(request.state, "user", None)
+    _, visible, own_pc_id, active_combatant_id, combat_round = _schematic_player_payload(db, s, user)
+    _BG = {"dark": "#111111", "blueprint": "#0d1b2a", "grid-light": "#1a1a2e", "light": "#f0f0f0"}
+    return templates.TemplateResponse("schematic_view.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "schematic": s, "elements_json": json.dumps(visible),
+        "canvas_bg_color": _BG.get(s.canvas_bg or "dark", "#111111"),
+        "party_pins_json": json.dumps(_party_pins_for(db, s.world_id, "schematic", slug)),
+        "grid_type": s.grid_type or "none",
+        "grid_config_json": s.grid_config_json or "{}",
+        "own_pc_id": own_pc_id,
+        "combat_active_combatant_id": active_combatant_id,
+        "combat_round": combat_round,
+    })
+
+
+@app.get("/maps/schematic/{slug}/view.json")
+def schematic_player_view_json(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    s = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not s or (s.is_html and s.html_file):
+        raise HTTPException(404)
+    world = get_active_world(request, db, active_world)
+    if not world or s.world_id != world.id:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    _, visible, own_pc_id, active_combatant_id, combat_round = _schematic_player_payload(db, s, user)
+    return {
+        "elements": visible,
+        "party_pins": _party_pins_for(db, s.world_id, "schematic", slug),
+        "own_pc_id": own_pc_id,
+        "combat_active_combatant_id": active_combatant_id,
+        "combat_round": combat_round,
+    }
+
+
+@app.post("/api/maps/schematic/{slug}/move-token")
+async def schematic_move_own_token(slug: str, request: Request, db: Session = Depends(get_db)):
+    """Players may move only the one token linked to their own PlayerCharacter.
+    Ownership is re-derived from the session user server-side, never trusted
+    from the client."""
+    s = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not s:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    if not user:
+        raise HTTPException(403)
+    body = await request.json()
+    token_id = body.get("token_id")
+    x, y = body.get("x"), body.get("y")
+    if token_id is None or x is None or y is None:
+        raise HTTPException(400)
+    elements = json.loads(s.elements_json or "[]")
+    el = next((e for e in elements if e.get("id") == token_id and e.get("type") == "token"), None)
+    if not el:
+        raise HTTPException(404)
+    if not user.is_gm:
+        pc = db.query(PlayerCharacter).filter(
+            PlayerCharacter.world_id == s.world_id, PlayerCharacter.owner_user_id == user.id
+        ).first()
+        if not pc or el.get("pc_id") != pc.id:
+            raise HTTPException(403, "Not your character's token")
+        if not el.get("visible_to_players", True):
+            raise HTTPException(403)
+    el["x"] = float(x)
+    el["y"] = float(y)
+    s.elements_json = json.dumps(elements)
+    db.commit()
+    return {"ok": True}
 
 @app.post("/maps/schematic/{slug}/grid")
 async def schematic_save_grid(slug: str, request: Request, db: Session = Depends(get_db)):

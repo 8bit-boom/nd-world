@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}{{ schematic.name }} — Live Map{% endblock %}
+{% block content %}
+<div id="sv-wrap">
+  <div id="sv-toolbar">
+    <span id="sv-title">🔴 {{ schematic.name }}</span>
+    <span id="sv-round" style="display:none">Round <span id="sv-round-num"></span></span>
+    <div style="flex:1"></div>
+    <span id="sv-status" style="opacity:.5;font-size:.75rem">live</span>
+  </div>
+  <div id="sv-canvas-wrap">
+    <svg id="sch-svg" viewBox="0 0 {{ schematic.canvas_width or 2000 }} {{ schematic.canvas_height or 1500 }}" xmlns="http://www.w3.org/2000/svg">
+      <rect id="bg" width="100%" height="100%" fill="{{ canvas_bg_color }}"/>
+      <g id="el-layer"></g>
+      <g id="battle-grid-layer" pointer-events="none"></g>
+      <g id="party-layer"></g>
+      <g id="token-layer"></g>
+    </svg>
+  </div>
+</div>
+
+<style>
+#sv-wrap { display:flex; flex-direction:column; height:calc(100vh - 50px); }
+#sv-toolbar { display:flex; align-items:center; gap:.6rem; padding:.5rem .8rem; background:var(--bg2,#1a1a2e); border-bottom:1px solid var(--border,#333); font-family:var(--font); }
+#sv-title { color:var(--neon,#00f0ff); font-weight:bold; font-size:.95rem; }
+#sv-round { color:var(--text-dim,#888); font-size:.85rem; }
+#sv-canvas-wrap { flex:1; overflow:auto; background:#0a0a0a; display:flex; align-items:center; justify-content:center; }
+#sch-svg { max-width:100%; max-height:100%; }
+.own-token { cursor:grab; }
+.own-token:active { cursor:grabbing; }
+</style>
+
+<script src="/static/js/schematic-render.js"></script>
+<script>
+"use strict";
+const SLUG = {{ schematic.slug | tojson }};
+const CW   = {{ schematic.canvas_width  or 2000 }};
+const CH   = {{ schematic.canvas_height or 1500 }};
+let elements  = JSON.parse({{ elements_json | tojson }});
+let partyPins = {{ party_pins_json | safe }};
+let gridType   = {{ grid_type | tojson }};
+let gridConfig = JSON.parse({{ grid_config_json | tojson }});
+const OWN_PC_ID = {{ own_pc_id | default(none) | tojson }};
+let activeCombatantId = {{ combat_active_combatant_id | default(none) | tojson }};
+let combatRound = {{ combat_round | default(none) | tojson }};
+const layerState = {};
+
+const svg = document.getElementById('sch-svg');
+const elLayer = document.getElementById('el-layer');
+const tokenLayer = document.getElementById('token-layer');
+const partyLayer = document.getElementById('party-layer');
+const battleGridLayer = document.getElementById('battle-grid-layer');
+
+function redraw() {
+  elLayer.innerHTML = '';
+  tokenLayer.innerHTML = '';
+  renderBattleGrid();
+  elements.forEach(el => {
+    const g = makeElSVG(el);
+    if (!g) return;
+    if (el.type === 'token') {
+      g.dataset.id = el.id;
+      if (OWN_PC_ID && el.pc_id === OWN_PC_ID) {
+        g.classList.add('own-token');
+        wireDrag(g, el);
+      }
+      tokenLayer.appendChild(g);
+    } else {
+      elLayer.appendChild(g);
+    }
+  });
+  renderPartyPins();
+  if (combatRound) {
+    document.getElementById('sv-round').style.display = '';
+    document.getElementById('sv-round-num').textContent = combatRound;
+  }
+}
+
+function renderPartyPins() {
+  partyLayer.innerHTML = '';
+  partyPins.forEach(p => {
+    const g = svgEl('g', {});
+    g.appendChild(svgEl('rect', { x:p.x-13, y:p.y-28, width:26, height:26, rx:5, fill:'#ffcc00', 'fill-opacity':.92, stroke:'#fff', 'stroke-width':1.5 }));
+    const t = svgEl('text', { x:p.x, y:p.y-11, 'font-size':14, 'text-anchor':'middle' });
+    t.textContent = '🧑‍🤝‍🧑'; g.appendChild(t);
+    g.appendChild(svgEl('line', { x1:p.x, y1:p.y-2, x2:p.x, y2:p.y+4, stroke:'#ffcc00', 'stroke-width':2 }));
+    const lbl = svgEl('text', { x:p.x+16, y:p.y-14, 'font-size':12, 'font-family':'monospace', fill:'#fff', 'pointer-events':'none' });
+    lbl.textContent = p.name; g.appendChild(lbl);
+    partyLayer.appendChild(g);
+  });
+}
+
+// ── Own-token drag ──────────────────────────────────────────────────────────
+function svgPt(e) {
+  const pt = svg.createSVGPoint();
+  pt.x = e.clientX; pt.y = e.clientY;
+  const loc = pt.matrixTransform(svg.getScreenCTM().inverse());
+  return { x: loc.x, y: loc.y };
+}
+let dragEl = null;
+function wireDrag(g, el) {
+  g.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    dragEl = el;
+    g.setPointerCapture(e.pointerId);
+  });
+}
+svg.addEventListener('pointermove', e => {
+  if (!dragEl) return;
+  const pt = svgPt(e);
+  const snapped = gridType === 'none' ? pt : snapToGrid(pt.x, pt.y);
+  dragEl.x = snapped.x; dragEl.y = snapped.y;
+  redraw();
+});
+svg.addEventListener('pointerup', async e => {
+  if (!dragEl) return;
+  const el = dragEl; dragEl = null;
+  await fetch(`/api/maps/schematic/${SLUG}/move-token`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token_id: el.id, x: el.x, y: el.y }),
+  });
+});
+
+// ── Poll for live updates ─────────────────────────────────────────────────────
+async function poll() {
+  try {
+    const r = await fetch(`/maps/schematic/${SLUG}/view.json`);
+    if (!r.ok) return;
+    const data = await r.json();
+    if (dragEl) return; // don't clobber an in-progress drag
+    elements = data.elements;
+    partyPins = data.party_pins;
+    activeCombatantId = data.combat_active_combatant_id;
+    combatRound = data.combat_round;
+    redraw();
+  } catch (e) { /* transient network error — try again next tick */ }
+}
+setInterval(poll, 4000);
+
+redraw();
+</script>
+{% endblock %}
