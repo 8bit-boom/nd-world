@@ -491,13 +491,16 @@ const SLUG = {{ schematic.slug | tojson }};
 const CW   = {{ schematic.canvas_width  or 2000 }};
 const CH   = {{ schematic.canvas_height or 1500 }};
 let elements = JSON.parse({{ elements_json | tojson }});
-const WORLD_PARTIES = {{ world_parties_json | safe }};
-let partyPins = {{ party_pins_json | safe }};
+// JSON.parse(...|tojson) — not |safe — so a party/PC/entity/item name can't
+// break out of this inline script (tojson HTML-escapes <, >, &; |safe on a
+// raw json.dumps() string does not).
+const WORLD_PARTIES = JSON.parse({{ world_parties_json | tojson }});
+let partyPins = JSON.parse({{ party_pins_json | tojson }});
 let gridType   = {{ grid_type | tojson }};
 let gridConfig = JSON.parse({{ grid_config_json | tojson }});
-const PC_PAYLOAD     = {{ pc_payload_json | safe }};
-const ENTITY_PAYLOAD = {{ entity_payload_json | safe }};
-const ITEM_PAYLOAD   = {{ item_payload_json | safe }};
+const PC_PAYLOAD     = JSON.parse({{ pc_payload_json | tojson }});
+const ENTITY_PAYLOAD = JSON.parse({{ entity_payload_json | tojson }});
+const ITEM_PAYLOAD   = JSON.parse({{ item_payload_json | tojson }});
 
 const svg        = document.getElementById('sch-svg');
 const partyLayer = document.getElementById('party-layer');
@@ -583,6 +586,11 @@ function svgXYRaw(e) {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const uid = () => Math.random().toString(36).slice(2, 9);
+// Escape user-controlled text (names, labels, ...) before interpolating it
+// into innerHTML — PC names in particular are player-editable, so this is
+// the boundary that keeps a crafted name from executing script in the GM's
+// browser the moment this dialog/dropdown is opened.
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function def() { return { fill:'#334455', stroke:'#00f0ff', strokeW:2, opacity:0.9, label:'', dash:'' }; }
 const primary = () => { const a = [...selIds]; return a.length ? elements.find(e=>e.id===a[a.length-1]) : null; };
 const selectedEls = () => elements.filter(e => selIds.has(e.id));
@@ -1299,7 +1307,7 @@ renderPartyPins();
 
 function openPartyDlg() {
   const sel = document.getElementById('pdlg-select');
-  sel.innerHTML = WORLD_PARTIES.map(p => `<option value="${p.id}">${p.name} (${p.member_count} member${p.member_count===1?'':'s'})</option>`).join('') || '<option value="">No parties in this world yet</option>';
+  sel.innerHTML = WORLD_PARTIES.map(p => `<option value="${p.id}">${esc(p.name)} (${p.member_count} member${p.member_count===1?'':'s'})</option>`).join('') || '<option value="">No parties in this world yet</option>';
   showDlg('party-dlg');
 }
 
@@ -1325,7 +1333,7 @@ function showPartyPopup(e, p) {
   const menu = document.createElement('div');
   menu.id = 'party-popup';
   menu.style.cssText = 'position:fixed;left:' + e.clientX + 'px;top:' + e.clientY + 'px;background:#1a1a1a;border:1px solid rgba(255,255,255,.18);border-radius:5px;padding:.3rem;z-index:9500;font-family:var(--font);font-size:.8rem;min-width:160px;box-shadow:0 4px 14px rgba(0,0,0,.5)';
-  menu.innerHTML = `<div style="padding:.2rem .5rem .4rem;opacity:.7">🧑‍🤝‍🧑 ${p.name} · ${p.member_count} member${p.member_count===1?'':'s'}</div>
+  menu.innerHTML = `<div style="padding:.2rem .5rem .4rem;opacity:.7">🧑‍🤝‍🧑 ${esc(p.name)} · ${p.member_count} member${p.member_count===1?'':'s'}</div>
     <a href="/parties/${p.id}" class="ctx-btn" style="display:block;text-decoration:none">Open Party →</a>
     <button class="ctx-btn ctx-del" onclick="removePartyPin(${p.id})">🗑 Remove from here</button>`;
   document.body.appendChild(menu);
@@ -1358,20 +1366,20 @@ function onItemSelectChange() {
 function openTokenDlg() {
   const pcSel = document.getElementById('tkdlg-pc-select');
   pcSel.innerHTML = PC_PAYLOAD.map(pc =>
-    `<option value="${pc.id}">${pc.name} (HP ${pc.hp}/${pc.max_hp})</option>`
+    `<option value="${pc.id}">${esc(pc.name)} (HP ${pc.hp}/${pc.max_hp})</option>`
   ).join('') || '<option value="">No player characters in this world</option>';
   const enSel = document.getElementById('tkdlg-entity-select');
   enSel.innerHTML = ENTITY_PAYLOAD.map(en =>
-    `<option value="${en.id}">${en.name} (${en.kind}, HP ${en.max_hp})</option>`
+    `<option value="${en.id}">${esc(en.name)} (${en.kind}, HP ${en.max_hp})</option>`
   ).join('') || '<option value="">No creatures/characters in this world</option>';
   const itSel = document.getElementById('tkdlg-item-select');
   itSel.innerHTML = '<option value="">— custom item (type below) —</option>' +
-    ITEM_PAYLOAD.map(it => `<option value="${it.id}">${it.name}</option>`).join('');
+    ITEM_PAYLOAD.map(it => `<option value="${it.id}">${esc(it.name)}</option>`).join('');
   document.getElementById('tkdlg-item-name').value = '';
   document.getElementById('tkdlg-item-qty').value = 1;
   const merSel = document.getElementById('tkdlg-merchant-entity-select');
   merSel.innerHTML = '<option value="">— custom merchant (type below) —</option>' +
-    ENTITY_PAYLOAD.map(en => `<option value="${en.id}">${en.name} (${en.kind})</option>`).join('');
+    ENTITY_PAYLOAD.map(en => `<option value="${en.id}">${esc(en.name)} (${en.kind})</option>`).join('');
   document.getElementById('tkdlg-merchant-name').value = '';
   document.getElementById('tkdlg-manual-name').value = '';
   setTokenTab('pc');
@@ -1428,7 +1436,7 @@ function openMerchantInventoryDlg() {
   const el = primary(); if (!el || el.source !== 'merchant') return;
   document.getElementById('minv-title').textContent = `🛒 ${el.name || 'Merchant'} — Inventory`;
   const opts = document.getElementById('minv-item-options');
-  opts.innerHTML = ITEM_PAYLOAD.map(it => `<option value="${it.name}">`).join('');
+  opts.innerHTML = ITEM_PAYLOAD.map(it => `<option value="${esc(it.name)}">`).join('');
   renderInventoryRows(el.inventory || []);
   showDlg('merchant-inventory-dlg');
 }
@@ -1439,9 +1447,9 @@ function renderInventoryRows(rows) {
     const r = document.createElement('div');
     r.style.cssText = 'display:flex;gap:.35rem;align-items:center';
     r.innerHTML = `
-      <input list="minv-item-options" data-i="${i}" data-f="name" value="${(row.name||'').replace(/"/g,'&quot;')}" placeholder="Item name" style="flex:2"/>
+      <input list="minv-item-options" data-i="${i}" data-f="name" value="${esc(row.name||'')}" placeholder="Item name" style="flex:2"/>
       <input type="number" data-i="${i}" data-f="price" value="${row.price ?? 0}" min="0" class="pnum" title="Price" style="width:60px"/>
-      <input type="text" data-i="${i}" data-f="currency_abbr" value="${row.currency_abbr || 'CR'}" title="Currency abbr" style="width:44px"/>
+      <input type="text" data-i="${i}" data-f="currency_abbr" value="${esc(row.currency_abbr || 'CR')}" title="Currency abbr" style="width:44px"/>
       <input type="number" data-i="${i}" data-f="qty" value="${row.qty ?? 1}" min="-1" class="pnum" title="Qty (-1 = unlimited)" style="width:52px"/>
       <button type="button" class="tb" style="color:var(--neon2)" onclick="removeInventoryRow(${i})">✕</button>
     `;

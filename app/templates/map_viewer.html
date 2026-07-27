@@ -152,18 +152,26 @@ input[type=range] { width:100%; accent-color:var(--neon); }
 
 {% if image_url %}
 <script>
+// Escape user-controlled text (names, labels, notes, ...) before it's
+// interpolated into a Leaflet bindPopup/divIcon HTML string — those render
+// their argument as raw HTML, so an unescaped name could execute script in
+// anyone viewing this map (players included — this page is player-safe).
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 const MAP_W = {{ map_data.width }};
 const MAP_H = {{ map_data.height }};
 const IMG_URL = {{ image_url | tojson }};
 const SLUG = {{ slug | tojson }};
 const KANKA_MARKERS = {{ map_data.markers | tojson }};
-const ENAME_MAP = {{ ename_map | safe }};
-const SCHEMATICS = {{ schematics_json | safe }};
-const WORLD_PARTIES = {{ world_parties_json | safe }};
+// JSON.parse(...|tojson) — not |safe — so entity/party/marker names can't
+// break out of this inline script (tojson HTML-escapes <, >, &; |safe on a
+// raw json.dumps() string does not).
+const ENAME_MAP = JSON.parse({{ ename_map | tojson }});
+const SCHEMATICS = JSON.parse({{ schematics_json | tojson }});
+const WORLD_PARTIES = JSON.parse({{ world_parties_json | tojson }});
 const IS_GM = {{ is_gm | tojson }};
-let customMarkers = {{ overlay.custom_markers_json | safe }};
-let customRegions = {{ overlay.custom_regions_json | safe }};
-let partyPins = {{ party_pins_json | safe }};
+let customMarkers = JSON.parse({{ overlay.custom_markers_json | tojson }});
+let customRegions = JSON.parse({{ overlay.custom_regions_json | tojson }});
+let partyPins = JSON.parse({{ party_pins_json | tojson }});
 
 // Populate the "link to schematic" dropdown on the marker dialog
 (function () {
@@ -208,8 +216,8 @@ function renderKanka() {
       iconSize: [16,16], iconAnchor: [8,8],
     });
     L.marker(ll, {icon}).addTo(kankaLayer)
-      .bindPopup(`<div class="map-popup"><b>${name}</b>${type ? `<div class="pop-type">${type}</div>` : ''}${desc ? `<div class="pop-desc">${desc}</div>` : ''}${link}</div>`)
-      .bindTooltip(name, {direction:'right', className:'', opacity:.9});
+      .bindPopup(`<div class="map-popup"><b>${esc(name)}</b>${type ? `<div class="pop-type">${esc(type)}</div>` : ''}${desc ? `<div class="pop-desc">${esc(desc)}</div>` : ''}${link}</div>`)
+      .bindTooltip(esc(name), {direction:'right', className:'', opacity:.9});
   });
 }
 renderKanka();
@@ -229,11 +237,11 @@ function renderCustomMarkers() {
     const ll = L.latLng(m.lat, m.lng);
     const lm = L.marker(ll, {icon: makeCustomIcon(m.color || '#ff4466'), draggable: false})
       .addTo(customMarkersLayer);
-    const note = m.note ? `<div class="pop-desc">${m.note}</div>` : '';
+    const note = m.note ? `<div class="pop-desc">${esc(m.note)}</div>` : '';
     const schem = SCHEMATICS.find(s => s.slug === m.link_schematic);
-    const link = (schem && IS_GM) ? `<br><a href="/maps/schematic/${schem.slug}">🔗 Open ${schem.name} →</a>` : '';
-    lm.bindPopup(`<div class="map-popup"><b>${m.label || '?'}</b>${note}${link}</div>`);
-    lm.bindTooltip(m.label || '', {direction:'right', opacity:.9});
+    const link = (schem && IS_GM) ? `<br><a href="/maps/schematic/${schem.slug}">🔗 Open ${esc(schem.name)} →</a>` : '';
+    lm.bindPopup(`<div class="map-popup"><b>${esc(m.label || '?')}</b>${note}${link}</div>`);
+    lm.bindTooltip(esc(m.label || ''), {direction:'right', opacity:.9});
     lm.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removeCustomMarker(i); } else if (editMode && (tool === 'marker' || tool === 'move')) { L.DomEvent.stop(e); editCustomMarker(i); } });
   });
 }
@@ -256,8 +264,8 @@ function renderPartyPins() {
     const ll = L.latLng(p.lat, p.lng);
     const pm = L.marker(ll, {icon: makePartyIcon()}).addTo(partyPinsLayer);
     const gmActions = IS_GM ? `<a href="/parties/${p.id}">Open Party →</a><br><a href="#" onclick="removePartyPin(${p.id});return false;">Remove from map</a>` : '';
-    pm.bindPopup(`<div class="map-popup"><b>🧑‍🤝‍🧑 ${p.name}</b><div class="pop-desc">${p.member_count} member${p.member_count===1?'':'s'}</div>${gmActions}</div>`);
-    pm.bindTooltip(p.name, {direction:'right', opacity:.9});
+    pm.bindPopup(`<div class="map-popup"><b>🧑‍🤝‍🧑 ${esc(p.name)}</b><div class="pop-desc">${p.member_count} member${p.member_count===1?'':'s'}</div>${gmActions}</div>`);
+    pm.bindTooltip(esc(p.name), {direction:'right', opacity:.9});
     pm.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removePartyPin(p.id); } });
   });
 }
@@ -283,7 +291,7 @@ function renderCustomRegions() {
       fillOpacity: r.opacity || 0.25,
       weight: 2,
     }).addTo(customRegionsLayer);
-    if (r.name) poly.bindTooltip(r.name, {sticky:true, opacity:.9});
+    if (r.name) poly.bindTooltip(esc(r.name), {sticky:true, opacity:.9});
     poly.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removeRegion(i); } });
   });
 }

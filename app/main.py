@@ -10,6 +10,7 @@ from sqlalchemy import or_, func
 from typing import List, Optional
 from urllib.parse import quote
 import re
+import html
 import markdown2
 import os
 import secrets
@@ -183,7 +184,12 @@ app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, https_only=COOKIE_S
 
 
 def render_md(text):
-    return markdown2.markdown(text, extras=["fenced-code-blocks", "tables", "strike"]) if text else ""
+    # safe_mode="escape": raw HTML typed into markdown-authored fields (character
+    # notes/backstory, entity/rules bodies) is escaped to inert text instead of
+    # rendered — otherwise a <script> tag in user-authored content would execute
+    # in the browser of anyone who views it (stored XSS). Normal markdown syntax
+    # (links, emphasis, tables, ...) is unaffected.
+    return markdown2.markdown(text, extras=["fenced-code-blocks", "tables", "strike"], safe_mode="escape") if text else ""
 
 def _rules_toc(html: str):
     toc = []
@@ -2457,9 +2463,13 @@ def _snippet(text: str, q: str, window: int = 120) -> str:
     start = max(0, idx - window // 2)
     end = min(len(text), idx + window // 2)
     snippet = ("…" if start > 0 else "") + text[start:end].strip() + ("…" if end < len(text) else "")
-    # bold the match
-    pattern = re.compile(re.escape(q), re.IGNORECASE)
-    return pattern.sub(lambda m: f"<mark>{m.group()}</mark>", snippet)
+    # Escape before highlighting — entity/rules bodies are raw author-supplied
+    # text, and this snippet is rendered with |safe, so any literal HTML in it
+    # (e.g. a <script> tag typed into an entity body) must be inert by the time
+    # it reaches the template.
+    escaped = html.escape(snippet)
+    pattern = re.compile(re.escape(html.escape(q)), re.IGNORECASE)
+    return pattern.sub(lambda m: f"<mark>{m.group()}</mark>", escaped)
 
 @app.get("/search", response_class=HTMLResponse)
 def search(request: Request, q: str = "", kind: str = "",

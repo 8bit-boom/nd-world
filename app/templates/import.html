@@ -45,8 +45,11 @@
 </style>
 
 <script>
-const SCHEMATICS = {{ schematics_json | safe }};
-const MAPS = {{ maps_json | safe }};
+// JSON.parse(...|tojson) — not |safe — so a schematic/map name can't break
+// out of this inline script (tojson HTML-escapes <, >, &; |safe on a raw
+// json.dumps() string does not).
+const SCHEMATICS = JSON.parse({{ schematics_json | tojson }});
+const MAPS = JSON.parse({{ maps_json | tojson }});
 const KINDS = ["character","location","organization","creature","event","item","feat","note"];
 const NEEDS_BY_KIND = {
   world_rules: [], map_overlay: ["map_slug"], schematic_elements: ["schematic_slug"],

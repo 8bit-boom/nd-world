@@ -86,9 +86,12 @@
 
 <script>
 const COMBAT_ID = {{ combat.id }};
-const PCS = {{ pc_payload_json | safe }};
-const ENTITIES = {{ entity_payload_json | safe }};
-let combatants = {{ combatants_json | safe }};
+// JSON.parse(...|tojson) — not |safe — so a PC/entity name containing
+// "</script>" can't break out of this inline script and execute (tojson
+// escapes <, >, & for HTML-safety; |safe on a raw json.dumps() string does not).
+const PCS = JSON.parse({{ pc_payload_json | tojson }});
+const ENTITIES = JSON.parse({{ entity_payload_json | tojson }});
+let combatants = JSON.parse({{ combatants_json | tojson }});
 let roundNum = {{ combat.round_num }};
 let activeIdx = {{ combat.active_idx }};
 const CONDITION_PRESETS = ['Burn','Freeze','Toxin','Bleeding','Blind','Charm','Daze','Stunned','Prone','Restrained'];
@@ -260,8 +263,8 @@ document.getElementById('sync-btn').addEventListener('click', async () => {
   const data = await res.json();
   const box = document.getElementById('sync-result');
   box.style.display = 'block';
-  box.innerHTML = `<strong>Synced:</strong> ${data.synced.join(', ') || '—'}` +
-    (data.skipped.length ? `<br><strong style="color:var(--text-dim)">Skipped (not player characters):</strong> ${data.skipped.join(', ')}` : '');
+  box.innerHTML = `<strong>Synced:</strong> ${data.synced.map(esc).join(', ') || '—'}` +
+    (data.skipped.length ? `<br><strong style="color:var(--text-dim)">Skipped (not player characters):</strong> ${data.skipped.map(esc).join(', ')}` : '');
 });
 
 document.getElementById('delete-btn').addEventListener('click', () => {

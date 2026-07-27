@@ -31,7 +31,9 @@ BASE_DIR = Path(__file__).parent.parent.parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 templates.env.globals.update(kinds=KINDS, subtypes=SUBTYPES, kind_icons=KIND_ICONS)
 templates.env.filters["md"] = lambda t: (
-    markdown2.markdown(t, extras=["fenced-code-blocks", "tables", "strike"]) if t else ""
+    # safe_mode="escape": see app/main.py's render_md — raw HTML in a
+    # character's notes/backstory must not execute in another viewer's browser.
+    markdown2.markdown(t, extras=["fenced-code-blocks", "tables", "strike"], safe_mode="escape") if t else ""
 )
 templates.env.filters["fromjson"] = lambda s: json.loads(s) if s else []
 
