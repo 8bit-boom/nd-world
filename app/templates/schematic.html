@@ -195,7 +195,16 @@
       <label>Color</label>
       <input type="color" id="tp-color" oninput="setTokenPropLive('color',this.value)" onchange="snapshot()"/>
       <label>Size</label>
-      <input type="number" class="pnum" id="tp-size" min="6" max="120" oninput="setTokenPropLive('r',+this.value)" onchange="snapshot()"/>
+      <input type="number" class="pnum" id="tp-size" min="6" max="300" oninput="setTokenPropLive('r',+this.value)" onchange="snapshot()"/>
+      <span id="tp-sizecat-group" style="display:flex;align-items:center;gap:.15rem">
+        <select id="tp-size-category" onchange="setTokenSizeCategory(this.value)" title="Quick-set radius from a size category (relative to the map's grid cell)">
+          <option value="small">Small</option>
+          <option value="medium" selected>Medium</option>
+          <option value="large">Large</option>
+          <option value="huge">Huge</option>
+          <option value="colossal">Colossal</option>
+        </select>
+      </span>
       <label title="Shown on the player-facing live view" style="display:flex;align-items:center;gap:.15rem">
         <input type="checkbox" id="tp-visible" onchange="setTokenPropLive('visible_to_players',this.checked);snapshot()"/> 👁 Players
       </label>
@@ -847,12 +856,14 @@ function showTokenProps(show, el) {
   document.getElementById('tp-name').textContent = el.name || '(token)';
   document.getElementById('tp-color').value  = el.color || '#4488ff';
   document.getElementById('tp-size').value   = el.r ?? 20;
+  document.getElementById('tp-size-category').value = el.size_category || 'medium';
   document.getElementById('tp-visible').checked = el.visible_to_players !== false;
   const isItem = el.source === 'item';
   const isMerchant = el.source === 'merchant';
   document.getElementById('tp-hp-group').style.display       = (isItem || isMerchant) ? 'none' : 'flex';
   document.getElementById('tp-qty-group').style.display      = isItem ? 'flex' : 'none';
   document.getElementById('tp-merchant-group').style.display = isMerchant ? 'flex' : 'none';
+  document.getElementById('tp-sizecat-group').style.display  = isItem ? 'none' : 'flex';
   if (isItem) {
     document.getElementById('tp-qty').value = el.qty ?? 1;
   } else if (!isMerchant) {
@@ -864,6 +875,13 @@ function showTokenProps(show, el) {
 function setTokenPropLive(k, v) {
   const el = primary(); if (!el || el.type !== 'token') return;
   el[k] = v; redraw();
+}
+function setTokenSizeCategory(value) {
+  const el = primary(); if (!el || el.type !== 'token') return;
+  el.size_category = value;
+  el.r = radiusForSize(value, gridType, gridConfig);
+  document.getElementById('tp-size').value = el.r;
+  redraw(); snapshot();
 }
 function adjustTokenHp(delta) {
   const el = primary(); if (!el || el.type !== 'token' || el.source === 'item') return;
@@ -1389,7 +1407,8 @@ function confirmTokenPlacement() {
   hideDlg('token-dlg');
   if (!pendingTokenPt) return;
   let el = null;
-  const base = { id:uid(), type:'token', x:pendingTokenPt.x, y:pendingTokenPt.y, r:20,
+  const base = { id:uid(), type:'token', x:pendingTokenPt.x, y:pendingTokenPt.y,
+    r: radiusForSize('medium', gridType, gridConfig), size_category:'medium',
     conditions:[], layer:activeLayer, combatant_id:null, visible_to_players:true };
   if (tokenTab === 'pc') {
     const id = parseInt(document.getElementById('tkdlg-pc-select').value, 10);

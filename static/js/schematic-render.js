@@ -102,6 +102,26 @@ function pxToUnits(px) {
   return { cells, units: cells * perCell, label };
 }
 
+// ── Creature size categories ──────────────────────────────────────────────────
+// "cells" is the token's footprint diameter as a multiple of one grid cell —
+// Medium fills one square, Large a 2x2 area, etc., matching standard tabletop
+// size-category convention.
+const SIZE_CATEGORIES = {
+  small:    { label: 'Small',    cells: 0.75 },
+  medium:   { label: 'Medium',   cells: 1 },
+  large:    { label: 'Large',    cells: 2 },
+  huge:     { label: 'Huge',     cells: 3 },
+  colossal: { label: 'Colossal', cells: 4 },
+};
+// Token radius for a size category, relative to the map's actual grid cell
+// size so "Large" looks the same 2-square footprint on any map — falls back
+// to a 50px baseline cell on grid-less maps so categories still work there.
+function radiusForSize(sizeKey, gridType, gridConfig) {
+  const cells = (SIZE_CATEGORIES[sizeKey] || SIZE_CATEGORIES.medium).cells;
+  const cellPx = (gridType !== 'none' && gridConfig && gridConfig.cell_size) ? gridConfig.cell_size : 50;
+  return (cells * cellPx) / 2;
+}
+
 // ── Element bounds ───────────────────────────────────────────────────────────
 function getBounds(el) {
   switch(el.type) {
