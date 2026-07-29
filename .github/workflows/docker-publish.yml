@@ -3,10 +3,34 @@ name: Build & Publish Docker Image
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest tests/ -v
+
   build-and-push:
+    needs: test
+    # Only push on a real merge to main (or a manual dispatch) — a PR from a
+    # fork doesn't have package-write access to GITHUB_TOKEN, and PR code
+    # shouldn't be published as :latest before it's reviewed either way. The
+    # test job above still runs for PRs, so a broken build is still caught.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -27,4 +51,6 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest
+            ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.sha }}

@@ -1,20 +1,15 @@
 import json
-from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..deps import get_world_ctx
 from ..models import CalendarEvent, Entity, World, WorldCalendar
+from ..templating import templates
 
 router = APIRouter()
-
-BASE_DIR = Path(__file__).parent.parent.parent
-templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
-templates.env.filters["fromjson"] = lambda s: json.loads(s) if s else []
 
 DEFAULT_MONTHS = [
     {"name": n, "days": 30} for n in [
@@ -22,12 +17,6 @@ DEFAULT_MONTHS = [
         "Amberfall", "Duskmere", "Stormtide", "Coldreach", "Deepwinter", "Yearsend",
     ]
 ]
-
-
-def _get_world_ctx(db: Session, active_world: Optional[str]):
-    worlds = db.query(World).order_by(World.id).all()
-    world = next((w for w in worlds if w.slug == active_world), None) or (worlds[0] if worlds else None)
-    return world, worlds
 
 
 def _default_config() -> dict:
@@ -71,7 +60,7 @@ def _month_start_day(months: list, year: int, month_idx: int) -> int:
 
 @router.get("/calendar", response_class=HTMLResponse)
 def calendar_view(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     world_id = world.id if world else 1
     cal = _get_or_create_calendar(db, world_id)
     config = json.loads(cal.config_json or "{}") or _default_config()
@@ -125,7 +114,7 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
 
 @router.get("/calendar/config", response_class=HTMLResponse)
 def calendar_config_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     world_id = world.id if world else 1
     cal = _get_or_create_calendar(db, world_id)
     config = json.loads(cal.config_json or "{}") or _default_config()
@@ -136,7 +125,7 @@ def calendar_config_form(request: Request, db: Session = Depends(get_db), active
 
 @router.post("/calendar/config")
 async def calendar_config_save(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, _ = _get_world_ctx(db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
     world_id = world.id if world else 1
     cal = _get_or_create_calendar(db, world_id)
     form = await request.form()
@@ -157,7 +146,7 @@ async def calendar_config_save(request: Request, db: Session = Depends(get_db), 
 
 @router.post("/api/calendar/events")
 async def calendar_event_add(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, _ = _get_world_ctx(db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
     world_id = world.id if world else 1
     body = await request.json()
     ev = CalendarEvent(
@@ -185,7 +174,7 @@ def calendar_event_delete(event_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/calendar/advance")
 async def calendar_advance(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, _ = _get_world_ctx(db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
     world_id = world.id if world else 1
     cal = _get_or_create_calendar(db, world_id)
     body = await request.json()

@@ -66,6 +66,7 @@
       </div>
     </div>
     <a href="/export"       class="nav-kind">⬇ Export</a>
+    <a href="/admin/backup.zip" class="nav-kind" title="Full database + uploads + maps snapshot">🗄 Backup</a>
     {% endif %}
     <a href="/rules"        class="nav-kind {% if request.url.path == '/rules' %}active{% endif %}">📖 Rules</a>
     <a href="/characters"   class="nav-kind {% if request.url.path.startswith('/characters') %}active{% endif %}">🎲 Characters</a>

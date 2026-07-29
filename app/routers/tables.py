@@ -1,28 +1,17 @@
 import json
 import random
 import re
-from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..deps import get_world_ctx
 from ..models import RandomTable, World
+from ..templating import templates
 
 router = APIRouter()
-
-from pathlib import Path
-BASE_DIR = Path(__file__).parent.parent.parent
-templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
-templates.env.filters["fromjson"] = lambda s: json.loads(s) if s else []
-
-
-def _get_world_ctx(db: Session, active_world: Optional[str]):
-    worlds = db.query(World).order_by(World.id).all()
-    world = next((w for w in worlds if w.slug == active_world), None) or (worlds[0] if worlds else None)
-    return world, worlds
 
 
 def _slugify(name: str, db: Session) -> str:
@@ -37,7 +26,7 @@ def _slugify(name: str, db: Session) -> str:
 
 @router.get("/tables", response_class=HTMLResponse)
 def tables_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     tables = db.query(RandomTable).filter(
         (RandomTable.world_id.is_(None)) | (RandomTable.world_id == (world.id if world else None))
     ).order_by(RandomTable.category, RandomTable.name).all()
@@ -51,7 +40,7 @@ def tables_list(request: Request, db: Session = Depends(get_db), active_world: s
 
 @router.get("/tables/new", response_class=HTMLResponse)
 def table_new_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     return templates.TemplateResponse("tables/form.html", {
         "request": request, "world": world, "worlds": worlds, "tbl": None, "entries": [],
     })
@@ -59,7 +48,7 @@ def table_new_form(request: Request, db: Session = Depends(get_db), active_world
 
 @router.post("/tables/new")
 async def table_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, _ = _get_world_ctx(db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
     form = await request.form()
     name = str(form.get("name", "")).strip() or "Unnamed Table"
     category = str(form.get("category", "")).strip() or "general"
@@ -81,7 +70,7 @@ async def table_create(request: Request, db: Session = Depends(get_db), active_w
 
 @router.get("/tables/{table_id}/edit", response_class=HTMLResponse)
 def table_edit_form(table_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     tbl = db.query(RandomTable).filter(RandomTable.id == table_id).first()
     if not tbl:
         raise HTTPException(404)
@@ -141,8 +130,8 @@ def table_roll(table_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/tables/export")
-def tables_export(db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, _ = _get_world_ctx(db, active_world)
+def tables_export(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
     tables = db.query(RandomTable).filter(
         (RandomTable.world_id.is_(None)) | (RandomTable.world_id == (world.id if world else None))
     ).all()
@@ -155,7 +144,7 @@ def tables_export(db: Session = Depends(get_db), active_world: str = Cookie(None
 
 @router.post("/tables/import")
 async def tables_import(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, _ = _get_world_ctx(db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
     form = await request.form()
     file = form.get("file")
     if file is None:

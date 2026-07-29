@@ -1,26 +1,62 @@
+import time
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import APIRouter, Cookie, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from .. import auth
 from ..database import get_db
 from ..models import InviteCode, User, World, WorldMembership
+from ..templating import templates
 
 router = APIRouter()
 
-BASE_DIR = Path(__file__).parent.parent.parent
-templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
+# ── Failed-login throttling ───────────────────────────────────────────────────
+# Process-local, which is sufficient because the Dockerfile starts uvicorn with a
+# single worker (no --workers flag). If workers are ever added this becomes
+# per-worker and must move to the DB or a shared cache to stay effective.
+_MAX_ATTEMPTS = 8
+_LOCKOUT_SECONDS = 300
+_failed_logins: dict = {}  # (ip, email) -> (count, window_started_monotonic)
+
+
+def _rl_key(request: Request, email: str):
+    return ((request.client.host if request.client else "?"), email)
+
+
+def _rl_lock_remaining(key) -> int:
+    """Seconds left on a lockout for this key, or 0 if not locked."""
+    rec = _failed_logins.get(key)
+    if not rec:
+        return 0
+    count, started = rec
+    if count < _MAX_ATTEMPTS:
+        return 0
+    elapsed = time.monotonic() - started
+    if elapsed >= _LOCKOUT_SECONDS:
+        _failed_logins.pop(key, None)
+        return 0
+    return int(_LOCKOUT_SECONDS - elapsed)
+
+
+def _rl_record_failure(key) -> None:
+    count, started = _failed_logins.get(key, (0, time.monotonic()))
+    if time.monotonic() - started >= _LOCKOUT_SECONDS:
+        count, started = 0, time.monotonic()  # previous window aged out
+    _failed_logins[key] = (count + 1, started)
+
+
+def _rl_clear(key) -> None:
+    _failed_logins.pop(key, None)
 
 
 @router.get("/login", response_class=HTMLResponse)
 def login_form(request: Request, next: str = "/"):
+    next_url = auth.safe_next_url(next)
     if request.session.get("user_id"):
-        return RedirectResponse(next or "/", status_code=303)
-    return templates.TemplateResponse("auth/login.html", {"request": request, "next": next, "error": None})
+        return RedirectResponse(next_url, status_code=303)
+    return templates.TemplateResponse("auth/login.html", {"request": request, "next": next_url, "error": None})
 
 
 @router.post("/login")
@@ -28,14 +64,31 @@ async def login_submit(request: Request, db: Session = Depends(get_db)):
     form = await request.form()
     email = str(form.get("email", "")).strip().lower()
     password = str(form.get("password", ""))
-    next_url = str(form.get("next") or "/")
+    next_url = auth.safe_next_url(str(form.get("next") or "/"))
+
+    key = _rl_key(request, email)
+    locked_for = _rl_lock_remaining(key)
+    if locked_for:
+        return templates.TemplateResponse("auth/login.html", {
+            "request": request, "next": next_url,
+            "error": f"Too many failed attempts. Try again in {locked_for // 60 + 1} minute(s).",
+        }, status_code=429)
+
     user = db.query(User).filter(User.email == email).first()
-    if not user or not auth.verify_password(password, user.password_hash):
+    if user:
+        ok = auth.verify_password(password, user.password_hash)
+    else:
+        auth.burn_password_verify()  # keep unknown-email timing indistinguishable
+        ok = False
+    if not ok:
+        _rl_record_failure(key)
         return templates.TemplateResponse("auth/login.html", {
             "request": request, "next": next_url, "error": "Incorrect email or password.",
         }, status_code=400)
+
+    _rl_clear(key)
     request.session["user_id"] = user.id
-    return RedirectResponse(next_url or "/", status_code=303)
+    return RedirectResponse(next_url, status_code=303)
 
 
 @router.get("/logout")
@@ -80,11 +133,25 @@ async def join_submit(code: str, request: Request, db: Session = Depends(get_db)
 
     user = db.query(User).filter(User.email == email).first()
     if mode == "login":
-        if not user or not auth.verify_password(password, user.password_hash):
+        key = _rl_key(request, email)
+        locked_for = _rl_lock_remaining(key)
+        if locked_for:
+            return templates.TemplateResponse("auth/join.html", {
+                "request": request, "code": code, "world": invite.world, "error": None,
+                "form_error": f"Too many failed attempts. Try again in {locked_for // 60 + 1} minute(s).",
+            }, status_code=429)
+        if user:
+            ok = auth.verify_password(password, user.password_hash)
+        else:
+            auth.burn_password_verify()  # same timing equalization as POST /login
+            ok = False
+        if not ok:
+            _rl_record_failure(key)
             return templates.TemplateResponse("auth/join.html", {
                 "request": request, "code": code, "world": invite.world, "error": None,
                 "form_error": "Incorrect email or password.",
             }, status_code=400)
+        _rl_clear(key)
     else:
         if user:
             return templates.TemplateResponse("auth/join.html", {

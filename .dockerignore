@@ -1,0 +1,20 @@
+# The Dockerfile only COPYs app/ and static/, but without this file the full
+# build context (everything below, including the ~50MB .git history) is
+# still sent to the Docker daemon on every build.
+.git/
+.github/
+lore/
+docs/
+tests/
+scripts/
+__pycache__/
+*.pyc
+.pytest_cache/
+README.md
+AGENTS.md
+LICENSE
+LICENSE-CONTENT.md
+.env
+.env.example
+docker-compose.yml
+truenas-compose.yml

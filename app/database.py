@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -7,6 +8,9 @@ from .models import (
     StarredImage, User, WorldMembership, InviteCode, EntityTemplate, RandomTable,
     AppSettings,
 )
+
+
+_log = logging.getLogger("nd.db")
 
 
 def get_app_settings(db):
@@ -37,7 +41,6 @@ def _heal_table(conn, table, columns):
     for name, defn, _nullable in columns:
         if name not in existing:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {defn}"))
-    conn.commit()
     info = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
     existing = {r[1]: r[3] for r in info}
     if any(nullable and existing.get(name) == 1 for name, _, nullable in columns):
@@ -48,7 +51,6 @@ def _heal_table(conn, table, columns):
         col_names = ", ".join(["id"] + [c[0] for c in columns])
         conn.execute(text(f"INSERT INTO {table} ({col_names}) SELECT {col_names} FROM {tmp}"))
         conn.execute(text(f"DROP TABLE {tmp}"))
-        conn.commit()
 
 
 def _f(id, label, type="text", section="", default_value=""):
@@ -144,51 +146,89 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
     Base.metadata.create_all(bind=engine)
-    _migrate()
+    try:
+        _migrate()
+    except Exception:
+        # Startup dies either way, but without this the container just crash-loops
+        # on a bare traceback. Say plainly that the schema was left untouched, so
+        # the DB isn't suspected of being half-migrated (it can't be — _migrate
+        # runs in a single transaction and rolls back as a unit).
+        _log.exception("Schema migration failed; database left unchanged (rolled back)")
+        raise
     _seed()
 
+
+def _once(conn, key: str, fn) -> bool:
+    """Run `fn(conn)` only if `key` has never been applied, then record it.
+
+    Guards one-time data repairs. Schema DDL doesn't need this — it re-derives
+    what's missing from PRAGMA table_info on every boot and is naturally
+    idempotent — but data fixes are not: re-running them fights the GM's own
+    edits, and a DELETE re-runs destructively forever.
+    """
+    conn.execute(text(
+        "CREATE TABLE IF NOT EXISTS schema_meta ("
+        " key TEXT PRIMARY KEY, applied_at DATETIME DEFAULT CURRENT_TIMESTAMP)"
+    ))
+    already = conn.execute(
+        text("SELECT 1 FROM schema_meta WHERE key = :k"), {"k": key}
+    ).fetchone()
+    if already:
+        return False
+    fn(conn)
+    conn.execute(text("INSERT INTO schema_meta (key) VALUES (:k)"), {"k": key})
+    _log.info("Applied one-time migration: %s", key)
+    return True
+
+
 def _migrate():
-    with engine.connect() as conn:
+    # engine.begin() wraps the whole migration in one transaction: SQLite supports
+    # transactional DDL, so a failure part-way rolls the entire thing back instead
+    # of leaving a half-migrated schema (and, for the _heal_table rebuild path,
+    # instead of leaving both `<table>_old` and a partial `<table>` behind).
+    with engine.begin() as conn:
         # Add world_id column to existing entities table if missing
         cols = [r[1] for r in conn.execute(text("PRAGMA table_info(entities)")).fetchall()]
         if "world_id" not in cols:
             conn.execute(text("ALTER TABLE entities ADD COLUMN world_id INTEGER NOT NULL DEFAULT 1"))
-            conn.commit()
         if "folder" not in cols:
             conn.execute(text("ALTER TABLE entities ADD COLUMN folder VARCHAR(256)"))
-            conn.commit()
         if "visible_to_players" not in cols:
             conn.execute(text("ALTER TABLE entities ADD COLUMN visible_to_players BOOLEAN DEFAULT 1"))
-            conn.commit()
         if "template_id" not in cols:
             conn.execute(text("ALTER TABLE entities ADD COLUMN template_id INTEGER"))
-            conn.commit()
         if "custom_fields_json" not in cols:
             conn.execute(text("ALTER TABLE entities ADD COLUMN custom_fields_json TEXT DEFAULT '{}'"))
-            conn.commit()
-        # Clean up literal "None" strings stored by early import runs
-        conn.execute(text("UPDATE entities SET folder  = NULL WHERE folder  = 'None'"))
-        conn.execute(text("UPDATE entities SET summary = NULL WHERE summary = 'None'"))
-        conn.execute(text("UPDATE entities SET body    = NULL WHERE body    = 'None'"))
-        conn.execute(text("UPDATE entities SET subtype = NULL WHERE subtype = 'None'"))
-        # Delete entities with missing names (string 'None', null, or blank)
-        conn.execute(text("DELETE FROM entities WHERE name IS NULL OR TRIM(name) = '' OR name = 'None'"))
-        # Re-classify equipment feat directories: they were imported as items but are feats
-        conn.execute(text(
-            "UPDATE entities SET kind = 'feat' WHERE kind = 'item' AND folder LIKE '%Feat%'"
-        ))
-        # Prefix bare Rank/Origin/Edge folders on feats with 'Common Feats/' parent
-        conn.execute(text(
-            "UPDATE entities SET folder = 'Common Feats/' || folder "
-            "WHERE kind = 'feat' AND folder IN ('Rank 1', 'Rank 2', 'Rank 3', 'Origin', 'Edge')"
-        ))
-        conn.commit()
+        # One-time repair of damage done by the earliest lore-import runs. Gated by
+        # _once because none of it is safe to repeat: the DELETE is destructive, and
+        # the kind='item' → 'feat' reclassification silently overrides a GM who
+        # deliberately sets such an entity back to 'item' — every container restart,
+        # which with Watchtower polling is every few minutes.
+        def _cleanup_legacy_import(c):
+            # Clean up literal "None" strings stored by early import runs
+            c.execute(text("UPDATE entities SET folder  = NULL WHERE folder  = 'None'"))
+            c.execute(text("UPDATE entities SET summary = NULL WHERE summary = 'None'"))
+            c.execute(text("UPDATE entities SET body    = NULL WHERE body    = 'None'"))
+            c.execute(text("UPDATE entities SET subtype = NULL WHERE subtype = 'None'"))
+            # Delete entities with missing names (string 'None', null, or blank)
+            c.execute(text("DELETE FROM entities WHERE name IS NULL OR TRIM(name) = '' OR name = 'None'"))
+            # Re-classify equipment feat directories: they were imported as items but are feats
+            c.execute(text(
+                "UPDATE entities SET kind = 'feat' WHERE kind = 'item' AND folder LIKE '%Feat%'"
+            ))
+            # Prefix bare Rank/Origin/Edge folders on feats with 'Common Feats/' parent
+            c.execute(text(
+                "UPDATE entities SET folder = 'Common Feats/' || folder "
+                "WHERE kind = 'feat' AND folder IN ('Rank 1', 'Rank 2', 'Rank 3', 'Origin', 'Edge')"
+            ))
+
+        _once(conn, "cleanup_legacy_import_v1", _cleanup_legacy_import)
+
         # Add new Schematic columns if missing
         sch_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(schematics)")).fetchall()] if conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='schematics'")).fetchone() else []
         for col, defn in [("canvas_width", "INTEGER DEFAULT 2000"), ("canvas_height", "INTEGER DEFAULT 1500"), ("canvas_bg", "VARCHAR(32) DEFAULT 'dark'"), ("elements_json", "TEXT DEFAULT '[]'"), ("grid_type", "VARCHAR(16) DEFAULT 'none'"), ("grid_config_json", "TEXT DEFAULT '{}'"), ("combat_session_id", "INTEGER REFERENCES combat_sessions(id)")]:
             if sch_cols and col not in sch_cols:
                 conn.execute(text(f"ALTER TABLE schematics ADD COLUMN {col} {defn}"))
-        conn.commit()
         # app_settings: the original convert_images_avif/convert_animated_avif
         # booleans were replaced by static_format/animated_format ("none"/
         # "avif"/"webp") almost immediately after shipping — heal existing
@@ -211,7 +251,6 @@ def _migrate():
                 conn.execute(text(
                     "UPDATE app_settings SET animated_format = CASE WHEN convert_animated_avif = 0 THEN 'none' ELSE 'avif' END"
                 ))
-            conn.commit()
         # player_characters table — add any missing columns to existing installs
         pc_exists = conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='player_characters'"
@@ -249,7 +288,6 @@ def _migrate():
             for col, defn in _pc_extra:
                 if col not in pc_cols:
                     conn.execute(text(f"ALTER TABLE player_characters ADD COLUMN {col} {defn}"))
-            conn.commit()
         # sheet_templates table migration — ensure it exists (Base.metadata handles creation,
         # but old DBs may lack the table until next create_all call)
         tpl_exists = conn.execute(text(
@@ -259,7 +297,6 @@ def _migrate():
             tpl_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(sheet_templates)")).fetchall()]
             if "sheet_mode" not in tpl_cols:
                 conn.execute(text("ALTER TABLE sheet_templates ADD COLUMN sheet_mode VARCHAR(16) DEFAULT 'nd'"))
-                conn.commit()
         # worlds table — add players_see_party if missing
         w_exists = conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='worlds'"
@@ -268,10 +305,8 @@ def _migrate():
             w_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(worlds)")).fetchall()]
             if "players_see_party" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN players_see_party BOOLEAN DEFAULT 1"))
-                conn.commit()
             if "rules_md" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN rules_md TEXT"))
-                conn.commit()
         # random_tables table — some installs ended up with a table that
         # doesn't match the model: missing columns (e.g. slug), and/or
         # world_id incorrectly marked NOT NULL (the model allows NULL there
@@ -298,7 +333,6 @@ def _migrate():
             for col, defn in _rt_extra:
                 if col not in rt_cols:
                     conn.execute(text(f"ALTER TABLE random_tables ADD COLUMN {col} {defn}"))
-            conn.commit()
             # ...then check for a world_id NOT NULL constraint left over from
             # however this table was first created. SQLite can't drop a NOT
             # NULL constraint via ALTER TABLE, so rebuild the table properly
@@ -324,7 +358,6 @@ def _migrate():
                 cols = "id, world_id, name, slug, category, description, is_builtin, entries_json, created_at, updated_at"
                 conn.execute(text(f"INSERT INTO random_tables ({cols}) SELECT {cols} FROM random_tables_old"))
                 conn.execute(text("DROP TABLE random_tables_old"))
-                conn.commit()
             # slug has a UNIQUE index on the model but a column added via ALTER
             # TABLE can't carry that constraint retroactively — backfill any
             # NULL slugs (from rows that predate the column) so the app's own
@@ -332,7 +365,6 @@ def _migrate():
             conn.execute(text(
                 "UPDATE random_tables SET slug = 'table-' || id WHERE slug IS NULL"
             ))
-            conn.commit()
 
         # Other campaign-management tables shipped in the same batch as
         # random_tables turned out to have the same class of issue on some
@@ -496,8 +528,15 @@ def _seed():
         if gm_email and gm_password and not db.query(User).filter(User.is_gm == True).first():  # noqa: E712
             existing = db.query(User).filter(User.email == gm_email).first()
             if existing:
-                existing.is_gm = True
-                existing.password_hash = _auth.hash_password(gm_password)
+                # Don't silently hijack an existing account: if the GM row was ever
+                # deleted, every restart would otherwise reset this user's password
+                # and promote them to GM, just because their email matches GM_EMAIL.
+                _log.warning(
+                    "GM_EMAIL (%s) matches an existing non-GM user; not resetting their "
+                    "password or promoting them. Delete/rename that account or change "
+                    "GM_EMAIL if you intended to bootstrap a fresh GM account.",
+                    gm_email,
+                )
             else:
                 db.add(User(
                     email=gm_email,
@@ -505,7 +544,7 @@ def _seed():
                     display_name=os.environ.get("GM_NAME", "GM"),
                     is_gm=True,
                 ))
-            db.commit()
+                db.commit()
     finally:
         db.close()
 

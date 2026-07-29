@@ -7,31 +7,23 @@ from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..constants import KINDS, ND_DEFAULT_CURRENCY, ND_DEFAULT_STATS
 from ..database import get_db
+from ..deps import get_world_ctx
 from ..models import Entity, EntityTemplate, MapOverlay, PlayerCharacter, RandomTable, Schematic, SheetTemplate, World
+from ..templating import templates
 from .characters import _apply_form
 from .tables import _slugify as _table_slugify
 
 router = APIRouter()
 
-BASE_DIR = Path(__file__).parent.parent.parent
-templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
-
 _MAPS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "maps"
 
 SCHEMATIC_ELEMENT_TYPES = {"rect", "circle", "line", "arrow", "poly", "path", "text", "pin", "image", "measure", "token"}
 FIELD_TYPES = {"text", "number", "textarea", "select", "list", "resource", "table"}
-
-
-def _get_world_ctx(db: Session, active_world: Optional[str]):
-    worlds = db.query(World).order_by(World.id).all()
-    world = next((w for w in worlds if w.slug == active_world), None) or (worlds[0] if worlds else None)
-    return world, worlds
 
 
 def _schematic_slugify(name: str, db: Session) -> str:
@@ -505,7 +497,7 @@ def execute_batch_import(db: Session, world: World, items: list) -> list:
 
 @router.get("/import", response_class=HTMLResponse)
 def import_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     world_id = world.id if world else 1
     schematics = db.query(Schematic).filter(Schematic.world_id == world_id, Schematic.is_html == False).order_by(Schematic.name).all()  # noqa: E712
     return templates.TemplateResponse("import.html", {
@@ -528,7 +520,7 @@ async def import_detect(request: Request):
 
 @router.post("/api/import/execute")
 async def import_execute(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, _ = _get_world_ctx(db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
     body = await request.json()

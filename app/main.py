@@ -2,7 +2,6 @@ from fastapi import FastAPI, Request, Depends, Form, HTTPException, UploadFile, 
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy.orm import Session
@@ -11,7 +10,7 @@ from typing import List, Optional
 from urllib.parse import quote
 import re
 import html
-import markdown2
+import logging
 import os
 import secrets
 import uuid
@@ -22,7 +21,11 @@ import io
 from pathlib import Path
 
 from .database import init_db, get_db, SessionLocal, get_app_settings
+from .deps import get_world_ctx
 from .imaging import convert_image
+from .rendering import parse_stats, render_md
+from .templating import templates
+from .uploads import copy_upload_bounded
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter
 from .routers.ai import router as ai_router
 from .routers.characters import router as characters_router
@@ -66,10 +69,13 @@ app.include_router(calendar_router)
 app.include_router(importer_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
-templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 
 # KINDS, SUBTYPES, KIND_ICONS imported from .constants
-ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}
+# Raster only, deliberately. SVG is excluded because it can contain <script> and is
+# served from this app's own origin — imaging.convert_image can't neutralize it either
+# (re-encoding a vector would rasterize it). Every raster format here is auto-converted
+# to AVIF/WebP on upload, so dropping SVG costs little.
+ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 ENTITY_COLS = {"kind", "subtype", "folder", "name", "tags", "summary", "body", "image_url", "world_id"}
 
 @app.on_event("startup")
@@ -178,18 +184,18 @@ async def auth_gate(request: Request, call_next):
 # in reverse-of-addition order, so the *last* added middleware runs *first* per
 # request — this makes SessionMiddleware run before auth_gate, so request.session
 # is already populated when auth_gate reads it).
-SECRET_KEY = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+_log = logging.getLogger("nd.main")
+_env_secret_key = os.environ.get("SECRET_KEY")
+if not _env_secret_key:
+    _log.warning(
+        "SECRET_KEY is not set — falling back to a random per-process key. Every "
+        "logged-in session will be invalidated on the next restart. Set SECRET_KEY "
+        "in the environment (e.g. docker-compose) to avoid this."
+    )
+SECRET_KEY = _env_secret_key or secrets.token_hex(32)
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").strip().lower() == "true"
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, https_only=COOKIE_SECURE, same_site="lax")
 
-
-def render_md(text):
-    # safe_mode="escape": raw HTML typed into markdown-authored fields (character
-    # notes/backstory, entity/rules bodies) is escaped to inert text instead of
-    # rendered — otherwise a <script> tag in user-authored content would execute
-    # in the browser of anyone who views it (stored XSS). Normal markdown syntax
-    # (links, emphasis, tables, ...) is unaffected.
-    return markdown2.markdown(text, extras=["fenced-code-blocks", "tables", "strike"], safe_mode="escape") if text else ""
 
 def _rules_toc(html: str):
     toc = []
@@ -202,146 +208,6 @@ def _rules_toc(html: str):
     html = re.sub(r'<h([23])>(.*?)</h\1>', _repl, html, flags=re.DOTALL)
     return html, toc
 
-def strip_md(text):
-    if not text:
-        return ""
-    text = re.sub(r'!\[[^\]]*\]\([^)]+\)', '', text)
-    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
-    text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
-    text = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', text)
-    text = re.sub(r'^\*\s*', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^-{3,}$', '', text, flags=re.MULTILINE)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
-
-_STAT_SKIP = {"visibility", "type", "physical stats", "other", "costs", ""}
-_STAT_WANT = {
-    "damage", "rarity", "armor", "cost", "special conditions", "effect",
-    "requirement", "requirements", "range", "rounds", "strength", "power",
-    "speed", "feats", "capacity", "augment slots", "max health", "max pp",
-}
-_STAT_TABLE_SKIP = {"visibility", "physical stats", "other", "costs"}
-
-def _clean_val(v: str) -> str:
-    v = re.sub(r'\\\*\\\*', '', v)
-    v = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', v)
-    return v.strip()
-
-_PLAIN_KEY_RE = re.compile(r'^([A-Z][A-Za-z ()]{1,38}):\s*(.*)')
-
-def parse_stats(body: str) -> list[dict]:
-    """Return list of {key, val, special} dicts from ## Attributes or ## Entry."""
-    if not body:
-        return []
-    lines = body.splitlines()
-    in_section = False
-    rows = []
-    i = 0
-    while i < len(lines):
-        ln = lines[i]
-        i += 1
-        if re.match(r'^##\s+(Attributes|Entry|Profile)', ln, re.IGNORECASE):
-            in_section = True
-            continue
-        if in_section and re.match(r'^##', ln):
-            break
-        if not in_section:
-            continue
-        if re.match(r'^(---|!\[|\s*$)', ln):
-            continue
-
-        key = val = None
-        # Format 1 – bullet: * **Key[optional bracket]**: Value
-        m = re.match(r'\*\s+\*\*([^*\[]+)(?:\[[^\]]*\])?\*\*[:\s]\s*(.*)', ln)
-        if m:
-            key, val = m.group(1).strip(), m.group(2).strip()
-        if not key:
-            # Format 2 – Kanka escaped: \*\*Key\*\* = Value
-            m = re.match(r'\\\*\\\*([^\\]+)\\\*\\\*\s*[=:]\s*(.*)', ln)
-            if m:
-                key, val = m.group(1).strip(), m.group(2).strip()
-        if not key:
-            # Format 3 – inline bold: **Key:** Value  (race feats)
-            m = re.match(r'\*\*([^*:]+)\*\*[:\s]\s*(.*)', ln)
-            if m:
-                key, val = m.group(1).strip(), m.group(2).strip()
-        if not key:
-            # Format 4 – plain title-case: Key: Value  (flesh grafts, "Points: 12")
-            m = _PLAIN_KEY_RE.match(ln.strip())
-            if m:
-                key, val = m.group(1).strip(), m.group(2).strip()
-                # Multi-line: key-only line, value is on the next non-empty line
-                if not val:
-                    j = i
-                    while j < len(lines) and not lines[j].strip():
-                        j += 1
-                    if j < len(lines) and not re.match(r'^##|^---|^\*\s+\*\*|^\\\*\\\*', lines[j]):
-                        # next line is plain text — use as value, advance pointer
-                        val = lines[j].strip()
-                        i = j + 1
-
-        if not key or not val:
-            continue
-        val = _clean_val(val)
-        if not val or val.startswith('{') or key.lower() in _STAT_TABLE_SKIP:
-            continue
-        rows.append({"key": key, "val": val, "special": key.lower() == "special conditions"})
-    return rows
-
-def _decode(text: str) -> str:
-    return (text.replace('&#39;', "'").replace('&amp;', '&')
-                .replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"'))
-
-def entry_text(body: str) -> str:
-    """Extract ## Entry section as clean plain text (for feat descriptions)."""
-    if not body:
-        return ""
-    lines = body.splitlines()
-    in_entry = False
-    chunks = []
-    for ln in lines:
-        if re.match(r'^##\s+Entry', ln, re.IGNORECASE):
-            in_entry = True
-            continue
-        if in_entry and re.match(r'^##', ln):
-            break
-        if not in_entry or re.match(r'^(---|!\[|\s*$)', ln):
-            continue
-        if re.match(r'^\|', ln):          # markdown table row — skip
-            continue
-        ln = re.sub(r'\\\*\\\*', '', ln)  # \*\*
-        ln = re.sub(r'\\-', '-', ln)
-        ln = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', ln)
-        ln = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', ln)
-        ln = re.sub(r'^[-*]\s+', '', ln)
-        chunks.append(ln.strip())
-    text = ' '.join(c for c in chunks if c)
-    return _decode(re.sub(r'\s+', ' ', text).strip())
-
-def body_summary(text):
-    """Compact stat line for cards: key stats or entry text fallback."""
-    if not text:
-        return ""
-    pairs = []
-    special = None
-    for ln in text.splitlines():
-        if re.match(r'^\|', ln):          # skip markdown tables
-            continue
-        m = re.match(r'\*\s+\*\*([^*]+)\*\*[:\s]\s*(.+)', ln)
-        if not m:
-            m = re.match(r'\\\*\\\*([^\\]+)\\\*\\\*\s*[=:]\s*(.+)', ln)
-        if not m:
-            continue
-        key = m.group(1).strip().lower()
-        val = _decode(re.sub(r'\\\*\\\*', '', m.group(2)).strip().rstrip('\\').strip())
-        if not val or val.startswith('{') or key in _STAT_SKIP:
-            continue
-        if key == "special conditions":
-            special = val[:220]
-        elif key in _STAT_WANT and len(pairs) < 4:
-            pairs.append(f"{m.group(1).strip()}: {val}")
-    return special or "  ·  ".join(pairs) or entry_text(text)
-
 def save_upload(file: UploadFile, subdir: str = "", db: Optional[Session] = None):
     if not file or not file.filename:
         return None
@@ -352,8 +218,7 @@ def save_upload(file: UploadFile, subdir: str = "", db: Optional[Session] = None
     target_dir = UPLOADS_DIR / subdir if subdir else UPLOADS_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / filename
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+    copy_upload_bounded(file, dest)
     if db is not None:
         settings = get_app_settings(db)
         dest = convert_image(dest, static_format=settings.static_format,
@@ -362,13 +227,6 @@ def save_upload(file: UploadFile, subdir: str = "", db: Optional[Session] = None
         dest = convert_image(dest)
     url_path = f"/uploads/{subdir}/{dest.name}" if subdir else f"/uploads/{dest.name}"
     return url_path
-
-templates.env.globals.update(kinds=KINDS, subtypes=SUBTYPES, kind_icons=KIND_ICONS)
-templates.env.filters["md"] = render_md
-templates.env.filters["strip_md"] = strip_md
-templates.env.filters["body_summary"] = body_summary
-templates.env.filters["parse_stats"] = parse_stats
-templates.env.filters["entry_text"] = entry_text
 
 # ── World helpers ─────────────────────────────────────────────────────────────
 
@@ -484,10 +342,25 @@ def _visible_worlds(request: Request, db: Session):
 
 @app.get("/uploads/{filepath:path}")
 def serve_upload(filepath: str):
-    path = UPLOADS_DIR / filepath
-    if not path.exists() or not path.is_file():
+    # Containment check: without it, `filepath="../world.db"` escapes UPLOADS_DIR
+    # (/data/uploads) and serves the SQLite database one level up — every password
+    # hash and all GM-only content — to any logged-in account, since _is_player_safe
+    # allows all GETs under /uploads/. Resolving both sides also closes the
+    # symlink-escape variant, because FileResponse follows symlinks.
+    root = UPLOADS_DIR.resolve()
+    try:
+        path = (root / filepath).resolve()
+    except (OSError, RuntimeError):
         raise HTTPException(404)
-    return FileResponse(path)
+    if not path.is_relative_to(root) or not path.is_file():
+        raise HTTPException(404)
+    headers = {"X-Content-Type-Options": "nosniff"}
+    # SVG can carry <script>, and it's served from this app's own origin. New SVG
+    # uploads are rejected outright (see ALLOWED_EXTS), but files uploaded before
+    # that change still exist on disk — force them to download instead of render.
+    if path.suffix.lower() == ".svg":
+        headers["Content-Disposition"] = f'attachment; filename="{path.name}"'
+    return FileResponse(path, headers=headers)
 
 # ── Worlds management ─────────────────────────────────────────────────────────
 
@@ -539,7 +412,7 @@ def world_edit_form(world_id: int, request: Request, db: Session = Depends(get_d
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     invites = db.query(InviteCode).filter(InviteCode.world_id == world_id).order_by(InviteCode.created_at.desc()).all()
     members = (
         db.query(WorldMembership, User)
@@ -685,13 +558,14 @@ def private_note_delete(world_id: int, user_id: int, note_id: int, db: Session =
 
 @app.post("/folders/rename")
 def folder_rename(
+    request: Request,
     kind: str = Form(...),
     old_path: str = Form(...),
     new_path: str = Form(""),
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
-    world, _ = _get_world_ctx(db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
     old_path = old_path.strip()
     new_path = new_path.strip()
     if not world or not old_path:
@@ -955,8 +829,7 @@ async def map_new(
         if ext in ALLOWED_EXTS:
             maps_upload_dir = UPLOADS_DIR / "maps"
             maps_upload_dir.mkdir(parents=True, exist_ok=True)
-            with (maps_upload_dir / (slug + ext)).open("wb") as f:
-                shutil.copyfileobj(image_file.file, f)
+            copy_upload_bounded(image_file, maps_upload_dir / (slug + ext))
     return RedirectResponse(f"/maps/{slug}", status_code=303)
 
 @app.post("/maps/{slug}/upload")
@@ -971,8 +844,7 @@ async def map_upload_image(slug: str, file: UploadFile = File(...)):
         if old.exists():
             old.unlink()
     dest = maps_upload_dir / (slug + ext)
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+    copy_upload_bounded(file, dest)
     return RedirectResponse("/maps", status_code=303)
 
 def _world_parties_payload(db: Session, world_id: int):
@@ -1026,10 +898,15 @@ def map_viewer(slug: str, request: Request, db: Session = Depends(get_db), activ
     if not overlay:
         overlay = MapOverlay(slug=slug, custom_markers_json="[]", custom_regions_json="[]")
         db.add(overlay); db.commit()
-    # build name→id map for local entity linking
+    # build name→id map for local entity linking. Filtered by visibility: this map is
+    # serialized into the page, and /maps/{slug} is player-safe, so an unfiltered query
+    # would hand players the names and IDs of GM-only hidden entities.
     ename_map = {}
     if world:
-        for e in db.query(Entity.name, Entity.id).filter(Entity.world_id == world.id).all():
+        ename_q = _filter_visible_entities(
+            db.query(Entity.name, Entity.id).filter(Entity.world_id == world.id), request
+        )
+        for e in ename_q.all():
             ename_map[e.name.lower()] = e.id
     schematics = db.query(Schematic).filter(Schematic.world_id == world.id).order_by(Schematic.name).all()
     user = getattr(request.state, "user", None)
@@ -1083,7 +960,7 @@ def world_rules_edit_form(world_id: int, request: Request, db: Session = Depends
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     return templates.TemplateResponse("rules_edit.html", {
         "request": request, "world": world, "worlds": worlds, "edit_world": w,
     })
@@ -1538,8 +1415,7 @@ async def schematic_upload_image(slug: str, file: UploadFile = File(...), db: Se
         old = sch_dir / (slug + old_ext)
         if old.exists(): old.unlink()
     dest = sch_dir / (slug + ext)
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+    copy_upload_bounded(file, dest)
     s.image_url = f"/uploads/schematics/{slug}{ext}"
     db.commit()
     return RedirectResponse(f"/maps/schematic/{slug}", status_code=303)
@@ -1554,14 +1430,9 @@ def schematic_delete(slug: str, db: Session = Depends(get_db)):
 
 # ── Investigation Boards ──────────────────────────────────────────────────────
 
-def _get_world_ctx(db, active_world):
-    worlds = db.query(World).all()
-    world = next((w for w in worlds if w.slug == active_world), None) or (worlds[0] if worlds else None)
-    return world, worlds
-
 @app.get("/api/ai/world-context")
-def ai_world_context(db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, _ = _get_world_ctx(db, active_world)
+def ai_world_context(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
     if not world:
         return {"context": "", "world_name": ""}
     lines = [f"# {world.name}", world.description or "", ""]
@@ -1662,10 +1533,11 @@ class _SmartCtxBody(BaseModel):
 @app.post("/api/ai/world-context-smart")
 def ai_world_context_smart(
     body: _SmartCtxBody,
+    request: Request,
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
-    world, _ = _get_world_ctx(db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
     if not world:
         return {"context": "", "count": 0, "notes": 0}
     entities = _find_relevant_entities(db, world.id, body.query, limit=body.limit)
@@ -1699,10 +1571,11 @@ class _SaveNoteBody(BaseModel):
 @app.post("/api/ai/save-note")
 def ai_save_note(
     body: _SaveNoteBody,
+    request: Request,
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
-    world, _ = _get_world_ctx(db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
     note = Entity(
@@ -1728,10 +1601,11 @@ class _SmartGenBody(BaseModel):
 @app.post("/api/ai/generate/entity-smart")
 async def gen_entity_smart(
     body: _SmartGenBody,
+    request: Request,
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
-    world, _ = _get_world_ctx(db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
     related_ctx = ""
     if world:
         related = _find_relevant_entities(db, world.id, f"{body.name} {body.summary}", limit=12)
@@ -1748,7 +1622,7 @@ async def gen_entity_smart(
 
 @app.get("/ai", response_class=HTMLResponse)
 def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     entity_counts = {}
     world_system = (
         "You are a creative world-building AI assistant for a Neon & Dragons "
@@ -1777,7 +1651,7 @@ def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: 
 
 @app.get("/imagestudio", response_class=HTMLResponse)
 def imagestudio(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     return templates.TemplateResponse("imagestudio.html", {
         "request": request, "world": world, "worlds": worlds,
         "kinds": KINDS, "kind_icons": KIND_ICONS,
@@ -1786,7 +1660,7 @@ def imagestudio(request: Request, db: Session = Depends(get_db), active_world: s
 
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     settings = get_app_settings(db)
     return templates.TemplateResponse("settings.html", {
         "request": request, "world": world, "worlds": worlds,
@@ -1807,7 +1681,7 @@ def settings_save(
 
 @app.get("/boards", response_class=HTMLResponse)
 def boards_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     boards = db.query(InvestBoard).filter(InvestBoard.world_id == (world.id if world else 1)).all()
     return templates.TemplateResponse("boards.html", {
         "request": request, "world": world, "worlds": worlds,
@@ -1816,7 +1690,7 @@ def boards_list(request: Request, db: Session = Depends(get_db), active_world: s
 
 @app.get("/boards/new", response_class=HTMLResponse)
 def board_new_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     return templates.TemplateResponse("board_new.html", {
         "request": request, "world": world, "worlds": worlds,
         "kinds": KINDS, "kind_icons": KIND_ICONS,
@@ -1831,7 +1705,7 @@ def board_new_post(
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
-    world, _ = _get_world_ctx(db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "board"
     base_slug = slug
     i = 2
@@ -1844,7 +1718,7 @@ def board_new_post(
 
 @app.get("/boards/{slug}", response_class=HTMLResponse)
 def board_view(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     b = db.query(InvestBoard).filter(InvestBoard.slug == slug).first()
     if not b: raise HTTPException(404)
     # Build entity name→{id,kind,image_url} map for quick lookup
@@ -1886,7 +1760,7 @@ def board_delete(slug: str, db: Session = Depends(get_db)):
 @app.get("/boards/{slug}/export", response_class=HTMLResponse)
 def board_export(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     from datetime import date as _date
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     b = db.query(InvestBoard).filter(InvestBoard.slug == slug).first()
     if not b:
         raise HTTPException(404)
@@ -1917,7 +1791,7 @@ def board_export(slug: str, request: Request, db: Session = Depends(get_db), act
 def world_export_book(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     import zipfile, io as _io
     from datetime import date
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         return RedirectResponse("/worlds")
 
@@ -1983,6 +1857,74 @@ def world_export_book(request: Request, db: Session = Depends(get_db), active_wo
         buf,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{world.slug}-worldbook.zip"'},
+    )
+
+
+@app.get("/admin/backup.zip")
+def admin_backup(db: Session = Depends(get_db)):
+    # Not in _is_player_safe, so the auth_gate middleware already denies this to
+    # non-GM users by default — this is the only thing standing between a player
+    # and a copy of the whole database, so don't add it to the allowlist above.
+    import sqlite3
+    import tempfile
+    import zipfile
+    from datetime import datetime, timezone
+
+    db_path = Path(os.environ.get("DB_PATH", "/data/world.db"))
+
+    manifest = {
+        "app": "nd-world",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "tables": {
+            "worlds": db.query(World).count(),
+            "entities": db.query(Entity).count(),
+            "users": db.query(User).count(),
+            "world_memberships": db.query(WorldMembership).count(),
+            "invite_codes": db.query(InviteCode).count(),
+            "player_characters": db.query(PlayerCharacter).count(),
+            "combat_sessions": db.query(CombatSession).count(),
+            "quests": db.query(Quest).count(),
+            "parties": db.query(Party).count(),
+            "game_sessions": db.query(GameSession).count(),
+            "schematics": db.query(Schematic).count(),
+            "map_overlays": db.query(MapOverlay).count(),
+            "invest_boards": db.query(InvestBoard).count(),
+            "private_notes": db.query(PrivateNote).count(),
+            "entity_notes": db.query(EntityNote).count(),
+            "entity_templates": db.query(EntityTemplate).count(),
+        },
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # VACUUM INTO produces a consistent, defragmented snapshot in one statement —
+        # copying world.db directly while uvicorn holds it open risks capturing a
+        # half-written page mid-write.
+        snapshot_path = Path(tmp) / "world.db"
+        raw = sqlite3.connect(str(db_path))
+        try:
+            raw.execute("VACUUM INTO ?", (str(snapshot_path),))
+        finally:
+            raw.close()
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(snapshot_path, "world.db")
+            zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+            if UPLOADS_DIR.exists():
+                for f in UPLOADS_DIR.rglob("*"):
+                    if f.is_file():
+                        zf.write(f, "uploads/" + str(f.relative_to(UPLOADS_DIR)))
+            if _MAPS_DIR.exists():
+                for f in _MAPS_DIR.rglob("*"):
+                    if f.is_file():
+                        zf.write(f, "maps/" + str(f.relative_to(_MAPS_DIR)))
+        buf.seek(0)
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="nd-world-backup-{stamp}.zip"'},
     )
 
 # ── List ──────────────────────────────────────────────────────────────────────
@@ -2119,6 +2061,11 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
     if not entity:
         raise HTTPException(404)
     user = getattr(request.state, "user", None)
+    # World-membership gate: visible_to_players alone is not enough, or a player in one
+    # world could read every player-visible entity in every other world by walking IDs.
+    ent_world = db.get(World, entity.world_id) if entity.world_id else None
+    if not _auth.user_can_access_world(db, user, ent_world):
+        raise HTTPException(404)
     if not entity.visible_to_players and not (user and user.is_gm):
         shared = user and db.query(entity_player_access).filter(
             entity_player_access.c.entity_id == entity.id,

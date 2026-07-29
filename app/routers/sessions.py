@@ -1,34 +1,20 @@
 import json
-from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..deps import get_world_ctx
 from ..models import CombatSession, Entity, GameSession, Party, PlayerCharacter, World
+from ..templating import templates
 
 router = APIRouter()
-
-BASE_DIR = Path(__file__).parent.parent.parent
-templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
-templates.env.filters["fromjson"] = lambda s: json.loads(s) if s else []
-templates.env.filters["md"] = lambda t: __import__("markdown2").markdown(
-    t, extras=["fenced-code-blocks", "tables", "strike"]
-) if t else ""
-
-
-def _get_world_ctx(db: Session, active_world: Optional[str]):
-    worlds = db.query(World).order_by(World.id).all()
-    world = next((w for w in worlds if w.slug == active_world), None) or (worlds[0] if worlds else None)
-    return world, worlds
 
 
 @router.get("/sessions", response_class=HTMLResponse)
 def sessions_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     sessions = db.query(GameSession).filter(
         GameSession.world_id == (world.id if world else 1)
     ).order_by(GameSession.session_num.desc()).all()
@@ -39,7 +25,7 @@ def sessions_list(request: Request, db: Session = Depends(get_db), active_world:
 
 @router.get("/sessions/new", response_class=HTMLResponse)
 def session_new_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     parties = db.query(Party).filter(Party.world_id == (world.id if world else 1)).order_by(Party.name).all()
     last = db.query(GameSession).filter(
         GameSession.world_id == (world.id if world else 1)
@@ -53,7 +39,7 @@ def session_new_form(request: Request, db: Session = Depends(get_db), active_wor
 
 @router.post("/sessions/new")
 async def session_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, _ = _get_world_ctx(db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
     form = await request.form()
     gs = GameSession(
         world_id=world.id if world else 1,
@@ -72,7 +58,7 @@ async def session_create(request: Request, db: Session = Depends(get_db), active
 
 @router.get("/sessions/{session_id}", response_class=HTMLResponse)
 def session_detail(session_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)

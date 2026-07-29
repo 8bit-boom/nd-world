@@ -1,37 +1,23 @@
 import json
-from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..deps import get_world_ctx
 from ..models import Entity, Party, Quest, World
+from ..templating import templates
 
 router = APIRouter()
-
-BASE_DIR = Path(__file__).parent.parent.parent
-templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
-templates.env.filters["fromjson"] = lambda s: json.loads(s) if s else []
-templates.env.filters["md"] = lambda t: __import__("markdown2").markdown(
-    t, extras=["fenced-code-blocks", "tables", "strike"]
-) if t else ""
 
 STATUSES = ["active", "complete", "failed", "secret"]
 CATEGORIES = ["main", "side", "personal"]
 
 
-def _get_world_ctx(db: Session, active_world: Optional[str]):
-    worlds = db.query(World).order_by(World.id).all()
-    world = next((w for w in worlds if w.slug == active_world), None) or (worlds[0] if worlds else None)
-    return world, worlds
-
-
 @router.get("/quests", response_class=HTMLResponse)
 def quests_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     quests = db.query(Quest).filter(Quest.world_id == (world.id if world else 1)).order_by(Quest.title).all()
     grouped: dict = {s: [] for s in STATUSES}
     for q in quests:
@@ -43,7 +29,7 @@ def quests_list(request: Request, db: Session = Depends(get_db), active_world: s
 
 @router.get("/quests/new", response_class=HTMLResponse)
 def quest_new_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     parties = db.query(Party).filter(Party.world_id == (world.id if world else 1)).order_by(Party.name).all()
     quests = db.query(Quest).filter(Quest.world_id == (world.id if world else 1)).order_by(Quest.title).all()
     entities = db.query(Entity).filter(Entity.world_id == (world.id if world else 1)).order_by(Entity.name).all()
@@ -56,7 +42,7 @@ def quest_new_form(request: Request, db: Session = Depends(get_db), active_world
 
 @router.post("/quests/new")
 async def quest_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, _ = _get_world_ctx(db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
     form = await request.form()
     q = Quest(
         world_id=world.id if world else 1,
@@ -82,7 +68,7 @@ async def quest_create(request: Request, db: Session = Depends(get_db), active_w
 
 @router.get("/quests/{quest_id}", response_class=HTMLResponse)
 def quest_detail(quest_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     quest = db.query(Quest).filter(Quest.id == quest_id).first()
     if not quest:
         raise HTTPException(404)

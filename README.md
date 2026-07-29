@@ -532,7 +532,56 @@ Click **Export** in the nav bar. The download is a self-contained JSON file with
 
 Go to **Worlds** → **Manage** → **Import** and upload a previously exported JSON file.
 
-### Manual backup
+### Full backup (recommended)
+
+The **⬇ Export** button above only covers one world's entities and lore — it drops
+characters, combat, quests, parties, sessions, calendar, tables, notes and schematics.
+For a full-fidelity backup, log in as the GM and click **🗄 Backup** in the nav bar
+(`GET /admin/backup.zip`). It streams a zip containing:
+
+- `world.db` — a consistent snapshot of the whole database (built with SQLite's
+  `VACUUM INTO`, so it's safe to download while the app is running — no risk of
+  capturing a half-written page the way copying the live file directly would be)
+- `uploads/` — every uploaded and AI-generated image
+- `maps/` — all battle-map JSON
+- `manifest.json` — app name, timestamp, and a row count per table, for sanity-checking a restore
+
+For unattended backups, run `scripts/backup.sh` (reads `GM_EMAIL`/`GM_PASSWORD` from
+`.env`, logs in, and downloads the zip), e.g. from cron:
+
+```bash
+0 3 * * * cd /path/to/nd-world && BACKUP_DIR=/mnt/backups/nd-world KEEP=14 bash scripts/backup.sh >> /var/log/nd-world-backup.log 2>&1
+```
+
+`BACKUP_DIR` is where zips are written (default `./backups`), `KEEP` is how many to
+retain before older ones are pruned (default 14).
+
+### Restoring from a backup
+
+Restore is deliberately manual — there's no in-app "restore" button that could overwrite
+a live database by accident.
+
+1. Stop the container: `docker compose down` (or `docker stop nd-world`).
+2. Unzip the backup and replace the contents of the `/data` volume with it:
+   ```bash
+   # Docker named volume
+   docker run --rm -v nd-world-data:/data -v "$(pwd)":/backup alpine sh -c \
+     "rm -rf /data/* && unzip -o /backup/nd-world-backup-*.zip -d /data"
+
+   # TrueNAS / host bind mount
+   rm -rf /mnt/DeadPool/apps/nd-world/*
+   unzip -o nd-world-backup-*.zip -d /mnt/DeadPool/apps/nd-world
+   ```
+   Either way, `world.db`, `uploads/`, and `maps/` should end up directly under `/data`
+   (not nested inside another folder) — `manifest.json` can stay alongside them or be
+   discarded, it's only for sanity-checking row counts.
+3. Start the container back up: `docker compose up -d`.
+
+### Raw filesystem copy (fallback)
+
+If you can't reach the app (e.g. it's already down), the old copy-the-volume approach
+still works but isn't a point-in-time-consistent snapshot if the app was running when
+you took it:
 
 ```bash
 # Docker named volume

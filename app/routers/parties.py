@@ -1,32 +1,21 @@
 import json
-from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..deps import get_world_ctx
 from ..models import CombatSession, Entity, Party, PlayerCharacter, Quest, World
+from ..templating import templates
 from .combat import entity_to_combatant, pc_to_combatant, _COMBATANT_KINDS
 
 router = APIRouter()
 
-BASE_DIR = Path(__file__).parent.parent.parent
-templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
-templates.env.filters["fromjson"] = lambda s: json.loads(s) if s else []
-
-
-def _get_world_ctx(db: Session, active_world: Optional[str]):
-    worlds = db.query(World).order_by(World.id).all()
-    world = next((w for w in worlds if w.slug == active_world), None) or (worlds[0] if worlds else None)
-    return world, worlds
-
 
 @router.get("/parties", response_class=HTMLResponse)
 def parties_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     parties = db.query(Party).filter(Party.world_id == (world.id if world else 1)).order_by(Party.name).all()
     member_counts = {
         p.id: len(json.loads(p.member_pc_ids_json or "[]")) + len(json.loads(p.member_entity_ids_json or "[]"))
@@ -39,8 +28,8 @@ def parties_list(request: Request, db: Session = Depends(get_db), active_world: 
 
 
 @router.post("/parties/new")
-def party_create(name: str = Form("New Party"), db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, _ = _get_world_ctx(db, active_world)
+def party_create(request: Request, name: str = Form("New Party"), db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
     p = Party(world_id=world.id if world else 1, name=name.strip() or "New Party")
     db.add(p)
     db.commit()
@@ -50,7 +39,7 @@ def party_create(name: str = Form("New Party"), db: Session = Depends(get_db), a
 
 @router.get("/parties/{party_id}", response_class=HTMLResponse)
 def party_detail(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     party = db.query(Party).filter(Party.id == party_id).first()
     if not party:
         raise HTTPException(404)

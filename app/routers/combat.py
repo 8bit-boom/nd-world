@@ -1,29 +1,18 @@
 import json
 import uuid
-from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..deps import get_world_ctx
 from ..models import CombatSession, Entity, GameSession, PlayerCharacter, World
+from ..templating import templates
 
 router = APIRouter()
 
-BASE_DIR = Path(__file__).parent.parent.parent
-templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
-templates.env.filters["fromjson"] = lambda s: json.loads(s) if s else []
-
 _COMBATANT_KINDS = ("character", "creature")
-
-
-def _get_world_ctx(db: Session, active_world: Optional[str]):
-    worlds = db.query(World).order_by(World.id).all()
-    world = next((w for w in worlds if w.slug == active_world), None) or (worlds[0] if worlds else None)
-    return world, worlds
 
 
 def pc_to_combatant(pc: PlayerCharacter) -> dict:
@@ -104,7 +93,7 @@ def _candidates(db: Session, world_id: int):
 
 @router.get("/combat", response_class=HTMLResponse)
 def combat_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     sessions = db.query(CombatSession).filter(
         CombatSession.world_id == (world.id if world else 1)
     ).order_by(CombatSession.updated_at.desc()).all()
@@ -116,8 +105,8 @@ def combat_list(request: Request, db: Session = Depends(get_db), active_world: s
 
 
 @router.post("/combat/new")
-def combat_create(name: str = Form("New Encounter"), db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, _ = _get_world_ctx(db, active_world)
+def combat_create(request: Request, name: str = Form("New Encounter"), db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
     cs = CombatSession(world_id=world.id if world else 1, name=name.strip() or "New Encounter")
     db.add(cs)
     db.commit()
@@ -127,7 +116,7 @@ def combat_create(name: str = Form("New Encounter"), db: Session = Depends(get_d
 
 @router.get("/combat/{combat_id}", response_class=HTMLResponse)
 def combat_detail(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = _get_world_ctx(db, active_world)
+    world, worlds = get_world_ctx(request, db, active_world)
     cs = db.query(CombatSession).filter(CombatSession.id == combat_id).first()
     if not cs:
         raise HTTPException(404)

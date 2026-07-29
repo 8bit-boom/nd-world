@@ -41,6 +41,36 @@ def generate_invite_code() -> str:
     return secrets.token_urlsafe(9)  # short, URL-safe, ~12 chars
 
 
+# A real hash of a throwaway value, used to equalize login response time when the
+# submitted email doesn't exist. Without it, `if not user or verify_password(...)`
+# short-circuits: an unknown email answers in sub-milliseconds while a known one
+# costs 600k PBKDF2 iterations, which is a trivially measurable enumeration oracle.
+# Computed once at import (~200ms of startup).
+_DUMMY_HASH = hash_password("nd-world-timing-equalizer")
+
+
+def burn_password_verify() -> None:
+    """Spend the same PBKDF2 cost as a real verification, discarding the result."""
+    verify_password("wrong", _DUMMY_HASH)
+
+
+def safe_next_url(candidate: Optional[str], fallback: str = "/") -> str:
+    """Clamp a `next=` redirect target to a same-site relative path.
+
+    `next` is supplied by the client (it's a form field on the login page), so an
+    unvalidated value turns POST /login into an open redirect. Anything that isn't
+    a single-slash-prefixed relative path is rejected — this blocks absolute URLs
+    ("https://evil.example") and protocol-relative ones ("//evil.example"), which
+    browsers resolve to a foreign origin.
+    """
+    if not candidate:
+        return fallback
+    c = candidate.strip()
+    if not c.startswith("/") or c.startswith("//") or c.startswith("/\\"):
+        return fallback
+    return c
+
+
 # ── Request-scoped current-user helpers ───────────────────────────────────────
 
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> Optional[User]:
