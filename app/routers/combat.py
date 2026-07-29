@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, paginate
 from ..models import CombatSession, Entity, GameSession, PlayerCharacter, World
 from ..templating import templates
 
@@ -92,15 +92,17 @@ def _candidates(db: Session, world_id: int):
 
 
 @router.get("/combat", response_class=HTMLResponse)
-def combat_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def combat_list(request: Request, page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
-    sessions = db.query(CombatSession).filter(
+    base_q = db.query(CombatSession).filter(
         CombatSession.world_id == (world.id if world else 1)
-    ).order_by(CombatSession.updated_at.desc()).all()
+    ).order_by(CombatSession.updated_at.desc())
+    sessions, page, total_pages = paginate(base_q, page)
     combatant_counts = {s.id: len(json.loads(s.combatants_json or "[]")) for s in sessions}
     return templates.TemplateResponse("combat/list.html", {
         "request": request, "world": world, "worlds": worlds,
         "sessions": sessions, "combatant_counts": combatant_counts,
+        "page": page, "total_pages": total_pages,
     })
 
 

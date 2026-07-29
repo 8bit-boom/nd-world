@@ -264,6 +264,20 @@ def _filter_visible_entities(q, request: Request):
     return q
 
 
+def _kind_counts(db: Session, world_id: int, request: Request) -> dict:
+    """Entity count per kind for one world, as a single GROUP BY query instead
+    of one COUNT(*) per kind (the homepage and /ai page both used to run 8
+    separate queries — one per KINDS entry — to build this same dict)."""
+    q = _filter_visible_entities(
+        db.query(Entity.kind, func.count(Entity.id)).filter(Entity.world_id == world_id),
+        request,
+    )
+    rows = q.group_by(Entity.kind).all()
+    counts = {k: 0 for k in KINDS}
+    counts.update({k: c for k, c in rows})
+    return counts
+
+
 def _kind_folders(db: Session, world_id: int, kind: str):
     """Distinct folder paths already in use for this world+kind, for the folder
     picker on the entity form (existing folders to choose from)."""
@@ -683,7 +697,7 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
     world = get_active_world(request, db, active_world)
     if not world:
         return RedirectResponse("/worlds")
-    counts = {k: _filter_visible_entities(db.query(Entity).filter(Entity.kind == k, Entity.world_id == world.id), request).count() for k in KINDS}
+    counts = _kind_counts(db, world.id, request)
     recent = _filter_visible_entities(db.query(Entity).filter(Entity.world_id == world.id), request).order_by(Entity.updated_at.desc()).limit(8).all()
     worlds = _visible_worlds(request, db)
     # collect a few maps for the homepage preview
@@ -1630,10 +1644,7 @@ def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: 
         "lore, NPC backstories, plot hooks, and creative writing. Be vivid and immersive."
     )
     if world:
-        for k in KINDS:
-            entity_counts[k] = db.query(Entity).filter(
-                Entity.world_id == world.id, Entity.kind == k
-            ).count()
+        entity_counts = _kind_counts(db, world.id, request)
         counts_str = ", ".join(f"{v} {k}s" for k, v in entity_counts.items() if v > 0)
         world_system = (
             f"You are a creative world-building AI assistant for '{world.name}', "
@@ -1721,8 +1732,12 @@ def board_view(slug: str, request: Request, db: Session = Depends(get_db), activ
     world, worlds = get_world_ctx(request, db, active_world)
     b = db.query(InvestBoard).filter(InvestBoard.slug == slug).first()
     if not b: raise HTTPException(404)
-    # Build entity name→{id,kind,image_url} map for quick lookup
-    entities = db.query(Entity.id, Entity.name, Entity.kind, Entity.image_url).all()
+    # Build entity name→{id,kind,image_url} map for quick lookup — scoped to the
+    # board's own world (not every entity in the database) so a board with a
+    # handful of nodes doesn't load every lore entry across every world.
+    entities = db.query(Entity.id, Entity.name, Entity.kind, Entity.image_url).filter(
+        Entity.world_id == b.world_id
+    ).all()
     entity_list = [{"id": e.id, "name": e.name, "kind": e.kind, "image_url": e.image_url} for e in entities]
     # nodes_json may be a legacy bare array OR the new {nodes, groups} object
     raw_nodes = json.loads(b.nodes_json or "[]")
@@ -2418,6 +2433,92 @@ def _snippet(text: str, q: str, window: int = 120) -> str:
     pattern = re.compile(re.escape(html.escape(q)), re.IGNORECASE)
     return pattern.sub(lambda m: f"<mark>{m.group()}</mark>", escaped)
 
+_SEARCH_RESULT_CAP = 25  # per result type — this is a quick-jump search box, not a report
+
+
+def _search_characters(db: Session, world: World, request: Request, q: str) -> list[dict]:
+    """Player-reachable: a player may see their own character(s) plus, if the
+    GM has players_see_party on, other party members' — the same rule
+    characters.py's _can_view_character applies to the character sheet itself,
+    so search can't surface anything a player couldn't already click through to."""
+    user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
+    pc_q = db.query(PlayerCharacter).filter(
+        PlayerCharacter.world_id == world.id,
+        or_(
+            PlayerCharacter.name.ilike(f"%{q}%"),
+            PlayerCharacter.player_name.ilike(f"%{q}%"),
+            PlayerCharacter.race.ilike(f"%{q}%"),
+            PlayerCharacter.char_class.ilike(f"%{q}%"),
+            PlayerCharacter.backstory.ilike(f"%{q}%"),
+            PlayerCharacter.notes.ilike(f"%{q}%"),
+        ),
+    )
+    if not is_gm:
+        if not user:
+            return []
+        if world.players_see_party:
+            pc_q = pc_q.filter(or_(
+                PlayerCharacter.owner_user_id == user.id,
+                PlayerCharacter.owner_user_id.isnot(None),
+            ))
+        else:
+            pc_q = pc_q.filter(PlayerCharacter.owner_user_id == user.id)
+    out = []
+    for pc in pc_q.order_by(PlayerCharacter.name).limit(_SEARCH_RESULT_CAP).all():
+        subtitle = " / ".join(x for x in (pc.race, pc.char_class) if x)
+        snippet = "" if q.lower() in (pc.name or "").lower() else _snippet(pc.backstory or pc.notes or "", q)
+        out.append({"title": pc.name, "subtitle": subtitle, "url": f"/characters/{pc.id}",
+                    "icon": "🎲", "snippet": snippet})
+    return out
+
+
+def _search_quests(db: Session, world: World, q: str) -> list[dict]:
+    quest_q = db.query(Quest).filter(
+        Quest.world_id == world.id,
+        or_(Quest.title.ilike(f"%{q}%"), Quest.summary.ilike(f"%{q}%"), Quest.body.ilike(f"%{q}%")),
+    )
+    out = []
+    for quest in quest_q.order_by(Quest.title).limit(_SEARCH_RESULT_CAP).all():
+        snippet = "" if q.lower() in (quest.title or "").lower() else _snippet(quest.body or quest.summary or "", q)
+        out.append({"title": quest.title, "subtitle": (quest.status or "").capitalize(),
+                    "url": f"/quests/{quest.id}", "icon": "📜", "snippet": snippet})
+    return out
+
+
+def _search_sessions(db: Session, world: World, q: str) -> list[dict]:
+    sess_q = db.query(GameSession).filter(
+        GameSession.world_id == world.id,
+        or_(GameSession.title.ilike(f"%{q}%"), GameSession.summary.ilike(f"%{q}%")),
+    )
+    out = []
+    for s in sess_q.order_by(GameSession.session_num.desc()).limit(_SEARCH_RESULT_CAP).all():
+        snippet = "" if q.lower() in (s.title or "").lower() else _snippet(s.summary or "", q)
+        out.append({"title": f"Session #{s.session_num}: {s.title}", "subtitle": s.session_date or "",
+                    "url": f"/sessions/{s.id}", "icon": "📓", "snippet": snippet})
+    return out
+
+
+def _search_notes(db: Session, world: World, request: Request, q: str) -> list[dict]:
+    """EntityNote, not PrivateNote — these are GM-authored notes pinned to a
+    lore entity, so they already carry the visible_to_players flag that
+    determines whether search may surface them to a non-GM viewer."""
+    user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
+    note_q = (
+        db.query(EntityNote, Entity.name, Entity.id)
+        .join(Entity, Entity.id == EntityNote.entity_id)
+        .filter(Entity.world_id == world.id, EntityNote.content.ilike(f"%{q}%"))
+    )
+    if not is_gm:
+        note_q = note_q.filter(EntityNote.visible_to_players.is_(True))
+    out = []
+    for note, ent_name, ent_id in note_q.limit(_SEARCH_RESULT_CAP).all():
+        out.append({"title": ent_name, "subtitle": "Note", "url": f"/entity/{ent_id}",
+                    "icon": "🔒", "snippet": _snippet(note.content or "", q)})
+    return out
+
+
 @app.get("/search", response_class=HTMLResponse)
 def search(request: Request, q: str = "", kind: str = "",
            db: Session = Depends(get_db), active_world: str = Cookie(None)):
@@ -2425,6 +2526,7 @@ def search(request: Request, q: str = "", kind: str = "",
     results = []
     grouped: dict[str, list] = {}
     snippets: dict[int, str] = {}
+    other_grouped: dict[str, list] = {}
 
     if q:
         query = db.query(Entity).filter(
@@ -2447,9 +2549,24 @@ def search(request: Request, q: str = "", kind: str = "",
             if q.lower() not in (e.name or "").lower() and q.lower() not in (e.summary or "").lower():
                 snippets[e.id] = _snippet(e.body or "", q)
 
+        # The entity-kind filter dropdown only makes sense against entities —
+        # characters/quests/sessions/notes aren't entity kinds, so leave them
+        # out of a kind-filtered search rather than force them under it.
+        if not kind:
+            user = getattr(request.state, "user", None)
+            is_gm = bool(user and user.is_gm)
+            other_sections = [("Characters", _search_characters(db, world, request, q))]
+            if is_gm:
+                other_sections += [
+                    ("Quests", _search_quests(db, world, q)),
+                    ("Sessions", _search_sessions(db, world, q)),
+                ]
+            other_sections.append(("Notes", _search_notes(db, world, request, q)))
+            other_grouped = {label: items for label, items in other_sections if items}
+
     worlds = _visible_worlds(request, db)
     return templates.TemplateResponse("search.html", {
-        "request": request, "results": results, "grouped": grouped,
+        "request": request, "results": results, "grouped": grouped, "other_grouped": other_grouped,
         "snippets": snippets, "q": q, "kind_filter": kind,
         "world": world, "worlds": worlds,
     })

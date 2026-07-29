@@ -60,6 +60,7 @@
     <button class="tb" onclick="fitZoom()" title="Fit · F">⊡ Fit</button>
     <button class="tb" onclick="zoomReset()" title="100%">1:1</button>
     <button class="tb" onclick="doZoom(0.83)">－</button>
+    <button class="tb" id="bar2-toggle" onclick="toggleBar2()" title="More tools (edit/align/export)">⋯ More</button>
     <div style="flex:1"></div>
     <button class="tb" id="save-btn" onclick="save()" style="border-color:#44ff88;color:#44ff88">💾 Save</button>
   </div>
@@ -415,10 +416,23 @@
 .tb-check { font-size:.76rem; opacity:.75; cursor:pointer; display:flex; align-items:center; gap:.2rem; }
 
 #sch-main { display:flex; flex:1; overflow:hidden; position:relative; }
-#sch-canvas-wrap { flex:1; overflow:auto; background:#050505; position:relative; }
+#sch-canvas-wrap { flex:1; overflow:auto; background:#050505; position:relative; touch-action:none; }
 #sch-svg { display:block; transform-origin:0 0; }
 #sch-canvas-wrap.panning { cursor:grabbing; }
 #sch-canvas-wrap.pan-ready { cursor:grab; }
+
+/* ── Touch / small-screen: larger hit targets, row 2 collapses behind a toggle ──
+   A mouse+trackpad user never sees #bar2-toggle or the enlarged targets —
+   (pointer:coarse) matches a touchscreen's primary input specifically, not
+   just a narrow window, so a resized desktop browser window isn't affected. */
+#bar2-toggle { display:none; }
+@media (pointer:coarse) {
+  .tb { padding:.42rem .6rem; min-width:38px; min-height:38px; font-size:.86rem; }
+  .tb-check { padding:.3rem 0; }
+  #bar2-toggle { display:inline-block; }
+  #sch-bar2 { display:none; }
+  #sch-bar2.open { display:flex; }
+}
 
 #sch-panel {
   width:178px; flex-shrink:0; background:rgba(0,0,0,.7);
@@ -538,6 +552,13 @@ let pencilPts = null;
 let measurePt = null;
 let stampSpec = null;               // currently active stamp template
 let wpDrag    = null;               // {elId, idx} for waypoint drag
+let activePointers = new Map();     // pointerId -> {x,y} — 2 active = two-finger pan
+let panPointerIds = null;           // the pair of pointerIds driving a two-finger pan
+// A touchscreen's primary input reports as "coarse" — used to size resize/
+// waypoint handles for a fingertip instead of a mouse cursor (SVG geometry
+// attributes like a <rect>'s width/height aren't styleable from the
+// pointer-coarse CSS media query the rest of the toolbar uses).
+const TOUCH = window.matchMedia('(pointer:coarse)').matches;
 let activeWpHandle = null;          // {elId, idx} for waypoint delete
 let pendingPartyPt = null;          // {x,y} awaiting party-placement dialog confirm
 let pendingTokenPt = null;          // {x,y} awaiting token-placement dialog confirm
@@ -612,6 +633,11 @@ function octiSnap(x1, y1, x2, y2) {
   return { x: x1 + Math.cos(angle)*dist, y: y1 + Math.sin(angle)*dist };
 }
 
+// ── Touch/small-screen toolbar ────────────────────────────────────────────────
+// #sch-bar2 (undo/redo, align, z-order, export, ...) is hidden by default on a
+// coarse (touch) pointer to leave room for the canvas — this just reveals it.
+function toggleBar2() { document.getElementById('sch-bar2').classList.toggle('open'); }
+
 // ── Tool selection ────────────────────────────────────────────────────────────
 function setTool(t) {
   tool = t;
@@ -639,7 +665,7 @@ function redraw() {
     g.dataset.id = el.id;
     if (tool === 'select' && !el.locked && !layerState[el.layer||'Tracks']?.lock) {
       g.style.cursor = 'pointer';
-      g.addEventListener('mousedown', e => { e.stopPropagation(); pickEl(e, el); });
+      g.addEventListener('pointerdown', e => { e.stopPropagation(); pickEl(e, el); });
       g.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation();
         if (!selIds.has(el.id)) { selIds.clear(); selIds.add(el.id); }
         showCtx(e); redraw();
@@ -728,28 +754,31 @@ function drawSel() {
       ];
       const CUR = {nw:'nw-resize',n:'n-resize',ne:'ne-resize',e:'e-resize',
                    se:'se-resize',s:'s-resize',sw:'sw-resize',w:'w-resize'};
+      const HS = TOUCH ? 9 : 4; // half-size: 18px square on touch vs 8px for a mouse cursor
       HH.forEach(([hid,hx,hy]) => {
-        const h = svgEl('rect', {x:hx-4, y:hy-4, width:8, height:8, rx:1,
+        const h = svgEl('rect', {x:hx-HS, y:hy-HS, width:HS*2, height:HS*2, rx:1,
           fill:'#111', stroke:'#00f0ff', 'stroke-width':1.5,
           cursor:CUR[hid], 'pointer-events':'all'});
-        h.addEventListener('mousedown', e => { e.stopPropagation(); startResize(e, hid, el); });
+        h.addEventListener('pointerdown', e => { e.stopPropagation(); startResize(e, hid, el); });
         selLayer.appendChild(h);
       });
     } else if (isLineLike) {
+      const HR = TOUCH ? 11 : 5; // radius: ~22px touch target vs 10px for a mouse cursor
       [[el.x1,el.y1,'ep1'],[el.x2,el.y2,'ep2']].forEach(([ex,ey,hid]) => {
-        const h = svgEl('circle', {cx:ex, cy:ey, r:5,
+        const h = svgEl('circle', {cx:ex, cy:ey, r:HR,
           fill:'#111', stroke:'#00f0ff', 'stroke-width':1.5,
           cursor:'crosshair', 'pointer-events':'all'});
-        h.addEventListener('mousedown', e => { e.stopPropagation(); startResize(e, hid, el); });
+        h.addEventListener('pointerdown', e => { e.stopPropagation(); startResize(e, hid, el); });
         selLayer.appendChild(h);
       });
       // Waypoint handles (intermediate points)
       if ((el.type==='line'||el.type==='arrow') && elPoints(el).length > 2) {
+        const WR = TOUCH ? 12 : 6;
         elPoints(el).slice(1, -1).forEach((p, i) => {
-          const wh = svgEl('circle', {cx:p.x, cy:p.y, r:6,
+          const wh = svgEl('circle', {cx:p.x, cy:p.y, r:WR,
             fill:'#00ff9d', stroke:'#000', 'stroke-width':1,
             cursor:'move', 'pointer-events':'all'});
-          wh.addEventListener('mousedown', e => {
+          wh.addEventListener('pointerdown', e => {
             e.stopPropagation();
             activeWpHandle = {elId:el.id, idx:i+1};
             wpDrag = {elId:el.id, idx:i+1};
@@ -991,8 +1020,10 @@ function moveEl(el, o, dx, dy) {
   }
 }
 
-// ── Global mouse handlers ─────────────────────────────────────────────────────
-document.addEventListener('mousemove', e => {
+// ── Global pointer handlers (mouse, touch, and pen) ───────────────────────────
+document.addEventListener('pointermove', e => {
+  if (activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+
   // Status bar
   const r = svg.getBoundingClientRect();
   if (e.clientX>=r.left && e.clientX<=r.right && e.clientY>=r.top && e.clientY<=r.bottom) {
@@ -1002,6 +1033,10 @@ document.addEventListener('mousemove', e => {
 
   // Pan
   if (panning) {
+    // Two-finger pan tracks one designated anchor finger — with two pointers
+    // moving independently, using whichever one happened to fire this event
+    // would jump the scroll position around instead of panning smoothly.
+    if (panPointerIds && e.pointerId !== panPointerIds[0]) return;
     const dx = e.clientX - panStart.x, dy = e.clientY - panStart.y;
     wrap.scrollLeft = panScrollStart.x - dx;
     wrap.scrollTop  = panScrollStart.y - dy;
@@ -1090,7 +1125,11 @@ document.addEventListener('mousemove', e => {
   }
 });
 
-document.addEventListener('mouseup', e => {
+document.addEventListener('pointerup', e => {
+  activePointers.delete(e.pointerId);
+  // Two-finger pan ends as soon as either driving finger lifts — matches the
+  // "second finger touching down" trigger in pointerdown being symmetric.
+  if (panPointerIds && panPointerIds.includes(e.pointerId)) panPointerIds = null;
   if (panning) { panning=false; wrap.classList.remove('panning'); return; }
   if (marquee) { finishMarquee(); marquee=null; drawMarquee(); return; }
   if (wpDrag)  { wpDrag=null; snapshot(); return; }
@@ -1101,9 +1140,43 @@ document.addEventListener('mouseup', e => {
     isDrag=false; guideLayer.innerHTML='';
   }
 });
+document.addEventListener('pointercancel', e => {
+  // iOS Safari fires pointercancel (not pointerup) when a touch gesture is
+  // interrupted (e.g. an incoming call, or the OS claiming it for a system
+  // gesture) — without this, activePointers/panPointerIds could get stuck
+  // with a phantom finger that never "lifted".
+  activePointers.delete(e.pointerId);
+  if (panPointerIds && panPointerIds.includes(e.pointerId)) { panPointerIds = null; panning = false; wrap.classList.remove('panning'); }
+});
 
-// ── Hit rect (canvas mousedown) ───────────────────────────────────────────────
-hit.addEventListener('mousedown', e => {
+// A second (or third+) finger touching down anywhere always means "pan",
+// regardless of what the first finger was doing — there's no modifier key on
+// a tablet to distinguish pan from draw/select the way space-held does for a
+// mouse. Registered on the capture phase (fires before any bubble-phase
+// handler, including one that calls stopPropagation, like an element's own
+// pointerdown) so this works even when the first finger landed on an element
+// — pickEl()'s own listener stopping propagation would otherwise hide that
+// touch from a bubble-phase listener entirely.
+document.addEventListener('pointerdown', e => {
+  if (e.pointerType !== 'touch') return;
+  activePointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+  if (activePointers.size < 2) return;
+  if (!panning) {
+    marquee = null; drawing = false; drawStart = null; isDrag = false; resizing = null; wpDrag = null;
+    prevLayer.innerHTML = ''; guideLayer.innerHTML = '';
+    const anchorId = [...activePointers.keys()][0];
+    panPointerIds = [anchorId];
+    const p = activePointers.get(anchorId);
+    panning = true; panStart = { x:p.x, y:p.y };
+    panScrollStart = { x:wrap.scrollLeft, y:wrap.scrollTop };
+    wrap.classList.add('panning');
+  }
+  e.stopPropagation(); // a 2nd+ finger never also starts a new element pick/marquee/draw
+}, { capture:true });
+
+// ── Hit rect (canvas pointerdown — mouse, touch, and pen all funnel through
+// the Pointer Events API instead of separate mouse/touch handlers) ────────────
+hit.addEventListener('pointerdown', e => {
   // Pan: middle mouse OR space held
   if (e.button === 1 || (e.button === 0 && spaceHeld)) {
     panning = true; panStart = { x:e.clientX, y:e.clientY };
@@ -1176,7 +1249,7 @@ function pointToSegDist(px,py,ax,ay,bx,by) {
   return Math.hypot(px-(ax+t*dx), py-(ay+t*dy));
 }
 
-hit.addEventListener('mouseup', e => {
+hit.addEventListener('pointerup', e => {
   if (drawing && tool === 'pencil') { finishPencil(); drawing=false; pencilPts=null; prevLayer.innerHTML=''; return; }
   if (!drawing) return;
   if (tool==='poly') return;
@@ -1312,7 +1385,7 @@ function renderPartyPins() {
     g.appendChild(svgEl('line', { x1:p.x, y1:p.y-2, x2:p.x, y2:p.y+4, stroke:'#ffcc00', 'stroke-width':2 }));
     const lbl = svgEl('text', { x:p.x+16, y:p.y-14, 'font-size':12, 'font-family':'monospace', fill:'#fff', 'pointer-events':'none' });
     lbl.textContent = p.name; g.appendChild(lbl);
-    g.addEventListener('mousedown', e => { e.stopPropagation(); });
+    g.addEventListener('pointerdown', e => { e.stopPropagation(); });
     g.addEventListener('click', e => {
       e.stopPropagation();
       if (tool === 'party') return; // avoid accidental popup while placing another party

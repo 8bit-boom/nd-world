@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, paginate
 from ..models import CombatSession, Entity, GameSession, Party, PlayerCharacter, World
 from ..templating import templates
 
@@ -13,13 +13,15 @@ router = APIRouter()
 
 
 @router.get("/sessions", response_class=HTMLResponse)
-def sessions_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def sessions_list(request: Request, page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
-    sessions = db.query(GameSession).filter(
+    base_q = db.query(GameSession).filter(
         GameSession.world_id == (world.id if world else 1)
-    ).order_by(GameSession.session_num.desc()).all()
+    ).order_by(GameSession.session_num.desc())
+    sessions, page, total_pages = paginate(base_q, page)
     return templates.TemplateResponse("sessions/list.html", {
         "request": request, "world": world, "worlds": worlds, "sessions": sessions,
+        "page": page, "total_pages": total_pages,
     })
 
 

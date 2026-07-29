@@ -23,13 +23,26 @@ def get_app_settings(db):
         db.refresh(s)
     return s
 
-def _heal_table(conn, table, columns):
+def _heal_table(conn, table, columns, foreign_keys=None, indexes=None, unique_indexes=None):
     """Self-heal a table against its model's expected columns: add whatever's
     missing, and rebuild (SQLite can't ALTER to drop a NOT NULL constraint)
     if any column the model marks nullable ended up NOT NULL in the DB —
     the same class of issue seen on random_tables/game_sessions after some
     installs ended up with tables that don't fully match their models.
+
     `columns` is [(name, add_column_sql_defn, nullable), ...], excluding id.
+
+    The rebuild path used to emit a bare `CREATE TABLE` with just those
+    columns, silently dropping any FOREIGN KEY constraints, indexes, and
+    UNIQUE indexes the model actually declares — `ALTER TABLE ADD COLUMN`
+    can't add them, so once a table went through one rebuild without them
+    they stayed missing forever (create_all() only creates tables that don't
+    exist yet, it never alters an existing one to add a missing index).
+    `foreign_keys` is [(column, ref_table, ref_column), ...],
+    `indexes` / `unique_indexes` are plain lists of column names — pass the
+    same ones the SQLAlchemy model declares via ForeignKey()/index=True/
+    unique=True so a healed table matches the model again, not just its
+    column list.
     """
     exists = conn.execute(text(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=:t"
@@ -47,10 +60,20 @@ def _heal_table(conn, table, columns):
         tmp = f"{table}_old"
         conn.execute(text(f"ALTER TABLE {table} RENAME TO {tmp}"))
         col_sql = ",\n                ".join(f"{name} {defn}" for name, defn, _ in columns)
-        conn.execute(text(f"CREATE TABLE {table} (\n                id INTEGER PRIMARY KEY,\n                {col_sql}\n            )"))
+        fk_sql = "".join(
+            f",\n                FOREIGN KEY ({col}) REFERENCES {ref_table}({ref_col})"
+            for col, ref_table, ref_col in (foreign_keys or [])
+        )
+        conn.execute(text(
+            f"CREATE TABLE {table} (\n                id INTEGER PRIMARY KEY,\n                {col_sql}{fk_sql}\n            )"
+        ))
         col_names = ", ".join(["id"] + [c[0] for c in columns])
         conn.execute(text(f"INSERT INTO {table} ({col_names}) SELECT {col_names} FROM {tmp}"))
         conn.execute(text(f"DROP TABLE {tmp}"))
+        for col in (indexes or []):
+            conn.execute(text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{col} ON {table} ({col})"))
+        for col in (unique_indexes or []):
+            conn.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS ix_{table}_{col} ON {table} ({col})"))
 
 
 def _f(id, label, type="text", section="", default_value=""):
@@ -341,6 +364,10 @@ def _migrate():
             world_id_notnull = any(r[1] == "world_id" and r[3] == 1 for r in rt_info)
             if world_id_notnull:
                 conn.execute(text("ALTER TABLE random_tables RENAME TO random_tables_old"))
+                # FOREIGN KEY + the world_id index are declared here (not just
+                # `slug ... UNIQUE`) so a healed table matches the model again —
+                # ALTER TABLE ADD COLUMN can add neither retroactively, and
+                # create_all() never alters a table that already exists.
                 conn.execute(text("""
                     CREATE TABLE random_tables (
                         id INTEGER PRIMARY KEY,
@@ -352,12 +379,14 @@ def _migrate():
                         is_builtin BOOLEAN DEFAULT 0,
                         entries_json TEXT DEFAULT '[]',
                         created_at DATETIME,
-                        updated_at DATETIME
+                        updated_at DATETIME,
+                        FOREIGN KEY (world_id) REFERENCES worlds(id)
                     )
                 """))
                 cols = "id, world_id, name, slug, category, description, is_builtin, entries_json, created_at, updated_at"
                 conn.execute(text(f"INSERT INTO random_tables ({cols}) SELECT {cols} FROM random_tables_old"))
                 conn.execute(text("DROP TABLE random_tables_old"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_random_tables_world_id ON random_tables (world_id)"))
             # slug has a UNIQUE index on the model but a column added via ALTER
             # TABLE can't carry that constraint retroactively — backfill any
             # NULL slugs (from rows that predate the column) so the app's own
@@ -379,7 +408,10 @@ def _migrate():
             ("game_session_id",  "INTEGER", True),
             ("created_at",       "DATETIME", True),
             ("updated_at",       "DATETIME", True),
-        ])
+        ], foreign_keys=[
+            ("world_id", "worlds", "id"),
+            ("game_session_id", "game_sessions", "id"),
+        ], indexes=["world_id", "game_session_id"])
         _heal_table(conn, "parties", [
             ("world_id",                "INTEGER", False),
             ("name",                    "VARCHAR(256)", False),
@@ -390,7 +422,7 @@ def _migrate():
             ("location_json",           "TEXT DEFAULT '{}'", True),
             ("created_at",              "DATETIME", True),
             ("updated_at",              "DATETIME", True),
-        ])
+        ], foreign_keys=[("world_id", "worlds", "id")], indexes=["world_id"])
         _heal_table(conn, "quests", [
             ("world_id",              "INTEGER", False),
             ("title",                 "VARCHAR(256)", False),
@@ -403,7 +435,11 @@ def _migrate():
             ("assigned_party_id",     "INTEGER", True),
             ("created_at",            "DATETIME", True),
             ("updated_at",            "DATETIME", True),
-        ])
+        ], foreign_keys=[
+            ("world_id", "worlds", "id"),
+            ("parent_id", "quests", "id"),
+            ("assigned_party_id", "parties", "id"),
+        ], indexes=["world_id", "parent_id", "assigned_party_id"])
         _heal_table(conn, "game_sessions", [
             ("world_id",      "INTEGER", False),
             ("title",         "VARCHAR(256)", False),
@@ -417,12 +453,15 @@ def _migrate():
             ("party_id",      "INTEGER", True),
             ("created_at",    "DATETIME", True),
             ("updated_at",    "DATETIME", True),
-        ])
+        ], foreign_keys=[
+            ("world_id", "worlds", "id"),
+            ("party_id", "parties", "id"),
+        ], indexes=["world_id", "party_id"])
         _heal_table(conn, "world_calendars", [
             ("world_id",     "INTEGER", False),
             ("config_json",  "TEXT DEFAULT '{}'", True),
             ("updated_at",   "DATETIME", True),
-        ])
+        ], foreign_keys=[("world_id", "worlds", "id")], unique_indexes=["world_id"])
         _heal_table(conn, "calendar_events", [
             ("world_id",    "INTEGER", False),
             ("day",         "INTEGER", False),
@@ -431,7 +470,10 @@ def _migrate():
             ("entity_id",   "INTEGER", True),
             ("color",       "VARCHAR(16) DEFAULT '#4488ff'", True),
             ("created_at",  "DATETIME", True),
-        ])
+        ], foreign_keys=[
+            ("world_id", "worlds", "id"),
+            ("entity_id", "entities", "id"),
+        ], indexes=["world_id", "entity_id"])
 
 def _seed():
     db = SessionLocal()

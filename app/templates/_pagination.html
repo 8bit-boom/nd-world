@@ -1,0 +1,15 @@
+{% if total_pages and total_pages > 1 %}
+<div class="pagination">
+  {% if page > 1 %}
+  <a href="?page={{ page - 1 }}" class="page-link">&larr; Prev</a>
+  {% else %}
+  <span class="page-link disabled">&larr; Prev</span>
+  {% endif %}
+  <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
+  {% if page < total_pages %}
+  <a href="?page={{ page + 1 }}" class="page-link">Next &rarr;</a>
+  {% else %}
+  <span class="page-link disabled">Next &rarr;</span>
+  {% endif %}
+</div>
+{% endif %}

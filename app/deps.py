@@ -27,3 +27,25 @@ def get_world_ctx(request: Request, db: Session, active_world: Optional[str]):
     worlds = q.order_by(World.id).all()
     world = next((w for w in worlds if w.slug == active_world), None) or (worlds[0] if worlds else None)
     return world, worlds
+
+
+PAGE_SIZE = 50
+
+
+def paginate(query, page: int, page_size: int = PAGE_SIZE):
+    """Slice an ordered SQLAlchemy query to one page, clamping `page` into
+    range instead of returning an empty page for an out-of-bounds request.
+
+    Only fits flat, already-ordered list queries — views that group results
+    by folder/status/category (the entity browser, quests, random tables)
+    need every row in the group to render correctly, so paginating the raw
+    query would silently split a group across pages. Those are left as full
+    loads for now rather than force-fit a slice that would corrupt the
+    grouping; this is for straightforward "one row per card" lists.
+    """
+    page = max(1, page)
+    total = query.count()
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, total_pages)
+    items = query.offset((page - 1) * page_size).limit(page_size).all()
+    return items, page, total_pages

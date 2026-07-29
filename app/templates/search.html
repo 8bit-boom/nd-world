@@ -16,12 +16,13 @@
 </div>
 
 {% if q %}
+  {% set other_count = other_grouped.values() | map('length') | sum %}
   <p class="result-count">
-    {{ results|length }} result(s) for "<strong>{{ q }}</strong>"
+    {{ results|length + other_count }} result(s) for "<strong>{{ q }}</strong>"
     {% if kind_filter %} in {{ kind_filter }}s{% endif %}
   </p>
 
-  {% if grouped %}
+  {% if grouped or other_grouped %}
   <div class="search-results">
     {% for kind, items in grouped.items() %}
     <details class="folder-group" open>
@@ -45,6 +46,29 @@
             {% endif %}
             {% if e.tags %}
             <div class="tags">{% for t in e.tags.split(',') %}<span class="tag">{{ t.strip() }}</span>{% endfor %}</div>
+            {% endif %}
+          </div>
+        </a>
+        {% endfor %}
+      </div>
+    </details>
+    {% endfor %}
+    {% for label, items in other_grouped.items() %}
+    <details class="folder-group" open>
+      <summary class="folder-group-title">
+        {{ items[0].icon }} {{ label }}
+        <span class="folder-count">{{ items|length }}</span>
+      </summary>
+      <div class="search-result-list">
+        {% for r in items %}
+        <a href="{{ r.url }}" class="search-result-item">
+          <div class="search-result-body">
+            <div class="search-result-title">
+              {{ r.title }}
+              {% if r.subtitle %}<span class="entity-sub">{{ r.subtitle }}</span>{% endif %}
+            </div>
+            {% if r.snippet %}
+            <p class="search-snippet">{{ r.snippet | safe }}</p>
             {% endif %}
           </div>
         </a>

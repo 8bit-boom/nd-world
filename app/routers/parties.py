@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, paginate
 from ..models import CombatSession, Entity, Party, PlayerCharacter, Quest, World
 from ..templating import templates
 from .combat import entity_to_combatant, pc_to_combatant, _COMBATANT_KINDS
@@ -14,9 +14,10 @@ router = APIRouter()
 
 
 @router.get("/parties", response_class=HTMLResponse)
-def parties_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def parties_list(request: Request, page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
-    parties = db.query(Party).filter(Party.world_id == (world.id if world else 1)).order_by(Party.name).all()
+    base_q = db.query(Party).filter(Party.world_id == (world.id if world else 1)).order_by(Party.name)
+    parties, page, total_pages = paginate(base_q, page)
     member_counts = {
         p.id: len(json.loads(p.member_pc_ids_json or "[]")) + len(json.loads(p.member_entity_ids_json or "[]"))
         for p in parties
@@ -24,6 +25,7 @@ def parties_list(request: Request, db: Session = Depends(get_db), active_world: 
     return templates.TemplateResponse("parties/list.html", {
         "request": request, "world": world, "worlds": worlds,
         "parties": parties, "member_counts": member_counts,
+        "page": page, "total_pages": total_pages,
     })
 
 
