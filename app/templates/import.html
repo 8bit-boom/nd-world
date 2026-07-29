@@ -34,6 +34,22 @@
     <button type="button" id="import-btn" disabled style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer;opacity:.5">Import</button>
     <span id="import-result" style="font-size:.85rem"></span>
   </div>
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-top:1.5rem">
+    <h2 style="color:var(--neon);font-size:.9rem;margin:0 0 .4rem">🖼 Bulk Image Import</h2>
+    <p style="color:var(--text-dim);font-size:.82rem;margin:0 0 .8rem">
+      Select several portrait/art files at once — each one is matched to an entity
+      in this world by filename (e.g. "Gandalf.png" → the entity named "Gandalf").
+      Review the matches below and adjust any before importing; files left on
+      "— Skip —" aren't uploaded at all.
+    </p>
+    <input type="file" id="img-files-input" multiple accept="image/jpeg,image/png,image/gif,image/webp" style="font-size:.8rem"/>
+    <div id="img-preview-table" style="margin-top:1rem"></div>
+    <div style="display:flex;gap:.75rem;margin-top:.9rem;align-items:center">
+      <button type="button" id="img-import-btn" disabled style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer;opacity:.5">Import Images</button>
+      <span id="img-import-result" style="font-size:.85rem"></span>
+    </div>
+  </div>
 </div>
 
 <style>
@@ -50,6 +66,7 @@
 // json.dumps() string does not).
 const SCHEMATICS = JSON.parse({{ schematics_json | tojson }});
 const MAPS = JSON.parse({{ maps_json | tojson }});
+const ENTITIES = JSON.parse({{ entities_json | tojson }});
 const KINDS = ["character","location","organization","creature","event","item","feat","note"];
 const NEEDS_BY_KIND = {
   world_rules: [], map_overlay: ["map_slug"], schematic_elements: ["schematic_slug"],
@@ -227,6 +244,143 @@ document.getElementById('import-btn').addEventListener('click', async () => {
     }
     resEl.style.color = '#4f4'; resEl.textContent = 'Imported! Redirecting…';
     setTimeout(() => { window.location.href = data.redirect; }, 600);
+  } catch (e) {
+    resEl.style.color = '#c44'; resEl.textContent = 'Import failed: ' + e.message;
+  }
+});
+
+// ── Bulk image import ───────────────────────────────────────────────────────
+// Matches each selected file to an entity in this world by (normalized)
+// filename, entirely client-side against the entity list already embedded
+// in the page — no round trip needed just to preview the matches.
+function normalizeMatchName(s) {
+  return s.toLowerCase().replace(/[_\-.]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function matchEntityByFilename(filename) {
+  const base = filename.replace(/\.[^.]+$/, '');
+  const norm = normalizeMatchName(base);
+  if (!norm) return null;
+  const exact = ENTITIES.find(e => normalizeMatchName(e.name) === norm);
+  if (exact) return { entity: exact, confidence: 'exact' };
+  const fuzzy = ENTITIES.find(e => {
+    const en = normalizeMatchName(e.name);
+    return en.length > 2 && norm.length > 2 && (en.includes(norm) || norm.includes(en));
+  });
+  if (fuzzy) return { entity: fuzzy, confidence: 'fuzzy' };
+  return null;
+}
+
+function buildEntitySelect(selectedId) {
+  const sel = document.createElement('select');
+  sel.style.cssText = 'background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-size:.8rem;border-radius:3px;max-width:260px';
+  const skipOpt = document.createElement('option');
+  skipOpt.value = ''; skipOpt.textContent = '— Skip —';
+  sel.appendChild(skipOpt);
+  const byKind = {};
+  ENTITIES.forEach(e => { (byKind[e.kind] = byKind[e.kind] || []).push(e); });
+  Object.keys(byKind).sort().forEach(k => {
+    const grp = document.createElement('optgroup');
+    grp.label = k.charAt(0).toUpperCase() + k.slice(1) + 's';
+    byKind[k].forEach(e => {
+      const opt = document.createElement('option');
+      opt.value = e.id;
+      opt.textContent = e.name + (e.has_image ? ' (has image)' : '');
+      if (String(e.id) === String(selectedId)) opt.selected = true;
+      grp.appendChild(opt);
+    });
+    sel.appendChild(grp);
+  });
+  return sel;
+}
+
+let selectedImgFiles = [];
+
+document.getElementById('img-files-input').addEventListener('change', (e) => {
+  selectedImgFiles = Array.from(e.target.files);
+  renderImgPreview();
+});
+
+function renderImgPreview() {
+  const box = document.getElementById('img-preview-table');
+  box.innerHTML = '';
+  if (!selectedImgFiles.length) { disableImgImport(); return; }
+  const list = document.createElement('div');
+  list.style.cssText = 'display:flex;flex-direction:column;gap:.4rem;max-height:420px;overflow-y:auto';
+  selectedImgFiles.forEach((f, i) => {
+    const match = matchEntityByFilename(f.name);
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:.6rem;padding:.4rem;background:var(--bg3);border-radius:4px' +
+      (match && match.confidence === 'fuzzy' ? ';border:1px solid #e8a94a' : '');
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(f);
+    img.style.cssText = 'width:36px;height:36px;object-fit:cover;border-radius:3px;flex-shrink:0;background:#000';
+    row.appendChild(img);
+    const name = document.createElement('span');
+    name.textContent = f.name;
+    name.style.cssText = 'flex:1;font-size:.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    row.appendChild(name);
+    if (match && match.confidence === 'fuzzy') {
+      const badge = document.createElement('span');
+      badge.textContent = 'check match';
+      badge.style.cssText = 'font-size:.7rem;color:#e8a94a;white-space:nowrap';
+      row.appendChild(badge);
+    }
+    const sel = buildEntitySelect(match ? match.entity.id : '');
+    sel.dataset.fileIndex = i;
+    row.appendChild(sel);
+    list.appendChild(row);
+  });
+  box.appendChild(list);
+  enableImgImport();
+}
+
+function enableImgImport() {
+  const btn = document.getElementById('img-import-btn');
+  btn.disabled = false; btn.style.opacity = '1';
+}
+function disableImgImport() {
+  const btn = document.getElementById('img-import-btn');
+  btn.disabled = true; btn.style.opacity = '.5';
+}
+
+document.getElementById('img-import-btn').addEventListener('click', async () => {
+  const resEl = document.getElementById('img-import-result');
+  const selects = document.querySelectorAll('#img-preview-table select');
+  const fd = new FormData();
+  let count = 0;
+  selects.forEach(sel => {
+    if (!sel.value) return; // "— Skip —" — never uploaded, not just unassigned
+    const idx = parseInt(sel.dataset.fileIndex, 10);
+    fd.append('files', selectedImgFiles[idx]);
+    fd.append('entity_ids', sel.value);
+    count++;
+  });
+  if (count === 0) {
+    resEl.style.color = '#c44'; resEl.textContent = 'Nothing to import — every file is set to skip.';
+    return;
+  }
+  resEl.style.color = 'var(--text-dim)'; resEl.textContent = `Uploading ${count} image(s)…`;
+  try {
+    const res = await fetch('/api/import/images', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) { resEl.style.color = '#c44'; resEl.textContent = data.detail || 'Import failed.'; return; }
+    resEl.style.color = data.updated === count ? '#4f4' : '#e8a94a';
+    resEl.textContent = `${data.updated}/${count} image(s) applied.`;
+    const errs = data.results.filter(r => r.status === 'error');
+    if (errs.length) {
+      const list = document.createElement('ul');
+      list.style.cssText = 'margin:.4rem 0 0 1.2rem;padding:0';
+      errs.forEach(r => {
+        const li = document.createElement('li');
+        li.style.color = '#c44';
+        li.textContent = `${r.filename}: ${r.error}`;
+        list.appendChild(li);
+      });
+      resEl.appendChild(list);
+    } else {
+      setTimeout(() => window.location.reload(), 900);
+    }
   } catch (e) {
     resEl.style.color = '#c44'; resEl.textContent = 'Import failed: ' + e.message;
   }

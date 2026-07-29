@@ -1,0 +1,175 @@
+"""Tests for POST /api/import/images (bulk portrait/art import matched to
+entities by filename, from the /import page). Covers the same concerns as
+every other upload path in this app: size limits, extension allowlist, and
+that entity_id is re-validated against the active world server-side rather
+than trusted from the client.
+"""
+import io
+
+from app.database import SessionLocal
+from app.models import Entity
+
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+
+
+def _png_bytes(size=2000):
+    return b"\x89PNG\r\n\x1a\n" + b"\x00" * size
+
+
+def _make_entity(world, name="Gandalf", kind="character"):
+    db = SessionLocal()
+    try:
+        ent = Entity(world_id=world.id, kind=kind, name=name)
+        db.add(ent)
+        db.commit()
+        db.refresh(ent)
+        return ent
+    finally:
+        db.close()
+
+
+def test_bulk_image_import_assigns_to_entity(client, seed):
+    ent = _make_entity(seed.world_a, name="Gandalf")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.post(
+        "/api/import/images",
+        files=[("files", ("Gandalf.png", io.BytesIO(_png_bytes()), "image/png"))],
+        data={"entity_ids": [str(ent.id)]},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["updated"] == 1
+    assert body["results"][0]["status"] == "ok"
+
+    db = SessionLocal()
+    try:
+        refreshed = db.query(Entity).filter(Entity.id == ent.id).first()
+        assert refreshed.image_url and refreshed.image_url.startswith("/uploads/")
+    finally:
+        db.close()
+
+
+def test_bulk_image_import_multiple_files(client, seed):
+    ent_a = _make_entity(seed.world_a, name="Aragorn")
+    ent_b = _make_entity(seed.world_a, name="Boromir")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.post(
+        "/api/import/images",
+        files=[
+            ("files", ("Aragorn.png", io.BytesIO(_png_bytes()), "image/png")),
+            ("files", ("Boromir.png", io.BytesIO(_png_bytes()), "image/png")),
+        ],
+        data={"entity_ids": [str(ent_a.id), str(ent_b.id)]},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["updated"] == 2
+    assert all(res["status"] == "ok" for res in body["results"])
+
+
+def test_bulk_image_import_skips_blank_entity_id(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.post(
+        "/api/import/images",
+        files=[("files", ("Unmatched.png", io.BytesIO(_png_bytes()), "image/png"))],
+        data={"entity_ids": [""]},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["updated"] == 0
+    assert body["results"][0]["status"] == "skipped"
+
+
+def test_bulk_image_import_rejects_entity_from_other_world(client, seed):
+    """The client's matching UI only ever offers entities from the active
+    world, but the server must not trust that — an entity_id for a
+    different world must be rejected, not silently reassigned."""
+    other_world_ent = _make_entity(seed.world_b, name="Sauron")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.post(
+        "/api/import/images",
+        files=[("files", ("Sauron.png", io.BytesIO(_png_bytes()), "image/png"))],
+        data={"entity_ids": [str(other_world_ent.id)]},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["updated"] == 0
+    assert body["results"][0]["status"] == "error"
+
+    db = SessionLocal()
+    try:
+        refreshed = db.query(Entity).filter(Entity.id == other_world_ent.id).first()
+        assert refreshed.image_url is None
+    finally:
+        db.close()
+
+
+def test_bulk_image_import_rejects_oversized_file(client, seed):
+    ent = _make_entity(seed.world_a, name="Legolas")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    oversized = _png_bytes(1_048_576 + 200_000)  # conftest sets MAX_UPLOAD_BYTES=1MiB
+    r = client.post(
+        "/api/import/images",
+        files=[("files", ("Legolas.png", io.BytesIO(oversized), "image/png"))],
+        data={"entity_ids": [str(ent.id)]},
+    )
+    assert r.status_code == 413
+
+
+def test_bulk_image_import_rejects_svg(client, seed):
+    ent = _make_entity(seed.world_a, name="Gimli")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.post(
+        "/api/import/images",
+        files=[("files", ("Gimli.svg", io.BytesIO(b"<svg onload='alert(1)'></svg>"), "image/svg+xml"))],
+        data={"entity_ids": [str(ent.id)]},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["updated"] == 0
+    assert body["results"][0]["status"] == "error"
+
+
+def test_bulk_image_import_is_gm_only(client, seed):
+    ent = _make_entity(seed.world_a, name="Frodo")
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.post(
+        "/api/import/images",
+        files=[("files", ("Frodo.png", io.BytesIO(_png_bytes()), "image/png"))],
+        data={"entity_ids": [str(ent.id)]},
+    )
+    assert r.status_code == 403
+
+    db = SessionLocal()
+    try:
+        refreshed = db.query(Entity).filter(Entity.id == ent.id).first()
+        assert refreshed.image_url is None
+    finally:
+        db.close()
+
+
+def test_bulk_image_import_rejects_mismatched_lengths(client, seed):
+    ent = _make_entity(seed.world_a, name="Samwise")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.post(
+        "/api/import/images",
+        files=[("files", ("Samwise.png", io.BytesIO(_png_bytes()), "image/png"))],
+        data={"entity_ids": [str(ent.id), "999"]},
+    )
+    assert r.status_code == 400

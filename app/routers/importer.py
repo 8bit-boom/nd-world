@@ -500,10 +500,16 @@ def import_page(request: Request, db: Session = Depends(get_db), active_world: s
     world, worlds = get_world_ctx(request, db, active_world)
     world_id = world.id if world else 1
     schematics = db.query(Schematic).filter(Schematic.world_id == world_id, Schematic.is_html == False).order_by(Schematic.name).all()  # noqa: E712
+    entities = db.query(Entity.id, Entity.name, Entity.kind, Entity.image_url).filter(
+        Entity.world_id == world_id
+    ).order_by(Entity.kind, Entity.name).all()
     return templates.TemplateResponse("import.html", {
         "request": request, "world": world, "worlds": worlds,
         "schematics_json": json.dumps([{"slug": s.slug, "name": s.name} for s in schematics]),
         "maps_json": json.dumps([{"slug": slug, "name": name} for slug, name in _world_maps(world_id)]),
+        "entities_json": json.dumps([
+            {"id": e.id, "name": e.name, "kind": e.kind, "has_image": bool(e.image_url)} for e in entities
+        ]),
     })
 
 

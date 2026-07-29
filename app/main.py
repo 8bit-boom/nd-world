@@ -2609,6 +2609,56 @@ async def api_upload_image(file: UploadFile = File(...), db: Session = Depends(g
         raise HTTPException(400, "Unsupported file type")
     return {"url": uploaded}
 
+_BULK_IMAGE_MAX_FILES = 100  # per request — a batch this size is already a lot to review in one pass
+
+
+@app.post("/api/import/images")
+async def api_import_images(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    entity_ids: List[str] = Form(...),
+    db: Session = Depends(get_db),
+    active_world: str = Cookie(None),
+):
+    """Bulk portrait/art import: each file is paired by position with the
+    entity_ids entry at the same index (the client does filename-to-entity
+    matching itself, using the entity list already embedded in /import) —
+    entity_ids[i] == "" means "skip this file". Every entity_id is
+    re-validated against the active world server-side rather than trusted
+    from the client, the same as any other entity mutation."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    if len(files) != len(entity_ids):
+        raise HTTPException(400, "files and entity_ids must be the same length")
+    if len(files) > _BULK_IMAGE_MAX_FILES:
+        raise HTTPException(400, f"Too many files in one batch (max {_BULK_IMAGE_MAX_FILES})")
+
+    results = []
+    updated = 0
+    for file, raw_id in zip(files, entity_ids):
+        name = file.filename or "(unnamed)"
+        raw_id = (raw_id or "").strip()
+        if not raw_id:
+            results.append({"filename": name, "status": "skipped"})
+            continue
+        if not raw_id.isdigit():
+            results.append({"filename": name, "status": "error", "error": "Invalid entity id"})
+            continue
+        entity = db.query(Entity).filter(Entity.id == int(raw_id), Entity.world_id == world.id).first()
+        if not entity:
+            results.append({"filename": name, "status": "error", "error": "Entity not found in this world"})
+            continue
+        uploaded = save_upload(file, db=db)
+        if not uploaded:
+            results.append({"filename": name, "status": "error", "error": "Unsupported file type"})
+            continue
+        entity.image_url = uploaded
+        updated += 1
+        results.append({"filename": name, "status": "ok", "entity_id": entity.id, "entity_name": entity.name})
+    db.commit()
+    return {"updated": updated, "results": results}
+
 @app.post("/api/worlds")
 def api_create_world(payload: dict, db: Session = Depends(get_db)):
     slug = payload["name"].lower().replace(" ", "-").replace("&", "and")

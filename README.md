@@ -532,6 +532,15 @@ Click **Export** in the nav bar. The download is a self-contained JSON file with
 
 Go to **Worlds** → **Manage** → **Import** and upload a previously exported JSON file.
 
+### Bulk image import
+
+On the **Import** page, the **🖼 Bulk Image Import** section lets you select many
+portrait/art files at once — each one is matched to an entity in the current world
+by filename (e.g. `Gandalf.png` → the entity named "Gandalf"; underscores/dashes and
+case are ignored, so `aragorn_king.png` matches "Aragorn" too). Review the matches
+(a "check match" flag means it wasn't an exact match) and adjust any via the dropdown
+before importing — files left on "— Skip —" aren't uploaded.
+
 ### Full backup (recommended)
 
 The **⬇ Export** button above only covers one world's entities and lore — it drops
