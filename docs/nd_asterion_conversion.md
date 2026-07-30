@@ -113,6 +113,38 @@ Credit spend for advantage on social rolls"), that bonus is *this* mechanic —
 it's folded into the Signature Stat rather than built as a separate ability, so
 nothing double-dips.
 
+### Skill Checks
+
+Not every roll is a fight against another character. For a roll against a
+fixed obstacle instead — resist fear, pick a lock, recall a fact, hold your
+footing, force a Willpower/Dexterity/whatever check named by an ability below
+— roll a **Skill Check** rather than an Opposed Roll:
+
+- **Base pool:** 1d10, for whichever Stat the check names.
+- **Stat Rank bonus:** +1d10 if that Stat is 7-8, +2d10 if it's 9-10, -1d10 if
+  it's 1 (minimum pool 1d10). This is where your 20-point Stat distribution
+  earns its keep roll-to-roll — a focused build (say, 8 in one Physical Stat
+  off a 15-point split) reaches the first breakpoint comfortably; only an
+  extreme dump reaches the second. It's deliberately capped low so it never
+  approaches the Domain Pool's 3d10, keeping combat's pool-size math (which
+  the rest of this document's balance leans on) untouched — this bonus only
+  ever applies to Skill Checks, never to Opposed Rolls.
+- **+1d10** if the Stat is one of your Signature Stats (stacks with the above).
+- **+1d10 per PP/MP** spent Pushing Your Limits, as normal.
+- The GM sets an opposing **difficulty pool** sized to the task, using N&D's
+  own Difficulty Scale names for reference: Simple/Routine → 1d10,
+  Challenging/Professional → 2d10, Heroic/Epic → 3d10, Legendary/Impossible →
+  4d10+. Count Successes (6+) on each side — you succeed if you match or beat
+  the difficulty pool. **Ties favor you, the acting character** (unlike combat
+  ties — there's no damage to trade here, so a tie needs a clean outcome).
+
+Anywhere else in this document that names a Stat and a target number (e.g. "a
+Willpower check against a Heroic difficulty") is a Skill Check using this
+rule — translate a bare N&D-style DC into the nearest difficulty-pool tier
+above (Difficulty 8-10 ≈ Challenging/Professional/2d10, 12-15 ≈ Heroic/
+Epic/3d10, 18+ ≈ Legendary/Impossible/4d10+) if you ever need to convert one
+by hand.
+
 ### Combat Basics
 
 - **Turn:** one Movement (30 ft standard) and one Main Action (Basic Attack /
@@ -292,7 +324,7 @@ retroactively, a bounty "paused").
 | Ability | Type & Tier | Effect |
 |---|---|---|
 | Fluxform Physiology | Passive T1 (Movement) | Minor trait — unnaturally flexible body; squeeze through tight gaps, subtly reshape your features during a Rest. |
-| Fluxform | Active T3 (once per session, 3 PP or MP) | Spend your session's Fluxform Point to shift into your true form for a scene. Choose **Physical Shift** (Special Effect: Hard CC fear pulse on sight — non-allies roll Willpower vs 12 or are Intimidated/flee; Passive for the scene: immune to grapples, squeeze through tight spaces) or **Mental Shift** (Passive for the scene: Greater Resistance to mental effects; Special Effect: once per shift, ask the GM one question about the immediate past or near future). |
+| Fluxform | Active T3 (once per session, 3 PP or MP) | Spend your session's Fluxform Point to shift into your true form for a scene. Choose **Physical Shift** (Special Effect: Hard CC fear pulse on sight — non-allies make a Willpower Skill Check against a Heroic (3d10) difficulty pool or are Intimidated/flee; Passive for the scene: immune to grapples, squeeze through tight spaces) or **Mental Shift** (Passive for the scene: Greater Resistance to mental effects; Special Effect: once per shift, ask the GM one question about the immediate past or near future). |
 
 ##### High Elves/Elves — Signature Stat: Charisma
 
@@ -398,7 +430,8 @@ stim limit is 1 per Rest (not the usual 3).
 Gain +1 HPres when you take 10+ damage in one hit, kill an enemy, perform a
 physical feat beyond human limits, or push a failed Strength/Body roll. Lose 1
 HPres from an uninterrupted hour of rest, a Biolumina Serum Injection, or
-succeeding a Willpower + Body roll (Difficulty 13) after combat.
+succeeding a Willpower Skill Check against a Heroic (3d10) difficulty pool
+after combat.
 
 | HPres | State | Effect |
 |---|---|---|
@@ -458,11 +491,11 @@ rules if an ability perfectly fits the narrative" allowance.
 | Bloodline | Stat Synergy | Passive | Blood Surge (Active) | Unique Trait |
 |---|---|---|---|---|
 | **Infernis** (Fire) | Strength + Intellect | Thermal Conduction: immune to fire; melee attackers vs you take 1 Shock. | 2 PP: 1d8 heat damage, short-radius burst, ignores 2 Armor; +2 to melee rolls for 1 round. | Regenerate 1 Health when you deal fire damage (once/turn). |
-| **Glaciar** (Frost) | Willpower + Dexterity | Cryostasis Veins: half damage from cold/EMP; melee attackers must roll Dexterity 8+ or be slowed (-2 Dexterity until their turn ends). | 2 PP: freeze target 1 turn (no damage), or 1d8 cold damage if already slowed/wet. | Regain 1 Shock whenever you spend PP on a Blood Surge. |
+| **Glaciar** (Frost) | Willpower + Dexterity | Cryostasis Veins: half damage from cold/EMP; melee attackers must make a Dexterity Skill Check against a Professional (2d10) difficulty pool or be slowed (-2 Dexterity until their turn ends). | 2 PP: freeze target 1 turn (no damage), or 1d8 cold damage if already slowed/wet. | Regain 1 Shock whenever you spend PP on a Blood Surge. |
 | **Voltaris** (Storm) | Dexterity + Intuition | Living Conductor: immune to electricity; +1 Shock when hit by electric/EMP (once/turn). | 1 PP: teleport up to short range as a Reaction when attacked. | Successfully dodging grants your next attack +2 damage. |
 | **Umbracline** (Shadow) | Dexterity + Intellect | Shadowmeld: +1d10 Stealth and +1 Armor in dim light or darker. | 2 PP: phase through solid objects/shadows (up to 3m) for one turn; attacks from inside shadows ignore Armor. | Killing a target in darkness restores 1 PP and 1 Shock. |
 | **Nekrith** (Decay) | Body + Willpower | Entropic Aura: living enemies in medium range take -1 to healing/regen; immune to poison/disease. | 2 PP: touch attack, 1d10 damage, reduces target's Max Health by that amount until healed (once/target). | Regain 1 PP and 1 Health whenever a creature dies near you (medium range). |
-| **Psionis** (Mind) | Intellect + Charisma | Neural Field: enemies in short range take -1d10 on Mental Stat rolls against you. | 2 MP: dominate one humanoid for 1 round (they roll Willpower 10+ to resist). | Regain 1 MP whenever you force a target to fail a Willpower roll. |
+| **Psionis** (Mind) | Intellect + Charisma | Neural Field: enemies in short range take -1d10 on Mental Stat rolls against you. | 2 MP: dominate one humanoid for 1 round (they make a Willpower Skill Check against a Heroic (3d10) difficulty pool to resist). | Regain 1 MP whenever you force a target to fail a Willpower roll. |
 | **Crimson** (Blood) | Body + Strength | Burning Blood: below 50% Health, +1 Strength and +1 Armor. | 2 PP + 2 Health (Self-Harm Trade-Off): +3 to all attack rolls for 2 turns; damage taken reduced by 1. | Kill an enemy in melee, roll d10 — 7+ regain 2 Health. |
 
 ##### Eldritch — Signature Stat: any one Stat of your choice (reflecting your alien nature)
@@ -475,7 +508,7 @@ N&D's own text).
 | Ability | Type & Tier | Effect |
 |---|---|---|
 | Void-Touched Physiology | Passive T1 (Resistance) | Mundane Immunity — no need to breathe, eat, drink, or sleep; survive unharmed in vacuum or extreme environments. |
-| True Form | Active T1 (Special Effect, 0 PP or MP) | Switch between your mundane alter ego and your true form (an Action). If a non-Eldritch witness sees you shift into true form, they roll Willpower vs 10 — on failure they panic (lose 1 Action and 1 Reaction for the round), on critical failure they flee for the round. While in true form, everyone treats you as hostile. |
+| True Form | Active T1 (Special Effect, 0 PP or MP) | Switch between your mundane alter ego and your true form (an Action). If a non-Eldritch witness sees you shift into true form, they make a Willpower Skill Check against a Professional (2d10) difficulty pool — on failure they panic (lose 1 Action and 1 Reaction for the round), or on a total failure (0 Successes rolled) they flee for the round instead. While in true form, everyone treats you as hostile. |
 | Transcendence | 1 Tier 2 + 2 Tier 1 abilities (built freely, usable only in true form) | This race's ability budget — mirrors Crimson Elves' Flesh Grafts. |
 
 ##### Stitches — Signature Stats: Body, Willpower
@@ -563,7 +596,7 @@ stay up to 10 in-game minutes.
 | Ability | Type & Tier | Effect |
 |---|---|---|
 | Call to Minds | Active T1 (Special Effect, 0 MP) | Briefly reach another psyonic you know mentally to send a short message or image. |
-| Psyonic Network | Active T2 (Special Effect menu, 1 MP, gated by Network Access) | While inside: **Locate a Thought** (roll your Domain Pool, 3d10, vs Difficulty 10-14 for a lead on specific knowledge), or **Download Emotion** — **Rage** (+2 damage on your next psychic attack), **Clarity** (auto-succeed your next psychic control check), or **Despair** (target rolls -1d10 on social rolls for 1 scene). |
+| Psyonic Network | Active T2 (Special Effect menu, 1 MP, gated by Network Access) | While inside: **Locate a Thought** (a Skill Check using your Domain Pool, 3d10, since it's tied to your Psyonic ability — against a Professional-to-Heroic (2d10-3d10) difficulty pool, scaling with how deep or specific the thought is, for a lead on specific knowledge), or **Download Emotion** — **Rage** (+2 damage on your next psychic attack), **Clarity** (auto-succeed your next psychic control check), or **Despair** (target rolls -1d10 on social rolls for 1 scene). |
 
 *Flavor note:* roll 1d6 on entry for a complication — 1 Mind Leech (Willpower
 save or 1 Shock), 2 Echo Trace (a hostile psyker can track you later), 3
@@ -589,7 +622,7 @@ killing.
 | 40 | Detect hidden enemies/surveillance in your Zone without a roll, once/scene. |
 | 50 | Once per Rest, auto-succeed a roll to resist a Mental Condition. |
 | 60 | Ignore movement penalties from difficult/cluttered terrain. |
-| 70 | Enemies roll Intuition vs your Charisma to target you with mental/fear effects. |
+| 70 | Enemies must beat your Charisma Skill Check with their own Intuition Skill Check to target you with mental/fear effects. |
 | 80 | Unarmed strikes deal +1d4 vs enemies with lower Street Cred/Reputation. |
 | 90 | A free Movement once per round that doesn't provoke Opportunity Attacks. |
 | 100 | Immune to Fear; allies in your Zone gain +1d10 to all rolls while you're conscious. |
