@@ -10,6 +10,7 @@ application code that displays and manages it (which is MIT-licensed; see
 - `lore/` — worldbuilding content (history, locations, factions, etc.)
 - `app/core_rules.md` — the Neon & Dragons core rules
 - `docs/asterion_rules.md`, `docs/asterion_rules.json` — the Asterion system rules
+- `docs/nd_asterion_conversion.md` — the Neon & Dragons / Asterion conversion rules
 - `app/game_data/` — the races/professions/feats/equipment/weapons/armor catalog
 - `app/maps/`, `static/maps/` — world map data and imagery
 - `static/schematics/` — location schematics

@@ -692,6 +692,12 @@ for reusing a ruleset across worlds/installs without re-pasting). `docs/asterion
 formats, ready to paste or upload for any world using the built-in Asterion
 character system.
 
+Want to run a Neon & Dragons world with Asterion's simpler, player-invented-ability
+engine instead of N&D's fixed feat catalog, while keeping N&D's actual races,
+professions, origins, and major edges? See `docs/nd_asterion_conversion.md` — it
+converts every one of N&D's 17 races, 6 professions, 5 origins, and 22 major edges
+into an Asterion-style ability, plus an adapted four-part Character Sentence.
+
 ---
 
 ## Entity Field Templates
