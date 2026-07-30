@@ -92,26 +92,32 @@ Every action with a chance of failure uses a d10 dice pool.
 
 ### Signature Stats
 
-Every race and profession is tagged with 1-2 **Signature Stats** below (drawn
-from that pick's own N&D fiction — usually its own "+1 [Stat]" line, or its
-dominant theme where it has none). **When a roll's pool uses one of your
-Signature Stats, add +1d10 to that pool.** This is the same "+1d10" bonus-die
-idiom `asterion_rules.md` already uses for Cover, Pushing Limits, and Defend/
-Brace — just granted permanently for the Stats your race and profession are
-built around — and it mirrors N&D's own "roll two dice, take the better"
-advantage idiom, translated into pool terms.
+You have three **Signature Stats**, each set a different way:
 
-The reverse also applies: where a race's own text gives it a flat *penalty* to a
-specific kind of roll (e.g. Xerm's -1 Intellect), that Stat's rolls take -1d10
-instead (minimum pool of 1d10).
+- **Race** — one Stat, fixed by your race (its own entry below says which).
+- **Profession** — one Stat, fixed by your profession (its own entry below).
+- **Your choice** — one Stat you pick yourself at creation, any of the 8,
+  reflecting your own personal focus rather than your race or profession's.
 
-You have two Signature Stats at most from your Race and Profession combined
-(some races/professions list two; most list one — see each entry). Where a
-race or profession's own text already grants a flat roll bonus to one specific
-kind of check (e.g. Advent AI's "+1 bonus to hacking rolls," Charlatan's "±1
-Credit spend for advantage on social rolls"), that bonus is *this* mechanic —
-it's folded into the Signature Stat rather than built as a separate ability, so
-nothing double-dips.
+**When you roll a pool (Opposed Roll or Skill Check) tied to one of your
+Signature Stats, you get bonus points equal to how many of your three
+Signature Stats match that roll** — 1 point if only one of the three matches,
+up to 3 if your Race, Profession, and personal choice all happen to land on
+the same Stat. Apply your points *after* rolling, before counting Successes:
+add them to the results of your own dice however you like — all onto one die,
+or split across several (a die pushed to exactly 10 explodes as normal). This
+is a smaller, more controllable nudge than a full extra die — enough to
+matter on a near-miss without swinging the whole roll.
+
+The reverse applies too: where a race's own text gives it a flat *penalty* to
+a specific Stat (e.g. Xerm's -1 Intellect), subtract 1 from one of your dice
+instead, on a roll using that Stat (minimum die value 1).
+
+Where a race or profession's own text already grants a flat roll bonus to one
+specific kind of check (e.g. Advent AI's "+1 bonus to hacking rolls,"
+Charlatan's "±1 Credit spend for advantage on social rolls"), that bonus is
+*this* mechanic — folded into its Signature Stat rather than built as a
+separate ability, so nothing double-dips.
 
 ### Skill Checks
 
@@ -121,15 +127,8 @@ footing, force a Willpower/Dexterity/whatever check named by an ability below
 — roll a **Skill Check** rather than an Opposed Roll:
 
 - **Base pool:** 1d10, for whichever Stat the check names.
-- **Stat Rank bonus:** +1d10 if that Stat is 7-8, +2d10 if it's 9-10, -1d10 if
-  it's 1 (minimum pool 1d10). This is where your 20-point Stat distribution
-  earns its keep roll-to-roll — a focused build (say, 8 in one Physical Stat
-  off a 15-point split) reaches the first breakpoint comfortably; only an
-  extreme dump reaches the second. It's deliberately capped low so it never
-  approaches the Domain Pool's 3d10, keeping combat's pool-size math (which
-  the rest of this document's balance leans on) untouched — this bonus only
-  ever applies to Skill Checks, never to Opposed Rolls.
-- **+1d10** if the Stat is one of your Signature Stats (stacks with the above).
+- **Signature Stat bonus points**, per the rule above, if that Stat is one of
+  your three.
 - **+1d10 per PP/MP** spent Pushing Your Limits, as normal.
 - The GM sets an opposing **difficulty pool** sized to the task, using N&D's
   own Difficulty Scale names for reference: Simple/Routine → 1d10,
@@ -235,22 +234,25 @@ how Major Edges (below) get to be full Tier 3 for free.
 ## Character Creation
 
 1. **Choose your Race** (17, tiered Standard/Advanced/Exceptional) — sets your
-   racial Stat modifiers/cap exceptions, your Race Signature Stat(s), and your
+   racial Stat modifiers/cap exceptions, your Race Signature Stat, and your
    full Race Ability list (§ Race Abilities — one ability per *named* special
    mechanic the race has in N&D, not just one per race).
-2. **Choose your Profession** (6) — sets your Profession Signature Stat(s) and
+2. **Choose your Profession** (6) — sets your Profession Signature Stat and
    full Profession Ability list.
-3. **Choose your Background** — one of N&D's 5 Origins, or invent your own
+3. **Choose your third Signature Stat** — any of the 8, your own free pick
+   (see "Signature Stats" above). Combined with your Race and Profession picks
+   from steps 1-2, this is what determines which rolls get a bonus.
+4. **Choose your Background** — one of N&D's 5 Origins, or invent your own
    (see § Background Abilities) — sets your Background Ability.
-4. **Choose your Major Edge** — constrained to the Edge(s) tied to your Race or
+5. **Choose your Major Edge** — constrained to the Edge(s) tied to your Race or
    your Profession (see § Major Edge Abilities).
-5. **Distribute 20 Stat points** across the 8 Stats (one of the 3 splits), then
+6. **Distribute 20 Stat points** across the 8 Stats (one of the 3 splits), then
    apply your race's fixed Stat modifiers and any cap exceptions.
-6. **Calculate Health, Shock, PP, and MP** from your final Stats.
-7. **Write down your character sheet:** your full ability list from steps 1-4
-   (the total varies — a race/profession with more named mechanics in N&D
-   gives you more abilities, by design), your Signature Stats, and your
-   derived resources.
+7. **Calculate Health, Shock, PP, and MP** from your final Stats.
+8. **Write down your character sheet:** your full ability list from steps 1,
+   2, 4, and 5 (the total varies — a race/profession with more named
+   mechanics in N&D gives you more abilities, by design), your three
+   Signature Stats, and your derived resources.
 
 A naming note: Asterion's own Character Sentence uses "Origin (For Gods)" to
 mean *how you became divine* — that's unrelated to N&D's "Origin" feats
@@ -292,7 +294,7 @@ plain terms next to the race's Tier abilities rather than forced into them.
 
 #### Standard tier
 
-##### Below Elves/Drow — Signature Stats: Willpower, Perception
+##### Below Elves/Drow — Signature Stat: Willpower
 
 | Ability | Type & Tier | Effect |
 |---|---|---|
@@ -333,7 +335,7 @@ retroactively, a bounty "paused").
 | Aura Sight | Active T1 (Special Effect, 0 MP) | Read a person's emotional/social aura for insight into their mood or intent. |
 | Social Stance | Active T1 (Special Effect, 0 MP) | Declare a Stance at the start of a social scene — Charming, Assertive, Deceptive, or Observant. Gain +1d10 on rolls matching that stance's strength, -1d10 on rolls matching its weakness, until you change it (once per scene). |
 
-##### Human — Signature Stat: any one Stat of your choice (reflecting Humanity's versatility)
+##### Human — Signature Stat: a second free pick, any Stat (reflecting Humanity's versatility — stacks with your universal "your choice" Signature Stat from Character Creation step 3, so a Human gets two open picks)
 
 | Ability | Type & Tier | Effect |
 |---|---|---|
@@ -361,7 +363,7 @@ Mental Stats (still cap 10), then add +2 to Intellect. Add +5 to your Shock; at
 | Network Sense | Passive T1 (Senses) | Perceive and interface with nearby electronic systems — a built-in scanner for tech and networks. |
 | Husk/Robot Piloting | Active T1 (Special Effect, 0 MP) | Upload into a Husk (a purpose-built robot body with its own Physical Stats, PP, and Health, set by the GM, that you cannot upgrade) or an ordinary robot (2 in all Physical Stats, 5 PP, 7 Health) to act in the physical world. If the vessel has anti-virus defenses, defeat or disable them first. If your vessel is destroyed, take 1d4 Shock damage. |
 
-##### Banshee — Signature Stat: none (a Banshee's power comes from its whole Ectoplasm pool, not one Stat)
+##### Banshee — Signature Stat: a free pick, any Stat (Ectoplasm draws on all of them equally, so nothing is fixed — you decide which one your chassis favors)
 
 *Override — a Banshee doesn't use the standard Resources rules:* no Health,
 Shock, PP, or MP. Instead you have a single **Ectoplasm** pool equal to the sum
@@ -378,7 +380,7 @@ Augments.
 | Inorganic Body | Passive T1 (Resistance) | Mundane Immunity — stims, drugs, toxins, and poison have no effect on you. |
 | Ghost Form | Active T1 (Special Effect, 0 MP) | Leave your automaton as an intangible ghost (can't interact with the physical world). A psyonic can banish you while in this form. |
 
-##### Child of the Black Goat — Signature Stats: Willpower, Intuition
+##### Child of the Black Goat — Signature Stat: Willpower
 
 | Ability | Type & Tier | Effect |
 |---|---|---|
@@ -388,7 +390,7 @@ Augments.
 *Flavor notes:* implanting metal augments exiles you from Ritual Casting; Bio
 Augments need a priest/priestess's blessing. -1d10 on Urban Navigation rolls.
 
-##### Crimson Elves/Amalgama — Signature Stat: your currently chosen Physical Stat (swappable after each Rest)
+##### Crimson Elves/Amalgama — Signature Stat: your currently chosen Physical Stat, swappable after each Rest (unlike the universal "your choice" Signature Stat, which is fixed at creation)
 
 *Override — Flesh Grafts are this race's ability budget:* instead of the usual
 Race Ability list, you get **1 Tier 2 and 2 Tier 1 abilities**, built freely
@@ -406,7 +408,7 @@ Stat. You sustain yourself on blood; stims/drugs don't affect you. Go 48 hours
 without feeding and you take 1 Health damage every hour, unable to heal Health
 until you feed — a built-in drawback, no formal Trade-Off needed.
 
-##### Devilspawn — Signature Stats: Willpower, Intuition
+##### Devilspawn — Signature Stat: Intuition
 
 *Override:* -5 to your Max Health.
 
@@ -414,9 +416,10 @@ until you feed — a built-in drawback, no formal Trade-Off needed.
 |---|---|---|
 | Third Eye | Active T1 (Special Effect, 0 MP) | Open your third eye as an action. While open, roll your Domain Pool (3d10 instead of 2d10) on Psy-flavored rolls — but risk GM Intrusion: the GM may declare you briefly possessed (+2 to all Stats, but you act under a dangerous compulsion for 1 minute), usually on a critical failure. |
 
-##### Xerm — Signature Stats: Body, Strength (and -1d10 on Intellect rolls)
+##### Xerm — Signature Stat: Strength (and a -1 penalty point on Intellect rolls)
 
-*Override:* +1 Body, +1 Strength, -1 Intellect (folded into Signature Stats
+*Override:* +1 Body, +1 Strength, -1 Intellect (the Strength bonus is folded
+into your Signature Stat above; the -1 Intellect is the penalty point noted
 above). You can't use Psy Powers. You can use Xerm (Heavy) weapons without
 penalty. Augments cost +20%; you gain +2 Feat Slots for arm augmentation. Your
 stim limit is 1 per Rest (not the usual 3).
@@ -443,7 +446,7 @@ after combat.
 
 #### Exceptional tier
 
-##### Consumed by Yellow — Signature Stat: Willpower (or matches whichever race's feats you draw on — see below)
+##### Consumed by Yellow — Signature Stat: the Signature Stat of whichever race you draw your Race Abilities from (see below)
 
 *Override:* no Shock, and you cannot become unconscious from it. You don't
 need to sleep; restore 1 PP and 1 MP every hour instead. Take 5 Max Health
@@ -472,7 +475,7 @@ Yellow's presence (+1, once/session); falls when you consume a sentient being
 | 8-9 | Crowned With Madness | Enemies at long range: -1d10; allies: +1d10. |
 | 10 | Becoming the Yellow | Power of the Yellow costs nothing; +2 to all Stats; risk of losing control (roll 1d6 each turn: 1-2 in control, 3-4 GM narrates hallucinated motives, 5 GM controls you for 1 turn, 6 you become the Avatar permanently). |
 
-##### Dragonblooded — Signature Stats: your chosen bloodline's Stat Synergy pair (below)
+##### Dragonblooded — Signature Stat: one of your chosen bloodline's two Stat Synergy stats (below), your pick
 
 *Override:* choose Physical or Mental Stats — +1 to every Stat in that
 category, and its cap becomes 11. You can augment yourself, but with half the
@@ -498,7 +501,7 @@ rules if an ability perfectly fits the narrative" allowance.
 | **Psionis** (Mind) | Intellect + Charisma | Neural Field: enemies in short range take -1d10 on Mental Stat rolls against you. | 2 MP: dominate one humanoid for 1 round (they make a Willpower Skill Check against a Heroic (3d10) difficulty pool to resist). | Regain 1 MP whenever you force a target to fail a Willpower roll. |
 | **Crimson** (Blood) | Body + Strength | Burning Blood: below 50% Health, +1 Strength and +1 Armor. | 2 PP + 2 Health (Self-Harm Trade-Off): +3 to all attack rolls for 2 turns; damage taken reduced by 1. | Kill an enemy in melee, roll d10 — 7+ regain 2 Health. |
 
-##### Eldritch — Signature Stat: any one Stat of your choice (reflecting your alien nature)
+##### Eldritch — Signature Stat: a second free pick, any Stat (reflecting your alien nature — stacks with your universal "your choice" Signature Stat from Character Creation step 3, so an Eldritch gets two open picks)
 
 *Override:* start with 16 Stat points instead of 20, but every Stat's cap
 becomes 12. -1d10 on empathy/social rolls. Can't use augments. Inventing a new
@@ -511,7 +514,7 @@ N&D's own text).
 | True Form | Active T1 (Special Effect, 0 PP or MP) | Switch between your mundane alter ego and your true form (an Action). If a non-Eldritch witness sees you shift into true form, they make a Willpower Skill Check against a Professional (2d10) difficulty pool — on failure they panic (lose 1 Action and 1 Reaction for the round), or on a total failure (0 Successes rolled) they flee for the round instead. While in true form, everyone treats you as hostile. |
 | Transcendence | 1 Tier 2 + 2 Tier 1 abilities (built freely, usable only in true form) | This race's ability budget — mirrors Crimson Elves' Flesh Grafts. |
 
-##### Stitches — Signature Stats: Body, Willpower
+##### Stitches — Signature Stat: Body
 
 *Override:* choose two mental conditions (PTSD, ADHD, Paranoia, etc.) at
 creation. You take +1d4+1 extra Shock damage from all Shock sources; Shock can
@@ -555,9 +558,10 @@ headline resource.
 | The Price of Anything | Active (Special Effect menu, gated by Credit, not PP/MP) | Spend Credit for: **2₡ Flash of Wealth** (1 round of hesitation, or -2 to enemies' Initiative in a social encounter), **3₡ Buy Your Way In** (declare a connection/favor/backdoor for narrative control over one obstacle, GM decides limits), or **4₡ Contract of Convenience** (once/session — forge a binding contract; you define the terms, the GM defines the twist). |
 
 *Note:* ₡1 Grease Palms (N&D's own "advantage on a social roll") is already
-your Charisma Signature Stat bonus die above — no separate spend needed.
+covered by your Charisma Signature Stat bonus points above — no separate
+spend needed.
 
-##### Cyberdoc — Signature Stats: Intellect, Body
+##### Cyberdoc — Signature Stat: Intellect
 
 *Tracked gauge — Nanite Charges:* start with 2, regain 1 per session.
 
@@ -579,7 +583,7 @@ session, a critical failure while hacking makes your Buddy misfire — the GM
 picks one consequence (early alarm, fake alert delivered to the target, or the
 Buddy is unusable for the rest of the scene).
 
-##### Merc — Signature Stats: Strength, Dexterity
+##### Merc — Signature Stat: Dexterity
 
 *Tracked gauge — Bullet Time:* usable once per session.
 
@@ -588,7 +592,7 @@ Buddy is unusable for the rest of the scene).
 | Snapshot | Active T1 (Base Damage, 0 PP) | 1 Damage, melee/touch range — a fast, professional shot. |
 | Bullet Time | Active T3 (once per session — auto-Trade-Off, no PP/MP cost) | Lasts 1 round. Choose 2 of: **Double Tap** (two full actions), **Focus Fire** (+2 to hit, ignore cover), **Interrupt Fire** (interrupt an enemy's action once to fire or move), **Tactical Surge** (double movement, ignore difficult terrain), **Ricochet Read** (+1 Defense, can't be flanked or surprised). |
 
-##### Psyonic — Signature Stats: Willpower, Intuition
+##### Psyonic — Signature Stat: Willpower
 
 *Tracked gauge — Network Access:* enter the Psyonic Network once per Rest,
 stay up to 10 in-game minutes.
@@ -604,7 +608,7 @@ Corrupted Terrain (comms jumbled), 4 Mental Predator (3 turns to finish your
 task before it arrives), 5 nothing, 6 a rogue psion offers guidance or a
 bargain.
 
-##### Street Fighter — Signature Stats: Strength, Body
+##### Street Fighter — Signature Stat: Strength
 
 | Ability | Type & Tier | Effect |
 |---|---|---|
@@ -710,8 +714,10 @@ Perception 2 (Physical sum 5); Willpower 4+1 racial = 5, Intellect 5, Charisma
 
 **Derived resources:** Health 15 (5+10), Shock 16, PP 5, MP 16.
 
-**Signature Stats:** Willpower, Perception (Drow) + Intellect (Hacker) — +1d10
-on rolls using any of these three.
+**Signature Stats:** Willpower (Race: Drow), Intellect (Profession: Hacker),
+Intellect (your own choice — picked to double down on hacking). Two of the
+three land on Intellect, so Intellect rolls get 2 bonus points to split or
+stack across dice; Willpower rolls get 1.
 
 > "I am a **Drow** **Hacker**, marked by my being **Infamous**, known for my
 > **Veil of the Unseen War**."
