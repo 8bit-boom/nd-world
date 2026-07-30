@@ -22,7 +22,7 @@ mechanic in its own text, it gets more than one ability here too.
 
 Readers who already know vanilla Asterion: this rulebook replaces Asterion's
 Flesh/Ichor/Spark Shield resource layer with N&D's own Health/Shock/PP/MP (see
-"Derived Resources" below), and replaces flat Tier costs paid from one pool with
+"Resources" below), and replaces flat Tier costs paid from one pool with
 costs paid from whichever of PP/MP fits the ability. Everything else about the
 engine — dice pools, exploding 10s, opposed rolls, the Tier property tables,
 Trade-Off, Glory — works exactly as in `asterion_rules.md`.
@@ -31,7 +31,10 @@ Trade-Off, Glory — works exactly as in `asterion_rules.md`.
 
 ## Stats
 
-Every character has N&D's 8 Stats, split into two categories:
+Every character has N&D's 8 Stats, split into two categories. There's nothing
+to buy or distribute — Stats aren't numbered at all here. They exist to name
+things: which pool (PP or MP) an ability draws from, which die a Skill Check
+rolls, and which Stat your three Signature Stats point to.
 
 **Physical:** Strength (melee damage, lifting), Dexterity (speed, ranged
 accuracy), Body (toughness, endurance), Perception (awareness, detection).
@@ -40,26 +43,27 @@ accuracy), Body (toughness, endurance), Perception (awareness, detection).
 hacking, analysis), Charisma (presence, persuasion), Intuition (reflexes,
 instinct, initiative).
 
-**Character creation:** distribute **20 points** across the 8 Stats using one of
-three splits — 15 Physical / 5 Mental, 10 Physical / 10 Mental, or 5 Physical /
-15 Mental. **Stat cap: 10**, unless your race sets a different cap (noted in
-that race's entry — Dragonblooded raise their chosen category to 11, Eldritch
-raise every Stat's cap to 12 but start with 16 points instead of 20, Advent AI
-only buy Mental Stats). Apply your race's fixed Stat modifiers (its own "+1
-[Stat]" line) after distributing points.
+A race's own "+1 [Stat]" line (from its N&D fiction) is simply a pointer to
+that race's Signature Stat below — it's not a number to add anywhere.
 
 ---
 
-## Derived Resources
+## Resources
 
-Four numbers come directly from your final Stats:
+Every character starts with the same four numbers — no Stat math involved:
 
-| Resource | Formula | Represents |
+| Resource | Starting Value | Represents |
 |---|---|---|
-| **Health** | Sum of Physical Stats + 10 | Physical harm — weapons, brute force, toxins, fire, cyberware failure. At 0 Health you are dying and incapacitated. |
-| **Shock** | Sum of Mental Stats | Mental/psychic/social harm — fear, intimidation, psychic assault, Yellow corruption, overwhelming stress. At 0 Shock you are unconscious (roll d10 each round: 5+ regains 1 Shock and wakes you up; 3 failures = out for an hour). |
-| **PP** (Physical Points) | Sum of Physical Stats | Fuels abilities rooted in a Physical Stat — melee, gunplay, toughness, physical senses. |
-| **MP** (Mental Points) | Sum of Mental Stats | Fuels abilities rooted in a Mental Stat — hacking, persuasion, willpower, psychic effects. |
+| **Health** | 5 | Physical harm — weapons, brute force, toxins, fire, cyberware failure. At 0 Health you are dying and incapacitated. |
+| **Shock** | 5 | Mental/psychic/social harm — fear, intimidation, psychic assault, Yellow corruption, overwhelming stress. At 0 Shock you are unconscious (roll d10 each round: 5+ regains 1 Shock and wakes you up; 3 failures = out for an hour). |
+| **PP** (Physical Points) | 5 | Fuels abilities rooted in a Physical Stat — melee, gunplay, toughness, physical senses. |
+| **MP** (Mental Points) | 5 | Fuels abilities rooted in a Mental Stat — hacking, persuasion, willpower, psychic effects. |
+
+This matches Asterion's own Flesh/Ichor baseline (5) and keeps the Ability
+Construction Tier table below (1/2/4 damage, 0/1/3 PP-MP cost) calibrated the
+way it was designed — a handful of races adjust these starting numbers
+(noted in their own entry below); everyone else grows them the normal way,
+through Glory.
 
 There is no Spark Shield or other absorption layer — damage and harmful effects
 go straight to Health or Shock, whichever matches their fiction. Most abilities
@@ -233,10 +237,10 @@ how Major Edges (below) get to be full Tier 3 for free.
 
 ## Character Creation
 
-1. **Choose your Race** (17, tiered Standard/Advanced/Exceptional) — sets your
-   racial Stat modifiers/cap exceptions, your Race Signature Stat, and your
-   full Race Ability list (§ Race Abilities — one ability per *named* special
-   mechanic the race has in N&D, not just one per race).
+1. **Choose your Race** (17, tiered Standard/Advanced/Exceptional) — sets any
+   racial resource adjustment, your Race Signature Stat, and your full Race
+   Ability list (§ Race Abilities — one ability per *named* special mechanic
+   the race has in N&D, not just one per race).
 2. **Choose your Profession** (6) — sets your Profession Signature Stat and
    full Profession Ability list.
 3. **Choose your third Signature Stat** — any of the 8, your own free pick
@@ -246,10 +250,9 @@ how Major Edges (below) get to be full Tier 3 for free.
    (see § Background Abilities) — sets your Background Ability.
 5. **Choose your Major Edge** — constrained to the Edge(s) tied to your Race or
    your Profession (see § Major Edge Abilities).
-6. **Distribute 20 Stat points** across the 8 Stats (one of the 3 splits), then
-   apply your race's fixed Stat modifiers and any cap exceptions.
-7. **Calculate Health, Shock, PP, and MP** from your final Stats.
-8. **Write down your character sheet:** your full ability list from steps 1,
+6. **Set your resources:** Health, Shock, PP, and MP all start at 5 — apply
+   any race-specific adjustment noted in your race's entry.
+7. **Write down your character sheet:** your full ability list from steps 1,
    2, 4, and 5 (the total varies — a race/profession with more named
    mechanics in N&D gives you more abilities, by design), your three
    Signature Stats, and your derived resources.
@@ -353,10 +356,10 @@ retroactively, a bounty "paused").
 
 ##### Advent AI — Signature Stat: Intellect
 
-*Override — Advent AI doesn't use the standard Stats/Resources rules:* no
-Physical Stats, Health, or PP at baseline. Distribute only **10 points** across
-Mental Stats (still cap 10), then add +2 to Intellect. Add +5 to your Shock; at
-0 Shock, you are **erased**, not just unconscious.
+*Override — Advent AI doesn't use the standard Resources rules:* no Health or
+PP at baseline (no Physical Stats to speak of at all). Shock starts at 10
+instead of 5 (+5 bonus); at 0 Shock, you are **erased**, not just
+unconscious.
 
 | Ability | Type & Tier | Effect |
 |---|---|---|
@@ -365,11 +368,12 @@ Mental Stats (still cap 10), then add +2 to Intellect. Add +5 to your Shock; at
 
 ##### Banshee — Signature Stat: a free pick, any Stat (Ectoplasm draws on all of them equally, so nothing is fixed — you decide which one your chassis favors)
 
-*Override — a Banshee doesn't use the standard Resources rules:* no Health,
-Shock, PP, or MP. Instead you have a single **Ectoplasm** pool equal to the sum
-of all your Stats; anything that would change Health, Shock, PP, or MP changes
-Ectoplasm instead. You heal only by repair, never by Rest. You have no citizen
-rights. You take +4 damage from electric sources. You take -1d10 on social
+*Override — a Banshee doesn't use the standard Resources rules:* no separate
+Health, Shock, PP, or MP. Instead you have a single **Ectoplasm** pool
+starting at 20 (the combined total of what everyone else's four pools add up
+to); anything that would change Health, Shock, PP, or MP changes Ectoplasm
+instead. You heal only by repair, never by Rest. You have no citizen rights.
+You take +4 damage from electric sources. You take -1d10 on social
 rolls (a permanent narrative drawback, already baked in — no Trade-Off needed).
 You can't use Bio Augments; you're treated as already having all Alpha
 Augments.
@@ -402,25 +406,26 @@ visible — you cannot hide a Flesh Graft under clothing or otherwise.
 | Sanguine Metabolism | Passive T1 (Resistance) | Mundane Immunity — stims, drugs, and mundane toxins have no effect on you. |
 | Malleable Flesh | Free (no Tier cost, narrative only) | Change your skin color, height, weight, eye color, etc.; takes 1 minute. |
 
-*Override:* choose 1 Physical Stat for +1 at creation (or +1 to two, with a -1
-penalty to a third) — swappable after each Rest, and it sets your Signature
-Stat. You sustain yourself on blood; stims/drugs don't affect you. Go 48 hours
+*Override:* choose 1 Physical Stat at creation as your favored one —
+swappable after each Rest, and it sets your Signature Stat. You sustain
+yourself on blood; stims/drugs don't affect you. Go 48 hours
 without feeding and you take 1 Health damage every hour, unable to heal Health
 until you feed — a built-in drawback, no formal Trade-Off needed.
 
 ##### Devilspawn — Signature Stat: Intuition
 
-*Override:* -5 to your Max Health.
+*Override:* -2 to your Max Health (scaled down from N&D's own -5, which
+assumed a much larger Health pool than this rulebook's flat starting 5).
 
 | Ability | Type & Tier | Effect |
 |---|---|---|
-| Third Eye | Active T1 (Special Effect, 0 MP) | Open your third eye as an action. While open, roll your Domain Pool (3d10 instead of 2d10) on Psy-flavored rolls — but risk GM Intrusion: the GM may declare you briefly possessed (+2 to all Stats, but you act under a dangerous compulsion for 1 minute), usually on a critical failure. |
+| Third Eye | Active T1 (Special Effect, 0 MP) | Open your third eye as an action. While open, roll your Domain Pool (3d10 instead of 2d10) on Psy-flavored rolls — but risk GM Intrusion: the GM may declare you briefly possessed (+1d10 to every pool you roll, but you act under a dangerous compulsion for 1 minute), usually on a critical failure. |
 
 ##### Xerm — Signature Stat: Strength (and a -1 penalty point on Intellect rolls)
 
-*Override:* +1 Body, +1 Strength, -1 Intellect (the Strength bonus is folded
-into your Signature Stat above; the -1 Intellect is the penalty point noted
-above). You can't use Psy Powers. You can use Xerm (Heavy) weapons without
+*Override:* a -1 penalty point on Intellect rolls (noted above; Strength is
+already your Signature Stat, so N&D's own "+1 Strength" is covered there
+too). You can't use Psy Powers. You can use Xerm (Heavy) weapons without
 penalty. Augments cost +20%; you gain +2 Feat Slots for arm augmentation. Your
 stim limit is 1 per Rest (not the usual 3).
 
@@ -440,8 +445,8 @@ after combat.
 |---|---|---|
 | 0-1 | Stable | +1d10 to resist Shock damage. |
 | 2-3 | Charged | +1d10 to Strength/Body rolls; use all four arms without penalty; extra interaction/reload each turn. |
-| 4-5 | Overdrive | +2 Strength, +1 Dexterity, +2 Speed; extra Action each turn; lose 1 Health at the end of your turn. |
-| 6 | Critical Limit | +3 to all Physical Stats; act first this round. At end of turn, roll 1d6: 4+ you survive (stay at 6), else you die. |
+| 4-5 | Overdrive | +2 bonus points on Strength rolls, +1 on Dexterity rolls (split/stacked like Signature Stat points), +10 ft movement; extra Action each turn; lose 1 Health at the end of your turn. |
+| 6 | Critical Limit | +3 bonus points on any Physical Stat roll (Strength/Dexterity/Body/Perception), your choice how to split them; act first this round. At end of turn, roll 1d6: 4+ you survive (stay at 6), else you die. |
 | 7+ | Rupture | Death — 2d10 damage to anyone within short range, ignoring Armor. |
 
 #### Exceptional tier
@@ -449,9 +454,11 @@ after combat.
 ##### Consumed by Yellow — Signature Stat: the Signature Stat of whichever race you draw your Race Abilities from (see below)
 
 *Override:* no Shock, and you cannot become unconscious from it. You don't
-need to sleep; restore 1 PP and 1 MP every hour instead. Take 5 Max Health
-damage for each day you don't consume a sentient being; at 0 Max Health you
-become an Avatar of the Yellow. You take Race Abilities from one other race of
+need to sleep; restore 1 PP and 1 MP every hour instead. Take 1 Max Health
+damage for each day you don't consume a sentient being (scaled down from
+N&D's own -5/day, which assumed a much larger Health pool than this
+rulebook's flat starting 5); at 0 Max Health you become an Avatar of the
+Yellow. You take Race Abilities from one other race of
 your choice, but never that race's Tier-3-equivalent ability, tracked-gauge
 subsystem, or Major Edge — and no race gets a race-Major-Edge here either; take
 your Major Edge from your Profession instead.
@@ -464,7 +471,8 @@ your Major Edge from your Profession instead.
 *Tracked gauge — Yellow Saturation (0-10):* rises when you use Power of the
 Yellow (+1), go a day without consuming (+1), or voluntarily accept the
 Yellow's presence (+1, once/session); falls when you consume a sentient being
-(-2) or burn a permanent Stat point (-5).
+(-2) or permanently burn 1 Max Health, Shock, PP, or MP (-5, your choice
+which pool).
 
 | Saturation | Name | Effect |
 |---|---|---|
@@ -473,12 +481,11 @@ Yellow's presence (+1, once/session); falls when you consume a sentient being
 | 4-5 | Yellow-Gifted | Power of the Yellow costs -1 Stat downgrade (min 1). |
 | 6-7 | Walking Blight | +1 Action/turn; immune to Fear; -1d10 to others' rolls to resist your mental effects. |
 | 8-9 | Crowned With Madness | Enemies at long range: -1d10; allies: +1d10. |
-| 10 | Becoming the Yellow | Power of the Yellow costs nothing; +2 to all Stats; risk of losing control (roll 1d6 each turn: 1-2 in control, 3-4 GM narrates hallucinated motives, 5 GM controls you for 1 turn, 6 you become the Avatar permanently). |
+| 10 | Becoming the Yellow | Power of the Yellow costs nothing; +2 bonus points on every roll you make, your choice how to split them; risk of losing control (roll 1d6 each turn: 1-2 in control, 3-4 GM narrates hallucinated motives, 5 GM controls you for 1 turn, 6 you become the Avatar permanently). |
 
 ##### Dragonblooded — Signature Stat: one of your chosen bloodline's two Stat Synergy stats (below), your pick
 
-*Override:* choose Physical or Mental Stats — +1 to every Stat in that
-category, and its cap becomes 11. You can augment yourself, but with half the
+*Override:* you can augment yourself, but with half the
 usual feat augment slots (rounded down). Hiding your dragonblooded form takes
 10 minutes; while hidden, +1 Armor and no bloodline abilities. In true form:
 +2 Armor, unarmed attacks deal 1d6+3 ignoring 1 Armor, bloodline abilities
@@ -493,18 +500,17 @@ rules if an ability perfectly fits the narrative" allowance.
 
 | Bloodline | Stat Synergy | Passive | Blood Surge (Active) | Unique Trait |
 |---|---|---|---|---|
-| **Infernis** (Fire) | Strength + Intellect | Thermal Conduction: immune to fire; melee attackers vs you take 1 Shock. | 2 PP: 1d8 heat damage, short-radius burst, ignores 2 Armor; +2 to melee rolls for 1 round. | Regenerate 1 Health when you deal fire damage (once/turn). |
-| **Glaciar** (Frost) | Willpower + Dexterity | Cryostasis Veins: half damage from cold/EMP; melee attackers must make a Dexterity Skill Check against a Professional (2d10) difficulty pool or be slowed (-2 Dexterity until their turn ends). | 2 PP: freeze target 1 turn (no damage), or 1d8 cold damage if already slowed/wet. | Regain 1 Shock whenever you spend PP on a Blood Surge. |
+| **Infernis** (Fire) | Strength + Intellect | Thermal Conduction: immune to fire; melee attackers vs you take 1 Shock. | 2 PP: 1d8 heat damage, short-radius burst, ignores 2 Armor; +2 bonus points on melee rolls for 1 round. | Regenerate 1 Health when you deal fire damage (once/turn). |
+| **Glaciar** (Frost) | Willpower + Dexterity | Cryostasis Veins: half damage from cold/EMP; melee attackers must make a Dexterity Skill Check against a Professional (2d10) difficulty pool or be slowed (half movement speed until their turn ends). | 2 PP: freeze target 1 turn (no damage), or 1d8 cold damage if already slowed/wet. | Regain 1 Shock whenever you spend PP on a Blood Surge. |
 | **Voltaris** (Storm) | Dexterity + Intuition | Living Conductor: immune to electricity; +1 Shock when hit by electric/EMP (once/turn). | 1 PP: teleport up to short range as a Reaction when attacked. | Successfully dodging grants your next attack +2 damage. |
 | **Umbracline** (Shadow) | Dexterity + Intellect | Shadowmeld: +1d10 Stealth and +1 Armor in dim light or darker. | 2 PP: phase through solid objects/shadows (up to 3m) for one turn; attacks from inside shadows ignore Armor. | Killing a target in darkness restores 1 PP and 1 Shock. |
 | **Nekrith** (Decay) | Body + Willpower | Entropic Aura: living enemies in medium range take -1 to healing/regen; immune to poison/disease. | 2 PP: touch attack, 1d10 damage, reduces target's Max Health by that amount until healed (once/target). | Regain 1 PP and 1 Health whenever a creature dies near you (medium range). |
 | **Psionis** (Mind) | Intellect + Charisma | Neural Field: enemies in short range take -1d10 on Mental Stat rolls against you. | 2 MP: dominate one humanoid for 1 round (they make a Willpower Skill Check against a Heroic (3d10) difficulty pool to resist). | Regain 1 MP whenever you force a target to fail a Willpower roll. |
-| **Crimson** (Blood) | Body + Strength | Burning Blood: below 50% Health, +1 Strength and +1 Armor. | 2 PP + 2 Health (Self-Harm Trade-Off): +3 to all attack rolls for 2 turns; damage taken reduced by 1. | Kill an enemy in melee, roll d10 — 7+ regain 2 Health. |
+| **Crimson** (Blood) | Body + Strength | Burning Blood: below 50% Health, +1 bonus point on Strength rolls and +1 Armor. | 2 PP + 2 Health (Self-Harm Trade-Off): +3 bonus points on attack rolls for 2 turns; damage taken reduced by 1. | Kill an enemy in melee, roll d10 — 7+ regain 2 Health. |
 
 ##### Eldritch — Signature Stat: a second free pick, any Stat (reflecting your alien nature — stacks with your universal "your choice" Signature Stat from Character Creation step 3, so an Eldritch gets two open picks)
 
-*Override:* start with 16 Stat points instead of 20, but every Stat's cap
-becomes 12. -1d10 on empathy/social rolls. Can't use augments. Inventing a new
+*Override:* -1d10 on empathy/social rolls. Can't use augments. Inventing a new
 Transcendence ability costs +1 Glory more than normal (Race Feats cost more in
 N&D's own text).
 
@@ -708,11 +714,8 @@ from your Profession instead.*
 
 ## Worked Example: a Drow Hacker
 
-**Stats** (5 Physical / 15 Mental split): Strength 1, Dexterity 1, Body 1,
-Perception 2 (Physical sum 5); Willpower 4+1 racial = 5, Intellect 5, Charisma
-3, Intuition 3 (Mental sum 16).
-
-**Derived resources:** Health 15 (5+10), Shock 16, PP 5, MP 16.
+**Resources:** Health 5, Shock 5, PP 5, MP 5 — the flat starting values;
+Drow carries no resource adjustment.
 
 **Signature Stats:** Willpower (Race: Drow), Intellect (Profession: Hacker),
 Intellect (your own choice — picked to double down on hacking). Two of the
@@ -770,12 +773,12 @@ one paragraph of fiction gets one ability, a race with a whole named subsystem
 (Dwarf's Spirit Reserve, Dragonblooded's bloodlines) gets one ability per named
 piece of it. Nothing from the source material is left out.
 
-**Why Health/Shock/PP/MP and Stats instead of vanilla Asterion's Flesh/Ichor/
-Spark Shield?** Because Neon & Dragons already has its own Stat and resource
-layer — reusing it keeps a character's sheet feeling like N&D throughout, not
-like a reskinned copy of Asterion. The Tier math works the same, just paid
-from four Stat-derived pools instead of two flat ones, with no shield layer
-absorbing damage first.
+**Why Health/Shock/PP/MP instead of vanilla Asterion's Flesh/Ichor/Spark
+Shield?** Because Neon & Dragons already has its own resource layer with that
+exact name and split — reusing it keeps a character's sheet feeling like N&D,
+not like a reskinned copy of Asterion. The Tier math works exactly the same
+(same 5-point starting values, same 0/1/3 costs), just paid from four pools
+instead of two, with no shield layer absorbing damage first.
 
 **Do I have to pick one of the five listed Origins for my Background?** No —
 they're ready-to-use options, but you're free to write your own and build a
