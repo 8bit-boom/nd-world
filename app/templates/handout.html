@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Handout</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#fff;color:#111;font-family:Georgia,'Times New Roman',serif;font-size:11pt}
+.handout{width:100%;max-width:700px;margin:0 auto;padding:2cm;page-break-after:always}
+.handout:last-child{page-break-after:auto}
+.ho-kind{font-size:8pt;text-transform:uppercase;letter-spacing:.1em;color:#888;margin-bottom:.5em}
+.ho-name{font-size:18pt;font-weight:700;border-bottom:2px solid #222;padding-bottom:.35em;margin-bottom:.75em}
+.ho-img{width:100%;max-height:240px;object-fit:cover;border-radius:3px;margin-bottom:.75em;display:block}
+.ho-summary{font-style:italic;color:#555;margin-bottom:.75em;font-size:10.5pt}
+.ho-body{line-height:1.6;font-size:10pt}
+.ho-body h2{font-size:12pt;margin:1em 0 .35em;border-bottom:1px solid #ccc}
+.ho-body h3{font-size:11pt;margin:.8em 0 .25em}
+.ho-body p{margin-bottom:.5em}
+.ho-body ul,ol{margin:.3em 0 .5em 1.5em}
+.ho-body table{border-collapse:collapse;width:100%;margin:.5em 0;font-size:9.5pt}
+.ho-body th,td{border:1px solid #ccc;padding:.25em .5em}
+.ho-body th{background:#f5f5f5}
+.ho-stat-block{border:1px solid #aaa;border-radius:3px;padding:.5em .75em;margin:.5em 0;background:#fafafa}
+.ho-stat-row{display:flex;justify-content:space-between;font-size:9pt;padding:.1em 0;border-bottom:1px solid #eee}
+.ho-stat-row:last-child{border:none}
+.print-bar{background:#222;color:#fff;padding:.5rem 1rem;display:flex;align-items:center;gap:.75rem;font-family:system-ui,sans-serif;font-size:.85rem}
+.print-bar a{color:#aaa;text-decoration:none}
+@media print{.print-bar{display:none}.handout{padding:1cm}}
+</style>
+</head>
+<body>
+<div class="print-bar">
+  <span>Handout Preview</span>
+  <button onclick="window.print()" style="background:#444;border:none;color:#fff;padding:.25rem .6rem;border-radius:3px;cursor:pointer;font-size:.82rem">🖨 Print / Save PDF</button>
+  <a href="javascript:history.back()">← Back</a>
+</div>
+{% for item in entities %}
+<div class="handout">
+  <div class="ho-kind">{{ item.entity.kind }}</div>
+  {% if item.entity.image_url %}<img class="ho-img" src="{{ item.entity.image_url }}" alt=""/>{% endif %}
+  <div class="ho-name">{{ item.entity.name }}</div>
+  {% if item.entity.summary %}<div class="ho-summary">{{ item.entity.summary }}</div>{% endif %}
+  <div class="ho-body">{{ item.body_html | safe }}</div>
+</div>
+{% endfor %}
+</body>
+</html>

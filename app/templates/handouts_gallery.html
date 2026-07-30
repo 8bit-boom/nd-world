@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Handouts — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div style="padding:1.5rem 2rem;max-width:940px">
+  <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1.2rem">
+    <h1 style="margin:0">🖨 HANDOUTS</h1>
+    <button onclick="printSelected()" class="btn-save">🖨 Print Selected</button>
+    <span id="sel-count" style="font-size:.82rem;color:#666">0 selected</span>
+  </div>
+  <p style="color:#666;font-size:.85rem;margin-bottom:1rem">Select entities below and print them as clean, print-ready handout cards.</p>
+  <div style="margin-bottom:.6rem;display:flex;gap:.5rem;flex-wrap:wrap">
+    {% for k in ['character','creature','item','feat','location','organization','note','event'] %}
+    <button onclick="filterKind('{{ k }}')" class="btn-cancel" style="font-size:.75rem;padding:.2rem .5rem">{{ k }}</button>
+    {% endfor %}
+    <button onclick="filterKind('')" class="btn-cancel" style="font-size:.75rem;padding:.2rem .5rem">All</button>
+    <button onclick="selectAll()" class="btn-cancel" style="font-size:.75rem;padding:.2rem .5rem">Select All</button>
+    <button onclick="clearSel()" class="btn-cancel" style="font-size:.75rem;padding:.2rem .5rem">Clear</button>
+  </div>
+  <div id="entity-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:.6rem">
+    {% for e in entities %}
+    <div class="ho-ent-card" data-kind="{{ e.kind }}" data-id="{{ e.id }}"
+      onclick="toggleSel(this)"
+      style="background:var(--bg2);border:2px solid var(--border);border-radius:6px;padding:.6rem .8rem;cursor:pointer;transition:border-color .12s;user-select:none">
+      <div style="font-size:.7rem;color:#555;text-transform:uppercase;margin-bottom:.15rem">{{ e.kind }}</div>
+      <div style="font-weight:700;font-size:.88rem;color:#ccc">{{ e.name }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+<script>
+var _sel = new Set();
+function toggleSel(el) {
+  var id = el.dataset.id;
+  if (_sel.has(id)) { _sel.delete(id); el.style.borderColor='var(--border)'; }
+  else { _sel.add(id); el.style.borderColor='var(--neon)'; }
+  document.getElementById('sel-count').textContent = _sel.size + ' selected';
+}
+function filterKind(k) {
+  document.querySelectorAll('.ho-ent-card').forEach(c=>{
+    c.style.display = (!k || c.dataset.kind===k) ? '' : 'none';
+  });
+}
+function selectAll() {
+  document.querySelectorAll('.ho-ent-card').forEach(c=>{
+    if(c.style.display!=='none'){ _sel.add(c.dataset.id); c.style.borderColor='var(--neon)'; }
+  });
+  document.getElementById('sel-count').textContent = _sel.size + ' selected';
+}
+function clearSel() {
+  _sel.clear();
+  document.querySelectorAll('.ho-ent-card').forEach(c=>c.style.borderColor='var(--border)');
+  document.getElementById('sel-count').textContent = '0 selected';
+}
+async function printSelected() {
+  if (!_sel.size) { alert('Select at least one entity.'); return; }
+  var r = await fetch('/handouts/print', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids:[..._sel]})});
+  var html = await r.text();
+  var w = window.open('', '_blank');
+  w.document.write(html);
+  w.document.close();
+}
+</script>
+{% endblock %}

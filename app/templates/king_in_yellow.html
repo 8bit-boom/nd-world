@@ -1,0 +1,694 @@
+{% extends "base.html" %}
+{% block title %}The King in Yellow — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<style>
+:root { --neon: #c9a84c; }
+
+#kiy-wrap {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 3rem 2rem 4rem;
+  font-family: Georgia, 'Times New Roman', serif;
+  color: #d4c08a;
+}
+
+/* ── Header ── */
+.kiy-header {
+  text-align: center;
+  margin-bottom: 2.5rem;
+  padding-bottom: 2rem;
+  border-bottom: 1px solid #2a2010;
+}
+.kiy-sign {
+  display: block;
+  font-size: 5rem;
+  color: #c9a84c;
+  text-shadow: 0 0 50px rgba(201,168,76,.45), 0 0 100px rgba(201,168,76,.15);
+  margin-bottom: .4rem;
+  animation: kiy-pulse 4s ease-in-out infinite;
+}
+@keyframes kiy-pulse {
+  0%,100% { text-shadow: 0 0 50px rgba(201,168,76,.45), 0 0 100px rgba(201,168,76,.15); }
+  50%      { text-shadow: 0 0 70px rgba(201,168,76,.7),  0 0 140px rgba(201,168,76,.3);  }
+}
+.kiy-title {
+  font-size: 2rem;
+  color: #e8d48b;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  margin: 0 0 .3rem;
+  font-weight: normal;
+}
+.kiy-subtitle {
+  color: #6b5a2a;
+  font-style: italic;
+  font-size: .95rem;
+  letter-spacing: .08em;
+}
+
+/* ── Epigraph ── */
+.kiy-epigraph {
+  text-align: center;
+  font-style: italic;
+  color: #7a6530;
+  margin: 1.8rem 0 1.8rem;
+  line-height: 2;
+  font-size: .95rem;
+}
+.kiy-epigraph cite {
+  display: block;
+  font-size: .78rem;
+  color: #4a3a18;
+  margin-top: .6rem;
+  font-style: normal;
+  letter-spacing: .05em;
+}
+
+/* ── Warning ── */
+.kiy-warning {
+  background: rgba(201,168,76,.07);
+  border: 1px solid rgba(201,168,76,.2);
+  border-radius: 3px;
+  padding: .75rem 1.2rem;
+  color: #9a7c2a;
+  font-size: .85rem;
+  text-align: center;
+  line-height: 1.7;
+  margin-bottom: 2rem;
+}
+
+/* ── Button ── */
+#btn-curtain {
+  display: block;
+  margin: 0 auto 1.5rem;
+  background: transparent;
+  border: 1px solid #c9a84c;
+  color: #c9a84c;
+  padding: .75rem 2.5rem;
+  font-size: 1rem;
+  font-family: Georgia, serif;
+  letter-spacing: .12em;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background .25s, box-shadow .25s;
+}
+#btn-curtain:hover:not(:disabled) {
+  background: rgba(201,168,76,.1);
+  box-shadow: 0 0 24px rgba(201,168,76,.25);
+}
+#btn-curtain:disabled { opacity: .35; cursor: not-allowed; }
+
+/* ── Status ── */
+#kiy-status {
+  text-align: center;
+  color: #6b5a2a;
+  font-style: italic;
+  font-size: .88rem;
+  min-height: 1.4rem;
+  margin-bottom: 1.2rem;
+  letter-spacing: .04em;
+}
+
+/* ── Inspirations ── */
+#kiy-inspirations {
+  display: none;
+  background: rgba(8,6,0,.7);
+  border: 1px solid #1e1800;
+  border-radius: 3px;
+  padding: .8rem 1rem;
+  margin-bottom: 2rem;
+}
+#kiy-inspirations summary {
+  color: #5a4a20;
+  font-size: .78rem;
+  cursor: pointer;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  list-style: none;
+  outline: none;
+}
+#kiy-inspirations summary:hover { color: #8a6a30; }
+.insp-item { margin-top: .7rem; padding-top: .7rem; border-top: 1px solid #181400; }
+.insp-source { color: #c9a84c; font-size: .76rem; font-weight: bold; }
+.insp-title  { color: #7a6530; font-size: .76rem; font-style: italic; margin-left: .4rem; }
+.insp-text   { color: #4a3c18; font-size: .78rem; margin-top: .25rem; line-height: 1.55; }
+
+/* ── Play output ── */
+#kiy-play { display: none; line-height: 1.95; font-size: .97rem; }
+
+.play-act {
+  text-align: center;
+  font-size: 1.5rem;
+  letter-spacing: .22em;
+  text-transform: uppercase;
+  color: #e8d48b;
+  margin: 3rem 0 1.5rem;
+  padding: .7rem 0;
+  border-top: 1px solid #3a3010;
+  border-bottom: 1px solid #3a3010;
+}
+.play-scene {
+  font-size: .9rem;
+  letter-spacing: .15em;
+  text-transform: uppercase;
+  color: #7a6530;
+  margin: 2rem 0 .6rem;
+}
+.play-direction {
+  font-style: italic;
+  color: #5a4820;
+  margin: .3rem 0;
+  padding-left: 2rem;
+}
+.play-char { font-variant: small-caps; font-weight: bold; color: #c9a84c; }
+.play-line { margin: .25rem 0 .25rem 2rem; }
+.play-blank { height: .6rem; }
+
+/* ── Generate again / actions ── */
+#btn-again {
+  display: none;
+  margin: 2.5rem auto 0;
+  background: transparent;
+  border: 1px solid #2a2010;
+  color: #5a4820;
+  padding: .5rem 1.5rem;
+  font-family: Georgia, serif;
+  font-size: .85rem;
+  cursor: pointer;
+  border-radius: 2px;
+  letter-spacing: .08em;
+  transition: border-color .2s, color .2s;
+}
+#btn-again:hover { border-color: #c9a84c; color: #c9a84c; }
+#kiy-actions button {
+  background: transparent;
+  border: 1px solid #2a2010;
+  color: #5a4820;
+  padding: .35rem 1rem;
+  font-family: Georgia, serif;
+  font-size: .78rem;
+  cursor: pointer;
+  border-radius: 2px;
+  letter-spacing: .06em;
+  transition: border-color .2s, color .2s;
+}
+#kiy-actions button:hover { border-color: #c9a84c; color: #c9a84c; }
+#kiy-last-notice {
+  display: none;
+  text-align: center;
+  color: #3a2c10;
+  font-size: .75rem;
+  font-style: italic;
+  margin: .4rem 0 0;
+  letter-spacing: .04em;
+}
+.kiy-lib-item {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .3rem 0;
+  border-bottom: 1px solid #1a1400;
+  font-size: .76rem;
+  color: #4a3818;
+}
+.kiy-lib-item span { flex: 1; }
+.kiy-lib-del {
+  background: none;
+  border: none;
+  color: #3a2810;
+  cursor: pointer;
+  font-size: .7rem;
+  padding: 0 .2rem;
+  transition: color .15s;
+}
+.kiy-lib-del:hover { color: #c9a84c; }
+
+/* ── Progress bar ── */
+#kiy-bar {
+  display: none;
+  height: 3px;
+  border-radius: 2px;
+  margin: 0 0 .6rem;
+  background: linear-gradient(90deg,
+    transparent 0%, #c9a84c 40%, #f0d870 50%, #c9a84c 60%, transparent 100%);
+  background-size: 200% 100%;
+  animation: kiy-shimmer 1.4s linear infinite;
+  opacity: 0;
+  transition: opacity .3s;
+}
+#kiy-bar.active { opacity: 1; }
+#kiy-bar.done   { background: #c9a84c; animation: none; opacity: 1; }
+@keyframes kiy-shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+</style>
+
+<div id="kiy-wrap">
+
+  <!-- Header -->
+  <div class="kiy-header">
+    <span class="kiy-sign">♔</span>
+    <h1 class="kiy-title">The King in Yellow</h1>
+    <div class="kiy-subtitle">A Play in Two Acts</div>
+  </div>
+
+  <!-- Epigraph -->
+  <div class="kiy-epigraph">
+    Along the shore the cloud waves break,<br>
+    The twin suns sink behind the lake,<br>
+    The shadows lengthen<br>
+    &emsp;&emsp;&emsp;&emsp;In Carcosa.<br>
+    <br>
+    Strange is the night where black stars rise,<br>
+    And strange moons circle through the skies,<br>
+    But stranger still is<br>
+    &emsp;&emsp;&emsp;&emsp;Lost Carcosa.
+    <cite>— Robert W. Chambers, The King in Yellow (1895)</cite>
+  </div>
+
+  <!-- Warning -->
+  <div class="kiy-warning">
+    ⚠ &ensp; The King in Yellow is a play in two acts.<br>
+    Those who read Act I are troubled by its beauty.<br>
+    Those who read Act II are said to go mad.<br>
+    <span style="font-size:.8rem;opacity:.65">Each performance is unique — this play has never been staged before.</span>
+  </div>
+
+  <!-- Model selector -->
+  <div style="text-align:center;margin-bottom:1rem">
+    <select id="kiy-model-sel" style="background:#0a0800;border:1px solid #2a2010;color:#6b5a2a;padding:.3rem .7rem;font-family:Georgia,serif;font-size:.8rem;border-radius:2px;cursor:pointer;letter-spacing:.05em">
+      <option value="">Default model</option>
+    </select>
+  </div>
+
+  <!-- Trigger -->
+  <button id="btn-curtain" onclick="drawCurtain()">✦ &ensp; Draw the Curtain &ensp; ✦</button>
+
+  <!-- Progress bar -->
+  <div id="kiy-bar"></div>
+
+  <!-- Status line -->
+  <div id="kiy-status"></div>
+
+  <!-- Inspirations (collapsed by default) -->
+  <details id="kiy-inspirations">
+    <summary>✦ &ensp; Inspirations gathered from across the veil</summary>
+    <div id="kiy-insp-list"></div>
+  </details>
+
+  <!-- Play output -->
+  <div id="kiy-play"></div>
+
+  <!-- Generate again / Save -->
+  <button id="btn-again" onclick="drawCurtain()">✦ &ensp; The King wears another mask — generate again &ensp; ✦</button>
+
+  <!-- Post-generation action row -->
+  <div id="kiy-actions" style="display:none;margin-top:.8rem;display:none">
+    <div style="display:flex;gap:.6rem;justify-content:center;flex-wrap:wrap">
+      <button id="btn-save" onclick="savePlay()" style="display:block">✦ Download .txt ✦</button>
+      <button id="btn-save-note" onclick="saveAsNote()">✦ Save as World Note ✦</button>
+      <button id="btn-add-library" onclick="addToLibrary()">✦ Add to RAG Library ✦</button>
+    </div>
+    <div id="kiy-action-status" style="text-align:center;color:#5a4820;font-size:.78rem;font-style:italic;margin-top:.4rem;min-height:1.2em"></div>
+  </div>
+
+  <div id="kiy-last-notice"></div>
+
+  <!-- RAG Library & model panel -->
+  <div id="kiy-library-panel" style="margin-top:2.5rem;border-top:1px solid #1e1800;padding-top:1.5rem;display:none">
+    <div style="text-align:center;color:#4a3818;font-size:.82rem;letter-spacing:.12em;text-transform:uppercase;margin-bottom:1rem">
+      ✦ Play Library &amp; RAG ✦
+    </div>
+    <div id="kiy-library-info" style="text-align:center;color:#3a2c10;font-size:.76rem;margin-bottom:.8rem"></div>
+    <div id="kiy-library-list" style="margin-bottom:1rem"></div>
+    <!-- Build model (Ollama Modelfile few-shot conditioning) -->
+    <div style="text-align:center">
+      <button id="btn-build-model" onclick="buildModel()"
+        style="background:transparent;border:1px solid #2a2010;color:#4a3818;padding:.4rem 1.2rem;font-family:Georgia,serif;font-size:.78rem;cursor:pointer;border-radius:2px;letter-spacing:.08em;transition:border-color .2s,color .2s"
+        onmouseover="this.style.borderColor='#c9a84c';this.style.color='#c9a84c'"
+        onmouseout="this.style.borderColor='#2a2010';this.style.color='#4a3818'">
+        ✦ Bake Library into Ollama Model ✦
+      </button>
+      <div style="color:#3a2810;font-size:.72rem;font-style:italic;margin-top:.25rem">
+        Creates <em>kiy-author:latest</em> — few-shot style conditioning via Modelfile
+      </div>
+      <div id="kiy-build-status" style="margin-top:.5rem;color:#5a4820;font-size:.76rem;font-style:italic;min-height:1.2em"></div>
+      <div id="kiy-build-bar" style="display:none;height:2px;background:linear-gradient(90deg,transparent,#c9a84c,transparent);background-size:200% 100%;animation:kiy-shimmer 1.4s linear infinite;margin-top:.4rem"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  let _lineBuf = '';
+  let _playEl = null;
+  let _kiyModel = '';
+
+  // ── Model selector ────────────────────────────────────────────────────────
+  async function loadKiyModels() {
+    const sel = document.getElementById('kiy-model-sel');
+    if (!sel) return;
+    try {
+      const r = await fetch('/api/ai/models');
+      const d = await r.json();
+      sel.innerHTML = '<option value="">Default model</option>';
+      for (const m of d.models) {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.textContent = m.label;
+        sel.appendChild(opt);
+      }
+      _kiyModel = localStorage.getItem('kiy_model') || '';
+      if (_kiyModel) sel.value = _kiyModel;
+      sel.onchange = () => { _kiyModel = sel.value; localStorage.setItem('kiy_model', _kiyModel); };
+    } catch(_) {}
+  }
+  loadKiyModels();
+
+  function setStatus(msg) {
+    document.getElementById('kiy-status').textContent = msg;
+  }
+
+  function formatLine(line) {
+    const t = line.trim();
+    if (!t) return '<div class="play-blank"></div>';
+
+    // ACT I / ACT II / ACT ONE / ACT TWO
+    if (/^ACT\s+/i.test(t)) return `<div class="play-act">${t}</div>`;
+
+    // Scene heading
+    if (/^(SCENE|Scene)\s+[\dIVX]/i.test(t)) return `<div class="play-scene">${t}</div>`;
+
+    // Stage direction [...]
+    if (t.startsWith('[') && t.includes(']'))
+      return `<div class="play-direction"><em>${t}</em></div>`;
+
+    // Character dialogue: ALL-CAPS word(s) then a period, then space, then text
+    const m = t.match(/^([A-Z][A-Z\s\-']{0,30})\.\s+([\s\S]+)/);
+    if (m) return `<div class="play-line"><span class="play-char">${m[1]}.</span> ${m[2]}</div>`;
+
+    return `<div class="play-line">${t}</div>`;
+  }
+
+  function pushToken(token) {
+    _lineBuf += token;
+    const lines = _lineBuf.split('\n');
+    _lineBuf = lines.pop();            // last (potentially incomplete) line stays buffered
+    lines.forEach(l => { _playEl.innerHTML += formatLine(l); });
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+
+  function flushBuf() {
+    if (_lineBuf.trim()) {
+      _playEl.innerHTML += formatLine(_lineBuf);
+      _lineBuf = '';
+    }
+  }
+
+  window.drawCurtain = async function () {
+    const btnCurtain = document.getElementById('btn-curtain');
+    const btnAgain   = document.getElementById('btn-again');
+    const inspEl     = document.getElementById('kiy-inspirations');
+    const inspList   = document.getElementById('kiy-insp-list');
+    _playEl          = document.getElementById('kiy-play');
+    const bar        = document.getElementById('kiy-bar');
+
+    btnCurtain.disabled = true;
+    bar.style.display = 'block'; bar.className = 'active';
+    btnAgain.style.display = 'none';
+    _playEl.style.display = 'none';
+    _playEl.innerHTML = '';
+    _lineBuf = '';
+    inspEl.style.display = 'none';
+    inspList.innerHTML = '';
+
+    // ── Step 1: fetch inspirations ──────────────────────────────────────────
+    setStatus('Searching across the veil for inspirations…');
+    try {
+      const r    = await fetch('/api/kiy/inspirations');
+      const data = await r.json();
+      const insps = data.inspirations || [];
+      if (insps.length) {
+        inspList.innerHTML = insps.map(i =>
+          `<div class="insp-item">
+             <span class="insp-source">${i.source}</span>
+             <span class="insp-title">${i.title}</span>
+             <div class="insp-text">${i.extract.slice(0, 320)}${i.extract.length > 320 ? '…' : ''}</div>
+           </div>`
+        ).join('');
+        inspEl.style.display = 'block';
+      }
+    } catch (_) { /* continue without inspirations */ }
+
+    // ── Step 2: stream the play ─────────────────────────────────────────────
+    setStatus('The curtain rises on Carcosa…');
+    _playEl.style.display = 'block';
+    document.getElementById('kiy-last-notice').style.display = 'none';
+
+    try {
+      const resp   = await fetch('/api/kiy/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: _kiyModel || undefined }),
+      });
+      const reader = resp.body.getReader();
+      const dec    = new TextDecoder();
+      let sseBuffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        sseBuffer += dec.decode(value, { stream: true });
+        const parts = sseBuffer.split('\n\n');
+        sseBuffer = parts.pop();           // keep partial last frame
+        for (const part of parts) {
+          if (!part.startsWith('data:')) continue;
+          const raw = part.slice(5).trim();
+          if (raw === '[DONE]') {
+            flushBuf();
+            setStatus('');
+            bar.className = 'done'; setTimeout(()=>{bar.style.display='none';bar.className='';},800);
+            btnCurtain.disabled = false;
+            btnAgain.style.display = 'block';
+            _showActions();
+            _persistPlay();
+            return;
+          }
+          try {
+            const obj = JSON.parse(raw);
+            if (obj.token) pushToken(obj.token);
+          } catch (_) {}
+        }
+      }
+    } catch (err) {
+      setStatus('The Yellow Sign obscures the way. Try again.');
+      bar.className = 'done'; setTimeout(()=>{bar.style.display='none';bar.className='';},800);
+    }
+
+    flushBuf();
+    setStatus('');
+    bar.className = 'done'; setTimeout(()=>{bar.style.display='none';bar.className='';},800);
+    btnCurtain.disabled = false;
+    btnAgain.style.display = 'block';
+    _showActions();
+    _persistPlay();
+  };
+
+  // ── Post-generation actions ───────────────────────────────────────────────
+
+  function _showActions() {
+    document.getElementById('kiy-actions').style.display = 'block';
+  }
+
+  function _setActionStatus(msg, clear = true) {
+    const el = document.getElementById('kiy-action-status');
+    el.textContent = msg;
+    if (clear) setTimeout(() => { el.textContent = ''; }, 3000);
+  }
+
+  window.saveAsNote = async function () {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = document.getElementById('kiy-play').innerHTML;
+    const text = (tmp.innerText || tmp.textContent || '').trim();
+    if (!text) return;
+    const date = new Date().toLocaleDateString();
+    const title = `The King in Yellow — ${date}`;
+    _setActionStatus('Saving…', false);
+    try {
+      const r = await fetch('/api/ai/save-note', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, content: text }),
+      });
+      const d = await r.json();
+      _setActionStatus(`Saved as note: "${d.name}"`);
+    } catch(e) {
+      _setActionStatus('Save failed: ' + e.message);
+    }
+  };
+
+  window.addToLibrary = async function () {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = document.getElementById('kiy-play').innerHTML;
+    const text = (tmp.innerText || tmp.textContent || '').trim();
+    if (!text) return;
+    _setActionStatus('Adding to library…', false);
+    try {
+      const r = await fetch('/api/kiy/plays', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      const d = await r.json();
+      _setActionStatus(`Added — library now has ${d.count} play${d.count !== 1 ? 's' : ''} for RAG`);
+      loadLibrary();
+    } catch(e) {
+      _setActionStatus('Failed: ' + e.message);
+    }
+  };
+
+  // ── RAG Library panel ─────────────────────────────────────────────────────
+
+  async function loadLibrary() {
+    try {
+      const r = await fetch('/api/kiy/plays');
+      const d = await r.json();
+      const panel = document.getElementById('kiy-library-panel');
+      const info  = document.getElementById('kiy-library-info');
+      const list  = document.getElementById('kiy-library-list');
+      if (d.count === 0) {
+        panel.style.display = 'none';
+        return;
+      }
+      panel.style.display = 'block';
+      info.textContent = `${d.count} play${d.count !== 1 ? 's' : ''} in library — retrieved as RAG context during generation`;
+      list.innerHTML = '';
+      for (const p of d.plays) {
+        const row = document.createElement('div');
+        row.className = 'kiy-lib-item';
+        const date = p.ts ? new Date(p.ts * 1000).toLocaleDateString() : '';
+        row.innerHTML = `<span>${p.title}</span><small style="color:#2a1e08">${date}</small>`;
+        const del = document.createElement('button');
+        del.className = 'kiy-lib-del';
+        del.textContent = '✕';
+        del.onclick = async () => {
+          await fetch('/api/kiy/plays/' + p.id, { method: 'DELETE' });
+          loadLibrary();
+        };
+        row.appendChild(del);
+        list.appendChild(row);
+      }
+    } catch(_) {}
+  }
+  loadLibrary();
+
+  window.buildModel = async function () {
+    const statusEl = document.getElementById('kiy-build-status');
+    const barEl    = document.getElementById('kiy-build-bar');
+    const btn      = document.getElementById('btn-build-model');
+    btn.disabled = true;
+    barEl.style.display = 'block';
+    statusEl.textContent = 'Building…';
+    try {
+      const resp = await fetch('/api/kiy/build-model', { method: 'POST' });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        statusEl.textContent = 'Error: ' + (err.detail || resp.status);
+        barEl.style.display = 'none';
+        btn.disabled = false;
+        return;
+      }
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split('\n\n'); buf = parts.pop();
+        for (const part of parts) {
+          if (!part.startsWith('data:')) continue;
+          const raw = part.slice(5).trim();
+          if (raw === '[DONE]') break;
+          try {
+            const obj = JSON.parse(raw);
+            if (obj.done) {
+              statusEl.textContent = `Model "${obj.model}" ready — select it from the dropdown above`;
+              loadKiyModels();
+            } else if (obj.error) {
+              statusEl.textContent = 'Error: ' + obj.error;
+            } else if (obj.status) {
+              statusEl.textContent = obj.status;
+            }
+          } catch(_) {}
+        }
+      }
+    } catch(e) {
+      statusEl.textContent = 'Failed: ' + e.message;
+    } finally {
+      barEl.style.display = 'none';
+      btn.disabled = false;
+    }
+  };
+
+  // ── Persist / restore ────────────────────────────────────────────────────
+
+  function _persistPlay() {
+    try {
+      const inspEl = document.getElementById('kiy-inspirations');
+      localStorage.setItem('kiy_last_play', JSON.stringify({
+        html:         _playEl.innerHTML,
+        insps:        document.getElementById('kiy-insp-list').innerHTML,
+        inspsVisible: inspEl.style.display === 'block',
+        ts:           Date.now(),
+      }));
+    } catch(_) {}
+  }
+
+  window.savePlay = function () {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = document.getElementById('kiy-play').innerHTML;
+    const text = tmp.innerText || tmp.textContent || '';
+    const date = new Date().toISOString().slice(0, 10);
+    const blob = new Blob(['THE KING IN YELLOW\nA Play in Two Acts\n\n' + text.trim()], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'king-in-yellow-' + date + '.txt';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  // Restore last play on page load
+  (function () {
+    try {
+      const raw = localStorage.getItem('kiy_last_play');
+      if (!raw) return;
+      const d = JSON.parse(raw);
+      if (!d.html) return;
+      const playEl    = document.getElementById('kiy-play');
+      const inspEl    = document.getElementById('kiy-inspirations');
+      const inspList  = document.getElementById('kiy-insp-list');
+      const btnAgain  = document.getElementById('btn-again');
+      const btnSave   = document.getElementById('btn-save');
+      const notice    = document.getElementById('kiy-last-notice');
+      playEl.innerHTML = d.html;
+      playEl.style.display = 'block';
+      if (d.inspsVisible && d.insps) {
+        inspList.innerHTML = d.insps;
+        inspEl.style.display = 'block';
+      }
+      btnAgain.style.display = 'block';
+      _showActions();
+      const mins = Math.round((Date.now() - (d.ts || 0)) / 60000);
+      notice.textContent = mins < 2 ? '↑ Last performance — just now' : `↑ Last performance — ${mins} min ago`;
+      notice.style.display = 'block';
+    } catch(_) {}
+  })();
+
+})();
+</script>
+{% endblock %}

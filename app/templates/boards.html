@@ -3,6 +3,18 @@
 {% block content %}
 <div class="page-header">
   <h1>📌 Investigation Boards</h1>
+  <form method="post" action="/boards/generate-orgs" style="display:inline">
+    <button type="submit" class="btn-primary" style="background:rgba(0,240,255,.12);border-color:#00f0ff;color:#00f0ff"
+            title="Auto-create a board with all organizations from this world">
+      🏛 Generate Faction Board
+    </button>
+  </form>
+  <form method="post" action="/boards/generate-dreamlands" style="display:inline">
+    <button type="submit" class="btn-primary" style="background:rgba(0,200,255,.1);border-color:#00c8ff;color:#00c8ff"
+            title="Generate a geographic map board of all 50 Dreamlands locations">
+      🗺 Dreamlands Map
+    </button>
+  </form>
   <a href="/boards/new" class="btn-primary">+ New Board</a>
 </div>
 

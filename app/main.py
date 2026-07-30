@@ -39,6 +39,9 @@ from .routers.sessions import router as sessions_router
 from .routers.calendar import router as calendar_router
 from .routers.importer import router as importer_router
 from .routers.races import router as races_router
+from .routers.lore_extras import router as lore_extras_router
+from .routers.boards_generate import router as boards_generate_router
+from .routers.handouts import router as handouts_router
 from . import ai as _ai_module
 from . import auth as _auth
 from .constants import KINDS, SUBTYPES, KIND_ICONS
@@ -69,6 +72,9 @@ app.include_router(sessions_router)
 app.include_router(calendar_router)
 app.include_router(importer_router)
 app.include_router(races_router)
+app.include_router(lore_extras_router)
+app.include_router(boards_generate_router)
+app.include_router(handouts_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 
