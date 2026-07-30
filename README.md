@@ -694,9 +694,12 @@ character system.
 
 Want to run a Neon & Dragons world with Asterion's simpler, player-invented-ability
 engine instead of N&D's fixed feat catalog, while keeping N&D's actual races,
-professions, origins, and major edges? See `docs/nd_asterion_conversion.md` — it
-converts every one of N&D's 17 races, 6 professions, 5 origins, and 22 major edges
-into an Asterion-style ability, plus an adapted four-part Character Sentence.
+professions, origins, and major edges? See `docs/nd_asterion_conversion.md` — a
+complete, standalone character-creation and play rulebook built on Asterion's
+engine: N&D's own Stats and Health/Shock/PP/MP resource layer, a Signature-Stat
+roll-easing mechanic per race/profession, and every special mechanic each of
+N&D's 17 races, 6 professions, 5 origins, and 22 major edges grants converted
+into Asterion abilities.
 
 ---
 
