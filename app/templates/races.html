@@ -1,0 +1,286 @@
+{% extends "base.html" %}
+{% block title %}Races — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<style>
+.races-header {
+  display: flex; align-items: center; gap: .8rem;
+  padding: 1rem 1.5rem .7rem; border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.races-header h1 { margin: 0; font-size: 1.3rem; }
+.tier-tabs { display: flex; gap: .4rem; padding: .55rem 1.5rem; background: var(--bg2); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.tier-tab {
+  background: transparent; border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text-dim); font-family: inherit; font-size: .82rem;
+  padding: .28rem .8rem; cursor: pointer; transition: border-color .12s, color .12s;
+}
+.tier-tab.active { border-color: var(--neon); color: var(--neon); }
+.tier-tab:hover:not(.active) { border-color: #666; color: var(--text); }
+.tier-badge {
+  display: inline-block; font-size: .65rem; padding: .1rem .32rem; border-radius: 3px;
+  font-weight: 700; text-transform: uppercase; letter-spacing: .05em; vertical-align: middle; margin-left: .3rem;
+}
+.tier-badge.standard    { background:#1a2a1a; color:#6f6; border:1px solid #3a5a3a; }
+.tier-badge.advanced    { background:#1a1a2e; color:#88f; border:1px solid #2a2a5e; }
+.tier-badge.exceptional { background:#2a1a0a; color:#fc8; border:1px solid #6a3a0a; }
+
+/* Grid */
+.races-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:.85rem; padding:1.1rem 1.5rem; }
+.race-card {
+  background:var(--bg2); border:1px solid var(--border); border-radius:6px;
+  cursor:pointer; transition:border-color .15s,transform .12s; overflow:hidden; position:relative;
+}
+.race-card:hover { border-color:var(--neon); transform:translateY(-2px); }
+.race-card-img { width:100%; height:150px; object-fit:cover; display:block; background:var(--bg3); }
+.race-card-placeholder { width:100%; height:150px; display:flex; align-items:center; justify-content:center; font-size:2.8rem; background:var(--bg3); color:var(--border); }
+.race-card-body { padding:.6rem .75rem; }
+.race-card-name { font-size:.95rem; font-weight:700; color:var(--text); margin-bottom:.15rem; }
+.race-card-summary { font-size:.75rem; color:var(--text-dim); line-height:1.5;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.race-card-del {
+  position:absolute; top:.35rem; right:.4rem; background:rgba(0,0,0,.7);
+  border:none; border-radius:3px; color:#666; font-size:.72rem; cursor:pointer;
+  padding:.15rem .35rem; line-height:1; opacity:0; transition:opacity .12s,color .12s;
+}
+.race-card:hover .race-card-del { opacity:1; }
+.race-card-del:hover { color:#c44; }
+
+/* Available builtin panel */
+.available-section { padding:0 1.5rem 1.5rem; }
+.available-header {
+  display:flex; align-items:center; gap:.7rem; margin:.4rem 0 .7rem;
+  cursor:pointer; user-select:none;
+}
+.available-header h3 { margin:0; font-size:.9rem; color:var(--text-dim); font-weight:600; }
+.available-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:.6rem; }
+.available-card {
+  background:var(--bg3); border:1px solid var(--border); border-radius:5px;
+  display:flex; align-items:center; gap:.6rem; padding:.45rem .6rem;
+  cursor:default;
+}
+.available-card-img { width:36px; height:36px; object-fit:cover; border-radius:3px; flex-shrink:0; }
+.available-card-placeholder { width:36px; height:36px; display:flex; align-items:center; justify-content:center; font-size:1.2rem; background:var(--bg2); border-radius:3px; flex-shrink:0; }
+.available-card-name { font-size:.8rem; color:var(--text-dim); flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.add-btn {
+  background:transparent; border:1px solid var(--border); border-radius:3px;
+  color:var(--text-dim); font-family:inherit; font-size:.72rem; padding:.15rem .4rem;
+  cursor:pointer; white-space:nowrap; transition:border-color .12s,color .12s; flex-shrink:0;
+}
+.add-btn:hover { border-color:var(--neon); color:var(--neon); }
+.add-btn:disabled { opacity:.4; cursor:default; }
+
+/* Modal */
+#race-modal { display:none; position:fixed; inset:0; z-index:9000; background:rgba(0,0,0,.88);
+  align-items:flex-start; justify-content:center; overflow-y:auto; padding:2rem 1rem; }
+#race-modal.open { display:flex; }
+#race-modal-inner { background:var(--bg2); border:1px solid var(--border); border-radius:8px;
+  width:100%; max-width:760px; position:relative; overflow:hidden; }
+#race-modal-close { position:absolute; top:.6rem; right:.8rem; background:none; border:none;
+  color:#aaa; font-size:1.6rem; cursor:pointer; line-height:1; z-index:1; }
+#race-modal-close:hover { color:#fff; }
+#race-modal-header { display:flex; align-items:stretch; }
+#race-modal-img { width:210px; flex-shrink:0; object-fit:cover; max-height:280px; display:block; }
+#race-modal-img-ph { width:210px; height:210px; flex-shrink:0; display:flex; align-items:center;
+  justify-content:center; font-size:4rem; background:var(--bg3); color:var(--border); }
+#race-modal-meta { padding:1.1rem 1.2rem .7rem; display:flex; flex-direction:column; gap:.35rem; }
+#race-modal-title { margin:0; font-size:1.4rem; color:var(--text); }
+#race-modal-body { padding:.9rem 1.4rem 1.4rem; overflow-y:auto; max-height:55vh; }
+.prose h1,.prose h2,.prose h3 { color:var(--neon); margin:.9rem 0 .3rem; }
+.prose h1 { font-size:1.15rem; margin-top:0; }
+.prose h2 { font-size:.95rem; }
+.prose p { margin:.4rem 0; line-height:1.7; font-size:.87rem; }
+.prose ul,.prose ol { padding-left:1.3rem; margin:.35rem 0; font-size:.87rem; }
+.prose li { margin:.2rem 0; }
+.prose hr { border:none; border-top:1px solid var(--border); margin:.9rem 0; }
+.prose strong { color:var(--text); }
+.prose img { max-width:100%; border-radius:4px; margin:.4rem 0; display:none; }
+.prose code { background:var(--bg3); padding:.1em .3em; border-radius:3px; font-size:.84em; }
+</style>
+
+<div class="races-header">
+  <h1>🧬 Races</h1>
+  {% if world %}
+  <span style="font-size:.82rem;color:var(--text-dim)">{{ world.name }}</span>
+  {% if request.query_params.get('added') %}
+  <span style="color:#4f4;font-size:.8rem">✓ Added {{ request.query_params.get('added') }} races</span>
+  {% endif %}
+  <a href="/races/new" class="btn-new" style="margin-left:auto">+ New Race</a>
+  {% else %}
+  <span style="color:#888;font-size:.82rem">Select a world first</span>
+  {% endif %}
+</div>
+
+{% if not world %}
+<p style="padding:2rem 1.5rem;color:var(--text-dim)">No world selected. <a href="/worlds" style="color:var(--neon)">Choose a world</a> to manage its races.</p>
+{% else %}
+
+<!-- Tier tabs for world races -->
+<div class="tier-tabs">
+  <button class="tier-tab active" id="tab-standard"    onclick="showTier('standard')">
+    Standard <span class="tier-badge standard">{{ world_by_tier.standard|length }}</span>
+  </button>
+  <button class="tier-tab" id="tab-advanced"    onclick="showTier('advanced')">
+    Advanced <span class="tier-badge advanced">{{ world_by_tier.advanced|length }}</span>
+  </button>
+  <button class="tier-tab" id="tab-exceptional" onclick="showTier('exceptional')">
+    Exceptional <span class="tier-badge exceptional">{{ world_by_tier.exceptional|length }}</span>
+  </button>
+</div>
+
+<!-- World races grids -->
+{% for tier in ['standard', 'advanced', 'exceptional'] %}
+<div id="tier-{{ tier }}" class="races-grid" style="{{ 'display:none' if not loop.first else '' }}">
+  {% for e in world_by_tier[tier] %}
+  <div class="race-card" onclick="openEntityRace({{ e.id }})">
+    {% if e.image_url %}
+    <img class="race-card-img" src="{{ e.image_url }}" alt="{{ e.name }}" loading="lazy"/>
+    {% else %}
+    <div class="race-card-placeholder">🧬</div>
+    {% endif %}
+    <div class="race-card-body">
+      <div class="race-card-name">{{ e.name }}</div>
+      {% if e.summary %}
+      <div class="race-card-summary">{{ e.summary }}</div>
+      {% endif %}
+    </div>
+    <form action="/races/{{ e.id }}/delete" method="post" onsubmit="event.stopPropagation();return confirm('Remove {{ e.name }} from this world?')">
+      <button type="submit" class="race-card-del" onclick="event.stopPropagation()">✕</button>
+    </form>
+  </div>
+  {% else %}
+  <p style="color:var(--text-dim);padding:.5rem 0;font-size:.85rem">No {{ tier }} races yet.</p>
+  {% endfor %}
+</div>
+{% endfor %}
+
+<!-- Available built-in races -->
+{% if available_builtin %}
+<div class="available-section">
+  <div class="available-header" onclick="toggleAvailable()">
+    <h3>📚 Add built-in races <span style="font-size:.75rem;color:#555">({{ available_builtin|length }} available)</span></h3>
+    <span id="avail-arrow" style="color:var(--text-dim);font-size:.8rem">▸</span>
+    <form action="/races/add-all-builtin" method="post" style="margin-left:auto" onclick="event.stopPropagation()">
+      <button type="submit" class="add-btn" style="font-size:.75rem;padding:.2rem .6rem">+ Add all</button>
+    </form>
+  </div>
+  <div id="available-list" style="display:none">
+    {% for tier in ['standard', 'advanced', 'exceptional'] %}
+    {% if available_by_tier[tier] %}
+    <div style="margin-bottom:.6rem">
+      <div style="font-size:.72rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.35rem">
+        {{ tier }} <span class="tier-badge {{ tier }}">{{ available_by_tier[tier]|length }}</span>
+      </div>
+      <div class="available-grid">
+        {% for r in available_by_tier[tier] %}
+        <div class="available-card" id="avail-{{ r.slug }}-{{ r.tier }}">
+          {% if r.image_url %}
+          <img class="available-card-img" src="{{ r.image_url }}" loading="lazy"/>
+          {% else %}
+          <div class="available-card-placeholder">🧬</div>
+          {% endif %}
+          <span class="available-card-name">{{ r.name }}</span>
+          <button class="add-btn" onclick="addBuiltin('{{ r.slug }}','{{ r.tier }}',this)">+ Add</button>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<!-- Entity race data for modal (from DB) -->
+<script>
+const ENTITY_RACES = {
+  {% for e in world_races %}
+  {{ e.id }}: {
+    name: {{ e.name | tojson }},
+    tier: {{ (e.subtype or 'standard') | tojson }},
+    image_url: {{ (e.image_url or '') | tojson }},
+    body_html: {{ (e.body | md if e.body else '') | tojson }},
+  },
+  {% endfor %}
+};
+</script>
+
+{% endif %}{# end if world #}
+
+<!-- Race detail modal -->
+<div id="race-modal" onclick="if(event.target===this)closeRace()">
+  <div id="race-modal-inner">
+    <button id="race-modal-close" onclick="closeRace()">✕</button>
+    <div id="race-modal-header">
+      <img id="race-modal-img" src="" alt="" style="display:none"/>
+      <div id="race-modal-img-ph">🧬</div>
+      <div id="race-modal-meta">
+        <h2 id="race-modal-title">—</h2>
+        <div id="race-modal-tier"></div>
+      </div>
+    </div>
+    <div id="race-modal-body" class="prose"></div>
+  </div>
+</div>
+
+<script>
+function showTier(tier) {
+  ['standard','advanced','exceptional'].forEach(t => {
+    document.getElementById('tier-' + t).style.display = t === tier ? 'grid' : 'none';
+    document.getElementById('tab-' + t).classList.toggle('active', t === tier);
+  });
+}
+
+function openEntityRace(id) {
+  const r = ENTITY_RACES[id];
+  if (!r) return;
+  const imgEl = document.getElementById('race-modal-img');
+  const phEl  = document.getElementById('race-modal-img-ph');
+  if (r.image_url) {
+    imgEl.src = r.image_url; imgEl.alt = r.name;
+    imgEl.style.display = 'block'; phEl.style.display = 'none';
+  } else {
+    imgEl.style.display = 'none'; phEl.style.display = 'flex';
+  }
+  document.getElementById('race-modal-title').textContent = r.name;
+  document.getElementById('race-modal-tier').innerHTML =
+    `<span class="tier-badge ${r.tier}">${r.tier}</span>`;
+  document.getElementById('race-modal-body').innerHTML = r.body_html || '<p style="color:var(--text-dim)">No description.</p>';
+  document.getElementById('race-modal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeRace() {
+  document.getElementById('race-modal').classList.remove('open');
+  document.body.style.overflow = '';
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeRace(); });
+
+function toggleAvailable() {
+  const el = document.getElementById('available-list');
+  const arr = document.getElementById('avail-arrow');
+  const open = el.style.display !== 'none';
+  el.style.display = open ? 'none' : 'block';
+  arr.textContent = open ? '▸' : '▾';
+}
+
+async function addBuiltin(slug, tier, btn) {
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const r = await fetch('/races/add-builtin', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({slug, tier}),
+    });
+    if (r.ok) {
+      const card = document.getElementById('avail-' + slug + '-' + tier);
+      if (card) { card.style.opacity = '.35'; card.style.pointerEvents = 'none'; }
+      btn.textContent = '✓';
+    } else {
+      btn.textContent = '!'; btn.disabled = false;
+    }
+  } catch {
+    btn.textContent = '!'; btn.disabled = false;
+  }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}New Race — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="page-header" style="display:flex;align-items:center;gap:1rem;padding:1.2rem 1.5rem .8rem;border-bottom:1px solid var(--border)">
+  <h1 style="margin:0;font-size:1.2rem">🧬 New Race</h1>
+  <a href="/races" style="padding:.3rem .8rem;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);text-decoration:none;font-size:.83rem">Cancel</a>
+</div>
+
+<form method="post" action="/races/new" enctype="multipart/form-data"
+      style="max-width:560px;display:flex;flex-direction:column;gap:1.1rem;padding:1.4rem 1.5rem">
+
+  <div class="form-field">
+    <label>Race name *</label>
+    <input name="name" required placeholder="e.g. Void-Touched" autofocus/>
+  </div>
+
+  <div class="form-field">
+    <label>Tier</label>
+    <select name="tier">
+      <option value="standard">Standard</option>
+      <option value="advanced">Advanced</option>
+      <option value="exceptional">Exceptional</option>
+    </select>
+  </div>
+
+  <div class="form-field">
+    <label>Image (optional)</label>
+    <input type="file" name="file" accept="image/*" onchange="previewImg(this)"/>
+    <div id="preview-wrap" style="display:none;margin-top:.5rem">
+      <img id="preview-img" src="" alt="preview"
+           style="max-width:240px;max-height:200px;border:1px solid var(--border);border-radius:4px;object-fit:cover"/>
+    </div>
+  </div>
+
+  <div class="form-field">
+    <label>Short summary</label>
+    <input name="summary" placeholder="One-line description shown on the card"/>
+  </div>
+
+  <div class="form-field">
+    <label>Description (Markdown)</label>
+    <textarea name="body" rows="12"
+              placeholder="## Entry&#10;Full race description, abilities, lore…&#10;&#10;## System&#10;Mechanical rules…"></textarea>
+  </div>
+
+  <button type="submit" class="btn-primary" style="align-self:flex-start;padding:.5rem 1.4rem">
+    ✓ Create Race
+  </button>
+</form>
+
+<style>
+.form-field { display:flex; flex-direction:column; gap:.3rem; }
+.form-field label { font-size:.78rem; opacity:.65; }
+.form-field input[type=text], .form-field input[name=name], .form-field input[name=summary],
+.form-field select {
+  background:rgba(255,255,255,.07); border:1px solid var(--border); border-radius:4px;
+  padding:.4rem .65rem; color:inherit; font-family:var(--font); font-size:.9rem;
+  width:100%; box-sizing:border-box;
+}
+.form-field select { cursor:pointer; }
+.form-field textarea {
+  background:rgba(255,255,255,.07); border:1px solid var(--border); border-radius:4px;
+  padding:.4rem .65rem; color:inherit; font-family:var(--font); font-size:.88rem;
+  width:100%; box-sizing:border-box; resize:vertical;
+}
+.form-field input:focus, .form-field textarea:focus, .form-field select:focus {
+  outline:1px solid var(--neon);
+}
+</style>
+
+<script>
+function previewImg(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  document.getElementById('preview-img').src = url;
+  document.getElementById('preview-wrap').style.display = 'block';
+}
+</script>
+{% endblock %}

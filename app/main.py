@@ -38,6 +38,7 @@ from .routers.quests import router as quests_router
 from .routers.sessions import router as sessions_router
 from .routers.calendar import router as calendar_router
 from .routers.importer import router as importer_router
+from .routers.races import router as races_router
 from . import ai as _ai_module
 from . import auth as _auth
 from .constants import KINDS, SUBTYPES, KIND_ICONS
@@ -67,6 +68,7 @@ app.include_router(quests_router)
 app.include_router(sessions_router)
 app.include_router(calendar_router)
 app.include_router(importer_router)
+app.include_router(races_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 
@@ -128,7 +130,7 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if method != "GET":
         return False
-    if path in ("/", "/rules", "/search", "/maps"):
+    if path in ("/", "/rules", "/search", "/maps", "/races"):
         return True
     if path.startswith("/kind/") or path.startswith("/uploads/"):
         return True

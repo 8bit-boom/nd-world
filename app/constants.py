@@ -1,4 +1,4 @@
-KINDS = ["character", "location", "organization", "creature", "event", "item", "feat", "note"]
+KINDS = ["character", "location", "organization", "creature", "event", "item", "feat", "note", "race"]
 
 SUBTYPES = {
     "character": ["NPC", "PC", "villain", "ally", "neutral"],
@@ -9,11 +9,14 @@ SUBTYPES = {
     "item": ["weapon", "armor", "augment", "bio-augmentation", "drone", "husk", "vehicle", "oddity", "metal", "item"],
     "feat": ["common feat", "origin feat", "profession feat", "profession ability", "psy power", "race feat"],
     "note": ["lore", "session note", "rumor", "prophecy", "theory"],
+    # Tier, matching the bundled race catalog under app/races/<tier>/*.md.
+    "race": ["standard", "advanced", "exceptional"],
 }
 
 KIND_ICONS = {
     "character": "👤", "location": "🗺", "organization": "🏢",
     "creature": "☠", "event": "⚡", "item": "⚙", "feat": "✦", "note": "📄",
+    "race": "🧬",
 }
 
 XP_THRESHOLDS = [
