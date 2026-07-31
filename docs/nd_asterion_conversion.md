@@ -76,6 +76,9 @@ ability's fiction (Tier 1 = 0, Tier 2 = 1, Tier 3 = 3). Purely social/narrative
 abilities with no damage, restoration, or Max-track component simply cost 0 PP
 or 0 MP and don't otherwise touch Health/Shock.
 
+Characters may use up to **3 stims per Rest** (N&D's own limit), unless a
+race's entry says otherwise.
+
 ---
 
 ## Dice & Play Engine
@@ -364,7 +367,7 @@ unconscious.
 | Ability | Type & Tier | Effect |
 |---|---|---|
 | Network Sense | Passive T1 (Senses) | Perceive and interface with nearby electronic systems — a built-in scanner for tech and networks. |
-| Husk/Robot Piloting | Active T1 (Special Effect, 0 MP) | Upload into a Husk (a purpose-built robot body with its own Physical Stats, PP, and Health, set by the GM, that you cannot upgrade) or an ordinary robot (2 in all Physical Stats, 5 PP, 7 Health) to act in the physical world. If the vessel has anti-virus defenses, defeat or disable them first. If your vessel is destroyed, take 1d4 Shock damage. |
+| Husk/Robot Piloting | Active T1 (Special Effect, 0 MP) | Upload into a Husk (a purpose-built robot body with its own Armor/Resistance/Movement traits and its own PP and Health pool, set by the GM, that you cannot upgrade) or an ordinary robot (5 PP, 7 Health, no special traits) to act in the physical world. If the vessel has anti-virus defenses, defeat or disable them first. If your vessel is destroyed, take 1d4 Shock damage. |
 
 ##### Banshee — Signature Stat: a free pick, any Stat (Ectoplasm draws on all of them equally, so nothing is fixed — you decide which one your chassis favors)
 
@@ -434,17 +437,16 @@ stim limit is 1 per Rest (not the usual 3).
 | Psy-Null Physiology | Passive T1 (Resistance) | Greater Resistance to mental/Psy-type intrusion — half damage (rounded down) from Psy Powers. |
 
 *Tracked gauge — Heart Pressure (HPres):* starts at 3; **7+ = instant death**
-(your Auxiliary Core ruptures). You have 3 Auxiliary Heart charges per Rest.
-Gain +1 HPres when you take 10+ damage in one hit, kill an enemy, perform a
-physical feat beyond human limits, or push a failed Strength/Body roll. Lose 1
-HPres from an uninterrupted hour of rest, a Biolumina Serum Injection, or
-succeeding a Willpower Skill Check against a Heroic (3d10) difficulty pool
-after combat.
+(your Auxiliary Core ruptures). Gain +1 HPres when you take 5+ damage in one
+hit, kill an enemy, perform a physical feat beyond human limits, or push a
+failed Strength/Body roll. Lose 1 HPres from an uninterrupted hour of rest, a
+Biolumina Serum Injection, or succeeding a Willpower Skill Check against a
+Heroic (3d10) difficulty pool after combat.
 
 | HPres | State | Effect |
 |---|---|---|
-| 0-1 | Stable | +1d10 to resist Shock damage. |
-| 2-3 | Charged | +1d10 to Strength/Body rolls; use all four arms without penalty; extra interaction/reload each turn. |
+| 0-1 | Stable | +1 bonus point to resist Shock damage. |
+| 2-3 | Charged | +1 bonus point on Strength/Body rolls; use all four arms without penalty; extra interaction/reload each turn. |
 | 4-5 | Overdrive | +2 bonus points on Strength rolls, +1 on Dexterity rolls (split/stacked like Signature Stat points), +10 ft movement; extra Action each turn; lose 1 Health at the end of your turn. |
 | 6 | Critical Limit | +3 bonus points on any Physical Stat roll (Strength/Dexterity/Body/Perception), your choice how to split them; act first this round. At end of turn, roll 1d6: 4+ you survive (stay at 6), else you die. |
 | 7+ | Rupture | Death — 2d10 damage to anyone within short range, ignoring Armor. |
@@ -471,8 +473,10 @@ your Major Edge from your Profession instead.
 *Tracked gauge — Yellow Saturation (0-10):* rises when you use Power of the
 Yellow (+1), go a day without consuming (+1), or voluntarily accept the
 Yellow's presence (+1, once/session); falls when you consume a sentient being
-(-2) or permanently burn 1 Max Health, Shock, PP, or MP (-5, your choice
-which pool).
+(-2) or permanently burn 1 point from a Max resource of your choice —
+Health, Shock, PP, or MP — which drops Saturation by 5. This is a much
+harsher trade than N&D's own "burn a Stat point" (a bigger pool to begin
+with), which fits it being the most drastic of the three options.
 
 | Saturation | Name | Effect |
 |---|---|---|
@@ -504,7 +508,7 @@ rules if an ability perfectly fits the narrative" allowance.
 | **Glaciar** (Frost) | Willpower + Dexterity | Cryostasis Veins: half damage from cold/EMP; melee attackers must make a Dexterity Skill Check against a Professional (2d10) difficulty pool or be slowed (half movement speed until their turn ends). | 2 PP: freeze target 1 turn (no damage), or 1d8 cold damage if already slowed/wet. | Regain 1 Shock whenever you spend PP on a Blood Surge. |
 | **Voltaris** (Storm) | Dexterity + Intuition | Living Conductor: immune to electricity; +1 Shock when hit by electric/EMP (once/turn). | 1 PP: teleport up to short range as a Reaction when attacked. | Successfully dodging grants your next attack +2 damage. |
 | **Umbracline** (Shadow) | Dexterity + Intellect | Shadowmeld: +1d10 Stealth and +1 Armor in dim light or darker. | 2 PP: phase through solid objects/shadows (up to 3m) for one turn; attacks from inside shadows ignore Armor. | Killing a target in darkness restores 1 PP and 1 Shock. |
-| **Nekrith** (Decay) | Body + Willpower | Entropic Aura: living enemies in medium range take -1 to healing/regen; immune to poison/disease. | 2 PP: touch attack, 1d10 damage, reduces target's Max Health by that amount until healed (once/target). | Regain 1 PP and 1 Health whenever a creature dies near you (medium range). |
+| **Nekrith** (Decay) | Body + Willpower | Entropic Aura: living enemies in medium range take -1 to healing/regen; immune to poison/disease. | 2 PP: touch attack, 1d4 damage, reduces target's Max Health by that amount until healed (once/target). | Regain 1 PP and 1 Health whenever a creature dies near you (medium range). |
 | **Psionis** (Mind) | Intellect + Charisma | Neural Field: enemies in short range take -1d10 on Mental Stat rolls against you. | 2 MP: dominate one humanoid for 1 round (they make a Willpower Skill Check against a Heroic (3d10) difficulty pool to resist). | Regain 1 MP whenever you force a target to fail a Willpower roll. |
 | **Crimson** (Blood) | Body + Strength | Burning Blood: below 50% Health, +1 bonus point on Strength rolls and +1 Armor. | 2 PP + 2 Health (Self-Harm Trade-Off): +3 bonus points on attack rolls for 2 turns; damage taken reduced by 1. | Kill an enemy in melee, roll d10 — 7+ regain 2 Health. |
 
@@ -573,7 +577,7 @@ spend needed.
 
 | Ability | Type & Tier | Effect |
 |---|---|---|
-| Nanite Swarm | Active (Special Effect menu, 1 Nanite Charge per use, not PP/MP) | **Micro-Repair Cloud** (restore 5 Health to an ally at touch, or remove a minor injury/status), **Aggro-Leech Protocol** (target an enemy's augments: 1d4 damage, save or one cybernetic system disabled for a round), **Synaptic Boost** (an ally gains +1 Action this turn or +2 Initiative next round), or **Auto-Surgeon** (repair or field-install a basic augment instantly; 1-in-6 malfunction risk). |
+| Nanite Swarm | Active (Special Effect menu, 1 Nanite Charge per use, not PP/MP) | **Micro-Repair Cloud** (restore 2 Health to an ally at touch, or remove a minor injury/status), **Aggro-Leech Protocol** (target an enemy's augments: 1d4 damage, save or one cybernetic system disabled for a round), **Synaptic Boost** (an ally gains +1 Action this turn or +2 Initiative next round), or **Auto-Surgeon** (repair or field-install a basic augment instantly; 1-in-6 malfunction risk). |
 
 ##### Hacker — Signature Stat: Intellect
 
@@ -582,6 +586,11 @@ spend needed.
 | Ability | Type & Tier | Effect |
 |---|---|---|
 | Electronic Buddy | Active (Special Effect menu, 0 MP, gated by Electronic Buddy Uses) | **Data Spider** (ask the GM one question about a target/system/location, get a usable lead), **Handshake Override** (+1d10 to a Hacking roll, or reduce Alert Level by 1 after a breach), **Signal Sniffer** (detect active signals — drones, smart-guns, comms, augment usage — in the environment), or **Auto-Chatter** (+1d10 to a Bluff/Deceive/Distract attempt by impersonating a call, message, or alert). |
+
+*Alert Level* is a GM-tracked meter (starts at 0) that rises 1 per failed
+hacking roll during an intrusion; the GM escalates consequences as it
+climbs — patrols get alerted, countermeasures activate, backup arrives.
+Mirrors N&D's own "Net Awareness."
 
 *Flavor notes:* your Buddy has an optional quirk (roll 1d4 or choose one —
 cat-obsessed, paranoid, cheerfully morbid, outdated personality). Once per
