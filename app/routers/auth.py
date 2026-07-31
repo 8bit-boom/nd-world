@@ -2,7 +2,7 @@ import time
 from datetime import datetime
 
 from fastapi import APIRouter, Cookie, Depends, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from .. import auth
@@ -89,6 +89,39 @@ async def login_submit(request: Request, db: Session = Depends(get_db)):
     _rl_clear(key)
     request.session["user_id"] = user.id
     return RedirectResponse(next_url, status_code=303)
+
+
+@router.post("/api/login")
+async def api_login(request: Request, db: Session = Depends(get_db)):
+    """JSON-friendly login for non-browser clients (e.g. the Android app) that
+    can't submit an HTML form. Shares the same session cookie and failed-login
+    lockout as the form-based /login above — a JSON client hammering this
+    doesn't get a free pass around the throttle."""
+    body = await request.json()
+    email = str(body.get("email", "")).strip().lower()
+    password = str(body.get("password", ""))
+
+    key = _rl_key(request, email)
+    locked_for = _rl_lock_remaining(key)
+    if locked_for:
+        return JSONResponse(
+            {"ok": False, "detail": f"Too many failed attempts. Try again in {locked_for // 60 + 1} minute(s)."},
+            status_code=429,
+        )
+
+    user = db.query(User).filter(User.email == email).first()
+    if user:
+        ok = auth.verify_password(password, user.password_hash)
+    else:
+        auth.burn_password_verify()  # keep unknown-email timing indistinguishable
+        ok = False
+    if not ok:
+        _rl_record_failure(key)
+        return JSONResponse({"ok": False, "detail": "Incorrect email or password."}, status_code=401)
+
+    _rl_clear(key)
+    request.session["user_id"] = user.id
+    return {"ok": True, "user": {"id": user.id, "email": user.email, "is_gm": user.is_gm}}
 
 
 @router.get("/logout")

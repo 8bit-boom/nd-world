@@ -307,6 +307,7 @@ def _migrate():
                 ("minor_edge_count",             "INTEGER DEFAULT 0"),
                 ("major_edge_count",             "INTEGER DEFAULT 0"),
                 ("owner_user_id",                "INTEGER"),
+                ("app_extra_json",                "TEXT DEFAULT '{}'"),
             ]
             for col, defn in _pc_extra:
                 if col not in pc_cols:

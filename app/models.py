@@ -252,6 +252,7 @@ class PlayerCharacter(Base):
     conditions_json = Column(Text, default='[]')  # list of active condition strings
     sheet_template_id  = Column(Integer, ForeignKey("sheet_templates.id"), nullable=True)
     custom_fields_json = Column(Text, default="{}")   # {field_id: value or [ {...}, ... ] for list fields}
+    app_extra_json = Column(Text, default="{}")  # passthrough for mobile-app-only fields not modeled here (see character-sync API)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

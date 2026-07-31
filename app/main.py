@@ -119,7 +119,7 @@ def health():
 # own character(s). Anything not allowlisted is GM-only. New routes are therefore
 # GM-only by default unless deliberately added to _is_player_safe.
 
-_PUBLIC_PATHS = {"/login", "/logout", "/health", "/favicon.ico"}
+_PUBLIC_PATHS = {"/login", "/api/login", "/logout", "/health", "/favicon.ico"}
 _PUBLIC_PREFIXES = ("/join/", "/static/")
 
 
@@ -127,6 +127,10 @@ def _is_player_safe(method: str, path: str) -> bool:
     if path.startswith("/characters/templates"):
         return False
     if path.startswith("/characters") or path.startswith("/api/characters/"):
+        return True
+    if path == "/api/me":
+        return True
+    if re.match(r"^/api/worlds/\d+/characters/sync$", path):
         return True
     if re.match(r"^/api/maps/schematic/[^/]+/move-token$", path):
         return True

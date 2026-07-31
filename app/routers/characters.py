@@ -123,20 +123,38 @@ def _derived(pc: PlayerCharacter) -> dict:
     }
 
 
+# Scalar fields _apply_form and the character-sync JSON API (below) both write.
+# Kept as one list so the two paths can't quietly drift on what's "live" for N&D
+# characters — see docs/AI_ENTITY_GUIDE.md's own field-liveness audit. race_id/
+# profession_id are handled separately below: unlike the rest, an omitted value
+# means "keep the current one" (they're wizard-set catalog ids, not something
+# every form submission necessarily repeats), not "blank it out."
+_PC_LIVE_SCALAR_FIELDS = (
+    "name", "player_name", "race", "char_class",
+    "level", "xp", "backstory", "notes",
+)
+# JSON-array columns, default "[]". skills_json/attacks_json are kept for DB
+# compatibility but unused in N&D — included anyway so there's exactly one field
+# list to maintain rather than two overlapping ones.
+_PC_LIVE_LIST_FIELDS = (
+    "stats_json", "skills_json", "currency_json", "equipment_json",
+    "feats_json", "attacks_json", "cyberware_json", "conditions_json",
+)
+# JSON-object columns, default "{}".
+_PC_LIVE_DICT_FIELDS = ("custom_fields_json", "app_extra_json")
+
+
 def _apply_form(pc: PlayerCharacter, data: dict):
     def gi(k, d=0):  return int(data.get(k) or d)
     def gs(k, d=""): return str(data.get(k) or d).strip()
 
-    pc.name        = gs("name") or "Unnamed"
-    pc.player_name = gs("player_name")
-    pc.race        = gs("race")
-    pc.race_id     = gs("race_id", pc.race_id or "")
-    pc.char_class  = gs("char_class")   # profession in N&D
-    pc.profession_id = gs("profession_id", pc.profession_id or "")
-    pc.level       = max(1, min(20, gi("level", 1)))
-    pc.xp          = max(0, gi("xp"))
-    pc.backstory   = gs("backstory")
-    pc.notes       = gs("notes")
+    for field in _PC_LIVE_SCALAR_FIELDS:
+        setattr(pc, field, gs(field))
+    pc.name = pc.name or "Unnamed"
+    pc.race_id        = gs("race_id", pc.race_id or "")
+    pc.profession_id  = gs("profession_id", pc.profession_id or "")
+    pc.level = max(1, min(20, gi("level", 1)))
+    pc.xp    = max(0, gi("xp"))
 
     # HP — max_hp=0 means "use auto-derived value"; store 0 so sheet uses derived
     pc.max_hp     = max(0, gi("max_hp", 0))
@@ -158,19 +176,17 @@ def _apply_form(pc: PlayerCharacter, data: dict):
     tpl_id = data.get("sheet_template_id")
     pc.sheet_template_id = int(tpl_id) if tpl_id and str(tpl_id).isdigit() else None
 
-    # Custom fields (free-form JSON object)
-    raw_cf = data.get("custom_fields_json", "{}") or "{}"
-    try:
-        json.loads(raw_cf)
-    except Exception:
-        raw_cf = "{}"
-    pc.custom_fields_json = raw_cf
+    # JSON object fields (free-form)
+    for field in _PC_LIVE_DICT_FIELDS:
+        raw = data.get(field, "{}") or "{}"
+        try:
+            json.loads(raw)
+        except Exception:
+            raw = "{}"
+        setattr(pc, field, raw)
 
-    # JSON fields (no skills_json in N&D)
-    for field in ("stats_json", "skills_json", "currency_json",
-                  "equipment_json", "feats_json", "attacks_json",
-                  "cyberware_json", "conditions_json"):
-        # skills_json kept for DB compatibility but not used in N&D
+    # JSON array fields
+    for field in _PC_LIVE_LIST_FIELDS:
         raw = data.get(field, "[]") or "[]"
         try:
             json.loads(raw)
@@ -1063,6 +1079,164 @@ async def character_feats_async(pc_id: int, request: Request, db: Session = Depe
     pc.feats_json = json.dumps(feats)
     db.commit()
     return {"feats": feats}
+
+
+# ── Character-sync JSON API ─────────────────────────────────────────────────────
+# A clean, general character-as-JSON GET/PUT for external clients (e.g. the
+# NeonDragonsApp Android client) to pull/push a full character over HTTP, on top
+# of the existing session-cookie auth — no new auth mechanism, no partial-update
+# semantics (each call replaces every live field), no conflict resolution (the
+# caller chooses to pull or push; either one is a deliberate full overwrite).
+
+def _pc_to_sync_dict(pc: PlayerCharacter) -> dict:
+    data = {
+        "id": pc.id,
+        "world_id": pc.world_id,
+        "updated_at": pc.updated_at.isoformat() if pc.updated_at else None,
+        "portrait_url": pc.portrait_url or "",
+        "sheet_template_id": pc.sheet_template_id,
+    }
+    for field in _PC_LIVE_SCALAR_FIELDS:
+        data[field] = getattr(pc, field, "") or ""
+    data["race_id"] = pc.race_id or ""
+    data["profession_id"] = pc.profession_id or ""
+    data["max_hp"] = pc.max_hp or 0
+    data["current_hp"] = pc.current_hp or 0
+    for field in ("shock_max", "shock_current", "pp_current", "mp_current",
+                  "minor_edge_count", "major_edge_count"):
+        data[field] = getattr(pc, field, 0) or 0
+    data["minor_edge"] = pc.minor_edge or ""
+    data["major_edge"] = pc.major_edge or ""
+    for field in _PC_LIVE_DICT_FIELDS:
+        raw = getattr(pc, field, None)
+        try:
+            data[field] = json.loads(raw) if raw else {}
+        except Exception:
+            data[field] = {}
+    for field in _PC_LIVE_LIST_FIELDS:
+        raw = getattr(pc, field, None)
+        try:
+            data[field] = json.loads(raw) if raw else []
+        except Exception:
+            data[field] = []
+    return data
+
+
+def _apply_sync_json(pc: PlayerCharacter, data: dict):
+    """Like _apply_form, but for a JSON body whose values are already typed
+    (not form-encoded strings) — used by the sync PUT/POST routes below."""
+    def gi(k, d=0):
+        try:
+            return int(data.get(k, d))
+        except (TypeError, ValueError):
+            return d
+    def gs(k, d=""):
+        return str(data.get(k, d) if data.get(k) is not None else d).strip()
+
+    for field in _PC_LIVE_SCALAR_FIELDS:
+        setattr(pc, field, gs(field))
+    pc.name = pc.name or "Unnamed"
+    pc.race_id        = gs("race_id", pc.race_id or "")
+    pc.profession_id  = gs("profession_id", pc.profession_id or "")
+    pc.level = max(1, min(20, gi("level", pc.level or 1)))
+    pc.xp    = max(0, gi("xp", pc.xp or 0))
+
+    pc.max_hp     = max(0, gi("max_hp", 0))
+    pc.current_hp = gi("current_hp", pc.max_hp)
+    pc.shock_max     = max(0, gi("shock_max"))
+    pc.shock_current = max(0, gi("shock_current"))
+    pc.pp_current    = max(0, gi("pp_current"))
+    pc.mp_current    = max(0, gi("mp_current"))
+
+    pc.minor_edge = gs("minor_edge")
+    pc.major_edge = gs("major_edge")
+    pc.minor_edge_count = max(0, gi("minor_edge_count", pc.minor_edge_count or 0))
+    pc.major_edge_count = max(0, gi("major_edge_count", pc.major_edge_count or 0))
+
+    tpl_id = data.get("sheet_template_id")
+    pc.sheet_template_id = int(tpl_id) if tpl_id else None
+
+    for field in _PC_LIVE_DICT_FIELDS:
+        value = data.get(field)
+        try:
+            setattr(pc, field, json.dumps(value if isinstance(value, dict) else {}))
+        except (TypeError, ValueError):
+            setattr(pc, field, "{}")
+    for field in _PC_LIVE_LIST_FIELDS:
+        value = data.get(field)
+        try:
+            setattr(pc, field, json.dumps(value if isinstance(value, list) else []))
+        except (TypeError, ValueError):
+            setattr(pc, field, "[]")
+
+    pc.updated_at = datetime.utcnow()
+
+
+@router.get("/api/characters/{pc_id}/sync")
+def character_sync_get(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
+    return _pc_to_sync_dict(pc)
+
+
+@router.put("/api/characters/{pc_id}/sync")
+async def character_sync_put(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
+    body = await request.json()
+    _apply_sync_json(pc, body)
+    db.commit()
+    return _pc_to_sync_dict(pc)
+
+
+@router.post("/api/worlds/{world_id}/characters/sync")
+async def character_sync_create(world_id: int, request: Request, db: Session = Depends(get_db)):
+    user = _current_user(request)
+    if not user:
+        raise HTTPException(401)
+    world = db.query(World).filter(World.id == world_id).first()
+    if not world or not auth.user_can_access_world(db, user, world):
+        raise HTTPException(404)
+    if _own_character(db, world_id, user.id):
+        raise HTTPException(400, "You already have a character in this world — use PUT .../sync to update it.")
+    body = await request.json()
+    pc = PlayerCharacter(world_id=world_id, owner_user_id=user.id, name="Unnamed")
+    _apply_sync_json(pc, body)
+    db.add(pc)
+    db.commit()
+    db.refresh(pc)
+    return _pc_to_sync_dict(pc)
+
+
+@router.get("/api/me")
+def api_me(request: Request, db: Session = Depends(get_db)):
+    user = _current_user(request)
+    if not user:
+        raise HTTPException(401)
+    if user.is_gm:
+        worlds = db.query(World).order_by(World.name).all()
+    else:
+        worlds = (
+            db.query(World)
+            .join(WorldMembership, WorldMembership.world_id == World.id)
+            .filter(WorldMembership.user_id == user.id)
+            .order_by(World.name)
+            .all()
+        )
+    world_list = []
+    for w in worlds:
+        pc = _own_character(db, w.id, user.id)
+        world_list.append({"id": w.id, "name": w.name, "character_id": pc.id if pc else None})
+    return {
+        "user": {"id": user.id, "email": user.email, "is_gm": user.is_gm},
+        "worlds": world_list,
+    }
 
 
 # ── AJAX: Dice roll ───────────────────────────────────────────────────────────
