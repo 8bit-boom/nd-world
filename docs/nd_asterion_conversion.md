@@ -305,7 +305,7 @@ plain terms next to the race's Tier abilities rather than forced into them.
 | Ability | Type & Tier | Effect |
 |---|---|---|
 | Umbral Sight | Passive T1 (Senses) | Full darkvision — see in total darkness as if it were day. |
-| Dual Persona Protocol | Active T2 (Special Effect, 1 PP or MP) | Switch between Surface Mask and Shadow Self once per scene. While in Surface Mask: treated as non-hostile by patrols/drones, can bypass biometric security. While in Shadow Self: spend 1 PP to become Undetected for one action, or trigger a Saboteur Action (sabotage a system/implant a virus/disable a camera). |
+| Dual Persona Protocol | Active T2 (Special Effect, 1 PP or MP) | Switch between Surface Mask and Shadow Self once per scene. While in Surface Mask: +1 bonus point on Deception/Bureaucracy/Social Engineering rolls; treated as non-hostile by patrols/drones; can bypass biometric security. While in Shadow Self: +1 bonus point on Stealth/Hacking/Explosives rolls; spend 1 PP to become Undetected for one action, or trigger a Saboteur Action (sabotage a system/implant a virus/disable a camera). |
 
 ##### Deviltouched — Signature Stat: Intellect
 
@@ -325,14 +325,14 @@ retroactively, a bounty "paused").
 | Ability | Type & Tier | Effect |
 |---|---|---|
 | Miner's Eye | Passive T1 (Senses) | An uncanny knack for spotting hidden doors, caches, and mechanisms. |
-| Spirit Reserve | Active T2 (Special Effect menu, 1 PP) | Spend 1 of 3 charges (refresh each session, or on a Rest if you drink) to trigger one: **Liquid Courage** (ignore Fear/Intimidation/Psychic Suppression 1 scene), **Iron Liver, Iron Body** (cleanse a toxin/resist pain 1 hour), **Drunken Precision** (reroll a failed Crafting/Engineering/Jury-Rig check), **Flaming Belch** (short-range fire/corrosive cone, counts as a basic ranged attack), **Brewed Bravery** (+1d10 to all rolls 1 minute, then -1d10 to Intuition rolls until your next Rest). |
+| Spirit Reserve | Active T2 (Special Effect menu, 1 PP) | Spend 1 of 3 charges (refresh each session, or on a Rest if you drink) to trigger one: **Liquid Courage** (ignore Fear/Intimidation/Psychic Suppression 1 scene), **Iron Liver, Iron Body** (cleanse a toxin/resist pain 1 hour), **Drunken Precision** (reroll a failed Crafting/Engineering/Jury-Rig check with +1 bonus point), **Flaming Belch** (short-range fire/corrosive cone, counts as a basic ranged attack), **Brewed Bravery** (+1 bonus point on any roll for 1 minute, then a -1 penalty point on Intuition rolls until your next Rest). |
 
 ##### Fae — Signature Stat: Intuition
 
 | Ability | Type & Tier | Effect |
 |---|---|---|
 | Fluxform Physiology | Passive T1 (Movement) | Minor trait — unnaturally flexible body; squeeze through tight gaps, subtly reshape your features during a Rest. |
-| Fluxform | Active T3 (once per session, 3 PP or MP) | Spend your session's Fluxform Point to shift into your true form for a scene. Choose **Physical Shift** (Special Effect: Hard CC fear pulse on sight — non-allies make a Willpower Skill Check against a Heroic (3d10) difficulty pool or are Intimidated/flee; Passive for the scene: immune to grapples, squeeze through tight spaces) or **Mental Shift** (Passive for the scene: Greater Resistance to mental effects; Special Effect: once per shift, ask the GM one question about the immediate past or near future). |
+| Fluxform | Active T3 (once per session, 3 PP or MP) | Spend your session's Fluxform Point to shift into your true form for a scene. Choose **Physical Shift** (Special Effect: Hard CC fear pulse on sight — non-allies make a Willpower Skill Check against a Heroic (3d10) difficulty pool or are Intimidated/flee; Passive for the scene: immune to grapples, squeeze through tight spaces; your attacks count as tentacle strikes that may restrain or disarm, GM's discretion) or **Mental Shift** (Passive for the scene: Greater Resistance to mental effects; Special Effect: once per shift, ask the GM one question about the immediate past or near future, and once per shift automatically confuse or disorient one NPC in a conversation). |
 
 ##### High Elves/Elves — Signature Stat: Charisma
 
@@ -376,15 +376,15 @@ Health, Shock, PP, or MP. Instead you have a single **Ectoplasm** pool
 starting at 20 (the combined total of what everyone else's four pools add up
 to); anything that would change Health, Shock, PP, or MP changes Ectoplasm
 instead. You heal only by repair, never by Rest. You have no citizen rights.
-You take +4 damage from electric sources. You take -1d10 on social
-rolls (a permanent narrative drawback, already baked in — no Trade-Off needed).
-You can't use Bio Augments; you're treated as already having all Alpha
-Augments.
+You take +4 damage from electric sources. You take a -1 penalty point on
+social rolls (a permanent narrative drawback, already baked in — no
+Trade-Off needed). You can't use Bio Augments; you're treated as already
+having all Alpha Augments.
 
 | Ability | Type & Tier | Effect |
 |---|---|---|
-| Iron Chassis | Passive T1→2 (Armor) | +1/+2 Armor, representing your robotic shell. |
-| Inorganic Body | Passive T1 (Resistance) | Mundane Immunity — stims, drugs, toxins, and poison have no effect on you. |
+| Iron Chassis | Passive T3 (Armor) | +2 Armor, representing your robotic shell — worn armor items grant no further benefit on top of this. |
+| Inorganic Body | Passive T1 (Resistance) | Mundane Immunity — toxins and poison have no effect on you. |
 | Ghost Form | Active T1 (Special Effect, 0 MP) | Leave your automaton as an intangible ghost (can't interact with the physical world). A psyonic can banish you while in this form. |
 
 ##### Child of the Black Goat — Signature Stat: Willpower
@@ -394,8 +394,11 @@ Augments.
 | Voice of the Wild | Active T1 (Special Effect, 0 MP) | Telepathically communicate with nearby animals, who default to neutral or friendly toward you. |
 | Ritual Casting | Active T2 (Special Effect, Charge-Up Trade-Off — a full scene to perform, 1 PP or MP) | Perform a powerful non-combat Psy ritual (no damage/debuff effects). |
 
-*Flavor notes:* implanting metal augments exiles you from Ritual Casting; Bio
-Augments need a priest/priestess's blessing. -1d10 on Urban Navigation rolls.
+*Flavor notes:* +1 bonus point on Nature-related rolls and non-combat Psy
+Power rolls (damage/debuff Psy Powers don't qualify); -2 penalty points on
+Skill Checks to orient in an urban environment. Implanting metal augments
+exiles you from Ritual Casting; Bio Augments need a priest/priestess's
+blessing.
 
 ##### Crimson Elves/Amalgama — Signature Stat: your currently chosen Physical Stat, swappable after each Rest (unlike the universal "your choice" Signature Stat, which is fixed at creation)
 
@@ -481,10 +484,10 @@ with), which fits it being the most drastic of the three options.
 | Saturation | Name | Effect |
 |---|---|---|
 | 0-1 | Awakened Host | No bonus. |
-| 2-3 | Dripping Core | +1 PP/MP regen per hour; +1d10 to Willpower rolls. |
+| 2-3 | Dripping Core | +1 PP/MP regen per hour; +1 bonus point on Willpower rolls. |
 | 4-5 | Yellow-Gifted | Power of the Yellow costs -1 Stat downgrade (min 1). |
-| 6-7 | Walking Blight | +1 Action/turn; immune to Fear; -1d10 to others' rolls to resist your mental effects. |
-| 8-9 | Crowned With Madness | Enemies at long range: -1d10; allies: +1d10. |
+| 6-7 | Walking Blight | +1 Action/turn; immune to Fear; -1 penalty point on others' rolls to resist your mental effects. |
+| 8-9 | Crowned With Madness | Enemies at long range take a -1 penalty point on their rolls; allies get a +1 bonus point. |
 | 10 | Becoming the Yellow | Power of the Yellow costs nothing; +2 bonus points on every roll you make, your choice how to split them; risk of losing control (roll 1d6 each turn: 1-2 in control, 3-4 GM narrates hallucinated motives, 5 GM controls you for 1 turn, 6 you become the Avatar permanently). |
 
 ##### Dragonblooded — Signature Stat: one of your chosen bloodline's two Stat Synergy stats (below), your pick
@@ -507,14 +510,16 @@ rules if an ability perfectly fits the narrative" allowance.
 | **Infernis** (Fire) | Strength + Intellect | Thermal Conduction: immune to fire; melee attackers vs you take 1 Shock. | 2 PP: 1d8 heat damage, short-radius burst, ignores 2 Armor; +2 bonus points on melee rolls for 1 round. | Regenerate 1 Health when you deal fire damage (once/turn). |
 | **Glaciar** (Frost) | Willpower + Dexterity | Cryostasis Veins: half damage from cold/EMP; melee attackers must make a Dexterity Skill Check against a Professional (2d10) difficulty pool or be slowed (half movement speed until their turn ends). | 2 PP: freeze target 1 turn (no damage), or 1d8 cold damage if already slowed/wet. | Regain 1 Shock whenever you spend PP on a Blood Surge. |
 | **Voltaris** (Storm) | Dexterity + Intuition | Living Conductor: immune to electricity; +1 Shock when hit by electric/EMP (once/turn). | 1 PP: teleport up to short range as a Reaction when attacked. | Successfully dodging grants your next attack +2 damage. |
-| **Umbracline** (Shadow) | Dexterity + Intellect | Shadowmeld: +1d10 Stealth and +1 Armor in dim light or darker. | 2 PP: phase through solid objects/shadows (up to 3m) for one turn; attacks from inside shadows ignore Armor. | Killing a target in darkness restores 1 PP and 1 Shock. |
+| **Umbracline** (Shadow) | Dexterity + Intellect | Shadowmeld: +1 bonus point on Stealth rolls and +1 Armor in dim light or darker. | 2 PP: phase through solid objects/shadows (up to 3m) for one turn; attacks from inside shadows ignore Armor. | Killing a target in darkness restores 1 PP and 1 Shock. |
 | **Nekrith** (Decay) | Body + Willpower | Entropic Aura: living enemies in medium range take -1 to healing/regen; immune to poison/disease. | 2 PP: touch attack, 1d4 damage, reduces target's Max Health by that amount until healed (once/target). | Regain 1 PP and 1 Health whenever a creature dies near you (medium range). |
-| **Psionis** (Mind) | Intellect + Charisma | Neural Field: enemies in short range take -1d10 on Mental Stat rolls against you. | 2 MP: dominate one humanoid for 1 round (they make a Willpower Skill Check against a Heroic (3d10) difficulty pool to resist). | Regain 1 MP whenever you force a target to fail a Willpower roll. |
+| **Psionis** (Mind) | Intellect + Charisma | Neural Field: enemies in short range take a -1 penalty point on Mental Stat rolls against you. | 2 MP: dominate one humanoid for 1 round (they make a Willpower Skill Check against a Heroic (3d10) difficulty pool to resist). | Regain 1 MP whenever you force a target to fail a Willpower roll. |
 | **Crimson** (Blood) | Body + Strength | Burning Blood: below 50% Health, +1 bonus point on Strength rolls and +1 Armor. | 2 PP + 2 Health (Self-Harm Trade-Off): +3 bonus points on attack rolls for 2 turns; damage taken reduced by 1. | Kill an enemy in melee, roll d10 — 7+ regain 2 Health. |
 
 ##### Eldritch — Signature Stat: a second free pick, any Stat (reflecting your alien nature — stacks with your universal "your choice" Signature Stat from Character Creation step 3, so an Eldritch gets two open picks)
 
-*Override:* -1d10 on empathy/social rolls. Can't use augments. Inventing a new
+*Override:* -3 penalty points on empathy/social rolls (N&D's own text says
+-3, notably harsher than the usual -1/-2 racial penalty — kept at that
+severity rather than flattened to a generic -1d10). Can't use augments. Inventing a new
 Transcendence ability costs +1 Glory more than normal (Race Feats cost more in
 N&D's own text).
 
@@ -526,11 +531,13 @@ N&D's own text).
 
 ##### Stitches — Signature Stat: Body
 
-*Override:* choose two mental conditions (PTSD, ADHD, Paranoia, etc.) at
-creation. You take +1d4+1 extra Shock damage from all Shock sources; Shock can
-go to -10 (regain 1 per 10 minutes, only while below 0). At 0 Shock or below,
-roll on the Mental Breakdown table. You can't use Augments or Bio Augments
-(some abilities may let you graft parts from bodies instead).
+*Override:* you start with one limb or organ already broken (roll on the
+Limbs and Organs table) and choose two mental conditions (PTSD, ADHD,
+Paranoia, etc.) at creation. You take +1d4+1 extra Shock damage from all
+Shock sources; Shock can go to -10 (regain 1 per 10 minutes, only while
+below 0). At 0 Shock or below, roll on the Mental Breakdown table. You
+can't use Augments or Bio Augments (some abilities may let you graft parts
+from bodies instead).
 
 | Ability | Type & Tier | Effect |
 |---|---|---|
@@ -560,8 +567,9 @@ headline resource.
 
 ##### Charlatan — Signature Stat: Charisma
 
-*Tracked gauge — Credit (₡):* refreshes each session to Charisma − 1d6
-(minimum 1), max 10.
+*Tracked gauge — Credit (₡):* refreshes each session to 4 (+2 if Charisma
+is one of your Signature Stats), max 10. Replaces N&D's own "Charisma −
+1d6" formula, which needed a numeric Charisma this rulebook doesn't have.
 
 | Ability | Type & Tier | Effect |
 |---|---|---|
@@ -577,7 +585,7 @@ spend needed.
 
 | Ability | Type & Tier | Effect |
 |---|---|---|
-| Nanite Swarm | Active (Special Effect menu, 1 Nanite Charge per use, not PP/MP) | **Micro-Repair Cloud** (restore 2 Health to an ally at touch, or remove a minor injury/status), **Aggro-Leech Protocol** (target an enemy's augments: 1d4 damage, save or one cybernetic system disabled for a round), **Synaptic Boost** (an ally gains +1 Action this turn or +2 Initiative next round), or **Auto-Surgeon** (repair or field-install a basic augment instantly; 1-in-6 malfunction risk). |
+| Nanite Swarm | Active (Special Effect menu, 1 Nanite Charge per use, not PP/MP) | **Micro-Repair Cloud** (restore 2 Health to an ally at touch, or remove a minor injury/status), **Aggro-Leech Protocol** (target an enemy's augments: 1d4 damage, they make a Body Skill Check or one cybernetic system is disabled for a round), **Synaptic Boost** (an ally gains +1 Action this turn or +2 Initiative next round), or **Auto-Surgeon** (repair or field-install a basic augment instantly; 1-in-6 malfunction risk). |
 
 ##### Hacker — Signature Stat: Intellect
 
@@ -585,7 +593,7 @@ spend needed.
 
 | Ability | Type & Tier | Effect |
 |---|---|---|
-| Electronic Buddy | Active (Special Effect menu, 0 MP, gated by Electronic Buddy Uses) | **Data Spider** (ask the GM one question about a target/system/location, get a usable lead), **Handshake Override** (+1d10 to a Hacking roll, or reduce Alert Level by 1 after a breach), **Signal Sniffer** (detect active signals — drones, smart-guns, comms, augment usage — in the environment), or **Auto-Chatter** (+1d10 to a Bluff/Deceive/Distract attempt by impersonating a call, message, or alert). |
+| Electronic Buddy | Active (Special Effect menu, 0 MP, gated by Electronic Buddy Uses) | **Data Spider** (ask the GM one question about a target/system/location, get a usable lead), **Handshake Override** (+1d10 to a Hacking roll, or reduce Alert Level by 1 after a breach), **Signal Sniffer** (detect active signals — drones, smart-guns, comms, augment usage — in the environment), or **Auto-Chatter** (+2 bonus points on a Bluff/Deceive/Distract attempt by impersonating a call, message, or alert). |
 
 *Alert Level* is a GM-tracked meter (starts at 0) that rises 1 per failed
 hacking roll during an intrusion; the GM escalates consequences as it
@@ -635,16 +643,16 @@ killing.
 
 | Cred | Passive Bonus |
 |---|---|
-| 10 | +1d10 to Agility-based defense rolls. |
+| 10 | +1 bonus point on Agility-based defense rolls. |
 | 20 | +1 Armor against the first hit each round. |
-| 30 | Always act first in combat (unless Surprised); +1d10 to Initiative. |
+| 30 | Always act first in combat (unless Surprised); +1 bonus point on Initiative. |
 | 40 | Detect hidden enemies/surveillance in your Zone without a roll, once/scene. |
 | 50 | Once per Rest, auto-succeed a roll to resist a Mental Condition. |
 | 60 | Ignore movement penalties from difficult/cluttered terrain. |
 | 70 | Enemies must beat your Charisma Skill Check with their own Intuition Skill Check to target you with mental/fear effects. |
 | 80 | Unarmed strikes deal +1d4 vs enemies with lower Street Cred/Reputation. |
 | 90 | A free Movement once per round that doesn't provoke Opportunity Attacks. |
-| 100 | Immune to Fear; allies in your Zone gain +1d10 to all rolls while you're conscious. |
+| 100 | Immune to Fear; allies in your Zone gain a +1 bonus point on all rolls while you're conscious. |
 
 ---
 
