@@ -112,9 +112,11 @@ Signature Stats match that roll** — 1 point if only one of the three matches,
 up to 3 if your Race, Profession, and personal choice all happen to land on
 the same Stat. Apply your points *after* rolling, before counting Successes:
 add them to the results of your own dice however you like — all onto one die,
-or split across several (a die pushed to exactly 10 explodes as normal). This
-is a smaller, more controllable nudge than a full extra die — enough to
-matter on a near-miss without swinging the whole roll.
+or split across several. A die pushed to exactly 10 explodes as normal;
+points that would push it past 10 are simply wasted (a die only explodes
+once per roll, no matter how far over 10 your points would otherwise take
+it). This is a smaller, more controllable nudge than a full extra die —
+enough to matter on a near-miss without swinging the whole roll.
 
 The reverse applies too: where a race's own text gives it a flat *penalty* to
 a specific Stat (e.g. Xerm's -1 Intellect), subtract 1 from one of your dice
@@ -166,13 +168,14 @@ by hand.
   Success before damage is calculated; Armor subtracts flat from physical
   damage after that.
 - **Ranges:** Melee 0-5 ft, Close 30 ft, Long 100 ft, Extreme 300+ ft
-  (line of sight). Half Cover grants the Defender +1d10; High Ground grants the
-  Attacker +1d10.
+  (line of sight). Half Cover grants the Defender +1d10 against ranged attacks
+  only; High Ground grants the Attacker +1d10.
 - **Status Conditions:** Blinded (ranged auto-fails, -2 dice melee), Burning/
   Bleeding (1 damage at the start of your turn to Health or Shock as fits the
   source, bypassing Armor/Resistance), Restrained (0 Movement), Stunned (no
   Main Action/Movement, -1 Defender die), Weakened (-1 Attacker die),
-  Vulnerable (Armor and Resistances drop to 0).
+  Vulnerable (Armor and Resistances drop to 0). Stacking multiple dice-losing
+  conditions can't drop a pool below 1 die.
 
 For deeper combat/GM material (grappling and throws, Divine Resonance ability
 synergy, full bestiary stat blocks) see `asterion_rules.md`.
