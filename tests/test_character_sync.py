@@ -128,6 +128,24 @@ def test_sync_get_owner_can_pull(client, seed):
     assert body["app_extra_json"] == {}
 
 
+def test_sync_get_zero_xp_and_default_level_stay_integers(client, seed):
+    """Regression test: _pc_to_sync_dict used to build most scalar fields via
+    `getattr(pc, field, "") or ""`, a pattern that's fine for strings but silently
+    coerces a falsy 0 into "" — and xp=0 is the normal starting value for every
+    new character, not an edge case. A client (like the Android app's Gson int
+    field) parsing that "" as an int would fail on essentially every fresh pull.
+    """
+    pc = _make_pc(seed.world_a, owner_id=seed.player_a.id)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.get(f"/api/characters/{pc.id}/sync")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["xp"] == 0
+    assert isinstance(body["xp"], int)
+    assert body["level"] == 1
+    assert isinstance(body["level"], int)
+
+
 def test_sync_get_other_player_forbidden(client, seed):
     pc = _make_pc(seed.world_a, owner_id=seed.player_a.id)
     login(client, seed.player_b.email, PLAYER_PASSWORD)

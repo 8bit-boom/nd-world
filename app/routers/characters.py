@@ -1097,7 +1097,11 @@ def _pc_to_sync_dict(pc: PlayerCharacter) -> dict:
         "sheet_template_id": pc.sheet_template_id,
     }
     for field in _PC_LIVE_SCALAR_FIELDS:
+        if field in ("level", "xp"):
+            continue  # integers — a falsy 0 would otherwise get coerced into "" below
         data[field] = getattr(pc, field, "") or ""
+    data["level"] = pc.level or 1
+    data["xp"] = pc.xp or 0
     data["race_id"] = pc.race_id or ""
     data["profession_id"] = pc.profession_id or ""
     data["max_hp"] = pc.max_hp or 0
