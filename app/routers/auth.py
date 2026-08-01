@@ -88,6 +88,7 @@ async def login_submit(request: Request, db: Session = Depends(get_db)):
 
     _rl_clear(key)
     request.session["user_id"] = user.id
+    request.session["session_version"] = user.session_version
     return RedirectResponse(next_url, status_code=303)
 
 
@@ -121,6 +122,7 @@ async def api_login(request: Request, db: Session = Depends(get_db)):
 
     _rl_clear(key)
     request.session["user_id"] = user.id
+    request.session["session_version"] = user.session_version
     return {"ok": True, "user": {"id": user.id, "email": user.email, "is_gm": user.is_gm}}
 
 
@@ -191,10 +193,10 @@ async def join_submit(code: str, request: Request, db: Session = Depends(get_db)
                 "request": request, "code": code, "world": invite.world, "error": None,
                 "form_error": "An account with that email already exists — log in instead.",
             }, status_code=400)
-        if len(password) < 8:
+        if len(password) < auth.MIN_PASSWORD_LENGTH:
             return templates.TemplateResponse("auth/join.html", {
                 "request": request, "code": code, "world": invite.world, "error": None,
-                "form_error": "Password must be at least 8 characters.",
+                "form_error": f"Password must be at least {auth.MIN_PASSWORD_LENGTH} characters.",
             }, status_code=400)
         user = User(
             email=email,
@@ -207,6 +209,7 @@ async def join_submit(code: str, request: Request, db: Session = Depends(get_db)
         db.refresh(user)
 
     request.session["user_id"] = user.id
+    request.session["session_version"] = user.session_version
     return _redeem(request, db, invite)
 
 

@@ -72,7 +72,7 @@ async def ai_models():
         ll = lid.lower()
         if not any(ll == r or ll in r or r in ll for r in listed_lower):
             result.append({"id": lid, "label": lid, "loaded": True, "builtin": False})
-    return {"models": result, "default": _ai.OLLAMA_MODEL, "available": loaded}
+    return {"models": result, "default": _ai.effective_ollama_model(), "available": loaded}
 
 
 @router.get("/debug")

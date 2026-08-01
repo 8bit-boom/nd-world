@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}My Account — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="form-page" style="max-width:640px">
+  <h1>👤 My Account</h1>
+
+  {% if request.query_params.get('saved') == 'name' %}
+  <p style="color:var(--neon3);font-size:.85rem">Display name updated.</p>
+  {% elif request.query_params.get('saved') == 'password' %}
+  <p style="color:var(--neon3);font-size:.85rem">Password changed. Your other sessions have been logged out.</p>
+  {% endif %}
+
+  <form method="post" action="/account/name" class="entity-form">
+    <h2 style="font-size:.9rem;color:var(--text-dim);margin:1rem 0 .5rem">Profile</h2>
+    <div class="form-group">
+      <label>Email</label>
+      <input type="text" value="{{ user.email }}" disabled>
+    </div>
+    <div class="form-group">
+      <label for="display-name">Display name</label>
+      <input id="display-name" type="text" name="display_name" value="{{ user.display_name }}" maxlength="256" required>
+    </div>
+    {% if name_error %}
+    <p style="color:var(--neon2);font-size:.82rem">{{ name_error }}</p>
+    {% endif %}
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Save name</button>
+    </div>
+  </form>
+
+  <form method="post" action="/account/password" class="entity-form" style="margin-top:2rem">
+    <h2 style="font-size:.9rem;color:var(--text-dim);margin:1rem 0 .5rem">Change password</h2>
+    <div class="form-group">
+      <label for="current-password">Current password</label>
+      <input id="current-password" type="password" name="current_password" required>
+    </div>
+    <div class="form-group">
+      <label for="new-password">New password</label>
+      <input id="new-password" type="password" name="new_password" minlength="8" required>
+    </div>
+    <div class="form-group">
+      <label for="confirm-password">Confirm new password</label>
+      <input id="confirm-password" type="password" name="confirm_password" minlength="8" required>
+    </div>
+    {% if password_error %}
+    <p style="color:var(--neon2);font-size:.82rem">{{ password_error }}</p>
+    {% endif %}
+    <p style="font-size:.78rem;color:var(--text-dim)">
+      Changing your password logs out every other session you're currently signed
+      into elsewhere — this one stays signed in.
+    </p>
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Change password</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

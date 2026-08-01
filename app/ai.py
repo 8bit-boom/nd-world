@@ -11,6 +11,26 @@ _log = logging.getLogger("nd.ai")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:26b")
 
+# Runtime overrides (set from AppSettings via POST /settings/system, without
+# needing a restart — see main.py's _refresh_settings_overrides()). Blank means
+# "use the env-var default above."
+_ollama_url_override: str = ""
+_ollama_model_override: str = ""
+
+
+def set_ollama_override(url: str, model: str) -> None:
+    global _ollama_url_override, _ollama_model_override
+    _ollama_url_override = (url or "").rstrip("/")
+    _ollama_model_override = model or ""
+
+
+def effective_ollama_url() -> str:
+    return _ollama_url_override or OLLAMA_URL
+
+
+def effective_ollama_model() -> str:
+    return _ollama_model_override or OLLAMA_MODEL
+
 _DATA_DIR = Path(os.getenv("DB_PATH", "/data/world.db")).parent
 _CUSTOM_MODELS_FILE = _DATA_DIR / "ai_models.json"
 
@@ -24,7 +44,7 @@ KNOWN_MODELS = [
 
 
 def _client() -> _ollama.AsyncClient:
-    return _ollama.AsyncClient(host=OLLAMA_URL)
+    return _ollama.AsyncClient(host=effective_ollama_url())
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────
@@ -93,7 +113,7 @@ async def _list_loaded() -> list[str]:
 
 
 async def resolve_model(requested: str) -> str:
-    target = requested or OLLAMA_MODEL
+    target = requested or effective_ollama_model()
     available = await _list_loaded()
     if not available:
         return target
@@ -120,7 +140,7 @@ _SYSTEM = (
 
 
 async def generate_chat(messages: list[dict], system: str = "", model: str = "") -> str:
-    m = model or OLLAMA_MODEL
+    m = model or effective_ollama_model()
     _log.info("generate_chat model=%s msgs=%d", m, len(messages))
     full = []
     if system:
@@ -139,7 +159,7 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "")
 
 
 async def stream_chat(messages: list[dict], system: str = "", model: str = "") -> AsyncGenerator[str, None]:
-    m = model or OLLAMA_MODEL
+    m = model or effective_ollama_model()
     _log.info("stream_chat model=%s msgs=%d", m, len(messages))
     full = [{"role": "system", "content": system}] if system else []
     full.extend(messages)
@@ -164,9 +184,9 @@ async def status() -> dict:
     try:
         resp = await _client().list()
         models = [m.model for m in resp.models]
-        return {"status": "ok", "model": OLLAMA_MODEL, "loaded_models": models}
+        return {"status": "ok", "model": effective_ollama_model(), "loaded_models": models}
     except Exception:
-        return {"status": "unavailable", "model": OLLAMA_MODEL}
+        return {"status": "unavailable", "model": effective_ollama_model()}
 
 
 async def debug_info() -> dict:
@@ -174,17 +194,17 @@ async def debug_info() -> dict:
         resp = await _client().list()
         models = [m.model for m in resp.models]
         return {
-            "ollama_url": OLLAMA_URL,
+            "ollama_url": effective_ollama_url(),
             "ollama_reachable": True,
             "loaded_models": models,
-            "default_model": OLLAMA_MODEL,
+            "default_model": effective_ollama_model(),
         }
     except Exception as exc:
         return {
-            "ollama_url": OLLAMA_URL,
+            "ollama_url": effective_ollama_url(),
             "ollama_reachable": False,
             "error": f"{type(exc).__name__}: {exc}",
-            "default_model": OLLAMA_MODEL,
+            "default_model": effective_ollama_model(),
         }
 
 

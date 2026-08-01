@@ -28,6 +28,7 @@ from .templating import templates
 from .uploads import copy_upload_bounded
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter
 from .routers.ai import router as ai_router
+from .routers.account import router as account_router
 from .routers.characters import router as characters_router
 from .routers.auth import router as auth_router
 from .routers.tables import router as tables_router
@@ -62,6 +63,7 @@ app = FastAPI(title="N&D World")
 _allowed = [h.strip() for h in os.getenv("ND_ALLOWED_HOSTS", "*").split(",") if h.strip()]
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed)
 app.include_router(ai_router)
+app.include_router(account_router)
 app.include_router(characters_router)
 app.include_router(auth_router)
 app.include_router(tables_router)
@@ -86,11 +88,27 @@ SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 ENTITY_COLS = {"kind", "subtype", "folder", "name", "tags", "summary", "body", "image_url", "world_id"}
 
+def _refresh_settings_overrides(db: Session = None):
+    """Push AppSettings' System/Integrations fields into app.ai's in-memory Ollama
+    overrides. Called at boot and again after every POST /settings/system save, so
+    a saved override takes effect without a container restart."""
+    owns = db is None
+    if owns:
+        db = SessionLocal()
+    try:
+        settings = get_app_settings(db)
+        _ai_module.set_ollama_override(settings.ollama_url or "", settings.ollama_model or "")
+    finally:
+        if owns:
+            db.close()
+
+
 @app.on_event("startup")
 def startup():
     init_db()
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     _seed_bundled_maps()
+    _refresh_settings_overrides()
 
 
 def _seed_bundled_maps():
@@ -129,6 +147,8 @@ def _is_player_safe(method: str, path: str) -> bool:
     if path.startswith("/characters") or path.startswith("/api/characters/"):
         return True
     if path == "/api/me":
+        return True
+    if path == "/account" or path.startswith("/account/"):
         return True
     if re.match(r"^/api/worlds/\d+/characters/sync$", path):
         return True
@@ -177,6 +197,15 @@ async def auth_gate(request: Request, call_next):
     if not user:
         request.session.clear()
         return RedirectResponse("/login", status_code=303)
+
+    if request.session.get("session_version") != user.session_version:
+        # Either this session predates session_version existing, or a password
+        # change elsewhere bumped it — either way, the cookie no longer represents
+        # a currently-valid session.
+        request.session.clear()
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "Session expired — please log in again."}, status_code=401)
+        return RedirectResponse(f"/login?next={quote(path)}", status_code=303)
 
     if not user.is_gm and not _is_player_safe(request.method, path):
         if path.startswith("/api/"):
@@ -1675,20 +1704,30 @@ def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: 
 @app.get("/imagestudio", response_class=HTMLResponse)
 def imagestudio(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    settings = get_app_settings(db)
+    swarmui_url = (settings.swarmui_external_url or SWARMUI_EXTERNAL_URL).rstrip("/")
     return templates.TemplateResponse("imagestudio.html", {
         "request": request, "world": world, "worlds": worlds,
         "kinds": KINDS, "kind_icons": KIND_ICONS,
-        "swarmui_url": SWARMUI_EXTERNAL_URL,
+        "swarmui_url": swarmui_url,
     })
 
-@app.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def _settings_context(request: Request, db: Session, active_world: str, tab: str, system_error: str = None):
     world, worlds = get_world_ctx(request, db, active_world)
     settings = get_app_settings(db)
-    return templates.TemplateResponse("settings.html", {
+    return {
         "request": request, "world": world, "worlds": worlds,
         "settings": settings,
-    })
+        "active_tab": tab if tab in ("options", "system") else "options",
+        "env_ollama_model": _ai_module.OLLAMA_MODEL,
+        "env_ollama_url": _ai_module.OLLAMA_URL,
+        "env_swarmui_external_url": SWARMUI_EXTERNAL_URL,
+        "system_error": system_error,
+    }
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), tab: str = "options"):
+    return templates.TemplateResponse("settings.html", _settings_context(request, db, active_world, tab))
 
 @app.post("/settings")
 def settings_save(
@@ -1701,6 +1740,34 @@ def settings_save(
     settings.animated_format = animated_format if animated_format in ("none", "avif", "webp") else "avif"
     db.commit()
     return RedirectResponse("/settings", status_code=303)
+
+@app.post("/settings/system")
+def settings_system_save(
+    request: Request,
+    ollama_model: str = Form(""),
+    ollama_url: str = Form(""),
+    swarmui_external_url: str = Form(""),
+    db: Session = Depends(get_db),
+    active_world: str = Cookie(None),
+):
+    ollama_model = ollama_model.strip()
+    ollama_url = ollama_url.strip().rstrip("/")
+    swarmui_external_url = swarmui_external_url.strip().rstrip("/")
+    for label, val in (("Ollama URL", ollama_url), ("SwarmUI external URL", swarmui_external_url)):
+        if val and not (val.startswith("http://") or val.startswith("https://")):
+            return templates.TemplateResponse(
+                "settings.html",
+                _settings_context(request, db, active_world, "system",
+                                   system_error=f"{label} must start with http:// or https://"),
+                status_code=400,
+            )
+    settings = get_app_settings(db)
+    settings.ollama_model = ollama_model
+    settings.ollama_url = ollama_url
+    settings.swarmui_external_url = swarmui_external_url
+    db.commit()
+    _refresh_settings_overrides(db)
+    return RedirectResponse("/settings?tab=system", status_code=303)
 
 @app.get("/boards", response_class=HTMLResponse)
 def boards_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):

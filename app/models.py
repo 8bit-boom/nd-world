@@ -52,6 +52,10 @@ class User(Base):
     # they've been invited to (WorldMembership), and only their own character(s).
     is_gm = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Bumped whenever a password change should invalidate every other session for
+    # this user (see /account/password); compared against a value stashed in the
+    # signed session cookie at login. No server-side session store otherwise exists.
+    session_version = Column(Integer, default=1, nullable=False)
 
 
 class WorldMembership(Base):
@@ -509,4 +513,9 @@ class AppSettings(Base):
     id = Column(Integer, primary_key=True, default=1)
     static_format = Column(String(16), default="avif")    # "none" | "avif" | "webp"
     animated_format = Column(String(16), default="avif")  # "none" | "avif" | "webp"
+    # Blank = fall back to the OLLAMA_MODEL/OLLAMA_URL/SWARMUI_EXTERNAL_URL env vars
+    # (see app.ai.effective_ollama_*() and main.py's imagestudio()).
+    ollama_model = Column(String(256), default="")
+    ollama_url = Column(String(512), default="")
+    swarmui_external_url = Column(String(512), default="")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

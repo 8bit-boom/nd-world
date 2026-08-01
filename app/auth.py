@@ -20,6 +20,7 @@ from .database import get_db
 from .models import User, WorldMembership, World
 
 _PBKDF2_ITERATIONS = 600_000
+MIN_PASSWORD_LENGTH = 8
 
 
 def hash_password(password: str) -> str:

@@ -87,6 +87,7 @@
     <span class="nav-kind" style="color:var(--text-dim);cursor:default">
       {{ '⚡ GM' if request.state.user.is_gm else '🎭 ' + request.state.user.display_name }}
     </span>
+    <a href="/account"      class="nav-kind {% if request.url.path == '/account' %}active{% endif %}">👤 Account</a>
     <a href="/logout" class="nav-kind">⏻ Logout</a>
     {% endif %}
   </div>

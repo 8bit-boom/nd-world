@@ -4,7 +4,7 @@ _once/schema_meta): the legacy-import cleanup used to run its destructive DML
 boot, silently reverting a GM's deliberate edit on every container restart —
 which with Watchtower polling happens every few minutes in production.
 """
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 import app.database as database_module
@@ -72,6 +72,59 @@ def test_legacy_cleanup_runs_once_not_every_boot(tmp_path, monkeypatch):
             "kind='item' was reclassified back to 'feat' on a later restart — "
             "the legacy-import cleanup is re-running every boot instead of once"
         )
+    finally:
+        db.close()
+
+    engine.dispose()
+
+
+def test_heals_pre_settings_expansion_schema(tmp_path, monkeypatch):
+    """Simulates an install that predates the Settings-tab expansion: `users`
+    has no session_version column and `app_settings` has no ollama_model/
+    ollama_url/swarmui_external_url columns. init_db() must ALTER TABLE them
+    into existence — without this, the very first request that touches
+    User.session_version or AppSettings.ollama_model crashes every existing
+    install (SQLAlchemy raises OperationalError for a column the DB doesn't
+    have yet)."""
+    db_path = tmp_path / "pre_expansion.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR(256) UNIQUE NOT NULL, "
+            "password_hash VARCHAR(256) NOT NULL, display_name VARCHAR(256), "
+            "is_gm BOOLEAN, created_at DATETIME)"
+        ))
+        conn.execute(text(
+            "CREATE TABLE app_settings (id INTEGER PRIMARY KEY, static_format VARCHAR(16), "
+            "animated_format VARCHAR(16), updated_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO users (id, email, password_hash, display_name, is_gm) "
+            "VALUES (1, 'pre-existing@test.local', 'x', 'Pre-existing', 0)"
+        ))
+        conn.execute(text(
+            "INSERT INTO app_settings (id, static_format, animated_format) VALUES (1, 'avif', 'avif')"
+        ))
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        user_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(users)")).fetchall()}
+        settings_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(app_settings)")).fetchall()}
+    assert "session_version" in user_cols
+    assert {"ollama_model", "ollama_url", "swarmui_external_url"} <= settings_cols
+
+    # The pre-existing row gets the column's default, not a crash or NULL that'd
+    # trip up `!= user.session_version` comparisons downstream.
+    db = SessionLocal()
+    try:
+        row = db.execute(text("SELECT session_version FROM users WHERE id = 1")).fetchone()
+        assert row[0] == 1
     finally:
         db.close()
 

@@ -25,10 +25,14 @@ CASES = [
     ("POST", "/worlds/1/delete", False),
     ("GET", "/worlds", False),
     ("GET", "/settings", False),
+    ("POST", "/settings/system", False),
     ("POST", "/entity/new", False),
     ("GET", "/characters/templates", False),  # explicitly excluded despite the /characters prefix
     # Player-safe — read-only world/lore browsing and their own character(s).
     ("GET", "/", True),
+    ("GET", "/account", True),
+    ("POST", "/account/name", True),
+    ("POST", "/account/password", True),
     ("GET", "/rules", True),
     ("GET", "/search", True),
     ("GET", "/maps", True),

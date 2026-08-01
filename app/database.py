@@ -274,6 +274,22 @@ def _migrate():
                 conn.execute(text(
                     "UPDATE app_settings SET animated_format = CASE WHEN convert_animated_avif = 0 THEN 'none' ELSE 'avif' END"
                 ))
+            for col, defn in [
+                ("ollama_model", "VARCHAR(256) DEFAULT ''"),
+                ("ollama_url", "VARCHAR(512) DEFAULT ''"),
+                ("swarmui_external_url", "VARCHAR(512) DEFAULT ''"),
+            ]:
+                if col not in as_cols:
+                    conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN {col} {defn}"))
+        # users table — session_version backs the password-change "log out my other
+        # sessions" feature (see /account/password and auth_gate in main.py).
+        u_exists = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
+        )).fetchone()
+        if u_exists:
+            u_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(users)")).fetchall()]
+            if "session_version" not in u_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN session_version INTEGER DEFAULT 1"))
         # player_characters table — add any missing columns to existing installs
         pc_exists = conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='player_characters'"

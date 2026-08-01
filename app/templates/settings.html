@@ -5,10 +5,11 @@
   <h1>⚙ Settings</h1>
 
   <div class="settings-tab-bar">
-    <button type="button" class="settings-tab active" id="tab-options" onclick="switchSettingsTab('options')">Options</button>
+    <button type="button" class="settings-tab {% if active_tab == 'options' %}active{% endif %}" id="tab-options" onclick="switchSettingsTab('options')">Options</button>
+    <button type="button" class="settings-tab {% if active_tab == 'system' %}active{% endif %}" id="tab-system" onclick="switchSettingsTab('system')">System</button>
   </div>
 
-  <div id="pane-options">
+  <div id="pane-options" {% if active_tab != 'options' %}style="display:none"{% endif %}>
     <form method="post" action="/settings" class="entity-form">
       <h2 style="font-size:.9rem;color:var(--text-dim);margin:1rem 0 .5rem">Image uploads</h2>
       <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
@@ -40,6 +41,36 @@
       </div>
     </form>
   </div>
+
+  <div id="pane-system" {% if active_tab != 'system' %}style="display:none"{% endif %}>
+    <form method="post" action="/settings/system" class="entity-form">
+      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1rem 0 .5rem">System &amp; integrations</h2>
+      <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
+        These normally come from environment variables and need a container restart
+        to change. Setting them here overrides the environment immediately, without
+        a restart — leave a field blank to fall back to its environment default
+        (shown as the placeholder).
+      </p>
+      {% if system_error %}
+      <p style="color:var(--neon2);font-size:.82rem">{{ system_error }}</p>
+      {% endif %}
+      <div class="form-group">
+        <label for="ollama-model">Ollama model (AI chat)</label>
+        <input id="ollama-model" name="ollama_model" value="{{ settings.ollama_model or '' }}" placeholder="{{ env_ollama_model }} (env default)">
+      </div>
+      <div class="form-group">
+        <label for="ollama-url">Ollama URL</label>
+        <input id="ollama-url" name="ollama_url" value="{{ settings.ollama_url or '' }}" placeholder="{{ env_ollama_url }} (env default)">
+      </div>
+      <div class="form-group">
+        <label for="swarmui-external-url">SwarmUI external URL (Image Studio iframe)</label>
+        <input id="swarmui-external-url" name="swarmui_external_url" value="{{ settings.swarmui_external_url or '' }}" placeholder="{{ env_swarmui_external_url or 'not set' }}">
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary">Save</button>
+      </div>
+    </form>
+  </div>
 </div>
 
 <style>
@@ -56,8 +87,8 @@
 function switchSettingsTab(t) {
   document.querySelectorAll('.settings-tab').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-' + t).classList.add('active');
-  // Only one pane exists today (Options) — this just establishes the
-  // show/hide wiring for whenever a second settings tab shows up.
+  document.querySelectorAll('[id^="pane-"]').forEach(p => p.style.display = 'none');
+  document.getElementById('pane-' + t).style.display = '';
 }
 </script>
 {% endblock %}
