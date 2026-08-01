@@ -11,6 +11,11 @@
   <div id="sv-canvas-wrap">
     <svg id="sch-svg" viewBox="0 0 {{ schematic.canvas_width or 2000 }} {{ schematic.canvas_height or 1500 }}" xmlns="http://www.w3.org/2000/svg">
       <rect id="bg" width="100%" height="100%" fill="{{ canvas_bg_color }}"/>
+      {% if schematic.image_url %}
+      <image id="bg-image" href="{{ schematic.image_url }}"
+             x="0" y="0" width="{{ schematic.canvas_width or 2000 }}" height="{{ schematic.canvas_height or 1500 }}"
+             preserveAspectRatio="none" pointer-events="none"/>
+      {% endif %}
       <g id="el-layer"></g>
       <g id="battle-grid-layer" pointer-events="none"></g>
       <g id="party-layer"></g>

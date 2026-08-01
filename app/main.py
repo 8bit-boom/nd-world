@@ -166,7 +166,7 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if re.match(r"^/entity/\d+$", path):
         return True
-    if path.startswith("/maps/") and not path.startswith("/maps/schematic") and path != "/maps/new":
+    if path.startswith("/maps/") and not (path == "/maps/schematic" or path.startswith("/maps/schematic/")) and path != "/maps/new":
         return True
     if re.match(r"^/maps/schematic/[^/]+/view(\.json)?$", path):
         return True
@@ -1275,14 +1275,19 @@ def schematic_push_combat(slug: str, db: Session = Depends(get_db)):
 
 
 def _schematic_player_payload(db: Session, s: Schematic, user):
-    """Elements filtered for the player-facing live view: non-token elements
-    always pass through, tokens only if visible_to_players. Also resolves the
-    viewer's own PlayerCharacter (for the draggable-own-token feature) and the
-    linked combat's active-turn combatant, if any."""
+    """Elements filtered for the player-facing live view: any element the GM
+    marked "hidden" (the 👁 toggle in the editor) is dropped, and tokens are
+    further filtered by visible_to_players. This is the only server-side gate
+    that matters for secrecy — the GM editor's own client-side hidden check
+    is just a local display convenience, not something players' browsers ever
+    see. Also resolves the viewer's own PlayerCharacter (for the
+    draggable-own-token feature) and the linked combat's active-turn
+    combatant, if any."""
     elements = json.loads(s.elements_json or "[]")
     visible = [
         el for el in elements
-        if el.get("type") != "token" or el.get("visible_to_players", True)
+        if not el.get("hidden")
+        and (el.get("type") != "token" or el.get("visible_to_players", True))
     ]
     own_pc_id, own_pc_currency = None, []
     if user and not user.is_gm:
@@ -1342,12 +1347,28 @@ def schematic_player_view_json(slug: str, request: Request, db: Session = Depend
     _, visible, own_pc_id, own_pc_currency, active_combatant_id, combat_round = _schematic_player_payload(db, s, user)
     return {
         "elements": visible,
+        "image_url": s.image_url,
         "party_pins": _party_pins_for(db, s.world_id, "schematic", slug),
         "own_pc_id": own_pc_id,
         "own_pc_currency": own_pc_currency,
         "combat_active_combatant_id": active_combatant_id,
         "combat_round": combat_round,
     }
+
+
+def _require_schematic_world_access(db: Session, s: Schematic, user) -> None:
+    """Write-route guard: a GM always passes; a player must currently hold a
+    WorldMembership row for s.world_id. The read routes (schematic_player_view)
+    already enforce this via get_active_world/accessible_world_ids — these
+    write routes previously only checked "does the caller own a PlayerCharacter
+    in this world," which member_remove() never revokes (it only deletes the
+    WorldMembership row), so a removed player kept live-play write access
+    forever even though the read view correctly 404s for them."""
+    if user.is_gm:
+        return
+    world = db.query(World).filter(World.id == s.world_id).first()
+    if not _auth.user_can_access_world(db, user, world):
+        raise HTTPException(403, "You no longer have access to this world")
 
 
 @app.post("/api/maps/schematic/{slug}/move-token")
@@ -1361,6 +1382,7 @@ async def schematic_move_own_token(slug: str, request: Request, db: Session = De
     user = getattr(request.state, "user", None)
     if not user:
         raise HTTPException(403)
+    _require_schematic_world_access(db, s, user)
     body = await request.json()
     token_id = body.get("token_id")
     x, y = body.get("x"), body.get("y")
@@ -1414,6 +1436,7 @@ async def schematic_pickup_item(slug: str, request: Request, db: Session = Depen
     user = getattr(request.state, "user", None)
     if not user:
         raise HTTPException(403)
+    _require_schematic_world_access(db, s, user)
     body = await request.json()
     token_id = body.get("token_id")
     if not token_id:
@@ -1447,6 +1470,7 @@ async def schematic_buy_item(slug: str, request: Request, db: Session = Depends(
     user = getattr(request.state, "user", None)
     if not user:
         raise HTTPException(403)
+    _require_schematic_world_access(db, s, user)
     body = await request.json()
     token_id = body.get("token_id")
     stock_id = body.get("stock_id")

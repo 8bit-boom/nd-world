@@ -41,6 +41,10 @@ CASES = [
     ("GET", "/rules", True),
     ("GET", "/search", True),
     ("GET", "/maps", True),
+    # A plain map named e.g. "Schematic Vault" slugifies to "schematic-vault" —
+    # confirms the /maps/schematic exclusion above is segment-anchored, not a
+    # bare string-prefix check that would false-positive-403 this.
+    ("GET", "/maps/schematic-vault", True),
     ("GET", "/characters", True),
     ("GET", "/characters/new", True),
     ("POST", "/api/characters/5/hp-async", True),
