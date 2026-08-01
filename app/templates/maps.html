@@ -30,6 +30,16 @@
           <input type="file" name="file" accept="image/*" onchange="this.form.submit()" style="display:none"/>
         </label>
       </form>
+      <div style="display:flex;gap:.4rem;margin-top:.4rem">
+        <form action="/maps/{{ m.slug }}/rename" method="post" style="display:inline">
+          <input type="hidden" name="name" value="">
+          <button type="button" class="btn-edit-sm"
+                  onclick="var f=this.form; var n=prompt('Rename map:', {{ m.name|tojson }}); if(n && n.trim()){ f.name.value=n.trim(); f.submit(); }">✏ Rename</button>
+        </form>
+        <form action="/maps/{{ m.slug }}/delete" method="post" onsubmit="return confirm('Delete {{ m.name }}? This cannot be undone.')" style="display:inline">
+          <button type="submit" class="btn-delete-sm">🗑 Delete</button>
+        </form>
+      </div>
     </div>
   </div>
   {% else %}
@@ -75,9 +85,16 @@
         </label>
       </form>
       {% endif %}
-      <form action="/maps/schematic/{{ s.slug }}/delete" method="post" onsubmit="return confirm('Delete {{s.name}}?')" style="margin-top:.4rem">
-        <button type="submit" class="btn-delete-sm">🗑 Delete</button>
-      </form>
+      <div style="display:flex;gap:.4rem;margin-top:.4rem">
+        <form action="/maps/schematic/{{ s.slug }}/rename" method="post" style="display:inline">
+          <input type="hidden" name="name" value="">
+          <button type="button" class="btn-edit-sm"
+                  onclick="var f=this.form; var n=prompt('Rename schematic:', {{ s.name|tojson }}); if(n && n.trim()){ f.name.value=n.trim(); f.submit(); }">✏ Rename</button>
+        </form>
+        <form action="/maps/schematic/{{ s.slug }}/delete" method="post" onsubmit="return confirm('Delete {{s.name}}?')" style="display:inline">
+          <button type="submit" class="btn-delete-sm">🗑 Delete</button>
+        </form>
+      </div>
     </div>
   </div>
   {% else %}

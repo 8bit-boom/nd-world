@@ -1049,6 +1049,17 @@ input[type="file"]:hover { border-color: var(--neon); }
   border-radius: 2px;
 }
 .btn-delete-sm:hover { background: var(--neon2); color: #000; }
+.btn-edit-sm {
+  padding: .25rem .6rem;
+  border: 1px solid var(--neon);
+  background: transparent;
+  color: var(--neon);
+  cursor: pointer;
+  font-family: var(--font);
+  font-size: .78rem;
+  border-radius: 2px;
+}
+.btn-edit-sm:hover { background: var(--neon); color: #000; }
 .pill {
   display: inline-block;
   padding: .1rem .5rem;

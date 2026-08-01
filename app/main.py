@@ -887,6 +887,54 @@ async def map_new(
             copy_upload_bounded(image_file, maps_upload_dir / (slug + ext))
     return RedirectResponse(f"/maps/{slug}", status_code=303)
 
+@app.post("/maps/{slug}/rename")
+def map_rename(slug: str, request: Request, name: str = Form(...),
+                db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    jf = _MAPS_DIR / f"{slug}.json"
+    if not jf.exists():
+        raise HTTPException(404)
+    map_data = _map_data(jf)
+    if map_data is None:
+        raise HTTPException(404)
+    world = get_active_world(request, db, active_world)
+    if not world or map_data.get("world_id", 1) != world.id:
+        raise HTTPException(404)
+    new_name = name.strip()
+    if not new_name:
+        raise HTTPException(400, "Name can't be blank")
+    # Renaming here only changes the display name, not the slug/URL — the slug
+    # is also how the uploaded image file, MapOverlay row, and any party pins
+    # (Party.location_json {"kind": "map", "slug": ...}) reference this map, so
+    # keeping it stable avoids cascading updates and broken links/bookmarks.
+    map_data["name"] = new_name
+    jf.write_text(json.dumps(map_data), encoding="utf-8")
+    return RedirectResponse("/maps", status_code=303)
+
+@app.post("/maps/{slug}/delete")
+def map_delete(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    jf = _MAPS_DIR / f"{slug}.json"
+    if not jf.exists():
+        raise HTTPException(404)
+    map_data = _map_data(jf)
+    if map_data is None:
+        raise HTTPException(404)
+    world = get_active_world(request, db, active_world)
+    if not world or map_data.get("world_id", 1) != world.id:
+        raise HTTPException(404)
+    jf.unlink()
+    maps_upload_dir = UPLOADS_DIR / "maps"
+    for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif"):
+        img = maps_upload_dir / (slug + ext)
+        if img.exists():
+            img.unlink()
+    # Clean up the overlay row too — otherwise a later map that happens to
+    # slugify to the same value would silently inherit this one's markers.
+    overlay = db.query(MapOverlay).filter(MapOverlay.slug == slug).first()
+    if overlay:
+        db.delete(overlay)
+        db.commit()
+    return RedirectResponse("/maps", status_code=303)
+
 @app.post("/maps/{slug}/upload")
 async def map_upload_image(slug: str, file: UploadFile = File(...)):
     ext = Path(file.filename).suffix.lower()
@@ -1472,6 +1520,20 @@ async def schematic_upload_image(slug: str, file: UploadFile = File(...), db: Se
     dest = sch_dir / (slug + ext)
     copy_upload_bounded(file, dest)
     s.image_url = f"/uploads/schematics/{slug}{ext}"
+    db.commit()
+    return RedirectResponse(f"/maps/schematic/{slug}", status_code=303)
+
+@app.post("/maps/schematic/{slug}/rename")
+def schematic_rename(slug: str, name: str = Form(...), db: Session = Depends(get_db)):
+    s = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not s:
+        raise HTTPException(404)
+    new_name = name.strip()
+    if not new_name:
+        raise HTTPException(400, "Name can't be blank")
+    # Slug (the URL/id) stays stable — combat-session links, party pins, and
+    # any bookmarked /maps/schematic/{slug} URL all key off it.
+    s.name = new_name
     db.commit()
     return RedirectResponse(f"/maps/schematic/{slug}", status_code=303)
 

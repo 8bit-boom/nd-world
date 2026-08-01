@@ -126,6 +126,11 @@
           <marker id="arr-prev" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#00f0ff" opacity="0.6"/></marker>
         </defs>
         <rect id="bg" width="100%" height="100%" fill="{{ canvas_bg_color }}"/>
+        {% if schematic.image_url %}
+        <image id="bg-image" href="{{ schematic.image_url }}"
+               x="0" y="0" width="{{ schematic.canvas_width or 2000 }}" height="{{ schematic.canvas_height or 1500 }}"
+               preserveAspectRatio="none" pointer-events="none"/>
+        {% endif %}
         <rect id="grid-layer" width="100%" height="100%" fill="url(#major-grid)" display="none" pointer-events="none"/>
         <g id="el-layer"></g>
         <g id="battle-grid-layer" pointer-events="none"></g>
@@ -417,6 +422,16 @@
 
 #sch-main { display:flex; flex:1; overflow:hidden; position:relative; }
 #sch-canvas-wrap { flex:1; overflow:auto; background:#050505; position:relative; touch-action:none; }
+#sch-canvas-wrap.bg-drag-over::after {
+  content: "Drop image to set background";
+  position: absolute; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 240, 255, 0.12);
+  border: 3px dashed var(--neon, #00f0ff);
+  color: var(--neon, #00f0ff);
+  font-family: var(--font); font-size: 1rem;
+  pointer-events: none;
+}
 #sch-svg { display:block; transform-origin:0 0; }
 #sch-canvas-wrap.panning { cursor:grabbing; }
 #sch-canvas-wrap.pan-ready { cursor:grab; }
@@ -1651,6 +1666,43 @@ function onImageFile(e) {
   };
   reader.readAsDataURL(f);
   e.target.value = '';
+}
+
+// ── Background drag & drop ──────────────────────────────────────────────────
+// Distinct from pickImage() above: this replaces the schematic's own
+// background (the same thing the "Replace background" upload link on the
+// maps list page sets), not an embedded/movable canvas element.
+let bgDragDepth = 0;
+wrap.addEventListener('dragenter', e => {
+  if (!e.dataTransfer.types.includes('Files')) return;
+  e.preventDefault();
+  bgDragDepth++;
+  wrap.classList.add('bg-drag-over');
+});
+wrap.addEventListener('dragover', e => {
+  if (!e.dataTransfer.types.includes('Files')) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+});
+wrap.addEventListener('dragleave', () => {
+  bgDragDepth = Math.max(0, bgDragDepth - 1);
+  if (bgDragDepth === 0) wrap.classList.remove('bg-drag-over');
+});
+wrap.addEventListener('drop', e => {
+  if (!e.dataTransfer.types.includes('Files')) return;
+  e.preventDefault();
+  bgDragDepth = 0;
+  wrap.classList.remove('bg-drag-over');
+  const f = e.dataTransfer.files[0];
+  if (!f || !f.type.startsWith('image/')) return;
+  uploadBackground(f);
+});
+function uploadBackground(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  fetch(`/maps/schematic/${SLUG}/upload`, { method: 'POST', body: fd })
+    .then(r => { if (r.ok) location.reload(); else alert('Background upload failed.'); })
+    .catch(() => alert('Background upload failed.'));
 }
 
 // ── Symbols / stamps ──────────────────────────────────────────────────────────

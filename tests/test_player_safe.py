@@ -26,6 +26,11 @@ CASES = [
     ("GET", "/worlds", False),
     ("GET", "/settings", False),
     ("POST", "/settings/system", False),
+    ("POST", "/maps/some-map/rename", False),
+    ("POST", "/maps/some-map/delete", False),
+    ("GET", "/maps/schematic/some-slug", False),
+    ("POST", "/maps/schematic/some-slug/rename", False),
+    ("POST", "/maps/schematic/some-slug/delete", False),
     ("POST", "/entity/new", False),
     ("GET", "/characters/templates", False),  # explicitly excluded despite the /characters prefix
     # Player-safe — read-only world/lore browsing and their own character(s).
