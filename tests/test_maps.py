@@ -3,6 +3,7 @@ delete or rename at all; Schematic battle-maps had delete but no rename.
 Covers both new code paths, plus the world-ownership check that keeps a GM
 from renaming/deleting a map that belongs to a different world.
 """
+import io
 import json
 
 import pytest
@@ -127,6 +128,91 @@ def test_schematic_new_symbol_only_name_rejected_not_a_zombie(client, seed):
     db = SessionLocal()
     try:
         assert db.query(Schematic).filter(Schematic.slug == "").first() is None
+    finally:
+        db.close()
+
+
+def test_map_upload_404s_for_nonexistent_slug(client, seed):
+    """Phase 8 regression guard: map_upload_image previously took no db/world
+    params at all, so it would write an image for *any* slug — map or no
+    map — with no existence check. A nonexistent slug left an orphan upload
+    file that would silently attach itself to a later map created with that
+    same slug."""
+    from app.main import UPLOADS_DIR
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    small_png = io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+    r = client.post("/maps/no-such-map/upload", files={"file": ("map.png", small_png, "image/png")})
+    assert r.status_code == 404
+    assert not (UPLOADS_DIR / "maps" / "no-such-map.png").exists()
+
+
+def test_map_upload_404s_wrong_world(client, seed):
+    _make_map(seed.world_b.id, "b-only-map-3")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    small_png = io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+    r = client.post("/maps/b-only-map-3/upload", files={"file": ("map.png", small_png, "image/png")})
+    assert r.status_code == 404
+
+
+def test_map_upload_succeeds_for_own_world_map(client, seed):
+    from app.main import UPLOADS_DIR
+    _make_map(seed.world_a.id, "own-map")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    small_png = io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+    r = client.post("/maps/own-map/upload", files={"file": ("map.png", small_png, "image/png")}, follow_redirects=False)
+    assert r.status_code == 303
+    assert (UPLOADS_DIR / "maps" / "own-map.png").exists()
+
+
+def test_map_overlay_404s_for_nonexistent_slug(client, seed):
+    """Same missing-existence-check hazard as map_upload_image, for the
+    overlay save route: previously any slug got (and kept) a MapOverlay row
+    with no check the map even existed."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/maps/no-such-map/overlay", json={"custom_markers": [], "custom_regions": []})
+    assert r.status_code == 404
+
+
+def test_map_overlay_404s_wrong_world(client, seed):
+    _make_map(seed.world_b.id, "b-only-map-4")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/maps/b-only-map-4/overlay", json={"custom_markers": [], "custom_regions": []})
+    assert r.status_code == 404
+
+
+def test_map_overlay_rejects_non_list_payload(client, seed):
+    _make_map(seed.world_a.id, "shape-map")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/maps/shape-map/overlay", json={"custom_markers": "not-a-list", "custom_regions": []})
+    assert r.status_code == 400
+
+
+def test_map_overlay_rejects_too_many_items(client, seed):
+    _make_map(seed.world_a.id, "flood-map")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    markers = [{"lat": 0, "lng": 0, "label": "x", "color": "#ff4466"} for _ in range(501)]
+    r = client.post("/api/maps/flood-map/overlay", json={"custom_markers": markers, "custom_regions": []})
+    assert r.status_code == 400
+
+
+def test_map_overlay_saves_for_own_world_map(client, seed):
+    _make_map(seed.world_a.id, "save-map")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    markers = [{"lat": 1, "lng": 2, "label": "Cache", "color": "#ff4466"}]
+    r = client.post("/api/maps/save-map/overlay", json={"custom_markers": markers, "custom_regions": []})
+    assert r.status_code == 200
+    db = SessionLocal()
+    try:
+        overlay = db.query(MapOverlay).filter(MapOverlay.slug == "save-map").first()
+        assert json.loads(overlay.custom_markers_json) == markers
     finally:
         db.close()
 

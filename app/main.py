@@ -943,7 +943,23 @@ def map_delete(slug: str, request: Request, db: Session = Depends(get_db), activ
     return RedirectResponse("/maps", status_code=303)
 
 @app.post("/maps/{slug}/upload")
-async def map_upload_image(slug: str, file: UploadFile = File(...)):
+async def map_upload_image(slug: str, request: Request, file: UploadFile = File(...),
+                            db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    # Unlike its rename/delete siblings, this route previously took no db/world
+    # params at all — it would happily write to any slug, map or no map,
+    # regardless of which world was active. A nonexistent slug left an orphan
+    # upload file that would silently "haunt" a later map created with that
+    # same slug (the same squatting hazard map_delete's overlay cleanup guards
+    # against).
+    jf = _MAPS_DIR / f"{slug}.json"
+    if not jf.exists():
+        raise HTTPException(404)
+    map_data = _map_data(jf)
+    if map_data is None:
+        raise HTTPException(404)
+    world = get_active_world(request, db, active_world)
+    if not world or map_data.get("world_id", 1) != world.id:
+        raise HTTPException(404)
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_EXTS:
         raise HTTPException(400, "Unsupported file type")
@@ -1030,14 +1046,33 @@ def map_viewer(slug: str, request: Request, db: Session = Depends(get_db), activ
         "party_pins_json": json.dumps(_party_pins_for(db, world.id, "map", slug)),
     })
 
+_MAX_OVERLAY_ITEMS = 500  # per list — a GM-authored battle map, not a data dump
+
 @app.post("/api/maps/{slug}/overlay")
-async def save_map_overlay(slug: str, request: Request, db: Session = Depends(get_db)):
+async def save_map_overlay(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    # This route previously took no world param and did no existence check at
+    # all — any slug, real map or not, would get (and keep) an overlay row.
+    jf = _MAPS_DIR / f"{slug}.json"
+    if not jf.exists():
+        raise HTTPException(404)
+    map_data = _map_data(jf)
+    if map_data is None:
+        raise HTTPException(404)
+    world = get_active_world(request, db, active_world)
+    if not world or map_data.get("world_id", 1) != world.id:
+        raise HTTPException(404)
     body = await request.json()
+    custom_markers = body.get("custom_markers", [])
+    custom_regions = body.get("custom_regions", [])
+    if not isinstance(custom_markers, list) or not isinstance(custom_regions, list):
+        raise HTTPException(400, "custom_markers and custom_regions must be lists")
+    if len(custom_markers) > _MAX_OVERLAY_ITEMS or len(custom_regions) > _MAX_OVERLAY_ITEMS:
+        raise HTTPException(400, f"Too many markers/regions — limit is {_MAX_OVERLAY_ITEMS} each")
     overlay = db.query(MapOverlay).filter(MapOverlay.slug == slug).first()
     if not overlay:
         overlay = MapOverlay(slug=slug); db.add(overlay)
-    overlay.custom_markers_json = json.dumps(body.get("custom_markers", []))
-    overlay.custom_regions_json = json.dumps(body.get("custom_regions", []))
+    overlay.custom_markers_json = json.dumps(custom_markers)
+    overlay.custom_regions_json = json.dumps(custom_regions)
     db.commit()
     return {"ok": True}
 
