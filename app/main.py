@@ -1421,7 +1421,16 @@ def _require_schematic_world_access(db: Session, s: Schematic, user) -> None:
 async def schematic_move_own_token(slug: str, request: Request, db: Session = Depends(get_db)):
     """Players may move only the one token linked to their own PlayerCharacter.
     Ownership is re-derived from the session user server-side, never trusted
-    from the client."""
+    from the client.
+
+    An element's `locked` flag (toggled in the GM editor via lockSel()/the
+    per-element lock button) previously only gated the *editor's* own select
+    tool client-side — this route, pickup-item, and buy-item all ignored it
+    entirely, so a player could drag/pick up/buy a token the GM had locked
+    by hitting the API directly (or even just via the ordinary player-view
+    drag handle, which never checked it either). Enforced here and in the
+    other two player-write routes below; the GM's own editor writes go
+    through a different route (/elements) and aren't affected."""
     s = db.query(Schematic).filter(Schematic.slug == slug).first()
     if not s:
         raise HTTPException(404)
@@ -1446,6 +1455,8 @@ async def schematic_move_own_token(slug: str, request: Request, db: Session = De
             raise HTTPException(403, "Not your character's token")
         if not el.get("visible_to_players", True):
             raise HTTPException(403)
+        if el.get("locked"):
+            raise HTTPException(403, "This token is locked")
     el["x"] = float(x)
     el["y"] = float(y)
     s.elements_json = json.dumps(elements)
@@ -1500,6 +1511,8 @@ async def schematic_pickup_item(slug: str, request: Request, db: Session = Depen
             raise HTTPException(404)
         if not el.get("visible_to_players", True):
             raise HTTPException(403)
+        if el.get("locked"):
+            raise HTTPException(403, "This item is locked")
         pc = _own_pc_for_schematic(db, s2, user)
         if not pc:
             raise HTTPException(400, "You don't have a character in this world")
@@ -1547,6 +1560,8 @@ async def schematic_buy_item(slug: str, request: Request, db: Session = Depends(
             raise HTTPException(404)
         if not el.get("visible_to_players", True):
             raise HTTPException(403)
+        if el.get("locked"):
+            raise HTTPException(403, "This merchant is locked")
         inventory = el.get("inventory") or []
         stock = next((row for row in inventory if row.get("id") == stock_id), None)
         qty = stock.get("qty", -1) if stock else -1

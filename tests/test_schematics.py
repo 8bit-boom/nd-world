@@ -357,3 +357,65 @@ def test_concurrent_pickup_item_no_duplication(client, seed, monkeypatch):
         assert json.loads(fresh.elements_json) == []
     finally:
         db.close()
+
+
+def test_move_token_locked_rejected(client, seed):
+    """Phase 10 regression guard: an element's `locked` flag (toggled in the
+    GM editor) previously only gated the editor's own select tool
+    client-side — this route ignored it completely, so a player could drag
+    their own token even after the GM locked it (e.g. mid-cutscene, or once
+    initiative positions are finalized for the round)."""
+    pc = _make_pc(seed.world_a.id, seed.player_a.id)
+    elements = [{"id": "tok1", "type": "token", "pc_id": pc.id, "x": 10, "y": 10,
+                 "visible_to_players": True, "locked": True}]
+    s = _make_schematic(seed.world_a.id, "locked-move", elements=elements)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post(f"/api/maps/schematic/{s.slug}/move-token", json={"token_id": "tok1", "x": 20, "y": 20})
+    assert r.status_code == 403
+    db = SessionLocal()
+    try:
+        fresh = db.query(Schematic).filter(Schematic.id == s.id).first()
+        el = json.loads(fresh.elements_json)[0]
+        assert (el["x"], el["y"]) == (10, 10)
+    finally:
+        db.close()
+
+
+def test_pickup_item_locked_rejected(client, seed):
+    _make_pc(seed.world_a.id, seed.player_a.id)
+    elements = [{"id": "item1", "type": "token", "source": "item", "name": "Sword",
+                 "qty": 1, "visible_to_players": True, "locked": True}]
+    s = _make_schematic(seed.world_a.id, "locked-pickup", elements=elements)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post(f"/api/maps/schematic/{s.slug}/pickup-item", json={"token_id": "item1"})
+    assert r.status_code == 403
+    db = SessionLocal()
+    try:
+        fresh = db.query(Schematic).filter(Schematic.id == s.id).first()
+        assert json.loads(fresh.elements_json) != []
+    finally:
+        db.close()
+
+
+def test_buy_item_locked_rejected(client, seed):
+    _make_pc(seed.world_a.id, seed.player_a.id, currency=[{"abbr": "CR", "value": 100}])
+    elements = [{"id": "merch1", "type": "token", "source": "merchant", "visible_to_players": True, "locked": True,
+                 "inventory": [{"id": "stock1", "name": "Potion", "price": 5, "currency_abbr": "CR", "qty": 1}]}]
+    s = _make_schematic(seed.world_a.id, "locked-buy", elements=elements)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post(f"/api/maps/schematic/{s.slug}/buy-item", json={"token_id": "merch1", "stock_id": "stock1"})
+    assert r.status_code == 403
+
+
+def test_schematic_view_does_not_wire_drag_for_locked_own_token(client, seed):
+    """Source-level guard (no JS runtime in this test suite): the player-view
+    drag handler must skip an own-token that's locked, rather than let the
+    player see it move locally and then snap back on the next 4s poll once
+    the (already-403ing) move-token POST is silently discarded."""
+    pc = _make_pc(seed.world_a.id, seed.player_a.id)
+    elements = [{"id": "tok1", "type": "token", "pc_id": pc.id, "x": 10, "y": 10, "visible_to_players": True}]
+    s = _make_schematic(seed.world_a.id, "view-lock-check", elements=elements)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.get(f"/maps/schematic/{s.slug}/view")
+    assert r.status_code == 200
+    assert "OWN_PC_ID && el.pc_id === OWN_PC_ID && !el.locked" in r.text

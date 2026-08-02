@@ -81,7 +81,7 @@ function redraw() {
     if (!g) return;
     if (el.type === 'token') {
       g.dataset.id = el.id;
-      if (OWN_PC_ID && el.pc_id === OWN_PC_ID) {
+      if (OWN_PC_ID && el.pc_id === OWN_PC_ID && !el.locked) {
         g.classList.add('own-token');
         wireDrag(g, el);
       } else if (el.source === 'item') {
