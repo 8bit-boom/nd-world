@@ -11,7 +11,7 @@ from app.database import SessionLocal
 from app.main import _MAPS_DIR
 from app.models import MapOverlay, Schematic
 
-from .conftest import GM_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
 
 @pytest.fixture(autouse=True)
@@ -211,3 +211,63 @@ def test_schematic_editor_no_background_image_element_when_unset(client, seed):
     r = client.get("/maps/schematic/no-bg")
     assert r.status_code == 200
     assert 'id="bg-image"' not in r.text
+
+
+def test_maps_page_hides_gm_controls_from_players(client, seed):
+    """Phase 6 regression guard: /maps is player-safe (GET), but the write
+    routes behind its New/Upload/Rename/Delete controls (POST) are already
+    GM-only at the middleware level — so a player who clicked any of these
+    previously got a confirm() dialog followed by a 403, not a working
+    button. Players should not see controls they can't use."""
+    _make_map(seed.world_a.id, "player-visible-map")
+    db = SessionLocal()
+    try:
+        _make_schematic(db, seed.world_a.id, "player-visible-schem")
+    finally:
+        db.close()
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/maps")
+    assert r.status_code == 200
+    for forbidden in ("+ New Map", "+ New Schematic", "✏ Rename", "🗑 Delete",
+                       "Upload image", "Upload background"):
+        assert forbidden not in r.text, f"player should not see {forbidden!r} on /maps"
+    assert "/maps/schematic/player-visible-schem/view" in r.text
+
+
+def test_maps_page_shows_gm_controls_for_gm(client, seed):
+    _make_map(seed.world_a.id, "gm-visible-map")
+    db = SessionLocal()
+    try:
+        _make_schematic(db, seed.world_a.id, "gm-visible-schem")
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/maps")
+    assert r.status_code == 200
+    for expected in ("+ New Map", "+ New Schematic", "✏ Rename", "🗑 Delete"):
+        assert expected in r.text
+    assert 'href="/maps/schematic/gm-visible-schem"' in r.text
+
+
+def test_maps_page_html_schematic_not_linked_for_players(client, seed):
+    """HTML-type schematics have no player-safe view route at all
+    (schematic_player_view 404s them) — a player clicking through would hit
+    the GM-only editor and 403. The card must render without a link."""
+    db = SessionLocal()
+    try:
+        s = _make_schematic(db, seed.world_a.id, "html-schem")
+        s.is_html = True
+        s.html_file = "html-schem.html"
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/maps")
+    assert r.status_code == 200
+    assert "/maps/schematic/html-schem" not in r.text
