@@ -274,16 +274,21 @@ function makeElSVG(el) {
     }
     case 'aoe': {
       const dist = Math.hypot(el.x2-el.x1, el.y2-el.y1);
-      const color = el.color || '#ff6666';
+      // el.fill/el.stroke, same keys every other shape uses — `color` was a
+      // one-off field the property panel's Fill/Stroke pickers never wrote
+      // to, so AOE color looked editable but silently had no effect. Kept
+      // as a fallback only for elements saved before this fix.
+      const fillColor = el.fill || el.color || '#ff6666';
+      const strokeColor = el.stroke || el.color || '#ff6666';
       if (el.shape === 'circle') {
-        g.appendChild(svgEl('circle', { cx:el.x1, cy:el.y1, r:dist, fill:color, opacity:0.28, stroke:color, 'stroke-width':2 }));
+        g.appendChild(svgEl('circle', { cx:el.x1, cy:el.y1, r:dist, fill:fillColor, opacity:0.28, stroke:strokeColor, 'stroke-width':2 }));
       } else if (el.shape === 'cone') {
         const pts = aoeConePoints(el.x1, el.y1, el.x2, el.y2);
-        g.appendChild(svgEl('polygon', { points: pts.map(p=>p.join(',')).join(' '), fill:color, opacity:0.28, stroke:color, 'stroke-width':2 }));
+        g.appendChild(svgEl('polygon', { points: pts.map(p=>p.join(',')).join(' '), fill:fillColor, opacity:0.28, stroke:strokeColor, 'stroke-width':2 }));
       } else {
         const width = gridConfig.cell_size || 20;
-        g.appendChild(svgEl('line', { x1:el.x1, y1:el.y1, x2:el.x2, y2:el.y2, stroke:color, 'stroke-width':width, opacity:0.28 }));
-        g.appendChild(svgEl('line', { x1:el.x1, y1:el.y1, x2:el.x2, y2:el.y2, stroke:color, 'stroke-width':2, opacity:0.8 }));
+        g.appendChild(svgEl('line', { x1:el.x1, y1:el.y1, x2:el.x2, y2:el.y2, stroke:strokeColor, 'stroke-width':width, opacity:0.28 }));
+        g.appendChild(svgEl('line', { x1:el.x1, y1:el.y1, x2:el.x2, y2:el.y2, stroke:strokeColor, 'stroke-width':2, opacity:0.8 }));
       }
       const units = pxToUnits(dist);
       const lt = svgEl('text', { x:(el.x1+el.x2)/2, y:(el.y1+el.y2)/2-6,
@@ -388,6 +393,23 @@ function makeElSVG(el) {
     const lt = svgEl('text', { x:cx, y:cy+5, 'text-anchor':'middle', 'font-size':13,
       'font-family':'monospace', fill:'#fff', 'pointer-events':'none' });
     lt.textContent = el.label; g.appendChild(lt);
+  }
+  // Radius indicator in grid units (feet/hexes/etc, same conversion AOE and
+  // Measure already use) — a plain circle previously had no size readout at
+  // all short of selecting it and reading raw pixel radius off the property
+  // bar, unlike AOE bursts which already show their size baked onto the map.
+  if (el.type === 'circle') {
+    const rxUnits = pxToUnits(el.rx), ryUnits = pxToUnits(el.ry);
+    if (rxUnits) {
+      const sizeText = Math.abs(el.rx - el.ry) < 0.5
+        ? `r ${rxUnits.units.toFixed(1)} ${rxUnits.label}`
+        : `r ${rxUnits.units.toFixed(1)}×${ryUnits.units.toFixed(1)} ${rxUnits.label}`;
+      const st = svgEl('text', { x:el.cx, y:el.cy+el.ry-8, 'text-anchor':'middle', 'font-size':11,
+        'font-family':'monospace', fill:'#fff', 'pointer-events':'none',
+        style:'paint-order:stroke;stroke:#000;stroke-width:3px' });
+      st.textContent = sizeText;
+      g.appendChild(st);
+    }
   }
   return g;
 }

@@ -1350,7 +1350,12 @@ function finishShape(b) {
     }
     case 'aoe': {
       const shape = document.getElementById('aoe-shape-select').value;
-      el={id:uid(),type:'aoe',shape,x1:a.x,y1:a.y,x2:b.x,y2:b.y,color:'#ff6666',opacity:0.9};
+      // fill/stroke, not a bespoke `color` field — the property panel's
+      // existing Fill/Stroke pickers (setPropLive) already read/write those
+      // two keys generically for every other shape type, so reusing them
+      // here is what makes AOE color actually editable through that UI
+      // instead of being silently stuck at this default forever.
+      el={id:uid(),type:'aoe',shape,x1:a.x,y1:a.y,x2:b.x,y2:b.y,fill:'#ff6666',stroke:'#ff6666',opacity:0.9};
       break;
     }
   }
