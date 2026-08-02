@@ -1234,7 +1234,11 @@ def schematic_link_combat(slug: str, combat_session_id: str = Form(""), db: Sess
     if not s:
         raise HTTPException(404)
     if combat_session_id.strip():
-        cs = db.query(CombatSession).filter(CombatSession.id == int(combat_session_id), CombatSession.world_id == s.world_id).first()
+        try:
+            cs_id = int(combat_session_id)
+        except ValueError:
+            raise HTTPException(400, "Invalid combat session")
+        cs = db.query(CombatSession).filter(CombatSession.id == cs_id, CombatSession.world_id == s.world_id).first()
         if not cs:
             raise HTTPException(404, "Combat session not found in this world")
         s.combat_session_id = cs.id
@@ -1253,71 +1257,104 @@ def schematic_unlink_combat(slug: str, db: Session = Depends(get_db)):
 @app.post("/maps/schematic/{slug}/pull-combat")
 def schematic_pull_combat(slug: str, db: Session = Depends(get_db)):
     """One-way sync Combat → Map: create/refresh tokens for every combatant in
-    the linked CombatSession, matched by the token's combatant_id."""
+    the linked CombatSession, matched by the token's combatant_id.
+
+    Runs inside the same BEGIN IMMEDIATE pattern as move-token/pickup-item/
+    buy-item (see those for why with_for_update() alone is a no-op on
+    SQLite): without it, a player's concurrent move-token — a plain
+    read-modify-write of the same elements_json column — could read the
+    pre-pull elements, and its write would then land after this one and
+    silently discard every token this pull just created or refreshed.
+    """
     s = db.query(Schematic).filter(Schematic.slug == slug).first()
     if not s or not s.combat_session_id:
         raise HTTPException(404)
-    cs = db.query(CombatSession).filter(CombatSession.id == s.combat_session_id).first()
-    if not cs:
-        raise HTTPException(404)
-    combatants = json.loads(cs.combatants_json or "[]")
-    elements = json.loads(s.elements_json or "[]")
-    by_combatant_id = {e.get("combatant_id"): e for e in elements if e.get("type") == "token" and e.get("combatant_id")}
-    cx, cy = (s.canvas_width or 2000) / 2, (s.canvas_height or 1500) / 2
-    new_count = 0
-    for combatant in combatants:
-        token = by_combatant_id.get(combatant["id"])
-        if token:
-            token["name"] = combatant.get("name", token.get("name"))
-            token["hp"] = combatant.get("hp", token.get("hp"))
-            token["max_hp"] = combatant.get("max_hp", token.get("max_hp"))
-            token["conditions"] = list(combatant.get("conditions", []))
-        else:
-            source = combatant.get("source", "manual")
-            elements.append({
-                "id": str(uuid.uuid4())[:8], "type": "token",
-                "x": cx + (new_count % 5) * 45 - 90, "y": cy + (new_count // 5) * 45 - 45,
-                "r": 20, "layer": "Tracks", "combatant_id": combatant["id"],
-                "source": source, "pc_id": combatant.get("pc_id"), "entity_id": combatant.get("entity_id"),
-                "name": combatant.get("name", "Combatant"),
-                "color": "#4488ff" if source == "pc" else ("#e63946" if source == "entity" else "#888888"),
-                "hp": combatant.get("hp", 0), "max_hp": combatant.get("max_hp", 0),
-                "conditions": list(combatant.get("conditions", [])),
-                "visible_to_players": source == "pc",
-            })
-            new_count += 1
-    s.elements_json = json.dumps(elements)
-    db.commit()
-    return {"elements": elements}
+    try:
+        db.rollback()
+        db.execute(text("BEGIN IMMEDIATE"))
+        s2 = db.query(Schematic).filter(Schematic.id == s.id).with_for_update().first()
+        cs = db.query(CombatSession).filter(CombatSession.id == s2.combat_session_id).first()
+        if not cs:
+            raise HTTPException(404)
+        combatants = json.loads(cs.combatants_json or "[]")
+        elements = json.loads(s2.elements_json or "[]")
+        by_combatant_id = {e.get("combatant_id"): e for e in elements if e.get("type") == "token" and e.get("combatant_id")}
+        cx, cy = (s2.canvas_width or 2000) / 2, (s2.canvas_height or 1500) / 2
+        new_count = 0
+        for combatant in combatants:
+            token = by_combatant_id.get(combatant["id"])
+            if token:
+                token["name"] = combatant.get("name", token.get("name"))
+                token["hp"] = combatant.get("hp", token.get("hp"))
+                token["max_hp"] = combatant.get("max_hp", token.get("max_hp"))
+                token["conditions"] = list(combatant.get("conditions", []))
+            else:
+                source = combatant.get("source", "manual")
+                elements.append({
+                    "id": str(uuid.uuid4())[:8], "type": "token",
+                    "x": cx + (new_count % 5) * 45 - 90, "y": cy + (new_count // 5) * 45 - 45,
+                    "r": 20, "layer": "Tracks", "combatant_id": combatant["id"],
+                    "source": source, "pc_id": combatant.get("pc_id"), "entity_id": combatant.get("entity_id"),
+                    "name": combatant.get("name", "Combatant"),
+                    "color": "#4488ff" if source == "pc" else ("#e63946" if source == "entity" else "#888888"),
+                    "hp": combatant.get("hp", 0), "max_hp": combatant.get("max_hp", 0),
+                    "conditions": list(combatant.get("conditions", [])),
+                    "visible_to_players": source == "pc",
+                })
+                new_count += 1
+        s2.elements_json = json.dumps(elements)
+        db.commit()
+        return {"elements": elements}
+    except HTTPException:
+        db.rollback()
+        raise
+    except OperationalError:
+        db.rollback()
+        raise HTTPException(409, "Someone else is updating this map — try again")
 
 @app.post("/maps/schematic/{slug}/push-combat")
 def schematic_push_combat(slug: str, db: Session = Depends(get_db)):
     """One-way sync Map → Combat: write token hp/max_hp/conditions back onto
     the matching combatant (matched by combatant_id, not pc_id/entity_id, so
-    duplicate entities in one combat stay distinguishable)."""
+    duplicate entities in one combat stay distinguishable).
+
+    Same BEGIN IMMEDIATE pattern as pull-combat, locking the CombatSession
+    row this time — a player's move-token doesn't touch combatants_json, but
+    another push-combat (or the combat tracker's own hp/condition edits)
+    could race this one's read-modify-write of it.
+    """
     s = db.query(Schematic).filter(Schematic.slug == slug).first()
     if not s or not s.combat_session_id:
         raise HTTPException(404)
-    cs = db.query(CombatSession).filter(CombatSession.id == s.combat_session_id).first()
-    if not cs:
-        raise HTTPException(404)
-    elements = json.loads(s.elements_json or "[]")
-    combatants = json.loads(cs.combatants_json or "[]")
-    by_id = {c["id"]: c for c in combatants}
-    synced = []
-    for el in elements:
-        if el.get("type") != "token" or not el.get("combatant_id"):
-            continue
-        c = by_id.get(el["combatant_id"])
-        if not c:
-            continue
-        c["hp"] = el.get("hp", c.get("hp"))
-        c["max_hp"] = el.get("max_hp", c.get("max_hp"))
-        c["conditions"] = list(el.get("conditions", []))
-        synced.append(c.get("name"))
-    cs.combatants_json = json.dumps(combatants)
-    db.commit()
-    return {"synced": synced}
+    try:
+        db.rollback()
+        db.execute(text("BEGIN IMMEDIATE"))
+        cs = db.query(CombatSession).filter(CombatSession.id == s.combat_session_id).with_for_update().first()
+        if not cs:
+            raise HTTPException(404)
+        elements = json.loads(s.elements_json or "[]")
+        combatants = json.loads(cs.combatants_json or "[]")
+        by_id = {c["id"]: c for c in combatants}
+        synced = []
+        for el in elements:
+            if el.get("type") != "token" or not el.get("combatant_id"):
+                continue
+            c = by_id.get(el["combatant_id"])
+            if not c:
+                continue
+            c["hp"] = el.get("hp", c.get("hp"))
+            c["max_hp"] = el.get("max_hp", c.get("max_hp"))
+            c["conditions"] = list(el.get("conditions", []))
+            synced.append(c.get("name"))
+        cs.combatants_json = json.dumps(combatants)
+        db.commit()
+        return {"synced": synced}
+    except HTTPException:
+        db.rollback()
+        raise
+    except OperationalError:
+        db.rollback()
+        raise HTTPException(409, "Someone else is updating this combat — try again")
 
 
 def _schematic_player_payload(db: Session, s: Schematic, user):
@@ -1430,7 +1467,15 @@ async def schematic_move_own_token(slug: str, request: Request, db: Session = De
     by hitting the API directly (or even just via the ordinary player-view
     drag handle, which never checked it either). Enforced here and in the
     other two player-write routes below; the GM's own editor writes go
-    through a different route (/elements) and aren't affected."""
+    through a different route (/elements) and aren't affected.
+
+    Also runs inside the same BEGIN IMMEDIATE pattern as pickup-item/buy-item
+    (Phase 4) and pull/push-combat (Phase 11): this was previously the one
+    read-modify-write of elements_json left completely unlocked, so even
+    with pull-combat's own lock added, a concurrent move-token could still
+    read the pre-pull elements, block on commit until pull-combat released
+    its lock, and then commit its own stale copy — silently erasing every
+    token pull-combat had just created or refreshed."""
     s = db.query(Schematic).filter(Schematic.slug == slug).first()
     if not s:
         raise HTTPException(404)
@@ -1443,25 +1488,35 @@ async def schematic_move_own_token(slug: str, request: Request, db: Session = De
     x, y = body.get("x"), body.get("y")
     if token_id is None or x is None or y is None:
         raise HTTPException(400)
-    elements = json.loads(s.elements_json or "[]")
-    el = next((e for e in elements if e.get("id") == token_id and e.get("type") == "token"), None)
-    if not el:
-        raise HTTPException(404)
-    if not user.is_gm:
-        pc = db.query(PlayerCharacter).filter(
-            PlayerCharacter.world_id == s.world_id, PlayerCharacter.owner_user_id == user.id
-        ).first()
-        if not pc or el.get("pc_id") != pc.id:
-            raise HTTPException(403, "Not your character's token")
-        if not el.get("visible_to_players", True):
-            raise HTTPException(403)
-        if el.get("locked"):
-            raise HTTPException(403, "This token is locked")
-    el["x"] = float(x)
-    el["y"] = float(y)
-    s.elements_json = json.dumps(elements)
-    db.commit()
-    return {"ok": True}
+    try:
+        db.rollback()
+        db.execute(text("BEGIN IMMEDIATE"))
+        s2 = db.query(Schematic).filter(Schematic.id == s.id).with_for_update().first()
+        elements = json.loads(s2.elements_json or "[]")
+        el = next((e for e in elements if e.get("id") == token_id and e.get("type") == "token"), None)
+        if not el:
+            raise HTTPException(404)
+        if not user.is_gm:
+            pc = db.query(PlayerCharacter).filter(
+                PlayerCharacter.world_id == s2.world_id, PlayerCharacter.owner_user_id == user.id
+            ).first()
+            if not pc or el.get("pc_id") != pc.id:
+                raise HTTPException(403, "Not your character's token")
+            if not el.get("visible_to_players", True):
+                raise HTTPException(403)
+            if el.get("locked"):
+                raise HTTPException(403, "This token is locked")
+        el["x"] = float(x)
+        el["y"] = float(y)
+        s2.elements_json = json.dumps(elements)
+        db.commit()
+        return {"ok": True}
+    except HTTPException:
+        db.rollback()
+        raise
+    except OperationalError:
+        db.rollback()
+        raise HTTPException(409, "Someone else is updating this map — try again")
 
 
 def _merge_equipment_item(pc: PlayerCharacter, name: str, qty: int):
@@ -1611,7 +1666,16 @@ async def schematic_save_elements(slug: str, request: Request, db: Session = Dep
     s = db.query(Schematic).filter(Schematic.slug == slug).first()
     if not s: raise HTTPException(404)
     body = await request.json()
-    s.elements_json = json.dumps(body.get("elements", []))
+    elements = body.get("elements", [])
+    # Every read path — the editor itself, the player view, move-token,
+    # pickup-item, buy-item, pull/push-combat — assumes elements_json decodes
+    # to a list of dicts. This was the only write route that never checked
+    # that before persisting, so a malformed body (elements missing, or not a
+    # list) would silently brick the schematic: every subsequent view 500s
+    # trying to iterate/index into whatever got stored instead.
+    if not isinstance(elements, list) or not all(isinstance(e, dict) for e in elements):
+        raise HTTPException(400, "elements must be a list of objects")
+    s.elements_json = json.dumps(elements)
     db.commit()
     return {"ok": True}
 
