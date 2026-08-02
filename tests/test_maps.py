@@ -104,6 +104,41 @@ def test_map_delete_missing_404s(client, seed):
     assert r.status_code == 404
 
 
+def test_map_viewer_marker_color_is_sanitized_before_svg_interpolation(client, seed):
+    """Phase 5 regression guard: custom-marker colors are GM-settable via
+    /api/maps/{slug}/overlay and previously flowed straight into an SVG
+    template literal that Leaflet injects as raw innerHTML (L.divIcon's
+    `html` option). A color like `"/><image src=x onerror=alert(1)>` would
+    break out of the fill="..." attribute and execute for every viewer of the
+    map, players included — this locks in that makeCustomIcon runs colors
+    through safeColor() (a strict hex check) before interpolating, rather
+    than using the raw value.
+
+    This can't drive the browser to prove the payload doesn't execute (no JS
+    runtime in this test suite), so it locks in the source-level guard
+    instead: the SVG template must reference the sanitized `c`, not `color`.
+
+    The map-viewer script block only renders when an image_url is resolved
+    (`{% if image_url %}` wraps the whole <script>), so a background image
+    file has to exist on disk for this route to emit any of the JS this test
+    inspects. UPLOADS_DIR is wiped by the `client` fixture between tests, so
+    writing there (rather than the real static/maps dir) needs no cleanup.
+    """
+    from app.main import UPLOADS_DIR
+    _make_map(seed.world_a.id, "paint-cave")
+    maps_upload_dir = UPLOADS_DIR / "maps"
+    maps_upload_dir.mkdir(parents=True, exist_ok=True)
+    (maps_upload_dir / "paint-cave.png").write_bytes(b"fake-png")
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/maps/paint-cave")
+    assert r.status_code == 200
+    assert "function safeColor(c)" in r.text
+    assert 'fill="${c}"' in r.text and 'stroke="${c}"' in r.text
+    assert 'fill="${color}"' not in r.text and 'stroke="${color}"' not in r.text
+
+
 def _make_schematic(db, world_id, slug, name="Test Schematic"):
     s = Schematic(world_id=world_id, name=name, slug=slug, is_html=False,
                    canvas_width=2000, canvas_height=1500, canvas_bg="dark", elements_json="[]")
