@@ -361,6 +361,38 @@ def test_map_viewer_move_tool_also_drags_regions(client, seed):
     assert "saveOverlay()" in r.text[onup_idx:onup_idx + 600]
 
 
+def test_map_viewer_move_tool_drags_party_pins(client, seed):
+    """Party pins were created with no `draggable` option at all and their
+    click handler only ever checked for the Delete tool — Move never worked
+    for them, unlike markers (Phase 9) and regions (Phase 17). Confirmed
+    live via Playwright (drag a placed party pin with Move active, reload,
+    confirm the new position persisted through a POST to
+    /api/parties/{id}/location) before fixing. Source-level guard here."""
+    from app.main import UPLOADS_DIR
+    _make_map(seed.world_a.id, "party-drag-cave")
+    maps_upload_dir = UPLOADS_DIR / "maps"
+    maps_upload_dir.mkdir(parents=True, exist_ok=True)
+    (maps_upload_dir / "party-drag-cave.png").write_bytes(b"fake-png")
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/maps/party-drag-cave")
+    assert r.status_code == 200
+    idx = r.text.index("function renderPartyPins() {")
+    render_end = r.text.index("\nfunction ", idx + len("function renderPartyPins() {"))
+    block = r.text[idx:render_end]
+    assert "const draggable = editMode && tool === 'move';" in block
+    assert "draggable}" in block
+    assert "pm.on('dragend'" in block
+    assert "/api/parties/${p.id}/location" in block
+    # setTool() re-renders draggable-ness for both markers and party pins —
+    # only re-rendering renderCustomMarkers() here would leave a pin's
+    # draggable state stuck at whatever it was when the page first loaded.
+    set_tool_idx = r.text.index("function setTool(t) {")
+    set_tool_end = r.text.index("\n}", set_tool_idx)
+    assert "renderPartyPins();" in r.text[set_tool_idx:set_tool_end]
+
+
 def _make_schematic(db, world_id, slug, name="Test Schematic"):
     s = Schematic(world_id=world_id, name=name, slug=slug, is_html=False,
                    canvas_width=2000, canvas_height=1500, canvas_bg="dark", elements_json="[]")

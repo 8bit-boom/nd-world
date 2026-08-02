@@ -291,13 +291,28 @@ function makePartyIcon() {
 
 function renderPartyPins() {
   partyPinsLayer.clearLayers();
+  const draggable = editMode && tool === 'move';
   partyPins.forEach(p => {
     const ll = L.latLng(p.lat, p.lng);
-    const pm = L.marker(ll, {icon: makePartyIcon()}).addTo(partyPinsLayer);
+    const pm = L.marker(ll, {icon: makePartyIcon(), draggable}).addTo(partyPinsLayer);
     const gmActions = IS_GM ? `<a href="/parties/${p.id}">Open Party →</a><br><a href="#" onclick="removePartyPin(${p.id});return false;">Remove from map</a>` : '';
     pm.bindPopup(`<div class="map-popup"><b>🧑‍🤝‍🧑 ${esc(p.name)}</b><div class="pop-desc">${p.member_count} member${p.member_count===1?'':'s'}</div>${gmActions}</div>`);
     pm.bindTooltip(esc(p.name), {direction:'right', opacity:.9});
     pm.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removePartyPin(p.id); } });
+    // Same Move-tool drag treatment custom markers/regions already have —
+    // party pins were created with no draggable option at all, so there was
+    // no way to reposition one short of removing it and re-placing it via
+    // the Party tool from scratch.
+    pm.on('dragend', async e => {
+      const pos = e.target.getLatLng();
+      const res = await fetch(`/api/parties/${p.id}/location`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ kind: 'map', slug: SLUG, lat: pos.lat, lng: pos.lng }),
+      });
+      if (!res.ok) { renderPartyPins(); return; }
+      const idx = partyPins.findIndex(pp => pp.id === p.id);
+      if (idx !== -1) partyPins[idx] = { ...partyPins[idx], lat: pos.lat, lng: pos.lng };
+    });
   });
 }
 renderPartyPins();
@@ -371,9 +386,11 @@ function setTool(t) {
     if (el) el.classList.toggle('active', id === 'btn-' + (t==='marker'?'add-m':t==='region'?'add-r':t==='party'?'add-p':t==='move'?'move':'del'));
   });
   map.getContainer().style.cursor = (t === 'region' || t === 'party' || t === 'marker') ? 'crosshair' : t === 'delete' ? 'not-allowed' : '';
-  // Marker draggable-ness is derived from `tool` at render time (see
-  // renderCustomMarkers), so switching tools has to re-render to pick it up.
+  // Marker/party-pin draggable-ness is derived from `tool` at render time
+  // (see renderCustomMarkers/renderPartyPins), so switching tools has to
+  // re-render to pick it up.
   renderCustomMarkers();
+  renderPartyPins();
 }
 
 // Map click handler
