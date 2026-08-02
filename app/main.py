@@ -27,7 +27,7 @@ from .imaging import convert_image
 from .rendering import parse_stats, render_md
 from .templating import templates
 from .uploads import copy_upload_bounded
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -445,9 +445,53 @@ def world_create(
 
 @app.post("/worlds/{world_id}/delete")
 def world_delete(world_id: int, db: Session = Depends(get_db)):
+    """Deletes every row and file this world owns before removing the World
+    row itself. Previously just did db.delete(w) — SQLite's foreign_keys
+    pragma is never turned on (see database.py) and World has no ORM cascade
+    configured for most of its child tables (only Entity does), so every
+    PlayerCharacter, Schematic, WorldMembership, InviteCode, CombatSession,
+    Party, Quest, GameSession, PrivateNote, InvestBoard, RandomTable,
+    WorldCalendar/CalendarEvent row — plus every filesystem-backed Map JSON
+    file, its MapOverlay row, and every uploaded map/schematic image — was
+    silently orphaned forever on every world delete.
+
+    Deliberately out of scope: uploaded Entity/PlayerCharacter/Party
+    portrait images. Those use a flat /uploads/{filename} naming scheme
+    (unlike maps/schematics, which are already carefully cleaned up
+    elsewhere in this file) that isn't safely reversible from just the DB
+    row without real risk of deleting the wrong file — a pre-existing,
+    broader orphaned-upload problem that predates and outlives world-delete
+    specifically."""
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
+
+    entity_ids = [row[0] for row in db.query(Entity.id).filter(Entity.world_id == world_id).all()]
+    if entity_ids:
+        db.query(EntityNote).filter(EntityNote.entity_id.in_(entity_ids)).delete(synchronize_session=False)
+        db.execute(entity_links.delete().where(
+            entity_links.c.source_id.in_(entity_ids) | entity_links.c.target_id.in_(entity_ids)
+        ))
+        db.execute(entity_player_access.delete().where(entity_player_access.c.entity_id.in_(entity_ids)))
+
+    for s in db.query(Schematic).filter(Schematic.world_id == world_id).all():
+        _delete_schematic_files(s)
+
+    for slug, _data in list(_iter_world_maps(world_id)):
+        jf = _MAPS_DIR / f"{slug}.json"
+        if jf.exists():
+            jf.unlink()
+        for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif"):
+            img = UPLOADS_DIR / "maps" / (slug + ext)
+            if img.exists():
+                img.unlink()
+        db.query(MapOverlay).filter(MapOverlay.slug == slug).delete(synchronize_session=False)
+
+    for model in (Entity, PlayerCharacter, Schematic, WorldMembership, InviteCode, PrivateNote,
+                  InvestBoard, RandomTable, CombatSession, Party, Quest, GameSession,
+                  WorldCalendar, CalendarEvent):
+        db.query(model).filter(model.world_id == world_id).delete(synchronize_session=False)
+
     db.delete(w)
     db.commit()
     resp = RedirectResponse("/worlds", status_code=303)
@@ -1741,11 +1785,38 @@ def schematic_rename(slug: str, name: str = Form(...), db: Session = Depends(get
     db.commit()
     return RedirectResponse(f"/maps/schematic/{slug}", status_code=303)
 
+def _delete_schematic_files(s: Schematic) -> None:
+    """Remove every file this schematic owns on disk: its HTML file (is_html
+    schematics) or background image, plus any images embedded into elements
+    via the 🖼 Embed Image tool (Phase 13's /embed-image uploads, stored
+    under uploads/schematics/embeds/ and referenced by URL from element.href).
+    schematic_delete previously only ever deleted the DB row, leaking every
+    one of these on every delete — the same class of bug map_delete's own
+    overlay-row cleanup comment already flags for maps."""
+    if s.is_html and s.html_file:
+        html_path = SCHEMATICS_STATIC_DIR / s.html_file
+        if html_path.exists():
+            html_path.unlink()
+    elif s.image_url:
+        for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif"):
+            img = UPLOADS_DIR / "schematics" / (s.slug + ext)
+            if img.exists():
+                img.unlink()
+    embeds_dir = UPLOADS_DIR / "schematics" / "embeds"
+    for el in json.loads(s.elements_json or "[]"):
+        href = el.get("href") if isinstance(el, dict) else None
+        if isinstance(href, str) and href.startswith("/uploads/schematics/embeds/"):
+            f = embeds_dir / href.rsplit("/", 1)[-1]
+            if f.exists():
+                f.unlink()
+
+
 @app.post("/maps/schematic/{slug}/delete")
 def schematic_delete(slug: str, db: Session = Depends(get_db)):
     s = db.query(Schematic).filter(Schematic.slug == slug).first()
     if not s:
         raise HTTPException(404)
+    _delete_schematic_files(s)
     db.delete(s); db.commit()
     return RedirectResponse("/maps", status_code=303)
 
