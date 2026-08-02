@@ -512,3 +512,27 @@ def test_schematic_editor_uploads_image_instead_of_embedding_base64(client, seed
     assert "reader.readAsDataURL" not in r.text
     assert "/embed-image" in r.text
     assert "href:url" in r.text
+
+
+def test_schematic_editor_dialogs_close_on_escape_and_backdrop_click(client, seed):
+    """Phase 14 regression guard (source-level — no JS runtime in this test
+    suite): the editor's five modal dialogs (text/party/token/merchant-
+    inventory/grid) previously closed only via their own Cancel button —
+    Escape and clicking the dark backdrop outside the box did nothing. Locks
+    in that a dedicated Escape handler and a backdrop click listener exist
+    and dispatch through DLG_CANCEL (which routes grid-dlg to
+    cancelGridDlg() specifically, since plain hideDlg() would leave its
+    live-previewed gridType/gridConfig changes applied instead of reverting
+    them)."""
+    db = SessionLocal()
+    try:
+        _make_schematic(db, seed.world_a.id, "dlg-escape-check")
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get("/maps/schematic/dlg-escape-check")
+    assert r.status_code == 200
+    assert "function openDialogId()" in r.text
+    assert "'grid-dlg': () => cancelGridDlg()" in r.text
+    assert "back.addEventListener('click'" in r.text
+    assert "e.stopImmediatePropagation()" in r.text

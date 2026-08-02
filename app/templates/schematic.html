@@ -2114,6 +2114,37 @@ async function refreshCombat() {
   redraw();
 }
 
+// ── Dialog dismissal (Escape + backdrop click) ────────────────────────────────
+// All five modal dialogs (text/party/token/merchant-inventory/grid) previously
+// closed only via their own explicit Cancel button — pressing Escape or
+// clicking the dark backdrop outside the dialog box did nothing, unlike the
+// near-universal expectation for a modal overlay. grid-dlg's Cancel needs to
+// restore its config backup (onGridDlgChange live-previews the grid as you
+// type, before Save is clicked), so this dispatches per-dialog rather than
+// blindly calling hideDlg for whichever one happens to be open.
+const DLG_CANCEL = {
+  'text-dlg': () => hideDlg('text-dlg'),
+  'party-dlg': () => hideDlg('party-dlg'),
+  'token-dlg': () => hideDlg('token-dlg'),
+  'merchant-inventory-dlg': () => hideDlg('merchant-inventory-dlg'),
+  'grid-dlg': () => cancelGridDlg(),
+};
+function openDialogId() {
+  return Object.keys(DLG_CANCEL).find(id => document.getElementById(id).style.display === 'flex') || null;
+}
+document.querySelectorAll('.dlg-back').forEach(back => {
+  back.addEventListener('click', e => { if (e.target === back && DLG_CANCEL[back.id]) DLG_CANCEL[back.id](); });
+});
+// Registered ahead of the canvas keydown handler below (and independent of
+// its INPUT/TEXTAREA/SELECT guard, since these dialogs are full of exactly
+// those) so Escape closes an open dialog instead of falling through to
+// canvas-tool escape behavior.
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  const openId = openDialogId();
+  if (openId) { e.preventDefault(); e.stopImmediatePropagation(); DLG_CANCEL[openId](); }
+});
+
 // ── Keyboard ─────────────────────────────────────────────────────────────────
 document.addEventListener('keydown', e => {
   if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
