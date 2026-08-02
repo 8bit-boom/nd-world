@@ -26,7 +26,7 @@ from .deps import get_world_ctx
 from .imaging import convert_image
 from .rendering import parse_stats, render_md
 from .templating import templates
-from .uploads import copy_upload_bounded
+from .uploads import copy_upload_bounded, BULK_IMAGE_MAX_FILES
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
@@ -3036,9 +3036,6 @@ async def api_upload_image(file: UploadFile = File(...), db: Session = Depends(g
         raise HTTPException(400, "Unsupported file type")
     return {"url": uploaded}
 
-_BULK_IMAGE_MAX_FILES = 100  # per request — a batch this size is already a lot to review in one pass
-
-
 @app.post("/api/import/images")
 async def api_import_images(
     request: Request,
@@ -3058,8 +3055,8 @@ async def api_import_images(
         raise HTTPException(400, "No active world")
     if len(files) != len(entity_ids):
         raise HTTPException(400, "files and entity_ids must be the same length")
-    if len(files) > _BULK_IMAGE_MAX_FILES:
-        raise HTTPException(400, f"Too many files in one batch (max {_BULK_IMAGE_MAX_FILES})")
+    if len(files) > BULK_IMAGE_MAX_FILES:
+        raise HTTPException(400, f"Too many files in one batch (max {BULK_IMAGE_MAX_FILES})")
 
     results = []
     updated = 0

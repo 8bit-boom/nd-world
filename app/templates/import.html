@@ -67,6 +67,22 @@
 const SCHEMATICS = JSON.parse({{ schematics_json | tojson }});
 const MAPS = JSON.parse({{ maps_json | tojson }});
 const ENTITIES = JSON.parse({{ entities_json | tojson }});
+const BULK_IMAGE_MAX_FILES = {{ bulk_image_max_files | tojson }};
+
+// The server always returns JSON, but a reverse proxy/CDN in front of it can
+// still reject an oversized or slow request before it ever reaches the app
+// (body-size limit, upload timeout) and return its own HTML/plain-text error
+// page instead. Blindly awaiting res.json() on that throws a raw
+// "JSON.parse: unexpected character…" SyntaxError that's meaningless to a
+// user — this parses defensively and falls back to the HTTP status.
+async function parseJsonResponse(res) {
+  const text = await res.text();
+  try {
+    return { data: JSON.parse(text), parseError: null };
+  } catch (e) {
+    return { data: null, parseError: `${res.status} ${res.statusText || ''}`.trim() };
+  }
+}
 const KINDS = ["character","location","organization","creature","event","item","feat","note"];
 const NEEDS_BY_KIND = {
   world_rules: [], map_overlay: ["map_slug"], schematic_elements: ["schematic_slug"],
@@ -225,7 +241,8 @@ document.getElementById('import-btn').addEventListener('click', async () => {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ json_text: jsonText, kind, params }),
     });
-    const data = await res.json();
+    const { data, parseError } = await parseJsonResponse(res);
+    if (parseError) { resEl.style.color = '#c44'; resEl.textContent = `Import failed: server returned a non-JSON response (${parseError}).`; return; }
     if (!res.ok) { resEl.style.color = '#c44'; resEl.textContent = data.detail || 'Import failed.'; return; }
     if (data.batch) {
       const okCount = data.results.filter(r => r.ok).length;
@@ -360,10 +377,24 @@ document.getElementById('img-import-btn').addEventListener('click', async () => 
     resEl.style.color = '#c44'; resEl.textContent = 'Nothing to import — every file is set to skip.';
     return;
   }
+  if (count > BULK_IMAGE_MAX_FILES) {
+    // The server enforces this same cap (BULK_IMAGE_MAX_FILES, shared from
+    // app/uploads.py) — but only *after* fully receiving every file, since
+    // FastAPI parses the whole multipart body into the declared
+    // List[UploadFile] before the route body runs. Checking here first
+    // avoids uploading a batch (e.g. 138 files) that was always going to be
+    // rejected, and skips the failure mode where a reverse proxy in front
+    // of the app times out or hits its own body-size limit on that oversized
+    // request and returns an HTML error page instead of JSON.
+    resEl.style.color = '#c44';
+    resEl.textContent = `Too many files selected (${count}) — the max is ${BULK_IMAGE_MAX_FILES} per batch. Deselect some or import in multiple batches.`;
+    return;
+  }
   resEl.style.color = 'var(--text-dim)'; resEl.textContent = `Uploading ${count} image(s)…`;
   try {
     const res = await fetch('/api/import/images', { method: 'POST', body: fd });
-    const data = await res.json();
+    const { data, parseError } = await parseJsonResponse(res);
+    if (parseError) { resEl.style.color = '#c44'; resEl.textContent = `Import failed: server returned a non-JSON response (${parseError}).`; return; }
     if (!res.ok) { resEl.style.color = '#c44'; resEl.textContent = data.detail || 'Import failed.'; return; }
     resEl.style.color = data.updated === count ? '#4f4' : '#e8a94a';
     resEl.textContent = `${data.updated}/${count} image(s) applied.`;

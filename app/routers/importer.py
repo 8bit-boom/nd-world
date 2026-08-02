@@ -15,6 +15,7 @@ from ..database import get_db
 from ..deps import get_world_ctx
 from ..models import Entity, EntityTemplate, MapOverlay, PlayerCharacter, RandomTable, Schematic, SheetTemplate, World
 from ..templating import templates
+from ..uploads import BULK_IMAGE_MAX_FILES
 from .characters import _apply_form
 from .tables import _slugify as _table_slugify
 
@@ -510,6 +511,7 @@ def import_page(request: Request, db: Session = Depends(get_db), active_world: s
         "entities_json": json.dumps([
             {"id": e.id, "name": e.name, "kind": e.kind, "has_image": bool(e.image_url)} for e in entities
         ]),
+        "bulk_image_max_files": BULK_IMAGE_MAX_FILES,
     })
 
 

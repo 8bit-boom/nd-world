@@ -173,3 +173,46 @@ def test_bulk_image_import_rejects_mismatched_lengths(client, seed):
         data={"entity_ids": [str(ent.id), "999"]},
     )
     assert r.status_code == 400
+
+
+def test_bulk_image_import_rejects_batch_over_max_files(client, seed):
+    """Server-side enforcement of BULK_IMAGE_MAX_FILES (shared from
+    app/uploads.py — see test_import_page_precheck_matches_server_cap for
+    the client-side half of this: warning before upload rather than only
+    after the whole oversized batch has already gone over the wire)."""
+    from app.uploads import BULK_IMAGE_MAX_FILES
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    n = BULK_IMAGE_MAX_FILES + 1
+    files = [("files", (f"img{i}.png", io.BytesIO(_png_bytes(50)), "image/png")) for i in range(n)]
+    r = client.post(
+        "/api/import/images",
+        files=files,
+        data={"entity_ids": [""] * n},
+    )
+    assert r.status_code == 400
+    assert "Too many files" in r.json()["detail"]
+
+
+def test_import_page_precheck_matches_server_cap(client, seed):
+    """Regression guard, source-level (no JS runtime in this test suite).
+    The bulk-image click handler previously always awaited
+    res.json() unconditionally, so if a reverse proxy in front of the app
+    rejected an oversized/slow batch and returned its own HTML error page
+    instead of JSON, the user saw a raw
+    "Import failed: JSON.parse: unexpected character…" SyntaxError instead
+    of anything actionable. Locks in: (1) the client checks the file count
+    against the server's own BULK_IMAGE_MAX_FILES (rendered into the page,
+    not a separately-hardcoded number that could drift) before uploading
+    anything, and (2) both fetch handlers parse the response defensively
+    instead of assuming it's always JSON."""
+    from app.uploads import BULK_IMAGE_MAX_FILES
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/import")
+    assert r.status_code == 200
+    assert f"const BULK_IMAGE_MAX_FILES = {BULK_IMAGE_MAX_FILES};" in r.text
+    assert "count > BULK_IMAGE_MAX_FILES" in r.text
+    assert "async function parseJsonResponse(res)" in r.text
+    assert r.text.count("parseJsonResponse(res)") >= 2  # both fetch handlers use it

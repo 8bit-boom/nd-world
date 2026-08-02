@@ -14,6 +14,14 @@ from fastapi import HTTPException, UploadFile
 # down with it (SQLite writes fail once the disk is full).
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
 
+# Bulk portrait/art import (/api/import/images) caps how many files one
+# request may carry — a batch this size is already a lot to review in one
+# pass. Shared here (rather than living next to the route in main.py) so the
+# /import page router can import it too and warn the user client-side
+# *before* uploading a batch the server will just reject, instead of only
+# finding out after every file has already gone over the wire.
+BULK_IMAGE_MAX_FILES = 100
+
 _CHUNK = 1024 * 1024
 
 
