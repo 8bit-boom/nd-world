@@ -82,7 +82,19 @@ function renderBattleGrid() {
     }
     return pts.map(p=>p.join(',')).join(' ');
   };
-  const qLo=-2, qHi=Math.ceil(CW/w)+2, rLo=-2, rHi=Math.ceil(CH/h)+2;
+  // Axial q/r is sheared relative to screen space — hexToPixel's pointy-top
+  // formula adds sqrt(3)/2*size*r onto x (flat-top adds the equivalent onto
+  // y for q), so a fixed rectangular q/r loop sized off CW/CH alone drifts
+  // out of frame for any map whose height/width ratio doesn't happen to
+  // match the shear: deep rows (or far columns) would need q (or r) values
+  // well outside a range picked without accounting for that shift, leaving
+  // whole rows/columns of the grid undrawn near the opposite edge. Instead,
+  // convert the canvas's four corners through pixelToHex and take their
+  // bounding box (padded by one cell) — this is shear-correct because it
+  // reuses the exact inverse of hexToPixel rather than approximating it.
+  const corners = [[0,0],[CW,0],[0,CH],[CW,CH]].map(([x,y]) => pixelToHex(x-ox, y-oy, cs, orientation));
+  const qLo = Math.min(...corners.map(c=>c.q))-1, qHi = Math.max(...corners.map(c=>c.q))+1;
+  const rLo = Math.min(...corners.map(c=>c.r))-1, rHi = Math.max(...corners.map(c=>c.r))+1;
   for (let r=rLo; r<=rHi; r++) {
     for (let q=qLo; q<=qHi; q++) {
       const p = hexToPixel(q, r, cs, orientation);
