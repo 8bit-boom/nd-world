@@ -1698,6 +1698,35 @@ async def schematic_upload_image(slug: str, file: UploadFile = File(...), db: Se
     db.commit()
     return RedirectResponse(f"/maps/schematic/{slug}", status_code=303)
 
+@app.post("/maps/schematic/{slug}/embed-image")
+async def schematic_embed_image(slug: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """The editor's 🖼 Embed Image tool used to read the picked file as a
+    base64 data: URI client-side (FileReader.readAsDataURL) and stuff the
+    whole thing directly into the new element's `href` — which then landed
+    verbatim in elements_json. Every read of that schematic (the editor
+    itself, the player view, and every move-token/pickup-item/buy-item/
+    pull-push-combat call in between) had to parse and transmit that entire
+    blob just to touch one token's x/y, with no size cap at all (unlike the
+    background-image upload above, which goes through copy_upload_bounded).
+
+    This route gives embedded images the same treatment as every other
+    upload in the app: validated, size-bounded, written to disk under a
+    unique filename, and referenced by URL — so elements_json stays cheap to
+    read regardless of how many images a GM has embedded, and the browser
+    can actually cache the image instead of re-transmitting it inline on
+    every poll."""
+    s = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not s:
+        raise HTTPException(404)
+    ext = Path(file.filename).suffix.lower()
+    if ext not in ALLOWED_EXTS:
+        raise HTTPException(400, "Unsupported file type")
+    embeds_dir = UPLOADS_DIR / "schematics" / "embeds"
+    embeds_dir.mkdir(parents=True, exist_ok=True)
+    fname = uuid.uuid4().hex + ext
+    copy_upload_bounded(file, embeds_dir / fname)
+    return {"url": f"/uploads/schematics/embeds/{fname}"}
+
 @app.post("/maps/schematic/{slug}/rename")
 def schematic_rename(slug: str, name: str = Form(...), db: Session = Depends(get_db)):
     s = db.query(Schematic).filter(Schematic.slug == slug).first()

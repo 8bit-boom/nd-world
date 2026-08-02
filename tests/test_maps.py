@@ -428,3 +428,87 @@ def test_maps_page_html_schematic_not_linked_for_players(client, seed):
     r = client.get("/maps")
     assert r.status_code == 200
     assert "/maps/schematic/html-schem" not in r.text
+
+
+# Phase 13: the editor's "Embed Image" tool used to base64-encode the picked
+# file client-side (FileReader.readAsDataURL) and stuff the whole data: URI
+# straight into the new element's href — landing verbatim in elements_json,
+# which every read of the schematic (editor, player view, move-token,
+# pickup/buy, pull/push-combat) had to parse and transmit whole, with no
+# size cap at all. schematic_embed_image gives it the same upload-and-
+# reference-by-URL treatment as every other image in the app.
+
+_OVERSIZED_BYTES = 1_048_576 + 200_000  # conftest.py sets MAX_UPLOAD_BYTES=1MiB
+
+
+def test_embed_image_rejects_bad_extension(client, seed):
+    db = SessionLocal()
+    try:
+        s = _make_schematic(db, seed.world_a.id, "embed-badext")
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(f"/maps/schematic/{s.slug}/embed-image",
+                     files={"file": ("evil.svg", io.BytesIO(b"<svg/>"), "image/svg+xml")})
+    assert r.status_code == 400
+
+
+def test_embed_image_rejects_oversized_file(client, seed):
+    from app.main import UPLOADS_DIR
+    db = SessionLocal()
+    try:
+        s = _make_schematic(db, seed.world_a.id, "embed-oversized")
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    big_file = io.BytesIO(b"\x00" * _OVERSIZED_BYTES)
+    r = client.post(f"/maps/schematic/{s.slug}/embed-image",
+                     files={"file": ("huge.png", big_file, "image/png")})
+    assert r.status_code == 413
+    embeds_dir = UPLOADS_DIR / "schematics" / "embeds"
+    leftover = list(embeds_dir.glob("*")) if embeds_dir.exists() else []
+    assert leftover == [], f"oversized embed left partial file(s) behind: {leftover}"
+
+
+def test_embed_image_happy_path_returns_url_not_data_uri(client, seed):
+    from app.main import UPLOADS_DIR
+    db = SessionLocal()
+    try:
+        s = _make_schematic(db, seed.world_a.id, "embed-ok")
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    small_png = io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\x00" * 1000)
+    r = client.post(f"/maps/schematic/{s.slug}/embed-image",
+                     files={"file": ("small.png", small_png, "image/png")})
+    assert r.status_code == 200
+    url = r.json()["url"]
+    assert url.startswith("/uploads/schematics/embeds/")
+    assert url.endswith(".png")
+    fname = url.rsplit("/", 1)[-1]
+    assert (UPLOADS_DIR / "schematics" / "embeds" / fname).exists()
+
+
+def test_embed_image_404s_for_nonexistent_schematic(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    small_png = io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+    r = client.post("/maps/schematic/does-not-exist/embed-image",
+                     files={"file": ("small.png", small_png, "image/png")})
+    assert r.status_code == 404
+
+
+def test_schematic_editor_uploads_image_instead_of_embedding_base64(client, seed):
+    """Source-level guard (no JS runtime in this test suite): onImageFile must
+    POST to /embed-image and use the returned URL as href, not
+    FileReader.readAsDataURL."""
+    db = SessionLocal()
+    try:
+        _make_schematic(db, seed.world_a.id, "embed-source-check")
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get("/maps/schematic/embed-source-check")
+    assert r.status_code == 200
+    assert "reader.readAsDataURL" not in r.text
+    assert "/embed-image" in r.text
+    assert "href:url" in r.text

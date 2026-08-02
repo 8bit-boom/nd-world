@@ -1646,26 +1646,44 @@ function addMeasure(a, b) {
 }
 
 // ── Image upload ──────────────────────────────────────────────────────────────
+// Uploads the picked file to the server and references it by URL, rather
+// than the old FileReader.readAsDataURL approach of embedding the whole
+// image as a base64 data: URI directly in the element's href — which landed
+// verbatim in elements_json, so every read of this schematic (this editor,
+// the player view, every move-token/pickup/buy/pull-push-combat call) had
+// to parse and transmit that entire blob just to touch one token's x/y,
+// with no size limit at all.
 function pickImage() {
   document.getElementById('img-input').click();
 }
 function onImageFile(e) {
   const f = e.target.files[0]; if (!f) return;
-  const reader = new FileReader();
-  reader.onload = ev => {
-    const img = new Image();
-    img.onload = () => {
-      const max = 600;
-      let w = img.width, h = img.height;
-      if (w > max || h > max) { const r = max/Math.max(w,h); w*=r; h*=r; }
-      const el = {id:uid(), type:'image', x:CW/2 - w/2, y:CH/2 - h/2, w, h,
-        href:ev.target.result, opacity:1, fill:'none', stroke:'none', strokeW:0, label:'', dash:'', layer:activeLayer};
-      elements.push(el); selIds.clear(); selIds.add(el.id); redraw(); snapshot();
-    };
-    img.src = ev.target.result;
-  };
-  reader.readAsDataURL(f);
   e.target.value = '';
+  const objectUrl = URL.createObjectURL(f);
+  const img = new Image();
+  img.onload = async () => {
+    const max = 600;
+    let w = img.width, h = img.height;
+    if (w > max || h > max) { const r = max/Math.max(w,h); w*=r; h*=r; }
+    URL.revokeObjectURL(objectUrl);
+    const fd = new FormData();
+    fd.append('file', f);
+    let url;
+    try {
+      const res = await fetch(`/maps/schematic/${SLUG}/embed-image`, { method: 'POST', body: fd });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        alert('Image upload failed — ' + (body.detail || 'try again'));
+        return;
+      }
+      url = (await res.json()).url;
+    } catch (err) { alert('Image upload failed — network error'); return; }
+    const el = {id:uid(), type:'image', x:CW/2 - w/2, y:CH/2 - h/2, w, h,
+      href:url, opacity:1, fill:'none', stroke:'none', strokeW:0, label:'', dash:'', layer:activeLayer};
+    elements.push(el); selIds.clear(); selIds.add(el.id); redraw(); snapshot();
+  };
+  img.onerror = () => URL.revokeObjectURL(objectUrl);
+  img.src = objectUrl;
 }
 
 // ── Background drag & drop ──────────────────────────────────────────────────
