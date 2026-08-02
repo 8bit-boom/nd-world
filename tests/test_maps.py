@@ -104,6 +104,33 @@ def test_map_delete_missing_404s(client, seed):
     assert r.status_code == 404
 
 
+def test_map_new_symbol_only_name_rejected_not_a_zombie(client, seed):
+    """Phase 7 regression guard: _slug_from_name strips everything but
+    [a-z0-9], so a name with no letters or digits (emoji, punctuation-only)
+    used to slugify to "" — writing a map to the bare filename ".json" and
+    redirecting to /maps/, which /maps/{slug} can never route back to. The
+    map still showed up in the /maps listing (glob "*.json" matches ".json")
+    but was permanently unreachable and undeletable: a zombie record. Reject
+    the name up front instead."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/maps/new", data={"name": "!!! 🐉🐉🐉 ???"})
+    assert r.status_code == 400
+    assert not (_MAPS_DIR / ".json").exists()
+
+
+def test_schematic_new_symbol_only_name_rejected_not_a_zombie(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/maps/schematic/new", data={"name": "!!! 🐉🐉🐉 ???"})
+    assert r.status_code == 400
+    db = SessionLocal()
+    try:
+        assert db.query(Schematic).filter(Schematic.slug == "").first() is None
+    finally:
+        db.close()
+
+
 def test_map_viewer_marker_color_is_sanitized_before_svg_interpolation(client, seed):
     """Phase 5 regression guard: custom-marker colors are GM-settable via
     /api/maps/{slug}/overlay and previously flowed straight into an SVG

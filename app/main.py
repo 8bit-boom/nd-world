@@ -873,6 +873,12 @@ async def map_new(
     if not world:
         raise HTTPException(400, "No world selected")
     slug = _slug_from_name(name)
+    if not slug:
+        # A name with no letters/digits (e.g. "???" or emoji-only) slugifies to
+        # "" — f"{slug}.json" would then write to the bare filename ".json",
+        # which /maps/{slug} can never route back to: a zombie map, visible in
+        # the listing but unreachable and undeletable through the app.
+        raise HTTPException(400, "Name must contain at least one letter or number")
     base = slug; i = 2
     _MAPS_DIR.mkdir(parents=True, exist_ok=True)
     while (_MAPS_DIR / f"{slug}.json").exists():
@@ -1127,6 +1133,10 @@ async def schematic_new(
 ):
     world = get_active_world(request, db, active_world)
     slug = _slug_from_name(name)
+    if not slug:
+        # Same zombie-record hazard as map_new: an empty slug would create a
+        # Schematic that /maps/schematic/{slug} can never route back to.
+        raise HTTPException(400, "Name must contain at least one letter or number")
     base = slug; i = 2
     while db.query(Schematic).filter(Schematic.slug == slug).first():
         slug = f"{base}-{i}"; i += 1
