@@ -199,6 +199,20 @@ const kankaLayer = L.layerGroup().addTo(map);
 const customMarkersLayer = L.layerGroup().addTo(map);
 const customRegionsLayer = L.layerGroup().addTo(map);
 
+// ── Edit mode state ────────────────────────────────────────────────────────────
+// Declared here, before the first render*() call below, rather than down in the
+// "Edit mode" section further down the file — renderCustomMarkers() reads
+// editMode/tool on its very first line, and a `let` binding is in the temporal
+// dead zone until its own declaration executes, so declaring these after the
+// render calls threw "Cannot access 'editMode' before initialization" on every
+// single page load, aborting the rest of the script (no party pins, no custom
+// regions, no map click handlers, no working Edit/Move/Delete tools).
+let editMode = false;
+let tool = 'pointer';
+let polyPoints = [], polyPreview = null;
+let pendingLL = null, editingMarkerIdx = null;
+let mColor = '#ff4466', rColor = '#00f0ff';
+
 // ── Kanka markers ─────────────────────────────────────────────────────────────
 function renderKanka() {
   kankaLayer.clearLayers();
@@ -343,12 +357,6 @@ function renderCustomRegions() {
 renderCustomRegions();
 
 // ── Edit mode ──────────────────────────────────────────────────────────────────
-let editMode = false;
-let tool = 'pointer';
-let polyPoints = [], polyPreview = null;
-let pendingLL = null, editingMarkerIdx = null;
-let mColor = '#ff4466', rColor = '#00f0ff';
-
 function toggleEdit() {
   editMode = !editMode;
   document.getElementById('btn-edit').classList.toggle('active', editMode);

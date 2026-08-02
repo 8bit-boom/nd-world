@@ -601,3 +601,85 @@ def test_schematic_editor_dialogs_close_on_escape_and_backdrop_click(client, see
     assert "'grid-dlg': () => cancelGridDlg()" in r.text
     assert "back.addEventListener('click'" in r.text
     assert "e.stopImmediatePropagation()" in r.text
+
+
+def test_map_viewer_editmode_state_declared_before_first_render_call(client, seed):
+    """Regression guard (source-level — no JS runtime in this test suite):
+    renderCustomMarkers() is called at the script's top level and reads
+    editMode/tool on its first line, but `let editMode`/`let tool` used to be
+    declared later in the same script — a `let` binding is in the temporal
+    dead zone until its own declaration executes, so every single map page
+    load threw "Cannot access 'editMode' before initialization" the moment
+    renderCustomMarkers() ran, aborting the rest of the script (no party
+    pins, no custom regions, no map click handlers, no working Edit/Move/
+    Delete tools — confirmed live via Playwright, not just by inspection).
+    Locks in that the state block now appears before the render call site."""
+    from app.main import UPLOADS_DIR
+    _make_map(seed.world_a.id, "editmode-order-check")
+    maps_upload_dir = UPLOADS_DIR / "maps"
+    maps_upload_dir.mkdir(parents=True, exist_ok=True)
+    (maps_upload_dir / "editmode-order-check.png").write_bytes(b"fake-png")
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/maps/editmode-order-check")
+    assert r.status_code == 200
+    let_idx = r.text.index("let editMode = false;")
+    render_call_idx = r.text.index("renderCustomMarkers();")
+    assert let_idx < render_call_idx, (
+        "editMode must be declared before renderCustomMarkers() is first called"
+    )
+
+
+def test_maps_page_rename_button_does_not_embed_tojson_in_onclick(client, seed):
+    """Regression guard (source-level): the rename buttons used to build
+    their onclick as `onclick="...prompt('Rename map:', {{ m.name|tojson }})..."`
+    — tojson wraps its output in literal double quotes, which terminates a
+    double-quoted HTML *attribute* early (confirmed live: for a map named
+    "Central District" the browser parsed the attribute as ending right
+    after `prompt('Rename map:', "`, leaving the rest of the name and the
+    remaining JS as bogus trailing attributes on the button — this broke for
+    every name, not just ones with special characters). The fix reads the
+    name from a data-name attribute (Jinja's normal HTML autoescaping is
+    safe in that position) via a shared renameViaPrompt() helper instead."""
+    _make_map(seed.world_a.id, "rename-escaping-check")
+    db = SessionLocal()
+    try:
+        _make_schematic(db, seed.world_a.id, "rename-escaping-check-schem")
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/maps")
+    assert r.status_code == 200
+    assert "name|tojson" not in r.text
+    assert "function renameViaPrompt(btn, label)" in r.text
+    assert r.text.count("onclick=\"renameViaPrompt(this,") == 2
+    assert 'data-name="Test Map"' in r.text
+    assert 'data-name="Test Schematic"' in r.text
+
+
+def test_maps_page_upload_labels_support_drag_and_drop(client, seed):
+    """Feature-parity guard: the schematic editor's background image drop
+    zone (dragenter/dragover/dragleave/drop on #sch-canvas-wrap) already
+    worked (confirmed live via a synthetic DataTransfer+File drop event);
+    the maps list had no drag&drop at all, only click-to-browse — a real gap
+    the user hit, not a regression. Locks in that the same four listeners
+    are now wired to the .map-upload-label upload zones."""
+    _make_map(seed.world_a.id, "dragdrop-check")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/maps")
+    assert r.status_code == 200
+    assert "querySelectorAll('.map-upload-label')" in r.text
+    for evt in ("dragenter", "dragover", "dragleave", "drop"):
+        assert f"label.addEventListener('{evt}'" in r.text
+
+
+def test_map_new_form_supports_drag_and_drop(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/maps/new")
+    assert r.status_code == 200
+    for evt in ("dragenter", "dragover", "dragleave", "drop"):
+        assert f"zone.addEventListener('{evt}'" in r.text

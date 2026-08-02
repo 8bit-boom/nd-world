@@ -301,6 +301,20 @@ function normalizeMatchName(s) {
   return s.toLowerCase().replace(/[_\-.]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// Two words match if identical, or if both are long enough (>=4 chars) that
+// one is a short prefix-stretch of the other (<=3 chars of drift) — catches
+// real-world spelling/gender-suffix variance between entity names and
+// marketplace art filenames (e.g. entity "Minotaur" vs. filename word
+// "Minotaura", "Queen" vs. "Queena") without opening the door to unrelated
+// short words sharing a prefix (the >=4 floor keeps e.g. "cat" out).
+function wordsMatch(a, b) {
+  if (a === b) return true;
+  if (a.length < 4 || b.length < 4) return false;
+  const shorter = a.length <= b.length ? a : b;
+  const longer = a.length <= b.length ? b : a;
+  return longer.startsWith(shorter) && longer.length - shorter.length <= 3;
+}
+
 function matchEntityByFilename(filename) {
   const base = filename.replace(/\.[^.]+$/, '');
   const norm = normalizeMatchName(base);
@@ -313,11 +327,17 @@ function matchEntityByFilename(filename) {
   // "Skinner.png" because "skinner".includes("inn"). Splitting into words
   // and requiring one side's full word-set to be contained in the other's
   // closes that off, since "inn" as a whole word never appears in
-  // "skinner" (a single word with no internal spaces).
+  // "skinner" (a single word with no internal spaces). Per-word comparison
+  // uses wordsMatch (prefix-tolerant for longer words) rather than strict
+  // equality — real bulk-import filenames combine a numeric ID prefix, the
+  // entity name, and a descriptive suffix, with minor spelling variance on
+  // the name itself; strict equality missed all of these (a real
+  // regression from the substring-based matcher this replaced).
   const normWords = norm.split(' ');
   const candidates = ENTITIES.filter(e => {
     const enWords = normalizeMatchName(e.name).split(' ');
-    return enWords.every(w => normWords.includes(w)) || normWords.every(w => enWords.includes(w));
+    return enWords.every(w => normWords.some(nw => wordsMatch(w, nw))) ||
+           normWords.every(w => enWords.some(ew => wordsMatch(w, ew)));
   });
   if (!candidates.length) return null;
   // Tie-break: several entities can satisfy the word-containment check

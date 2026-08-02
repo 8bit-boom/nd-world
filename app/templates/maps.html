@@ -37,8 +37,8 @@
       <div style="display:flex;gap:.4rem;margin-top:.4rem">
         <form action="/maps/{{ m.slug }}/rename" method="post" style="display:inline">
           <input type="hidden" name="name" value="">
-          <button type="button" class="btn-edit-sm"
-                  onclick="var f=this.form; var n=prompt('Rename map:', {{ m.name|tojson }}); if(n && n.trim()){ f.name.value=n.trim(); f.submit(); }">✏ Rename</button>
+          <button type="button" class="btn-edit-sm" data-name="{{ m.name }}"
+                  onclick="renameViaPrompt(this, 'map')">✏ Rename</button>
         </form>
         <form action="/maps/{{ m.slug }}/delete" method="post" onsubmit="return confirm('Delete {{ m.name }}? This cannot be undone.')" style="display:inline">
           <button type="submit" class="btn-delete-sm">🗑 Delete</button>
@@ -101,8 +101,8 @@
       <div style="display:flex;gap:.4rem;margin-top:.4rem">
         <form action="/maps/schematic/{{ s.slug }}/rename" method="post" style="display:inline">
           <input type="hidden" name="name" value="">
-          <button type="button" class="btn-edit-sm"
-                  onclick="var f=this.form; var n=prompt('Rename schematic:', {{ s.name|tojson }}); if(n && n.trim()){ f.name.value=n.trim(); f.submit(); }">✏ Rename</button>
+          <button type="button" class="btn-edit-sm" data-name="{{ s.name }}"
+                  onclick="renameViaPrompt(this, 'schematic')">✏ Rename</button>
         </form>
         <form action="/maps/schematic/{{ s.slug }}/delete" method="post" onsubmit="return confirm('Delete {{s.name}}?')" style="display:inline">
           <button type="submit" class="btn-delete-sm">🗑 Delete</button>
@@ -115,4 +115,46 @@
   <p class="empty">No schematics yet. <a href="/maps/schematic/new">Create one</a>.</p>
   {% endfor %}
 </div>
+
+<script>
+// Reads the map/schematic name from a data-name attribute rather than
+// embedding it via |tojson inside this onclick string — tojson wraps its
+// output in literal double quotes, which terminates a double-quoted HTML
+// attribute early (breaks for every name, not just ones with special
+// characters). data-name goes through Jinja's normal HTML autoescaping
+// instead, which is safe in this position.
+function renameViaPrompt(btn, label) {
+  const f = btn.closest('form');
+  const n = prompt('Rename ' + label + ':', btn.dataset.name);
+  if (n && n.trim()) { f.name.value = n.trim(); f.submit(); }
+}
+
+// Drag&drop onto the upload labels, in addition to the existing click-to-
+// browse file input — same event pattern as the schematic editor's proven
+// background-image drop zone (app/templates/schematic.html), wired here to
+// just populate the existing file input and submit its form.
+document.querySelectorAll('.map-upload-label').forEach(label => {
+  label.addEventListener('dragenter', e => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    label.classList.add('drag-over');
+  });
+  label.addEventListener('dragover', e => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  label.addEventListener('dragleave', () => label.classList.remove('drag-over'));
+  label.addEventListener('drop', e => {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    label.classList.remove('drag-over');
+    const f = e.dataTransfer.files[0];
+    if (!f || !f.type.startsWith('image/')) return;
+    const input = label.querySelector('input[type=file]');
+    input.files = e.dataTransfer.files;
+    input.form.submit();
+  });
+});
+</script>
 {% endblock %}

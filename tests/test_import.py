@@ -577,6 +577,28 @@ def test_import_page_fuzzy_match_uses_word_boundaries_not_raw_substring(client, 
     assert "normWords" in r.text and "enWords" in r.text
 
 
+def test_import_page_fuzzy_match_is_prefix_tolerant_not_exact(client, seed):
+    """Regression guard (source-level — no JS runtime in this test suite):
+    word-boundary matching (the fix locked in by the test above) requires
+    each side's word-set to be exactly contained in the other's, which broke
+    on real bulk-import filenames combining a numeric ID prefix + entity
+    name + descriptive suffix with minor spelling/gender-suffix variance
+    from the entity name itself (e.g. filename word "Minotaura" vs. entity
+    name word "Minotaur") — every file in a 100-file batch missed, confirmed
+    live via Playwright against the actual matching function. wordsMatch()
+    restores prefix tolerance for words >=4 chars with <=3 chars of drift,
+    while the strict-equality Inn/Skinner guard (word-level, not raw
+    substring — closed by the fix above and unaffected by this one) still
+    holds, confirmed live: "Skinner.png" still doesn't match entity "Inn"."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/import")
+    assert r.status_code == 200
+    assert "function wordsMatch(a, b)" in r.text
+    assert "longer.startsWith(shorter)" in r.text
+    assert "normWords.some(nw => wordsMatch(w, nw))" in r.text
+
+
 def test_import_page_warns_on_duplicate_entity_assignment(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
