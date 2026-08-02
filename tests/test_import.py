@@ -599,6 +599,43 @@ def test_import_page_fuzzy_match_is_prefix_tolerant_not_exact(client, seed):
     assert "normWords.some(nw => wordsMatch(w, nw))" in r.text
 
 
+def test_import_page_fuzzy_match_tolerates_dropped_connector_words(client, seed):
+    """Regression guard (source-level — no JS runtime in this test suite):
+    art-pack filenames routinely drop connector words ("the", "of", "a")
+    that appear in a verbose entity name — e.g. entity "Raven of the
+    Gallows Wind" vs. filename "Ravens of Gallows Winda" (note: "the" is
+    simply gone, "of" is kept). Requiring every entity word verbatim in the
+    filename made these miss entirely even with prefix-tolerant wordsMatch,
+    confirmed against the exact filenames from a real live-site batch.
+    Skipping only these specific stopwords (not any arbitrary missing word —
+    that would risk cross-matching similarly-named entity variants, e.g.
+    "Bronze War Golem" against art meant for a differently-suffixed "Bronze
+    War ___") closes the gap without reopening the Inn/Skinner false
+    positive, which the test above already locks in stays closed."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/import")
+    assert r.status_code == 200
+    assert "MATCH_STOPWORDS" in r.text
+    assert "new Set(['the', 'of', 'a', 'an', 'and'])" in r.text
+    assert "enWords.every(w => MATCH_STOPWORDS.has(w) || normWords.some(nw => wordsMatch(w, nw)))" in r.text
+
+
+def test_import_page_normalize_strips_commas(client, seed):
+    """normalizeMatchName previously stripped underscores/hyphens/periods to
+    spaces but left commas as literal characters glued onto the preceding
+    word (e.g. entity "Garmr, Gate-Hound of the Deep" normalized to a first
+    word of "garmr," with a trailing comma) — harmless for prefix-tolerant
+    matches where the comma happened to fall within the drift allowance, but
+    not a real fix. Commas (and other pure separators) are now stripped the
+    same way hyphens/underscores already were."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/import")
+    assert r.status_code == 200
+    assert "replace(/[_\\-.,:;]+/g, ' ')" in r.text
+
+
 def test_import_page_warns_on_duplicate_entity_assignment(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)

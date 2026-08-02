@@ -298,8 +298,17 @@ document.getElementById('import-btn').addEventListener('click', async () => {
 // filename, entirely client-side against the entity list already embedded
 // in the page — no round trip needed just to preview the matches.
 function normalizeMatchName(s) {
-  return s.toLowerCase().replace(/[_\-.]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return s.toLowerCase().replace(/[_\-.,:;]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
+
+// Connector words carry no identifying information, and art-pack filenames
+// routinely drop them from a verbose entity name (e.g. entity "Raven of the
+// Gallows Wind" vs. filename "Ravens of Gallows Winda" — "the" is simply
+// gone). Skipping only these specific words (not just any missing word —
+// that would risk matching e.g. "Bronze War Golem" against art actually
+// meant for a differently-suffixed "Bronze War ___" variant) closes that
+// gap without reopening the original Inn/Skinner false-positive.
+const MATCH_STOPWORDS = new Set(['the', 'of', 'a', 'an', 'and']);
 
 // Two words match if identical, or if both are long enough (>=4 chars) that
 // one is a short prefix-stretch of the other (<=3 chars of drift) — catches
@@ -336,7 +345,7 @@ function matchEntityByFilename(filename) {
   const normWords = norm.split(' ');
   const candidates = ENTITIES.filter(e => {
     const enWords = normalizeMatchName(e.name).split(' ');
-    return enWords.every(w => normWords.some(nw => wordsMatch(w, nw))) ||
+    return enWords.every(w => MATCH_STOPWORDS.has(w) || normWords.some(nw => wordsMatch(w, nw))) ||
            normWords.every(w => enWords.some(ew => wordsMatch(w, ew)));
   });
   if (!candidates.length) return null;
@@ -455,46 +464,83 @@ function disableImgImport() {
   btn.disabled = true; btn.style.opacity = '.5';
 }
 
+// Real portrait/art files can easily be several MB each, so one request
+// carrying a whole 100-file batch regularly landed well past what a reverse
+// proxy in front of the app allows — the app's own per-file MAX_UPLOAD_BYTES
+// never even came into play, since a proxy that size-limits the *request*
+// rejects it before FastAPI ever sees it, coming back as a non-JSON 413.
+// Splitting into byte-bounded chunks (not just a fixed file count, since a
+// handful of large files can be just as oversized as a hundred small ones)
+// keeps each individual request comfortably under that kind of limit.
+const IMG_UPLOAD_CHUNK_MAX_BYTES = 8 * 1024 * 1024;
+const IMG_UPLOAD_CHUNK_MAX_FILES = 20;
+function chunkUploadItems(items) {
+  const chunks = [];
+  let current = [], currentBytes = 0;
+  items.forEach(item => {
+    if (current.length && (currentBytes + item.file.size > IMG_UPLOAD_CHUNK_MAX_BYTES || current.length >= IMG_UPLOAD_CHUNK_MAX_FILES)) {
+      chunks.push(current);
+      current = []; currentBytes = 0;
+    }
+    current.push(item);
+    currentBytes += item.file.size;
+  });
+  if (current.length) chunks.push(current);
+  return chunks;
+}
+
 document.getElementById('img-import-btn').addEventListener('click', async () => {
   const imgBtn = document.getElementById('img-import-btn');
   const resEl = document.getElementById('img-import-result');
   const selects = document.querySelectorAll('#img-preview-table select');
-  const fd = new FormData();
-  let count = 0;
+  const toUpload = [];
   selects.forEach(sel => {
     if (!sel.value) return; // "— Skip —" — never uploaded, not just unassigned
     const idx = parseInt(sel.dataset.fileIndex, 10);
-    fd.append('files', selectedImgFiles[idx]);
-    fd.append('entity_ids', sel.value);
-    count++;
+    toUpload.push({ file: selectedImgFiles[idx], entityId: sel.value });
   });
-  if (count === 0) {
+  if (toUpload.length === 0) {
     resEl.style.color = '#c44'; resEl.textContent = 'Nothing to import — every file is set to skip.';
     return;
   }
-  if (count > BULK_IMAGE_MAX_FILES) {
-    // The server enforces this same cap (BULK_IMAGE_MAX_FILES, shared from
-    // app/uploads.py) — but only *after* fully receiving every file, since
-    // FastAPI parses the whole multipart body into the declared
-    // List[UploadFile] before the route body runs. Checking here first
-    // avoids uploading a batch (e.g. 138 files) that was always going to be
-    // rejected, and skips the failure mode where a reverse proxy in front
-    // of the app times out or hits its own body-size limit on that oversized
-    // request and returns an HTML error page instead of JSON.
+  if (toUpload.length > BULK_IMAGE_MAX_FILES) {
+    // The server also enforces this same cap (BULK_IMAGE_MAX_FILES, shared
+    // from app/uploads.py) per request, but chunking below means that alone
+    // wouldn't catch an oversized *overall* selection — the per-chunk
+    // requests would each individually pass. Checking the total here first
+    // avoids silently uploading only part of a batch that's simply too big.
     resEl.style.color = '#c44';
-    resEl.textContent = `Too many files selected (${count}) — the max is ${BULK_IMAGE_MAX_FILES} per batch. Deselect some or import in multiple batches.`;
+    resEl.textContent = `Too many files selected (${toUpload.length}) — the max is ${BULK_IMAGE_MAX_FILES} per batch. Deselect some or import in multiple batches.`;
     return;
   }
-  resEl.style.color = 'var(--text-dim)'; resEl.textContent = `Uploading ${count} image(s)…`;
   imgBtn.disabled = true;
   try {
-    const res = await fetch('/api/import/images', { method: 'POST', body: fd });
-    const { data, parseError } = await parseJsonResponse(res);
-    if (parseError) { resEl.style.color = '#c44'; resEl.textContent = `Import failed: server returned a non-JSON response (${parseError}).`; return; }
-    if (!res.ok) { resEl.style.color = '#c44'; resEl.textContent = data.detail || 'Import failed.'; return; }
-    resEl.style.color = data.updated === count ? '#4f4' : '#e8a94a';
-    resEl.textContent = `${data.updated}/${count} image(s) applied.`;
-    const errs = data.results.filter(r => r.status === 'error');
+    const chunks = chunkUploadItems(toUpload);
+    let updatedTotal = 0, uploadedSoFar = 0;
+    const allResults = [];
+    for (const chunk of chunks) {
+      resEl.style.color = 'var(--text-dim)';
+      resEl.textContent = `Uploading ${uploadedSoFar + 1}–${uploadedSoFar + chunk.length} of ${toUpload.length}…`;
+      const fd = new FormData();
+      chunk.forEach(({ file, entityId }) => { fd.append('files', file); fd.append('entity_ids', entityId); });
+      try {
+        const res = await fetch('/api/import/images', { method: 'POST', body: fd });
+        const { data, parseError } = await parseJsonResponse(res);
+        if (parseError || !res.ok) {
+          const msg = parseError ? `server returned a non-JSON response (${parseError})` : ((data && data.detail) || 'Import failed.');
+          chunk.forEach(({ file }) => allResults.push({ filename: file.name, status: 'error', error: msg }));
+        } else {
+          updatedTotal += data.updated;
+          allResults.push(...data.results);
+        }
+      } catch (e) {
+        chunk.forEach(({ file }) => allResults.push({ filename: file.name, status: 'error', error: e.message }));
+      }
+      uploadedSoFar += chunk.length;
+    }
+    resEl.style.color = updatedTotal === toUpload.length ? '#4f4' : '#e8a94a';
+    resEl.textContent = `${updatedTotal}/${toUpload.length} image(s) applied.`;
+    const errs = allResults.filter(r => r.status === 'error');
     if (errs.length) {
       const list = document.createElement('ul');
       list.style.cssText = 'margin:.4rem 0 0 1.2rem;padding:0';
@@ -508,8 +554,6 @@ document.getElementById('img-import-btn').addEventListener('click', async () => 
     } else {
       setTimeout(() => window.location.reload(), 900);
     }
-  } catch (e) {
-    resEl.style.color = '#c44'; resEl.textContent = 'Import failed: ' + e.message;
   } finally {
     imgBtn.disabled = false;
   }

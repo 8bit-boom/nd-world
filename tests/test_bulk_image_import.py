@@ -213,6 +213,41 @@ def test_import_page_precheck_matches_server_cap(client, seed):
     r = client.get("/import")
     assert r.status_code == 200
     assert f"const BULK_IMAGE_MAX_FILES = {BULK_IMAGE_MAX_FILES};" in r.text
-    assert "count > BULK_IMAGE_MAX_FILES" in r.text
+    assert "toUpload.length > BULK_IMAGE_MAX_FILES" in r.text
     assert "async function parseJsonResponse(res)" in r.text
     assert r.text.count("parseJsonResponse(res)") >= 2  # both fetch handlers use it
+
+
+def test_import_page_bulk_image_upload_is_chunked_by_size(client, seed):
+    """A real live-site batch of 100 portrait/art files (several MB each)
+    sent as one multipart request regularly exceeded a reverse proxy's body-
+    size limit in front of the app — the app's own per-file MAX_UPLOAD_BYTES
+    never even came into play, since the proxy rejected the request before
+    FastAPI saw it, returning a non-JSON 413 (which parseJsonResponse — see
+    the test above — already turned into a clean message instead of a raw
+    crash, but the upload itself still just failed outright). The client now
+    splits into byte-bounded chunks and uploads them as separate sequential
+    requests to /api/import/images, so no single request need be anywhere
+    near that size, and one bad chunk doesn't sink files that already
+    succeeded via earlier chunks. Source-level guard (no JS runtime in this
+    test suite)."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/import")
+    assert r.status_code == 200
+    assert "function chunkUploadItems(items)" in r.text
+    assert "IMG_UPLOAD_CHUNK_MAX_BYTES" in r.text
+    # Chunking must be driven by cumulative byte size, not just a fixed file
+    # count — a handful of large files can be just as oversized as a hundred
+    # small ones.
+    assert "currentBytes + item.file.size > IMG_UPLOAD_CHUNK_MAX_BYTES" in r.text
+    # Each chunk goes through the same fetch, and a failed chunk (network
+    # error, non-JSON response, or a server-side error) must be recorded per
+    # file and the loop must continue to the next chunk rather than aborting
+    # the whole batch.
+    idx = r.text.index("function chunkUploadItems(items)")
+    handler_idx = r.text.index("img-import-btn').addEventListener('click'", idx)
+    handler_end = r.text.index("\n});", handler_idx)
+    handler_src = r.text[handler_idx:handler_end]
+    assert "for (const chunk of chunks)" in handler_src
+    assert "allResults.push" in handler_src
