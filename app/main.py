@@ -1354,7 +1354,7 @@ def schematic_pull_combat(slug: str, db: Session = Depends(get_db)):
                     "color": "#4488ff" if source == "pc" else ("#e63946" if source == "entity" else "#888888"),
                     "hp": combatant.get("hp", 0), "max_hp": combatant.get("max_hp", 0),
                     "conditions": list(combatant.get("conditions", [])),
-                    "visible_to_players": source == "pc",
+                    "visible_to_players": source in ("pc", "entity"),
                 })
                 new_count += 1
         s2.elements_json = json.dumps(elements)

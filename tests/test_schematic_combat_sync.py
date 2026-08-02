@@ -142,6 +142,28 @@ def test_pull_combat_creates_and_refreshes_tokens(client, seed):
     assert elements2[0]["hp"] == 2
 
 
+def test_pull_combat_entity_sourced_tokens_default_visible_to_players(client, seed):
+    """Creature/NPC combatants used to come in with visible_to_players=False
+    (only "pc"-sourced combatants defaulted visible) — a GM pulling monsters
+    into a schematic had to manually toggle each one on before players could
+    see them. Per explicit request, entity-sourced (creature/NPC) combatants
+    now default visible too, same as PCs; only "manual" (typed directly into
+    the combat tracker, no PC/Entity link) still defaults hidden."""
+    cs = _make_combat(seed.world_a.id, combatants=[
+        {"id": "c1", "name": "Goblin", "source": "entity", "hp": 5, "max_hp": 5, "conditions": []},
+        {"id": "c2", "name": "Hero", "source": "pc", "hp": 10, "max_hp": 10, "conditions": []},
+        {"id": "c3", "name": "Ambusher", "source": "manual", "hp": 8, "max_hp": 8, "conditions": []},
+    ])
+    s = _make_schematic(seed.world_a.id, "pull-visibility", combat_session_id=cs.id)
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(f"/maps/schematic/{s.slug}/pull-combat")
+    assert r.status_code == 200
+    elements = {e["combatant_id"]: e for e in r.json()["elements"]}
+    assert elements["c1"]["visible_to_players"] is True
+    assert elements["c2"]["visible_to_players"] is True
+    assert elements["c3"]["visible_to_players"] is False
+
+
 def test_push_combat_syncs_hp_back(client, seed):
     cs = _make_combat(seed.world_a.id, combatants=[
         {"id": "c1", "name": "Goblin", "source": "entity", "hp": 5, "max_hp": 5, "conditions": []},

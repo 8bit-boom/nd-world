@@ -1510,7 +1510,7 @@ function confirmTokenPlacement() {
     const en = ENTITY_PAYLOAD.find(x => x.id === id);
     if (!en) { pendingTokenPt=null; return; }
     el = { ...base, source:'entity', pc_id:null, entity_id:en.id, name:en.name,
-      color:'#e63946', hp:en.max_hp, max_hp:en.max_hp, visible_to_players:false,
+      color:'#e63946', hp:en.max_hp, max_hp:en.max_hp,
       image_url: en.image_url || null };
   } else if (tokenTab === 'item') {
     const id = parseInt(document.getElementById('tkdlg-item-select').value, 10);

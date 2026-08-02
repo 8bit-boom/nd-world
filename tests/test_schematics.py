@@ -419,3 +419,20 @@ def test_schematic_view_does_not_wire_drag_for_locked_own_token(client, seed):
     r = client.get(f"/maps/schematic/{s.slug}/view")
     assert r.status_code == 200
     assert "OWN_PC_ID && el.pc_id === OWN_PC_ID && !el.locked" in r.text
+
+
+def test_schematic_editor_creature_tokens_default_visible_to_players(client, seed):
+    """Source-level guard (no JS runtime in this test suite): placing a
+    creature/NPC token via the "+ Token" dialog's Creatures tab used to
+    hardcode visible_to_players:false, hiding it from players until the GM
+    manually ticked the "Players" checkbox on every single one. Per explicit
+    request, creature/NPC tokens now default visible like PC tokens do —
+    only the base object's visible_to_players:true should apply, with no
+    override in the entity branch."""
+    s = _make_schematic(seed.world_a.id, "creature-token-visibility-check")
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get(f"/maps/schematic/{s.slug}")
+    assert r.status_code == 200
+    idx = r.text.index("} else if (tokenTab === 'entity') {")
+    next_branch = r.text.index("} else if (tokenTab === 'item') {", idx)
+    assert "visible_to_players:false" not in r.text[idx:next_branch]
