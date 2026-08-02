@@ -241,9 +241,10 @@ function makeCustomIcon(color) {
 
 function renderCustomMarkers() {
   customMarkersLayer.clearLayers();
+  const draggable = editMode && tool === 'move';
   customMarkers.forEach((m, i) => {
     const ll = L.latLng(m.lat, m.lng);
-    const lm = L.marker(ll, {icon: makeCustomIcon(m.color || '#ff4466'), draggable: false})
+    const lm = L.marker(ll, {icon: makeCustomIcon(m.color || '#ff4466'), draggable})
       .addTo(customMarkersLayer);
     const note = m.note ? `<div class="pop-desc">${esc(m.note)}</div>` : '';
     const schem = SCHEMATICS.find(s => s.slug === m.link_schematic);
@@ -251,6 +252,14 @@ function renderCustomMarkers() {
     lm.bindPopup(`<div class="map-popup"><b>${esc(m.label || '?')}</b>${note}${link}</div>`);
     lm.bindTooltip(esc(m.label || ''), {direction:'right', opacity:.9});
     lm.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removeCustomMarker(i); } else if (editMode && (tool === 'marker' || tool === 'move')) { L.DomEvent.stop(e); editCustomMarker(i); } });
+    // The Move tool's whole purpose is repositioning a placed marker by drag —
+    // previously every marker was created with draggable:false unconditionally,
+    // so switching to Move and dragging a pin did nothing at all.
+    lm.on('dragend', e => {
+      const pos = e.target.getLatLng();
+      customMarkers[i] = { ...customMarkers[i], lat: pos.lat, lng: pos.lng };
+      saveOverlay();
+    });
   });
 }
 renderCustomMarkers();
@@ -326,6 +335,9 @@ function setTool(t) {
     if (el) el.classList.toggle('active', id === 'btn-' + (t==='marker'?'add-m':t==='region'?'add-r':t==='party'?'add-p':t==='move'?'move':'del'));
   });
   map.getContainer().style.cursor = (t === 'region' || t === 'party' || t === 'marker') ? 'crosshair' : t === 'delete' ? 'not-allowed' : '';
+  // Marker draggable-ness is derived from `tool` at render time (see
+  // renderCustomMarkers), so switching tools has to re-render to pick it up.
+  renderCustomMarkers();
 }
 
 // Map click handler
@@ -395,6 +407,7 @@ function confirmMarker() {
   }
   closeDlg('dlg-marker'); pendingLL = null; editingMarkerIdx = null;
   renderCustomMarkers();
+  saveOverlay();
 }
 
 // ── Party placement dialog ───────────────────────────────────────────────────
@@ -424,9 +437,10 @@ function deleteMarker() {
   if (editingMarkerIdx !== null) customMarkers.splice(editingMarkerIdx, 1);
   closeDlg('dlg-marker'); pendingLL = null; editingMarkerIdx = null;
   renderCustomMarkers();
+  saveOverlay();
 }
 
-function removeCustomMarker(i) { customMarkers.splice(i, 1); renderCustomMarkers(); }
+function removeCustomMarker(i) { customMarkers.splice(i, 1); renderCustomMarkers(); saveOverlay(); }
 
 // ── Region dialog ─────────────────────────────────────────────────────────────
 function finishRegion() {
@@ -451,6 +465,7 @@ function confirmRegion() {
   closeDlg('dlg-region');
   cancelRegionDraw();
   renderCustomRegions();
+  saveOverlay();
 }
 
 function cancelRegionDraw() {
@@ -460,7 +475,7 @@ function cancelRegionDraw() {
   closeDlg('dlg-region');
 }
 
-function removeRegion(i) { customRegions.splice(i, 1); renderCustomRegions(); }
+function removeRegion(i) { customRegions.splice(i, 1); renderCustomRegions(); saveOverlay(); }
 
 // ── Layer toggle ──────────────────────────────────────────────────────────────
 let kankaVisible = true;

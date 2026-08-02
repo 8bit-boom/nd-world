@@ -252,6 +252,50 @@ def test_map_viewer_marker_color_is_sanitized_before_svg_interpolation(client, s
     assert 'fill="${color}"' not in r.text and 'stroke="${color}"' not in r.text
 
 
+def test_map_viewer_move_tool_drags_markers_and_mutations_autosave(client, seed):
+    """Phase 9 regression guard, source-level (no JS runtime in this test
+    suite — see the marker-color test above for why). Two bugs bundled into
+    one fix:
+
+    1. Every custom marker was created with draggable:false hardcoded, so the
+       toolbar's "Move" tool did nothing at all — clicking a marker while
+       Move was active just opened the same edit dialog as the Marker tool.
+       Markers must now be draggable exactly when editMode && tool==='move',
+       and dragend must persist the new position.
+    2. Adding/editing/deleting a marker or region only ever updated in-memory
+       state — nothing was written back to the server until the GM
+       remembered to click the manual "💾 Save" button, so navigating away
+       (e.g. via a marker popup's "Open schematic" link) silently discarded
+       the edit. Every mutation must now call saveOverlay() itself.
+    """
+    from app.main import UPLOADS_DIR
+    _make_map(seed.world_a.id, "drag-cave")
+    maps_upload_dir = UPLOADS_DIR / "maps"
+    maps_upload_dir.mkdir(parents=True, exist_ok=True)
+    (maps_upload_dir / "drag-cave.png").write_bytes(b"fake-png")
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/maps/drag-cave")
+    assert r.status_code == 200
+    assert "draggable: false" not in r.text
+    assert "const draggable = editMode && tool === 'move'" in r.text
+    assert "lm.on('dragend'" in r.text
+    for fn_start in (
+        "function confirmMarker() {",
+        "function deleteMarker() {",
+        "function removeCustomMarker(i) {",
+        "function confirmRegion() {",
+        "function removeRegion(i) {",
+    ):
+        idx = r.text.index(fn_start)
+        # removeCustomMarker/removeRegion are one-liners; the others are
+        # multi-statement functions — either way saveOverlay() must appear
+        # before the next top-level function declaration.
+        next_fn = r.text.index("\nfunction ", idx + len(fn_start))
+        assert "saveOverlay()" in r.text[idx:next_fn], f"{fn_start} never calls saveOverlay()"
+
+
 def _make_schematic(db, world_id, slug, name="Test Schematic"):
     s = Schematic(world_id=world_id, name=name, slug=slug, is_html=False,
                    canvas_width=2000, canvas_height=1500, canvas_bg="dark", elements_json="[]")
