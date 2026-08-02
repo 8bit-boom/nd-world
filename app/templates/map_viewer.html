@@ -310,6 +310,34 @@ function renderCustomRegions() {
     }).addTo(customRegionsLayer);
     if (r.name) poly.bindTooltip(esc(r.name), {sticky:true, opacity:.9});
     poly.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removeRegion(i); } });
+    // Regions never got the Move tool's drag treatment markers did — the
+    // only way to reposition one was delete + redraw from scratch. Leaflet
+    // polygons aren't draggable without the (unloaded) leaflet.path.drag
+    // plugin, so this drags by hand: disable map panning, translate every
+    // point by the pointer's lat/lng delta on mousemove, and persist +
+    // re-enable panning on mouseup.
+    poly.on('mousedown', e => {
+      if (!(editMode && tool === 'move')) return;
+      L.DomEvent.stop(e);
+      map.dragging.disable();
+      const start = e.latlng;
+      const origPoints = customRegions[i].points.map(p => [p[0], p[1]]);
+      const onMove = ev => {
+        const dLat = ev.latlng.lat - start.lat, dLng = ev.latlng.lng - start.lng;
+        poly.setLatLngs(origPoints.map(([lat, lng]) => L.latLng(lat + dLat, lng + dLng)));
+      };
+      const onUp = ev => {
+        map.off('mousemove', onMove);
+        map.off('mouseup', onUp);
+        map.dragging.enable();
+        const dLat = ev.latlng.lat - start.lat, dLng = ev.latlng.lng - start.lng;
+        customRegions[i] = { ...customRegions[i], points: origPoints.map(([lat, lng]) => [lat + dLat, lng + dLng]) };
+        renderCustomRegions();
+        saveOverlay();
+      };
+      map.on('mousemove', onMove);
+      map.on('mouseup', onUp);
+    });
   });
 }
 renderCustomRegions();

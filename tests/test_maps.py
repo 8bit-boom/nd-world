@@ -334,6 +334,33 @@ def test_map_viewer_move_tool_drags_markers_and_mutations_autosave(client, seed)
         assert "saveOverlay()" in r.text[idx:next_fn], f"{fn_start} never calls saveOverlay()"
 
 
+def test_map_viewer_move_tool_also_drags_regions(client, seed):
+    """Phase 17: Move only ever worked for markers (Phase 9) — regions had no
+    drag support at all, since Leaflet polygons aren't draggable without the
+    (unloaded) leaflet.path.drag plugin, so the only way to reposition one
+    was delete + redraw from scratch. Source-level guard (no JS runtime in
+    this test suite) for the hand-rolled drag: mousedown starts it (gated on
+    editMode && tool==='move'), mousemove translates every point by the
+    pointer's lat/lng delta, and mouseup persists via saveOverlay()."""
+    from app.main import UPLOADS_DIR
+    _make_map(seed.world_a.id, "region-drag-cave")
+    maps_upload_dir = UPLOADS_DIR / "maps"
+    maps_upload_dir.mkdir(parents=True, exist_ok=True)
+    (maps_upload_dir / "region-drag-cave.png").write_bytes(b"fake-png")
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/maps/region-drag-cave")
+    assert r.status_code == 200
+    assert "poly.on('mousedown'" in r.text
+    assert "if (!(editMode && tool === 'move')) return;" in r.text
+    assert "map.dragging.disable()" in r.text
+    assert "map.dragging.enable()" in r.text
+    idx = r.text.index("poly.on('mousedown'")
+    onup_idx = r.text.index("const onUp", idx)
+    assert "saveOverlay()" in r.text[onup_idx:onup_idx + 600]
+
+
 def _make_schematic(db, world_id, slug, name="Test Schematic"):
     s = Schematic(world_id=world_id, name=name, slug=slug, is_html=False,
                    canvas_width=2000, canvas_height=1500, canvas_bg="dark", elements_json="[]")
