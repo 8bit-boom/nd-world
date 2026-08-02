@@ -7,7 +7,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from sqlalchemy import or_
+from sqlalchemy import or_, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ..constants import KINDS, ND_DEFAULT_CURRENCY, ND_DEFAULT_STATS
@@ -52,6 +53,24 @@ def _world_maps(world_id: int):
         if data.get("world_id", 1) == world_id:
             out.append((jf.stem, data.get("name", jf.stem)))
     return out
+
+
+def _map_world_id(slug: str) -> Optional[int]:
+    """world_id of the filesystem-backed map at this slug, or None if it
+    doesn't exist — same lookup as main.py's _map_data(), duplicated locally
+    for the same reason _world_maps() is (see its docstring above)."""
+    jf = _MAPS_DIR / f"{slug}.json"
+    if not jf.exists():
+        return None
+    try:
+        data = json.loads(jf.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data.get("world_id", 1)
+
+
+_MAX_OVERLAY_ITEMS = 500  # mirrors main.py's save_map_overlay cap
+_MAX_BATCH_IMPORT_ITEMS = 200  # each item can trigger its own DB commit — unbounded is a DoS vector
 
 
 # ── Detection ────────────────────────────────────────────────────────────────
@@ -303,51 +322,99 @@ def execute_import(db: Session, world: World, kind: str, data, params: dict):
         slug = params.get("map_slug")
         if not slug:
             return False, "No map selected"
-        overlay = db.query(MapOverlay).filter(MapOverlay.slug == slug).first()
-        if not overlay:
-            overlay = MapOverlay(slug=slug, custom_markers_json="[]", custom_regions_json="[]")
-            db.add(overlay)
-        markers = json.loads(overlay.custom_markers_json or "[]")
-        regions = json.loads(overlay.custom_regions_json or "[]")
-        markers.extend(data.get("custom_markers") or [])
-        regions.extend(data.get("custom_regions") or [])
-        overlay.custom_markers_json = json.dumps(markers)
-        overlay.custom_regions_json = json.dumps(regions)
-        db.commit()
-        return True, f"/maps/{slug}"
+        # Same "doesn't exist" vs "belongs to another world" ambiguity as
+        # every other cross-world-write guard in this app — deliberately
+        # one message for both, so a GM can't use this to probe other
+        # worlds' map slugs.
+        if _map_world_id(slug) != world.id:
+            return False, "Map not found"
+        markers_in = data.get("custom_markers") or []
+        regions_in = data.get("custom_regions") or []
+        if not isinstance(markers_in, list) or not isinstance(regions_in, list):
+            return False, "custom_markers and custom_regions must be lists"
+        try:
+            # BEGIN IMMEDIATE pattern — see main.py's schematic_pull_combat
+            # for the canonical version of this. Without it, two concurrent
+            # imports (or an import racing a GM editing the map live) could
+            # both read the pre-import overlay and the second write would
+            # silently discard the first's markers/regions.
+            db.rollback()
+            db.execute(text("BEGIN IMMEDIATE"))
+            overlay = db.query(MapOverlay).filter(MapOverlay.slug == slug).with_for_update().first()
+            if not overlay:
+                overlay = MapOverlay(slug=slug, custom_markers_json="[]", custom_regions_json="[]")
+                db.add(overlay)
+                db.flush()
+            markers = json.loads(overlay.custom_markers_json or "[]")
+            regions = json.loads(overlay.custom_regions_json or "[]")
+            markers.extend(markers_in)
+            regions.extend(regions_in)
+            # Capped on the merged total, not just the incoming batch —
+            # otherwise the cap is trivially bypassed by importing a few
+            # items at a time forever.
+            if len(markers) > _MAX_OVERLAY_ITEMS or len(regions) > _MAX_OVERLAY_ITEMS:
+                db.rollback()
+                return False, f"Too many markers/regions on this map — limit is {_MAX_OVERLAY_ITEMS} each"
+            overlay.custom_markers_json = json.dumps(markers)
+            overlay.custom_regions_json = json.dumps(regions)
+            db.commit()
+            return True, f"/maps/{slug}"
+        except OperationalError:
+            db.rollback()
+            return False, "Someone else is editing this map right now — try again"
 
     if kind == "schematic_elements":
         elements = data.get("elements") if isinstance(data, dict) else data
         if not isinstance(elements, list) or not elements or not all(isinstance(el, dict) for el in elements):
             return False, 'Expected a non-empty array of schematic elements (or {"elements": [...]})'
         slug = params.get("schematic_slug")
+
         if slug == "__new__":
             name = (params.get("new_schematic_name") or "Imported Schematic").strip() or "Imported Schematic"
+            try:
+                canvas_width = int(params.get("new_canvas_width") or 2000)
+                canvas_height = int(params.get("new_canvas_height") or 1500)
+            except (TypeError, ValueError):
+                return False, "Canvas width/height must be numbers"
+            # Same bounds as main.py's schematic_new — feeds the SVG viewBox
+            # and the hex-grid rendering loop's iteration bounds.
+            if not (100 <= canvas_width <= 20000) or not (100 <= canvas_height <= 20000):
+                return False, "Canvas width/height must be between 100 and 20000"
+            # No locking needed: this slug doesn't exist until this INSERT
+            # commits, so nothing else can be concurrently writing its
+            # elements_json yet.
             s = Schematic(
                 world_id=world.id, name=name, slug=_schematic_slugify(name, db),
                 description=None, is_html=False,
-                canvas_width=int(params.get("new_canvas_width") or 2000),
-                canvas_height=int(params.get("new_canvas_height") or 1500),
+                canvas_width=canvas_width, canvas_height=canvas_height,
                 canvas_bg=params.get("new_canvas_bg") or "dark",
-                elements_json="[]",
+                elements_json=json.dumps(elements),
             )
             db.add(s)
-            db.flush()
-        else:
-            s = db.query(Schematic).filter(Schematic.slug == slug).first()
-            if not s:
-                return False, "No schematic selected"
-        existing = json.loads(s.elements_json or "[]")
-        by_id = {el.get("id"): i for i, el in enumerate(existing) if el.get("id")}
-        for el in elements:
-            eid = el.get("id")
-            if eid and eid in by_id:
-                existing[by_id[eid]] = el
-            else:
-                existing.append(el)
-        s.elements_json = json.dumps(existing)
-        db.commit()
-        return True, f"/maps/schematic/{s.slug}"
+            db.commit()
+            return True, f"/maps/schematic/{s.slug}"
+
+        s = db.query(Schematic).filter(Schematic.slug == slug).first()
+        if not s or s.world_id != world.id:
+            return False, "Schematic not found"
+        try:
+            db.rollback()
+            db.execute(text("BEGIN IMMEDIATE"))
+            s2 = db.query(Schematic).filter(Schematic.id == s.id).with_for_update().first()
+            existing = json.loads(s2.elements_json or "[]")
+            by_id = {el.get("id"): i for i, el in enumerate(existing) if el.get("id")}
+            for el in elements:
+                eid = el.get("id")
+                if eid and eid in by_id:
+                    existing[by_id[eid]] = el
+                else:
+                    existing.append(el)
+            s2.elements_json = json.dumps(existing)
+            db.commit()
+            return True, f"/maps/schematic/{s2.slug}"
+        except OperationalError:
+            db.rollback()
+            return False, "Someone else is editing this schematic right now — try again"
 
     if kind == "random_table":
         rows = data if isinstance(data, list) else [data]
@@ -544,10 +611,21 @@ async def import_execute(request: Request, db: Session = Depends(get_db), active
         items = data.get("imports") if isinstance(data, dict) else None
         if not isinstance(items, list) or not items:
             raise HTTPException(400, 'Expected {"imports": [...]}')
+        if len(items) > _MAX_BATCH_IMPORT_ITEMS:
+            raise HTTPException(400, f"Too many items in one batch — limit is {_MAX_BATCH_IMPORT_ITEMS}")
         results = execute_batch_import(db, world, items)
         return {"ok": True, "batch": True, "results": results}
 
-    ok, result = execute_import(db, world, kind, data, params)
+    # execute_batch_import (above) already wraps its per-item call to
+    # execute_import in try/except so one bad item in a mixed batch doesn't
+    # take down the rest — this single-item path had no equivalent, so a
+    # commit-time error (e.g. a forced kind mismatched against the data)
+    # surfaced as an unhandled 500 instead of a clean 400.
+    try:
+        ok, result = execute_import(db, world, kind, data, params)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(400, str(e))
     if not ok:
         raise HTTPException(400, result)
     return {"ok": True, "redirect": result}

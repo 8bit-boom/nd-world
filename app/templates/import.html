@@ -14,14 +14,14 @@
 
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem">
-      <label style="font-size:.82rem;color:var(--text-dim)">JSON content</label>
+      <label for="json-input" style="font-size:.82rem;color:var(--text-dim)">JSON content</label>
       <input type="file" id="file-input" accept=".json,application/json" style="font-size:.78rem;max-width:220px"/>
     </div>
     <textarea id="json-input" rows="14" placeholder="Paste JSON here, or choose a file above…"
       style="width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.6rem .75rem;font-family:monospace;font-size:.8rem;border-radius:3px"></textarea>
     <div style="display:flex;gap:.75rem;margin-top:.75rem;align-items:center">
       <button type="button" id="analyze-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem 1rem;font-size:.85rem;border-radius:3px;cursor:pointer">Analyze</button>
-      <span id="analyze-result" style="font-size:.85rem;color:var(--text-dim)"></span>
+      <span id="analyze-result" aria-live="polite" style="font-size:.85rem;color:var(--text-dim)"></span>
     </div>
   </div>
 
@@ -32,7 +32,7 @@
 
   <div style="display:flex;gap:.75rem;align-items:center">
     <button type="button" id="import-btn" disabled style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer;opacity:.5">Import</button>
-    <span id="import-result" style="font-size:.85rem"></span>
+    <span id="import-result" aria-live="polite" style="font-size:.85rem"></span>
   </div>
 
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-top:1.5rem">
@@ -43,11 +43,12 @@
       Review the matches below and adjust any before importing; files left on
       "— Skip —" aren't uploaded at all.
     </p>
+    <label for="img-files-input" style="font-size:.82rem;color:var(--text-dim);display:block;margin-bottom:.3rem">Image files</label>
     <input type="file" id="img-files-input" multiple accept="image/jpeg,image/png,image/gif,image/webp" style="font-size:.8rem"/>
     <div id="img-preview-table" style="margin-top:1rem"></div>
     <div style="display:flex;gap:.75rem;margin-top:.9rem;align-items:center">
       <button type="button" id="img-import-btn" disabled style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer;opacity:.5">Import Images</button>
-      <span id="img-import-result" style="font-size:.85rem"></span>
+      <span id="img-import-result" aria-live="polite" style="font-size:.85rem"></span>
     </div>
   </div>
 </div>
@@ -110,7 +111,23 @@ document.getElementById('file-input').addEventListener('change', (e) => {
   reader.readAsText(f);
 });
 
+// Editing the JSON after clicking Analyze used to leave lastDetected/
+// lastData pointing at whatever was last analyzed — so clicking Import
+// would send the *new* textarea contents paired with the *stale* detected
+// kind/params, silently importing the wrong thing. Invalidate on every
+// edit; the file-input's change handler above sets .value via JS, which
+// does not fire 'input', so loading a file doesn't spuriously trigger this
+// (nothing was analyzed yet at that point anyway).
+document.getElementById('json-input').addEventListener('input', () => {
+  lastDetected = null;
+  lastData = null;
+  document.getElementById('analyze-result').textContent = '';
+  document.getElementById('params-box').style.display = 'none';
+  disableImport();
+});
+
 document.getElementById('analyze-btn').addEventListener('click', async () => {
+  const analyzeBtn = document.getElementById('analyze-btn');
   const jsonText = document.getElementById('json-input').value;
   const resEl = document.getElementById('analyze-result');
   let parsed;
@@ -120,14 +137,20 @@ document.getElementById('analyze-btn').addEventListener('click', async () => {
     return;
   }
   lastData = parsed;
-  const res = await fetch('/api/import/detect', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ json_text: jsonText }),
-  });
-  const detected = await res.json();
-  lastDetected = detected;
-  resEl.textContent = (KIND_LABELS[detected.kind] || detected.kind) + ' — ' + detected.summary;
-  renderParams(detected.kind, detected.needs || []);
+  analyzeBtn.disabled = true;
+  try {
+    const res = await fetch('/api/import/detect', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ json_text: jsonText }),
+    });
+    const { data: detected, parseError } = await parseJsonResponse(res);
+    if (parseError) { resEl.textContent = `Analyze failed: server returned a non-JSON response (${parseError}).`; return; }
+    lastDetected = detected;
+    resEl.textContent = (KIND_LABELS[detected.kind] || detected.kind) + ' — ' + detected.summary;
+    renderParams(detected.kind, detected.needs || []);
+  } finally {
+    analyzeBtn.disabled = false;
+  }
 });
 
 function renderParams(kind, needs) {
@@ -226,6 +249,7 @@ function disableImport() {
 }
 
 document.getElementById('import-btn').addEventListener('click', async () => {
+  const importBtn = document.getElementById('import-btn');
   const resEl = document.getElementById('import-result');
   const jsonText = document.getElementById('json-input').value;
   const params = {};
@@ -236,6 +260,7 @@ document.getElementById('import-btn').addEventListener('click', async () => {
     return;
   }
   resEl.style.color = 'var(--text-dim)'; resEl.textContent = 'Importing…';
+  importBtn.disabled = true;
   try {
     const res = await fetch('/api/import/execute', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -263,6 +288,8 @@ document.getElementById('import-btn').addEventListener('click', async () => {
     setTimeout(() => { window.location.href = data.redirect; }, 600);
   } catch (e) {
     resEl.style.color = '#c44'; resEl.textContent = 'Import failed: ' + e.message;
+  } finally {
+    importBtn.disabled = false;
   }
 });
 
@@ -280,12 +307,28 @@ function matchEntityByFilename(filename) {
   if (!norm) return null;
   const exact = ENTITIES.find(e => normalizeMatchName(e.name) === norm);
   if (exact) return { entity: exact, confidence: 'exact' };
-  const fuzzy = ENTITIES.find(e => {
-    const en = normalizeMatchName(e.name);
-    return en.length > 2 && norm.length > 2 && (en.includes(norm) || norm.includes(en));
+  // Word-boundary matching, not raw substring: a plain includes() check
+  // (the old approach) false-positives whenever a short entity name hides
+  // inside an unrelated longer filename — e.g. entity "Inn" would match
+  // "Skinner.png" because "skinner".includes("inn"). Splitting into words
+  // and requiring one side's full word-set to be contained in the other's
+  // closes that off, since "inn" as a whole word never appears in
+  // "skinner" (a single word with no internal spaces).
+  const normWords = norm.split(' ');
+  const candidates = ENTITIES.filter(e => {
+    const enWords = normalizeMatchName(e.name).split(' ');
+    return enWords.every(w => normWords.includes(w)) || normWords.every(w => enWords.includes(w));
   });
-  if (fuzzy) return { entity: fuzzy, confidence: 'fuzzy' };
-  return null;
+  if (!candidates.length) return null;
+  // Tie-break: several entities can satisfy the word-containment check
+  // (e.g. "Gandalf" and "Gandalf the White" both qualify for
+  // "Gandalf_v2.png") — prefer whichever's normalized name length is
+  // closest to the filename's, i.e. the tightest match, rather than
+  // whichever happens to come first in ENTITIES.
+  candidates.sort((a, b) =>
+    Math.abs(normalizeMatchName(a.name).length - norm.length) -
+    Math.abs(normalizeMatchName(b.name).length - norm.length));
+  return { entity: candidates[0], confidence: 'fuzzy' };
 }
 
 function buildEntitySelect(selectedId) {
@@ -312,6 +355,7 @@ function buildEntitySelect(selectedId) {
 }
 
 let selectedImgFiles = [];
+let imgObjectUrls = [];
 
 document.getElementById('img-files-input').addEventListener('change', (e) => {
   selectedImgFiles = Array.from(e.target.files);
@@ -319,6 +363,11 @@ document.getElementById('img-files-input').addEventListener('change', (e) => {
 });
 
 function renderImgPreview() {
+  // Every previous call to this function left its createObjectURL() blob
+  // URLs un-revoked — reselecting a large batch repeatedly (e.g. after
+  // narrowing down a folder) leaked memory for the rest of the page's life.
+  imgObjectUrls.forEach(u => URL.revokeObjectURL(u));
+  imgObjectUrls = [];
   const box = document.getElementById('img-preview-table');
   box.innerHTML = '';
   if (!selectedImgFiles.length) { disableImgImport(); return; }
@@ -330,7 +379,9 @@ function renderImgPreview() {
     row.style.cssText = 'display:flex;align-items:center;gap:.6rem;padding:.4rem;background:var(--bg3);border-radius:4px' +
       (match && match.confidence === 'fuzzy' ? ';border:1px solid #e8a94a' : '');
     const img = document.createElement('img');
-    img.src = URL.createObjectURL(f);
+    const url = URL.createObjectURL(f);
+    imgObjectUrls.push(url);
+    img.src = url;
     img.style.cssText = 'width:36px;height:36px;object-fit:cover;border-radius:3px;flex-shrink:0;background:#000';
     row.appendChild(img);
     const name = document.createElement('span');
@@ -342,14 +393,37 @@ function renderImgPreview() {
       badge.textContent = 'check match';
       badge.style.cssText = 'font-size:.7rem;color:#e8a94a;white-space:nowrap';
       row.appendChild(badge);
+    } else if (!match) {
+      const badge = document.createElement('span');
+      badge.textContent = 'no match — will skip';
+      badge.style.cssText = 'font-size:.7rem;color:var(--text-dim);white-space:nowrap';
+      row.appendChild(badge);
     }
     const sel = buildEntitySelect(match ? match.entity.id : '');
     sel.dataset.fileIndex = i;
+    sel.addEventListener('change', updateDuplicateWarnings);
     row.appendChild(sel);
     list.appendChild(row);
   });
   box.appendChild(list);
   enableImgImport();
+  updateDuplicateWarnings();
+}
+
+// Two files both assigned to the same entity used to be allowed silently —
+// the server (main.py's /api/import/images) applies them in order, so the
+// second upload just overwrites the first with no indication which "won."
+// Flag every select sharing a value with another select so it's visible
+// before the user clicks Import Images, not after.
+function updateDuplicateWarnings() {
+  const selects = Array.from(document.querySelectorAll('#img-preview-table select'));
+  const counts = {};
+  selects.forEach(sel => { if (sel.value) counts[sel.value] = (counts[sel.value] || 0) + 1; });
+  selects.forEach(sel => {
+    const isDupe = sel.value && counts[sel.value] > 1;
+    sel.style.outline = isDupe ? '2px solid #e8a94a' : '';
+    sel.title = isDupe ? 'Another file is also assigned to this entity — the last one uploaded wins' : '';
+  });
 }
 
 function enableImgImport() {
@@ -362,6 +436,7 @@ function disableImgImport() {
 }
 
 document.getElementById('img-import-btn').addEventListener('click', async () => {
+  const imgBtn = document.getElementById('img-import-btn');
   const resEl = document.getElementById('img-import-result');
   const selects = document.querySelectorAll('#img-preview-table select');
   const fd = new FormData();
@@ -391,6 +466,7 @@ document.getElementById('img-import-btn').addEventListener('click', async () => 
     return;
   }
   resEl.style.color = 'var(--text-dim)'; resEl.textContent = `Uploading ${count} image(s)…`;
+  imgBtn.disabled = true;
   try {
     const res = await fetch('/api/import/images', { method: 'POST', body: fd });
     const { data, parseError } = await parseJsonResponse(res);
@@ -414,6 +490,8 @@ document.getElementById('img-import-btn').addEventListener('click', async () => 
     }
   } catch (e) {
     resEl.style.color = '#c44'; resEl.textContent = 'Import failed: ' + e.message;
+  } finally {
+    imgBtn.disabled = false;
   }
 });
 </script>

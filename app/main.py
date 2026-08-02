@@ -3000,12 +3000,56 @@ def search(request: Request, q: str = "", kind: str = "",
 
 # ── Import API ────────────────────────────────────────────────────────────────
 
+# Not dead code despite predating /import's importer.py — still actively used
+# by the standalone import_chronicles.py and import_lore.py scripts in the
+# repo root (both POST {"world_id"?, "entities": [...]}). Their request
+# shape and the upsert-by-(name,kind,world_id) dedup behavior below must stay
+# unchanged; only the validation is new.
+_MAX_LEGACY_IMPORT_ENTITIES = 500  # both scripts batch in groups of 10 — generous headroom
+
 @app.post("/api/import")
 def api_import(payload: dict, db: Session = Depends(get_db)):
+    # item["name"]/item["kind"] (bracket access) previously threw an
+    # unhandled KeyError on a malformed entity — a 500 with a non-JSON body
+    # (no exception handler is registered anywhere in this app), the same
+    # failure mode a client-side JSON.parse() chokes on. world_id was never
+    # checked to exist either (SQLite FK enforcement is never turned on —
+    # see database.py — so a bogus id silently orphaned rows), and nothing
+    # capped how many entities one request could carry.
+    try:
+        world_id = int(payload.get("world_id", 1))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "world_id must be a number")
+    if not db.query(World).filter(World.id == world_id).first():
+        raise HTTPException(400, f"World {world_id} does not exist")
+
+    items = payload.get("entities", [])
+    if not isinstance(items, list):
+        raise HTTPException(400, '"entities" must be a list')
+    if len(items) > _MAX_LEGACY_IMPORT_ENTITIES:
+        raise HTTPException(400, f"Too many entities in one batch — limit is {_MAX_LEGACY_IMPORT_ENTITIES}")
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise HTTPException(400, f"Item #{i + 1}: not an object")
+        name = str(item.get("name") or "").strip()
+        kind = item.get("kind")
+        if not name or kind not in KINDS:
+            raise HTTPException(400, f'Item #{i + 1}: needs "kind" (one of {", ".join(KINDS)}) and a non-empty "name"')
+
     created = 0
-    world_id = payload.get("world_id", 1)
-    for item in payload.get("entities", []):
+    for item in items:
+        item = dict(item)
+        item["name"] = str(item["name"]).strip()
         item["world_id"] = world_id
+        # Defensive coercion: these columns are all String/Text — a caller
+        # sending e.g. tags as a list would otherwise die unhandled at
+        # commit time (a SQLite bind-parameter adaptation error, caught
+        # nowhere). Both existing scripts already send strings here; this
+        # only protects against a future/different caller.
+        for col in ("subtype", "folder", "tags", "image_url", "summary", "body"):
+            v = item.get(col)
+            if v is not None and not isinstance(v, str):
+                item[col] = json.dumps(v) if isinstance(v, (list, dict)) else str(v)
         existing = db.query(Entity).filter(
             Entity.name == item["name"],
             Entity.kind == item["kind"],
