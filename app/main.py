@@ -5,7 +5,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, func
+from sqlalchemy import or_, func, text
+from sqlalchemy.exc import OperationalError
 from typing import List, Optional
 from urllib.parse import quote
 import re
@@ -1429,7 +1430,10 @@ def _own_pc_for_schematic(db: Session, s: Schematic, user) -> Optional[PlayerCha
 async def schematic_pickup_item(slug: str, request: Request, db: Session = Depends(get_db)):
     """A player picks up an entire item-token stack into their own character's
     equipment. Ownership of the calling PlayerCharacter is re-derived from the
-    session user server-side, same pattern as move-token."""
+    session user server-side, same pattern as move-token. The read-check-write
+    below runs inside a BEGIN IMMEDIATE transaction so two concurrent pickups
+    of the same token can't both succeed — with_for_update() is a no-op on
+    SQLite, so BEGIN IMMEDIATE is the actual lock."""
     s = db.query(Schematic).filter(Schematic.slug == slug).first()
     if not s:
         raise HTTPException(404)
@@ -1441,29 +1445,41 @@ async def schematic_pickup_item(slug: str, request: Request, db: Session = Depen
     token_id = body.get("token_id")
     if not token_id:
         raise HTTPException(400)
-    elements = json.loads(s.elements_json or "[]")
-    el = next((e for e in elements if e.get("id") == token_id and e.get("type") == "token" and e.get("source") == "item"), None)
-    if not el:
-        raise HTTPException(404)
-    if not el.get("visible_to_players", True):
-        raise HTTPException(403)
-    pc = _own_pc_for_schematic(db, s, user)
-    if not pc:
-        raise HTTPException(400, "You don't have a character in this world")
-    qty = int(el.get("qty") or 1)
-    name = el.get("name") or "Item"
-    _merge_equipment_item(pc, name, qty)
-    elements = [e for e in elements if e.get("id") != token_id]
-    s.elements_json = json.dumps(elements)
-    db.commit()
-    return {"ok": True, "name": name, "qty": qty}
+    try:
+        db.rollback()  # close whatever transaction the reads above opened
+        db.execute(text("BEGIN IMMEDIATE"))
+        s2 = db.query(Schematic).filter(Schematic.id == s.id).with_for_update().first()
+        elements = json.loads(s2.elements_json or "[]")
+        el = next((e for e in elements if e.get("id") == token_id and e.get("type") == "token" and e.get("source") == "item"), None)
+        if not el:
+            raise HTTPException(404)
+        if not el.get("visible_to_players", True):
+            raise HTTPException(403)
+        pc = _own_pc_for_schematic(db, s2, user)
+        if not pc:
+            raise HTTPException(400, "You don't have a character in this world")
+        qty = int(el.get("qty") or 1)
+        name = el.get("name") or "Item"
+        _merge_equipment_item(pc, name, qty)
+        elements = [e for e in elements if e.get("id") != token_id]
+        s2.elements_json = json.dumps(elements)
+        db.commit()
+        return {"ok": True, "name": name, "qty": qty}
+    except HTTPException:
+        db.rollback()
+        raise
+    except OperationalError:
+        db.rollback()
+        raise HTTPException(409, "Someone else is completing this action — try again")
 
 
 @app.post("/api/maps/schematic/{slug}/buy-item")
 async def schematic_buy_item(slug: str, request: Request, db: Session = Depends(get_db)):
     """A player buys one stock row from a merchant token, deducting currency
     and merging the item into their own equipment. Ownership of the calling
-    PlayerCharacter is re-derived server-side, same pattern as pickup-item."""
+    PlayerCharacter is re-derived server-side, same pattern as pickup-item.
+    Wrapped in the same BEGIN IMMEDIATE pattern as pickup-item so a concurrent
+    double-buy can't oversell stock or double-charge currency."""
     s = db.query(Schematic).filter(Schematic.slug == slug).first()
     if not s:
         raise HTTPException(404)
@@ -1476,35 +1492,46 @@ async def schematic_buy_item(slug: str, request: Request, db: Session = Depends(
     stock_id = body.get("stock_id")
     if not token_id or not stock_id:
         raise HTTPException(400)
-    elements = json.loads(s.elements_json or "[]")
-    el = next((e for e in elements if e.get("id") == token_id and e.get("type") == "token" and e.get("source") == "merchant"), None)
-    if not el:
-        raise HTTPException(404)
-    if not el.get("visible_to_players", True):
-        raise HTTPException(403)
-    inventory = el.get("inventory") or []
-    stock = next((row for row in inventory if row.get("id") == stock_id), None)
-    if not stock or stock.get("qty") == 0:
-        raise HTTPException(404, "That item is out of stock")
-    pc = _own_pc_for_schematic(db, s, user)
-    if not pc:
-        raise HTTPException(400, "You don't have a character in this world")
-    price = float(stock.get("price") or 0)
-    abbr = (stock.get("currency_abbr") or "CR").strip().lower()
-    currency = json.loads(pc.currency_json or "[]")
-    entry = next((c for c in currency if (c.get("abbr") or "").strip().lower() == abbr), None)
-    if not entry:
-        raise HTTPException(400, f"Your character doesn't have {stock.get('currency_abbr', 'CR')}")
-    if float(entry.get("value") or 0) < price:
-        raise HTTPException(400, "Insufficient funds")
-    entry["value"] = float(entry.get("value") or 0) - price
-    pc.currency_json = json.dumps(currency)
-    if stock.get("qty", -1) != -1:
-        stock["qty"] = stock["qty"] - 1
-    _merge_equipment_item(pc, stock.get("name") or "Item", 1)
-    s.elements_json = json.dumps(elements)
-    db.commit()
-    return {"ok": True, "item": {"name": stock.get("name"), "qty": 1}, "currency": {"abbr": entry.get("abbr"), "value": entry.get("value")}}
+    try:
+        db.rollback()  # close whatever transaction the reads above opened
+        db.execute(text("BEGIN IMMEDIATE"))
+        s2 = db.query(Schematic).filter(Schematic.id == s.id).with_for_update().first()
+        elements = json.loads(s2.elements_json or "[]")
+        el = next((e for e in elements if e.get("id") == token_id and e.get("type") == "token" and e.get("source") == "merchant"), None)
+        if not el:
+            raise HTTPException(404)
+        if not el.get("visible_to_players", True):
+            raise HTTPException(403)
+        inventory = el.get("inventory") or []
+        stock = next((row for row in inventory if row.get("id") == stock_id), None)
+        qty = stock.get("qty", -1) if stock else -1
+        if not stock or (qty != -1 and qty <= 0):
+            raise HTTPException(404, "That item is out of stock")
+        pc = _own_pc_for_schematic(db, s2, user)
+        if not pc:
+            raise HTTPException(400, "You don't have a character in this world")
+        price = float(stock.get("price") or 0)
+        abbr = (stock.get("currency_abbr") or "CR").strip().lower()
+        currency = json.loads(pc.currency_json or "[]")
+        entry = next((c for c in currency if (c.get("abbr") or "").strip().lower() == abbr), None)
+        if not entry:
+            raise HTTPException(400, f"Your character doesn't have {stock.get('currency_abbr', 'CR')}")
+        if float(entry.get("value") or 0) < price:
+            raise HTTPException(400, "Insufficient funds")
+        entry["value"] = float(entry.get("value") or 0) - price
+        pc.currency_json = json.dumps(currency)
+        if stock.get("qty", -1) != -1:
+            stock["qty"] = stock["qty"] - 1
+        _merge_equipment_item(pc, stock.get("name") or "Item", 1)
+        s2.elements_json = json.dumps(elements)
+        db.commit()
+        return {"ok": True, "item": {"name": stock.get("name"), "qty": 1}, "currency": {"abbr": entry.get("abbr"), "value": entry.get("value")}}
+    except HTTPException:
+        db.rollback()
+        raise
+    except OperationalError:
+        db.rollback()
+        raise HTTPException(409, "Someone else is completing this action — try again")
 
 @app.post("/maps/schematic/{slug}/grid")
 async def schematic_save_grid(slug: str, request: Request, db: Session = Depends(get_db)):
