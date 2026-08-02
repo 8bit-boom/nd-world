@@ -642,6 +642,54 @@ def test_import_page_warns_on_duplicate_entity_assignment(client, seed):
     r = client.get("/import")
     assert r.status_code == 200
     assert "function updateDuplicateWarnings" in r.text
+    # The per-row picker's underlying <select> is hidden (display:none) —
+    # the duplicate-assignment outline/tooltip has to land on the visible
+    # combo input instead, or a GM would never actually see the warning.
+    idx = r.text.index("function updateDuplicateWarnings")
+    fn_end = r.text.index("\n}", idx)
+    assert "sel._comboInput || sel" in r.text[idx:fn_end]
+
+
+def test_import_page_bulk_image_entity_picker_is_searchable(client, seed):
+    """Per explicit request: with a world's entity list running into the
+    hundreds, the per-row picker (previously a plain <select>) only
+    supported "jump to the option starting with the next key pressed," not
+    real search. Replaced with a searchable combobox: a visible text input
+    filters entities by substring as the GM types, while a hidden <select>
+    (kept in the DOM, not just in memory) stays the source of truth every
+    other part of this page already reads via
+    document.querySelectorAll('select')/`.value` — updateDuplicateWarnings
+    and the Import Images click handler needed no changes at all because of
+    that. Source-level guard (no JS runtime in this test suite)."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/import")
+    assert r.status_code == 200
+    assert "wrap.className = 'entity-combo'" in r.text
+    assert "wrap.appendChild(sel)" in r.text  # the hidden select must actually be in the DOM, not just built in memory
+    assert "e.name.toLowerCase().includes(filter)" in r.text
+    assert "role', 'combobox'" in r.text
+    idx = r.text.index("function renderImgPreview()")
+    fn_end = r.text.index("\nfunction ", idx + len("function renderImgPreview()"))
+    render_src = r.text[idx:fn_end]
+    assert "wrap.querySelector('select')" in render_src
+
+
+def test_import_page_entity_picker_colors_has_image_entries(client, seed):
+    """Per explicit request: entities that already have an image are now
+    visually distinguished in the picker (a distinct text color, not just
+    the existing "(has image)" text suffix, which is kept alongside it for
+    anyone relying on the text rather than color) so assigning one — which
+    silently overwrites its existing image — stands out before the GM
+    clicks Import. Native <option> background-color styling is unreliable
+    across browsers, which is part of why this needed the custom combobox
+    above rather than just styling the old <select>'s options."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/import")
+    assert r.status_code == 200
+    assert "e.has_image ? 'color:#7fe3a1' : ''" in r.text
+    assert "e.name + (e.has_image ? ' (has image)' : '')" in r.text
 
 
 def test_import_page_revokes_object_urls_on_rerender(client, seed):

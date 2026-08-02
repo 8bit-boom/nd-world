@@ -59,6 +59,9 @@
   background:var(--bg3); border:1px solid var(--border); color:var(--text);
   padding:.4rem .6rem; font-family:var(--font); font-size:.85rem; border-radius:3px;
 }
+.entity-combo-list [data-combo-item]:hover, .entity-combo-list [data-combo-item].hl {
+  background:rgba(0,240,255,0.12);
+}
 </style>
 
 <script>
@@ -360,14 +363,23 @@ function matchEntityByFilename(filename) {
   return { entity: candidates[0], confidence: 'fuzzy' };
 }
 
+// Only one row's search dropdown open at a time — otherwise a batch of 100
+// rows could end up with a dozen open lists cluttering the page at once.
+let _openComboClose = null;
+
 function buildEntitySelect(selectedId) {
+  // Hidden native <select> — kept as the actual source of truth so the rest
+  // of this page (updateDuplicateWarnings, the Import Images click handler)
+  // can keep reading it via document.querySelectorAll('select')/`.value`
+  // exactly as before; only what's *visible* changes below.
   const sel = document.createElement('select');
-  sel.style.cssText = 'background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-size:.8rem;border-radius:3px;max-width:260px';
+  sel.style.display = 'none';
   const skipOpt = document.createElement('option');
   skipOpt.value = ''; skipOpt.textContent = '— Skip —';
   sel.appendChild(skipOpt);
   const byKind = {};
   ENTITIES.forEach(e => { (byKind[e.kind] = byKind[e.kind] || []).push(e); });
+  const optionByValue = {};
   Object.keys(byKind).sort().forEach(k => {
     const grp = document.createElement('optgroup');
     grp.label = k.charAt(0).toUpperCase() + k.slice(1) + 's';
@@ -376,11 +388,161 @@ function buildEntitySelect(selectedId) {
       opt.value = e.id;
       opt.textContent = e.name + (e.has_image ? ' (has image)' : '');
       if (String(e.id) === String(selectedId)) opt.selected = true;
+      optionByValue[e.id] = opt;
       grp.appendChild(opt);
     });
     sel.appendChild(grp);
   });
-  return sel;
+
+  // Searchable combobox — with a world's entity list running into the
+  // hundreds, a plain <select> only supports "jump to the option starting
+  // with the next key pressed," not substring search, and native <option>
+  // background-color styling is unreliable across browsers, so entities
+  // that already have an image (and would be overwritten by this
+  // assignment) couldn't be visually flagged. This gives both a real
+  // type-to-filter search and a color cue for those.
+  const wrap = document.createElement('div');
+  wrap.className = 'entity-combo';
+  wrap.style.cssText = 'position:relative;flex:1;max-width:260px';
+  wrap.appendChild(sel);
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.setAttribute('role', 'combobox');
+  input.setAttribute('aria-autocomplete', 'list');
+  input.setAttribute('aria-expanded', 'false');
+  input.style.cssText = 'width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-size:.8rem;border-radius:3px';
+  wrap.appendChild(input);
+
+  const listEl = document.createElement('div');
+  listEl.setAttribute('role', 'listbox');
+  listEl.className = 'entity-combo-list';
+  listEl.style.cssText = 'display:none;position:absolute;top:100%;left:0;right:0;z-index:30;max-height:260px;overflow-y:auto;background:var(--bg2);border:1px solid var(--border);border-radius:3px;margin-top:2px;box-shadow:0 4px 12px rgba(0,0,0,.4)';
+  wrap.appendChild(listEl);
+
+  sel._comboInput = input;
+
+  function currentLabel() {
+    const opt = optionByValue[sel.value];
+    return opt ? opt.textContent : (sel.value === '' ? '— Skip —' : '');
+  }
+  input.value = currentLabel();
+
+  let highlighted = -1;
+  function items() { return Array.from(listEl.querySelectorAll('[data-combo-item]')); }
+  function setHighlighted(i) {
+    const els = items();
+    els.forEach(el => el.classList.remove('hl'));
+    highlighted = Math.max(-1, Math.min(i, els.length - 1));
+    if (highlighted >= 0) {
+      els[highlighted].classList.add('hl');
+      els[highlighted].scrollIntoView({ block: 'nearest' });
+    }
+  }
+  function selectValue(value) {
+    Array.from(sel.options).forEach(o => { o.selected = o.value === value; });
+    input.value = currentLabel();
+    closeList();
+    sel.dispatchEvent(new Event('change'));
+  }
+  function closeList() {
+    listEl.style.display = 'none';
+    input.setAttribute('aria-expanded', 'false');
+    highlighted = -1;
+    if (_openComboClose === closeList) _openComboClose = null;
+  }
+  function renderList() {
+    const q = input.value.trim().toLowerCase();
+    // The input holds the current *selection's* label until the user
+    // actually types something different — comparing against that label
+    // (not against '') is what makes clicking into an already-assigned row
+    // show every option again instead of a filtered list containing only
+    // itself.
+    const filter = q === currentLabel().toLowerCase() ? '' : q;
+    listEl.innerHTML = '';
+    let any = false;
+    if (!filter || '— skip —'.includes(filter)) {
+      const item = document.createElement('div');
+      item.dataset.comboItem = '1';
+      item.setAttribute('role', 'option');
+      item.textContent = '— Skip —';
+      item.style.cssText = 'padding:.35rem .6rem;cursor:pointer;font-size:.8rem;color:var(--text-dim)';
+      item.addEventListener('mouseenter', () => setHighlighted(items().indexOf(item)));
+      item.addEventListener('mousedown', e => { e.preventDefault(); selectValue(''); });
+      listEl.appendChild(item);
+      any = true;
+    }
+    Object.keys(byKind).sort().forEach(k => {
+      const matches = byKind[k].filter(e => e.name.toLowerCase().includes(filter));
+      if (!matches.length) return;
+      any = true;
+      const header = document.createElement('div');
+      header.textContent = k.charAt(0).toUpperCase() + k.slice(1) + 's';
+      header.style.cssText = 'padding:.3rem .6rem .1rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);opacity:.7';
+      listEl.appendChild(header);
+      matches.forEach(e => {
+        const item = document.createElement('div');
+        item.dataset.comboItem = '1';
+        item.setAttribute('role', 'option');
+        item.textContent = e.name + (e.has_image ? ' (has image)' : '');
+        // Entities that already have an image get a distinct color so
+        // assigning one to a new file — silently overwriting the existing
+        // image — stands out before the GM clicks Import, not after.
+        item.style.cssText = 'padding:.35rem .6rem;cursor:pointer;font-size:.8rem;' +
+          (e.has_image ? 'color:#7fe3a1' : '');
+        item.addEventListener('mouseenter', () => setHighlighted(items().indexOf(item)));
+        item.addEventListener('mousedown', ev => { ev.preventDefault(); selectValue(String(e.id)); });
+        listEl.appendChild(item);
+      });
+    });
+    if (!any) {
+      const none = document.createElement('div');
+      none.textContent = 'No matches';
+      none.style.cssText = 'padding:.35rem .6rem;font-size:.8rem;opacity:.5';
+      listEl.appendChild(none);
+    }
+    highlighted = -1;
+  }
+  function openList() {
+    if (_openComboClose && _openComboClose !== closeList) _openComboClose();
+    _openComboClose = closeList;
+    renderList();
+    listEl.style.display = 'block';
+    input.setAttribute('aria-expanded', 'true');
+  }
+
+  input.addEventListener('focus', () => { openList(); input.select(); });
+  input.addEventListener('input', () => { renderList(); listEl.style.display = 'block'; input.setAttribute('aria-expanded', 'true'); });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (listEl.style.display === 'none') openList(); else setHighlighted(highlighted + 1);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlighted(highlighted - 1);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const els = items();
+      if (highlighted >= 0 && els[highlighted]) els[highlighted].dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      else input.blur();
+    } else if (e.key === 'Escape') {
+      input.value = currentLabel();
+      closeList();
+      input.blur();
+    }
+  });
+  input.addEventListener('blur', () => {
+    // An item's mousedown handler already called preventDefault() and ran
+    // before blur fires, so by now either a selection was made (input.value
+    // is the new label) or nothing was — either way, resync the input to
+    // the real selection and close.
+    input.value = currentLabel();
+    closeList();
+  });
+
+  return wrap;
 }
 
 let selectedImgFiles = [];
@@ -397,6 +559,7 @@ function renderImgPreview() {
   // narrowing down a folder) leaked memory for the rest of the page's life.
   imgObjectUrls.forEach(u => URL.revokeObjectURL(u));
   imgObjectUrls = [];
+  _openComboClose = null; // rows about to be destroyed below — drop any stale reference to their (now-detached) dropdown
   const box = document.getElementById('img-preview-table');
   box.innerHTML = '';
   if (!selectedImgFiles.length) { disableImgImport(); return; }
@@ -428,10 +591,11 @@ function renderImgPreview() {
       badge.style.cssText = 'font-size:.7rem;color:var(--text-dim);white-space:nowrap';
       row.appendChild(badge);
     }
-    const sel = buildEntitySelect(match ? match.entity.id : '');
+    const wrap = buildEntitySelect(match ? match.entity.id : '');
+    const sel = wrap.querySelector('select');
     sel.dataset.fileIndex = i;
     sel.addEventListener('change', updateDuplicateWarnings);
-    row.appendChild(sel);
+    row.appendChild(wrap);
     list.appendChild(row);
   });
   box.appendChild(list);
@@ -450,8 +614,12 @@ function updateDuplicateWarnings() {
   selects.forEach(sel => { if (sel.value) counts[sel.value] = (counts[sel.value] || 0) + 1; });
   selects.forEach(sel => {
     const isDupe = sel.value && counts[sel.value] > 1;
-    sel.style.outline = isDupe ? '2px solid #e8a94a' : '';
-    sel.title = isDupe ? 'Another file is also assigned to this entity — the last one uploaded wins' : '';
+    // The select itself is hidden (display:none) — the visible combo input
+    // is what the outline/tooltip actually needs to land on for the GM to
+    // see it, so style that instead when the searchable combobox built it.
+    const target = sel._comboInput || sel;
+    target.style.outline = isDupe ? '2px solid #e8a94a' : '';
+    target.title = isDupe ? 'Another file is also assigned to this entity — the last one uploaded wins' : '';
   });
 }
 
