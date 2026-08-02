@@ -132,6 +132,44 @@ def test_schematic_new_symbol_only_name_rejected_not_a_zombie(client, seed):
         db.close()
 
 
+def test_schematic_new_no_active_world_rejected_not_500(client, seed):
+    """Phase 16 regression guard: map_new already guarded this identically
+    (`if not world: raise HTTPException(400, ...)`), but schematic_new never
+    did — world.id would 500 with an unhandled AttributeError instead of a
+    clean 400. Reproduced here via the state right after Phase 15's
+    world-delete cascade removes the last world (or a fresh install with
+    none created yet): get_active_world has nothing to fall back to."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    db = SessionLocal()
+    try:
+        db.query(Schematic).delete()
+        from app.models import World
+        db.query(World).delete()
+        db.commit()
+    finally:
+        db.close()
+    r = client.post("/maps/schematic/new", data={"name": "Orphan Schematic"})
+    assert r.status_code == 400
+
+
+def test_schematic_new_rejects_invalid_canvas_dimensions(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    for width, height in [(0, 1500), (-100, 1500), (2000, 0), (2000, 999_999)]:
+        r = client.post("/maps/schematic/new",
+                         data={"name": f"Bad Canvas {width}x{height}", "canvas_width": width, "canvas_height": height})
+        assert r.status_code == 400, f"{width}x{height} should have been rejected"
+
+
+def test_schematic_new_accepts_valid_canvas_dimensions(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/maps/schematic/new",
+                     data={"name": "Good Canvas", "canvas_width": 3000, "canvas_height": 2200},
+                     follow_redirects=False)
+    assert r.status_code == 303
+
+
 def test_map_upload_404s_for_nonexistent_slug(client, seed):
     """Phase 8 regression guard: map_upload_image previously took no db/world
     params at all, so it would write an image for *any* slug — map or no

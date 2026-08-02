@@ -1211,6 +1211,11 @@ async def schematic_new(
     active_world: str = Cookie(None),
 ):
     world = get_active_world(request, db, active_world)
+    if not world:
+        # map_new already guards this identically — schematic_new never did,
+        # so world.id below would 500 with an unhandled AttributeError
+        # instead of a clean 400 (e.g. right after deleting your only world).
+        raise HTTPException(400, "No world selected")
     slug = _slug_from_name(name)
     if not slug:
         # Same zombie-record hazard as map_new: an empty slug would create a
@@ -1219,6 +1224,12 @@ async def schematic_new(
     base = slug; i = 2
     while db.query(Schematic).filter(Schematic.slug == slug).first():
         slug = f"{base}-{i}"; i += 1
+    # canvas_width/height feed the SVG viewBox and (for hex grids) the
+    # renderBattleGrid tiling loop's iteration bounds — unvalidated, a
+    # zero/negative value degenerates the canvas and a client-supplied
+    # multi-million-pixel value could make that loop iterate absurdly.
+    if not (100 <= canvas_width <= 20000) or not (100 <= canvas_height <= 20000):
+        raise HTTPException(400, "Canvas width/height must be between 100 and 20000")
     s = Schematic(world_id=world.id, name=name, slug=slug,
                   description=description or None, is_html=False,
                   canvas_width=canvas_width, canvas_height=canvas_height,
