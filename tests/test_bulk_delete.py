@@ -148,5 +148,22 @@ def test_entities_list_page_has_bulk_delete_ui(client, seed):
     assert r.status_code == 200
     assert 'id="bulk-action-bar"' in r.text
     assert 'id="bulk-delete-btn"' in r.text
+    assert 'id="bulk-select-all-btn"' in r.text
     assert "class=\"row-cb\"" in r.text or "row-cb" in r.text
     assert "/bulk-delete`" in r.text
+
+
+def test_entities_list_page_select_all_toggles_every_checkbox(client, seed):
+    """Source-level regression guard: the Select All button must toggle
+    every .row-cb on the page (all tables and cards), not just one table —
+    that's the whole point of it existing alongside each table's own
+    per-table select-all checkbox."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/kind/feat")
+    assert r.status_code == 200
+    assert "function updateBulkBar()" in r.text
+    assert "allRowCbs()" in r.text
+    assert "Deselect All" in r.text
+    assert "getElementById('bulk-select-all-btn').addEventListener" in r.text
+    assert r.text.count("updateBulkBar();") >= 1  # called on load, not just reactively on change

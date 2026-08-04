@@ -60,9 +60,9 @@
 
   <div class="list-main">
     <div id="bulk-action-bar" style="display:none">
+      <button type="button" id="bulk-select-all-btn">☑ Select All</button>
       <span><span id="bulk-count">0</span> selected</span>
-      <button type="button" id="bulk-delete-btn">🗑 Delete Selected</button>
-      <button type="button" id="bulk-clear-btn">Clear</button>
+      <button type="button" id="bulk-delete-btn" disabled>🗑 Delete Selected</button>
     </div>
 
     {# Subfolder cards — JS fills this when inside a folder that has children #}
@@ -200,10 +200,11 @@
 }
 #bulk-delete-btn:hover { background:#c44; }
 #bulk-delete-btn:disabled { opacity:.5; cursor:default; }
-#bulk-clear-btn {
+#bulk-select-all-btn {
   background:transparent; border:1px solid var(--border); color:var(--text-dim); border-radius:3px;
   padding:.3rem .7rem; font-size:.8rem; cursor:pointer;
 }
+#bulk-select-all-btn:hover { border-color:var(--neon); color:var(--neon); }
 .entity-card-wrap { position:relative; }
 .entity-card-wrap .card-cb {
   position:absolute; top:.5rem; left:.5rem; z-index:2; width:16px; height:16px; cursor:pointer;
@@ -443,6 +444,7 @@ renderSidebar();
 renderSubfolderStrip();
 renderRootFolders();
 renderBreadcrumbManage();
+updateBulkBar();
 
 // ── Bulk delete ──────────────────────────────────────────────────────────────
 // Row checkboxes live in every table (leaf and grouped-subfolder views) and
@@ -451,10 +453,14 @@ renderBreadcrumbManage();
 function allRowCbs() { return Array.from(document.querySelectorAll('.row-cb')); }
 
 function updateBulkBar() {
-  const checked = allRowCbs().filter(cb => cb.checked);
+  const all = allRowCbs();
+  const checked = all.filter(cb => cb.checked);
   const bar = document.getElementById('bulk-action-bar');
+  bar.style.display = all.length ? 'flex' : 'none';
   document.getElementById('bulk-count').textContent = checked.length;
-  bar.style.display = checked.length ? 'flex' : 'none';
+  document.getElementById('bulk-delete-btn').disabled = checked.length === 0;
+  const allSelected = all.length > 0 && checked.length === all.length;
+  document.getElementById('bulk-select-all-btn').textContent = allSelected ? '☐ Deselect All' : '☑ Select All';
   document.querySelectorAll('.table-select-all-cb').forEach(headCb => {
     const table = headCb.closest('table');
     const rows = Array.from(table.querySelectorAll('.row-cb'));
@@ -472,8 +478,14 @@ document.addEventListener('change', (e) => {
   }
 });
 
-document.getElementById('bulk-clear-btn').addEventListener('click', () => {
-  allRowCbs().forEach(cb => { cb.checked = false; });
+// Single toggle: selects everything on the page (every table and every
+// card, not just the table you're looking at) if anything is currently
+// unselected, otherwise clears the whole selection.
+document.getElementById('bulk-select-all-btn').addEventListener('click', () => {
+  const all = allRowCbs();
+  const checked = all.filter(cb => cb.checked);
+  const selectAll = checked.length !== all.length;
+  all.forEach(cb => { cb.checked = selectAll; });
   updateBulkBar();
 });
 
