@@ -347,6 +347,10 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN players_see_party BOOLEAN DEFAULT 1"))
             if "rules_md" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN rules_md TEXT"))
+            if "home_welcome_md" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN home_welcome_md TEXT"))
+            if "home_sections_json" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN home_sections_json TEXT DEFAULT '[]'"))
         # random_tables table — some installs ended up with a table that
         # doesn't match the model: missing columns (e.g. slug), and/or
         # world_id incorrectly marked NOT NULL (the model allows NULL there

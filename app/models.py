@@ -36,6 +36,22 @@ class World(Base):
     # to the bundled Neon & Dragons core_rules.md, for worlds actually running
     # N&D and any world created before this field existed.
     rules_md = Column(Text, nullable=True)
+    # GM-authored blurb shown at the top of the world's home page (/),
+    # Markdown, rendered with the same `md` Jinja filter as rules_md/entity
+    # bodies. NULL = no blurb.
+    home_welcome_md = Column(Text, nullable=True)
+    # Ordered list of GM-defined home page tabs/sections, each holding its
+    # own ordered list of curated links:
+    # [{name, visible_to_players, links: [{label, icon, target_type,
+    #   target_ref, visible_to_players}, ...]}, ...].
+    # See app/routers/home_content.py for validation and
+    # app/main.py's _resolve_home_sections for how it's rendered. Link
+    # entries are a snapshot — label/icon are GM-set at add-time, not
+    # re-derived from the target on every render — matching
+    # Quest.linked_entities_json / GameSession.npcs_json. A link/section is
+    # only shown to players if both its own visible_to_players and its
+    # parent section's are true.
+    home_sections_json = Column(Text, default="[]")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     entities = relationship("Entity", back_populates="world", cascade="all, delete-orphan")

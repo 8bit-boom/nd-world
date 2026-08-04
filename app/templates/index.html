@@ -6,6 +6,40 @@
   <p class="hero-sub">Neon &amp; Dragons worldbuilding codex</p>
 </section>
 
+{% if world.home_welcome_md %}
+<section class="home-welcome">{{ world.home_welcome_md | md | safe }}</section>
+{% endif %}
+
+{% if home_sections %}
+<section class="dash-section quick-links-section">
+  {% if home_sections|length > 1 %}
+  <div class="ql-tab-bar">
+    {% for sec in home_sections %}
+    <button type="button" class="ql-tab {% if loop.first %}active{% endif %}" id="ql-tab-{{ loop.index0 }}" onclick="switchQuickLinksTab({{ loop.index0 }})">{{ sec.name }}</button>
+    {% endfor %}
+  </div>
+  {% else %}
+  <h2 class="dash-heading">📌 {{ home_sections[0].name }}</h2>
+  {% endif %}
+  {% for sec in home_sections %}
+  <div class="ql-pane" id="ql-pane-{{ loop.index0 }}" {% if not loop.first %}style="display:none"{% endif %}>
+    <div class="quick-links-grid">
+      {% for l in sec.links %}
+      <a href="{{ l.href }}" class="quick-link-card">
+        {% if l.icon %}<span class="ql-icon">{{ l.icon }}</span>{% endif %}
+        <span class="ql-label">{{ l.label }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if request.state.user and request.state.user.is_gm %}
+<a href="/worlds/{{ world.id }}/home/edit" class="home-edit-link">✏ Customize this page</a>
+{% endif %}
+
 <section class="dashboard">
   {% for k in kinds %}
   <a href="/kind/{{ k }}" class="dash-card kind-{{ k }}">
@@ -95,7 +129,7 @@
     <div>
       <div class="tool-label">✏ Schematics</div>
       {% for s in recent_schematics %}
-      <a href="/schematics/{{ s.slug }}" class="tool-item">{{ s.name }}<span class="tool-date">{{ s.updated_at.strftime('%b %d') if s.updated_at }}</span></a>
+      <a href="/maps/schematic/{{ s.slug }}" class="tool-item">{{ s.name }}<span class="tool-date">{{ s.updated_at.strftime('%b %d') if s.updated_at }}</span></a>
       {% endfor %}
     </div>
     {% endif %}
@@ -136,5 +170,25 @@
 .tool-item { display:flex; justify-content:space-between; align-items:center; text-decoration:none; color:#ccc; padding:.25rem .4rem; border-radius:3px; font-size:.85rem; gap:1rem; }
 .tool-item:hover { background:#1a1a1a; color:var(--neon); }
 .tool-date { font-size:.72rem; color:#555; flex-shrink:0; }
+.home-welcome { margin:1.5rem 0; padding:1rem 1.25rem; background:#161616; border:1px solid #2a2a2a; border-radius:6px; color:#ddd; font-size:.9rem; line-height:1.5; }
+.home-welcome :first-child { margin-top:0; }
+.home-welcome :last-child { margin-bottom:0; }
+.ql-tab-bar { display:flex; gap:.3rem; margin-bottom:.75rem; border-bottom:1px solid var(--border); padding-bottom:.5rem; flex-wrap:wrap; }
+.ql-tab { background:var(--bg2); border:1px solid var(--border); color:var(--text-dim); padding:.35rem .9rem; border-radius:4px 4px 0 0; cursor:pointer; font-family:var(--font); font-size:.85rem; }
+.ql-tab.active { border-color:var(--neon); color:var(--neon); }
+.quick-links-grid { display:flex; flex-wrap:wrap; gap:.6rem; }
+.quick-link-card { display:flex; align-items:center; gap:.5rem; text-decoration:none; color:#e0e0e0; background:#161616; border:1px solid #2a2a2a; border-radius:6px; padding:.55rem .9rem; font-size:.85rem; transition:border-color .15s; }
+.quick-link-card:hover { border-color:var(--neon); color:var(--neon); }
+.ql-icon { font-size:1.1rem; }
+.home-edit-link { display:inline-block; margin:0 0 1rem; font-size:.78rem; color:var(--text-dim); text-decoration:none; }
+.home-edit-link:hover { color:var(--neon); }
 </style>
+<script>
+function switchQuickLinksTab(i) {
+  document.querySelectorAll('.ql-tab').forEach(b => b.classList.remove('active'));
+  document.getElementById('ql-tab-' + i).classList.add('active');
+  document.querySelectorAll('[id^="ql-pane-"]').forEach(p => p.style.display = 'none');
+  document.getElementById('ql-pane-' + i).style.display = '';
+}
+</script>
 {% endblock %}

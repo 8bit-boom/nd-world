@@ -45,6 +45,7 @@ from .routers.professions import router as professions_router
 from .routers.lore_extras import router as lore_extras_router
 from .routers.boards_generate import router as boards_generate_router
 from .routers.handouts import router as handouts_router
+from .routers.home_content import router as home_content_router
 from . import ai as _ai_module
 from . import auth as _auth
 from .constants import KINDS, SUBTYPES, KIND_ICONS
@@ -80,6 +81,7 @@ app.include_router(professions_router)
 app.include_router(lore_extras_router)
 app.include_router(boards_generate_router)
 app.include_router(handouts_router)
+app.include_router(home_content_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 
@@ -780,6 +782,84 @@ async def world_import(world_id: int, file: UploadFile = File(...), db: Session 
 
 # ── Home ──────────────────────────────────────────────────────────────────────
 
+def _resolve_home_link_href(db: Session, world: World, link: dict, is_gm: bool) -> Optional[str]:
+    """A stored home-page link -> a live href, or None if its target no
+    longer exists / doesn't belong to this world (deleted since the link was
+    added) — the caller drops it silently in that case. See
+    app/routers/home_content.py's _sanitize_link for what shapes a stored
+    link can take; this only has to handle already-sanitized entries."""
+    target_type = link.get("target_type")
+    ref = link.get("target_ref") or ""
+    try:
+        if target_type == "entity":
+            e = db.get(Entity, int(ref))
+            return f"/entity/{e.id}" if e and e.world_id == world.id else None
+        if target_type == "session":
+            s = db.get(GameSession, int(ref))
+            return f"/sessions/{s.id}" if s and s.world_id == world.id else None
+        if target_type == "quest":
+            q = db.get(Quest, int(ref))
+            return f"/quests/{q.id}" if q and q.world_id == world.id else None
+    except (TypeError, ValueError):
+        return None
+    if target_type == "board":
+        b = db.query(InvestBoard).filter(InvestBoard.slug == ref, InvestBoard.world_id == world.id).first()
+        return f"/boards/{b.slug}" if b else None
+    if target_type == "schematic":
+        s = db.query(Schematic).filter(Schematic.slug == ref, Schematic.world_id == world.id).first()
+        if not s:
+            return None
+        # GM gets the editor, players get the real read-only view route —
+        # /maps/schematic/{slug} (no suffix) is GM-only.
+        return f"/maps/schematic/{s.slug}" if is_gm else f"/maps/schematic/{s.slug}/view"
+    if target_type == "map":
+        jf = _MAPS_DIR / f"{ref}.json"
+        data = _map_data(jf) if jf.exists() else None
+        return f"/maps/{ref}" if data and data.get("world_id", 1) == world.id else None
+    if target_type == "kind":
+        return f"/kind/{ref}" if ref in KINDS else None
+    if target_type == "url":
+        if ref.startswith("http://") or ref.startswith("https://") or ref.startswith("/"):
+            return ref
+        return None
+    return None
+
+
+def _resolve_home_sections(db: Session, world: World, request: Request) -> list[dict]:
+    """world.home_sections_json -> renderable sections for index.html:
+    [{name, links: [{label, icon, href}]}, ...]. A section or link hidden
+    from the current viewer (GM sees everything; players only see
+    visible_to_players=True on both the section and the link itself) is
+    dropped, as is any link whose target no longer resolves. Sections with
+    no links left after filtering are dropped entirely — nothing useful to
+    show for them on the live page."""
+    user = getattr(request.state, "user", None)
+    is_gm = bool(user and getattr(user, "is_gm", False))
+    try:
+        raw_sections = json.loads(world.home_sections_json or "[]")
+    except Exception:
+        raw_sections = []
+    out = []
+    for sec in raw_sections if isinstance(raw_sections, list) else []:
+        if not isinstance(sec, dict):
+            continue
+        if not is_gm and not sec.get("visible_to_players", True):
+            continue
+        links = []
+        for l in (sec.get("links") or []):
+            if not isinstance(l, dict):
+                continue
+            if not is_gm and not l.get("visible_to_players", True):
+                continue
+            href = _resolve_home_link_href(db, world, l, is_gm)
+            if href is None:
+                continue
+            links.append({"label": l.get("label", ""), "icon": l.get("icon", ""), "href": href})
+        if links:
+            out.append({"name": sec.get("name") or "Untitled", "links": links})
+    return out
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world = get_active_world(request, db, active_world)
@@ -839,12 +919,15 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
         Quest.world_id == world.id, Quest.status == "active"
     ).order_by(Quest.updated_at.desc()).limit(3).all() if world else []
 
+    home_sections = _resolve_home_sections(db, world, request) if world else []
+
     return templates.TemplateResponse("index.html", {
         "request": request, "counts": counts, "recent": recent,
         "world": world, "worlds": worlds, "preview_maps": preview_maps,
         "most_linked": most_linked, "top_tags": top_tags,
         "recent_boards": recent_boards, "recent_schematics": recent_schematics,
         "recent_sessions": recent_sessions, "active_quests": active_quests,
+        "home_sections": home_sections,
     })
 
 def _map_data(jf: Path) -> Optional[dict]:

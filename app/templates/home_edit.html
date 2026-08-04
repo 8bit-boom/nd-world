@@ -1,0 +1,212 @@
+{% extends "base.html" %}
+{% block title %}Edit Home Page — {{ edit_world.name }}{% endblock %}
+{% block content %}
+<div class="form-page">
+  <h1>🏠 Edit Home Page — {{ edit_world.name }}</h1>
+  <p style="color:var(--text-dim);font-size:.85rem;margin:.3rem 0 1rem">
+    A welcome blurb and curated Quick Links, shown at the top of this world's
+    <a href="/">home page</a>. Group links into as many tabs/sections as you
+    like — a "Category Page" link points at one of this world's built-in kind
+    pages (Character, Race, Profession, ...), same as the dashboard cards
+    below it.
+  </p>
+  <p style="background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:.6rem .8rem;font-size:.78rem;color:var(--text-dim);margin-bottom:1.25rem">
+    ⚠ Session, Quest, and Board pages are GM-only in this app — a player who
+    clicks a link to one of those will see an access-denied page even with
+    "Players" checked below. Entity, Map, Schematic, Category Page, and
+    External URL links don't have this limitation.
+  </p>
+
+  <form method="post" action="/worlds/{{ edit_world.id }}/home/edit" class="entity-form" id="home-form">
+    <div class="form-group">
+      <label for="welcome-md">Welcome Message <small>(Markdown, optional)</small></label>
+      <textarea id="welcome-md" name="home_welcome_md" rows="6" placeholder="Session 12 is next Tuesday — see the Quick Links below for prep notes."
+                style="font-family:var(--font);font-size:.85rem">{{ edit_world.home_welcome_md or '' }}</textarea>
+    </div>
+
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin:1rem 0">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.9rem">
+        <h2 style="color:var(--neon);font-size:.95rem;margin:0">Quick Link Sections</h2>
+        <button type="button" onclick="addSection()" class="ql-btn-add">+ Add Section</button>
+      </div>
+      <div id="sections-list"></div>
+      <input type="hidden" name="home_sections_json" id="sections-json-input"/>
+
+      <datalist id="entity-options">
+        {% for e in entities %}<option value="{{ e.name }}" data-id="{{ e.id }}">{% endfor %}
+      </datalist>
+      <datalist id="session-options">
+        {% for s in sessions %}<option value="#{{ s.session_num }} {{ s.title }}" data-id="{{ s.id }}">{% endfor %}
+      </datalist>
+      <datalist id="quest-options">
+        {% for q in quests %}<option value="{{ q.title }}" data-id="{{ q.id }}">{% endfor %}
+      </datalist>
+      <datalist id="board-options">
+        {% for b in boards %}<option value="{{ b.name }}" data-id="{{ b.slug }}">{% endfor %}
+      </datalist>
+      <datalist id="schematic-options">
+        {% for s in schematics %}<option value="{{ s.name }}" data-id="{{ s.slug }}">{% endfor %}
+      </datalist>
+      <datalist id="map-options">
+        {% for slug, name in maps %}<option value="{{ name }}" data-id="{{ slug }}">{% endfor %}
+      </datalist>
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn-save">Save</button>
+      <a href="/" class="btn-cancel">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<style>
+.ql-section { background:var(--bg3); border:1px solid var(--border); border-radius:6px; padding:.9rem; margin-bottom:.9rem; }
+.ql-section-head { display:flex; align-items:center; gap:.5rem; margin-bottom:.7rem; flex-wrap:wrap; }
+.ql-section-head input[type="text"] { flex:1; min-width:160px; background:var(--bg2); border:1px solid var(--border); color:var(--text); padding:.35rem .6rem; font-family:var(--font); font-size:.85rem; border-radius:3px; font-weight:600; }
+.ql-section-head label { font-size:.76rem; color:var(--text-dim); display:flex; align-items:center; gap:.3rem; white-space:nowrap; }
+.ql-icon-btn { background:none; border:1px solid var(--border); color:var(--text-dim); font-size:.85rem; cursor:pointer; padding:.2rem .5rem; border-radius:3px; line-height:1; }
+.ql-icon-btn:hover { border-color:var(--neon); color:var(--neon); }
+.ql-icon-btn.danger:hover { border-color:#c44; color:#c44; }
+.ql-link-row { display:grid; grid-template-columns:1.1fr 56px 1fr 1.3fr auto 32px; gap:.4rem; align-items:center; background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.4rem .55rem; margin-bottom:.35rem; }
+.ql-link-row input, .ql-link-row select { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.3rem .5rem; font-family:var(--font); font-size:.78rem; border-radius:3px; width:100%; box-sizing:border-box; }
+.ql-vis-toggle { font-size:.72rem; color:var(--text-dim); display:flex; align-items:center; gap:.25rem; white-space:nowrap; }
+.link-del { background:none; border:none; color:#c44; font-size:1.1rem; cursor:pointer; padding:0 .1rem; line-height:1; }
+.ql-btn-add { background:var(--bg3); border:1px solid var(--neon); color:var(--neon); padding:.3rem .75rem; font-size:.78rem; border-radius:3px; cursor:pointer; }
+.ql-btn-add-link { background:none; border:1px dashed var(--border); color:var(--text-dim); padding:.3rem .6rem; font-size:.76rem; border-radius:3px; cursor:pointer; margin-top:.2rem; }
+.ql-btn-add-link:hover { border-color:var(--neon); color:var(--neon); }
+</style>
+
+<script>
+const KINDS = {{ kinds | tojson }};
+const LINK_TYPES = [
+  ['entity', 'Entity'], ['session', 'Session'], ['quest', 'Quest'],
+  ['board', 'Board'], ['schematic', 'Schematic'], ['map', 'Map'],
+  ['kind', 'Category Page'], ['url', 'External URL'],
+];
+const NAME_TO_REF = { entity: {}, session: {}, quest: {}, board: {}, schematic: {}, map: {} };
+const REF_TO_NAME = { entity: {}, session: {}, quest: {}, board: {}, schematic: {}, map: {} };
+Object.keys(NAME_TO_REF).forEach(t => {
+  document.querySelectorAll('#' + t + '-options option').forEach(o => {
+    NAME_TO_REF[t][o.value] = String(o.dataset.id);
+    REF_TO_NAME[t][String(o.dataset.id)] = o.value;
+  });
+});
+
+function refNameFor(type, ref) {
+  if (!ref || type === 'kind' || type === 'url') return ref || '';
+  return (REF_TO_NAME[type] && REF_TO_NAME[type][ref]) || '';
+}
+
+const INIT_SECTIONS = {{ initial_sections | tojson }};
+let _sections = INIT_SECTIONS.map(s => ({
+  name: s.name || '',
+  visible_to_players: s.visible_to_players !== false,
+  links: (s.links || []).map(l => ({
+    label: l.label || '', icon: l.icon || '',
+    target_type: l.target_type || 'entity',
+    target_ref: l.target_ref || '',
+    ref_name: refNameFor(l.target_type || 'entity', l.target_ref || ''),
+    visible_to_players: l.visible_to_players !== false,
+  })),
+}));
+
+function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+function renderRefField(si, li, link) {
+  const t = link.target_type;
+  if (t === 'kind') {
+    return `<select onchange="updateLink(${si},${li},'target_ref',this.value)">` +
+      KINDS.map(k => `<option value="${k}" ${k === link.target_ref ? 'selected' : ''}>${k}</option>`).join('') +
+      `</select>`;
+  }
+  if (t === 'url') {
+    return `<input type="url" placeholder="https://..." value="${esc(link.target_ref)}" oninput="updateLink(${si},${li},'target_ref',this.value)"/>`;
+  }
+  return `<input type="text" list="${t}-options" placeholder="Search ${t}s…" value="${esc(link.ref_name)}" oninput="updateLinkRef(${si},${li},this.value)"/>`;
+}
+
+function renderLinkRow(si, li, link) {
+  return `
+    <div class="ql-link-row">
+      <input type="text" placeholder="Label" value="${esc(link.label)}" oninput="updateLink(${si},${li},'label',this.value)"/>
+      <input type="text" placeholder="🔗" maxlength="4" value="${esc(link.icon)}" oninput="updateLink(${si},${li},'icon',this.value)"/>
+      <select onchange="updateLinkType(${si},${li},this.value)">
+        ${LINK_TYPES.map(([v, l]) => `<option value="${v}" ${v === link.target_type ? 'selected' : ''}>${l}</option>`).join('')}
+      </select>
+      ${renderRefField(si, li, link)}
+      <label class="ql-vis-toggle"><input type="checkbox" ${link.visible_to_players ? 'checked' : ''} onchange="updateLink(${si},${li},'visible_to_players',this.checked)"/> Players</label>
+      <button type="button" class="link-del" onclick="removeLink(${si},${li})" title="Remove link">✕</button>
+    </div>
+  `;
+}
+
+function renderSection(sec, si) {
+  const links = sec.links.map((l, li) => renderLinkRow(si, li, l)).join('');
+  return `
+    <div class="ql-section">
+      <div class="ql-section-head">
+        <input type="text" value="${esc(sec.name)}" placeholder="Section name" oninput="updateSectionField(${si},'name',this.value)"/>
+        <label><input type="checkbox" ${sec.visible_to_players ? 'checked' : ''} onchange="updateSectionField(${si},'visible_to_players',this.checked)"/> Visible to players</label>
+        <button type="button" class="ql-icon-btn" onclick="moveSection(${si},-1)" title="Move up">▲</button>
+        <button type="button" class="ql-icon-btn" onclick="moveSection(${si},1)" title="Move down">▼</button>
+        <button type="button" class="ql-icon-btn danger" onclick="removeSection(${si})" title="Delete section">✕</button>
+      </div>
+      ${links}
+      <button type="button" class="ql-btn-add-link" onclick="addLink(${si})">+ Add Link</button>
+    </div>
+  `;
+}
+
+function renderAll() {
+  document.getElementById('sections-list').innerHTML = _sections.map(renderSection).join('');
+  syncHidden();
+}
+
+function addSection() { _sections.push({ name: 'New Section', visible_to_players: true, links: [] }); renderAll(); }
+function removeSection(si) { if (!confirm('Delete this section and all its links?')) return; _sections.splice(si, 1); renderAll(); }
+function moveSection(si, dir) {
+  const j = si + dir;
+  if (j < 0 || j >= _sections.length) return;
+  [_sections[si], _sections[j]] = [_sections[j], _sections[si]];
+  renderAll();
+}
+function updateSectionField(si, key, val) { _sections[si][key] = val; syncHidden(); }
+
+function addLink(si) {
+  _sections[si].links.push({ label: '', icon: '', target_type: 'entity', target_ref: '', ref_name: '', visible_to_players: true });
+  renderAll();
+}
+function removeLink(si, li) { _sections[si].links.splice(li, 1); renderAll(); }
+function updateLink(si, li, key, val) { _sections[si].links[li][key] = val; syncHidden(); }
+function updateLinkRef(si, li, val) {
+  const t = _sections[si].links[li].target_type;
+  _sections[si].links[li].ref_name = val;
+  _sections[si].links[li].target_ref = (NAME_TO_REF[t] && NAME_TO_REF[t][val]) || '';
+  syncHidden();
+}
+function updateLinkType(si, li, val) {
+  _sections[si].links[li].target_type = val;
+  _sections[si].links[li].target_ref = '';
+  _sections[si].links[li].ref_name = '';
+  renderAll();
+}
+
+function syncHidden() {
+  document.getElementById('sections-json-input').value = JSON.stringify(
+    _sections.map(s => ({
+      name: s.name,
+      visible_to_players: !!s.visible_to_players,
+      links: s.links
+        .filter(l => l.label && l.target_ref)
+        .map(l => ({
+          label: l.label, icon: l.icon, target_type: l.target_type,
+          target_ref: l.target_ref, visible_to_players: !!l.visible_to_players,
+        })),
+    }))
+  );
+}
+
+document.getElementById('home-form').addEventListener('submit', syncHidden);
+renderAll();
+</script>
+{% endblock %}
