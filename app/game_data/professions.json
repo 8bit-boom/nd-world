@@ -2,7 +2,7 @@
   {
     "id": "charlatan",
     "name": "Charlatan",
-    "type": "",
+    "type": "Social",
     "tags": "",
     "description": "",
     "sections": {
@@ -20,12 +20,13 @@
         "defaultValue": "0",
         "valueType": "INT"
       }
-    ]
+    ],
+    "tier": "Standard"
   },
   {
     "id": "cyberdoc",
     "name": "Cyberdoc",
-    "type": "",
+    "type": "Technical",
     "tags": "",
     "description": "",
     "sections": {
@@ -43,12 +44,13 @@
         "defaultValue": "2",
         "valueType": "INT"
       }
-    ]
+    ],
+    "tier": "Advanced"
   },
   {
     "id": "hacker",
     "name": "Hacker",
-    "type": "",
+    "type": "Technical",
     "tags": "",
     "description": "",
     "sections": {
@@ -69,12 +71,13 @@
         "defaultValue": "1",
         "valueType": "INT"
       }
-    ]
+    ],
+    "tier": "Advanced"
   },
   {
     "id": "merc",
     "name": "Merc",
-    "type": "",
+    "type": "Combatant",
     "tags": "",
     "description": "",
     "sections": {
@@ -89,12 +92,13 @@
         "defaultValue": "1",
         "valueType": "INT"
       }
-    ]
+    ],
+    "tier": "Standard"
   },
   {
     "id": "psyonic",
     "name": "Psyonic",
-    "type": "",
+    "type": "Supernatural",
     "tags": "",
     "description": "",
     "sections": {
@@ -112,12 +116,13 @@
         "defaultValue": "1",
         "valueType": "INT"
       }
-    ]
+    ],
+    "tier": "Exceptional"
   },
   {
     "id": "street_fighter",
     "name": "Street Fighter",
-    "type": "",
+    "type": "Combatant",
     "tags": "",
     "description": "",
     "sections": {
@@ -131,6 +136,7 @@
         "defaultValue": "0",
         "valueType": "INT"
       }
-    ]
+    ],
+    "tier": "Standard"
   }
 ]

@@ -397,10 +397,20 @@ function isHuman() { return sel.race && sel.race.name.toLowerCase().includes('hu
 
 // ── Profession step ───────────────────────────────────────────────────────────
 function renderProfessionStep() {
-  document.getElementById('prof-cards').innerHTML = CATALOG.professions.map(p => `
-    <div class="wiz-card${sel.profession && sel.profession.id===p.id ? ' selected':''}" onclick="pickProfession('${p.id}')">
-      <div class="wiz-card-name">${escVal(p.name)}</div>
-    </div>`).join('');
+  const tiers = ['Standard', 'Advanced', 'Exceptional'];
+  let html = '';
+  tiers.forEach(tier => {
+    const professions = CATALOG.professions.filter(p => p.tier === tier);
+    if (!professions.length) return;
+    html += `<div class="wiz-tier-label">${tier} (${professions.length})</div><div class="wiz-cardgrid">`;
+    html += professions.map(p => `
+      <div class="wiz-card${sel.profession && sel.profession.id===p.id ? ' selected':''}" onclick="pickProfession('${p.id}')">
+        <div class="wiz-card-name">${escVal(p.name)}</div>
+        <div class="wiz-card-sub">${tier}</div>
+      </div>`).join('');
+    html += `</div>`;
+  });
+  document.getElementById('prof-cards').innerHTML = html;
 }
 function pickProfession(id) {
   sel.profession = CATALOG.professions.find(p => p.id === id);

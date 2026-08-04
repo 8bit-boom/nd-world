@@ -169,7 +169,10 @@ def catalog_payload() -> dict:
             for r in RACES
         ],
         "professions": [
-            {"id": p["id"], "name": p["name"], "description": p.get("description", "")}
+            {
+                "id": p["id"], "name": p["name"], "tier": p.get("tier", "Standard"),
+                "description": p.get("description", ""),
+            }
             for p in PROFESSIONS
         ],
         "feats": [

@@ -41,6 +41,7 @@ from .routers.sessions import router as sessions_router
 from .routers.calendar import router as calendar_router
 from .routers.importer import router as importer_router
 from .routers.races import router as races_router
+from .routers.professions import router as professions_router
 from .routers.lore_extras import router as lore_extras_router
 from .routers.boards_generate import router as boards_generate_router
 from .routers.handouts import router as handouts_router
@@ -75,6 +76,7 @@ app.include_router(sessions_router)
 app.include_router(calendar_router)
 app.include_router(importer_router)
 app.include_router(races_router)
+app.include_router(professions_router)
 app.include_router(lore_extras_router)
 app.include_router(boards_generate_router)
 app.include_router(handouts_router)
@@ -161,7 +163,7 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if method != "GET":
         return False
-    if path in ("/", "/rules", "/search", "/maps", "/races"):
+    if path in ("/", "/rules", "/search", "/maps", "/races", "/professions"):
         return True
     if path.startswith("/kind/") or path.startswith("/uploads/"):
         return True

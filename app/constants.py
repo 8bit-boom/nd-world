@@ -1,4 +1,4 @@
-KINDS = ["character", "location", "organization", "creature", "event", "item", "feat", "note", "race"]
+KINDS = ["character", "location", "organization", "creature", "event", "item", "feat", "note", "race", "profession"]
 
 SUBTYPES = {
     "character": ["NPC", "PC", "villain", "ally", "neutral"],
@@ -11,12 +11,14 @@ SUBTYPES = {
     "note": ["lore", "session note", "rumor", "prophecy", "theory"],
     # Tier, matching the bundled race catalog under app/races/<tier>/*.md.
     "race": ["standard", "advanced", "exceptional"],
+    # Tier, matching the bundled profession catalog under app/professions/<tier>/*.md.
+    "profession": ["standard", "advanced", "exceptional"],
 }
 
 KIND_ICONS = {
     "character": "👤", "location": "🗺", "organization": "🏢",
     "creature": "☠", "event": "⚡", "item": "⚙", "feat": "✦", "note": "📄",
-    "race": "🧬",
+    "race": "🧬", "profession": "🎭",
 }
 
 XP_THRESHOLDS = [
