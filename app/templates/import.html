@@ -36,6 +36,25 @@
   </div>
 
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-top:1.5rem">
+    <h2 style="color:var(--neon);font-size:.9rem;margin:0 0 .4rem">📦 Bulk JSON Import</h2>
+    <p style="color:var(--text-dim);font-size:.82rem;margin:0 0 .8rem">
+      Select several JSON files at once — each is analyzed the same way as the
+      single-file box above and imported automatically if nothing more than
+      that file's own content is needed. Files that need extra details (which
+      map or schematic to attach to, a stat-block template's kind) aren't
+      guessable in bulk — those get flagged below to import one at a time above
+      instead.
+    </p>
+    <label for="bulk-json-files-input" style="font-size:.82rem;color:var(--text-dim);display:block;margin-bottom:.3rem">JSON files</label>
+    <input type="file" id="bulk-json-files-input" multiple accept=".json,application/json" style="font-size:.8rem"/>
+    <div id="bulk-json-preview" style="margin-top:1rem"></div>
+    <div style="display:flex;gap:.75rem;margin-top:.9rem;align-items:center">
+      <button type="button" id="bulk-json-import-btn" disabled style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer;opacity:.5">Import All</button>
+      <span id="bulk-json-import-result" aria-live="polite" style="font-size:.85rem"></span>
+    </div>
+  </div>
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-top:1.5rem">
     <h2 style="color:var(--neon);font-size:.9rem;margin:0 0 .4rem">🖼 Bulk Image Import</h2>
     <p style="color:var(--text-dim);font-size:.82rem;margin:0 0 .8rem">
       Select several portrait/art files at once — each one is matched to an entity
@@ -294,6 +313,146 @@ document.getElementById('import-btn').addEventListener('click', async () => {
   } finally {
     importBtn.disabled = false;
   }
+});
+
+// ── Bulk JSON import ─────────────────────────────────────────────────────────
+// Multiple whole-file imports in one action, reusing the exact same
+// /api/import/detect + /api/import/execute endpoints the single-file box
+// above uses — no separate backend route. Each file is independent: one
+// failing (bad JSON, unknown kind, a kind that needs params we can't guess
+// per-file) doesn't block the rest.
+const BULK_JSON_MAX_FILES = 50;
+let bulkJsonFiles = []; // [{file, name, text, parsed, parseErr, detected, status, error}]
+
+document.getElementById('bulk-json-files-input').addEventListener('change', async (e) => {
+  let files = Array.from(e.target.files);
+  const resEl = document.getElementById('bulk-json-import-result');
+  resEl.textContent = '';
+  if (files.length > BULK_JSON_MAX_FILES) {
+    resEl.style.color = '#e8a94a';
+    resEl.textContent = `${files.length} files selected — only importing the first ${BULK_JSON_MAX_FILES} (max per batch).`;
+    files = files.slice(0, BULK_JSON_MAX_FILES);
+  }
+  bulkJsonFiles = await Promise.all(files.map(async (f) => {
+    const text = await f.text();
+    let parsed = null, parseErr = null;
+    try { parsed = JSON.parse(text); } catch (err) { parseErr = err.message; }
+    return { file: f, name: f.name, text, parsed, parseErr, detected: null, status: 'checking' };
+  }));
+  renderBulkJsonPreview();
+  await analyzeBulkJsonFiles();
+});
+
+async function analyzeBulkJsonFiles() {
+  for (const item of bulkJsonFiles) {
+    if (item.parseErr) { item.status = 'invalid'; continue; }
+    try {
+      const res = await fetch('/api/import/detect', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ json_text: item.text }),
+      });
+      const { data, parseError } = await parseJsonResponse(res);
+      if (parseError) { item.status = 'error'; item.error = `server returned a non-JSON response (${parseError})`; continue; }
+      item.detected = data;
+      item.status = data.kind === 'unknown' ? 'unknown'
+        : (data.needs && data.needs.length ? 'needs-params' : 'ready');
+    } catch (err) {
+      item.status = 'error'; item.error = err.message;
+    }
+    renderBulkJsonPreview();
+  }
+}
+
+function renderBulkJsonPreview() {
+  const box = document.getElementById('bulk-json-preview');
+  box.innerHTML = '';
+  if (!bulkJsonFiles.length) { disableBulkJsonImport(); return; }
+  const list = document.createElement('div');
+  list.style.cssText = 'display:flex;flex-direction:column;gap:.4rem;max-height:360px;overflow-y:auto';
+  bulkJsonFiles.forEach((item) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:.6rem;padding:.4rem .6rem;background:var(--bg3);border-radius:4px';
+    const name = document.createElement('span');
+    name.textContent = item.name;
+    name.style.cssText = 'flex:1;font-size:.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    row.appendChild(name);
+    const status = document.createElement('span');
+    status.style.cssText = 'font-size:.75rem;white-space:nowrap';
+    if (item.parseErr) {
+      status.style.color = '#c44'; status.textContent = 'Not valid JSON';
+    } else if (item.status === 'checking') {
+      status.style.color = 'var(--text-dim)'; status.textContent = 'Analyzing…';
+    } else if (item.status === 'unknown') {
+      status.style.color = '#c44'; status.textContent = "Couldn't tell what this is — import it above instead";
+    } else if (item.status === 'needs-params') {
+      status.style.color = '#e8a94a';
+      status.textContent = `${KIND_LABELS[item.detected.kind] || item.detected.kind} — needs details, import above instead`;
+    } else if (item.status === 'error') {
+      status.style.color = '#c44'; status.textContent = item.error;
+    } else if (item.status === 'ready') {
+      status.style.color = '#4f4';
+      status.textContent = `${KIND_LABELS[item.detected.kind] || item.detected.kind} — ${item.detected.summary}`;
+    }
+    row.appendChild(status);
+    list.appendChild(row);
+  });
+  box.appendChild(list);
+  const readyCount = bulkJsonFiles.filter(i => i.status === 'ready').length;
+  if (readyCount) enableBulkJsonImport(); else disableBulkJsonImport();
+}
+
+function enableBulkJsonImport() {
+  const btn = document.getElementById('bulk-json-import-btn');
+  btn.disabled = false; btn.style.opacity = '1';
+}
+function disableBulkJsonImport() {
+  const btn = document.getElementById('bulk-json-import-btn');
+  btn.disabled = true; btn.style.opacity = '.5';
+}
+
+document.getElementById('bulk-json-import-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('bulk-json-import-btn');
+  const resEl = document.getElementById('bulk-json-import-result');
+  const ready = bulkJsonFiles.filter(i => i.status === 'ready');
+  if (!ready.length) return;
+  btn.disabled = true;
+  const results = [];
+  for (let i = 0; i < ready.length; i++) {
+    const item = ready[i];
+    resEl.style.color = 'var(--text-dim)';
+    resEl.textContent = `Importing ${i + 1}/${ready.length}: ${item.name}…`;
+    try {
+      const res = await fetch('/api/import/execute', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ json_text: item.text, kind: item.detected.kind, params: {} }),
+      });
+      const { data, parseError } = await parseJsonResponse(res);
+      if (parseError || !res.ok) {
+        const msg = parseError ? `server returned a non-JSON response (${parseError})` : ((data && data.detail) || 'Import failed.');
+        results.push({ name: item.name, ok: false, message: msg });
+      } else if (data.batch) {
+        const okCount = data.results.filter(r => r.ok).length;
+        results.push({ name: item.name, ok: okCount === data.results.length, message: `${okCount}/${data.results.length} sub-item(s) imported` });
+      } else {
+        results.push({ name: item.name, ok: true, message: 'imported' });
+      }
+    } catch (err) {
+      results.push({ name: item.name, ok: false, message: err.message });
+    }
+  }
+  const okCount = results.filter(r => r.ok).length;
+  resEl.style.color = okCount === results.length ? '#4f4' : '#e8a94a';
+  resEl.textContent = `${okCount}/${results.length} file(s) imported.`;
+  const list = document.createElement('ul');
+  list.style.cssText = 'margin:.5rem 0 0 1.2rem;padding:0';
+  results.forEach((r) => {
+    const li = document.createElement('li');
+    li.style.color = r.ok ? '#4f4' : '#c44';
+    li.textContent = `${r.name}: ${r.message}`;
+    list.appendChild(li);
+  });
+  resEl.appendChild(list);
+  btn.disabled = false;
 });
 
 // ── Bulk image import ───────────────────────────────────────────────────────
