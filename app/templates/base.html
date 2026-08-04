@@ -12,7 +12,7 @@
       } catch(e) {}
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=11"/>
+  <link rel="stylesheet" href="/static/style.css?v=12"/>
   {% if world %}<style>:root { --neon: {{ world.accent }} !important; }</style>{% endif %}
 </head>
 <body>
@@ -178,6 +178,89 @@ function closeLightbox() {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeLightbox();
 });
+</script>
+
+<script>
+// Hover-preview popup: hover any /entity/{id} link long enough (Settings >
+// Options controls whether this is on and how long) to see its full
+// details without opening it in a new tab. Delegated to `document` so it
+// works on links rendered anywhere — entity cards, linked-entity lists,
+// search results, quick links, entity bodies — and on links added to the
+// DOM later by other scripts (e.g. index.html's quick-link drag&drop),
+// with no per-template wiring needed.
+(function(){
+  var cfg = { enabled: false, delayMs: 5000 };
+  var hoverTimer = null;
+  var currentAnchor = null;
+  var popupEl = null;
+
+  fetch('/api/hover-preview/config').then(r => r.json()).then(d => {
+    cfg.enabled = !!d.enabled;
+    cfg.delayMs = d.delay_ms || 5000;
+  }).catch(() => {});
+
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+  function hidePopup() {
+    if (popupEl) { popupEl.remove(); popupEl = null; }
+  }
+
+  function positionPopup(anchor, popup) {
+    var r = anchor.getBoundingClientRect();
+    document.body.appendChild(popup);
+    var w = popup.offsetWidth, h = popup.offsetHeight;
+    var left = Math.min(Math.max(8, r.left), window.innerWidth - w - 8);
+    var top = r.bottom + 6;
+    if (top + h > window.innerHeight - 8 && r.top - h - 6 > 0) {
+      top = r.top - h - 6; // flip above if there's no room below
+    }
+    popup.style.left = (left + window.scrollX) + 'px';
+    popup.style.top = (top + window.scrollY) + 'px';
+  }
+
+  function renderPopup(anchor, data) {
+    hidePopup();
+    popupEl = document.createElement('div');
+    popupEl.className = 'hover-preview-popup';
+    popupEl.innerHTML =
+      (data.image_url ? '<img src="' + esc(data.image_url) + '" alt=""/>' : '') +
+      '<span class="entity-kind">' + esc(data.kind_icon) + ' ' + esc(data.kind) + '</span>' +
+      (data.subtype ? '<span class="entity-sub">' + esc(data.subtype) + '</span>' : '') +
+      '<h3>' + esc(data.name) + '</h3>' +
+      (data.summary ? '<p class="detail-summary">' + esc(data.summary) + '</p>' : '') +
+      (data.tags && data.tags.length ? '<div class="tags">' + data.tags.map(t => '<span class="tag">' + esc(t) + '</span>').join('') + '</div>' : '') +
+      (data.body_html ? '<div class="prose">' + data.body_html + '</div>' : '') +
+      '<a class="hp-open-link" href="/entity/' + data.id + '">Open full page →</a>';
+    // Keep it open while the pointer is over the popup itself, not just the anchor.
+    popupEl.addEventListener('mouseleave', hidePopup);
+    positionPopup(anchor, popupEl);
+  }
+
+  document.addEventListener('mouseover', e => {
+    if (!cfg.enabled) return;
+    var a = e.target.closest('a[href^="/entity/"]');
+    if (!a || a === currentAnchor) return;
+    currentAnchor = a;
+    clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(function() {
+      var m = a.getAttribute('href').match(/^\/entity\/(\d+)/);
+      if (!m || currentAnchor !== a) return;
+      fetch('/api/entity/' + m[1] + '/preview').then(r => r.ok ? r.json() : null).then(data => {
+        if (data && currentAnchor === a) renderPopup(a, data);
+      }).catch(() => {});
+    }, cfg.delayMs);
+  });
+
+  document.addEventListener('mouseout', e => {
+    var a = e.target.closest('a[href^="/entity/"]');
+    if (!a || a !== currentAnchor) return;
+    // Moving from the link straight into its own popup shouldn't close it.
+    if (popupEl && e.relatedTarget && popupEl.contains(e.relatedTarget)) return;
+    currentAnchor = null;
+    clearTimeout(hoverTimer);
+    hidePopup();
+  });
+})();
 </script>
 
 <script>

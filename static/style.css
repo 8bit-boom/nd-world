@@ -341,6 +341,36 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
   justify-content: center;
 }
 .lightbox-close:hover { border-color: var(--neon); color: var(--neon); }
+
+/* ── Hover-preview popup (Settings > Options; base.html's global mouseover handler) ── */
+.hover-preview-popup {
+  position: absolute;
+  z-index: 900;
+  width: 340px;
+  max-height: 420px;
+  overflow-y: auto;
+  background: var(--bg2);
+  border: 1px solid var(--neon);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .5);
+  padding: .9rem 1rem;
+  font-size: .82rem;
+  color: var(--text);
+  pointer-events: auto;
+}
+.hover-preview-popup img {
+  width: 100%;
+  max-height: 140px;
+  object-fit: cover;
+  border-radius: 5px;
+  margin-bottom: .6rem;
+}
+.hover-preview-popup h3 { margin: .2rem 0 .3rem; font-size: 1.05rem; color: var(--neon); }
+.hover-preview-popup .entity-sub { font-size: .7rem; color: var(--text-dim); margin-left: .4rem; }
+.hover-preview-popup .hp-open-link {
+  display: inline-block; margin-top: .6rem; font-size: .75rem; color: var(--text-dim); text-decoration: none;
+}
+.hover-preview-popup .hp-open-link:hover { color: var(--neon); }
 .detail-meta h1 { font-size: 1.6rem; margin: .3rem 0 .6rem; }
 .detail-summary { color: var(--text-dim); font-style: italic; margin-bottom: .5rem; }
 .detail-date { font-size: .72rem; color: var(--text-dim); margin-top: .5rem; }

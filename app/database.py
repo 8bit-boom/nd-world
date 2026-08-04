@@ -278,6 +278,8 @@ def _migrate():
                 ("ollama_model", "VARCHAR(256) DEFAULT ''"),
                 ("ollama_url", "VARCHAR(512) DEFAULT ''"),
                 ("swarmui_external_url", "VARCHAR(512) DEFAULT ''"),
+                ("hover_preview_enabled", "BOOLEAN DEFAULT 1"),
+                ("hover_preview_delay_ms", "INTEGER DEFAULT 5000"),
             ]:
                 if col not in as_cols:
                     conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN {col} {defn}"))

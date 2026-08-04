@@ -534,4 +534,9 @@ class AppSettings(Base):
     ollama_model = Column(String(256), default="")
     ollama_url = Column(String(512), default="")
     swarmui_external_url = Column(String(512), default="")
+    # Hover-a-link-for-N-seconds entity preview popup (base.html's global
+    # mouseover handler + GET /api/entity/{id}/preview) — instance-wide like
+    # everything else on this row, editable from Settings > Options.
+    hover_preview_enabled = Column(Boolean, default=True)
+    hover_preview_delay_ms = Column(Integer, default=5000)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

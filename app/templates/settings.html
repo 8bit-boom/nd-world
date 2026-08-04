@@ -36,6 +36,24 @@
           <option value="none" {% if settings.animated_format == 'none' %}selected{% endif %}>Don't convert</option>
         </select>
       </div>
+      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Entity hover preview</h2>
+      <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
+        Hovering over a link to any entity (character, item, feat, race — everything)
+        for the delay below pops up a small preview card with its full details, so you
+        don't need to open it in a new tab just to check something.
+      </p>
+      <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+        <input type="checkbox" id="hover-preview-enabled" name="hover_preview_enabled" value="1"
+               style="width:auto;accent-color:var(--neon)" {% if settings.hover_preview_enabled %}checked{% endif %}>
+        <label for="hover-preview-enabled" style="margin:0">Enable hover preview</label>
+      </div>
+      <div class="form-group">
+        <label for="hover-preview-delay">Delay before it appears (seconds)</label>
+        <input type="number" id="hover-preview-delay" name="hover_preview_delay_seconds"
+               step="0.5" value="{{ (settings.hover_preview_delay_ms or 5000) / 1000 }}"
+               style="max-width:120px"/>
+        <small style="color:var(--text-dim)">0.5–30 seconds; out-of-range values are clamped on save.</small>
+      </div>
       <div class="form-actions">
         <button type="submit" class="btn-primary">Save</button>
       </div>

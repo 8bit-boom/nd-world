@@ -153,6 +153,10 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if path == "/api/me":
         return True
+    if path == "/api/hover-preview/config":
+        return True
+    if re.match(r"^/api/entity/\d+/preview$", path):
+        return True
     if path == "/account" or path.startswith("/account/"):
         return True
     if re.match(r"^/api/worlds/\d+/characters/sync$", path):
@@ -2171,11 +2175,17 @@ def settings_page(request: Request, db: Session = Depends(get_db), active_world:
 def settings_save(
     static_format: str = Form("avif"),
     animated_format: str = Form("avif"),
+    hover_preview_enabled: Optional[str] = Form(None),
+    hover_preview_delay_seconds: float = Form(5.0),
     db: Session = Depends(get_db),
 ):
     settings = get_app_settings(db)
     settings.static_format = static_format if static_format in ("none", "avif", "webp") else "avif"
     settings.animated_format = animated_format if animated_format in ("none", "avif", "webp") else "avif"
+    settings.hover_preview_enabled = hover_preview_enabled is not None
+    # Clamped rather than rejected with an error page — a GM fat-fingering
+    # "0" or "9999" should just get a sane bound, not a round trip to fix a form.
+    settings.hover_preview_delay_ms = int(max(0.5, min(30.0, hover_preview_delay_seconds)) * 1000)
     db.commit()
     return RedirectResponse("/settings", status_code=303)
 
@@ -2587,8 +2597,13 @@ def list_entities(request: Request, kind: str, q: str = "", folder: Optional[str
 
 # ── Detail ────────────────────────────────────────────────────────────────────
 
-@app.get("/entity/{entity_id}", response_class=HTMLResponse)
-def detail(request: Request, entity_id: int, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def _entity_view_gate(db: Session, request: Request, entity_id: int) -> Entity:
+    """The single entity by id, only if the current viewer is actually
+    allowed to see it — raises 404 (not 403) either way, same as the /entity
+    detail route this was factored out of, so a player can't distinguish
+    "doesn't exist" from "exists but you can't see it" by the status code.
+    Shared by the detail page and the hover-preview API so both enforce the
+    exact same rule instead of two hand-maintained copies drifting apart."""
     entity = db.get(Entity, entity_id)
     if not entity:
         raise HTTPException(404)
@@ -2605,6 +2620,46 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         ).first()
         if not shared:
             raise HTTPException(404)
+    return entity
+
+
+@app.get("/api/entity/{entity_id}/preview")
+def entity_preview(entity_id: int, request: Request, db: Session = Depends(get_db)):
+    """Hover-preview popup content (see base.html's dragstart-adjacent
+    mouseover handler) — same access rule as the full detail page via
+    _entity_view_gate, just returning a small JSON summary instead of the
+    whole rendered page."""
+    entity = _entity_view_gate(db, request, entity_id)
+    return {
+        "id": entity.id,
+        "name": entity.name,
+        "kind": entity.kind,
+        "kind_icon": KIND_ICONS.get(entity.kind, ""),
+        "subtype": entity.subtype,
+        "summary": entity.summary,
+        "image_url": entity.image_url,
+        "tags": [t.strip() for t in (entity.tags or "").split(",") if t.strip()],
+        "body_html": render_md(entity.body) if entity.body else "",
+    }
+
+
+@app.get("/api/hover-preview/config")
+def hover_preview_config(db: Session = Depends(get_db)):
+    """Instance-wide hover-preview settings (Settings > Options), fetched
+    once by base.html on every page load — mirrors the existing /api/ai/status
+    fetch-on-load pattern rather than needing every route handler to
+    remember to pass this through its own template context."""
+    settings = get_app_settings(db)
+    return {
+        "enabled": bool(settings.hover_preview_enabled),
+        "delay_ms": settings.hover_preview_delay_ms or 5000,
+    }
+
+
+@app.get("/entity/{entity_id}", response_class=HTMLResponse)
+def detail(request: Request, entity_id: int, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    entity = _entity_view_gate(db, request, entity_id)
+    user = getattr(request.state, "user", None)
     world = get_active_world(request, db, active_world)
     all_entities = _filter_visible_entities(
         db.query(Entity).filter(Entity.id != entity_id, Entity.world_id == entity.world_id), request

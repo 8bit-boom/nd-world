@@ -52,6 +52,8 @@ CASES = [
     ("GET", "/characters/new", True),
     ("POST", "/api/characters/5/hp-async", True),
     ("GET", "/entity/5", True),
+    ("GET", "/api/entity/5/preview", True),
+    ("GET", "/api/hover-preview/config", True),
     ("GET", "/kind/character", True),
     ("GET", "/uploads/portraits/x.png", True),
     ("GET", "/maps/some-map", True),
