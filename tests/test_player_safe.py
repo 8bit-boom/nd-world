@@ -35,6 +35,7 @@ CASES = [
     ("GET", "/characters/templates", False),  # explicitly excluded despite the /characters prefix
     ("GET", "/worlds/1/home/edit", False),
     ("POST", "/worlds/1/home/edit", False),
+    ("POST", "/api/worlds/1/home/quick-link", False),
     # Player-safe — read-only world/lore browsing and their own character(s).
     ("GET", "/", True),
     ("GET", "/account", True),

@@ -831,8 +831,13 @@ def _resolve_home_sections(db: Session, world: World, request: Request) -> list[
     from the current viewer (GM sees everything; players only see
     visible_to_players=True on both the section and the link itself) is
     dropped, as is any link whose target no longer resolves. Sections with
-    no links left after filtering are dropped entirely — nothing useful to
-    show for them on the live page."""
+    no links left after filtering are dropped for players — nothing useful
+    to show for them on the live page — but kept for the GM, so a section
+    they've named via the edit page but not filled in yet still appears as
+    a drop target for the drag-a-nav-tab-here feature (index.html); this
+    also means a GM's returned list here has the same length/order as the
+    raw stored array, which index.html's drop handlers rely on to pass the
+    right section_index back to the quick-link endpoint."""
     user = getattr(request.state, "user", None)
     is_gm = bool(user and getattr(user, "is_gm", False))
     try:
@@ -855,7 +860,7 @@ def _resolve_home_sections(db: Session, world: World, request: Request) -> list[
             if href is None:
                 continue
             links.append({"label": l.get("label", ""), "icon": l.get("icon", ""), "href": href})
-        if links:
+        if links or is_gm:
             out.append({"name": sec.get("name") or "Untitled", "links": links})
     return out
 

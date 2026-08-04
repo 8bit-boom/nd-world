@@ -15,14 +15,14 @@
   {% if home_sections|length > 1 %}
   <div class="ql-tab-bar">
     {% for sec in home_sections %}
-    <button type="button" class="ql-tab {% if loop.first %}active{% endif %}" id="ql-tab-{{ loop.index0 }}" onclick="switchQuickLinksTab({{ loop.index0 }})">{{ sec.name }}</button>
+    <button type="button" class="ql-tab {% if loop.first %}active{% endif %}" id="ql-tab-{{ loop.index0 }}" data-idx="{{ loop.index0 }}" onclick="switchQuickLinksTab({{ loop.index0 }})">{{ sec.name }}</button>
     {% endfor %}
   </div>
   {% else %}
   <h2 class="dash-heading">📌 {{ home_sections[0].name }}</h2>
   {% endif %}
   {% for sec in home_sections %}
-  <div class="ql-pane" id="ql-pane-{{ loop.index0 }}" {% if not loop.first %}style="display:none"{% endif %}>
+  <div class="ql-pane" id="ql-pane-{{ loop.index0 }}" data-idx="{{ loop.index0 }}" {% if not loop.first %}style="display:none"{% endif %}>
     <div class="quick-links-grid">
       {% for l in sec.links %}
       <a href="{{ l.href }}" class="quick-link-card">
@@ -33,6 +33,10 @@
     </div>
   </div>
   {% endfor %}
+</section>
+{% elif request.state.user and request.state.user.is_gm %}
+<section class="dash-section quick-links-section">
+  <div id="ql-empty-dropzone" class="ql-empty-dropzone">📌 Drag a tab from the top nav here to start your Quick Links</div>
 </section>
 {% endif %}
 
@@ -182,6 +186,12 @@
 .ql-icon { font-size:1.1rem; }
 .home-edit-link { display:inline-block; margin:0 0 1rem; font-size:.78rem; color:var(--text-dim); text-decoration:none; }
 .home-edit-link:hover { color:var(--neon); }
+.ql-tab.drag-over, .quick-links-grid.drag-over { border-color:var(--neon); box-shadow:0 0 0 1px var(--neon) inset; }
+.quick-links-grid.drag-over { border:1px dashed var(--neon); border-radius:6px; padding:.4rem; }
+.ql-drop-ok { animation:ql-flash .7s ease; }
+@keyframes ql-flash { 0% { box-shadow:0 0 0 2px var(--neon) inset; } 100% { box-shadow:none; } }
+.ql-empty-dropzone { border:1px dashed var(--border); border-radius:6px; padding:1.5rem; text-align:center; color:var(--text-dim); font-size:.85rem; }
+.ql-empty-dropzone.drag-over { border-color:var(--neon); color:var(--neon); }
 </style>
 <script>
 function switchQuickLinksTab(i) {
@@ -190,5 +200,73 @@ function switchQuickLinksTab(i) {
   document.querySelectorAll('[id^="ql-pane-"]').forEach(p => p.style.display = 'none');
   document.getElementById('ql-pane-' + i).style.display = '';
 }
+
+{% if world and request.state.user and request.state.user.is_gm %}
+(function(){
+  function computeHref(type, ref) {
+    return type === 'kind' ? ('/kind/' + ref) : ref;
+  }
+
+  function appendCard(idx, link) {
+    var pane = document.getElementById('ql-pane-' + idx);
+    if (!pane) return;
+    var grid = pane.querySelector('.quick-links-grid');
+    if (!grid) return;
+    var a = document.createElement('a');
+    a.href = computeHref(link.target_type, link.target_ref);
+    a.className = 'quick-link-card';
+    var label = document.createElement('span');
+    label.className = 'ql-label';
+    label.textContent = link.label;
+    a.appendChild(label);
+    grid.appendChild(a);
+  }
+
+  function parsePayload(e) {
+    var raw = e.dataTransfer.getData('application/json');
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch (err) { return null; }
+  }
+
+  async function saveQuickLink(idx, payload, flashEl, isEmptyState) {
+    try {
+      var r = await fetch('/api/worlds/{{ world.id }}/home/quick-link', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign({ section_index: idx }, payload)),
+      });
+      if (!r.ok) return;
+      var data = await r.json();
+      if (isEmptyState) { location.reload(); return; }
+      appendCard(data.section_index, payload);
+      if (flashEl) {
+        flashEl.classList.add('ql-drop-ok');
+        setTimeout(function() { flashEl.classList.remove('ql-drop-ok'); }, 700);
+      }
+    } catch (err) {}
+  }
+
+  function wireDropTarget(el, idx, isEmptyState) {
+    el.addEventListener('dragover', function(e) { e.preventDefault(); el.classList.add('drag-over'); });
+    el.addEventListener('dragleave', function() { el.classList.remove('drag-over'); });
+    el.addEventListener('drop', function(e) {
+      e.preventDefault();
+      el.classList.remove('drag-over');
+      var payload = parsePayload(e);
+      if (!payload) return;
+      saveQuickLink(idx, payload, el, isEmptyState);
+    });
+  }
+
+  document.querySelectorAll('.ql-tab').forEach(function(tab) {
+    wireDropTarget(tab, parseInt(tab.dataset.idx, 10), false);
+  });
+  document.querySelectorAll('.ql-pane').forEach(function(pane) {
+    var grid = pane.querySelector('.quick-links-grid');
+    if (grid) wireDropTarget(grid, parseInt(pane.dataset.idx, 10), false);
+  });
+  var emptyZone = document.getElementById('ql-empty-dropzone');
+  if (emptyZone) wireDropTarget(emptyZone, null, true);
+})();
+{% endif %}
 </script>
 {% endblock %}

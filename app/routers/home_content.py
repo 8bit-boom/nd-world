@@ -130,3 +130,41 @@ async def world_home_edit_post(world_id: int, request: Request, db: Session = De
     w.home_sections_json = json.dumps(_sanitize_sections(str(form.get("home_sections_json", "[]") or "[]")))
     db.commit()
     return RedirectResponse("/", status_code=303)
+
+
+@router.post("/api/worlds/{world_id}/home/quick-link")
+async def world_home_quick_link(world_id: int, request: Request, db: Session = Depends(get_db)):
+    """Append one link to a home-page section without the full edit-form
+    round trip — the drag-a-nav-tab-onto-the-home-page interaction
+    (app/templates/base.html's dragstart + index.html's drop handlers)
+    posts here. Reuses the same sanitizer as the edit form; the only
+    values this particular caller ever sends are target_type "kind" or
+    "url" (see base.html's dragstart handler), but nothing here assumes
+    that — any type _sanitize_link accepts is handled identically."""
+    w = db.get(World, world_id)
+    if not w:
+        raise HTTPException(404)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid payload")
+    link = _sanitize_link({
+        "label": payload.get("label", ""),
+        "icon": "",
+        "target_type": payload.get("target_type", ""),
+        "target_ref": payload.get("target_ref", ""),
+        "visible_to_players": True,
+    })
+    if not link:
+        raise HTTPException(400, "Invalid link")
+    sections = _sanitize_sections(w.home_sections_json)
+    idx = payload.get("section_index")
+    if not isinstance(idx, int) or not (0 <= idx < len(sections)):
+        if not sections:
+            sections = [{"name": "Quick Links", "visible_to_players": True, "links": []}]
+        idx = 0
+    if len(sections[idx]["links"]) >= _MAX_LINKS_PER_SECTION:
+        raise HTTPException(400, "Section is full")
+    sections[idx]["links"].append(link)
+    w.home_sections_json = json.dumps(sections)
+    db.commit()
+    return {"ok": True, "section_index": idx}

@@ -123,8 +123,18 @@ def test_home_page_renders_welcome_blurb_as_markdown(client, seed):
     assert "<strong>bold announcement</strong>" in r.text
 
 
-def test_home_page_omits_quick_links_section_when_empty(client, seed):
+def test_home_page_shows_empty_state_dropzone_for_gm_only(client, seed):
+    """With zero Quick Link sections configured, a GM sees the drag-a-tab-
+    here empty-state placeholder (so there's a drop target for the
+    drag-and-drop feature); a player — who never gets a drop affordance —
+    sees nothing there at all."""
     login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert 'id="ql-empty-dropzone"' in r.text
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/")
     assert r.status_code == 200
@@ -237,3 +247,135 @@ def test_invalid_kind_link_is_dropped_on_save(client, seed):
         assert json.loads(w.home_sections_json)[0]["links"] == []
     finally:
         db.close()
+
+
+# ── Drag-a-nav-tab-onto-the-home-page quick-add ─────────────────────────────
+
+
+def test_quick_link_is_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post(
+        f"/api/worlds/{seed.world_a.id}/home/quick-link",
+        json={"section_index": None, "label": "Characters", "target_type": "kind", "target_ref": "character"},
+    )
+    assert r.status_code == 403
+
+
+def test_quick_link_appends_to_given_section(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.home_sections_json = json.dumps([
+            {"name": "First", "visible_to_players": True, "links": []},
+            {"name": "Second", "visible_to_players": True, "links": []},
+        ])
+        db.commit()
+    finally:
+        db.close()
+
+    r = client.post(
+        f"/api/worlds/{seed.world_a.id}/home/quick-link",
+        json={"section_index": 1, "label": "Characters", "target_type": "kind", "target_ref": "character"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "section_index": 1}
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        sections = json.loads(w.home_sections_json)
+        assert sections[0]["links"] == []
+        assert sections[1]["links"][0]["target_ref"] == "character"
+    finally:
+        db.close()
+
+
+def test_quick_link_missing_section_index_falls_back_to_first_or_creates_default(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    # No sections at all yet — should create a default "Quick Links" section.
+    r = client.post(
+        f"/api/worlds/{seed.world_a.id}/home/quick-link",
+        json={"section_index": None, "label": "Race Catalog", "target_type": "url", "target_ref": "/races"},
+    )
+    assert r.status_code == 200
+    assert r.json()["section_index"] == 0
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        sections = json.loads(w.home_sections_json)
+        assert len(sections) == 1
+        assert sections[0]["links"][0]["target_ref"] == "/races"
+    finally:
+        db.close()
+
+    # An out-of-range index falls back to section 0 rather than erroring.
+    r = client.post(
+        f"/api/worlds/{seed.world_a.id}/home/quick-link",
+        json={"section_index": 99, "label": "Boards", "target_type": "url", "target_ref": "/boards"},
+    )
+    assert r.status_code == 200
+    assert r.json()["section_index"] == 0
+
+
+def test_quick_link_rejects_full_section(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    full_links = [
+        {"label": f"L{i}", "icon": "", "target_type": "url", "target_ref": f"/l{i}", "visible_to_players": True}
+        for i in range(50)
+    ]
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.home_sections_json = json.dumps([{"name": "Full", "visible_to_players": True, "links": full_links}])
+        db.commit()
+    finally:
+        db.close()
+
+    r = client.post(
+        f"/api/worlds/{seed.world_a.id}/home/quick-link",
+        json={"section_index": 0, "label": "One More", "target_type": "url", "target_ref": "/one-more"},
+    )
+    assert r.status_code == 400
+
+
+def test_quick_link_rejects_invalid_target_type(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(
+        f"/api/worlds/{seed.world_a.id}/home/quick-link",
+        json={"section_index": None, "label": "Bad", "target_type": "not-a-real-type", "target_ref": "whatever"},
+    )
+    assert r.status_code == 400
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        assert json.loads(w.home_sections_json or "[]") == []
+    finally:
+        db.close()
+
+
+def test_empty_named_section_visible_to_gm_but_not_player(client, seed):
+    """A section a GM has named via the edit page but hasn't filled in yet
+    should still show up in the GM's own resolved home_sections (so it's a
+    usable drop target for the drag-a-nav-tab feature), but stays absent
+    for players — nothing useful to show them for an empty section."""
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.home_sections_json = json.dumps([{"name": "Empty For Now", "visible_to_players": True, "links": []}])
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert "Empty For Now" in r.text
+    assert 'id="ql-tab-0"' in r.text or 'id="ql-pane-0"' in r.text
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert "Empty For Now" not in r.text
