@@ -189,20 +189,37 @@ document.addEventListener('keydown', e => {
 // DOM later by other scripts (e.g. index.html's quick-link drag&drop),
 // with no per-template wiring needed.
 (function(){
-  var cfg = { enabled: false, delayMs: 5000 };
+  var cfg = { enabled: false, delayMs: 5000, hideDelayMs: 400, widthPx: 340, maxHeightPx: 420 };
   var hoverTimer = null;
+  var hideTimer = null;
   var currentAnchor = null;
   var popupEl = null;
 
   fetch('/api/hover-preview/config').then(r => r.json()).then(d => {
     cfg.enabled = !!d.enabled;
     cfg.delayMs = d.delay_ms || 5000;
+    cfg.hideDelayMs = d.hide_delay_ms != null ? d.hide_delay_ms : 400;
+    cfg.widthPx = d.width_px || 340;
+    cfg.maxHeightPx = d.max_height_px || 420;
   }).catch(() => {});
 
   function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
   function hidePopup() {
     if (popupEl) { popupEl.remove(); popupEl = null; }
+  }
+
+  // A short grace period between the pointer leaving the anchor (or the
+  // popup) and the popup actually closing, so there's time to move the
+  // mouse from the link onto the popup itself without it vanishing first —
+  // canceled by cancelHide() if the pointer reaches the popup, or a link,
+  // before it elapses.
+  function scheduleHide() {
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(hidePopup, cfg.hideDelayMs);
+  }
+  function cancelHide() {
+    clearTimeout(hideTimer);
   }
 
   function positionPopup(anchor, popup) {
@@ -222,6 +239,8 @@ document.addEventListener('keydown', e => {
     hidePopup();
     popupEl = document.createElement('div');
     popupEl.className = 'hover-preview-popup';
+    popupEl.style.width = cfg.widthPx + 'px';
+    popupEl.style.maxHeight = cfg.maxHeightPx + 'px';
     popupEl.innerHTML =
       (data.image_url ? '<img src="' + esc(data.image_url) + '" alt=""/>' : '') +
       '<span class="entity-kind">' + esc(data.kind_icon) + ' ' + esc(data.kind) + '</span>' +
@@ -231,8 +250,9 @@ document.addEventListener('keydown', e => {
       (data.tags && data.tags.length ? '<div class="tags">' + data.tags.map(t => '<span class="tag">' + esc(t) + '</span>').join('') + '</div>' : '') +
       (data.body_html ? '<div class="prose">' + data.body_html + '</div>' : '') +
       '<a class="hp-open-link" href="/entity/' + data.id + '">Open full page →</a>';
-    // Keep it open while the pointer is over the popup itself, not just the anchor.
-    popupEl.addEventListener('mouseleave', hidePopup);
+    // Hovering the popup itself keeps it open; leaving it re-arms the same grace period.
+    popupEl.addEventListener('mouseenter', cancelHide);
+    popupEl.addEventListener('mouseleave', scheduleHide);
     positionPopup(anchor, popupEl);
   }
 
@@ -241,6 +261,7 @@ document.addEventListener('keydown', e => {
     var a = e.target.closest('a[href^="/entity/"]');
     if (!a || a === currentAnchor) return;
     currentAnchor = a;
+    cancelHide();
     clearTimeout(hoverTimer);
     hoverTimer = setTimeout(function() {
       var m = a.getAttribute('href').match(/^\/entity\/(\d+)/);
@@ -254,11 +275,9 @@ document.addEventListener('keydown', e => {
   document.addEventListener('mouseout', e => {
     var a = e.target.closest('a[href^="/entity/"]');
     if (!a || a !== currentAnchor) return;
-    // Moving from the link straight into its own popup shouldn't close it.
-    if (popupEl && e.relatedTarget && popupEl.contains(e.relatedTarget)) return;
     currentAnchor = null;
     clearTimeout(hoverTimer);
-    hidePopup();
+    scheduleHide();
   });
 })();
 </script>

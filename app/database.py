@@ -280,6 +280,9 @@ def _migrate():
                 ("swarmui_external_url", "VARCHAR(512) DEFAULT ''"),
                 ("hover_preview_enabled", "BOOLEAN DEFAULT 1"),
                 ("hover_preview_delay_ms", "INTEGER DEFAULT 5000"),
+                ("hover_preview_hide_delay_ms", "INTEGER DEFAULT 400"),
+                ("hover_preview_width_px", "INTEGER DEFAULT 340"),
+                ("hover_preview_max_height_px", "INTEGER DEFAULT 420"),
             ]:
                 if col not in as_cols:
                     conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN {col} {defn}"))

@@ -539,4 +539,10 @@ class AppSettings(Base):
     # everything else on this row, editable from Settings > Options.
     hover_preview_enabled = Column(Boolean, default=True)
     hover_preview_delay_ms = Column(Integer, default=5000)
+    # Grace period after the pointer leaves the link before the popup
+    # actually closes, so there's time to move the mouse onto the popup
+    # itself. Popup card size is otherwise fixed by CSS; these override it.
+    hover_preview_hide_delay_ms = Column(Integer, default=400)
+    hover_preview_width_px = Column(Integer, default=340)
+    hover_preview_max_height_px = Column(Integer, default=420)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

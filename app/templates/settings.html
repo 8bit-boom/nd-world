@@ -54,6 +54,27 @@
                style="max-width:120px"/>
         <small style="color:var(--text-dim)">0.5–30 seconds; out-of-range values are clamped on save.</small>
       </div>
+      <div class="form-group">
+        <label for="hover-preview-hide-delay">Stay open for (seconds) after you move the mouse away</label>
+        <input type="number" id="hover-preview-hide-delay" name="hover_preview_hide_delay_seconds"
+               step="0.1" value="{{ (settings.hover_preview_hide_delay_ms if settings.hover_preview_hide_delay_ms is not none else 400) / 1000 }}"
+               style="max-width:120px"/>
+        <small style="color:var(--text-dim)">0–10 seconds; gives you time to move onto the popup itself. Out-of-range values are clamped on save.</small>
+      </div>
+      <div class="form-group">
+        <label for="hover-preview-width">Popup width (pixels)</label>
+        <input type="number" id="hover-preview-width" name="hover_preview_width_px"
+               step="10" value="{{ settings.hover_preview_width_px or 340 }}"
+               style="max-width:120px"/>
+        <small style="color:var(--text-dim)">220–800; out-of-range values are clamped on save.</small>
+      </div>
+      <div class="form-group">
+        <label for="hover-preview-max-height">Popup max height (pixels)</label>
+        <input type="number" id="hover-preview-max-height" name="hover_preview_max_height_px"
+               step="10" value="{{ settings.hover_preview_max_height_px or 420 }}"
+               style="max-width:120px"/>
+        <small style="color:var(--text-dim)">150–1000; taller content scrolls inside the popup instead. Out-of-range values are clamped on save.</small>
+      </div>
       <div class="form-actions">
         <button type="submit" class="btn-primary">Save</button>
       </div>

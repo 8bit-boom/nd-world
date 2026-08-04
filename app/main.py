@@ -2177,6 +2177,9 @@ def settings_save(
     animated_format: str = Form("avif"),
     hover_preview_enabled: Optional[str] = Form(None),
     hover_preview_delay_seconds: float = Form(5.0),
+    hover_preview_hide_delay_seconds: float = Form(0.4),
+    hover_preview_width_px: int = Form(340),
+    hover_preview_max_height_px: int = Form(420),
     db: Session = Depends(get_db),
 ):
     settings = get_app_settings(db)
@@ -2186,6 +2189,9 @@ def settings_save(
     # Clamped rather than rejected with an error page — a GM fat-fingering
     # "0" or "9999" should just get a sane bound, not a round trip to fix a form.
     settings.hover_preview_delay_ms = int(max(0.5, min(30.0, hover_preview_delay_seconds)) * 1000)
+    settings.hover_preview_hide_delay_ms = int(max(0.0, min(10.0, hover_preview_hide_delay_seconds)) * 1000)
+    settings.hover_preview_width_px = max(220, min(800, hover_preview_width_px))
+    settings.hover_preview_max_height_px = max(150, min(1000, hover_preview_max_height_px))
     db.commit()
     return RedirectResponse("/settings", status_code=303)
 
@@ -2653,6 +2659,9 @@ def hover_preview_config(db: Session = Depends(get_db)):
     return {
         "enabled": bool(settings.hover_preview_enabled),
         "delay_ms": settings.hover_preview_delay_ms or 5000,
+        "hide_delay_ms": settings.hover_preview_hide_delay_ms if settings.hover_preview_hide_delay_ms is not None else 400,
+        "width_px": settings.hover_preview_width_px or 340,
+        "max_height_px": settings.hover_preview_max_height_px or 420,
     }
 
 
