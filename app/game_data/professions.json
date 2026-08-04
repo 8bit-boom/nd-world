@@ -45,7 +45,7 @@
         "valueType": "INT"
       }
     ],
-    "tier": "Advanced"
+    "tier": "Standard"
   },
   {
     "id": "hacker",
@@ -72,7 +72,7 @@
         "valueType": "INT"
       }
     ],
-    "tier": "Advanced"
+    "tier": "Standard"
   },
   {
     "id": "merc",
@@ -117,7 +117,7 @@
         "valueType": "INT"
       }
     ],
-    "tier": "Exceptional"
+    "tier": "Standard"
   },
   {
     "id": "street_fighter",
