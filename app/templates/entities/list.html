@@ -7,24 +7,25 @@
     <form action="/kind/{{ kind }}" method="get" class="filter-form">
       <input name="q" placeholder="Filter…" value="{{ q }}"/>
       {% if active_folder is not none %}<input type="hidden" name="folder" value="{{ active_folder }}"/>{% endif %}
+      <input type="hidden" name="w" value="{{ world.slug if world else '' }}"/>
       <button type="submit">⌕</button>
     </form>
     {% if active_folder is not none %}
     <div class="view-toggle">
-      <a href="?{% if active_folder is not none %}folder={{ active_folder|urlencode }}&{% endif %}{% if q %}q={{ q }}&{% endif %}view=grid"
+      <a href="{{ ('?' + ('folder=' + active_folder|urlencode + '&' if active_folder is not none else '') + ('q=' + q + '&' if q else '') + 'view=grid')|wq }}"
          class="view-btn {% if view == 'grid' %}active{% endif %}" title="Card view">⊞</a>
-      <a href="?{% if active_folder is not none %}folder={{ active_folder|urlencode }}&{% endif %}{% if q %}q={{ q }}&{% endif %}view=table"
+      <a href="{{ ('?' + ('folder=' + active_folder|urlencode + '&' if active_folder is not none else '') + ('q=' + q + '&' if q else '') + 'view=table')|wq }}"
          class="view-btn {% if view == 'table' %}active{% endif %}" title="Table view">≡</a>
     </div>
     {% endif %}
-    <a href="/entity-templates" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;text-decoration:none;display:inline-flex;align-items:center">🗒 Field Templates</a>
-    <a href="/new?kind={{ kind }}{% if active_folder %}&folder={{ active_folder|urlencode }}{% endif %}" class="btn-new">+ New {{ kind }}</a>
+    <a href="{{ '/entity-templates'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;text-decoration:none;display:inline-flex;align-items:center">🗒 Field Templates</a>
+    <a href="{{ ('/new?kind=' + kind + ('&folder=' + active_folder|urlencode if active_folder else ''))|wq }}" class="btn-new">+ New {{ kind }}</a>
   </div>
 </div>
 
 {% if active_folder %}
 <nav class="breadcrumb">
-  <a href="/kind/{{ kind }}{% if q %}?q={{ q }}{% endif %}">{{ kind|capitalize }}s</a>
+  <a href="{{ ('/kind/' + kind + ('?q=' + q if q else ''))|wq }}">{{ kind|capitalize }}s</a>
   {% set ns = namespace(path='') %}
   {% for part in active_folder.split('/') %}
     {% if loop.first %}{% set ns.path = part %}{% else %}{% set ns.path = ns.path + '/' + part %}{% endif %}
@@ -33,7 +34,7 @@
     <span class="bc-current">{{ part }}</span>
     <button type="button" class="folder-rename-tog" id="bc-manage-btn" title="Rename or remove this folder">✏</button>
     {% else %}
-    <a href="/kind/{{ kind }}?folder={{ ns.path|urlencode }}{% if q %}&q={{ q }}{% endif %}">{{ part }}</a>
+    <a href="{{ ('/kind/' + kind + '?folder=' + ns.path|urlencode + ('&q=' + q if q else ''))|wq }}">{{ part }}</a>
     {% endif %}
   {% endfor %}
 </nav>
@@ -44,13 +45,13 @@
   {% if folders %}
   <aside class="folder-sidebar">
     <div class="folder-header">📂 FOLDERS</div>
-    <a href="/kind/{{ kind }}{% if q %}?q={{ q }}{% endif %}"
+    <a href="{{ ('/kind/' + kind + ('?q=' + q if q else ''))|wq }}"
        class="folder-item {% if active_folder is none %}active{% endif %}">
       All <span class="folder-count">{{ total_count }}</span>
     </a>
     <ul class="folder-tree" id="folder-tree"></ul>
     {% if folder_counts.get('') %}
-    <a href="/kind/{{ kind }}?folder={% if q %}&q={{ q }}{% endif %}"
+    <a href="{{ ('/kind/' + kind + '?folder=' + ('&q=' + q if q else ''))|wq }}"
        class="folder-item {% if active_folder == '' %}active{% endif %}">
       Unfiled <span class="folder-count">{{ folder_counts.get('', 0) }}</span>
     </a>
@@ -99,7 +100,7 @@
         <td class="col-name">
           {% if e.image_url %}<img class="tbl-thumb" src="{{ e.image_url }}" alt=""/>{% endif %}
           <div class="col-name-text">
-            <a href="/entity/{{ e.id }}">{{ e.name }}</a>
+            <a href="{{ ('/entity/' + e.id|string)|wq }}">{{ e.name }}</a>
             {% if e.subtype %}<span class="entity-sub">{{ e.subtype }}</span>{% endif %}
           </div>
         </td>
@@ -153,7 +154,7 @@
       <div class="group-header">
         <span class="group-label">📁 {{ label }}</span>
         <span class="group-count">{{ group_rows | length }}</span>
-        <a class="group-link" href="/kind/{{ kind }}?folder={{ group_path | urlencode }}{% if q %}&q={{ q }}{% endif %}">open folder →</a>
+        <a class="group-link" href="{{ ('/kind/' + kind + '?folder=' + group_path|urlencode + ('&q=' + q if q else ''))|wq }}">open folder →</a>
       </div>
       {{ render_table(group_rows) }}
     </div>
@@ -174,7 +175,7 @@
     {% else %}
     <div class="empty">
       <p>No {{ kind }}s{% if q %} matching "{{ q }}"{% endif %}{% if active_folder %} in "{{ active_folder }}"{% endif %}.</p>
-      <a href="/new?kind={{ kind }}" class="btn-new">Create the first one</a>
+      <a href="{{ ('/new?kind=' + kind)|wq }}" class="btn-new">Create the first one</a>
     </div>
     {% endif %}
   </div>
@@ -216,10 +217,12 @@ const COUNTS  = {{ folder_counts | tojson }};
 const ACTIVE  = {{ active_folder | tojson }};
 const KIND    = {{ kind | tojson }};
 const Q       = {{ q | tojson }};
+const WORLD_SLUG = {{ (world.slug if world else '') | tojson }};
 
 function folderUrl(fullPath) {
   let url = `/kind/${KIND}?folder=${encodeURIComponent(fullPath)}`;
   if (Q) url += `&q=${encodeURIComponent(Q)}`;
+  if (WORLD_SLUG) url += `&w=${encodeURIComponent(WORLD_SLUG)}`;
   return url;
 }
 

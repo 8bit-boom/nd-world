@@ -33,7 +33,7 @@
 
 <div class="cx">
   <div class="cx-actions">
-    <a href="/characters" style="color:var(--text-dim);font-size:.85rem;">← All Characters</a>
+    <a href="{{ '/characters'|wq }}" style="color:var(--text-dim);font-size:.85rem;">← All Characters</a>
     {% if pc and request.state.user and request.state.user.is_gm %}
     <form method="post" action="/characters/{{ pc.id }}/owner" style="display:flex;gap:.4rem;align-items:center;">
       <label style="font-size:.72rem;color:var(--text-dim)">Owning player</label>

@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-header" style="display:flex;align-items:center;gap:1rem;padding:1.2rem 1.5rem .8rem;border-bottom:1px solid var(--border)">
   <h1 style="margin:0;font-size:1.2rem">🧬 New Race</h1>
-  <a href="/races" style="padding:.3rem .8rem;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);text-decoration:none;font-size:.83rem">Cancel</a>
+  <a href="{{ '/races'|wq }}" style="padding:.3rem .8rem;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);text-decoration:none;font-size:.83rem">Cancel</a>
 </div>
 
 <form method="post" action="/races/new" enctype="multipart/form-data"

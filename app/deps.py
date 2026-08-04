@@ -12,6 +12,25 @@ from . import auth
 from .models import World
 
 
+def resolve_world_slug(request: Request, cookie_value: Optional[str]) -> Optional[str]:
+    """?w=<slug> takes precedence over the active_world cookie, so a link
+    that names its world explicitly (e.g. one shared with a player) always
+    shows that world regardless of what the recipient's browser has
+    cached — the cookie remains the fallback for links/bookmarks that
+    don't specify a world."""
+    return request.query_params.get("w") or cookie_value
+
+
+def with_world(path: str, world) -> str:
+    """Append ?w=<slug> (or &w=<slug> if `path` already has a query
+    string) so a link generated while viewing `world` stays pinned to it
+    for whoever opens it next. No-ops if `world` is falsy."""
+    if not world:
+        return path
+    sep = "&" if "?" in path else "?"
+    return f"{path}{sep}w={world.slug}"
+
+
 def get_world_ctx(request: Request, db: Session, active_world: Optional[str]):
     """The active world plus the world-switcher list, filtered to what this
     viewer may access — GMs see every world, players only the ones they're a
@@ -19,6 +38,7 @@ def get_world_ctx(request: Request, db: Session, active_world: Optional[str]):
     enumeration, so this (not a raw `db.query(World).all()`) is what every
     handler that needs "the current world" should call.
     """
+    active_world = resolve_world_slug(request, active_world)
     user = getattr(request.state, "user", None)
     accessible = auth.accessible_world_ids(db, user)
     q = db.query(World)

@@ -46,7 +46,7 @@
 
 <section class="dashboard">
   {% for k in kinds %}
-  <a href="/kind/{{ k }}" class="dash-card kind-{{ k }}">
+  <a href="{{ ('/kind/' + k)|wq }}" class="dash-card kind-{{ k }}">
     <span class="dash-icon">{{ kind_icons[k] }}</span>
     <span class="dash-count">{{ counts[k] }}</span>
     <span class="dash-label">{{ k|capitalize }}s</span>
@@ -56,10 +56,10 @@
 
 {% if preview_maps %}
 <section class="map-preview-section">
-  <h2>🗺 MAPS <a href="/maps" class="map-preview-all">View all →</a></h2>
+  <h2>🗺 MAPS <a href="{{ '/maps'|wq }}" class="map-preview-all">View all →</a></h2>
   <div class="map-mini-grid">
     {% for m in preview_maps %}
-    <a href="/maps/{{ m.slug }}" class="map-mini-card">
+    <a href="{{ ('/maps/' + m.slug)|wq }}" class="map-mini-card">
       {% if m.image_url %}<img src="{{ m.image_url }}" alt="{{ m.name }}"/>{% else %}<div class="map-mini-ph">🗺</div>{% endif %}
       <span class="map-mini-name">{{ m.name }}</span>
     </a>
@@ -73,7 +73,7 @@
   <h2>// RECENTLY UPDATED</h2>
   <div class="card-grid">
     {% for e in recent %}
-    <a href="/entity/{{ e.id }}" class="entity-card kind-{{ e.kind }}">
+    <a href="{{ ('/entity/' + e.id|string)|wq }}" class="entity-card kind-{{ e.kind }}">
       {% if e.image_url %}<img src="{{ e.image_url }}" alt="{{ e.name }}"/>{% endif %}
       <div class="entity-card-body">
         <span class="entity-kind">{{ kind_icons[e.kind] }} {{ e.kind }}</span>
@@ -95,7 +95,7 @@
   <h2 class="dash-heading">🔗 Most Referenced</h2>
   <div class="linked-strip">
     {% for ent, n in most_linked %}
-    <a href="/entity/{{ ent.id }}" class="linked-card">
+    <a href="{{ ('/entity/' + ent.id|string)|wq }}" class="linked-card">
       {% if ent.image_url %}<img src="{{ ent.image_url }}" class="linked-img" alt=""/>{% else %}<div class="linked-icon">{{ kind_icons[ent.kind] }}</div>{% endif %}
       <div class="linked-name">{{ ent.name }}</div>
       <div class="linked-badge">{{ n }} link{{ 's' if n != 1 }}</div>
@@ -111,7 +111,7 @@
   {% set max_count = top_tags[0][1] %}
   <div class="tag-cloud">
     {% for tag, count in top_tags %}
-    <a href="/search?q={{ tag }}" class="tag-chip" style="font-size:calc(0.72rem + {{ ((count / max_count) * 0.55)|round(2) }}rem)">{{ tag }}</a>
+    <a href="{{ ('/search?q=' + tag)|wq }}" class="tag-chip" style="font-size:calc(0.72rem + {{ ((count / max_count) * 0.55)|round(2) }}rem)">{{ tag }}</a>
     {% endfor %}
   </div>
 </section>
@@ -125,7 +125,7 @@
     <div>
       <div class="tool-label">📌 Boards</div>
       {% for b in recent_boards %}
-      <a href="/boards/{{ b.slug }}" class="tool-item">{{ b.name }}<span class="tool-date">{{ b.updated_at.strftime('%b %d') if b.updated_at }}</span></a>
+      <a href="{{ ('/boards/' + b.slug)|wq }}" class="tool-item">{{ b.name }}<span class="tool-date">{{ b.updated_at.strftime('%b %d') if b.updated_at }}</span></a>
       {% endfor %}
     </div>
     {% endif %}
@@ -133,7 +133,7 @@
     <div>
       <div class="tool-label">✏ Schematics</div>
       {% for s in recent_schematics %}
-      <a href="/maps/schematic/{{ s.slug }}" class="tool-item">{{ s.name }}<span class="tool-date">{{ s.updated_at.strftime('%b %d') if s.updated_at }}</span></a>
+      <a href="{{ ('/maps/schematic/' + s.slug)|wq }}" class="tool-item">{{ s.name }}<span class="tool-date">{{ s.updated_at.strftime('%b %d') if s.updated_at }}</span></a>
       {% endfor %}
     </div>
     {% endif %}
@@ -141,7 +141,7 @@
     <div>
       <div class="tool-label">📓 Sessions</div>
       {% for s in recent_sessions %}
-      <a href="/sessions/{{ s.id }}" class="tool-item">#{{ s.session_num }} {{ s.title }}<span class="tool-date">{{ s.updated_at.strftime('%b %d') if s.updated_at }}</span></a>
+      <a href="{{ ('/sessions/' + s.id|string)|wq }}" class="tool-item">#{{ s.session_num }} {{ s.title }}<span class="tool-date">{{ s.updated_at.strftime('%b %d') if s.updated_at }}</span></a>
       {% endfor %}
     </div>
     {% endif %}
@@ -149,7 +149,7 @@
     <div>
       <div class="tool-label">📜 Active Quests</div>
       {% for q in active_quests %}
-      <a href="/quests/{{ q.id }}" class="tool-item">{{ q.title }}<span class="tool-date">{{ q.updated_at.strftime('%b %d') if q.updated_at }}</span></a>
+      <a href="{{ ('/quests/' + q.id|string)|wq }}" class="tool-item">{{ q.title }}<span class="tool-date">{{ q.updated_at.strftime('%b %d') if q.updated_at }}</span></a>
       {% endfor %}
     </div>
     {% endif %}
@@ -203,8 +203,10 @@ function switchQuickLinksTab(i) {
 
 {% if world and request.state.user and request.state.user.is_gm %}
 (function(){
+  var worldSlug = {{ world.slug|tojson }};
   function computeHref(type, ref) {
-    return type === 'kind' ? ('/kind/' + ref) : ref;
+    var path = type === 'kind' ? ('/kind/' + ref) : ref;
+    return path + (path.indexOf('?') === -1 ? '?' : '&') + 'w=' + worldSlug;
   }
 
   function appendCard(idx, link) {

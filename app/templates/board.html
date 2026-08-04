@@ -5,7 +5,7 @@
 
   <!-- Toolbar -->
   <div id="brd-bar">
-    <a href="/boards" class="tb">← Boards</a>
+    <a href="{{ '/boards'|wq }}" class="tb">← Boards</a>
     <span class="tb-title">{{ board.name }}</span>
     <span id="dirty-dot" style="display:none;color:#ff8844;font-size:.8rem" title="Unsaved">●</span>
     <div class="tb-sep"></div>
@@ -69,7 +69,7 @@
           onsubmit="return confirm('Delete this board?')">
       <button type="submit" class="tb" style="color:#ff5555">✕ Delete</button>
     </form>
-    <a href="/boards/{{ board.slug }}/export" class="brd-tool-btn tb" title="Export HTML" style="text-decoration:none">⬇ Export</a>
+    <a href="{{ ('/boards/' + board.slug + '/export')|wq }}" class="brd-tool-btn tb" title="Export HTML" style="text-decoration:none">⬇ Export</a>
     <button class="tb tb-save" id="save-btn" onclick="save()">💾 Save</button>
   </div>
 

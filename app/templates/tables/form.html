@@ -7,7 +7,7 @@
       {{ '✏ Edit Table' if tbl else '+ New Table' }}
       {% if tbl and tbl.is_builtin %}<span style="font-size:.75rem;color:var(--text-dim);margin-left:.5rem">(built-in)</span>{% endif %}
     </h1>
-    <a href="/tables" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Random Tables</a>
+    <a href="{{ '/tables'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Random Tables</a>
   </div>
 
   {% if request.query_params.get('saved') %}
@@ -52,7 +52,7 @@
     </div>
 
     <div style="display:flex;gap:.75rem;justify-content:flex-end;flex-wrap:wrap">
-      <a href="/tables" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Cancel</a>
+      <a href="{{ '/tables'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Cancel</a>
       {% if tbl and not tbl.is_builtin %}
       <a href="/tables/{{ tbl.id }}/delete"
          onclick="event.preventDefault(); if(confirm('Delete this table?')) document.getElementById('del-form').submit();"

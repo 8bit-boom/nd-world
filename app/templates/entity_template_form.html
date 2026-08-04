@@ -7,7 +7,7 @@
       {{ '✏ Edit Template' if tpl else '+ New Template' }}
       {% if tpl and tpl.is_builtin %}<span style="font-size:.75rem;color:var(--text-dim);margin-left:.5rem">(built-in)</span>{% endif %}
     </h1>
-    <a href="/entity-templates" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Field Templates</a>
+    <a href="{{ '/entity-templates'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Field Templates</a>
   </div>
 
   {% if request.query_params.get('saved') %}
@@ -63,7 +63,7 @@
     </div>
 
     <div style="display:flex;gap:.75rem;justify-content:flex-end;flex-wrap:wrap">
-      <a href="/entity-templates" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Cancel</a>
+      <a href="{{ '/entity-templates'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Cancel</a>
       {% if tpl and not tpl.is_builtin %}
       <a href="/entity-templates/{{ tpl.id }}/delete"
          onclick="event.preventDefault(); if(confirm('Delete this template?')) document.getElementById('del-form').submit();"

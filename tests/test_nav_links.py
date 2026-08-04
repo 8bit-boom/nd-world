@@ -23,7 +23,12 @@ def test_all_kind_nav_links_render(client, seed, page):
     login(client, seed.gm.email, GM_PASSWORD)
     r = client.get(page)
     assert r.status_code == 200, f"{page} returned {r.status_code}"
-    found = set(re.findall(r'href="(/kind/[a-z_]+)"', r.text))
+    # Kind nav links now carry a trailing ?w=<world slug> (see app/deps.py's
+    # with_world / the `wq` template filter) so a copied link stays pinned
+    # to the world it was generated from — strip that suffix before
+    # comparing, since this test is about the /kind/<kind> links existing
+    # at all, not their query string.
+    found = {href.split("?")[0] for href in re.findall(r'href="(/kind/[a-z_]+(?:\?[^"]*)?)"', r.text)}
     expected = {f"/kind/{k}" for k in KINDS}
     assert found == expected, f"{page}: expected {len(expected)} kind nav links, found {found}"
 

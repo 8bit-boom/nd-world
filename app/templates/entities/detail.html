@@ -18,7 +18,7 @@
       <div class="detail-date">Updated: {{ entity.updated_at.strftime('%Y-%m-%d %H:%M') }}</div>
     </div>
     <div class="detail-actions">
-      <a href="/entity/{{ entity.id }}/edit" class="btn-edit">Edit</a>
+      <a href="{{ ('/entity/' + entity.id|string + '/edit')|wq }}" class="btn-edit">Edit</a>
       <form action="/entity/{{ entity.id }}/delete" method="post" onsubmit="return confirm('Delete {{ entity.name }}?')">
         <button class="btn-delete" type="submit">Delete</button>
       </form>
@@ -135,7 +135,7 @@
     <div class="card-grid small">
       {% for r in entity.related %}
       <div class="entity-card kind-{{ r.kind }} rel-card">
-        <a href="/entity/{{ r.id }}" class="rel-link">
+        <a href="{{ ('/entity/' + r.id|string)|wq }}" class="rel-link">
           <span class="entity-kind">{{ kind_icons[r.kind] }}</span>
           <span>{{ r.name }}</span>
           {% if r.subtype %}<span class="entity-sub">{{ r.subtype }}</span>{% endif %}
@@ -155,7 +155,7 @@
       <summary>🔗 Referenced by ({{ backlinks|length }})</summary>
       <div class="rel-grid">
         {% for r in backlinks %}
-        <a href="/entity/{{ r.id }}" class="rel-card">
+        <a href="{{ ('/entity/' + r.id|string)|wq }}" class="rel-card">
           <span class="rel-icon">{{ kind_icons[r.kind] }}</span>
           <span class="rel-name">{{ r.name }}</span>
           {% if r.subtype %}<span class="rel-sub">{{ r.subtype }}</span>{% endif %}

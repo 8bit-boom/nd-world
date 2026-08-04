@@ -224,7 +224,7 @@ def test_kind_link_resolves_to_kind_page(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/")
-    assert 'href="/kind/character"' in r.text
+    assert f'href="/kind/character?w={seed.world_a.slug}"' in r.text
     assert "All Characters" in r.text
 
 

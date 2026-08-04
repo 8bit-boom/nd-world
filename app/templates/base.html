@@ -17,7 +17,7 @@
 </head>
 <body>
 <nav class="topbar">
-  <a class="logo" href="/">N&amp;D <span>WORLD</span></a>
+  <a class="logo" href="{{ '/'|wq }}">N&amp;D <span>WORLD</span></a>
 
   <!-- World switcher -->
   <div class="world-switcher">
@@ -26,7 +26,7 @@
     </button>
     <div class="world-dropdown">
       {% for w in worlds %}
-      <a href="/worlds/switch/{{ w.slug }}" class="world-option {% if world and world.id == w.id %}active{% endif %}"
+      <a href="/worlds/switch/{{ w.slug }}?next={{ request.url.path|urlencode }}" class="world-option {% if world and world.id == w.id %}active{% endif %}"
          style="--w-accent: {{ w.accent }}">
         {{ w.name }}
       </a>
@@ -39,48 +39,49 @@
 
   <form class="search-form" action="/search" method="get">
     <input name="q" placeholder="Search world…" value="{{ request.query_params.get('q','') }}"/>
+    <input type="hidden" name="w" value="{{ world.slug if world else '' }}"/>
     <button type="submit">⌕</button>
   </form>
   <button class="nav-hamburger" id="nav-toggle" aria-label="Toggle navigation">☰</button>
   <div class="nav-kinds" id="nav-kinds">
     {% for k in kinds %}
-    <a href="/kind/{{ k }}" draggable="true" data-ql-type="kind" data-ql-ref="{{ k }}" class="nav-kind {% if request.url.path == '/kind/'+k %}active{% endif %}">
+    <a href="{{ ('/kind/' + k)|wq }}" draggable="true" data-ql-type="kind" data-ql-ref="{{ k }}" class="nav-kind {% if request.url.path == '/kind/'+k %}active{% endif %}">
       {{ kind_icons[k] }} {{ k|capitalize }}
     </a>
     {% endfor %}
-    <a href="/maps" draggable="true"         class="nav-kind {% if request.url.path == '/maps' %}active{% endif %}">🗺 Maps</a>
-    <a href="/races" draggable="true"        class="nav-kind {% if request.url.path.startswith('/races') %}active{% endif %}">🧬 Race Catalog</a>
-    <a href="/professions" draggable="true"  class="nav-kind {% if request.url.path.startswith('/professions') %}active{% endif %}">🎭 Profession Catalog</a>
+    <a href="{{ '/maps'|wq }}" draggable="true" data-ql-ref="/maps"                 class="nav-kind {% if request.url.path == '/maps' %}active{% endif %}">🗺 Maps</a>
+    <a href="{{ '/races'|wq }}" draggable="true" data-ql-ref="/races"               class="nav-kind {% if request.url.path.startswith('/races') %}active{% endif %}">🧬 Race Catalog</a>
+    <a href="{{ '/professions'|wq }}" draggable="true" data-ql-ref="/professions"   class="nav-kind {% if request.url.path.startswith('/professions') %}active{% endif %}">🎭 Profession Catalog</a>
     {% if request.state.user and request.state.user.is_gm %}
-    <a href="/boards" draggable="true"       class="nav-kind {% if request.url.path.startswith('/boards') %}active{% endif %}">📌 Boards</a>
+    <a href="{{ '/boards'|wq }}" draggable="true" data-ql-ref="/boards"             class="nav-kind {% if request.url.path.startswith('/boards') %}active{% endif %}">📌 Boards</a>
     <div class="tools-switcher">
       <button type="button" class="tools-btn" onclick="event.stopPropagation(); this.parentElement.classList.toggle('open')">
         🎯 Tools ▾
       </button>
       <div class="tools-dropdown">
-        <a href="/tables" draggable="true"  class="tools-option {% if request.url.path.startswith('/tables') %}active{% endif %}">🎲 Random Tables</a>
-        <a href="/combat" draggable="true"  class="tools-option {% if request.url.path.startswith('/combat') %}active{% endif %}">⚔ Combat Tracker</a>
-        <a href="/parties" draggable="true" class="tools-option {% if request.url.path.startswith('/parties') %}active{% endif %}">🛡 Parties</a>
-        <a href="/quests" draggable="true"  class="tools-option {% if request.url.path.startswith('/quests') %}active{% endif %}">📜 Quests</a>
-        <a href="/sessions" draggable="true" class="tools-option {% if request.url.path.startswith('/sessions') %}active{% endif %}">📓 Sessions</a>
-        <a href="/calendar" draggable="true" class="tools-option {% if request.url.path.startswith('/calendar') %}active{% endif %}">🗓 Calendar</a>
-        <a href="/import" draggable="true" class="tools-option {% if request.url.path.startswith('/import') %}active{% endif %}">📥 Import</a>
+        <a href="{{ '/tables'|wq }}" draggable="true" data-ql-ref="/tables"     class="tools-option {% if request.url.path.startswith('/tables') %}active{% endif %}">🎲 Random Tables</a>
+        <a href="{{ '/combat'|wq }}" draggable="true" data-ql-ref="/combat"     class="tools-option {% if request.url.path.startswith('/combat') %}active{% endif %}">⚔ Combat Tracker</a>
+        <a href="{{ '/parties'|wq }}" draggable="true" data-ql-ref="/parties"   class="tools-option {% if request.url.path.startswith('/parties') %}active{% endif %}">🛡 Parties</a>
+        <a href="{{ '/quests'|wq }}" draggable="true" data-ql-ref="/quests"     class="tools-option {% if request.url.path.startswith('/quests') %}active{% endif %}">📜 Quests</a>
+        <a href="{{ '/sessions'|wq }}" draggable="true" data-ql-ref="/sessions" class="tools-option {% if request.url.path.startswith('/sessions') %}active{% endif %}">📓 Sessions</a>
+        <a href="{{ '/calendar'|wq }}" draggable="true" data-ql-ref="/calendar" class="tools-option {% if request.url.path.startswith('/calendar') %}active{% endif %}">🗓 Calendar</a>
+        <a href="{{ '/import'|wq }}" draggable="true" data-ql-ref="/import"     class="tools-option {% if request.url.path.startswith('/import') %}active{% endif %}">📥 Import</a>
       </div>
     </div>
-    <a href="/export" draggable="true"       class="nav-kind">⬇ Export</a>
+    <a href="{{ '/export'|wq }}" draggable="true" data-ql-ref="/export" class="nav-kind">⬇ Export</a>
     <a href="/admin/backup.zip" class="nav-kind" title="Full database + uploads + maps snapshot">🗄 Backup</a>
     {% endif %}
-    <a href="/rules" draggable="true"        class="nav-kind {% if request.url.path == '/rules' %}active{% endif %}">📖 Rules</a>
-    <a href="/characters" draggable="true"   class="nav-kind {% if request.url.path.startswith('/characters') %}active{% endif %}">🎲 Player Characters</a>
+    <a href="{{ '/rules'|wq }}" draggable="true" data-ql-ref="/rules"           class="nav-kind {% if request.url.path == '/rules' %}active{% endif %}">📖 Rules</a>
+    <a href="{{ '/characters'|wq }}" draggable="true" data-ql-ref="/characters" class="nav-kind {% if request.url.path.startswith('/characters') %}active{% endif %}">🎲 Player Characters</a>
     {% if world and request.state.user and not request.state.user.is_gm %}
     <a href="/worlds/{{ world.id }}/notes/{{ request.state.user.id }}"
        class="nav-kind {% if request.url.path.startswith('/worlds/'+world.id|string+'/notes/') %}active{% endif %}">🔒 My Notes</a>
     {% endif %}
     {% if request.state.user and request.state.user.is_gm %}
-    <a href="/ai" draggable="true"           class="nav-kind {% if request.url.path == '/ai' %}active{% endif %}">🤖 AI</a>
-    <a href="/imagestudio" draggable="true"  class="nav-kind {% if request.url.path == '/imagestudio' %}active{% endif %}">🎨 Image Studio</a>
-    <a href="/settings" draggable="true"     class="nav-kind {% if request.url.path == '/settings' %}active{% endif %}">⚙ Settings</a>
-    <a href="/new" class="btn-new">+ New</a>
+    <a href="{{ '/ai'|wq }}" draggable="true" data-ql-ref="/ai"                 class="nav-kind {% if request.url.path == '/ai' %}active{% endif %}">🤖 AI</a>
+    <a href="{{ '/imagestudio'|wq }}" draggable="true" data-ql-ref="/imagestudio" class="nav-kind {% if request.url.path == '/imagestudio' %}active{% endif %}">🎨 Image Studio</a>
+    <a href="{{ '/settings'|wq }}" draggable="true" data-ql-ref="/settings"     class="nav-kind {% if request.url.path == '/settings' %}active{% endif %}">⚙ Settings</a>
+    <a href="{{ '/new'|wq }}" class="btn-new">+ New</a>
     <span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.4rem;vertical-align:middle"></span>
     {% endif %}
     <button type="button" id="theme-toggle" class="nav-kind" title="Switch theme" style="cursor:pointer;background:none;border:none;font-family:inherit;font-size:inherit"></button>
@@ -121,10 +122,14 @@
   }
   // Lets a GM drag a nav tab (Character, Race Catalog, Boards, ...) onto
   // the home page's Quick Links — see index.html for the drop targets.
-  // Only kind links carry data-ql-type/data-ql-ref (they map onto the
-  // existing target_type="kind" link schema); everything else falls back
-  // to target_type="url" with its own href, which the schema already
-  // accepts for any in-app absolute path.
+  // Kind links carry data-ql-type="kind" (they map onto the existing
+  // target_type="kind" link schema); every other draggable link carries
+  // its own data-ql-ref too (the bare, undecorated path) so the drag
+  // payload always uses a clean target_type="url" ref even though the
+  // visible href now carries a ?w=<world slug> query param — otherwise a
+  // dropped Quick Link would freeze onto whatever world happened to be
+  // active at drag time instead of following the viewer's current world
+  // like every other nav link.
   document.addEventListener('dragstart', function(e){
     var a = e.target.closest('a[draggable="true"]');
     if (!a) return;

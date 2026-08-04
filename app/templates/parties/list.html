@@ -14,7 +14,7 @@
 {% if parties %}
 <div class="card-grid">
   {% for p in parties %}
-  <a href="/parties/{{ p.id }}" class="entity-card">
+  <a href="{{ ('/parties/' + p.id|string)|wq }}" class="entity-card">
     <div class="entity-card-body">
       <span class="entity-kind">🛡 Party</span>
       <h3>{{ p.name }}</h3>

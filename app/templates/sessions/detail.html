@@ -4,7 +4,7 @@
 <div style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
     <h1 style="color:var(--neon);font-size:1.3rem;margin:0">{{ '📓 #' + gsession.session_num|string + ' ' + gsession.title if gsession else '+ New Session' }}</h1>
-    <a href="/sessions" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Sessions</a>
+    <a href="{{ '/sessions'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Sessions</a>
   </div>
 
   {% if request.query_params.get('saved') %}
@@ -61,7 +61,7 @@
       {% endif %}
     </div>
     <div style="display:flex;gap:.75rem;justify-content:flex-end;margin-bottom:1.5rem">
-      <a href="/sessions" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Cancel</a>
+      <a href="{{ '/sessions'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Cancel</a>
       {% if gsession %}
       <a href="#" onclick="event.preventDefault(); if(confirm('Delete this session?')) document.getElementById('del-form').submit();"
          style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Delete</a>
@@ -112,7 +112,7 @@
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .75rem">⚔ Linked Combats</h2>
     {% for c in linked_combats %}
-    <a href="/combat/{{ c.id }}" style="display:block;padding:.3rem 0;color:var(--text);font-size:.85rem;text-decoration:none">→ {{ c.name }}</a>
+    <a href="{{ ('/combat/' + c.id|string)|wq }}" style="display:block;padding:.3rem 0;color:var(--text);font-size:.85rem;text-decoration:none">→ {{ c.name }}</a>
     {% endfor %}
   </div>
   {% endif %}

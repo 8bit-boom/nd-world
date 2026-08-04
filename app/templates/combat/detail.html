@@ -7,7 +7,7 @@
       <h1 style="color:var(--neon);font-size:1.3rem;margin:0">⚔ {{ combat.name }}</h1>
       <div style="color:var(--text-dim);font-size:.82rem;margin-top:.2rem">Round <span id="round-display">{{ combat.round_num }}</span></div>
     </div>
-    <a href="/combat" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Combat Tracker</a>
+    <a href="{{ '/combat'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Combat Tracker</a>
   </div>
 
   <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:1rem">
@@ -23,7 +23,7 @@
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.75rem 1rem;margin-bottom:1rem;display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;font-size:.82rem">
     <span style="color:var(--text-dim)">Session:</span>
     {% if linked_session %}
-      <a href="/sessions/{{ linked_session.id }}" style="color:var(--neon)">{{ linked_session.title }}</a>
+      <a href="{{ ('/sessions/' + linked_session.id|string)|wq }}" style="color:var(--neon)">{{ linked_session.title }}</a>
       <form method="post" action="/combat/{{ combat.id }}/unlink-session" style="display:inline">
         <button type="submit" style="background:none;border:none;color:var(--text-dim);cursor:pointer;text-decoration:underline;font-size:.8rem">unlink</button>
       </form>

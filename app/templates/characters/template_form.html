@@ -7,7 +7,7 @@
       {{ '✏ Edit Template' if tpl else '+ New Template' }}
       {% if tpl and tpl.is_builtin %}<span style="font-size:.75rem;color:var(--text-dim);margin-left:.5rem">(built-in)</span>{% endif %}
     </h1>
-    <a href="/characters/templates" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Templates</a>
+    <a href="{{ '/characters/templates'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Templates</a>
   </div>
 
   {% if request.query_params.get('saved') %}
@@ -71,7 +71,7 @@
     </div>
 
     <div style="display:flex;gap:.75rem;justify-content:flex-end;flex-wrap:wrap">
-      <a href="/characters/templates" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Cancel</a>
+      <a href="{{ '/characters/templates'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Cancel</a>
       {% if tpl and not tpl.is_builtin %}
       <a href="/characters/templates/{{ tpl.id }}/delete"
          onclick="return confirm('Delete this template?')"

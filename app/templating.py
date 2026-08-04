@@ -12,8 +12,10 @@ everything exactly once here fixes that app-wide and is the reason this module
 import json
 from pathlib import Path
 
+import jinja2
 from fastapi.templating import Jinja2Templates
 
+from . import deps
 from .constants import KIND_ICONS, KINDS, SUBTYPES
 from .rendering import body_summary, entry_text, parse_stats, render_md, strip_md
 
@@ -26,3 +28,15 @@ templates.env.filters["body_summary"] = body_summary
 templates.env.filters["parse_stats"] = parse_stats
 templates.env.filters["entry_text"] = entry_text
 templates.env.filters["fromjson"] = lambda s: json.loads(s) if s else []
+
+
+@jinja2.pass_context
+def _wq(ctx, path):
+    """Append the current template's ?w=<world slug> to an internal link,
+    so a link generated while viewing a world stays pinned to it for
+    whoever opens it next — see deps.with_world. No-ops (returns path
+    unchanged) on pages that don't have a `world` in their context."""
+    return deps.with_world(path, ctx.get("world"))
+
+
+templates.env.filters["wq"] = _wq

@@ -102,7 +102,7 @@ def test_bulk_delete_empty_selection_is_a_no_op(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.post("/kind/feat/bulk-delete", data={}, follow_redirects=False)
     assert r.status_code == 303
-    assert r.headers["location"] == "/kind/feat"
+    assert r.headers["location"] == f"/kind/feat?w={seed.world_a.slug}"
 
 
 def test_bulk_delete_redirect_preserves_folder_and_query(client, seed):

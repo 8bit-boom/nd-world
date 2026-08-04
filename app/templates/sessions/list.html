@@ -4,14 +4,14 @@
 <div class="list-header">
   <h1>📓 Sessions</h1>
   <div class="list-actions">
-    <a href="/sessions/new" class="btn-new">+ New Session</a>
+    <a href="{{ '/sessions/new'|wq }}" class="btn-new">+ New Session</a>
   </div>
 </div>
 
 {% if sessions %}
 <div class="card-grid">
   {% for s in sessions %}
-  <a href="/sessions/{{ s.id }}" class="entity-card">
+  <a href="{{ ('/sessions/' + s.id|string)|wq }}" class="entity-card">
     <div class="entity-card-body">
       <span class="entity-kind">📓 Session #{{ s.session_num }}</span>
       <h3>{{ s.title }}</h3>
@@ -22,7 +22,7 @@
   {% endfor %}
 </div>
 {% else %}
-<p style="color:var(--text-dim);text-align:center;padding:2rem">No sessions logged yet. <a href="/sessions/new" style="color:var(--neon)">Log your first one</a>.</p>
+<p style="color:var(--text-dim);text-align:center;padding:2rem">No sessions logged yet. <a href="{{ '/sessions/new'|wq }}" style="color:var(--neon)">Log your first one</a>.</p>
 {% endif %}
 {% include "_pagination.html" %}
 {% endblock %}

@@ -4,7 +4,7 @@
 <div style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
     <h1 style="color:var(--neon);font-size:1.3rem;margin:0">🛡 {{ party.name }}</h1>
-    <a href="/parties" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Parties</a>
+    <a href="{{ '/parties'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Parties</a>
   </div>
 
   <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:1.25rem">
@@ -71,7 +71,7 @@
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">📜 Assigned Quests</h2>
     {% for q in assigned_quests %}
-    <a href="/quests/{{ q.id }}" style="display:block;padding:.3rem 0;color:var(--text);font-size:.85rem;text-decoration:none">→ {{ q.title }} <span style="color:var(--text-dim);font-size:.78rem">({{ q.status }})</span></a>
+    <a href="{{ ('/quests/' + q.id|string)|wq }}" style="display:block;padding:.3rem 0;color:var(--text);font-size:.85rem;text-decoration:none">→ {{ q.title }} <span style="color:var(--text-dim);font-size:.78rem">({{ q.status }})</span></a>
     {% endfor %}
   </div>
   {% endif %}

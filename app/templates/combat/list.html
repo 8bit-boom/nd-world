@@ -14,7 +14,7 @@
 {% if sessions %}
 <div class="card-grid">
   {% for s in sessions %}
-  <a href="/combat/{{ s.id }}" class="entity-card">
+  <a href="{{ ('/combat/' + s.id|string)|wq }}" class="entity-card">
     <div class="entity-card-body">
       <span class="entity-kind">⚔ Round {{ s.round_num }}</span>
       <h3>{{ s.name }}</h3>

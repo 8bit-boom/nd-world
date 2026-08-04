@@ -5,7 +5,7 @@
 <div class="list-header">
   <h1>🗺 MAPS</h1>
   {% if _is_gm %}
-  <a href="/maps/new" class="btn-new">+ New Map</a>
+  <a href="{{ '/maps/new'|wq }}" class="btn-new">+ New Map</a>
   {% endif %}
 </div>
 
@@ -13,7 +13,7 @@
   {% for m in maps %}
   <div class="map-card">
     <div class="map-img-wrap">
-      <a href="/maps/{{ m.slug }}">
+      <a href="{{ ('/maps/' + m.slug)|wq }}">
         {% if m.image_url %}
         <img class="map-img" src="{{ m.image_url }}" alt="{{ m.name }}"/>
         {% else %}
@@ -22,7 +22,7 @@
       </a>
     </div>
     <div class="map-card-body">
-      <div class="map-name"><a href="/maps/{{ m.slug }}" style="color:inherit;text-decoration:none">{{ m.name }}</a></div>
+      <div class="map-name"><a href="{{ ('/maps/' + m.slug)|wq }}" style="color:inherit;text-decoration:none">{{ m.name }}</a></div>
       <div class="map-meta">
         {{ m.width }}×{{ m.height }}
         {% if m.markers %} · {{ m.markers }} marker{{ 's' if m.markers != 1 }}{% endif %}
@@ -56,7 +56,7 @@
 <div class="list-header" style="margin-top:2.5rem">
   <h2>📐 SCHEMATICS</h2>
   {% if _is_gm %}
-  <a href="/maps/schematic/new" class="btn-new">+ New Schematic</a>
+  <a href="{{ '/maps/schematic/new'|wq }}" class="btn-new">+ New Schematic</a>
   {% endif %}
 </div>
 
@@ -112,7 +112,7 @@
     </div>
   </div>
   {% else %}
-  <p class="empty">No schematics yet. <a href="/maps/schematic/new">Create one</a>.</p>
+  <p class="empty">No schematics yet. <a href="{{ '/maps/schematic/new'|wq }}">Create one</a>.</p>
   {% endfor %}
 </div>
 

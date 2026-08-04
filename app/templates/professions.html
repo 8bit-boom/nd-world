@@ -103,7 +103,7 @@
   {% if request.query_params.get('added') %}
   <span style="color:#4f4;font-size:.8rem">✓ Added {{ request.query_params.get('added') }} professions</span>
   {% endif %}
-  <a href="/professions/new" class="btn-new" style="margin-left:auto">+ New Profession</a>
+  <a href="{{ '/professions/new'|wq }}" class="btn-new" style="margin-left:auto">+ New Profession</a>
   {% else %}
   <span style="color:#888;font-size:.82rem">Select a world first</span>
   {% endif %}

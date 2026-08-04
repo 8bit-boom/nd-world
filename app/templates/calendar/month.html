@@ -9,7 +9,7 @@
         Today: {{ months[cur_month_idx].name }} {{ cur_dom }}, Year {{ cur_year }} <span style="opacity:.6">(day {{ current_day }})</span>
       </div>
     </div>
-    <a href="/calendar/config" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">⚙ Configure</a>
+    <a href="{{ '/calendar/config'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">⚙ Configure</a>
   </div>
 
   {% if request.query_params.get('saved') %}
@@ -22,9 +22,9 @@
   </div>
 
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
-    <a href="/calendar?year={{ prev_year }}&month={{ prev_month }}" style="color:var(--text-dim);text-decoration:none;font-size:.85rem">← {{ months[prev_month].name }}</a>
+    <a href="{{ ('/calendar?year=' + prev_year|string + '&month=' + prev_month|string)|wq }}" style="color:var(--text-dim);text-decoration:none;font-size:.85rem">← {{ months[prev_month].name }}</a>
     <h2 style="color:var(--neon);font-size:1rem;margin:0">{{ month.name }}, Year {{ year }}</h2>
-    <a href="/calendar?year={{ next_year }}&month={{ next_month }}" style="color:var(--text-dim);text-decoration:none;font-size:.85rem">{{ months[next_month].name }} →</a>
+    <a href="{{ ('/calendar?year=' + next_year|string + '&month=' + next_month|string)|wq }}" style="color:var(--text-dim);text-decoration:none;font-size:.85rem">{{ months[next_month].name }} →</a>
   </div>
 
   <div class="cal-grid">

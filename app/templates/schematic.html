@@ -5,10 +5,10 @@
 
   <!-- ── Toolbar (row 1: tools) ────────────────────────────────────────────── -->
   <div id="sch-bar">
-    <a href="/maps" class="tb">← Maps</a>
+    <a href="{{ '/maps'|wq }}" class="tb">← Maps</a>
     <span class="tb-title">{{ schematic.name }}</span>
     <span id="dirty-dot" style="display:none;color:#ff8844;font-size:.8rem" title="Unsaved changes">●</span>
-    <a class="tb" href="/maps/schematic/{{ schematic.slug }}/view" target="_blank" title="Open the read-only live view players see">🔴 Live View</a>
+    <a class="tb" href="{{ ('/maps/schematic/' + schematic.slug + '/view')|wq }}" target="_blank" title="Open the read-only live view players see">🔴 Live View</a>
     <div class="tb-sep"></div>
     <button class="tb on" id="t-select"  onclick="setTool('select')"  title="Select · V">↖</button>
     <button class="tb"    id="t-rect"    onclick="setTool('rect')"    title="Rect · R">▭</button>
@@ -40,7 +40,7 @@
     <button class="tb" id="t-aoe" onclick="setTool('aoe')" title="Area-of-effect template">🎯 AOE</button>
     <div class="tb-sep"></div>
     {% if linked_combat %}
-      <span style="font-size:.78rem;color:var(--text-dim,#888);white-space:nowrap">⚔ <a href="/combat/{{ linked_combat.id }}" style="color:inherit">{{ linked_combat.name }}</a></span>
+      <span style="font-size:.78rem;color:var(--text-dim,#888);white-space:nowrap">⚔ <a href="{{ ('/combat/' + linked_combat.id|string)|wq }}" style="color:inherit">{{ linked_combat.name }}</a></span>
       <button class="tb" onclick="pullCombat()" title="Pull combatants from Combat Tracker onto the map">⬇ Pull</button>
       <button class="tb" onclick="pushCombat()" title="Push token HP/conditions back to Combat Tracker">⬆ Push</button>
       <button class="tb" onclick="refreshCombat()" title="Refresh active-turn ring from Combat Tracker">🔄</button>
@@ -526,6 +526,7 @@
 
 // ── Constants & state ─────────────────────────────────────────────────────────
 const SLUG = {{ schematic.slug | tojson }};
+const WORLD_SLUG = {{ (world.slug if world else '') | tojson }};
 const CW   = {{ schematic.canvas_width  or 2000 }};
 const CH   = {{ schematic.canvas_height or 1500 }};
 let elements = JSON.parse({{ elements_json | tojson }});
@@ -1445,7 +1446,7 @@ function showPartyPopup(e, p) {
   menu.id = 'party-popup';
   menu.style.cssText = 'position:fixed;left:' + e.clientX + 'px;top:' + e.clientY + 'px;background:#1a1a1a;border:1px solid rgba(255,255,255,.18);border-radius:5px;padding:.3rem;z-index:9500;font-family:var(--font);font-size:.8rem;min-width:160px;box-shadow:0 4px 14px rgba(0,0,0,.5)';
   menu.innerHTML = `<div style="padding:.2rem .5rem .4rem;opacity:.7">🧑‍🤝‍🧑 ${esc(p.name)} · ${p.member_count} member${p.member_count===1?'':'s'}</div>
-    <a href="/parties/${p.id}" class="ctx-btn" style="display:block;text-decoration:none">Open Party →</a>
+    <a href="/parties/${p.id}?w=${encodeURIComponent(WORLD_SLUG)}" class="ctx-btn" style="display:block;text-decoration:none">Open Party →</a>
     <button class="ctx-btn ctx-del" onclick="removePartyPin(${p.id})">🗑 Remove from here</button>`;
   document.body.appendChild(menu);
   setTimeout(() => document.addEventListener('click', hidePartyPopup, { once:true }), 0);

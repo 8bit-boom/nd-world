@@ -22,7 +22,7 @@ import io
 from pathlib import Path
 
 from .database import init_db, get_db, SessionLocal, get_app_settings
-from .deps import get_world_ctx
+from .deps import get_world_ctx, resolve_world_slug, with_world
 from .imaging import convert_image
 from .rendering import parse_stats, render_md
 from .templating import templates
@@ -283,6 +283,7 @@ def save_upload(file: UploadFile, subdir: str = "", db: Optional[Session] = None
 DEFAULT_WORLD_COOKIE = "active_world"
 
 def get_active_world(request: Request, db: Session, active_world: str = Cookie(None)) -> World:
+    active_world = resolve_world_slug(request, active_world)
     user = getattr(request.state, "user", None)
     accessible = _auth.accessible_world_ids(db, user)  # None = GM (all worlds)
 
@@ -507,11 +508,12 @@ def world_delete(world_id: int, db: Session = Depends(get_db)):
     return resp
 
 @app.get("/worlds/switch/{slug}")
-def world_switch(slug: str, request: Request, db: Session = Depends(get_db)):
+def world_switch(slug: str, request: Request, next: str = "/", db: Session = Depends(get_db)):
     w = db.query(World).filter(World.slug == slug).first()
     if not w or not _auth.user_can_access_world(db, getattr(request.state, "user", None), w):
         raise HTTPException(404)
-    resp = RedirectResponse("/", status_code=303)
+    dest = _auth.safe_next_url(next)
+    resp = RedirectResponse(with_world(dest, w), status_code=303)
     resp.set_cookie(DEFAULT_WORLD_COOKIE, slug, max_age=60*60*24*365)
     return resp
 
@@ -863,7 +865,7 @@ def _resolve_home_sections(db: Session, world: World, request: Request) -> list[
             href = _resolve_home_link_href(db, world, l, is_gm)
             if href is None:
                 continue
-            links.append({"label": l.get("label", ""), "icon": l.get("icon", ""), "href": href})
+            links.append({"label": l.get("label", ""), "icon": l.get("icon", ""), "href": with_world(href, world)})
         if links or is_gm:
             out.append({"name": sec.get("name") or "Untitled", "links": links})
     return out
@@ -2984,7 +2986,7 @@ async def bulk_delete_entities(kind: str, request: Request, db: Session = Depend
         params.append(f"q={quote(q)}")
     if params:
         redirect += "?" + "&".join(params)
-    return RedirectResponse(redirect, status_code=303)
+    return RedirectResponse(with_world(redirect, world), status_code=303)
 
 # ── Relations ─────────────────────────────────────────────────────────────────
 

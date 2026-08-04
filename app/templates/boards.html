@@ -15,13 +15,13 @@
       🗺 Dreamlands Map
     </button>
   </form>
-  <a href="/boards/new" class="btn-primary">+ New Board</a>
+  <a href="{{ '/boards/new'|wq }}" class="btn-primary">+ New Board</a>
 </div>
 
 {% if boards %}
 <div class="card-grid">
   {% for b in boards %}
-  <a href="/boards/{{ b.slug }}" class="entity-card board-card">
+  <a href="{{ ('/boards/' + b.slug)|wq }}" class="entity-card board-card">
     <div class="board-card-bg bg-{{ b.canvas_bg }}"></div>
     <div class="board-card-body">
       <div class="board-card-title">📌 {{ b.name }}</div>
@@ -37,7 +37,7 @@
 {% else %}
 <div class="empty-state">
   <p>No investigation boards yet.</p>
-  <a href="/boards/new" class="btn-primary">Create your first board</a>
+  <a href="{{ '/boards/new'|wq }}" class="btn-primary">Create your first board</a>
 </div>
 {% endif %}
 

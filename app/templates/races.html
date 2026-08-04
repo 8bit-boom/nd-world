@@ -103,7 +103,7 @@
   {% if request.query_params.get('added') %}
   <span style="color:#4f4;font-size:.8rem">✓ Added {{ request.query_params.get('added') }} races</span>
   {% endif %}
-  <a href="/races/new" class="btn-new" style="margin-left:auto">+ New Race</a>
+  <a href="{{ '/races/new'|wq }}" class="btn-new" style="margin-left:auto">+ New Race</a>
   {% else %}
   <span style="color:#888;font-size:.82rem">Select a world first</span>
   {% endif %}

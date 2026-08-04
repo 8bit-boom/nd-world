@@ -4,8 +4,8 @@
 <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:1.5rem;">
   <h1 style="color:var(--neon);font-size:1.4rem;letter-spacing:.05em;">🎲 Player Characters</h1>
   <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-    <a href="/characters/templates" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;text-decoration:none">🗒 Systems &amp; Templates</a>
-    <a href="/characters/new" class="btn-primary">+ New Character</a>
+    <a href="{{ '/characters/templates'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;text-decoration:none">🗒 Systems &amp; Templates</a>
+    <a href="{{ '/characters/new'|wq }}" class="btn-primary">+ New Character</a>
   </div>
 </div>
 
@@ -14,13 +14,13 @@
   <div style="font-size:3rem;margin-bottom:1rem;">🎲</div>
   <p style="font-size:1.1rem;margin-bottom:.5rem;">No player characters yet.</p>
   <p style="margin-bottom:1.5rem;">Create a character sheet to track stats, equipment, and feats.</p>
-  <a href="/characters/new" class="btn-primary">Create First Character</a>
+  <a href="{{ '/characters/new'|wq }}" class="btn-primary">Create First Character</a>
 </div>
 {% else %}
 <div class="pc-grid">
   {% for pc in pcs %}
   {% set d = derived[pc.id] %}
-  <a href="/characters/{{ pc.id }}" class="pc-card">
+  <a href="{{ ('/characters/' + pc.id|string)|wq }}" class="pc-card">
     <div class="pc-card-portrait">
       {% if pc.portrait_url %}
       <img src="{{ pc.portrait_url }}" alt="{{ pc.name }}">

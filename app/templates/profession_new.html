@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-header" style="display:flex;align-items:center;gap:1rem;padding:1.2rem 1.5rem .8rem;border-bottom:1px solid var(--border)">
   <h1 style="margin:0;font-size:1.2rem">🎭 New Profession</h1>
-  <a href="/professions" style="padding:.3rem .8rem;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);text-decoration:none;font-size:.83rem">Cancel</a>
+  <a href="{{ '/professions'|wq }}" style="padding:.3rem .8rem;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);text-decoration:none;font-size:.83rem">Cancel</a>
 </div>
 
 <form method="post" action="/professions/new" enctype="multipart/form-data"

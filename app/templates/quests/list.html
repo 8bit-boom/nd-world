@@ -4,7 +4,7 @@
 <div class="list-header">
   <h1>📜 Quests</h1>
   <div class="list-actions">
-    <a href="/quests/new" class="btn-new">+ New Quest</a>
+    <a href="{{ '/quests/new'|wq }}" class="btn-new">+ New Quest</a>
   </div>
 </div>
 
@@ -14,7 +14,7 @@
     <div class="folder-section-label" style="text-transform:capitalize">{{ status }} ({{ grouped.get(status, [])|length }})</div>
     <div style="display:flex;flex-direction:column;gap:.5rem;margin-top:.5rem">
       {% for q in grouped.get(status, []) %}
-      <a href="/quests/{{ q.id }}" style="display:block;background:var(--bg2);border:1px solid var(--border);border-radius:5px;padding:.6rem .75rem;text-decoration:none;color:var(--text)">
+      <a href="{{ ('/quests/' + q.id|string)|wq }}" style="display:block;background:var(--bg2);border:1px solid var(--border);border-radius:5px;padding:.6rem .75rem;text-decoration:none;color:var(--text)">
         <div style="font-weight:bold;font-size:.88rem">{{ q.title }}</div>
         <div style="font-size:.75rem;color:var(--text-dim);margin-top:.15rem">{{ q.category }}{% if q.parent_id %} · sub-quest{% endif %}</div>
         {% if q.summary %}<div style="font-size:.78rem;color:var(--text-dim);margin-top:.3rem">{{ q.summary }}</div>{% endif %}

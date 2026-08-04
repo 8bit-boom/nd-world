@@ -107,9 +107,9 @@
     <div class="imagestudio-actions">
       {% if swarmui_url %}
       <a href="{{ swarmui_url }}" target="_blank" rel="noopener" class="btn-open-tab">↗ Open in new tab</a>
-      <a href="/ai" class="btn-open-tab" style="border-color:var(--neon3);color:var(--neon3)">🤖 AI + Image Gen</a>
+      <a href="{{ '/ai'|wq }}" class="btn-open-tab" style="border-color:var(--neon3);color:var(--neon3)">🤖 AI + Image Gen</a>
       {% else %}
-      <a href="/ai" class="btn-open-tab">🤖 AI + Image Gen</a>
+      <a href="{{ '/ai'|wq }}" class="btn-open-tab">🤖 AI + Image Gen</a>
       {% endif %}
     </div>
   </div>
@@ -141,7 +141,7 @@
       <p>For TrueNAS, edit <code>truenas-compose.yml</code> and set the value under the <code>world</code> service's <code>environment</code> section, then redeploy.</p>
       <p>You can still generate images using the <strong>AI + Image Gen</strong> tab — it talks directly to SwarmUI internally without needing this URL.</p>
       <div class="imagestudio-links">
-        <a href="/ai" class="btn-open-tab">🤖 AI + Image Gen</a>
+        <a href="{{ '/ai'|wq }}" class="btn-open-tab">🤖 AI + Image Gen</a>
       </div>
     </div>
   {% endif %}

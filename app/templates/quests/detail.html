@@ -4,7 +4,7 @@
 <div style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
     <h1 style="color:var(--neon);font-size:1.3rem;margin:0">{{ '📜 ' + quest.title if quest else '+ New Quest' }}</h1>
-    <a href="/quests" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Quests</a>
+    <a href="{{ '/quests'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Quests</a>
   </div>
 
   {% if request.query_params.get('saved') %}
@@ -13,7 +13,7 @@
 
   {% if quest and quest.parent %}
   <div style="margin-bottom:.75rem;font-size:.82rem">
-    <a href="/quests/{{ quest.parent.id }}" style="color:var(--text-dim)">↖ {{ quest.parent.title }}</a>
+    <a href="{{ ('/quests/' + quest.parent.id|string)|wq }}" style="color:var(--text-dim)">↖ {{ quest.parent.title }}</a>
   </div>
   {% endif %}
 
@@ -75,7 +75,7 @@
     </div>
 
     <div style="display:flex;gap:.75rem;justify-content:flex-end;flex-wrap:wrap">
-      <a href="/quests" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Cancel</a>
+      <a href="{{ '/quests'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Cancel</a>
       {% if quest %}
       <a href="#" onclick="event.preventDefault(); if(confirm('Delete this quest?')) document.getElementById('del-form').submit();"
          style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Delete</a>
@@ -89,7 +89,7 @@
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-top:1.5rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .75rem">Sub-Quests</h2>
     {% for sq in quest.sub_quests %}
-    <a href="/quests/{{ sq.id }}" style="display:block;padding:.3rem 0;color:var(--text);font-size:.85rem;text-decoration:none">→ {{ sq.title }} <span style="color:var(--text-dim);font-size:.78rem">({{ sq.status }})</span></a>
+    <a href="{{ ('/quests/' + sq.id|string)|wq }}" style="display:block;padding:.3rem 0;color:var(--text);font-size:.85rem;text-decoration:none">→ {{ sq.title }} <span style="color:var(--text-dim);font-size:.78rem">({{ sq.status }})</span></a>
     {% endfor %}
   </div>
   {% endif %}

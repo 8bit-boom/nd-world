@@ -74,7 +74,7 @@
     </div>
 
     <div class="form-group">
-      <label>Template <small>(adds structured fields like age, status, or a stat block — <a href="/entity-templates" target="_blank">manage templates</a>)</small></label>
+      <label>Template <small>(adds structured fields like age, status, or a stat block — <a href="{{ '/entity-templates'|wq }}" target="_blank">manage templates</a>)</small></label>
       <select id="template-select" onchange="rebuildCustomFields()"></select>
     </div>
     <div id="custom-fields-container"></div>
@@ -146,9 +146,9 @@
     <div class="form-actions">
       <button type="submit" class="btn-save">Save</button>
       {% if entity %}
-      <a href="/entity/{{ entity.id }}" class="btn-cancel">Cancel</a>
+      <a href="{{ ('/entity/' + entity.id|string)|wq }}" class="btn-cancel">Cancel</a>
       {% else %}
-      <a href="/" class="btn-cancel">Cancel</a>
+      <a href="{{ '/'|wq }}" class="btn-cancel">Cancel</a>
       {% endif %}
     </div>
   </form>

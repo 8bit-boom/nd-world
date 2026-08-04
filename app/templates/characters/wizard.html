@@ -82,7 +82,7 @@
 
 <div class="wiz">
   <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem;">
-    <a href="/characters" style="color:var(--text-dim);font-size:.85rem;">←</a>
+    <a href="{{ '/characters'|wq }}" style="color:var(--text-dim);font-size:.85rem;">←</a>
     <h1 style="color:var(--neon);font-size:1.3rem;">New Character</h1>
   </div>
 
@@ -218,7 +218,7 @@
     <div class="wiz-nav">
       <button type="button" class="btn-primary" id="wiz-prev" onclick="wizPrev()" style="display:none">← Previous</button>
       <div class="spacer"></div>
-      <a href="/characters" style="color:var(--text-dim);">Cancel</a>
+      <a href="{{ '/characters'|wq }}" style="color:var(--text-dim);">Cancel</a>
       <button type="button" class="btn-primary" id="wiz-next" onclick="wizNext()">Next →</button>
       <button type="submit" class="btn-primary" id="wiz-submit" style="display:none">Create Character</button>
     </div>

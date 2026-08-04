@@ -92,7 +92,7 @@ body {
   <h1>{{ board.name }}</h1>
   {% if board.description %}<span class="meta">{{ board.description }}</span>{% endif %}
   <span class="meta" style="margin-left:auto">Exported {{ export_date }}</span>
-  <a href="/boards/{{ board.slug }}">← Live Board</a>
+  <a href="{{ ('/boards/' + board.slug)|wq }}">← Live Board</a>
 </div>
 
 <div style="overflow:auto;min-height:calc(100vh - 40px);background:#0e0e0e;padding:1rem">

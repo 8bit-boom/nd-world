@@ -4,12 +4,12 @@
 <div class="list-header">
   <h1>🎲 Random Tables</h1>
   <div class="list-actions">
-    <a href="/tables/export" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;text-decoration:none">⬇ Export</a>
+    <a href="{{ '/tables/export'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;text-decoration:none">⬇ Export</a>
     <form action="/tables/import" method="post" enctype="multipart/form-data" style="display:flex;align-items:center;gap:.4rem">
       <input type="file" name="file" accept="application/json,.json" required style="font-size:.78rem;max-width:160px"/>
       <button type="submit" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;cursor:pointer">Import</button>
     </form>
-    <a href="/tables/new" class="btn-new">+ New Table</a>
+    <a href="{{ '/tables/new'|wq }}" class="btn-new">+ New Table</a>
   </div>
 </div>
 
@@ -25,7 +25,7 @@
       {% if t.description %}<p>{{ t.description }}</p>{% endif %}
       <div style="display:flex;gap:.5rem;margin-top:.6rem;flex-wrap:wrap;align-items:center">
         <button type="button" class="roll-btn" data-id="{{ t.id }}" style="background:var(--neon);color:#000;border:none;padding:.35rem .8rem;font-size:.8rem;font-weight:bold;border-radius:3px;cursor:pointer">🎲 Roll</button>
-        <a href="/tables/{{ t.id }}/edit" style="color:var(--text-dim);font-size:.8rem;text-decoration:none">Edit →</a>
+        <a href="{{ ('/tables/' + t.id|string + '/edit')|wq }}" style="color:var(--text-dim);font-size:.8rem;text-decoration:none">Edit →</a>
       </div>
       <div class="roll-result" id="roll-result-{{ t.id }}" style="display:none;margin-top:.6rem;padding:.5rem .65rem;background:var(--bg3);border:1px solid var(--neon);border-radius:3px;font-size:.85rem"></div>
     </div>
@@ -34,7 +34,7 @@
 </div>
 {% endfor %}
 {% else %}
-<p style="color:var(--text-dim);text-align:center;padding:2rem">No random tables yet. <a href="/tables/new" style="color:var(--neon)">Create your first one</a>.</p>
+<p style="color:var(--text-dim);text-align:center;padding:2rem">No random tables yet. <a href="{{ '/tables/new'|wq }}" style="color:var(--neon)">Create your first one</a>.</p>
 {% endif %}
 
 <script>

@@ -6,7 +6,7 @@
 
 <div id="map-wrap">
   <div id="map-toolbar">
-    <a href="/maps" class="tb-btn" title="Back">← Maps</a>
+    <a href="{{ '/maps'|wq }}" class="tb-btn" title="Back">← Maps</a>
     <span id="map-title">{{ map_data.name }}</span>
     <div class="tb-spacer"></div>
     <button id="btn-toggle-kanka" class="tb-btn active" onclick="toggleLayer('kanka')" title="Toggle imported pins">📍 Pins</button>
@@ -26,7 +26,7 @@
 
   {% if not image_url %}
   <div id="no-image-msg">
-    <p>No map image found for this map.<br>Upload one on the <a href="/maps">Maps page</a>.</p>
+    <p>No map image found for this map.<br>Upload one on the <a href="{{ '/maps'|wq }}">Maps page</a>.</p>
   </div>
   {% else %}
   <div id="map"></div>
@@ -169,6 +169,7 @@ const ENAME_MAP = JSON.parse({{ ename_map | tojson }});
 const SCHEMATICS = JSON.parse({{ schematics_json | tojson }});
 const WORLD_PARTIES = JSON.parse({{ world_parties_json | tojson }});
 const IS_GM = {{ is_gm | tojson }};
+const WORLD_SLUG = {{ (world.slug if world else '') | tojson }};
 let customMarkers = JSON.parse({{ overlay.custom_markers_json | tojson }});
 let customRegions = JSON.parse({{ overlay.custom_regions_json | tojson }});
 let partyPins = JSON.parse({{ party_pins_json | tojson }});
@@ -223,7 +224,7 @@ function renderKanka() {
     let desc = (m.entity?.entry || '').replace(/<[^>]+>/g, '').trim().slice(0, 160);
     if (desc.length === 160) desc += '…';
     const lid = ENAME_MAP[name.toLowerCase()];
-    const link = lid ? `<br><a href="/entity/${lid}">→ Open in World</a>` : '';
+    const link = lid ? `<br><a href="/entity/${lid}?w=${encodeURIComponent(WORLD_SLUG)}">→ Open in World</a>` : '';
     const icon = L.divIcon({
       className: 'kanka-pin',
       html: `<svg width="16" height="16"><circle cx="8" cy="8" r="7" fill="#00f0ff" fill-opacity=".85" stroke="#fff" stroke-width="1.5"/></svg>`,
@@ -262,7 +263,7 @@ function renderCustomMarkers() {
       .addTo(customMarkersLayer);
     const note = m.note ? `<div class="pop-desc">${esc(m.note)}</div>` : '';
     const schem = SCHEMATICS.find(s => s.slug === m.link_schematic);
-    const link = (schem && IS_GM) ? `<br><a href="/maps/schematic/${schem.slug}">🔗 Open ${esc(schem.name)} →</a>` : '';
+    const link = (schem && IS_GM) ? `<br><a href="/maps/schematic/${schem.slug}?w=${encodeURIComponent(WORLD_SLUG)}">🔗 Open ${esc(schem.name)} →</a>` : '';
     lm.bindPopup(`<div class="map-popup"><b>${esc(m.label || '?')}</b>${note}${link}</div>`);
     lm.bindTooltip(esc(m.label || ''), {direction:'right', opacity:.9});
     lm.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removeCustomMarker(i); } else if (editMode && (tool === 'marker' || tool === 'move')) { L.DomEvent.stop(e); editCustomMarker(i); } });
@@ -295,7 +296,7 @@ function renderPartyPins() {
   partyPins.forEach(p => {
     const ll = L.latLng(p.lat, p.lng);
     const pm = L.marker(ll, {icon: makePartyIcon(), draggable}).addTo(partyPinsLayer);
-    const gmActions = IS_GM ? `<a href="/parties/${p.id}">Open Party →</a><br><a href="#" onclick="removePartyPin(${p.id});return false;">Remove from map</a>` : '';
+    const gmActions = IS_GM ? `<a href="/parties/${p.id}?w=${encodeURIComponent(WORLD_SLUG)}">Open Party →</a><br><a href="#" onclick="removePartyPin(${p.id});return false;">Remove from map</a>` : '';
     pm.bindPopup(`<div class="map-popup"><b>🧑‍🤝‍🧑 ${esc(p.name)}</b><div class="pop-desc">${p.member_count} member${p.member_count===1?'':'s'}</div>${gmActions}</div>`);
     pm.bindTooltip(esc(p.name), {direction:'right', opacity:.9});
     pm.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removePartyPin(p.id); } });

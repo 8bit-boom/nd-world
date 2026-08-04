@@ -13,8 +13,8 @@
       </p>
     </div>
     <div style="display:flex;gap:.5rem">
-      <a href="/characters" class="btn-cancel" style="padding:.4rem .9rem;font-size:.82rem">← Characters</a>
-      <a href="/characters/templates/new" class="btn-save" style="padding:.4rem .9rem;font-size:.82rem">+ New Template</a>
+      <a href="{{ '/characters'|wq }}" class="btn-cancel" style="padding:.4rem .9rem;font-size:.82rem">← Characters</a>
+      <a href="{{ '/characters/templates/new'|wq }}" class="btn-save" style="padding:.4rem .9rem;font-size:.82rem">+ New Template</a>
     </div>
   </div>
 
@@ -48,8 +48,8 @@
         {% endif %}
       </div>
       <div style="display:flex;gap:.5rem;flex-shrink:0">
-        <a href="/characters/new?template_id={{ tpl.id }}" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.3rem .7rem;font-size:.78rem;border-radius:3px;text-decoration:none">+ Create Character</a>
-        <a href="/characters/templates/{{ tpl.id }}/edit" style="background:var(--bg3);border:1px solid var(--border);color:var(--neon);padding:.3rem .7rem;font-size:.78rem;border-radius:3px;text-decoration:none">Edit</a>
+        <a href="{{ ('/characters/new?template_id=' + tpl.id|string)|wq }}" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.3rem .7rem;font-size:.78rem;border-radius:3px;text-decoration:none">+ Create Character</a>
+        <a href="{{ ('/characters/templates/' + tpl.id|string + '/edit')|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--neon);padding:.3rem .7rem;font-size:.78rem;border-radius:3px;text-decoration:none">Edit</a>
         {% if not tpl.is_builtin %}
         <form method="post" action="/characters/templates/{{ tpl.id }}/delete" onsubmit="return confirm('Delete template \'{{ tpl.name }}\'?')">
           <button type="submit" style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.3rem .7rem;font-size:.78rem;border-radius:3px;cursor:pointer">Delete</button>
@@ -58,7 +58,7 @@
       </div>
     </div>
     {% else %}
-    <p style="color:var(--text-dim);text-align:center;padding:2rem">No templates yet. <a href="/characters/templates/new">Create one</a>.</p>
+    <p style="color:var(--text-dim);text-align:center;padding:2rem">No templates yet. <a href="{{ '/characters/templates/new'|wq }}">Create one</a>.</p>
     {% endfor %}
   </div>
 </div>
