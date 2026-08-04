@@ -59,6 +59,12 @@
   {% endif %}
 
   <div class="list-main">
+    <div id="bulk-action-bar" style="display:none">
+      <span><span id="bulk-count">0</span> selected</span>
+      <button type="button" id="bulk-delete-btn">🗑 Delete Selected</button>
+      <button type="button" id="bulk-clear-btn">Clear</button>
+    </div>
+
     {# Subfolder cards — JS fills this when inside a folder that has children #}
     <div id="subfolder-strip" class="subfolder-strip"></div>
 
@@ -81,6 +87,7 @@
     {% if table_cols %}
     <table class="stat-table">
       <thead><tr>
+        <th class="col-cb"><input type="checkbox" class="table-select-all-cb" title="Select all in this table"/></th>
         <th class="col-name">Name</th>
         {% for col in table_cols %}<th>{{ col }}</th>{% endfor %}
       </tr></thead>
@@ -88,6 +95,7 @@
       {% for e in rows %}
       {% set st = entity_stats.get(e.id, {}) %}
       <tr class="kind-{{ e.kind }}{% if not st %} no-stats{% endif %}">
+        <td class="col-cb"><input type="checkbox" class="row-cb" data-id="{{ e.id }}"/></td>
         <td class="col-name">
           {% if e.image_url %}<img class="tbl-thumb" src="{{ e.image_url }}" alt=""/>{% endif %}
           <div class="col-name-text">
@@ -106,6 +114,7 @@
     {% else %}
     <table class="stat-table">
       <thead><tr>
+        <th class="col-cb"><input type="checkbox" class="table-select-all-cb" title="Select all in this table"/></th>
         <th class="col-name">Name</th>
         {% if char_feat_folder %}
         <th style="width:70px">Rank</th>
@@ -118,6 +127,7 @@
       {% for e in rows %}
       {% set st = entity_stats.get(e.id, {}) %}
       <tr class="kind-{{ e.kind }}">
+        <td class="col-cb"><input type="checkbox" class="row-cb" data-id="{{ e.id }}"/></td>
         <td class="col-name">
           {% if e.image_url %}<img class="tbl-thumb" src="{{ e.image_url }}" alt=""/>{% endif %}
           <div class="col-name-text"><a href="/entity/{{ e.id }}">{{ e.name }}</a></div>
@@ -179,6 +189,25 @@
 .folder-rename-ok { background:var(--neon); color:#000; }
 .folder-rename-del { background:transparent; border:1px solid #a33; color:#e07; }
 .folder-rename-del:hover { background:#a33; color:#fff; }
+.col-cb { width:28px; text-align:center; }
+#bulk-action-bar {
+  display:flex; align-items:center; gap:.75rem; padding:.5rem .8rem; margin-bottom:.7rem;
+  background:var(--bg2); border:1px solid var(--neon); border-radius:5px; font-size:.85rem;
+}
+#bulk-delete-btn {
+  background:#a33; color:#fff; border:none; border-radius:3px; padding:.3rem .8rem;
+  font-size:.8rem; cursor:pointer;
+}
+#bulk-delete-btn:hover { background:#c44; }
+#bulk-delete-btn:disabled { opacity:.5; cursor:default; }
+#bulk-clear-btn {
+  background:transparent; border:1px solid var(--border); color:var(--text-dim); border-radius:3px;
+  padding:.3rem .7rem; font-size:.8rem; cursor:pointer;
+}
+.entity-card-wrap { position:relative; }
+.entity-card-wrap .card-cb {
+  position:absolute; top:.5rem; left:.5rem; z-index:2; width:16px; height:16px; cursor:pointer;
+}
 </style>
 <script>
 const FOLDERS = {{ folders | tojson }};
@@ -414,5 +443,58 @@ renderSidebar();
 renderSubfolderStrip();
 renderRootFolders();
 renderBreadcrumbManage();
+
+// ── Bulk delete ──────────────────────────────────────────────────────────────
+// Row checkboxes live in every table (leaf and grouped-subfolder views) and
+// every card (grid view) on the page; tracked globally rather than per-table
+// so one action bar covers a whole grouped-subfolder listing at once.
+function allRowCbs() { return Array.from(document.querySelectorAll('.row-cb')); }
+
+function updateBulkBar() {
+  const checked = allRowCbs().filter(cb => cb.checked);
+  const bar = document.getElementById('bulk-action-bar');
+  document.getElementById('bulk-count').textContent = checked.length;
+  bar.style.display = checked.length ? 'flex' : 'none';
+  document.querySelectorAll('.table-select-all-cb').forEach(headCb => {
+    const table = headCb.closest('table');
+    const rows = Array.from(table.querySelectorAll('.row-cb'));
+    headCb.checked = rows.length > 0 && rows.every(cb => cb.checked);
+  });
+}
+
+document.addEventListener('change', (e) => {
+  if (e.target.classList.contains('row-cb')) {
+    updateBulkBar();
+  } else if (e.target.classList.contains('table-select-all-cb')) {
+    const table = e.target.closest('table');
+    table.querySelectorAll('.row-cb').forEach(cb => { cb.checked = e.target.checked; });
+    updateBulkBar();
+  }
+});
+
+document.getElementById('bulk-clear-btn').addEventListener('click', () => {
+  allRowCbs().forEach(cb => { cb.checked = false; });
+  updateBulkBar();
+});
+
+document.getElementById('bulk-delete-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('bulk-delete-btn');
+  const checked = allRowCbs().filter(cb => cb.checked);
+  if (!checked.length) return;
+  const label = checked.length === 1 ? `this ${KIND}` : `these ${checked.length} ${KIND}s`;
+  if (!confirm(`Delete ${label}? This can't be undone.`)) return;
+  const fd = new FormData();
+  checked.forEach(cb => fd.append('entity_ids', cb.dataset.id));
+  if (ACTIVE !== null) fd.append('folder', ACTIVE);
+  if (Q) fd.append('q', Q);
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/kind/${KIND}/bulk-delete`, { method: 'POST', body: fd });
+    window.location.href = res.url;
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+    btn.disabled = false;
+  }
+});
 </script>
 {% endblock %}

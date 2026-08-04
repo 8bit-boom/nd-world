@@ -2769,9 +2769,17 @@ async def update(
 # ── Delete ────────────────────────────────────────────────────────────────────
 
 @app.post("/entity/{entity_id}/delete")
-def delete(entity_id: int, db: Session = Depends(get_db)):
+def delete(entity_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     entity = db.get(Entity, entity_id)
     if not entity:
+        raise HTTPException(404)
+    # World-ownership check — previously missing here (every other delete
+    # route added this session, e.g. races/professions, already had it): a
+    # GM with access to only one world could otherwise delete any entity in
+    # any world on this instance just by walking IDs, since nothing tied the
+    # id to the currently active world.
+    world = get_active_world(request, db, active_world)
+    if not world or entity.world_id != world.id:
         raise HTTPException(404)
     db.execute(entity_links.delete().where(
         (entity_links.c.source_id == entity_id) | (entity_links.c.target_id == entity_id)
@@ -2781,6 +2789,50 @@ def delete(entity_id: int, db: Session = Depends(get_db)):
     db.delete(entity)
     db.commit()
     return RedirectResponse("/", status_code=303)
+
+
+@app.post("/kind/{kind}/bulk-delete")
+async def bulk_delete_entities(kind: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world = get_active_world(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    form = await request.form()
+    raw_ids = form.getlist("entity_ids")
+    ids = []
+    for v in raw_ids:
+        try:
+            ids.append(int(v))
+        except (TypeError, ValueError):
+            continue
+    if ids:
+        # Scoped to this kind and the active world — the same boundary every
+        # other delete/edit route in this app enforces, so a batch of ids
+        # can't be used to reach into another world or another entity kind.
+        entities = db.query(Entity).filter(
+            Entity.id.in_(ids), Entity.kind == kind, Entity.world_id == world.id
+        ).all()
+        matched_ids = [e.id for e in entities]
+        if matched_ids:
+            db.execute(entity_links.delete().where(
+                entity_links.c.source_id.in_(matched_ids) | entity_links.c.target_id.in_(matched_ids)
+            ))
+            db.execute(entity_player_access.delete().where(entity_player_access.c.entity_id.in_(matched_ids)))
+            db.query(EntityNote).filter(EntityNote.entity_id.in_(matched_ids)).delete(synchronize_session=False)
+            for e in entities:
+                db.delete(e)
+            db.commit()
+
+    folder = form.get("folder")
+    q = form.get("q") or ""
+    redirect = f"/kind/{kind}"
+    params = []
+    if folder is not None:
+        params.append(f"folder={quote(folder)}")
+    if q:
+        params.append(f"q={quote(q)}")
+    if params:
+        redirect += "?" + "&".join(params)
+    return RedirectResponse(redirect, status_code=303)
 
 # ── Relations ─────────────────────────────────────────────────────────────────
 
