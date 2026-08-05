@@ -11,13 +11,59 @@ import re
 import markdown2
 
 
+_COLOR_NAMES = {
+    "red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink",
+    "white", "black", "gray", "grey", "magenta", "lime", "teal", "gold",
+    "silver", "brown", "crimson", "violet", "indigo", "salmon", "coral",
+}
+_HEX_COLOR_RE = re.compile(r'^#(?:[0-9a-fA-F]{3}){1,2}$')
+
+# [color=...] / [mark] / [u] give authors color and underline/highlight beyond
+# what markdown2's extras cover, without allowing raw HTML: they're matched
+# and swapped for real tags *after* markdown2 has already run in safe_mode
+# (so any literal "<"/">" a user typed is inert text by this point), and the
+# color value itself is allowlisted so it can't break out of the style="..."
+# attribute or inject arbitrary CSS.
+_COLOR_TAG_RE = re.compile(r'\[color=([^\]]{1,20})\](.*?)\[/color\]', re.DOTALL)
+_MARK_TAG_RE = re.compile(r'\[mark(?:=([^\]]{1,20}))?\](.*?)\[/mark\]', re.DOTALL)
+_U_TAG_RE = re.compile(r'\[u\](.*?)\[/u\]', re.DOTALL)
+
+
+def _safe_color(raw: str) -> str | None:
+    raw = raw.strip()
+    if _HEX_COLOR_RE.match(raw):
+        return raw
+    if raw.lower() in _COLOR_NAMES:
+        return raw.lower()
+    return None
+
+
+def _apply_inline_styles(html: str) -> str:
+    def color_sub(m):
+        color = _safe_color(m.group(1))
+        return f'<span style="color:{color}">{m.group(2)}</span>' if color else m.group(2)
+
+    def mark_sub(m):
+        color = _safe_color(m.group(1)) if m.group(1) else None
+        style = f' style="background-color:{color}"' if color else ""
+        return f'<mark{style}>{m.group(2)}</mark>'
+
+    html = _COLOR_TAG_RE.sub(color_sub, html)
+    html = _MARK_TAG_RE.sub(mark_sub, html)
+    html = _U_TAG_RE.sub(r'<u>\1</u>', html)
+    return html
+
+
 def render_md(text):
+    if not text:
+        return ""
     # safe_mode="escape": raw HTML typed into markdown-authored fields (character
     # notes/backstory, entity/rules bodies) is escaped to inert text instead of
     # rendered — otherwise a <script> tag in user-authored content would execute
     # in the browser of anyone who views it (stored XSS). Normal markdown syntax
     # (links, emphasis, tables, ...) is unaffected.
-    return markdown2.markdown(text, extras=["fenced-code-blocks", "tables", "strike"], safe_mode="escape") if text else ""
+    html = markdown2.markdown(text, extras=["fenced-code-blocks", "tables", "strike"], safe_mode="escape")
+    return _apply_inline_styles(html)
 
 
 def strip_md(text):

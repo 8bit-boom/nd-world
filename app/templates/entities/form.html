@@ -88,12 +88,12 @@
     </div>
 
     <div class="form-group">
-      <label>Notes <small>(Markdown supported)</small></label>
+      <label>Notes <small>(Markdown supported — select text and use the toolbar for color/highlight/underline)</small></label>
       <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.4rem">
         <button type="button" id="ai-gen-btn" onclick="aiGenerate()" style="background:#1a1a2e;border:1px solid var(--neon);color:var(--neon);border-radius:4px;padding:.3rem .7rem;cursor:pointer;font-size:.82rem">✨ Generate with AI</button>
         <span id="ai-gen-status" style="font-size:.8rem;color:#888"></span>
       </div>
-      <textarea name="body" id="body-field" rows="16" placeholder="# History&#10;…">{{ entity.body if entity else '' }}</textarea>
+      <textarea name="body" id="body-field" rows="16" placeholder="# History&#10;…" data-fmt>{{ entity.body if entity else '' }}</textarea>
     </div>
 
     <div class="form-group" style="margin:.6rem 0 1rem">
@@ -485,4 +485,5 @@ async function aiGenerate() {
   }
 }
 </script>
+<script src="/static/js/text-format-toolbar.js"></script>
 {% endblock %}

@@ -17,7 +17,7 @@
 
   <form method="post" action="/worlds/{{ edit_world.id }}/rules/edit" class="entity-form">
     <div class="form-group">
-      <textarea name="rules_md" rows="28" placeholder="# My System&#10;&#10;## Core Mechanic&#10;…" style="font-family:var(--font);font-size:.85rem">{{ edit_world.rules_md or '' }}</textarea>
+      <textarea name="rules_md" rows="28" placeholder="# My System&#10;&#10;## Core Mechanic&#10;…" style="font-family:var(--font);font-size:.85rem" data-fmt>{{ edit_world.rules_md or '' }}</textarea>
     </div>
     <div class="form-actions">
       <button type="submit" class="btn-save">Save</button>
@@ -25,4 +25,5 @@
     </div>
   </form>
 </div>
+<script src="/static/js/text-format-toolbar.js"></script>
 {% endblock %}

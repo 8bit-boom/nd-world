@@ -576,6 +576,13 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
 }
 .prose del { color: var(--text-dim); }
 .prose hr { border: none; border-top: 1px solid var(--border); margin: 1.2em 0; }
+.prose mark, .rendered-md mark {
+  background: rgba(255, 221, 51, .35);
+  color: inherit;
+  padding: .05em .2em;
+  border-radius: 2px;
+}
+.prose u, .rendered-md u { text-decoration-color: var(--neon); text-underline-offset: 2px; }
 
 /* ── Relations ── */
 .relations { margin-top: 1.5rem; }
@@ -1371,6 +1378,31 @@ input[type="file"]:hover { border-color: var(--neon); }
 .rendered-md th { background: var(--bg3); padding: .3rem .5rem; border: 1px solid var(--border); }
 .rendered-md td { padding: .3rem .5rem; border: 1px solid var(--border); }
 .rendered-md code { background: var(--bg3); padding: .1em .3em; border-radius: 3px; }
+
+/* Text-format toolbar (static/js/text-format-toolbar.js) */
+.fmt-toolbar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: .3rem;
+  padding: .35rem .4rem; margin-bottom: .4rem;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
+}
+.fmt-btn {
+  background: rgba(255,255,255,.05); border: 1px solid var(--border); color: inherit;
+  min-width: 1.8rem; padding: .2rem .45rem; border-radius: 3px; cursor: pointer;
+  font-family: var(--font); font-size: .78rem; line-height: 1.2;
+}
+.fmt-btn:hover { border-color: var(--neon); color: var(--neon); }
+.fmt-btn[data-active="true"] { border-color: var(--neon); color: var(--neon); }
+.fmt-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 .15rem; }
+.fmt-color-group { display: flex; align-items: center; gap: .25rem; }
+.fmt-swatch {
+  width: 1.1rem; height: 1.1rem; padding: 0; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.35); cursor: pointer;
+}
+.fmt-swatch:hover { border-color: var(--neon); transform: scale(1.12); }
+.fmt-custom-color {
+  width: 1.5rem; height: 1.3rem; padding: 0; border: 1px solid var(--border);
+  border-radius: 3px; cursor: pointer; background: none;
+}
 
 @media (max-width: 480px) {
   .pc-grid { grid-template-columns: 1fr 1fr; }

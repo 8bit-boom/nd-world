@@ -135,7 +135,7 @@
       </div>
     </div>
     <input id="ndlg-title" placeholder="Title / Name" class="ndlg-input" style="font-size:1.05rem;font-weight:bold"/>
-    <textarea id="ndlg-body" placeholder="Notes, description, evidence…" class="ndlg-input" rows="4"></textarea>
+    <textarea id="ndlg-body" placeholder="Notes, description, evidence…" class="ndlg-input" rows="4" data-fmt></textarea>
     <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.3rem">
       <label style="font-size:.78rem;opacity:.6">Color</label>
       <input type="color" id="ndlg-color" value="#334455"/>
@@ -280,6 +280,8 @@
   padding:.3rem .55rem .45rem; font-size:.75rem; line-height:1.4;
   opacity:.8; word-break:break-word; max-height:90px; overflow:hidden;
 }
+.card-body mark { background:rgba(255,221,51,.35); color:inherit; padding:.05em .2em; border-radius:2px; }
+.card-body u { text-decoration-color:var(--neon); text-underline-offset:2px; }
 .card-entity-link {
   display:block; padding:.15rem .55rem; font-size:.7rem;
   opacity:.55; border-top:1px solid rgba(255,255,255,.1);
@@ -357,6 +359,7 @@
 #brd-wrap.present-mode .connect-dot { display:none !important; }
 </style>
 
+<script src="/static/js/text-format-toolbar.js"></script>
 <script>
 "use strict";
 const SLUG = {{ board.slug | tojson }};
@@ -616,7 +619,7 @@ function makeCard(n) {
   // Body
   if (n.body) {
     const bd = document.createElement('div');
-    bd.className = 'card-body'; bd.textContent = n.body;
+    bd.className = 'card-body'; bd.innerHTML = ndFmtRenderInline(n.body);
     div.appendChild(bd);
   }
 

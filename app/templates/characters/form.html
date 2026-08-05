@@ -309,9 +309,9 @@
     <div class="cf-section">
       <div class="cf-section-title"><span>Backstory &amp; Notes</span></div>
       <div class="cf-field" style="margin-bottom:.6rem;"><label>Backstory (Markdown supported)</label>
-        <textarea name="backstory" style="min-height:120px;" placeholder="Character history and origin...">{{ pc.backstory if pc else '' }}</textarea></div>
+        <textarea name="backstory" style="min-height:120px;" placeholder="Character history and origin..." data-fmt>{{ pc.backstory if pc else '' }}</textarea></div>
       <div class="cf-field"><label>Session Notes (Markdown supported)</label>
-        <textarea name="notes" style="min-height:100px;" placeholder="Ongoing notes, quests, contacts...">{{ pc.notes if pc else '' }}</textarea></div>
+        <textarea name="notes" style="min-height:100px;" placeholder="Ongoing notes, quests, contacts..." data-fmt>{{ pc.notes if pc else '' }}</textarea></div>
     </div>
 
     <!-- Custom Fields (from template) -->
@@ -668,4 +668,5 @@ renderEquipment();
 renderCyberware();
 renderCustomFields();
 </script>
+<script src="/static/js/text-format-toolbar.js"></script>
 {% endblock %}
