@@ -70,6 +70,37 @@
       <span id="img-import-result" aria-live="polite" style="font-size:.85rem"></span>
     </div>
   </div>
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-top:1.5rem">
+    <h2 style="color:var(--neon);font-size:.9rem;margin:0 0 .4rem">🔄 Bulk Image Format Conversion</h2>
+    <p style="color:var(--text-dim);font-size:.82rem;margin:0 0 .8rem">
+      Re-encode every image already in this world — entity/character art, portraits,
+      schematic backgrounds and embedded images, investigation board cards, and
+      uploaded maps — to a single format and quality. Useful for shrinking a world
+      full of large PNGs down to AVIF/WebP, or converting to PNG/JPG for
+      compatibility elsewhere. Runs in place; every reference is updated automatically.
+    </p>
+    <div style="display:flex;gap:1.25rem;flex-wrap:wrap;align-items:flex-end">
+      <label style="font-size:.82rem;color:var(--text-dim);display:flex;flex-direction:column;gap:.3rem">
+        Target format
+        <select id="convert-format" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-size:.85rem;border-radius:3px">
+          <option value="avif">AVIF</option>
+          <option value="webp">WebP</option>
+          <option value="png">PNG</option>
+          <option value="jpg">JPG</option>
+        </select>
+      </label>
+      <label style="font-size:.82rem;color:var(--text-dim);display:flex;flex-direction:column;gap:.3rem;min-width:180px">
+        Quality (<span id="convert-quality-val">90</span>, ignored for PNG)
+        <input type="range" id="convert-quality" min="1" max="100" value="90"/>
+      </label>
+    </div>
+    <div style="display:flex;gap:.75rem;margin-top:.9rem;align-items:center">
+      <button type="button" id="convert-images-btn" style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Convert All Images</button>
+      <span id="convert-images-result" aria-live="polite" style="font-size:.85rem"></span>
+    </div>
+    <div id="convert-images-details" style="margin-top:.75rem"></div>
+  </div>
 </div>
 
 <style>
@@ -908,6 +939,56 @@ document.getElementById('img-import-btn').addEventListener('click', async () => 
     }
   } finally {
     imgBtn.disabled = false;
+  }
+});
+
+// ── Bulk image format conversion ────────────────────────────────────────────
+document.getElementById('convert-quality').addEventListener('input', (e) => {
+  document.getElementById('convert-quality-val').textContent = e.target.value;
+});
+
+document.getElementById('convert-images-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('convert-images-btn');
+  const resEl = document.getElementById('convert-images-result');
+  const detailsEl = document.getElementById('convert-images-details');
+  const format = document.getElementById('convert-format').value;
+  const quality = parseInt(document.getElementById('convert-quality').value, 10);
+  detailsEl.innerHTML = '';
+  btn.disabled = true;
+  resEl.style.color = 'var(--text-dim)';
+  resEl.textContent = 'Converting — this can take a while for a world with a lot of art…';
+  try {
+    const res = await fetch('/api/import/convert-images', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ format, quality }),
+    });
+    const { data, parseError } = await parseJsonResponse(res);
+    if (parseError || !res.ok) {
+      resEl.style.color = '#c44';
+      resEl.textContent = parseError
+        ? `Server returned a non-JSON response (${parseError}).`
+        : ((data && data.detail) || 'Conversion failed.');
+      return;
+    }
+    resEl.style.color = data.converted > 0 ? '#4f4' : 'var(--text-dim)';
+    resEl.textContent = `${data.converted}/${data.total} image(s) converted to ${format.toUpperCase()}.`;
+    const converted = data.results.filter(r => r.status === 'ok');
+    if (converted.length) {
+      const list = document.createElement('ul');
+      list.style.cssText = 'margin:.5rem 0 0 1.2rem;padding:0;font-size:.8rem;color:var(--text-dim);max-height:220px;overflow-y:auto';
+      converted.forEach(r => {
+        const li = document.createElement('li');
+        li.textContent = `${r.scope} — ${r.label}: ${r.old_url} → ${r.new_url}`;
+        list.appendChild(li);
+      });
+      detailsEl.appendChild(list);
+    }
+  } catch (e) {
+    resEl.style.color = '#c44';
+    resEl.textContent = e.message;
+  } finally {
+    btn.disabled = false;
   }
 });
 </script>

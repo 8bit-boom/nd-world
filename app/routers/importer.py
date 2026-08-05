@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 from ..constants import KINDS, ND_DEFAULT_CURRENCY, ND_DEFAULT_STATS
 from ..database import get_db
 from ..deps import get_world_ctx
-from ..models import Entity, EntityTemplate, MapOverlay, PlayerCharacter, RandomTable, Schematic, SheetTemplate, World
+from ..imaging import CONVERT_QUALITY, convert_image_to
+from ..models import Entity, EntityTemplate, InvestBoard, MapOverlay, PlayerCharacter, RandomTable, Schematic, SheetTemplate, World
 from ..templating import templates
 from ..uploads import BULK_IMAGE_MAX_FILES
 from .characters import _apply_form
@@ -23,6 +24,12 @@ from .tables import _slugify as _table_slugify
 router = APIRouter()
 
 _MAPS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "maps"
+_UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+
+# The four formats the bulk image-conversion tool below can target — a
+# deliberately smaller set than app.imaging's full _PILLOW_FORMAT mapping
+# ("jpeg" is left out as a redundant alias of "jpg").
+CONVERT_TARGET_FORMATS = {"png", "jpg", "webp", "avif"}
 
 SCHEMATIC_ELEMENT_TYPES = {"rect", "circle", "line", "arrow", "poly", "path", "text", "pin", "image", "measure", "token"}
 FIELD_TYPES = {"text", "number", "textarea", "select", "list", "resource", "table"}
@@ -71,6 +78,136 @@ def _map_world_id(slug: str) -> Optional[int]:
 
 _MAX_OVERLAY_ITEMS = 500  # mirrors main.py's save_map_overlay cap
 _MAX_BATCH_IMPORT_ITEMS = 200  # each item can trigger its own DB commit — unbounded is a DoS vector
+
+
+# ── Bulk image format conversion ────────────────────────────────────────────
+# Retroactively re-encodes every image already referenced by a world, unlike
+# app.imaging.convert_image (main.py's save_upload), which only ever runs
+# once at upload time and only ever targets avif/webp. This walks every place
+# an uploaded image can be referenced within a world and converts each one in
+# place to a single GM-chosen format/quality, updating whatever DB column (or
+# JSON blob field) pointed at it.
+
+def _resolve_upload_path(url) -> Optional[Path]:
+    """Map an /uploads/... URL back to the file it names, or None if it
+    isn't a local upload at all (board card images are a free-text field
+    that can hold any external URL) or would escape UPLOADS_DIR — same
+    containment check as main.py's serve_upload, since this path also comes
+    from data that predates that route's containment fix."""
+    if not isinstance(url, str) or not url.startswith("/uploads/"):
+        return None
+    root = _UPLOADS_DIR.resolve()
+    try:
+        path = (root / url[len("/uploads/"):]).resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not path.is_relative_to(root) or not path.is_file():
+        return None
+    return path
+
+
+def _convert_one(old_url, target_format: str, quality: int) -> Optional[str]:
+    """Convert the uploaded file behind old_url to target_format/quality in
+    place. Returns the new /uploads/... URL on success, or None if nothing
+    changed (not a local upload, already that format, or decode failure) —
+    the caller should leave its reference untouched in that case."""
+    path = _resolve_upload_path(old_url)
+    if path is None:
+        return None
+    new_path = convert_image_to(path, target_format, quality)
+    if new_path is None:
+        return None
+    return old_url.rsplit("/", 1)[0] + "/" + new_path.name
+
+
+def _conversion_result(scope: str, label: str, old_url: str, new_url: Optional[str]) -> dict:
+    return {
+        "scope": scope, "label": label, "old_url": old_url,
+        "new_url": new_url, "status": "ok" if new_url else "skipped",
+    }
+
+
+def convert_world_images(db: Session, world: World, target_format: str, quality: int) -> list:
+    """Retroactively convert every already-uploaded image referenced by
+    `world` to target_format/quality: entity portraits/art, player character
+    portraits, schematic backgrounds and embedded images, investigation
+    board card images, and user-uploaded (not bundled) maps. Commits once at
+    the end; returns a per-image result list."""
+    results = []
+
+    entities = db.query(Entity).filter(Entity.world_id == world.id, Entity.image_url.isnot(None)).all()
+    for e in entities:
+        new_url = _convert_one(e.image_url, target_format, quality)
+        results.append(_conversion_result("entity", e.name, e.image_url, new_url))
+        if new_url:
+            e.image_url = new_url
+
+    pcs = db.query(PlayerCharacter).filter(
+        PlayerCharacter.world_id == world.id, PlayerCharacter.portrait_url != ""
+    ).all()
+    for pc in pcs:
+        new_url = _convert_one(pc.portrait_url, target_format, quality)
+        results.append(_conversion_result("character", pc.name, pc.portrait_url, new_url))
+        if new_url:
+            pc.portrait_url = new_url
+
+    schematics = db.query(Schematic).filter(Schematic.world_id == world.id).all()
+    for s in schematics:
+        if s.image_url:
+            new_url = _convert_one(s.image_url, target_format, quality)
+            results.append(_conversion_result(f"schematic: {s.name}", "background", s.image_url, new_url))
+            if new_url:
+                s.image_url = new_url
+        try:
+            elements = json.loads(s.elements_json or "[]")
+        except Exception:
+            elements = []
+        changed = False
+        for el in elements:
+            if not isinstance(el, dict):
+                continue
+            href = el.get("href")
+            if isinstance(href, str) and href.startswith("/uploads/schematics/embeds/"):
+                new_url = _convert_one(href, target_format, quality)
+                results.append(_conversion_result(f"schematic: {s.name}", "embedded image", href, new_url))
+                if new_url:
+                    el["href"] = new_url
+                    changed = True
+        if changed:
+            s.elements_json = json.dumps(elements)
+
+    boards = db.query(InvestBoard).filter(InvestBoard.world_id == world.id).all()
+    for b in boards:
+        try:
+            nodes = json.loads(b.nodes_json or "[]")
+        except Exception:
+            nodes = []
+        changed = False
+        for n in nodes:
+            if not isinstance(n, dict):
+                continue
+            img = n.get("image_url")
+            if isinstance(img, str) and img:
+                new_url = _convert_one(img, target_format, quality)
+                results.append(_conversion_result(f"board: {b.name}", n.get("title") or "card", img, new_url))
+                if new_url:
+                    n["image_url"] = new_url
+                    changed = True
+        if changed:
+            b.nodes_json = json.dumps(nodes)
+
+    for slug, name in _world_maps(world.id):
+        for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif"):
+            map_path = _UPLOADS_DIR / "maps" / (slug + ext)
+            if map_path.is_file():
+                new_path = convert_image_to(map_path, target_format, quality)
+                old_url = f"/uploads/maps/{slug}{ext}"
+                new_url = f"/uploads/maps/{new_path.name}" if new_path else None
+                results.append(_conversion_result("map", name, old_url, new_url))
+                break
+
+    db.commit()
+    return results
 
 
 # ── Detection ────────────────────────────────────────────────────────────────
@@ -629,3 +766,27 @@ async def import_execute(request: Request, db: Session = Depends(get_db), active
     if not ok:
         raise HTTPException(400, result)
     return {"ok": True, "redirect": result}
+
+
+@router.post("/api/import/convert-images")
+async def api_convert_images(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Retroactively re-encode every image already in the active world to a
+    single chosen format/quality — see convert_world_images above. GM-only:
+    enforced by main.py's auth_gate middleware, same as every other write
+    route that isn't explicitly listed as player-safe."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    body = await request.json()
+    target_format = body.get("format")
+    if target_format not in CONVERT_TARGET_FORMATS:
+        raise HTTPException(400, f"format must be one of: {', '.join(sorted(CONVERT_TARGET_FORMATS))}")
+    try:
+        quality = int(body.get("quality", CONVERT_QUALITY))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "quality must be a number")
+    if not (1 <= quality <= 100):
+        raise HTTPException(400, "quality must be between 1 and 100")
+    results = convert_world_images(db, world, target_format, quality)
+    converted = sum(1 for r in results if r["status"] == "ok")
+    return {"converted": converted, "total": len(results), "results": results}
