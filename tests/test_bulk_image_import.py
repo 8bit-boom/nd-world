@@ -218,6 +218,37 @@ def test_import_page_precheck_matches_server_cap(client, seed):
     assert r.text.count("parseJsonResponse(res)") >= 2  # both fetch handlers use it
 
 
+def test_import_page_flags_same_name_different_kind_as_ambiguous(client, seed):
+    """Regression guard, source-level (no JS runtime in this test suite).
+    matchEntityByFilename() used to resolve an exact filename match with
+    Array.find(), silently taking whichever entity came first in the
+    kind-then-name-sorted ENTITIES list — so a "Darro" race and a "Darro"
+    lore note (a normal thing for a world to have, not a data error) meant
+    art meant for the race silently landed on the note instead, with no
+    warning at all, since only *fuzzy* matches got the "check match" badge.
+    Locks in: (1) the client detects when more than one entity shares an
+    exact normalized name, (2) it deprioritizes kinds unlikely to be the
+    intended portrait target (note, event) when picking a default, and (3)
+    it surfaces a distinct, visible warning either way rather than staying
+    silent just because the name match itself was exact."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    _make_entity(seed.world_a, name="Darro", kind="race")
+    _make_entity(seed.world_a, name="Darro", kind="note")
+
+    r = client.get("/import")
+    assert r.status_code == 200
+    assert "const MATCH_KIND_DEPRIORITIZED" in r.text
+    assert "'ambiguous'" in r.text
+    assert "exactMatches.length > 1" in r.text
+    assert "same name in" in r.text  # the warning badge text
+    # Both same-named entities must actually reach the client for the
+    # ambiguity check to have anything to detect (entities_json is
+    # double-JSON-encoded into the page via Jinja's |tojson, so check for
+    # the name text itself rather than an exact quoting/spacing pattern).
+    assert r.text.count("Darro") >= 2
+
+
 def test_import_page_bulk_image_upload_is_chunked_by_size(client, seed):
     """A real live-site batch of 100 portrait/art files (several MB each)
     sent as one multipart request regularly exceeded a reverse proxy's body-

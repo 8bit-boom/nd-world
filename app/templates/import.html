@@ -486,12 +486,29 @@ function wordsMatch(a, b) {
   return longer.startsWith(shorter) && longer.length - shorter.length <= 3;
 }
 
+// Entities of different kinds can legitimately share a name — a "Darro"
+// race and a "Darro" lore note both existing is normal, not a data error.
+// A plain kind-agnostic name match can't tell those apart, so when an
+// exact match is ambiguous this way, deprioritize kinds that are rarely
+// the intended target of portrait/art import (a note is text, not a
+// character sheet) rather than falling back to array order — ENTITIES is
+// sorted by kind name alphabetically, which silently put "note" ahead of
+// "profession"/"race" and routed race art onto same-named notes with no
+// warning at all, since exact matches used to skip the "check match"
+// badge entirely.
+const MATCH_KIND_DEPRIORITIZED = new Set(['note', 'event']);
+
 function matchEntityByFilename(filename) {
   const base = filename.replace(/\.[^.]+$/, '');
   const norm = normalizeMatchName(base);
   if (!norm) return null;
-  const exact = ENTITIES.find(e => normalizeMatchName(e.name) === norm);
-  if (exact) return { entity: exact, confidence: 'exact' };
+  const exactMatches = ENTITIES.filter(e => normalizeMatchName(e.name) === norm);
+  if (exactMatches.length > 1) {
+    const preferred = exactMatches.filter(e => !MATCH_KIND_DEPRIORITIZED.has(e.kind));
+    const pick = (preferred.length ? preferred : exactMatches)[0];
+    return { entity: pick, confidence: 'ambiguous', alternates: exactMatches };
+  }
+  if (exactMatches.length === 1) return { entity: exactMatches[0], confidence: 'exact' };
   // Word-boundary matching, not raw substring: a plain includes() check
   // (the old approach) false-positives whenever a short entity name hides
   // inside an unrelated longer filename — e.g. entity "Inn" would match
@@ -726,9 +743,10 @@ function renderImgPreview() {
   list.style.cssText = 'display:flex;flex-direction:column;gap:.4rem;max-height:420px;overflow-y:auto';
   selectedImgFiles.forEach((f, i) => {
     const match = matchEntityByFilename(f.name);
+    const needsCheck = match && (match.confidence === 'fuzzy' || match.confidence === 'ambiguous');
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:.6rem;padding:.4rem;background:var(--bg3);border-radius:4px' +
-      (match && match.confidence === 'fuzzy' ? ';border:1px solid #e8a94a' : '');
+      (needsCheck ? ';border:1px solid #e8a94a' : '');
     const img = document.createElement('img');
     const url = URL.createObjectURL(f);
     imgObjectUrls.push(url);
@@ -739,7 +757,14 @@ function renderImgPreview() {
     name.textContent = f.name;
     name.style.cssText = 'flex:1;font-size:.8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     row.appendChild(name);
-    if (match && match.confidence === 'fuzzy') {
+    if (match && match.confidence === 'ambiguous') {
+      const badge = document.createElement('span');
+      const kinds = match.alternates.map(e => e.kind).join('/');
+      badge.textContent = `same name in ${match.alternates.length} kinds (${kinds}) — check match`;
+      badge.title = 'Another entity in this world has the exact same name under a different kind — verify the one selected below is the one you meant.';
+      badge.style.cssText = 'font-size:.7rem;color:#e8a94a;white-space:nowrap';
+      row.appendChild(badge);
+    } else if (match && match.confidence === 'fuzzy') {
       const badge = document.createElement('span');
       badge.textContent = 'check match';
       badge.style.cssText = 'font-size:.7rem;color:#e8a94a;white-space:nowrap';
