@@ -21,6 +21,9 @@ services:
       # Set to http://<truenas-ip>:6080 to enable the embedded Android app
       # iframe at /androidapp (see the "android" profile below).
       ANDROID_EMULATOR_URL: ""
+      # Set to http://<truenas-ip>:6081 to enable the embedded Content Editor
+      # iframe at /editor (see the "editor" profile below).
+      EDITOR_EXTERNAL_URL: ""
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: gemma4:26b   # change to whichever model you've pulled
       # Auth — see .env.example. GM_EMAIL/GM_PASSWORD bootstrap the one GM account;
@@ -118,6 +121,31 @@ services:
       net.ix-portals.android.port: "6080"
       net.ix-portals.android.path: "/"
       net.ix-portals.android.host: ""
+
+  # Optional: embed the real NeonDragonsEditor desktop app inside nd-world
+  # (see /editor) via a containerized Xvfb/noVNC session. Only starts if the
+  # "editor" profile is active — set COMPOSE_PROFILES=editor (or add it to
+  # your existing list), or run
+  # `docker compose -f truenas-compose.yml --profile editor up -d`.
+  #
+  # First-pass, unverified container (no CI coverage) — see
+  # docs/DEPLOYMENT.md. The editor has no git integration; use Part 2's
+  # "Export to nd-world..." as the primary save path, not this volume.
+  editor:
+    profiles: ["editor"]
+    build: https://github.com/8bit-boom/UoY-Neon-Dragons.git#main:NeonDragonsEditor
+    image: nd-editor:latest
+    restart: unless-stopped
+    ports:
+      - "6081:6080"
+    volumes:
+      - /mnt/DeadPool/apps/nd-world-editor/config:/root/NeonDragonsEditor
+      - /mnt/DeadPool/apps/nd-world-editor/rulebook:/data/rulebook
+    labels:
+      net.ix-portals.editor.scheme: "http"
+      net.ix-portals.editor.port: "6081"
+      net.ix-portals.editor.path: "/"
+      net.ix-portals.editor.host: ""
 
   watchtower:
     image: containrrr/watchtower

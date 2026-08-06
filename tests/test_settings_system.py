@@ -28,6 +28,7 @@ def test_settings_system_roundtrip(client, seed):
         "ollama_url": "http://127.0.0.1:11500",
         "swarmui_external_url": "http://127.0.0.1:7801",
         "android_emulator_url": "http://127.0.0.1:6080",
+        "editor_external_url": "http://127.0.0.1:6081",
     }, follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/settings?tab=system"
@@ -37,6 +38,7 @@ def test_settings_system_roundtrip(client, seed):
     assert "127.0.0.1:11500" in page.text
     assert "127.0.0.1:7801" in page.text
     assert "127.0.0.1:6080" in page.text
+    assert "127.0.0.1:6081" in page.text
 
     db = SessionLocal()
     try:
@@ -45,6 +47,7 @@ def test_settings_system_roundtrip(client, seed):
         assert settings.ollama_url == "http://127.0.0.1:11500"
         assert settings.swarmui_external_url == "http://127.0.0.1:7801"
         assert settings.android_emulator_url == "http://127.0.0.1:6080"
+        assert settings.editor_external_url == "http://127.0.0.1:6081"
     finally:
         db.close()
 
@@ -143,3 +146,34 @@ def test_androidapp_accessible_to_players(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/androidapp")
     assert r.status_code == 200
+
+
+def test_editor_env_fallback_when_blank(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    from app.main import EDITOR_EXTERNAL_URL
+    r = client.get("/editor")
+    assert r.status_code == 200
+    if EDITOR_EXTERNAL_URL:
+        assert EDITOR_EXTERNAL_URL in r.text
+    else:
+        assert "not configured" in r.text.lower()
+
+
+def test_editor_override_reflected_in_editor_embed(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/settings/system", data={
+        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+        "android_emulator_url": "", "editor_external_url": "http://127.0.0.1:6081",
+    })
+    r = client.get("/editor")
+    assert r.status_code == 200
+    assert "127.0.0.1:6081" in r.text
+
+
+def test_editor_is_gm_only(client, seed):
+    """Unlike /androidapp, the embedded Content Editor is a GM-only tool —
+    it edits world content, not something a player needs."""
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/editor")
+    assert r.status_code == 403

@@ -191,6 +191,50 @@ installing the app on their own phones.
 
 ---
 
+## Optional: embed NeonDragonsEditor in the browser (containerized desktop)
+
+nd-world's `/editor` page (GM-only) can show the real NeonDragonsEditor
+desktop app — the tool used to build races/professions/feats/items — running
+live in the browser, via a containerized session (Xvfb + noVNC, not an
+emulator, so it's much lighter than the Android option above). Like Android
+emulation, this is an opt-in add-on: it has **no automated test coverage**
+(no CI job builds or exercises this container) and is a first pass — expect
+to need some iteration, especially around the two tabs that embed a Chromium
+view (HTML sheet preview, city map).
+
+**1. Enable the profile** — add `editor` to `COMPOSE_PROFILES` in `.env`
+(comma-separated with any other profiles you're already running), then:
+```bash
+docker compose up -d
+```
+This builds the `NeonDragonsEditor/Dockerfile` image from the
+UoY-Neon-Dragons repo and starts a noVNC web viewer on port `6081`.
+
+**2. Point nd-world at it** — log in as the GM, go to **Settings → System**,
+and set **Content editor URL** to `http://<your-server>:6081`. `/editor` now
+shows the live editor session in an iframe; leaving this blank keeps the
+page showing a "not configured" message instead.
+
+**3. Give it content to edit** — the container mounts a volume at
+`/data/rulebook`, and the editor starts with `--portable /data/rulebook` so
+it skips the first-run folder picker. Populate that volume with a checkout
+of the content markdown (the `character creation/`/`equipment/`/`lore/`
+trees) before or after first start:
+```bash
+docker compose exec editor git clone <your-fork-url> /data/rulebook
+```
+
+**Known limitation**: the Editor has no git integration at all — edits made
+through the embedded session persist in the mounted volume, but getting them
+back into a real git repo's history is a manual
+`docker compose exec editor git ...` step. For most GMs, the
+**"Export to nd-world..."** feature (in the Editor's Data menu) should be
+the primary save path when using the remote editor — it pushes
+races/professions/feats/items/characters straight into a running nd-world
+world and needs no git at all.
+
+---
+
 ## Inviting players
 
 Once nd-world is reachable (locally or over the internet):

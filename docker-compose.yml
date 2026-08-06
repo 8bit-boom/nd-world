@@ -23,6 +23,9 @@ services:
       # Set to http://<your-host>:6080 to enable the embedded Android app
       # iframe at /androidapp (see the "android" profile below).
       ANDROID_EMULATOR_URL: ""
+      # Set to http://<your-host>:6081 to enable the embedded Content Editor
+      # iframe at /editor (see the "editor" profile below).
+      EDITOR_EXTERNAL_URL: ""
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: gemma4:26b   # change to whichever model you've pulled
       # Auth — see .env.example. GM_EMAIL/GM_PASSWORD bootstrap the one GM account;
@@ -111,6 +114,34 @@ services:
     volumes:
       - android-apk:/apk   # drop the CI-built debug APK here — see scripts/android-provision.sh
 
+  # Optional: embed the real NeonDragonsEditor desktop app inside nd-world
+  # (see /editor) via a containerized Xvfb/noVNC session, so a GM can build
+  # races/professions/feats/items from any browser without installing
+  # Python/Qt locally. Only starts if the "editor" profile is active — set
+  # COMPOSE_PROFILES=editor (or add it to your existing list) in .env, or
+  # run `docker compose --profile editor up -d`.
+  #
+  # This is a first-pass, unverified container (no CI coverage) — expect to
+  # need some iteration, especially around the QtWebEngine-dependent tabs
+  # (HTML sheet preview, city map). See docs/DEPLOYMENT.md.
+  #
+  # The editor-repo volume should point at a checkout of the content
+  # markdown (the "character creation/"/"equipment/"/"lore/" trees) so
+  # `--portable` skips the first-run folder picker. The editor has no git
+  # integration — use Part 2's "Export to nd-world..." as the primary save
+  # path; treat this volume as a working copy, not the source of truth.
+  editor:
+    profiles: ["editor"]
+    build: ./NeonDragonsEditor
+    image: nd-editor:latest
+    container_name: nd-world-editor
+    restart: unless-stopped
+    ports:
+      - "${EDITOR_VNC_PORT:-6081}:6080"
+    volumes:
+      - editor-config:/root/NeonDragonsEditor   # config.json + window state
+      - editor-repo:/data/rulebook              # content markdown checkout
+
 volumes:
   nd-world-data:
     driver: local
@@ -125,4 +156,8 @@ volumes:
   ollama-data:
     driver: local
   android-apk:
+    driver: local
+  editor-config:
+    driver: local
+  editor-repo:
     driver: local

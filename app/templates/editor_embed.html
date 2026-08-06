@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}Content Editor — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<style>
+.editorembed-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.editorembed-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .6rem;
+}
+.editorembed-header h1 {
+  font-size: 1.3rem;
+  letter-spacing: .12em;
+  color: var(--neon);
+}
+.editorembed-actions {
+  display: flex;
+  gap: .6rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.btn-open-tab {
+  padding: .4rem .9rem;
+  border: 1px solid var(--neon);
+  color: var(--neon);
+  border-radius: 2px;
+  font-size: .82rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.btn-open-tab:hover { background: var(--neon); color: #000; text-decoration: none; }
+
+/* iframe container */
+.editorembed-frame-wrap {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+.editorembed-frame {
+  width: 100%;
+  height: calc(100vh - 130px);
+  border: none;
+  display: block;
+  min-height: 500px;
+}
+
+/* setup / not-configured card */
+.editorembed-setup {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2rem;
+  max-width: 700px;
+}
+.editorembed-setup h2 { color: var(--neon); margin-bottom: 1rem; font-size: 1rem; }
+.editorembed-setup p { color: var(--text-dim); font-size: .88rem; line-height: 1.7; margin-bottom: .8rem; }
+.editorembed-setup code {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  padding: .1rem .4rem;
+  border-radius: 2px;
+  font-size: .85rem;
+  color: var(--neon3);
+}
+.editorembed-setup pre {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1rem;
+  font-size: .82rem;
+  overflow-x: auto;
+  margin: .6rem 0 1rem;
+  color: var(--text);
+}
+.editorembed-links { display: flex; gap: .8rem; flex-wrap: wrap; margin-top: 1.2rem; }
+
+/* mobile notice — hidden on desktop, shown on mobile */
+.editorembed-mobile-notice {
+  display: none;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1.2rem 1rem;
+  text-align: center;
+}
+.editorembed-mobile-notice p { color: var(--text-dim); font-size: .88rem; margin-bottom: .8rem; }
+.editorembed-mobile-notice a { color: var(--neon); }
+
+@media (max-width: 768px) {
+  .editorembed-frame-wrap { display: none; }
+  .editorembed-mobile-notice { display: block; }
+  .editorembed-frame { display: none; }
+}
+</style>
+
+<div class="editorembed-wrap">
+  <div class="editorembed-header">
+    <h1>🛠 Content Editor</h1>
+    <div class="editorembed-actions">
+      {% if editor_url %}
+      <a href="{{ editor_url }}" target="_blank" rel="noopener" class="btn-open-tab">↗ Open in new tab</a>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if editor_url %}
+    {# Desktop: full iframe embed of the live editor session's noVNC viewer #}
+    <div class="editorembed-frame-wrap">
+      <iframe
+        class="editorembed-frame"
+        src="{{ editor_url }}"
+        title="NeonDragonsEditor (containerized)"
+        allow="clipboard-read; clipboard-write"
+        loading="lazy"
+      ></iframe>
+    </div>
+
+    {# Mobile: notice with link — a remote desktop session inside a small phone browser isn't useful #}
+    <div class="editorembed-mobile-notice">
+      <p>The embedded Content Editor is meant for desktop browsers.</p>
+      <a href="{{ editor_url }}" target="_blank" rel="noopener" class="btn-open-tab">Open in browser ↗</a>
+    </div>
+
+  {% else %}
+    <div class="editorembed-setup">
+      <h2>Content editor not configured</h2>
+      <p>This page can embed a live, self-hosted session running the real NeonDragonsEditor desktop app, so a GM can build races/professions/feats/items from any browser without installing Python/Qt locally. It's an optional add-on with no precedent in this project — see <code>docs/DEPLOYMENT.md</code> before enabling it, and expect to need some iteration to get it running well.</p>
+      <p>To enable it: start the <code>editor</code> Compose profile (with the content repo mounted into its volume), then set the <code>EDITOR_EXTERNAL_URL</code> environment variable (or the field below) to the public URL of its noVNC viewer:</p>
+      <pre>EDITOR_EXTERNAL_URL=http://&lt;your-server-ip&gt;:6081</pre>
+      <p>For TrueNAS, edit <code>truenas-compose.yml</code> and set the value under the <code>world</code> service's <code>environment</code> section, then redeploy. This can also be set per-instance under Settings → System, which takes priority over the environment variable.</p>
+      <div class="editorembed-links">
+        <a href="{{ '/settings?tab=system'|wq }}" class="btn-open-tab">⚙ Settings</a>
+      </div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

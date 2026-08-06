@@ -537,6 +537,9 @@ class AppSettings(Base):
     # Same idea as swarmui_external_url, for the embedded Android app viewer
     # at /androidapp — see app.main's ANDROID_EMULATOR_URL and docs/DEPLOYMENT.md.
     android_emulator_url = Column(String(512), default="")
+    # Same idea again, for the embedded Content Editor viewer at /editor —
+    # see app.main's EDITOR_EXTERNAL_URL and docs/DEPLOYMENT.md.
+    editor_external_url = Column(String(512), default="")
     # Hover-a-link-for-N-seconds entity preview popup (base.html's global
     # mouseover handler + GET /api/entity/{id}/preview) — instance-wide like
     # everything else on this row, editable from Settings > Options.

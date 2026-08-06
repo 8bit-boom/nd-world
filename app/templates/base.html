@@ -81,6 +81,7 @@
     {% if request.state.user and request.state.user.is_gm %}
     <a href="{{ '/ai'|wq }}" draggable="true" data-ql-ref="/ai"                 class="nav-kind {% if request.url.path == '/ai' %}active{% endif %}">🤖 AI</a>
     <a href="{{ '/imagestudio'|wq }}" draggable="true" data-ql-ref="/imagestudio" class="nav-kind {% if request.url.path == '/imagestudio' %}active{% endif %}">🎨 Image Studio</a>
+    <a href="{{ '/editor'|wq }}" draggable="true" data-ql-ref="/editor" class="nav-kind {% if request.url.path == '/editor' %}active{% endif %}">🛠 Content Editor</a>
     <a href="{{ '/settings'|wq }}" draggable="true" data-ql-ref="/settings"     class="nav-kind {% if request.url.path == '/settings' %}active{% endif %}">⚙ Settings</a>
     <a href="{{ '/new'|wq }}" class="btn-new">+ New</a>
     <span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.4rem;vertical-align:middle"></span>

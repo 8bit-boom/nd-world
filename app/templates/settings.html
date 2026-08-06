@@ -109,6 +109,10 @@
         <label for="android-emulator-url">Android emulator URL (Android App iframe)</label>
         <input id="android-emulator-url" name="android_emulator_url" value="{{ settings.android_emulator_url or '' }}" placeholder="{{ env_android_emulator_url or 'not set' }}">
       </div>
+      <div class="form-group">
+        <label for="editor-external-url">Content editor URL (Content Editor iframe)</label>
+        <input id="editor-external-url" name="editor_external_url" value="{{ settings.editor_external_url or '' }}" placeholder="{{ env_editor_external_url or 'not set' }}">
+      </div>
       <div class="form-actions">
         <button type="submit" class="btn-primary">Save</button>
       </div>

@@ -62,6 +62,7 @@ _MAPS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "maps"
 _BUNDLED_MAPS_DIR = Path(__file__).parent / "maps"
 SWARMUI_EXTERNAL_URL = os.getenv("SWARMUI_EXTERNAL_URL", "").rstrip("/")
 ANDROID_EMULATOR_URL = os.getenv("ANDROID_EMULATOR_URL", "").rstrip("/")
+EDITOR_EXTERNAL_URL = os.getenv("EDITOR_EXTERNAL_URL", "").rstrip("/")
 
 app = FastAPI(title="N&D World")
 _allowed = [h.strip() for h in os.getenv("ND_ALLOWED_HOSTS", "*").split(",") if h.strip()]
@@ -2170,6 +2171,17 @@ def androidapp(request: Request, db: Session = Depends(get_db), active_world: st
         "android_url": android_url,
     })
 
+@app.get("/editor", response_class=HTMLResponse)
+def content_editor(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, worlds = get_world_ctx(request, db, active_world)
+    settings = get_app_settings(db)
+    editor_url = (settings.editor_external_url or EDITOR_EXTERNAL_URL).rstrip("/")
+    return templates.TemplateResponse("editor_embed.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "kinds": KINDS, "kind_icons": KIND_ICONS,
+        "editor_url": editor_url,
+    })
+
 def _settings_context(request: Request, db: Session, active_world: str, tab: str, system_error: str = None):
     world, worlds = get_world_ctx(request, db, active_world)
     settings = get_app_settings(db)
@@ -2181,6 +2193,7 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "env_ollama_url": _ai_module.OLLAMA_URL,
         "env_swarmui_external_url": SWARMUI_EXTERNAL_URL,
         "env_android_emulator_url": ANDROID_EMULATOR_URL,
+        "env_editor_external_url": EDITOR_EXTERNAL_URL,
         "system_error": system_error,
     }
 
@@ -2219,6 +2232,7 @@ def settings_system_save(
     ollama_url: str = Form(""),
     swarmui_external_url: str = Form(""),
     android_emulator_url: str = Form(""),
+    editor_external_url: str = Form(""),
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
@@ -2226,10 +2240,12 @@ def settings_system_save(
     ollama_url = ollama_url.strip().rstrip("/")
     swarmui_external_url = swarmui_external_url.strip().rstrip("/")
     android_emulator_url = android_emulator_url.strip().rstrip("/")
+    editor_external_url = editor_external_url.strip().rstrip("/")
     for label, val in (
         ("Ollama URL", ollama_url),
         ("SwarmUI external URL", swarmui_external_url),
         ("Android emulator URL", android_emulator_url),
+        ("Content editor URL", editor_external_url),
     ):
         if val and not (val.startswith("http://") or val.startswith("https://")):
             return templates.TemplateResponse(
@@ -2243,6 +2259,7 @@ def settings_system_save(
     settings.ollama_url = ollama_url
     settings.swarmui_external_url = swarmui_external_url
     settings.android_emulator_url = android_emulator_url
+    settings.editor_external_url = editor_external_url
     db.commit()
     _refresh_settings_overrides(db)
     return RedirectResponse("/settings?tab=system", status_code=303)
