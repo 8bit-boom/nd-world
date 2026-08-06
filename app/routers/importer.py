@@ -11,6 +11,7 @@ from sqlalchemy import or_, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from .. import auth
 from ..constants import KINDS, ND_DEFAULT_CURRENCY, ND_DEFAULT_STATS
 from ..database import get_db
 from ..deps import get_world_ctx
@@ -18,7 +19,7 @@ from ..imaging import CONVERT_QUALITY, convert_image_to
 from ..models import Entity, EntityTemplate, InvestBoard, MapOverlay, PlayerCharacter, RandomTable, Schematic, SheetTemplate, World
 from ..templating import templates
 from ..uploads import BULK_IMAGE_MAX_FILES
-from .characters import _apply_form
+from .characters import _apply_form, _current_user
 from .tables import _slugify as _table_slugify
 
 router = APIRouter()
@@ -33,6 +34,119 @@ CONVERT_TARGET_FORMATS = {"png", "jpg", "webp", "avif"}
 
 SCHEMATIC_ELEMENT_TYPES = {"rect", "circle", "line", "arrow", "poly", "path", "text", "pin", "image", "measure", "token"}
 FIELD_TYPES = {"text", "number", "textarea", "select", "list", "resource", "table"}
+
+
+# ── Content packs: nd-world Entity -> NeonDragonsApp bundled-JSON shape ────
+# The counterpart to NeonDragonsEditor's nd_world_export.py (which converts
+# the app's asset-JSON shape INTO nd-world entities) — this converts back
+# OUT, so a world's homebrew races/professions/feats/items can be pulled
+# into the Android app at runtime with no APK rebuild. See
+# GameDataLoader.kt on the app side for the JSON shape being produced here.
+
+_FEAT_SUBTYPE_TO_CATEGORY = {
+    "common feat": "Common", "origin feat": "Origin", "profession feat": "Profession",
+    "profession ability": "Profession Ability", "psy power": "Psy Power", "race feat": "Race",
+}
+_EQUIPMENT_SUBTYPE_TO_CATEGORY = {
+    "weapon": "Weapon", "armor": "Armor", "augment": "Augment",
+    "bio-augmentation": "Bio Augment", "drone": "Drone", "vehicle": "Vehicle", "husk": "Husk",
+}
+_CONTENT_PACK_KINDS = ("race", "profession", "feat", "item")
+
+
+def _pack_id(world_id: int, entity_id: int) -> str:
+    """Namespaced so a homebrew entity's id can never collide with a real
+    KnownIds.kt constant (all lowercase snake_case with no "custom_"
+    prefix) and accidentally trigger hardcoded race/feat logic it has no
+    business triggering."""
+    return f"custom_{world_id}_{entity_id}"
+
+
+def _sections_from_body(body: Optional[str]):
+    """Split a markdown body into (leading description, {heading: text})
+    by "## Heading" lines — the inverse of NeonDragonsEditor's own
+    _body_from_sections (data/nd_world_export.py), so content authored
+    there round-trips cleanly. A body that doesn't follow that convention
+    (e.g. entities authored directly in nd-world's own editor) lands
+    entirely under a single "Description" section instead of being lost."""
+    if not body or not body.strip():
+        return "", {}
+    parts = re.split(r"(?m)^##\s+(.+)$", body)
+    pre = parts[0].strip()
+    sections = {}
+    for i in range(1, len(parts), 2):
+        heading = parts[i].strip()
+        text = parts[i + 1].strip() if i + 1 < len(parts) else ""
+        if heading:
+            sections[heading] = text
+    if not sections:
+        return "", {"Description": body.strip()}
+    return pre, sections
+
+
+def _entity_to_pack_item(world_id: int, entity: Entity) -> dict:
+    """Every field the Kotlin Race/Profession/Feat/Equipment data classes
+    declare is included here, even when empty — plain Gson (no Kotlin
+    adapter, see GameDataParser.kt) ignores Kotlin default values for any
+    key missing from the JSON, leaving that field null at runtime despite
+    its non-nullable Kotlin type. Bundled assets/data/*.json already always
+    include every key for exactly this reason (extract_all_data.py); this
+    output must match that convention field-for-field."""
+    pre, sections = _sections_from_body(entity.body)
+    try:
+        custom_fields = json.loads(entity.custom_fields_json or "{}")
+    except Exception:
+        custom_fields = {}
+    bonuses = custom_fields.get("bonuses") if isinstance(custom_fields, dict) else None
+    if not isinstance(bonuses, dict):
+        bonuses = {}
+
+    item = {
+        "id": _pack_id(world_id, entity.id),
+        "name": entity.name,
+        "type": "",
+        "tags": entity.tags or "",
+        "description": entity.summary or pre,
+        "sections": sections,
+        "filepath": "",
+        "specialAttributes": [],
+        "bonuses": bonuses,
+        "image_url": entity.image_url or "",
+        "isCustom": True,
+    }
+
+    if entity.kind in ("race", "profession"):
+        item["tier"] = (entity.subtype or "standard").strip().lower()
+    elif entity.kind == "feat":
+        item["category"] = _FEAT_SUBTYPE_TO_CATEGORY.get((entity.subtype or "").strip().lower(), "Common")
+        item["rank"] = ""  # non-nullable in the Kotlin Feat class — must always be present, see docstring above
+        folder = entity.folder or ""
+        m = re.match(r"^Race Feats/([^/]+)/(.+)$", folder)
+        if m:
+            item["associatedRace"] = m.group(1)
+            item["rank"] = m.group(2)
+        else:
+            m = re.match(r"^Profession Feats/([^/]+)$", folder)
+            if m:
+                item["associatedProfession"] = m.group(1)
+    elif entity.kind == "item":
+        item["category"] = _EQUIPMENT_SUBTYPE_TO_CATEGORY.get((entity.subtype or "").strip().lower(), "Special")
+    return item
+
+
+def build_content_pack(db: Session, world_id: int) -> dict:
+    """A world's homebrew races/professions/feats/items, in the same JSON
+    shape as the app's bundled assets/data/*.json files — see
+    GameDataLoader.kt. Every "kind" bucket is returned even when empty so
+    the app's merge step can always iterate them uniformly."""
+    entities = db.query(Entity).filter(
+        Entity.world_id == world_id, Entity.kind.in_(_CONTENT_PACK_KINDS)
+    ).order_by(Entity.name).all()
+    pack = {"races": [], "professions": [], "feats": [], "items": []}
+    bucket_by_kind = {"race": "races", "profession": "professions", "feat": "feats", "item": "items"}
+    for e in entities:
+        pack[bucket_by_kind[e.kind]].append(_entity_to_pack_item(world_id, e))
+    return pack
 
 
 def _schematic_slugify(name: str, db: Session) -> str:
@@ -796,3 +910,20 @@ async def api_convert_images(request: Request, db: Session = Depends(get_db), ac
     results = convert_world_images(db, world, target_format, quality)
     converted = sum(1 for r in results if r["status"] == "ok")
     return {"converted": converted, "total": len(results), "results": results}
+
+
+@router.get("/api/worlds/{world_id}/content-pack")
+def api_content_pack(world_id: int, request: Request, db: Session = Depends(get_db)):
+    """A world's homebrew races/professions/feats/items, for NeonDragonsApp
+    to pull at runtime and merge alongside its bundled content — no APK
+    rebuild needed for anything expressible through the app's generic
+    bonus system. Same auth pattern as the character-sync endpoints
+    (POST /api/worlds/{id}/characters/sync): any member of the world, not
+    GM-only, since players are the intended audience here."""
+    user = _current_user(request)
+    if not user:
+        raise HTTPException(401)
+    world = db.query(World).filter(World.id == world_id).first()
+    if not world or not auth.user_can_access_world(db, user, world):
+        raise HTTPException(404)
+    return build_content_pack(db, world_id)

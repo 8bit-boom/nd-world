@@ -162,6 +162,8 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if re.match(r"^/api/worlds/\d+/characters/sync$", path):
         return True
+    if re.match(r"^/api/worlds/\d+/content-pack$", path):
+        return True
     if re.match(r"^/api/maps/schematic/[^/]+/move-token$", path):
         return True
     if re.match(r"^/api/maps/schematic/[^/]+/pickup-item$", path):
