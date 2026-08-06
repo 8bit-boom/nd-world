@@ -105,6 +105,10 @@
         <label for="swarmui-external-url">SwarmUI external URL (Image Studio iframe)</label>
         <input id="swarmui-external-url" name="swarmui_external_url" value="{{ settings.swarmui_external_url or '' }}" placeholder="{{ env_swarmui_external_url or 'not set' }}">
       </div>
+      <div class="form-group">
+        <label for="android-emulator-url">Android emulator URL (Android App iframe)</label>
+        <input id="android-emulator-url" name="android_emulator_url" value="{{ settings.android_emulator_url or '' }}" placeholder="{{ env_android_emulator_url or 'not set' }}">
+      </div>
       <div class="form-actions">
         <button type="submit" class="btn-primary">Save</button>
       </div>

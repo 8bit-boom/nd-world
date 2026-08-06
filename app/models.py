@@ -534,6 +534,9 @@ class AppSettings(Base):
     ollama_model = Column(String(256), default="")
     ollama_url = Column(String(512), default="")
     swarmui_external_url = Column(String(512), default="")
+    # Same idea as swarmui_external_url, for the embedded Android app viewer
+    # at /androidapp — see app.main's ANDROID_EMULATOR_URL and docs/DEPLOYMENT.md.
+    android_emulator_url = Column(String(512), default="")
     # Hover-a-link-for-N-seconds entity preview popup (base.html's global
     # mouseover handler + GET /api/entity/{id}/preview) — instance-wide like
     # everything else on this row, editable from Settings > Options.

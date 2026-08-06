@@ -141,6 +141,56 @@ door directly into your home network, which needs to be configured carefully.
 
 ---
 
+## Optional: embed NeonDragonsApp in the browser (self-hosted emulation)
+
+nd-world's `/androidapp` page can show the real NeonDragonsApp (the Android
+character sheet app) running live in the browser, via a self-hosted Android
+emulator — useful for a player who doesn't want to install the APK, or for
+demoing it at the table on a shared screen. This is a heavier, opt-in add-on,
+not something most installs need.
+
+**Before enabling this, check your hardware**: it needs an **x86_64** host
+with **`/dev/kvm`** available (check with `ls /dev/kvm` — without it the
+emulator still runs, but painfully slowly) and a few GB of free RAM on top
+of everything else you're running. It will **not** run acceptably on
+ARM-based NAS/SBC hardware (e.g. a Raspberry Pi, or ARM-based TrueNAS mini
+devices).
+
+**1. Enable the profile** — add `android` to `COMPOSE_PROFILES` in `.env`
+(comma-separated with any other profiles you're already running), then:
+```bash
+docker compose up -d
+```
+This starts an emulator + noVNC web viewer
+([budtmo/docker-android](https://github.com/budtmo/docker-android)) on port
+`6080`. Give it a couple of minutes on first boot — the emulator image is
+large and needs to fully start before the viewer shows anything.
+
+**2. Point nd-world at it** — log in as the GM, go to **Settings → System**,
+and set **Android emulator URL** to `http://<your-server>:6080` (same host
+you use to reach nd-world itself, just port `6080`). `/androidapp` now shows
+the live emulator in an iframe; leaving this blank keeps the page showing a
+"not configured" message instead, same as Image Studio does when SwarmUI
+isn't set up.
+
+**3. Install the app** — download the latest debug APK from CI (see the
+project's `CLAUDE.md` for the exact `gh run download` command), then:
+```bash
+bash scripts/android-provision.sh path/to/neon-dragons-debug.apk
+```
+Re-run this any time you want to push a newer build — it replaces the
+existing install in place. This step is manual by design: automating a pull
+from GitHub Actions would mean storing a GitHub token in your deployment for
+what's a nice-to-have feature, not the primary way players get the app.
+
+**Known limitation**: this is one shared emulator for the whole install, not
+a separate session per player — if two people open `/androidapp` at once,
+they're looking at (and controlling) the same Android session. Fine for a
+GM demoing something or a shared table device; not a substitute for players
+installing the app on their own phones.
+
+---
+
 ## Inviting players
 
 Once nd-world is reachable (locally or over the internet):

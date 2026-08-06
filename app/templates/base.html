@@ -73,6 +73,7 @@
     {% endif %}
     <a href="{{ '/rules'|wq }}" draggable="true" data-ql-ref="/rules"           class="nav-kind {% if request.url.path == '/rules' %}active{% endif %}">📖 Rules</a>
     <a href="{{ '/characters'|wq }}" draggable="true" data-ql-ref="/characters" class="nav-kind {% if request.url.path.startswith('/characters') %}active{% endif %}">🎲 Player Characters</a>
+    <a href="{{ '/androidapp'|wq }}" draggable="true" data-ql-ref="/androidapp" class="nav-kind {% if request.url.path == '/androidapp' %}active{% endif %}">📱 Android App</a>
     {% if world and request.state.user and not request.state.user.is_gm %}
     <a href="/worlds/{{ world.id }}/notes/{{ request.state.user.id }}"
        class="nav-kind {% if request.url.path.startswith('/worlds/'+world.id|string+'/notes/') %}active{% endif %}">🔒 My Notes</a>

@@ -385,6 +385,29 @@ def _normalize_pc_data(row: dict) -> dict:
     return out
 
 
+def _upsert_player_character(db: Session, world_id: int, row: dict) -> PlayerCharacter:
+    """Create a new PlayerCharacter, or update in place if one with this
+    exact name already exists in the world — mirrors app/main.py's legacy
+    entity-import upsert-by-name behavior (~line 3261), so re-running an
+    import (e.g. a GM re-exporting from NeonDragonsEditor after edits)
+    updates characters instead of piling up duplicates on every run."""
+    name = str(row.get("name") or "").strip()
+    pc = db.query(PlayerCharacter).filter(
+        PlayerCharacter.world_id == world_id, PlayerCharacter.name == name
+    ).first()
+    if not pc:
+        pc = PlayerCharacter(world_id=world_id, owner_user_id=None)
+        db.add(pc)
+    normalized = _normalize_pc_data(row)
+    resolved_tpl = _resolve_sheet_template(db, world_id, normalized.get("sheet_template_id"))
+    if resolved_tpl:
+        normalized["sheet_template_id"] = resolved_tpl
+    _apply_form(pc, normalized)
+    if row.get("portrait_url"):
+        pc.portrait_url = str(row["portrait_url"]).strip()
+    return pc
+
+
 def _resolve_sheet_template(db: Session, world_id: int, tpl_ref) -> Optional[str]:
     """id > slug > name fallback, mirroring _resolve_entity_template below —
     an AI-authored import file can't know this instance's real numeric
@@ -638,16 +661,7 @@ def execute_import(db: Session, world: World, kind: str, data, params: dict):
             if not isinstance(row, dict) or not str(row.get("name") or "").strip():
                 db.rollback()
                 return False, f'Character #{i + 1}: needs at least a "name"'
-            pc = PlayerCharacter(world_id=world.id, owner_user_id=None)
-            normalized = _normalize_pc_data(row)
-            resolved_tpl = _resolve_sheet_template(db, world.id, normalized.get("sheet_template_id"))
-            if resolved_tpl:
-                normalized["sheet_template_id"] = resolved_tpl
-            _apply_form(pc, normalized)
-            if row.get("portrait_url"):
-                pc.portrait_url = str(row["portrait_url"]).strip()
-            db.add(pc)
-            last = pc
+            last = _upsert_player_character(db, world.id, row)
         db.commit()
         db.refresh(last)
         return True, f"/characters/{last.id}" if len(data) == 1 else "/characters"
@@ -655,15 +669,7 @@ def execute_import(db: Session, world: World, kind: str, data, params: dict):
     if kind == "player_character":
         if not isinstance(data, dict) or not str(data.get("name") or "").strip():
             return False, 'Expected an object with at least a "name"'
-        pc = PlayerCharacter(world_id=world.id, owner_user_id=None)
-        normalized = _normalize_pc_data(data)
-        resolved_tpl = _resolve_sheet_template(db, world.id, normalized.get("sheet_template_id"))
-        if resolved_tpl:
-            normalized["sheet_template_id"] = resolved_tpl
-        _apply_form(pc, normalized)
-        if data.get("portrait_url"):
-            pc.portrait_url = str(data["portrait_url"]).strip()
-        db.add(pc)
+        pc = _upsert_player_character(db, world.id, data)
         db.commit()
         db.refresh(pc)
         return True, f"/characters/{pc.id}"

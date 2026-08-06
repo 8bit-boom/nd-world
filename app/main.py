@@ -61,6 +61,7 @@ _MAPS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "maps"
 # copies used to seed _MAPS_DIR on first boot, or when a new one is added.
 _BUNDLED_MAPS_DIR = Path(__file__).parent / "maps"
 SWARMUI_EXTERNAL_URL = os.getenv("SWARMUI_EXTERNAL_URL", "").rstrip("/")
+ANDROID_EMULATOR_URL = os.getenv("ANDROID_EMULATOR_URL", "").rstrip("/")
 
 app = FastAPI(title="N&D World")
 _allowed = [h.strip() for h in os.getenv("ND_ALLOWED_HOSTS", "*").split(",") if h.strip()]
@@ -169,7 +170,7 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if method != "GET":
         return False
-    if path in ("/", "/rules", "/search", "/maps", "/races", "/professions"):
+    if path in ("/", "/rules", "/search", "/maps", "/races", "/professions", "/androidapp"):
         return True
     if path.startswith("/kind/") or path.startswith("/uploads/"):
         return True
@@ -2156,6 +2157,17 @@ def imagestudio(request: Request, db: Session = Depends(get_db), active_world: s
         "swarmui_url": swarmui_url,
     })
 
+@app.get("/androidapp", response_class=HTMLResponse)
+def androidapp(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, worlds = get_world_ctx(request, db, active_world)
+    settings = get_app_settings(db)
+    android_url = (settings.android_emulator_url or ANDROID_EMULATOR_URL).rstrip("/")
+    return templates.TemplateResponse("androidapp.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "kinds": KINDS, "kind_icons": KIND_ICONS,
+        "android_url": android_url,
+    })
+
 def _settings_context(request: Request, db: Session, active_world: str, tab: str, system_error: str = None):
     world, worlds = get_world_ctx(request, db, active_world)
     settings = get_app_settings(db)
@@ -2166,6 +2178,7 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "env_ollama_model": _ai_module.OLLAMA_MODEL,
         "env_ollama_url": _ai_module.OLLAMA_URL,
         "env_swarmui_external_url": SWARMUI_EXTERNAL_URL,
+        "env_android_emulator_url": ANDROID_EMULATOR_URL,
         "system_error": system_error,
     }
 
@@ -2203,13 +2216,19 @@ def settings_system_save(
     ollama_model: str = Form(""),
     ollama_url: str = Form(""),
     swarmui_external_url: str = Form(""),
+    android_emulator_url: str = Form(""),
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
     ollama_model = ollama_model.strip()
     ollama_url = ollama_url.strip().rstrip("/")
     swarmui_external_url = swarmui_external_url.strip().rstrip("/")
-    for label, val in (("Ollama URL", ollama_url), ("SwarmUI external URL", swarmui_external_url)):
+    android_emulator_url = android_emulator_url.strip().rstrip("/")
+    for label, val in (
+        ("Ollama URL", ollama_url),
+        ("SwarmUI external URL", swarmui_external_url),
+        ("Android emulator URL", android_emulator_url),
+    ):
         if val and not (val.startswith("http://") or val.startswith("https://")):
             return templates.TemplateResponse(
                 "settings.html",
@@ -2221,6 +2240,7 @@ def settings_system_save(
     settings.ollama_model = ollama_model
     settings.ollama_url = ollama_url
     settings.swarmui_external_url = swarmui_external_url
+    settings.android_emulator_url = android_emulator_url
     db.commit()
     _refresh_settings_overrides(db)
     return RedirectResponse("/settings?tab=system", status_code=303)

@@ -699,3 +699,90 @@ def test_import_page_revokes_object_urls_on_rerender(client, seed):
     assert r.status_code == 200
     assert "revokeObjectURL" in r.text
     assert "imgObjectUrls" in r.text
+
+
+# ── player_character import: upsert-by-name, not always-create ─────────────
+# A GM re-running the same export (e.g. from NeonDragonsEditor, after tweaking
+# a character) should update the existing PlayerCharacter row, not pile up a
+# duplicate every time — the same expectation the legacy entity import
+# (app/main.py's POST /api/import) already has for races/feats/items.
+
+def test_player_character_import_creates_new(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = _import_execute(client, "player_character", {"name": "Nyla", "level": 3})
+    assert r.status_code == 200
+
+    db = SessionLocal()
+    try:
+        pcs = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == seed.world_a.id).all()
+        assert len(pcs) == 1
+        assert pcs[0].name == "Nyla"
+        assert pcs[0].level == 3
+        assert pcs[0].owner_user_id is None
+    finally:
+        db.close()
+
+
+def test_player_character_import_upserts_by_name_on_reexport(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r1 = _import_execute(client, "player_character", {"name": "Nyla", "level": 3})
+    assert r1.status_code == 200
+    r2 = _import_execute(client, "player_character", {"name": "Nyla", "level": 5, "backstory": "Updated"})
+    assert r2.status_code == 200
+
+    db = SessionLocal()
+    try:
+        pcs = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == seed.world_a.id).all()
+        assert len(pcs) == 1  # no duplicate
+        assert pcs[0].level == 5
+        assert pcs[0].backstory == "Updated"
+    finally:
+        db.close()
+
+
+def test_player_character_bulk_import_upserts_mixed_new_and_existing(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    _import_execute(client, "player_character_bulk", [{"name": "Nyla", "level": 1}])
+
+    r = _import_execute(client, "player_character_bulk", [
+        {"name": "Nyla", "level": 4},   # existing — updates in place
+        {"name": "Boro", "level": 1},   # new — created
+    ])
+    assert r.status_code == 200
+
+    db = SessionLocal()
+    try:
+        pcs = {pc.name: pc for pc in db.query(PlayerCharacter).filter(PlayerCharacter.world_id == seed.world_a.id).all()}
+        assert set(pcs) == {"Nyla", "Boro"}
+        assert pcs["Nyla"].level == 4
+        assert pcs["Boro"].level == 1
+    finally:
+        db.close()
+
+
+def test_player_character_import_upsert_scoped_to_world(client, seed):
+    """Two worlds can each have their own character named the same thing —
+    the upsert lookup must not cross world_id boundaries."""
+    db = SessionLocal()
+    try:
+        db.add(PlayerCharacter(world_id=seed.world_b.id, owner_user_id=None, name="Nyla", level=9))
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = _import_execute(client, "player_character", {"name": "Nyla", "level": 2})
+    assert r.status_code == 200
+
+    db = SessionLocal()
+    try:
+        world_a_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == seed.world_a.id).all()
+        world_b_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == seed.world_b.id).all()
+        assert len(world_a_pcs) == 1 and world_a_pcs[0].level == 2
+        assert len(world_b_pcs) == 1 and world_b_pcs[0].level == 9  # untouched
+    finally:
+        db.close()

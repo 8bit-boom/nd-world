@@ -20,6 +20,9 @@ services:
       IMAGEGEN_URL: http://swarmui:7801
       SWARMUI_EXTERNAL_URL: ""   # set to http://<your-host>:7801 to enable the Image Studio iframe
       SWARMUI_AC_DIR: /data/swarmui-ac  # shared volume → SwarmUI Data/Autocompletions
+      # Set to http://<your-host>:6080 to enable the embedded Android app
+      # iframe at /androidapp (see the "android" profile below).
+      ANDROID_EMULATOR_URL: ""
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: gemma4:26b   # change to whichever model you've pulled
       # Auth — see .env.example. GM_EMAIL/GM_PASSWORD bootstrap the one GM account;
@@ -76,6 +79,38 @@ services:
       SWARMUI_NETWORK_BIND_ADDRESS: "0.0.0.0"
       SWARMUI_NETWORK_PORT: "7801"
 
+  # Optional: embed the real NeonDragonsApp Android UI inside nd-world (see
+  # /androidapp) via a self-hosted emulator + noVNC web viewer, instead of
+  # requiring the APK to be installed on a player's own device. Only starts
+  # if the "android" profile is active — set COMPOSE_PROFILES=android (or
+  # add it to your existing list) in .env, or run
+  # `docker compose --profile android up -d`.
+  #
+  # Requirements this doesn't check for you: an x86_64 host, /dev/kvm
+  # available (huge performance difference without it — see
+  # docs/DEPLOYMENT.md), and a few GB of free RAM. Does NOT run acceptably
+  # on typical ARM-based NAS/SBC hardware.
+  #
+  # budtmo/docker-android bundles the emulator + a noVNC web viewer on port
+  # 6080 in one image, so there's no separate VNC/websocket bridge to wire
+  # up — see https://github.com/budtmo/docker-android for the full set of
+  # tunable EMULATOR_*/WEB_VNC env vars and device/API-level image tags.
+  android:
+    profiles: ["android"]
+    image: budtmo/docker-android:emulator_11.0
+    container_name: nd-world-android
+    restart: unless-stopped
+    privileged: true   # required by the image to run the emulator (KVM/binder access)
+    devices:
+      - /dev/kvm
+    ports:
+      - "${ANDROID_VNC_PORT:-6080}:6080"
+    environment:
+      EMULATOR_DEVICE: "Samsung Galaxy S10"
+      WEB_VNC: "true"
+    volumes:
+      - android-apk:/apk   # drop the CI-built debug APK here — see scripts/android-provision.sh
+
 volumes:
   nd-world-data:
     driver: local
@@ -88,4 +123,6 @@ volumes:
   swarmui-dlbackend:
     driver: local
   ollama-data:
+    driver: local
+  android-apk:
     driver: local

@@ -18,6 +18,9 @@ services:
       # Set to http://<truenas-ip>:7801 to enable the Image Studio iframe inside nd-world
       SWARMUI_EXTERNAL_URL: ""
       SWARMUI_AC_DIR: /data/swarmui-ac  # shared bind mount → SwarmUI Data/Autocompletions
+      # Set to http://<truenas-ip>:6080 to enable the embedded Android app
+      # iframe at /androidapp (see the "android" profile below).
+      ANDROID_EMULATOR_URL: ""
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: gemma4:26b   # change to whichever model you've pulled
       # Auth — see .env.example. GM_EMAIL/GM_PASSWORD bootstrap the one GM account;
@@ -85,6 +88,36 @@ services:
     #         - driver: nvidia
     #           count: all
     #           capabilities: [gpu]
+
+  # Optional: embed the real NeonDragonsApp Android UI inside nd-world (see
+  # /androidapp) via a self-hosted emulator + noVNC web viewer. Only starts
+  # if the "android" profile is active — set COMPOSE_PROFILES=android (or
+  # add it to your existing list), or run
+  # `docker compose -f truenas-compose.yml --profile android up -d`.
+  #
+  # Requirements this doesn't check for you: /dev/kvm available on the
+  # TrueNAS host (huge performance difference without it — see
+  # docs/DEPLOYMENT.md) and a few GB of free RAM. Does NOT run acceptably on
+  # ARM-based TrueNAS hardware.
+  android:
+    profiles: ["android"]
+    image: budtmo/docker-android:emulator_11.0
+    restart: unless-stopped
+    privileged: true   # required by the image to run the emulator (KVM/binder access)
+    devices:
+      - /dev/kvm
+    ports:
+      - "6080:6080"
+    environment:
+      EMULATOR_DEVICE: "Samsung Galaxy S10"
+      WEB_VNC: "true"
+    volumes:
+      - /mnt/DeadPool/apps/nd-world-android/apk:/apk   # drop the CI-built debug APK here — see scripts/android-provision.sh
+    labels:
+      net.ix-portals.android.scheme: "http"
+      net.ix-portals.android.port: "6080"
+      net.ix-portals.android.path: "/"
+      net.ix-portals.android.host: ""
 
   watchtower:
     image: containrrr/watchtower

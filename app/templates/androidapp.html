@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}Android App — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<style>
+.androidapp-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.androidapp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .6rem;
+}
+.androidapp-header h1 {
+  font-size: 1.3rem;
+  letter-spacing: .12em;
+  color: var(--neon);
+}
+.androidapp-actions {
+  display: flex;
+  gap: .6rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.btn-open-tab {
+  padding: .4rem .9rem;
+  border: 1px solid var(--neon);
+  color: var(--neon);
+  border-radius: 2px;
+  font-size: .82rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.btn-open-tab:hover { background: var(--neon); color: #000; text-decoration: none; }
+
+/* iframe container */
+.androidapp-frame-wrap {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+.androidapp-frame {
+  width: 100%;
+  height: calc(100vh - 130px);
+  border: none;
+  display: block;
+  min-height: 500px;
+}
+
+/* setup / not-configured card */
+.androidapp-setup {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2rem;
+  max-width: 700px;
+}
+.androidapp-setup h2 { color: var(--neon); margin-bottom: 1rem; font-size: 1rem; }
+.androidapp-setup p { color: var(--text-dim); font-size: .88rem; line-height: 1.7; margin-bottom: .8rem; }
+.androidapp-setup code {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  padding: .1rem .4rem;
+  border-radius: 2px;
+  font-size: .85rem;
+  color: var(--neon3);
+}
+.androidapp-setup pre {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1rem;
+  font-size: .82rem;
+  overflow-x: auto;
+  margin: .6rem 0 1rem;
+  color: var(--text);
+}
+.androidapp-links { display: flex; gap: .8rem; flex-wrap: wrap; margin-top: 1.2rem; }
+
+/* mobile notice — hidden on desktop, shown on mobile */
+.androidapp-mobile-notice {
+  display: none;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1.2rem 1rem;
+  text-align: center;
+}
+.androidapp-mobile-notice p { color: var(--text-dim); font-size: .88rem; margin-bottom: .8rem; }
+.androidapp-mobile-notice a { color: var(--neon); }
+
+@media (max-width: 768px) {
+  .androidapp-frame-wrap { display: none; }
+  .androidapp-mobile-notice { display: block; }
+  .androidapp-frame { display: none; }
+}
+</style>
+
+<div class="androidapp-wrap">
+  <div class="androidapp-header">
+    <h1>📱 Android App</h1>
+    <div class="androidapp-actions">
+      {% if android_url %}
+      <a href="{{ android_url }}" target="_blank" rel="noopener" class="btn-open-tab">↗ Open in new tab</a>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if android_url %}
+    {# Desktop: full iframe embed of the live emulator's noVNC viewer #}
+    <div class="androidapp-frame-wrap">
+      <iframe
+        class="androidapp-frame"
+        src="{{ android_url }}"
+        title="NeonDragonsApp (Android emulator)"
+        allow="clipboard-read; clipboard-write"
+        loading="lazy"
+      ></iframe>
+    </div>
+
+    {# Mobile: notice with link — a remote Android session inside a small phone browser isn't useful #}
+    <div class="androidapp-mobile-notice">
+      <p>The embedded Android app is meant for desktop browsers. On mobile, just install NeonDragonsApp directly instead.</p>
+      <a href="{{ android_url }}" target="_blank" rel="noopener" class="btn-open-tab">Open in browser ↗</a>
+    </div>
+
+  {% else %}
+    <div class="androidapp-setup">
+      <h2>Android emulator not configured</h2>
+      <p>This page can embed a live, self-hosted Android session running the real NeonDragonsApp, so it can be opened from a browser with nothing installed. It's an optional, resource-heavy add-on — see <code>docs/DEPLOYMENT.md</code> for host requirements before enabling it.</p>
+      <p>To enable it: start the <code>android</code> Compose profile, then set the <code>ANDROID_EMULATOR_URL</code> environment variable (or the field below) to the public URL of its noVNC viewer:</p>
+      <pre>ANDROID_EMULATOR_URL=http://&lt;your-server-ip&gt;:6080</pre>
+      <p>For TrueNAS, edit <code>truenas-compose.yml</code> and set the value under the <code>world</code> service's <code>environment</code> section, then redeploy. This can also be set per-instance under Settings → System, which takes priority over the environment variable.</p>
+      <div class="androidapp-links">
+        <a href="{{ '/settings?tab=system'|wq }}" class="btn-open-tab">⚙ Settings</a>
+      </div>
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
