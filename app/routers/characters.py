@@ -1236,7 +1236,12 @@ def api_me(request: Request, db: Session = Depends(get_db)):
     world_list = []
     for w in worlds:
         pc = _own_character(db, w.id, user.id)
-        world_list.append({"id": w.id, "name": w.name, "character_id": pc.id if pc else None})
+        # slug lets a caller select this world via the ?w=<slug> query param
+        # (see deps.resolve_world_slug) on any world-scoped endpoint, e.g.
+        # /api/import/execute — added for NeonDragonsEditor's export flow.
+        # Additive only: existing clients (NeonDragonsApp's Gson-based
+        # MeWorldDto) simply ignore JSON fields they don't declare.
+        world_list.append({"id": w.id, "name": w.name, "slug": w.slug, "character_id": pc.id if pc else None})
     return {
         "user": {"id": user.id, "email": user.email, "is_gm": user.is_gm},
         "worlds": world_list,

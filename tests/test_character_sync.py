@@ -97,6 +97,7 @@ def test_api_me_reflects_membership_and_character(client, seed):
 
     world_a_entry = next(w for w in body["worlds"] if w["id"] == seed.world_a.id)
     assert world_a_entry["character_id"] is None
+    assert world_a_entry["slug"] == seed.world_a.slug
 
     pc = _make_pc(seed.world_a, owner_id=seed.player_a.id)
     r2 = client.get("/api/me")
