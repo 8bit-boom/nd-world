@@ -1220,14 +1220,26 @@ async def save_map_overlay(slug: str, request: Request, db: Session = Depends(ge
     db.commit()
     return {"ok": True}
 
+_RULES_LEGACY_ANCHOR_RE = re.compile(r'<a\s+name="[^"]*">\s*</a>', re.IGNORECASE)
+
+
 def _world_rules_markdown(world) -> str:
     """This world's own rules if the GM has set any, else the bundled N&D
     core rules — so a world running a different system doesn't show N&D's
     stats/feats/psionics by default."""
     if world and (world.rules_md or "").strip():
-        return world.rules_md
-    rules_path = Path(__file__).parent / "core_rules.md"
-    return rules_path.read_text(encoding="utf-8", errors="ignore") if rules_path.exists() else ""
+        md = world.rules_md
+    else:
+        rules_path = Path(__file__).parent / "core_rules.md"
+        md = rules_path.read_text(encoding="utf-8", errors="ignore") if rules_path.exists() else ""
+    # Docs exported from Word/Google Docs often carry a raw <a name="..."></a>
+    # anchor on every heading for their own in-document TOC links. render_md()
+    # HTML-escapes raw tags (a stored-XSS guard for user-typed entity content),
+    # which turns these into visible "&lt;a name=...&gt;" text instead of an
+    # invisible anchor — and since _rules_toc() below already generates its
+    # own heading ids, these legacy anchors are redundant. Strip them here
+    # rather than weakening the shared renderer's escaping for everyone.
+    return _RULES_LEGACY_ANCHOR_RE.sub("", md)
 
 
 @app.get("/rules", response_class=HTMLResponse)
