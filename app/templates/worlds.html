@@ -25,6 +25,7 @@
         <div class="world-actions">
           <a href="/worlds/switch/{{ w.slug }}" class="btn-edit" style="font-size:.75rem">Switch</a>
           <a href="/worlds/{{ w.id }}/export" class="btn-export" title="Export world to JSON">⬇ Export</a>
+          <a href="/worlds/{{ w.id }}/export/split" class="btn-edit" style="font-size:.75rem" title="Export rules, characters, templates, and content by kind as separate files">⬇ Export (separate files)</a>
           {% if worlds|length > 1 %}
           <form action="/worlds/{{ w.id }}/delete" method="post"
                 onsubmit="return confirm('Delete world {{ w.name }} and ALL its entries?')">

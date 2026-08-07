@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Export — {{ export_world.name }}{% endblock %}
+{% block content %}
+<div class="form-page" style="max-width:820px">
+  <h1>📤 Export — {{ export_world.name }}</h1>
+  <p style="color:var(--text-dim);font-size:.85rem;margin:.3rem 0 1.25rem">
+    Download this world's content as separate JSON files — each one re-imports on its own via
+    the <a href="{{ '/import'|wq }}">Import</a> page. Need everything at once instead (e.g. for a
+    full backup)? Use <a href="/worlds/{{ export_world.id }}/export">the combined export</a>.
+  </p>
+
+  <div class="export-section">
+    <h2>Rules</h2>
+    {% if has_rules %}
+    <a href="/worlds/{{ export_world.id }}/export/rules.json" class="export-item">
+      <span>📖 {{ export_world.name }} Rules</span>
+      <span class="export-download">⬇ rules.json</span>
+    </a>
+    {% else %}
+    <p class="export-empty">No custom rules set for this world — nothing to export here.</p>
+    {% endif %}
+  </div>
+
+  <div class="export-section">
+    <h2>Player Characters</h2>
+    {% if pc_count %}
+    <a href="/worlds/{{ export_world.id }}/export/player-characters.json" class="export-item">
+      <span>🧑 Player Characters</span>
+      <span class="export-count">{{ pc_count }}</span>
+      <span class="export-download">⬇ player-characters.json</span>
+    </a>
+    {% else %}
+    <p class="export-empty">No player characters in this world yet.</p>
+    {% endif %}
+  </div>
+
+  <div class="export-section">
+    <h2>Character Templates</h2>
+    {% if custom_templates %}
+    {% for t in custom_templates %}
+    <a href="/worlds/{{ export_world.id }}/export/templates/{{ t.id }}.json" class="export-item">
+      <span>🗂 {{ t.name }}</span>
+      <span class="export-download">⬇ sheet-template-{{ t.slug }}.json</span>
+    </a>
+    {% endfor %}
+    {% else %}
+    <p class="export-empty">No custom character templates for this world — only built-in templates
+      (Neon &amp; Dragons — Default, Asterion), which every install already has and don't need exporting.</p>
+    {% endif %}
+  </div>
+
+  <div class="export-section">
+    <h2>Content by kind</h2>
+    <p style="color:var(--text-dim);font-size:.8rem;margin:0 0 .6rem">Races, professions, feats, items, notes,
+      characters (NPCs), locations, organizations, creatures, and events — one file per kind.</p>
+    {% for k, count in kind_counts.items() %}
+      {% if count %}
+      <a href="/worlds/{{ export_world.id }}/export/entities/{{ k }}.json" class="export-item">
+        <span>{{ kind_icons.get(k, '•') }} {{ k|capitalize }}</span>
+        <span class="export-count">{{ count }}</span>
+        <span class="export-download">⬇ {{ k }}.json</span>
+      </a>
+      {% else %}
+      <div class="export-item export-item-empty">
+        <span>{{ kind_icons.get(k, '•') }} {{ k|capitalize }}</span>
+        <span class="export-count">0</span>
+      </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+</div>
+
+<style>
+.export-section { margin-bottom: 1.5rem; }
+.export-section h2 { font-size: .9rem; color: var(--text-dim); margin: 0 0 .5rem; text-transform: uppercase; letter-spacing: .04em; }
+.export-item {
+  display: flex; align-items: center; gap: .6rem; justify-content: space-between;
+  padding: .6rem .8rem; margin-bottom: .4rem; background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 6px; text-decoration: none; color: var(--text); font-size: .88rem; flex-wrap: wrap;
+}
+.export-item:hover { border-color: var(--neon); }
+.export-item-empty { opacity: .5; }
+.export-count { color: var(--text-dim); font-size: .78rem; background: var(--bg3); border-radius: 10px; padding: .1rem .55rem; }
+.export-download { color: var(--neon); font-size: .78rem; white-space: nowrap; }
+.export-empty { color: var(--text-dim); font-size: .82rem; margin: 0 0 .6rem; }
+@media (max-width: 600px) {
+  .export-item { flex-direction: column; align-items: flex-start; gap: .25rem; }
+}
+</style>
+{% endblock %}
