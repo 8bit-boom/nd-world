@@ -52,6 +52,18 @@ class World(Base):
     # only shown to players if both its own visible_to_players and its
     # parent section's are true.
     home_sections_json = Column(Text, default="[]")
+    # GM-defined custom entity categories on top of the fixed built-ins in
+    # app/constants.py's KINDS — each gets its own nav tab and home stat
+    # tile, exactly like a built-in kind. Ordered list, array order IS
+    # display order:
+    # [{id, label, icon, subtypes: [str,...], created_at}, ...].
+    # `id` is permanent once created (renaming only changes label/icon/
+    # subtypes) and always "custom_" + a slugified label (see
+    # app/deps.py's CUSTOM_KIND_PREFIX), so it can never collide with a
+    # built-in kind added by a future app update. See app/deps.py's
+    # effective_kinds()/load_custom_kinds() for parsing/merging and
+    # app/routers/kinds_admin.py for validation on write.
+    custom_kinds_json = Column(Text, default="[]")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     entities = relationship("Entity", back_populates="world", cascade="all, delete-orphan")

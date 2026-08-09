@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Manage Kinds — {{ edit_world.name }}{% endblock %}
+{% block content %}
+<div class="form-page">
+  <h1>🏷 Manage Kinds — {{ edit_world.name }}</h1>
+  <p style="color:var(--text-dim);font-size:.85rem;margin:.3rem 0 1rem">
+    Custom content categories for this world, on top of the built-in ones (Character, Location,
+    Race, Profession, ...). Each one gets its own tab in the top nav and its own live-count card
+    on the <a href="/">home page</a>, and entities can be filed under it just like any built-in
+    kind. Up to {{ max_custom_kinds }} per world.
+  </p>
+  {% if request.query_params.get('saved') %}
+  <p style="background:var(--bg2);border:1px solid var(--neon);border-radius:4px;padding:.5rem .8rem;font-size:.8rem;color:var(--neon);margin-bottom:1rem">Saved.</p>
+  {% endif %}
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1.25rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">+ Add Kind</h2>
+    <form method="post" action="/worlds/{{ edit_world.id }}/kinds/new" class="kind-add-form">
+      <input type="text" name="label" placeholder="Label (e.g. Vehicles)" maxlength="40" required/>
+      <input type="text" name="icon" placeholder="🔗" maxlength="8"/>
+      <input type="text" name="subtypes" placeholder="Subtype suggestions, comma-separated (optional)"/>
+      <button type="submit" class="btn-save">Add</button>
+    </form>
+  </div>
+
+  <form method="post" action="/worlds/{{ edit_world.id }}/kinds/edit" id="kinds-form">
+    <div id="kinds-list"></div>
+    <input type="hidden" name="custom_kinds_json" id="kinds-json-input"/>
+    {% if initial_kinds %}
+    <div class="form-actions">
+      <button type="submit" class="btn-save">Save</button>
+      <a href="/" class="btn-cancel">Cancel</a>
+    </div>
+    {% endif %}
+  </form>
+  {% if not initial_kinds %}
+  <p style="color:var(--text-dim);font-size:.82rem">No custom kinds yet — add one above.</p>
+  {% endif %}
+</div>
+
+<style>
+.kind-add-form { display:flex; gap:.5rem; flex-wrap:wrap; }
+.kind-add-form input { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.4rem .6rem; font-family:var(--font); font-size:.85rem; border-radius:3px; }
+.kind-add-form input[name="label"] { flex:1; min-width:160px; }
+.kind-add-form input[name="icon"] { width:70px; }
+.kind-add-form input[name="subtypes"] { flex:2; min-width:200px; }
+.kind-row { display:grid; grid-template-columns:1fr 70px 1.5fr auto auto auto; gap:.5rem; align-items:center; background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.5rem .6rem; margin-bottom:.4rem; }
+.kind-row input { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.35rem .55rem; font-family:var(--font); font-size:.8rem; border-radius:3px; width:100%; box-sizing:border-box; }
+.kind-icon-btn { background:none; border:1px solid var(--border); color:var(--text-dim); font-size:.85rem; cursor:pointer; padding:.25rem .5rem; border-radius:3px; line-height:1; }
+.kind-icon-btn:hover { border-color:var(--neon); color:var(--neon); }
+.kind-icon-btn.danger:hover { border-color:#c44; color:#c44; }
+@media (max-width:700px) {
+  .kind-row { grid-template-columns:1fr; }
+}
+</style>
+
+<script>
+let _kinds = {{ initial_kinds | tojson }};
+
+function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+function renderRow(k, i) {
+  return `
+    <div class="kind-row">
+      <input type="text" value="${esc(k.label)}" placeholder="Label" oninput="updateKind(${i},'label',this.value)"/>
+      <input type="text" value="${esc(k.icon)}" placeholder="🔗" maxlength="8" oninput="updateKind(${i},'icon',this.value)"/>
+      <input type="text" value="${esc((k.subtypes||[]).join(', '))}" placeholder="Subtype suggestions" oninput="updateKindSubtypes(${i},this.value)"/>
+      <button type="button" class="kind-icon-btn" onclick="moveKind(${i},-1)" title="Move up">▲</button>
+      <button type="button" class="kind-icon-btn" onclick="moveKind(${i},1)" title="Move down">▼</button>
+      <button type="submit" class="kind-icon-btn danger" formaction="/worlds/{{ edit_world.id }}/kinds/${encodeURIComponent(k.id)}/delete" formmethod="post"
+        onclick="return confirm('Delete kind \\'' + ${JSON.stringify(k.label)} + '\\'? This only works if no entities use it yet.')" title="Delete">✕</button>
+    </div>
+  `;
+}
+
+function renderAll() {
+  document.getElementById('kinds-list').innerHTML = _kinds.map(renderRow).join('');
+  syncHidden();
+}
+
+function updateKind(i, key, val) { _kinds[i][key] = val; syncHidden(); }
+function updateKindSubtypes(i, val) {
+  _kinds[i].subtypes = val.split(',').map(s => s.trim()).filter(Boolean);
+  syncHidden();
+}
+function moveKind(i, dir) {
+  const j = i + dir;
+  if (j < 0 || j >= _kinds.length) return;
+  [_kinds[i], _kinds[j]] = [_kinds[j], _kinds[i]];
+  renderAll();
+}
+
+function syncHidden() {
+  document.getElementById('kinds-json-input').value = JSON.stringify(_kinds);
+}
+
+const kindsForm = document.getElementById('kinds-form');
+if (kindsForm) kindsForm.addEventListener('submit', syncHidden);
+renderAll();
+</script>
+{% endblock %}

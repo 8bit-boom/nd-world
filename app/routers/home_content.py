@@ -18,7 +18,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from ..constants import KINDS
+from .. import deps
 from ..database import get_db
 from ..deps import get_world_ctx
 from ..models import Entity, GameSession, InvestBoard, Quest, Schematic, World
@@ -50,7 +50,7 @@ def _world_maps(world_id: int) -> list[tuple[str, str]]:
     return out
 
 
-def _sanitize_link(raw) -> Optional[dict]:
+def _sanitize_link(raw, kinds) -> Optional[dict]:
     if not isinstance(raw, dict):
         return None
     label = str(raw.get("label", "")).strip()[:200]
@@ -65,7 +65,7 @@ def _sanitize_link(raw) -> Optional[dict]:
         # this app has no CSRF/output-sanitization layer to lean on elsewhere,
         # and this href is rendered directly for players to click.
         return None
-    if target_type == "kind" and target_ref not in KINDS:
+    if target_type == "kind" and target_ref not in kinds:
         return None
     return {
         "label": label,
@@ -76,7 +76,7 @@ def _sanitize_link(raw) -> Optional[dict]:
     }
 
 
-def _sanitize_sections(raw_json: str) -> list[dict]:
+def _sanitize_sections(raw_json: str, kinds) -> list[dict]:
     try:
         data = json.loads(raw_json or "[]")
     except Exception:
@@ -89,7 +89,7 @@ def _sanitize_sections(raw_json: str) -> list[dict]:
             continue
         name = str(sec.get("name", "")).strip()[:100] or "Untitled"
         raw_links = sec.get("links") or []
-        links = [l for l in (_sanitize_link(x) for x in raw_links[:_MAX_LINKS_PER_SECTION]) if l]
+        links = [l for l in (_sanitize_link(x, kinds) for x in raw_links[:_MAX_LINKS_PER_SECTION]) if l]
         out.append({
             "name": name,
             "visible_to_players": bool(sec.get("visible_to_players", True)),
@@ -104,13 +104,14 @@ def world_home_edit_form(world_id: int, request: Request, db: Session = Depends(
     if not w:
         raise HTTPException(404)
     world, worlds = get_world_ctx(request, db, active_world)
-    sections = _sanitize_sections(w.home_sections_json)
+    world_kinds = deps.effective_kinds(w)[0]
+    sections = _sanitize_sections(w.home_sections_json, world_kinds)
     if not sections:
         sections = [{"name": "Quick Links", "visible_to_players": True, "links": []}]
     return templates.TemplateResponse("home_edit.html", {
         "request": request, "world": world, "worlds": worlds, "edit_world": w,
         "initial_sections": sections,
-        "kinds": KINDS,
+        "kinds": world_kinds,
         "entities": db.query(Entity).filter(Entity.world_id == w.id).order_by(Entity.name).all(),
         "sessions": db.query(GameSession).filter(GameSession.world_id == w.id).order_by(GameSession.session_num).all(),
         "quests": db.query(Quest).filter(Quest.world_id == w.id).order_by(Quest.title).all(),
@@ -127,7 +128,9 @@ async def world_home_edit_post(world_id: int, request: Request, db: Session = De
         raise HTTPException(404)
     form = await request.form()
     w.home_welcome_md = str(form.get("home_welcome_md", "")).strip() or None
-    w.home_sections_json = json.dumps(_sanitize_sections(str(form.get("home_sections_json", "[]") or "[]")))
+    w.home_sections_json = json.dumps(_sanitize_sections(
+        str(form.get("home_sections_json", "[]") or "[]"), deps.effective_kinds(w)[0],
+    ))
     db.commit()
     return RedirectResponse("/", status_code=303)
 
@@ -147,16 +150,17 @@ async def world_home_quick_link(world_id: int, request: Request, db: Session = D
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(400, "Invalid payload")
+    world_kinds = deps.effective_kinds(w)[0]
     link = _sanitize_link({
         "label": payload.get("label", ""),
         "icon": "",
         "target_type": payload.get("target_type", ""),
         "target_ref": payload.get("target_ref", ""),
         "visible_to_players": True,
-    })
+    }, world_kinds)
     if not link:
         raise HTTPException(400, "Invalid link")
-    sections = _sanitize_sections(w.home_sections_json)
+    sections = _sanitize_sections(w.home_sections_json, world_kinds)
     idx = payload.get("section_index")
     if not isinstance(idx, int) or not (0 <= idx < len(sections)):
         if not sections:

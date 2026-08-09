@@ -13,14 +13,49 @@ import json
 from pathlib import Path
 
 import jinja2
+from fastapi import Request
 from fastapi.templating import Jinja2Templates
 
 from . import deps
 from .constants import KIND_ICONS, KINDS, SUBTYPES
+from .database import SessionLocal
 from .rendering import body_summary, entry_text, parse_stats, render_md, strip_md
 
+# Duplicated from main.py's DEFAULT_WORLD_COOKIE — same rationale as this
+# file's own docstring: importing from main.py here would be circular.
+_ACTIVE_WORLD_COOKIE = "active_world"
+
+
+def _kinds_context_processor(request: Request) -> dict:
+    """Makes every `{% for k in kinds %}` / `kind_icons[k]` template
+    (base.html's nav, index.html's home stat grid, entity forms, etc.)
+    world-scoped for GM-defined custom kinds (see deps.effective_kinds),
+    with zero changes to those templates: Starlette's TemplateResponse
+    applies context processors *after* a route's own context dict, so this
+    silently overrides the "kinds"/"kind_icons"/"subtypes" a handler may
+    or may not have already set (harmless either way, and cheaper than
+    threading world-awareness through the ~20 call sites that pass these
+    explicitly today).
+
+    One extra small World lookup per request — same per-request cost
+    profile as auth_gate's own independent SessionLocal() user lookup."""
+    db = SessionLocal()
+    try:
+        world, _ = deps.get_world_ctx(request, db, request.cookies.get(_ACTIVE_WORLD_COOKIE))
+        kinds, kind_icons = deps.effective_kinds(world)
+        return {"kinds": kinds, "kind_icons": kind_icons, "subtypes": deps.effective_subtypes(world)}
+    finally:
+        db.close()
+
+
 BASE_DIR = Path(__file__).parent.parent
-templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
+templates = Jinja2Templates(
+    directory=str(BASE_DIR / "app" / "templates"),
+    context_processors=[_kinds_context_processor],
+)
+# Last-resort default for the (nonexistent today) case of a template
+# rendered outside any request — real renders get the per-world merged
+# values from the context processor above.
 templates.env.globals.update(kinds=KINDS, subtypes=SUBTYPES, kind_icons=KIND_ICONS)
 templates.env.filters["md"] = render_md
 templates.env.filters["strip_md"] = strip_md

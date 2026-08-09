@@ -21,6 +21,7 @@ import base64
 import io
 from pathlib import Path
 
+from . import deps
 from .database import init_db, get_db, SessionLocal, get_app_settings
 from .deps import get_world_ctx, resolve_world_slug, with_world
 from .imaging import convert_image
@@ -47,6 +48,7 @@ from .routers.boards_generate import router as boards_generate_router
 from .routers.handouts import router as handouts_router
 from .routers.home_content import router as home_content_router
 from .routers.export import router as export_router
+from .routers.kinds_admin import router as kinds_admin_router
 from . import ai as _ai_module
 from . import auth as _auth
 from .constants import KINDS, SUBTYPES, KIND_ICONS
@@ -86,6 +88,7 @@ app.include_router(boards_generate_router)
 app.include_router(handouts_router)
 app.include_router(home_content_router)
 app.include_router(export_router)
+app.include_router(kinds_admin_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 
@@ -321,16 +324,20 @@ def _filter_visible_entities(q, request: Request):
     return q
 
 
-def _kind_counts(db: Session, world_id: int, request: Request) -> dict:
+def _kind_counts(db: Session, world: Optional[World], request: Request) -> dict:
     """Entity count per kind for one world, as a single GROUP BY query instead
     of one COUNT(*) per kind (the homepage and /ai page both used to run 8
-    separate queries — one per KINDS entry — to build this same dict)."""
+    separate queries — one per KINDS entry — to build this same dict).
+    Seeds every kind (including this world's custom ones) at 0 so a
+    freshly-added custom kind's home stat tile shows "0" immediately
+    instead of being absent from the dict."""
+    world_id = world.id if world else None
     q = _filter_visible_entities(
         db.query(Entity.kind, func.count(Entity.id)).filter(Entity.world_id == world_id),
         request,
     )
     rows = q.group_by(Entity.kind).all()
-    counts = {k: 0 for k in KINDS}
+    counts = {k: 0 for k in deps.effective_kinds(world)[0]}
     counts.update({k: c for k, c in rows})
     return counts
 
@@ -829,7 +836,7 @@ def _resolve_home_link_href(db: Session, world: World, link: dict, is_gm: bool) 
         data = _map_data(jf) if jf.exists() else None
         return f"/maps/{ref}" if data and data.get("world_id", 1) == world.id else None
     if target_type == "kind":
-        return f"/kind/{ref}" if ref in KINDS else None
+        return f"/kind/{ref}" if ref in deps.effective_kinds(world)[0] else None
     if target_type == "url":
         if ref.startswith("http://") or ref.startswith("https://") or ref.startswith("/"):
             return ref
@@ -882,7 +889,7 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
     world = get_active_world(request, db, active_world)
     if not world:
         return RedirectResponse("/worlds")
-    counts = _kind_counts(db, world.id, request)
+    counts = _kind_counts(db, world, request)
     recent = _filter_visible_entities(db.query(Entity).filter(Entity.world_id == world.id), request).order_by(Entity.updated_at.desc()).limit(8).all()
     worlds = _visible_worlds(request, db)
     # collect a few maps for the homepage preview
@@ -2147,7 +2154,7 @@ def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: 
         "lore, NPC backstories, plot hooks, and creative writing. Be vivid and immersive."
     )
     if world:
-        entity_counts = _kind_counts(db, world.id, request)
+        entity_counts = _kind_counts(db, world, request)
         counts_str = ", ".join(f"{v} {k}s" for k, v in entity_counts.items() if v > 0)
         world_system = (
             f"You are a creative world-building AI assistant for '{world.name}', "
@@ -2439,8 +2446,9 @@ def world_export_book(request: Request, db: Session = Depends(get_db), active_wo
     rules_md = _world_rules_markdown(world)
     rules_html = render_md(rules_md) if rules_md else ""
 
+    export_kinds, export_kind_icons = deps.effective_kinds(world)
     html = templates.env.get_template("world_export.html").render(
-        world=world, worlds=worlds, kinds=KINDS, kind_icons=KIND_ICONS,
+        world=world, worlds=worlds, kinds=export_kinds, kind_icons=export_kind_icons,
         entities_by_kind=entities_by_kind, boards=boards_export,
         maps=maps_export, rules_html=rules_html,
         export_date=date.today().isoformat(),
@@ -2691,11 +2699,12 @@ def entity_preview(entity_id: int, request: Request, db: Session = Depends(get_d
     _entity_view_gate, just returning a small JSON summary instead of the
     whole rendered page."""
     entity = _entity_view_gate(db, request, entity_id)
+    ent_world = db.get(World, entity.world_id) if entity.world_id else None
     return {
         "id": entity.id,
         "name": entity.name,
         "kind": entity.kind,
-        "kind_icon": KIND_ICONS.get(entity.kind, ""),
+        "kind_icon": deps.effective_kinds(ent_world)[1].get(entity.kind, ""),
         "subtype": entity.subtype,
         "summary": entity.summary,
         "image_url": entity.image_url,
@@ -2784,7 +2793,7 @@ async def entity_template_create(request: Request, db: Session = Depends(get_db)
     name = str(form.get("name", "")).strip() or "Unnamed Template"
     desc = str(form.get("description", "")).strip()
     kind = str(form.get("kind", "")).strip() or None
-    if kind not in KINDS:
+    if kind not in deps.effective_kinds(world)[0]:
         kind = None
     raw_fields = str(form.get("fields_json", "[]") or "[]")
     try:
@@ -2830,7 +2839,8 @@ async def entity_template_update(tpl_id: int, request: Request, db: Session = De
         tpl.name = str(form.get("name", tpl.name)).strip() or tpl.name
         tpl.description = str(form.get("description", "")).strip()
         kind = str(form.get("kind", "")).strip() or None
-        tpl.kind = kind if kind in KINDS else None
+        tpl_world = db.get(World, tpl.world_id) if tpl.world_id else None
+        tpl.kind = kind if kind in deps.effective_kinds(tpl_world)[0] else None
     raw_fields = str(form.get("fields_json", "[]") or "[]")
     try:
         json.loads(raw_fields)
@@ -3281,8 +3291,10 @@ def api_import(payload: dict, db: Session = Depends(get_db)):
         world_id = int(payload.get("world_id", 1))
     except (TypeError, ValueError):
         raise HTTPException(400, "world_id must be a number")
-    if not db.query(World).filter(World.id == world_id).first():
+    world = db.query(World).filter(World.id == world_id).first()
+    if not world:
         raise HTTPException(400, f"World {world_id} does not exist")
+    legacy_kinds = deps.effective_kinds(world)[0]
 
     items = payload.get("entities", [])
     if not isinstance(items, list):
@@ -3294,8 +3306,8 @@ def api_import(payload: dict, db: Session = Depends(get_db)):
             raise HTTPException(400, f"Item #{i + 1}: not an object")
         name = str(item.get("name") or "").strip()
         kind = item.get("kind")
-        if not name or kind not in KINDS:
-            raise HTTPException(400, f'Item #{i + 1}: needs "kind" (one of {", ".join(KINDS)}) and a non-empty "name"')
+        if not name or kind not in legacy_kinds:
+            raise HTTPException(400, f'Item #{i + 1}: needs "kind" (one of {", ".join(legacy_kinds)}) and a non-empty "name"')
 
     created = 0
     for item in items:

@@ -11,7 +11,7 @@ from sqlalchemy import or_, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
-from .. import auth
+from .. import auth, deps
 from ..constants import KINDS, ND_DEFAULT_CURRENCY, ND_DEFAULT_STATS
 from ..database import get_db
 from ..deps import get_world_ctx
@@ -338,8 +338,10 @@ def _looks_like_fields(lst) -> bool:
     )
 
 
-def _looks_like_entity(d) -> bool:
-    return isinstance(d, dict) and d.get("kind") in KINDS and isinstance(d.get("name"), str) and bool(d.get("name"))
+def _looks_like_entity(d, kinds=None) -> bool:
+    if kinds is None:
+        kinds = KINDS
+    return isinstance(d, dict) and d.get("kind") in kinds and isinstance(d.get("name"), str) and bool(d.get("name"))
 
 
 def _normkey(k) -> str:
@@ -371,36 +373,42 @@ _PC_KEY_LOOKUP = {_normkey(f): f for f in _PC_CANONICAL_FIELDS}
 _PC_MARKER_KEYS_NORM = set(_PC_KEY_LOOKUP)
 
 
-def _looks_like_pc(d) -> bool:
+def _looks_like_pc(d, kinds=None) -> bool:
     """A PC has a "name" and isn't a recognized Entity kind (Entities always
     carry a "kind" from the fixed 8-kind list — "playercharacter", "pc", etc.
     are not among them, so an author's self-declared kind string doesn't
     need special-casing here, it just falls through to the marker check)."""
+    if kinds is None:
+        kinds = KINDS
     if not isinstance(d, dict) or not isinstance(d.get("name"), str) or not d.get("name"):
         return False
-    if d.get("kind") in KINDS:
+    if d.get("kind") in kinds:
         return False
     return any(_normkey(k) in _PC_MARKER_KEYS_NORM for k in d.keys())
 
 
-def _resolve_batch_item(item):
+def _resolve_batch_item(item, kinds=None):
     """An `imports` array entry is either an explicit {"kind","data","params"}
     envelope (needed whenever that kind requires params, e.g. schematic_slug),
     or a bare self-describing blob run through the normal auto-detection."""
     if isinstance(item, dict) and "kind" in item and "data" in item:
         return item.get("kind"), item.get("data"), item.get("params") or {}
-    return detect_kind(item)["kind"], item, {}
+    return detect_kind(item, kinds=kinds)["kind"], item, {}
 
 
-def detect_kind(data) -> dict:
+def detect_kind(data, kinds=None) -> dict:
     """Best-effort sniff of what a parsed JSON blob is meant for. Returns
     {kind, summary, count, needs} — `needs` lists extra param keys the UI
     must collect before the import can run (e.g. which schematic to attach
-    elements to)."""
+    elements to). `kinds` defaults to the built-in KINDS for callers with no
+    world context (e.g. tests) — real requests pass deps.effective_kinds(world)[0]
+    so a GM's custom kinds are recognized too."""
+    if kinds is None:
+        kinds = KINDS
     if isinstance(data, dict) and isinstance(data.get("imports"), list) and data["imports"]:
         items = data["imports"]
-        kinds = [_resolve_batch_item(it)[0] for it in items]
-        breakdown = ", ".join(f"{n} {k}" for k, n in Counter(kinds).most_common())
+        item_kinds = [_resolve_batch_item(it, kinds)[0] for it in items]
+        breakdown = ", ".join(f"{n} {k}" for k, n in Counter(item_kinds).most_common())
         return {"kind": "batch", "summary": f"{len(items)} item(s): {breakdown}", "count": len(items), "needs": []}
 
     if isinstance(data, dict) and isinstance(data.get("rules_md"), str):
@@ -456,14 +464,14 @@ def detect_kind(data) -> dict:
             "needs": ["template_kind", "name"],
         }
 
-    if isinstance(data, list) and data and all(_looks_like_entity(e) for e in data):
+    if isinstance(data, list) and data and all(_looks_like_entity(e, kinds) for e in data):
         return {"kind": "entity_bulk", "summary": f"{len(data)} entities", "count": len(data), "needs": []}
-    if _looks_like_entity(data):
+    if _looks_like_entity(data, kinds):
         return {"kind": "entity_single", "summary": f'1 entity: "{data.get("name")}" ({data.get("kind")})', "count": 1, "needs": []}
 
-    if isinstance(data, list) and data and all(_looks_like_pc(e) for e in data):
+    if isinstance(data, list) and data and all(_looks_like_pc(e, kinds) for e in data):
         return {"kind": "player_character_bulk", "summary": f"{len(data)} player character(s)", "count": len(data), "needs": []}
-    if _looks_like_pc(data):
+    if _looks_like_pc(data, kinds):
         return {"kind": "player_character", "summary": f'1 player character: "{data.get("name")}"', "count": 1, "needs": []}
 
     return {"kind": "unknown", "summary": "Couldn't tell what this JSON is meant for — pick manually below.", "count": 0, "needs": ["forced_kind"]}
@@ -560,9 +568,11 @@ def _resolve_entity_template(db: Session, world_id: int, ent: dict) -> Optional[
     return None
 
 
-def _create_entity(db: Session, world_id: int, ent) -> Entity:
-    if not isinstance(ent, dict) or ent.get("kind") not in KINDS or not str(ent.get("name") or "").strip():
-        raise ValueError(f'Not a valid entity — needs "kind" (one of {", ".join(KINDS)}) and a non-empty "name"')
+def _create_entity(db: Session, world_id: int, ent, kinds=None) -> Entity:
+    if kinds is None:
+        kinds = KINDS
+    if not isinstance(ent, dict) or ent.get("kind") not in kinds or not str(ent.get("name") or "").strip():
+        raise ValueError(f'Not a valid entity — needs "kind" (one of {", ".join(kinds)}) and a non-empty "name"')
     cf = ent.get("custom_fields_json") if "custom_fields_json" in ent else ent.get("custom_fields")
     if not isinstance(cf, dict):
         cf = {}
@@ -583,6 +593,7 @@ def execute_import(db: Session, world: World, kind: str, data, params: dict):
     `kind` may have been manually forced by the user onto data that doesn't
     actually match (the "unknown" detection path), so every branch validates
     its own assumptions rather than trusting the shape."""
+    entity_kinds = deps.effective_kinds(world)[0]
     if kind == "world_rules":
         if not isinstance(data, dict) or not isinstance(data.get("rules_md"), str):
             return False, 'Expected {"rules_md": "..."}'
@@ -728,7 +739,7 @@ def execute_import(db: Session, world: World, kind: str, data, params: dict):
             return True, f"/characters/templates/{t.id}/edit"
         else:
             entity_kind = params.get("entity_kind") or None
-            if entity_kind not in KINDS:
+            if entity_kind not in entity_kinds:
                 entity_kind = None
             base_slug = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')[:50] or "template"
             slug = base_slug
@@ -750,7 +761,7 @@ def execute_import(db: Session, world: World, kind: str, data, params: dict):
         last = None
         for i, ent in enumerate(data):
             try:
-                last = _create_entity(db, world.id, ent)
+                last = _create_entity(db, world.id, ent, entity_kinds)
             except ValueError as e:
                 db.rollback()
                 return False, f"Entity #{i + 1}: {e}"
@@ -760,7 +771,7 @@ def execute_import(db: Session, world: World, kind: str, data, params: dict):
 
     if kind == "entity_single":
         try:
-            e = _create_entity(db, world.id, data)
+            e = _create_entity(db, world.id, data, entity_kinds)
         except ValueError as err:
             return False, str(err)
         db.commit()
@@ -798,8 +809,9 @@ def execute_batch_import(db: Session, world: World, items: list) -> list:
     no realistic way to make the whole batch atomic. Report per-item results
     instead of all-or-nothing rollback."""
     results = []
+    kinds = deps.effective_kinds(world)[0]
     for i, item in enumerate(items):
-        kind, item_data, item_params = _resolve_batch_item(item)
+        kind, item_data, item_params = _resolve_batch_item(item, kinds)
         if kind == "batch":
             results.append({"index": i, "kind": "batch", "ok": False, "message": "Nested batches are not supported"})
             continue
@@ -840,14 +852,15 @@ def import_page(request: Request, db: Session = Depends(get_db), active_world: s
 
 
 @router.post("/api/import/detect")
-async def import_detect(request: Request):
+async def import_detect(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
     body = await request.json()
     raw = body.get("json_text", "")
     try:
         data = json.loads(raw)
     except Exception as e:
         return JSONResponse({"kind": "invalid", "summary": f"Not valid JSON: {e}", "count": 0, "needs": []})
-    return detect_kind(data)
+    return detect_kind(data, kinds=deps.effective_kinds(world)[0])
 
 
 @router.post("/api/import/execute")
@@ -861,7 +874,7 @@ async def import_execute(request: Request, db: Session = Depends(get_db), active
         data = json.loads(raw)
     except Exception as e:
         raise HTTPException(400, f"Not valid JSON: {e}")
-    kind = body.get("kind") or detect_kind(data)["kind"]
+    kind = body.get("kind") or detect_kind(data, kinds=deps.effective_kinds(world)[0])["kind"]
     params = body.get("params") or {}
 
     if kind == "batch":

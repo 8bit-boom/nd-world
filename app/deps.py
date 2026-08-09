@@ -3,12 +3,14 @@
 Kept separate from main.py so routers (imported BY main.py) can use these
 without a circular import — see app/templating.py for the same rationale.
 """
+import json
 from typing import Optional
 
 from fastapi import Request
 from sqlalchemy.orm import Session
 
 from . import auth
+from .constants import KINDS, KIND_ICONS, SUBTYPES
 from .models import World
 
 
@@ -47,6 +49,73 @@ def get_world_ctx(request: Request, db: Session, active_world: Optional[str]):
     worlds = q.order_by(World.id).all()
     world = next((w for w in worlds if w.slug == active_world), None) or (worlds[0] if worlds else None)
     return world, worlds
+
+
+# GM-defined custom entity kinds (see World.custom_kinds_json) — namespaced
+# so a GM-picked id can never collide with a built-in kind a future app
+# update might add.
+CUSTOM_KIND_PREFIX = "custom_"
+MAX_CUSTOM_KINDS = 25
+
+
+def load_custom_kinds(world: Optional[World]) -> list:
+    """Parse+defensively validate world.custom_kinds_json. Never raises —
+    malformed/legacy-shaped entries are dropped rather than blowing up every
+    page render. world=None (or no custom kinds set) -> []."""
+    if not world:
+        return []
+    try:
+        raw = json.loads(world.custom_kinds_json or "[]")
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        kid = entry.get("id")
+        label = entry.get("label")
+        if not isinstance(kid, str) or not kid.startswith(CUSTOM_KIND_PREFIX):
+            continue
+        if not isinstance(label, str) or not label.strip():
+            continue
+        subtypes = entry.get("subtypes")
+        out.append({
+            "id": kid,
+            "label": label,
+            "icon": entry.get("icon") or "🏷",
+            "subtypes": [s for s in subtypes if isinstance(s, str)] if isinstance(subtypes, list) else [],
+            "created_at": entry.get("created_at") or "",
+        })
+    return out
+
+
+def effective_kinds(world: Optional[World]):
+    """Built-in KINDS/KIND_ICONS plus this world's custom kinds appended in
+    stored order. world=None returns the built-ins unchanged (no active
+    world yet, e.g. the /worlds picker). THE single source of truth for
+    "what kind values are valid content categories in this world" — every
+    validation/render call site should use this (or receive it already
+    computed) instead of importing KINDS/KIND_ICONS directly, so a custom
+    kind works everywhere a built-in one does.
+
+    Returns (kinds: list[str], kind_icons: dict[str, str])."""
+    custom = load_custom_kinds(world)
+    kinds = list(KINDS) + [c["id"] for c in custom]
+    icons = dict(KIND_ICONS)
+    icons.update({c["id"]: c["icon"] for c in custom})
+    return kinds, icons
+
+
+def effective_subtypes(world: Optional[World]):
+    """Built-in SUBTYPES plus each custom kind's own suggestion list —
+    same "suggestions only, not enforced" contract as the built-in dict."""
+    subtypes = {k: list(v) for k, v in SUBTYPES.items()}
+    for c in load_custom_kinds(world):
+        if c["subtypes"]:
+            subtypes[c["id"]] = list(c["subtypes"])
+    return subtypes
 
 
 PAGE_SIZE = 50
