@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from .. import auth
 from ..database import get_db
 from ..deps import get_world_ctx
-from ..models import User
+from ..models import ApiToken, User
 from ..templating import templates
 
 router = APIRouter()
@@ -54,11 +54,14 @@ def _rl_clear(user_id: int) -> None:
 
 
 def _render(request: Request, db: Session, user: User, active_world: Optional[str],
-            name_error: str = None, password_error: str = None, status_code: int = 200):
+            name_error: str = None, password_error: str = None, status_code: int = 200,
+            new_token: str = None):
     world, worlds = get_world_ctx(request, db, active_world)
+    tokens = db.query(ApiToken).filter(ApiToken.user_id == user.id).order_by(ApiToken.created_at.desc()).all()
     return templates.TemplateResponse("account.html", {
         "request": request, "world": world, "worlds": worlds,
         "user": user, "name_error": name_error, "password_error": password_error,
+        "tokens": tokens, "new_token": new_token,
     }, status_code=status_code)
 
 
@@ -112,3 +115,31 @@ def account_change_password(request: Request, current_password: str = Form(""),
     db.commit()
     request.session["session_version"] = user.session_version
     return RedirectResponse("/account?saved=password", status_code=303)
+
+
+@router.post("/account/tokens/new")
+def account_token_new(request: Request, label: str = Form(""),
+                       db: Session = Depends(get_db),
+                       user: User = Depends(auth.require_login), active_world: str = Cookie(None)):
+    """Issues a new MCP bearer token for this user (see app/mcp_server.py).
+    Rendered directly (not a redirect) so the raw token can be shown once in
+    this response without ever touching a URL/query string, where it could
+    end up in browser history or a server access log."""
+    raw = auth.generate_api_token()
+    token = ApiToken(user_id=user.id, token_hash=auth.hash_api_token(raw),
+                      label=label.strip()[:256] or "Unlabeled token")
+    db.add(token)
+    db.commit()
+    return _render(request, db, user, active_world, new_token=raw)
+
+
+@router.post("/account/tokens/{token_id}/revoke")
+def account_token_revoke(token_id: int, db: Session = Depends(get_db),
+                          user: User = Depends(auth.require_login)):
+    # Scoped to this user's own tokens — a player can't revoke someone
+    # else's token by guessing an id.
+    token = db.query(ApiToken).filter(ApiToken.id == token_id, ApiToken.user_id == user.id).first()
+    if token:
+        db.delete(token)
+        db.commit()
+    return RedirectResponse("/account", status_code=303)

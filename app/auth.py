@@ -42,6 +42,19 @@ def generate_invite_code() -> str:
     return secrets.token_urlsafe(9)  # short, URL-safe, ~12 chars
 
 
+def generate_api_token() -> str:
+    """A high-entropy MCP bearer token (see app/mcp_server.py). Shown to the
+    user exactly once at creation — only its hash is ever stored."""
+    return secrets.token_urlsafe(32)
+
+
+def hash_api_token(raw_token: str) -> str:
+    """sha256, not PBKDF2 — the token is already a high-entropy random value
+    (not a user-chosen password), so a fast exact-match hash is correct here
+    and lets the auth_gate middleware look it up in O(1) on every request."""
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
 # A real hash of a throwaway value, used to equalize login response time when the
 # submitted email doesn't exist. Without it, `if not user or verify_password(...)`
 # short-circuits: an unknown email answers in sub-milliseconds while a known one

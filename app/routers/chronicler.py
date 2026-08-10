@@ -22,7 +22,7 @@ _CHRONICLER_SYSTEM = (
 )
 
 
-def _visible_facts(db: Session, world_id: int, user) -> list:
+def visible_facts(db: Session, world_id: int, user) -> list:
     """The actual security boundary: a non-GM caller never gets a GM-only
     fact's content, even loaded into the prompt — not just told not to
     repeat it. Same visible_to_players convention as Entity/EntityNote."""
@@ -32,7 +32,7 @@ def _visible_facts(db: Session, world_id: int, user) -> list:
     return q.order_by(Fact.created_at.desc()).limit(200).all()
 
 
-def _visible_entities(db: Session, world_id: int, query: str, user, limit: int = 15) -> list:
+def visible_entities(db: Session, world_id: int, query: str, user, limit: int = 15) -> list:
     """Filtered variant of main.py's _find_relevant_entities — duplicated
     rather than imported since routers can't import from main (main.py
     imports every router, so the reverse would be circular; see
@@ -57,8 +57,8 @@ def _visible_entities(db: Session, world_id: int, query: str, user, limit: int =
 
 
 def build_chronicler_system_prompt(db: Session, world_id: int, question: str, user) -> str:
-    facts = _visible_facts(db, world_id, user)
-    entities = _visible_entities(db, world_id, question, user)
+    facts = visible_facts(db, world_id, user)
+    entities = visible_entities(db, world_id, question, user)
     lines = [_CHRONICLER_SYSTEM, "", "## Known facts"]
     if facts:
         lines.extend(f"- {f.content}" for f in facts)

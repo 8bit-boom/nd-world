@@ -53,5 +53,49 @@
       <button type="submit" class="btn-primary">Change password</button>
     </div>
   </form>
+
+  <div class="entity-form" style="margin-top:2rem">
+    <h2 style="font-size:.9rem;color:var(--text-dim);margin:1rem 0 .5rem">MCP access tokens</h2>
+    <p style="font-size:.78rem;color:var(--text-dim);margin-bottom:.8rem">
+      Generate a token to connect an MCP client (e.g. Claude on your phone) to this world —
+      log facts, search entities, and ask the Chronicler from a normal chat conversation.
+      A GM token can do anything the GM can here; a player token is limited exactly like the
+      web UI (it can never see a GM-only fact/entity or write one).
+    </p>
+
+    {% if new_token %}
+    <div style="background:#1a3a1a;border:1px solid #4f4;border-radius:4px;padding:.7rem 1rem;margin-bottom:1rem">
+      <p style="font-size:.82rem;margin:0 0 .4rem;color:#4f4">Copy this token now — it won't be shown again.</p>
+      <code style="display:block;word-break:break-all;font-size:.82rem;background:var(--bg3);padding:.5rem;border-radius:3px">{{ new_token }}</code>
+      <p style="font-size:.78rem;color:var(--text-dim);margin:.6rem 0 .3rem">Example MCP client config:</p>
+      <pre style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem;font-size:.72rem;overflow-x:auto;white-space:pre-wrap;word-break:break-all">{"mcpServers": {"nd-world": {"url": "{{ request.base_url }}mcp", "headers": {"Authorization": "Bearer {{ new_token }}"}}}}</pre>
+    </div>
+    {% endif %}
+
+    {% if tokens %}
+    <div style="display:flex;flex-direction:column;gap:.4rem;margin-bottom:1rem">
+      {% for t in tokens %}
+      <div style="display:flex;align-items:center;gap:.6rem;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:.5rem .7rem;font-size:.82rem">
+        <span style="flex:1">
+          {{ t.label or 'Unlabeled token' }}
+          <span style="color:var(--text-dim)">
+            — created {{ t.created_at.strftime('%Y-%m-%d') if t.created_at else '' }}{% if t.last_used_at %}, last used {{ t.last_used_at.strftime('%Y-%m-%d') }}{% endif %}
+          </span>
+        </span>
+        <form method="post" action="/account/tokens/{{ t.id }}/revoke" onsubmit="return confirm('Revoke this token? Any client using it will stop working.')">
+          <button type="submit" style="background:transparent;border:1px solid #c44;color:#c44;border-radius:3px;padding:.2rem .6rem;font-size:.78rem;cursor:pointer">Revoke</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p style="font-size:.82rem;color:var(--text-dim)">No tokens yet.</p>
+    {% endif %}
+
+    <form method="post" action="/account/tokens/new" style="display:flex;gap:.5rem">
+      <input name="label" placeholder="Label (e.g. My Phone)" style="flex:1" maxlength="256">
+      <button type="submit" class="btn-primary">+ Generate token</button>
+    </form>
+  </div>
 </div>
 {% endblock %}

@@ -4,11 +4,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.datastructures import Headers
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func, text
 from sqlalchemy.exc import OperationalError
 from typing import List, Optional
 from urllib.parse import quote
+import asyncio
 import re
 import html
 import logging
@@ -28,7 +30,7 @@ from .imaging import convert_image
 from .rendering import parse_stats, render_md
 from .templating import templates
 from .uploads import copy_upload_bounded, BULK_IMAGE_MAX_FILES
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, ApiToken
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -51,6 +53,7 @@ from .routers.export import router as export_router
 from .routers.kinds_admin import router as kinds_admin_router
 from .routers.facts import router as facts_router
 from .routers.chronicler import router as chronicler_router
+from . import mcp_server
 from . import ai as _ai_module
 from . import auth as _auth
 from .constants import KINDS, SUBTYPES, KIND_ICONS
@@ -125,6 +128,8 @@ def startup():
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     _seed_bundled_maps()
     _refresh_settings_overrides()
+
+
 
 
 def _seed_bundled_maps():
@@ -206,6 +211,17 @@ async def auth_gate(request: Request, call_next):
     path = request.url.path
     if path in _PUBLIC_PATHS or any(path.startswith(p) for p in _PUBLIC_PREFIXES):
         return await call_next(request)
+
+    # /mcp is deliberately NOT handled here — see ASGI_APP at the bottom of
+    # this file. auth_gate is @app.middleware("http") (BaseHTTPMiddleware
+    # under the hood), which bridges every request/response through its own
+    # background task; that breaks the streamable-http transport's own
+    # task-group-based streaming underneath it (cancel-scope errors —
+    # confirmed by reproducing it directly, not a guess) regardless of what
+    # this function's body does for that path, since the wrapping happens at
+    # the middleware-registration level before this dispatch function ever
+    # runs. /mcp requests are routed around this entire middleware stack
+    # instead, authenticated by their own bearer-token check.
 
     user_id = request.session.get("user_id")
     if not user_id:
@@ -3472,3 +3488,122 @@ def api_create_world(payload: dict, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(w)
     return {"id": w.id, "slug": w.slug, "created": True}
+
+_mcp_asgi_app = mcp_server.mcp.streamable_http_app()
+_mcp_start_lock = asyncio.Lock()
+_mcp_started = False
+_mcp_ready = asyncio.Event()
+
+
+async def _run_mcp_session_manager_forever():
+    """Owns FastMCP's background task group for the life of the event loop.
+    Entering session_manager.run() has to happen inside a task that itself
+    stays alive for as long as later /mcp requests need that task group to
+    still be usable — anyio ties a task group's cancel scope to whichever
+    task was running when it was entered, and that scope stops working once
+    that task finishes, independent of whether __aexit__ was ever called.
+    A short-lived caller (an individual request handler, or an
+    @app.on_event("startup") hook, which Starlette awaits and discards) both
+    return almost immediately, so entering there produces a task group that
+    already looks "torn down" to the very next request. Blocking forever
+    after entering is what keeps the owning task — and so the task group —
+    alive; asyncio.create_task's caller (_mcp_entrypoint, below) doesn't
+    await this, it only awaits _mcp_ready to confirm entry succeeded before
+    letting a request through."""
+    async with mcp_server.mcp.session_manager.run():
+        _mcp_ready.set()
+        await asyncio.Event().wait()
+
+
+async def _mcp_entrypoint(scope, receive, send):
+    """Lazily starts the above on the first real /mcp request rather than at
+    app startup. Two things force lazy-on-first-use instead of an eager
+    app.on_event("startup") hook: StreamableHTTPSessionManager.run() raises
+    if called more than once on the same instance even after a clean exit,
+    and mcp_server.mcp is a module-level singleton — a real server only
+    boots once so an eager hook would be fine there, but the test suite
+    creates and tears down this app's ASGI lifespan once per test (see
+    tests/conftest.py's `client` fixture), which would hit that "already
+    started" error on the second test to touch it. Starting it on first use
+    instead means only tests that actually exercise /mcp ever trigger it."""
+    global _mcp_started
+    if not _mcp_started:
+        async with _mcp_start_lock:
+            if not _mcp_started:
+                asyncio.create_task(_run_mcp_session_manager_forever())
+                _mcp_started = True
+    await _mcp_ready.wait()
+    await _mcp_asgi_app(scope, receive, send)
+
+
+async def _mcp_auth_wrapper(scope, receive, send):
+    """Bearer-token auth for /mcp, standing in for auth_gate (see the "if
+    path == /mcp" branch there for why this can't just live in auth_gate
+    itself). Deliberately plain ASGI — no BaseHTTPMiddleware, no Request
+    convenience wrapper beyond header parsing — so nothing here creates a
+    task group or buffers the body, both of which would reintroduce the same
+    cancel-scope conflict this function exists to avoid."""
+    if scope["type"] != "http":
+        return await _mcp_entrypoint(scope, receive, send)
+
+    headers = Headers(scope=scope)
+    auth_header = headers.get("authorization", "")
+    raw_token = auth_header[7:] if auth_header.lower().startswith("bearer ") else ""
+    if not raw_token:
+        return await JSONResponse({"detail": "Bearer token required"}, status_code=401)(scope, receive, send)
+
+    db = SessionLocal()
+    try:
+        token_row = db.query(ApiToken).filter(
+            ApiToken.token_hash == _auth.hash_api_token(raw_token)
+        ).first()
+        if not token_row:
+            return await JSONResponse({"detail": "Invalid or revoked token"}, status_code=401)(scope, receive, send)
+        user = db.query(User).filter(User.id == token_row.user_id).first()
+        if not user:
+            return await JSONResponse({"detail": "Invalid or revoked token"}, status_code=401)(scope, receive, send)
+        # Detach before commit: expire_on_commit would otherwise mark every
+        # already-loaded attribute on `user` (id, is_gm, ...) as stale, and
+        # since this session closes right after, any later access anywhere
+        # downstream (MCP tool handlers reading request.state.user) would
+        # hit DetachedInstanceError trying to refresh from a closed session.
+        db.expunge(user)
+        from datetime import datetime as _dt
+        token_row.last_used_at = _dt.utcnow()
+        db.commit()
+    finally:
+        db.close()
+
+    scope.setdefault("state", {})["user"] = user
+    await _mcp_entrypoint(scope, receive, send)
+
+
+_fastapi_app = app  # the real FastAPI instance, kept under this name so every
+                    # @app.get/@app.post/app.include_router/app.mount call
+                    # above (already executed by the time we get here) keeps
+                    # working exactly as written
+
+
+async def app(scope, receive, send):
+    """The actual ASGI entrypoint this module exports as `app` (what
+    `uvicorn app.main:app` and TestClient(app) both run) — a thin dispatcher
+    in front of the real FastAPI app, routing /mcp around its entire
+    @app.middleware("http") stack (auth_gate, SessionMiddleware,
+    TrustedHostMiddleware) instead of through it.
+
+    This has to happen at this outermost level, not via app.mount(): a
+    Mount()-ed sub-app is still just another route *inside* that middleware
+    stack — BaseHTTPMiddleware (what @app.middleware("http") installs)
+    unconditionally wraps every request reaching the router in its own
+    task-group/memory-stream bridge before any route or dispatch-function
+    body ever runs, and that conflicts with the streamable-http transport's
+    own task-group-based streaming underneath it. Only actually bypassing
+    the middleware stack itself — not just choosing to no-op inside it —
+    avoids the conflict (confirmed by reproducing the cancel-scope crash
+    both ways). Every non-"/mcp" path, and non-http scope types (lifespan,
+    websocket), still go straight through the unmodified FastAPI app below.
+    """
+    if scope["type"] == "http" and (scope["path"] == "/mcp" or scope["path"].startswith("/mcp/")):
+        await _mcp_auth_wrapper(scope, receive, send)
+    else:
+        await _fastapi_app(scope, receive, send)
