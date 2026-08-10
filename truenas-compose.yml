@@ -147,8 +147,15 @@ services:
       net.ix-portals.editor.path: "/"
       net.ix-portals.editor.host: ""
 
+  # containrrr/watchtower was archived (read-only) in December 2025 — its
+  # image stopped receiving updates, so an already-pulled copy drifts further
+  # behind every time the host's Docker Engine is upgraded until its
+  # bundled API client version falls below what the daemon still accepts
+  # ("client version X is too old"). nickfedor/watchtower is the actively
+  # maintained community continuation and a drop-in replacement (same image
+  # name/flags otherwise) — see https://github.com/nicholas-fedor/watchtower.
   watchtower:
-    image: containrrr/watchtower
+    image: nickfedor/watchtower
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
