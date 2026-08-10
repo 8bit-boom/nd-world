@@ -55,6 +55,9 @@ player account will get 403s from all of the above.
   an *existing* table does.
 - Auth is GM-only by default: `_is_player_safe()` in `app/main.py` is an
   allowlist — a new route stays GM-only unless deliberately added there.
+- [docs/API_REFERENCE.md](docs/API_REFERENCE.md) catalogs every HTTP route
+  and MCP tool (method, path, auth tier, one-line purpose) — check it before
+  assuming an endpoint doesn't exist, and add a row there for any new route.
 - `static/style.css` is loaded with a cache-busting `?v=N` query string in
   `app/templates/base.html` — bump `N` any time you change that file, or
   browsers will keep serving a stale cached copy.

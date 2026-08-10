@@ -2,7 +2,9 @@
 
 A self-hosted worldbuilding and lore management system for the **Neon & Dragons** tabletop RPG campaign. Organize your entire game world — characters, locations, factions, events, items, creatures, and more — with built-in AI assistance, image generation, interactive maps, and visual relationship boards.
 
-> **AI agents / assistants working with this repo:** see [AGENTS.md](AGENTS.md) first — it covers content-creation via the general importer (`docs/AI_ENTITY_GUIDE.md`, `docs/AI_SCHEMATIC_GUIDE.md`) and conventions to follow if modifying the app code.
+> **New to running the app day-to-day?** [docs/wiki/Home.md](docs/wiki/Home.md) is a full usage guide for GMs and players — worldbuilding, characters, maps, sessions, AI tools, settings — everything below the install steps.
+
+> **AI agents / assistants working with this repo:** see [AGENTS.md](AGENTS.md) first — it covers content-creation via the general importer (`docs/AI_ENTITY_GUIDE.md`, `docs/AI_SCHEMATIC_GUIDE.md`) and conventions to follow if modifying the app code. For a full list of every HTTP route and MCP tool the app exposes, see [docs/API_REFERENCE.md](docs/API_REFERENCE.md).
 
 ---
 
@@ -809,6 +811,8 @@ nd-world/
 │   └── setup.sh             # One-command install: Docker check, .env + GM account, start stack
 ├── docs/
 │   ├── DEPLOYMENT.md        # Local setup + Cloudflare Tunnel walkthrough
+│   ├── API_REFERENCE.md     # Every HTTP route + MCP tool: method, path, auth tier, purpose
+│   ├── wiki/                # Usage guide for GMs/players (Home.md is the index)
 │   ├── AI_ENTITY_GUIDE.md   # For AI agents: entities/templates/characters + the general importer
 │   └── AI_SCHEMATIC_GUIDE.md # For AI agents: schematic elements + map overlays
 ├── AGENTS.md                # Entry point for AI agents/assistants working with this repo
