@@ -180,6 +180,74 @@ async def generate(prompt: str, system: str = _SYSTEM) -> str:
     return await generate_chat([{"role": "user", "content": prompt}], system)
 
 
+_RECAP_SYSTEM = (
+    "You are a scribe for a tabletop RPG campaign. The GM will give you an informal, "
+    "terse recap of what happened in a session (e.g. \"went to the tavern, met Elyra, "
+    "she's actually working for the cult, found a strange clock\"). Turn it into a list "
+    "of discrete, well-written facts about what happened.\n\n"
+    "For each fact, set \"visible_to_players\" to indicate whether the player characters "
+    "(not just the GM) know it:\n"
+    "- true: the party witnessed it, was told it in-fiction, or it's public knowledge\n"
+    "- false: it's a GM-only secret (a villain's true identity or plan, hidden dice rolls, "
+    "monster stats, anything the players have not yet discovered)\n\n"
+    "Default to visible_to_players: true unless the recap clearly marks something as secret "
+    "or the players wouldn't plausibly know it yet. Split compound sentences into separate "
+    "facts where it makes sense. Write each fact as a complete sentence in past tense. Do not "
+    "invent details that aren't implied by the recap. Respond with JSON only."
+)
+
+_RECAP_FACTS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "facts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string"},
+                    "visible_to_players": {"type": "boolean"},
+                },
+                "required": ["content", "visible_to_players"],
+            },
+        },
+    },
+    "required": ["facts"],
+}
+
+
+async def parse_facts_from_recap(raw_text: str, model: str = "") -> list[dict]:
+    """Turn a rough GM recap into draft facts via the local model, using
+    Ollama's JSON-schema-constrained `format` — see ollama.AsyncClient.chat's
+    `format` parameter. Raises ValueError on any failure (model unreachable,
+    malformed JSON) so the caller can surface a clear error; does not write
+    anything to the database itself."""
+    m = model or effective_ollama_model()
+    try:
+        resp = await _client().chat(
+            model=m,
+            messages=[
+                {"role": "system", "content": _RECAP_SYSTEM},
+                {"role": "user", "content": raw_text},
+            ],
+            format=_RECAP_FACTS_SCHEMA,
+        )
+    except _ollama.ResponseError as exc:
+        raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
+    except Exception as exc:
+        raise ValueError(f"AI unavailable: {type(exc).__name__}: {exc}") from exc
+    try:
+        parsed = _json.loads(resp.message.content or "")
+        facts = parsed["facts"]
+        if not isinstance(facts, list):
+            raise ValueError
+        return [
+            {"content": str(f["content"]), "visible_to_players": bool(f["visible_to_players"])}
+            for f in facts
+        ]
+    except Exception as exc:
+        raise ValueError("Could not parse facts from that recap — try rephrasing it.") from exc
+
+
 async def status() -> dict:
     try:
         resp = await _client().list()

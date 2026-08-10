@@ -461,6 +461,7 @@ def _migrate():
             ("linked_entities_json",  "TEXT DEFAULT '[]'", True),
             ("parent_id",             "INTEGER", True),
             ("assigned_party_id",     "INTEGER", True),
+            ("visible_to_players",    "BOOLEAN DEFAULT 1", True),
             ("created_at",            "DATETIME", True),
             ("updated_at",            "DATETIME", True),
         ], foreign_keys=[

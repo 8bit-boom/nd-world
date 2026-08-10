@@ -445,6 +445,9 @@ class Quest(Base):
     linked_entities_json = Column(Text, default="[]")  # [{entity_id, role}]
     parent_id = Column(Integer, ForeignKey("quests.id"), nullable=True, index=True)
     assigned_party_id = Column(Integer, ForeignKey("parties.id"), nullable=True, index=True)
+    # GM can hide a quest from players entirely (e.g. a plot thread they haven't
+    # discovered yet) — same field name/semantics as Entity.visible_to_players.
+    visible_to_players = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -473,6 +476,47 @@ class GameSession(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     party = relationship("Party")
+
+
+class Fact(Base):
+    """A single, discrete piece of what-happened-in-play — unlike GameSession.summary
+    (one free-text recap blob), each Fact is small enough to have its own
+    visible_to_players flag, so a GM can record a scene the players witnessed
+    right next to the secret truth behind it without exposing the secret.
+    Optionally tied to the GameSession it came from."""
+    __tablename__ = "facts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    game_session_id = Column(Integer, ForeignKey("game_sessions.id"), nullable=True, index=True)
+    content = Column(Text, nullable=False)
+    visible_to_players = Column(Boolean, default=True)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    world = relationship("World")
+    game_session = relationship("GameSession")
+    author = relationship("User")
+
+
+class ApiToken(Base):
+    """A personal access token for the MCP server (see app/mcp_server.py) —
+    lets a GM or player update/query their world from an MCP client (e.g. a
+    phone) without a browser session cookie. Any user may generate one; MCP
+    tools that require GM access still check user.is_gm at call time, exactly
+    like the web UI, so a player's token can never do more than the player
+    already could."""
+    __tablename__ = "api_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)  # sha256 hex digest
+    label = Column(String(256), default="")
+    last_used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
 
 
 class WorldCalendar(Base):
