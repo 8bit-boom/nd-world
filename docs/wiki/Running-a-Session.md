@@ -39,3 +39,18 @@ GM-authored roll tables (loot, random encounters, NPC name generators,
 whatever) — add rows with weights, then **Roll** to get a result. Tables can
 be exported/imported as JSON, so a table you've built once is portable
 between worlds or shareable with other GMs.
+
+---
+
+## Quick example: starting a fight
+
+**⚔ Combat → + New Encounter**, name it, and you land on the tracker: an
+**+ Add Combatant** panel (pull from Player Characters or Entities, or type
+one in manually) above an empty initiative order.
+
+![Freshly created Combat Tracker encounter with the Add Combatant panel](images/combat-tracker-gm.png)
+
+Add each side, set initiative, and step through turns — HP/Shock have
+quick +1/+5/−1/−5 buttons so you're not retyping totals mid-fight. Link a
+Schematic (🔗 Link Combat, from that side) to keep a visual battle map in
+sync with these same combatants.

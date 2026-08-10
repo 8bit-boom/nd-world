@@ -45,3 +45,19 @@ auto-updating read version that hides GM-only elements). A non-GM player may:
 
 Both maps and schematics can be renamed or deleted from their list pages —
 deletion removes the associated uploaded image(s) too.
+
+---
+
+## Quick example: a blank schematic
+
+**🗺 Maps → + New Schematic**, give it a name (and, optionally, a starting
+canvas size/background) — you land straight in the editor on a blank canvas,
+ready for shapes, tokens, a grid overlay, and the combat-link toolbar along
+the top.
+
+![Blank schematic canvas editor with the full toolbar visible](images/schematic-editor-gm.png)
+
+Draw the room, drop tokens for your NPCs (linked to their Entity rows so
+clicking one jumps to their sheet), set a grid, and — once you're running
+the encounter — **🔗 Link Combat** to keep this canvas and the Combat Tracker
+in sync.

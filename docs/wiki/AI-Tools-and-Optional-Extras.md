@@ -51,3 +51,18 @@ you have a real local Ollama daemon running).
 If you visit `/dreamlands` or `/king-in-yellow` directly while the toggle is
 off, you'll see a small "this feature is disabled" page linking straight to
 the Settings toggle, instead of a dead end.
+
+---
+
+## Quick example: the AI chat panel
+
+**🤖 AI Tools → 🤖 AI** opens the chat page, scoped to your active world. The
+left sidebar has one-click **Quick Prompts** ("Random NPC", "Quest hook",
+"Loot table", …) and lists whatever Ollama models you have pulled — switch
+models per-conversation, or manage/pull new ones from the **Models** tab.
+
+![AI chat page for the active world, showing quick prompts and the model list](images/ai-chat-gm.png)
+
+Type a question or click a Quick Prompt — the assistant pulls in relevant
+entities from your world automatically before answering, and anything
+useful it generates can be saved straight onto an entity.

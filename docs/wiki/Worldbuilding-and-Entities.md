@@ -119,3 +119,21 @@ entity kind, plus a GM-editable set of **Quick Link** sections. Drag any nav
 tab onto the home page to pin it as a link (or use **World Edit → 🏠 Edit
 Home Page** for the full editor) — handy for surfacing the handful of pages
 your table actually opens every session.
+
+---
+
+## Quick example: creating an NPC
+
+1. Click **+ New** (top-right) — it defaults to whatever kind you're
+   currently browsing, or pick one from the **Type** dropdown on the form
+   itself. Fill in Name, Summary (the one-liner shown in lists), Tags, an
+   optional Folder, and the full write-up in Notes. **Visibility** defaults
+   to Everyone — switch it to **🔒 GM only** for anything that shouldn't
+   reach players yet (a Secret, an unrevealed twist, prep you're not ready
+   to show).
+
+   ![New Entity form filled out for an NPC, with visibility set to GM only](images/entity-new-form-gm.png)
+
+2. Click **Save** — you land on the new entity's detail page, where you can
+   attach images, link it to other entities, add player-visible or GM-only
+   **Notes**, and flip visibility any time.

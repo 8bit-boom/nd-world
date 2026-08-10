@@ -70,3 +70,18 @@ sets something else on **World Edit → 📖 Edit Rules** (paste Markdown
 directly, or import a JSON file shaped `{"rules_md": "..."}`). This is what
 makes running Asterion (or your own homebrew system) alongside its own rules
 text possible in the same app.
+
+---
+
+## Quick example: the wizard's Stats step
+
+After naming your character and picking a Race and Profession (steps 1–3),
+the wizard lands on **Stats**: choose a Physical/Mental split, then allocate
+your 20 points across the 8 stats with **+**/**−**. The derived-stats bar
+at the bottom (HP, Shock, CA, Speed, PP, MP) updates live as you allocate —
+no guessing what a point spent on Body actually buys you before you commit.
+
+![Character wizard Stats step, showing the point allocator and live derived-stats preview](images/character-wizard-stats-gm.png)
+
+Continue through **Feats** (required Race/Profession/Common picks) and
+**Equipment** (spend your starting budget) to finish the sheet.

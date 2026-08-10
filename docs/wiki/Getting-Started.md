@@ -65,3 +65,26 @@ player-specific hooks or secrets).
 - As GM: start filling in lore — see [Worldbuilding & Entities](Worldbuilding-and-Entities.md).
 - Have your players create characters — see [Characters](Characters.md).
 - Set up your first map or battle-map schematic — see [Maps & Schematics](Maps-and-Schematics.md).
+
+---
+
+## Quick example: create a world and invite a player
+
+1. **Open the world switcher** (top-left) — it lists every world you have
+   access to as GM. Click **⚙ Manage worlds** from here whenever you want to
+   create, rename, or switch worlds.
+
+   ![World switcher dropdown open, listing two worlds](images/world-switcher-dropdown-gm.png)
+
+2. **Create the invite.** From **⚙ Manage worlds → ✏ Edit** on the world you
+   want a player in, scroll to **Invite Links** and click **+ Create Invite
+   Link** — leave Expires/Max uses blank for a link that never expires and
+   has unlimited uses, or set them to limit it. Copy the generated
+   `/join/<code>` link and send it to your player.
+
+   ![World Edit page showing the Members list and two active Invite Links](images/invite-links-gm.png)
+
+3. Once they open the link and sign in (or create an account), they appear
+   under **Members** on this same page — see the "Dax" row above. From here
+   you can remove them or open a private **🔒 Notes** thread just between the
+   two of you.

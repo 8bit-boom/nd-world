@@ -83,3 +83,22 @@ entity/character/table/etc. shape, plus bulk portrait matching by filename
 and bulk AVIF/WebP re-encoding of everything already uploaded. Not to be
 confused with the World JSON re-import above, which is specifically for
 round-tripping nd-world's own export format.
+
+---
+
+## Quick example: Settings and an MCP token
+
+**⚙ Settings** opens on the **Options** tab — image-upload format, entity
+hover-preview timing/size, and the UI scale picker all live here (each has
+inline explanatory text, so this page is safe to just read top-to-bottom the
+first time).
+
+![Settings page, Options tab, showing image-upload and hover-preview controls](images/settings-options-gm.png)
+
+To connect a phone or desktop Claude conversation to this world, go to
+**👤 Account**, scroll to **MCP access tokens**, give it a label, and click
+**+ Generate token**. The raw token and a ready-to-paste `mcpServers` config
+snippet appear once — copy them now, since the token itself isn't stored
+anywhere retrievable afterward.
+
+![Account page after generating an MCP token, showing the one-time token value and config snippet](images/account-mcp-token-gm.png)
