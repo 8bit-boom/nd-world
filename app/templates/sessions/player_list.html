@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Session Log — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
+  <h1 style="color:var(--neon);font-size:1.3rem;margin:0 0 .3rem">📓 Session Log</h1>
+  <p style="color:var(--text-dim);font-size:.82rem;margin:0 0 1rem">
+    Recaps here are written fresh from what your party actually knows — nothing the GM hasn't revealed shows up.
+  </p>
+  {% if sessions %}
+  <div style="display:flex;flex-direction:column;gap:.5rem">
+    {% for s in sessions %}
+    <a href="{{ ('/session-log/' + s.id|string)|wq }}"
+       style="display:block;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;text-decoration:none;color:var(--text);transition:border-color .15s">
+      <div style="font-weight:bold">#{{ s.session_num }} {{ s.title }}</div>
+      {% if s.session_date %}<div style="font-size:.78rem;color:var(--text-dim);margin-top:.2rem">{{ s.session_date }}</div>{% endif %}
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty-small">No sessions logged yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -67,6 +67,9 @@ CASES = [
     ("GET", "/worlds/switch/some-world", True),
     ("GET", "/chronicler", True),
     ("POST", "/api/chronicler/ask", True),
+    ("GET", "/session-log", True),
+    ("GET", "/session-log/5", True),
+    ("POST", "/api/session-log/5/recap", True),
 ]
 
 

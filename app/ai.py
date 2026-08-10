@@ -248,6 +248,59 @@ async def parse_facts_from_recap(raw_text: str, model: str = "") -> list[dict]:
         raise ValueError("Could not parse facts from that recap — try rephrasing it.") from exc
 
 
+_EXPAND_NOTES_SYSTEM = (
+    "You are a scribe for a tabletop RPG campaign. The GM will give you rough, terse session "
+    "notes (e.g. \"went to the tavern, met Elyra, found a clock, fought goblins\"). Expand them "
+    "into a well-written, readable session recap in flowing prose — a few short paragraphs, "
+    "past tense, third person. Preserve every detail from the notes; don't invent new plot "
+    "points, names, or outcomes that aren't implied. Markdown is fine for light formatting "
+    "(e.g. **bold** for names) but keep it simple — this is a narrative recap, not a bulleted "
+    "list. Respond with the recap text only, no preamble or commentary."
+)
+
+
+async def expand_recap_notes(notes: str, model: str = "") -> str:
+    """Expand terse GM notes into a polished narrative session recap. Unlike
+    parse_facts_from_recap, this doesn't need JSON-schema-constrained output
+    (free-text prose, not discrete structured facts) so it just wraps
+    generate_chat directly — same "[AI error: ...]"/"[AI unavailable: ...]"
+    inline-string failure convention as every other chat call in this module,
+    which the caller can display as-is instead of catching an exception."""
+    return await generate_chat([{"role": "user", "content": notes}], system=_EXPAND_NOTES_SYSTEM, model=model)
+
+
+_SUMMARIZE_FACTS_SYSTEM = (
+    "You are a scribe for a tabletop RPG campaign. Below is a list of discrete facts logged "
+    "for one session. Weave them into a short, readable narrative recap in flowing prose — a "
+    "few short paragraphs, past tense, third person. Use only the facts given; don't invent "
+    "new details, and don't drop any of them. Markdown is fine for light formatting but keep it "
+    "simple. Respond with the recap text only, no preamble or commentary."
+)
+
+
+async def summarize_session_from_facts(facts: list[str], model: str = "") -> str:
+    """Weave a list of discrete session facts (see the Facts feature, which
+    logs these per-session) into a readable narrative recap."""
+    if not facts:
+        return ""
+    bullet_list = "\n".join(f"- {f}" for f in facts)
+    return await generate_chat([{"role": "user", "content": bullet_list}], system=_SUMMARIZE_FACTS_SYSTEM, model=model)
+
+
+_CONDENSE_RECAP_SYSTEM = (
+    "You are a scribe for a tabletop RPG campaign. Condense the following session recap into a "
+    "short, tight summary — a few sentences at most, hitting only the key beats a player would "
+    "need to remember before the next session. Keep it in flowing prose. Don't invent details "
+    "that aren't in the original. Respond with the condensed recap only, no preamble or "
+    "commentary."
+)
+
+
+async def condense_recap(recap: str, model: str = "") -> str:
+    """Condense an existing recap into a tighter 'previously on...' summary."""
+    return await generate_chat([{"role": "user", "content": recap}], system=_CONDENSE_RECAP_SYSTEM, model=model)
+
+
 async def status() -> dict:
     try:
         resp = await _client().list()

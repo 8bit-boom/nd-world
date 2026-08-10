@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}{{ gsession.title }} — Session Log{% endblock %}
+{% block content %}
+<div style="max-width:760px;margin:0 auto;padding:1.5rem 1rem">
+  <a href="{{ '/session-log'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Session Log</a>
+  <h1 style="color:var(--neon);font-size:1.3rem;margin:.5rem 0">#{{ gsession.session_num }} {{ gsession.title }}</h1>
+  {% if gsession.session_date %}<p style="color:var(--text-dim);font-size:.85rem;margin:0 0 1rem">{{ gsession.session_date }}</p>{% endif %}
+
+  <div id="recap-box" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem">
+    <p id="recap-status" style="color:var(--text-dim);font-size:.85rem;margin:0">Loading recap…</p>
+    <div id="recap-text" class="rendered-md" style="display:none"></div>
+  </div>
+</div>
+
+<script>
+function _recapMdToHtml(text) {
+  let h = text
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,'<em>$1</em>')
+    .replace(/\n\n/g,'</p><p>').replace(/\n/g,'<br>');
+  return '<p>' + h + '</p>';
+}
+
+(async function () {
+  const status = document.getElementById('recap-status');
+  const box = document.getElementById('recap-text');
+  try {
+    const res = await fetch('/api/session-log/{{ gsession.id }}/recap', { method: 'POST' });
+    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.recap) {
+      status.textContent = data.empty
+        ? 'No recap available for this session yet.'
+        : 'No recap produced.';
+      return;
+    }
+    status.style.display = 'none';
+    box.style.display = 'block';
+    box.innerHTML = _recapMdToHtml(data.recap);
+  } catch (e) {
+    status.textContent = 'Failed to load recap: ' + e.message;
+  }
+})();
+</script>
+{% endblock %}

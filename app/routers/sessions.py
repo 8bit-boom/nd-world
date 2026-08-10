@@ -4,9 +4,11 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
+from .. import auth
+from .. import ai as _ai_module
 from ..database import get_db
 from ..deps import get_world_ctx, paginate
-from ..models import CombatSession, Entity, GameSession, Party, PlayerCharacter, World
+from ..models import CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, World
 from ..templating import templates
 
 router = APIRouter()
@@ -198,3 +200,88 @@ async def session_loot_transfer(session_id: int, request: Request, db: Session =
         gs.party.loot_json = json.dumps(party_loot)
     db.commit()
     return {"loot": loot}
+
+
+# ── AI recap assist (GM-only, via the Sessions edit page) ────────────────────
+
+@router.post("/api/sessions/ai/expand-notes")
+async def api_expand_recap_notes(request: Request):
+    """Expand terse GM notes (whatever's currently in the Summary textarea)
+    into a polished narrative recap. Session-independent — works on the New
+    Session form too, before anything has been saved."""
+    body = await request.json()
+    notes = str(body.get("notes", "")).strip()
+    if not notes:
+        raise HTTPException(400, "No notes provided")
+    return {"recap": await _ai_module.expand_recap_notes(notes)}
+
+
+@router.post("/api/sessions/ai/condense-recap")
+async def api_condense_recap(request: Request):
+    body = await request.json()
+    recap = str(body.get("recap", "")).strip()
+    if not recap:
+        raise HTTPException(400, "No recap provided")
+    return {"recap": await _ai_module.condense_recap(recap)}
+
+
+@router.post("/api/sessions/{session_id}/ai/summarize-from-facts")
+async def api_summarize_from_facts(session_id: int, db: Session = Depends(get_db)):
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    if not gs:
+        raise HTTPException(404)
+    facts = db.query(Fact).filter(Fact.game_session_id == session_id).order_by(Fact.created_at).all()
+    if not facts:
+        raise HTTPException(400, "No facts logged for this session yet — log some on the Facts page first.")
+    recap = await _ai_module.summarize_session_from_facts([f.content for f in facts])
+    return {"recap": recap}
+
+
+# ── Player-facing session log (read-only, AI-synthesized) ───────────────────
+#
+# Deliberately separate from /sessions (GM-only): that page's Summary field
+# is the GM's raw recap, free-text with no visibility flag of its own, so it
+# can (and often does) contain secrets — exactly why the Facts feature
+# exists as a *discrete*, individually-flagged log. What a player sees here
+# is never that raw text; it's synthesized fresh, each time, purely from
+# this session's Facts already marked visible_to_players (or all facts, for
+# a GM browsing the same page) — the same security boundary the Chronicler
+# uses, just narrated for one session instead of the whole world.
+
+@router.get("/session-log", response_class=HTMLResponse)
+def session_log_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, worlds = get_world_ctx(request, db, active_world)
+    sessions = db.query(GameSession).filter(
+        GameSession.world_id == (world.id if world else 1)
+    ).order_by(GameSession.session_num.desc()).all()
+    return templates.TemplateResponse("sessions/player_list.html", {
+        "request": request, "world": world, "worlds": worlds, "sessions": sessions,
+    })
+
+
+@router.get("/session-log/{session_id}", response_class=HTMLResponse)
+def session_log_detail(session_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, worlds = get_world_ctx(request, db, active_world)
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    user = getattr(request.state, "user", None)
+    if not gs or not auth.user_can_access_world(db, user, db.get(World, gs.world_id)):
+        raise HTTPException(404)
+    return templates.TemplateResponse("sessions/player_detail.html", {
+        "request": request, "world": world, "worlds": worlds, "gsession": gs,
+    })
+
+
+@router.post("/api/session-log/{session_id}/recap")
+async def api_session_log_recap(session_id: int, request: Request, db: Session = Depends(get_db)):
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    user = getattr(request.state, "user", None)
+    if not gs or not auth.user_can_access_world(db, user, db.get(World, gs.world_id)):
+        raise HTTPException(404)
+    q = db.query(Fact).filter(Fact.game_session_id == session_id)
+    if not (user and user.is_gm):
+        q = q.filter(Fact.visible_to_players.isnot(False))
+    facts = q.order_by(Fact.created_at).all()
+    if not facts:
+        return {"recap": "", "empty": True}
+    recap = await _ai_module.summarize_session_from_facts([f.content for f in facts])
+    return {"recap": recap}

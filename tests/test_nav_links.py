@@ -15,7 +15,7 @@ from .conftest import GM_PASSWORD, login
 
 # All of these previously rendered zero /kind/ nav links (main.py's own pages,
 # and characters.py's, already worked and aren't the regression surface).
-PAGES = ["/quests", "/sessions", "/tables", "/combat", "/parties", "/calendar", "/import", "/facts", "/chronicler"]
+PAGES = ["/quests", "/sessions", "/tables", "/combat", "/parties", "/calendar", "/import", "/facts", "/chronicler", "/session-log"]
 
 
 @pytest.mark.parametrize("page", PAGES)

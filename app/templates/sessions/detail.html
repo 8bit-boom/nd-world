@@ -1,6 +1,10 @@
 {% extends "base.html" %}
 {% block title %}{{ gsession.title if gsession else 'New Session' }} — Sessions{% endblock %}
 {% block content %}
+<style>
+.ai-recap-btn { background:var(--bg3); border:1px solid var(--neon); color:var(--neon); padding:.35rem .8rem; font-size:.78rem; border-radius:3px; cursor:pointer; font-family:var(--font); }
+.ai-recap-btn:disabled { opacity:.5; cursor:default; }
+</style>
 <div style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
     <h1 style="color:var(--neon);font-size:1.3rem;margin:0">{{ '📓 #' + gsession.session_num|string + ' ' + gsession.title if gsession else '+ New Session' }}</h1>
@@ -38,7 +42,24 @@
       </div>
       <div class="form-group" style="margin-top:.75rem">
         <label>Summary <small>(Markdown)</small></label>
-        <textarea name="summary" rows="8" style="font-family:var(--font);font-size:.85rem">{{ gsession.summary if gsession else '' }}</textarea>
+        <textarea name="summary" id="summary-field" rows="8" style="font-family:var(--font);font-size:.85rem">{{ gsession.summary if gsession else '' }}</textarea>
+        <div style="display:flex;gap:.5rem;margin-top:.4rem;flex-wrap:wrap;align-items:center">
+          <button type="button" class="ai-recap-btn" onclick="aiExpandNotes()">✨ Expand notes into recap</button>
+          <button type="button" class="ai-recap-btn" onclick="aiCondenseRecap()">✂ Condense recap</button>
+          {% if gsession %}
+          <button type="button" class="ai-recap-btn" onclick="aiSummarizeFromFacts()">📎 Summarize from Facts</button>
+          {% endif %}
+          <span id="ai-recap-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+        </div>
+        <div id="ai-recap-preview" style="display:none;margin-top:.6rem;background:var(--bg3);border:1px solid var(--neon);border-radius:4px;padding:.7rem">
+          <div style="font-size:.78rem;color:var(--neon);margin-bottom:.4rem">AI draft — review before applying</div>
+          <div id="ai-recap-preview-text" style="font-size:.85rem;white-space:pre-wrap;max-height:220px;overflow-y:auto;margin-bottom:.5rem"></div>
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+            <button type="button" class="ai-recap-btn" onclick="aiApplyRecap('replace')">Replace summary</button>
+            <button type="button" class="ai-recap-btn" onclick="aiApplyRecap('append')">Append to summary</button>
+            <button type="button" class="ai-recap-btn" onclick="aiDiscardRecap()">Discard</button>
+          </div>
+        </div>
       </div>
       {% if not gsession %}
       <div class="form-group" style="margin-top:.75rem">
@@ -120,6 +141,68 @@
 </div>
 
 <script>
+// ── AI recap assist — unconditional (works on the New Session form too,
+// where gsession doesn't exist yet, unlike the prep/loot/XP panels below) ──
+let _aiRecapDraft = '';
+
+function _aiRecapButtons() { return document.querySelectorAll('.ai-recap-btn'); }
+
+async function aiRunRecap(url, body) {
+  const status = document.getElementById('ai-recap-status');
+  status.textContent = 'Thinking…';
+  _aiRecapButtons().forEach(b => b.disabled = true);
+  try {
+    const res = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+    const data = await res.json();
+    _aiRecapDraft = data.recap || '';
+    if (!_aiRecapDraft) {
+      status.textContent = data.empty ? 'No facts logged for this session yet.' : 'No recap produced.';
+      return;
+    }
+    document.getElementById('ai-recap-preview-text').textContent = _aiRecapDraft;
+    document.getElementById('ai-recap-preview').style.display = 'block';
+    status.textContent = '';
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  } finally {
+    _aiRecapButtons().forEach(b => b.disabled = false);
+  }
+}
+
+function aiExpandNotes() {
+  const notes = document.getElementById('summary-field').value.trim();
+  if (!notes) { alert('Type some notes first.'); return; }
+  aiRunRecap('/api/sessions/ai/expand-notes', { notes });
+}
+
+function aiCondenseRecap() {
+  const recap = document.getElementById('summary-field').value.trim();
+  if (!recap) { alert('Nothing to condense yet.'); return; }
+  aiRunRecap('/api/sessions/ai/condense-recap', { recap });
+}
+
+{% if gsession %}
+function aiSummarizeFromFacts() {
+  aiRunRecap('/api/sessions/{{ gsession.id }}/ai/summarize-from-facts', {});
+}
+{% endif %}
+
+function aiApplyRecap(mode) {
+  const ta = document.getElementById('summary-field');
+  const current = ta.value.trim();
+  ta.value = (mode === 'append' && current) ? current + '\n\n' + _aiRecapDraft : _aiRecapDraft;
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  aiDiscardRecap();
+}
+
+function aiDiscardRecap() {
+  document.getElementById('ai-recap-preview').style.display = 'none';
+  _aiRecapDraft = '';
+}
+
 {% if gsession %}
 const SESSION_ID = {{ gsession.id }};
 let prep = {{ prep | tojson }};

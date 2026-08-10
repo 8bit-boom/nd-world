@@ -187,13 +187,17 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if path == "/api/chronicler/ask":
         return True
+    if re.match(r"^/api/session-log/\d+/recap$", path):
+        return True
     if method != "GET":
         return False
-    if path in ("/", "/rules", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler"):
+    if path in ("/", "/rules", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log"):
         return True
     if path.startswith("/kind/") or path.startswith("/uploads/"):
         return True
     if re.match(r"^/entity/\d+$", path):
+        return True
+    if re.match(r"^/session-log/\d+$", path):
         return True
     if path.startswith("/maps/") and not (path == "/maps/schematic" or path.startswith("/maps/schematic/")) and path != "/maps/new":
         return True
