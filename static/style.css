@@ -583,6 +583,7 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
   border-radius: 2px;
 }
 .prose u, .rendered-md u { text-decoration-color: var(--neon); text-underline-offset: 2px; }
+.prose img, .rendered-md img { max-width: 100%; height: auto; border-radius: 4px; margin: .4em 0; display: block; }
 
 /* ── Relations ── */
 .relations { margin-top: 1.5rem; }

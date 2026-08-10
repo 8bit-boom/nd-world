@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Settings — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
-<div class="form-page" style="max-width:640px">
+<div class="form-page" style="max-width:{{ '960px' if active_tab == 'visibility' else '640px' }}">
   <h1>⚙ Settings</h1>
 
   <div class="settings-tab-bar">
     <button type="button" class="settings-tab {% if active_tab == 'options' %}active{% endif %}" id="tab-options" onclick="switchSettingsTab('options')">Options</button>
+    <button type="button" class="settings-tab {% if active_tab == 'visibility' %}active{% endif %}" id="tab-visibility" onclick="switchSettingsTab('visibility')">Visibility</button>
     <button type="button" class="settings-tab {% if active_tab == 'system' %}active{% endif %}" id="tab-system" onclick="switchSettingsTab('system')">System</button>
   </div>
 
@@ -81,6 +82,69 @@
     </form>
   </div>
 
+  <div id="pane-visibility" {% if active_tab != 'visibility' %}style="display:none"{% endif %}>
+    <h2 style="font-size:.9rem;color:var(--text-dim);margin:1rem 0 .5rem">Bulk visibility</h2>
+    {% if not world %}
+    <p style="font-size:.82rem;color:var(--text-dim)">Pick a world from the nav bar first — visibility is set per world.</p>
+    {% else %}
+    <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
+      Select entities below and set their visibility all at once, instead of editing each one
+      individually. Same three options as the per-entity edit form.
+    </p>
+    <div id="vis-bulk-bar" style="display:flex;flex-wrap:wrap;align-items:center;gap:.6rem;margin-bottom:.8rem;padding:.6rem;border:1px solid var(--border);border-radius:4px">
+      <span><span id="vis-count">0</span> selected</span>
+      <select id="vis-mode-select" style="max-width:220px">
+        <option value="everyone">🌐 Everyone</option>
+        <option value="gm">🔒 GM only</option>
+        <option value="players">👥 Specific players</option>
+      </select>
+      <div id="vis-player-picker" style="display:none;gap:.5rem;flex-wrap:wrap">
+        {% for p in world_players %}
+        <label style="display:flex;align-items:center;gap:.3rem;font-size:.8rem;font-weight:normal">
+          <input type="checkbox" class="vis-player-cb" value="{{ p.id }}" style="width:auto">
+          {{ p.display_name or p.email }}
+        </label>
+        {% else %}
+        <span style="font-size:.8rem;color:var(--text-dim)">No players in this world yet.</span>
+        {% endfor %}
+      </div>
+      <button type="button" id="vis-apply-btn" class="btn-primary" disabled>Apply</button>
+      <span id="vis-status" style="font-size:.8rem;color:var(--text-dim)"></span>
+    </div>
+
+    <input id="vis-filter" placeholder="Filter by name or kind…" style="margin-bottom:.6rem"/>
+
+    <div style="max-height:60vh;overflow-y:auto;border:1px solid var(--border);border-radius:4px">
+      <table class="stat-table" style="width:100%">
+        <thead>
+          <tr>
+            <th style="width:2rem"><input type="checkbox" id="vis-select-all" style="width:auto"></th>
+            <th>Name</th>
+            <th>Kind</th>
+            <th>Current visibility</th>
+          </tr>
+        </thead>
+        <tbody id="vis-rows">
+          {% for e in vis_entities %}
+          <tr class="vis-row" data-search="{{ (e.name ~ ' ' ~ e.kind)|lower }}">
+            <td><input type="checkbox" class="vis-row-cb" data-id="{{ e.id }}"></td>
+            <td>{{ e.name }}</td>
+            <td>{{ kind_icons.get(e.kind, '') }} {{ e.kind }}</td>
+            <td>
+              {% if e.visible_to_players %}🌐 Everyone
+              {% elif allowed_by_entity.get(e.id) %}👥 {{ allowed_by_entity[e.id]|length }} player(s)
+              {% else %}🔒 GM only{% endif %}
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" style="color:var(--text-dim);font-size:.82rem">No entities in this world yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+
   <div id="pane-system" {% if active_tab != 'system' %}style="display:none"{% endif %}>
     <form method="post" action="/settings/system" class="entity-form">
       <h2 style="font-size:.9rem;color:var(--text-dim);margin:1rem 0 .5rem">System &amp; integrations</h2>
@@ -137,5 +201,75 @@ function switchSettingsTab(t) {
   document.querySelectorAll('[id^="pane-"]').forEach(p => p.style.display = 'none');
   document.getElementById('pane-' + t).style.display = '';
 }
+
+// ── Bulk visibility ─────────────────────────────────────────────────────────
+(function () {
+  const rows = () => Array.from(document.querySelectorAll('.vis-row-cb'));
+  const selectAllCb = document.getElementById('vis-select-all');
+  const applyBtn = document.getElementById('vis-apply-btn');
+  const countEl = document.getElementById('vis-count');
+  const modeSelect = document.getElementById('vis-mode-select');
+  const playerPicker = document.getElementById('vis-player-picker');
+  const statusEl = document.getElementById('vis-status');
+  const filterInput = document.getElementById('vis-filter');
+  if (!applyBtn) return; // Visibility tab not rendered (no active world)
+
+  function updateBar() {
+    const checked = rows().filter(cb => cb.checked && cb.closest('tr').style.display !== 'none');
+    countEl.textContent = checked.length;
+    applyBtn.disabled = checked.length === 0;
+  }
+
+  function updateModeUI() {
+    playerPicker.style.display = modeSelect.value === 'players' ? 'flex' : 'none';
+  }
+
+  document.addEventListener('change', (e) => {
+    if (e.target.classList.contains('vis-row-cb')) updateBar();
+  });
+
+  selectAllCb.addEventListener('change', () => {
+    rows().forEach(cb => {
+      if (cb.closest('tr').style.display !== 'none') cb.checked = selectAllCb.checked;
+    });
+    updateBar();
+  });
+
+  modeSelect.addEventListener('change', updateModeUI);
+  updateModeUI();
+
+  filterInput.addEventListener('input', () => {
+    const term = filterInput.value.trim().toLowerCase();
+    document.querySelectorAll('.vis-row').forEach(tr => {
+      tr.style.display = !term || (tr.dataset.search || '').includes(term) ? '' : 'none';
+    });
+    updateBar();
+  });
+
+  applyBtn.addEventListener('click', async () => {
+    const checked = rows().filter(cb => cb.checked && cb.closest('tr').style.display !== 'none');
+    if (!checked.length) return;
+    const mode = modeSelect.value;
+    const allowedIds = Array.from(document.querySelectorAll('.vis-player-cb:checked')).map(cb => parseInt(cb.value, 10));
+    applyBtn.disabled = true;
+    statusEl.textContent = 'Applying…';
+    try {
+      const res = await fetch('/api/entities/bulk-visibility', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entity_ids: checked.map(cb => parseInt(cb.dataset.id, 10)),
+          visibility_mode: mode,
+          allowed_player_ids: allowedIds,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      window.location.href = '/settings?tab=visibility';
+    } catch (e) {
+      statusEl.textContent = 'Failed: ' + e.message;
+      applyBtn.disabled = false;
+    }
+  });
+})();
 </script>
 {% endblock %}

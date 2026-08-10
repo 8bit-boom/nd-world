@@ -2206,16 +2206,36 @@ def content_editor(request: Request, db: Session = Depends(get_db), active_world
 def _settings_context(request: Request, db: Session, active_world: str, tab: str, system_error: str = None):
     world, worlds = get_world_ctx(request, db, active_world)
     settings = get_app_settings(db)
+    vis_entities = []
+    world_players = []
+    if world:
+        vis_entities = (
+            db.query(Entity)
+            .filter(Entity.world_id == world.id)
+            .order_by(Entity.kind, Entity.name)
+            .all()
+        )
+        world_players = _world_player_list(db, world.id)
+    allowed_by_entity = {}
+    if vis_entities:
+        rows = db.query(entity_player_access.c.entity_id, entity_player_access.c.user_id).filter(
+            entity_player_access.c.entity_id.in_([e.id for e in vis_entities])
+        ).all()
+        for eid, uid in rows:
+            allowed_by_entity.setdefault(eid, set()).add(uid)
     return {
         "request": request, "world": world, "worlds": worlds,
         "settings": settings,
-        "active_tab": tab if tab in ("options", "system") else "options",
+        "active_tab": tab if tab in ("options", "system", "visibility") else "options",
         "env_ollama_model": _ai_module.OLLAMA_MODEL,
         "env_ollama_url": _ai_module.OLLAMA_URL,
         "env_swarmui_external_url": SWARMUI_EXTERNAL_URL,
         "env_android_emulator_url": ANDROID_EMULATOR_URL,
         "env_editor_external_url": EDITOR_EXTERNAL_URL,
         "system_error": system_error,
+        "vis_entities": vis_entities,
+        "world_players": world_players,
+        "allowed_by_entity": allowed_by_entity,
     }
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -3050,6 +3070,39 @@ async def bulk_delete_entities(kind: str, request: Request, db: Session = Depend
     if params:
         redirect += "?" + "&".join(params)
     return RedirectResponse(with_world(redirect, world), status_code=303)
+
+
+@app.post("/api/entities/bulk-visibility")
+async def bulk_set_visibility(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Set visible_to_players (and, for 'players' mode, the per-player
+    allow-list) on a batch of entities at once — the Settings > Visibility
+    tab's bulk-apply action. Same visibility semantics as the per-entity
+    edit form's visibility_mode radio group, just applied to many rows."""
+    world = get_active_world(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    body = await request.json()
+    ids = []
+    for v in body.get("entity_ids") or []:
+        try:
+            ids.append(int(v))
+        except (TypeError, ValueError):
+            continue
+    mode = str(body.get("visibility_mode", "")).strip()
+    if mode not in ("everyone", "gm", "players"):
+        raise HTTPException(400, "visibility_mode must be one of: everyone, gm, players")
+    allowed_player_ids = body.get("allowed_player_ids") or []
+
+    entities = (
+        db.query(Entity).filter(Entity.id.in_(ids), Entity.world_id == world.id).all()
+        if ids else []
+    )
+    for e in entities:
+        e.visible_to_players = (mode == "everyone")
+    db.commit()
+    for e in entities:
+        _sync_entity_access(db, e.id, allowed_player_ids if mode == "players" else [])
+    return {"updated": len(entities)}
 
 # ── Relations ─────────────────────────────────────────────────────────────────
 

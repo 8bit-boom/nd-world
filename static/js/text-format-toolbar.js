@@ -42,11 +42,30 @@ function ndFmtEscapeHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function ndFmtEscapeAttr(s) {
+  return ndFmtEscapeHtml(s).replace(/"/g, "&quot;");
+}
+
+// Only a same-origin upload path or a plain http(s) URL — never javascript:
+// or any other scheme — can end up in a src="..." attribute here.
+function ndFmtSafeImageUrl(raw) {
+  const v = (raw || "").trim();
+  if (v.startsWith("/uploads/") || /^https?:\/\//i.test(v)) return v;
+  return null;
+}
+
 // Client-side render of the inline-formatting subset only (no headings,
-// lists, tables, links — those are markdown2's job server-side). Used for
-// the board note card body, which has no server render pass.
+// lists, tables — those are markdown2's job server-side). Used for the board
+// note card body, which has no server render pass. Images are included (but
+// not full link syntax) since the toolbar's image button writes ![]() here
+// same as everywhere else data-fmt appears.
 function ndFmtRenderInline(text) {
   let html = ndFmtEscapeHtml(text || "");
+  html = html.replace(/!\[([^\]]{0,300})\]\(([^)\s]{1,2000})\)/g, (_, alt, url) => {
+    const safeUrl = ndFmtSafeImageUrl(url);
+    if (!safeUrl) return "";
+    return `<img src="${ndFmtEscapeAttr(safeUrl)}" alt="${ndFmtEscapeAttr(alt)}" style="max-width:100%;border-radius:4px;margin:.3em 0;display:block">`;
+  });
   html = html.replace(/\*\*(.+?)\*\*/gs, "<strong>$1</strong>");
   html = html.replace(/\*(.+?)\*/gs, "<em>$1</em>");
   html = html.replace(/~~(.+?)~~/gs, "<del>$1</del>");
@@ -73,6 +92,61 @@ function ndFmtWrapSelection(ta, before, after) {
   ta.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+// Uploads through the same /api/upload-image endpoint the entity portrait
+// field already posts to (app/main.py's save_upload — converts to the
+// world's configured format, rejects disallowed extensions). Markdown image
+// syntax is already rendered server-side (app/rendering.py's render_md has
+// no special-casing to disable it) and already special-cased for stripping
+// in card summaries (strip_md), so this button is purely a convenience for
+// getting a file onto disk and its URL into the textarea — nothing new to
+// teach the renderer.
+function ndFmtInsertImage(ta, btn) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/*";
+  input.style.display = "none";
+  document.body.appendChild(input);
+  input.addEventListener("change", async () => {
+    const file = input.files[0];
+    input.remove();
+    if (!file) return;
+    const start = ta.selectionStart, end = ta.selectionEnd;
+    const alt = ta.value.slice(start, end).trim();
+    const placeholder = `![Uploading ${file.name}…]()`;
+    ta.value = ta.value.slice(0, start) + placeholder + ta.value.slice(end);
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    btn.disabled = true;
+    const fd = new FormData();
+    fd.append("file", file);
+    // Which endpoint to POST to is per-textarea (data-fmt-upload) — entity/
+    // rules/board/private-note bodies are GM-only pages so the default
+    // GM-only /api/upload-image is fine, but the character backstory/notes
+    // fields are player-writable and need the player-safe
+    // /api/characters/upload-image instead (see characters.py).
+    const endpoint = ta.dataset.fmtUpload || "/api/upload-image";
+    try {
+      const res = await fetch(endpoint, { method: "POST", body: fd });
+      if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+      const data = await res.json();
+      const at = ta.value.indexOf(placeholder);
+      const markdown = `![${alt}](${data.url})`;
+      if (at !== -1) {
+        ta.value = ta.value.slice(0, at) + markdown + ta.value.slice(at + placeholder.length);
+        ta.selectionStart = ta.selectionEnd = at + markdown.length;
+      }
+    } catch (e) {
+      const at = ta.value.indexOf(placeholder);
+      if (at !== -1) ta.value = ta.value.slice(0, at) + ta.value.slice(at + placeholder.length);
+      alert("Image upload failed: " + e.message);
+    } finally {
+      btn.disabled = false;
+      ta.focus();
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  });
+  input.click();
+}
+
 function ndFmtButton(label, title, onClick) {
   const b = document.createElement("button");
   b.type = "button";
@@ -92,6 +166,9 @@ function ndFmtBuildToolbar(ta) {
   bar.appendChild(ndFmtButton("U", "Underline", () => ndFmtWrapSelection(ta, "[u]", "[/u]")));
   bar.appendChild(ndFmtButton("S", "Strikethrough", () => ndFmtWrapSelection(ta, "~~", "~~")));
   bar.appendChild(ndFmtButton("⬛", "Highlight", () => ndFmtWrapSelection(ta, "[mark]", "[/mark]")));
+
+  const imgBtn = ndFmtButton("🖼", "Insert image", () => ndFmtInsertImage(ta, imgBtn));
+  bar.appendChild(imgBtn);
 
   const sep = document.createElement("div");
   sep.className = "fmt-sep";

@@ -95,7 +95,7 @@
     <div class="en-list">
       {% for n in entity_notes %}
       <div class="en-note{% if not n.visible_to_players %} en-hidden{% endif %}">
-        <div class="en-note-content">{{ n.content }}</div>
+        <div class="en-note-content rendered-md">{{ n.content | md | safe }}</div>
         <div class="en-note-footer">
           <span class="en-note-date">{{ n.created_at.strftime('%Y-%m-%d %H:%M') if n.created_at else '' }}</span>
           {% if request.state.user and request.state.user.is_gm %}
@@ -117,7 +117,7 @@
 
     {% if request.state.user and request.state.user.is_gm %}
     <form action="/entity/{{ entity.id }}/notes/new" method="post" class="en-add-form">
-      <textarea name="content" rows="2" placeholder="Add a note about this entity…" required></textarea>
+      <textarea name="content" rows="2" placeholder="Add a note about this entity…" required data-fmt></textarea>
       <div class="en-add-row">
         <label class="en-vis-check">
           <input type="checkbox" name="visible" value="1" style="width:auto">
@@ -364,14 +364,12 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
   window.epKey = function(e) { if (e.key==='Enter'&&!e.shiftKey){e.preventDefault();epSend();} };
   window.epResize = function(el) { el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,100)+'px'; };
 
-  // Images embedded in the entity's body text (markdown ![]()) pop up too.
-  var body = document.querySelector('.detail-body');
-  if (body) {
-    body.querySelectorAll('img').forEach(function (img) {
-      img.style.cursor = 'zoom-in';
-      img.addEventListener('click', function () { openLightbox(img.src, img.alt); });
-    });
-  }
+  // Images embedded in the entity's body text or notes (markdown ![]()) pop up too.
+  document.querySelectorAll('.detail-body img, .en-note-content img').forEach(function (img) {
+    img.style.cursor = 'zoom-in';
+    img.addEventListener('click', function () { openLightbox(img.src, img.alt); });
+  });
 })();
 </script>
+<script src="/static/js/text-format-toolbar.js"></script>
 {% endblock %}

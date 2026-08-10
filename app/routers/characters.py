@@ -341,6 +341,20 @@ def api_characters_catalog():
     return game_catalog.catalog_payload()
 
 
+@router.post("/api/characters/upload-image")
+async def character_upload_image(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Backs the shared formatting toolbar's image button on the
+    backstory/notes textareas (app/templates/characters/form.html) — a
+    player-reachable equivalent of main.py's /api/upload-image, since a
+    player editing their own character can't call the GM-only one. Reuses
+    _upload_portrait rather than a separate code path so both land in the
+    same uploads/portraits/ dir under the same size/extension rules."""
+    uploaded = _upload_portrait(file, db=db)
+    if not uploaded:
+        raise HTTPException(400, "Unsupported file type")
+    return {"url": uploaded}
+
+
 @router.post("/characters/new")
 async def character_create(
     request: Request,

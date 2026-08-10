@@ -309,9 +309,9 @@
     <div class="cf-section">
       <div class="cf-section-title"><span>Backstory &amp; Notes</span></div>
       <div class="cf-field" style="margin-bottom:.6rem;"><label>Backstory (Markdown supported)</label>
-        <textarea name="backstory" style="min-height:120px;" placeholder="Character history and origin..." data-fmt>{{ pc.backstory if pc else '' }}</textarea></div>
+        <textarea name="backstory" style="min-height:120px;" placeholder="Character history and origin..." data-fmt data-fmt-upload="/api/characters/upload-image">{{ pc.backstory if pc else '' }}</textarea></div>
       <div class="cf-field"><label>Session Notes (Markdown supported)</label>
-        <textarea name="notes" style="min-height:100px;" placeholder="Ongoing notes, quests, contacts..." data-fmt>{{ pc.notes if pc else '' }}</textarea></div>
+        <textarea name="notes" style="min-height:100px;" placeholder="Ongoing notes, quests, contacts..." data-fmt data-fmt-upload="/api/characters/upload-image">{{ pc.notes if pc else '' }}</textarea></div>
     </div>
 
     <!-- Custom Fields (from template) -->
