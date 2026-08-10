@@ -7,8 +7,11 @@
 Three tabs:
 
 - **Options** — image-upload format (AVIF/WebP/none, chosen independently
-  for static vs. animated images) and entity hover-preview behavior (hover a
-  link for N seconds to see a popup card; configurable delay/size).
+  for static vs. animated images), entity hover-preview behavior (hover a
+  link for N seconds to see a popup card; configurable delay/size), and a
+  **UI scale** picker (90–150%, for readability — this one's actually a
+  per-browser preference like the theme toggle, not instance-wide; also
+  reachable from the nav bar itself without opening Settings at all).
 - **Visibility** — bulk-change `visible_to_players` across many entities at
   once (see [Worldbuilding & Entities](Worldbuilding-and-Entities.md#visibility)).
 - **System** — Ollama model/URL, SwarmUI/Android-emulator/Content-Editor

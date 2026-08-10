@@ -5,14 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>{% block title %}{{ world.name if world else 'N&D World' }} — World{% endblock %}</title>
   <script>
-    // Applied before first paint so there's no flash of the wrong theme.
+    // Applied before first paint so there's no flash of the wrong theme/scale.
     (function(){
       try {
         document.documentElement.dataset.theme = localStorage.getItem('nd_theme') || 'dark';
+        document.documentElement.dataset.scale = localStorage.getItem('nd_ui_scale') || '100';
       } catch(e) {}
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=12"/>
+  <link rel="stylesheet" href="/static/style.css?v=13"/>
   {% if world %}<style>:root { --neon: {{ world.accent }} !important; }</style>{% endif %}
 </head>
 <body>
@@ -103,6 +104,13 @@
     <a href="{{ ('/new?kind=' + _current_kind)|wq }}" class="btn-new" title="New {{ _current_kind }}">+ New</a>
     {% endif %}
     <button type="button" id="theme-toggle" class="nav-kind" title="Switch theme" style="cursor:pointer;background:none;border:none;font-family:inherit;font-size:inherit"></button>
+    <select id="scale-select" title="UI scale" class="nav-kind" style="cursor:pointer;background:var(--bg2);border:1px solid var(--border);color:var(--text);font-family:inherit;font-size:.8rem;border-radius:2px;padding:.2rem .3rem">
+      <option value="90">90%</option>
+      <option value="100">100%</option>
+      <option value="110">110%</option>
+      <option value="125">125%</option>
+      <option value="150">150%</option>
+    </select>
     {% if request.state.user %}
     <span class="nav-kind" style="color:var(--text-dim);cursor:default">
       {{ '⚡ GM' if request.state.user.is_gm else '🎭 ' + request.state.user.display_name }}
@@ -137,6 +145,20 @@
       var idx=THEMES.indexOf(document.documentElement.dataset.theme);
       setTheme(THEMES[(idx+1)%THEMES.length]);
     });
+  }
+  // UI scale — same per-browser localStorage pattern as theme above. Exposed
+  // on window so a second control elsewhere on the page (Settings > Options)
+  // can drive the exact same state instead of duplicating this logic.
+  window.ndSetUIScale=function(v){
+    document.documentElement.dataset.scale=v;
+    try{localStorage.setItem('nd_ui_scale',v);}catch(e){}
+    document.querySelectorAll('.nd-ui-scale-select').forEach(function(el){el.value=v;});
+  };
+  var scaleSelect=document.getElementById('scale-select');
+  if(scaleSelect){
+    scaleSelect.classList.add('nd-ui-scale-select');
+    scaleSelect.value=document.documentElement.dataset.scale||'100';
+    scaleSelect.addEventListener('change',function(){window.ndSetUIScale(this.value);});
   }
   // Lets a GM drag a nav tab (Character, Race Catalog, Boards, ...) onto
   // the home page's Quick Links — see index.html for the drop targets.

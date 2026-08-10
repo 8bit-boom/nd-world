@@ -10,7 +10,9 @@
 
 /* ── Sidebar ── */
 .ai-sidebar {
-  width: 260px;
+  /* rem, not px, so this tracks the UI-scale setting/browser zoom instead
+     of staying visually fixed while its (rem-sized) contents grow. */
+  width: 17rem;
   flex-shrink: 0;
   background: var(--bg2);
   border-right: 1px solid var(--border);
@@ -725,16 +727,16 @@
       <div style="display:flex;align-items:center;gap:.4rem;margin-top:.45rem">
         <label for="ctx-limit" style="font-size:.72rem;color:var(--text-dim);white-space:nowrap" title="Max entities fetched per message">Entities:</label>
         <input type="range" id="ctx-limit" min="5" max="250" step="5" value="25"
-               style="flex:1;accent-color:var(--neon);cursor:pointer"
+               style="flex:1;min-width:0;accent-color:var(--neon);cursor:pointer"
                oninput="document.getElementById('ctx-limit-val').textContent=this.value==250?'max':this.value">
-        <span id="ctx-limit-val" style="font-size:.72rem;color:var(--neon);min-width:3ch;text-align:right">25</span>
+        <span id="ctx-limit-val" style="font-size:.72rem;color:var(--neon);min-width:2.4rem;text-align:right">25</span>
       </div>
       <div style="display:flex;align-items:center;gap:.4rem;margin-top:.3rem">
         <label for="notes-limit" style="font-size:.72rem;color:var(--text-dim);white-space:nowrap" title="Extra notes included per message (0 = off)">Notes:</label>
         <input type="range" id="notes-limit" min="0" max="20" step="1" value="5"
-               style="flex:1;accent-color:var(--neon);cursor:pointer"
+               style="flex:1;min-width:0;accent-color:var(--neon);cursor:pointer"
                oninput="document.getElementById('notes-limit-val').textContent=this.value==0?'off':this.value">
-        <span id="notes-limit-val" style="font-size:.72rem;color:var(--neon);min-width:3ch;text-align:right">5</span>
+        <span id="notes-limit-val" style="font-size:.72rem;color:var(--neon);min-width:2.4rem;text-align:right">5</span>
       </div>
     </div>
 
@@ -792,16 +794,16 @@
       <div style="display:flex;align-items:center;gap:.4rem">
         <label style="font-size:.72rem;color:var(--text-dim);white-space:nowrap;min-width:4rem" title="Max entities fetched per message">Entities:</label>
         <input type="range" id="ctx-limit-mob" min="5" max="250" step="5" value="25"
-               style="flex:1;accent-color:var(--neon);cursor:pointer"
+               style="flex:1;min-width:0;accent-color:var(--neon);cursor:pointer"
                oninput="syncRagSliders('entities',this.value)">
-        <span id="ctx-limit-mob-val" style="font-size:.72rem;color:var(--neon);min-width:3ch;text-align:right">25</span>
+        <span id="ctx-limit-mob-val" style="font-size:.72rem;color:var(--neon);min-width:2.4rem;text-align:right">25</span>
       </div>
       <div style="display:flex;align-items:center;gap:.4rem">
         <label style="font-size:.72rem;color:var(--text-dim);white-space:nowrap;min-width:4rem" title="Extra notes included per message (0 = off)">Notes:</label>
         <input type="range" id="notes-limit-mob" min="0" max="20" step="1" value="5"
-               style="flex:1;accent-color:var(--neon);cursor:pointer"
+               style="flex:1;min-width:0;accent-color:var(--neon);cursor:pointer"
                oninput="syncRagSliders('notes',this.value)">
-        <span id="notes-limit-mob-val" style="font-size:.72rem;color:var(--neon);min-width:3ch;text-align:right">5</span>
+        <span id="notes-limit-mob-val" style="font-size:.72rem;color:var(--neon);min-width:2.4rem;text-align:right">5</span>
       </div>
     </div>
 

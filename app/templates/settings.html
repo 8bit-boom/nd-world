@@ -80,6 +80,21 @@
         <button type="submit" class="btn-primary">Save</button>
       </div>
     </form>
+
+    <div class="entity-form" style="margin-top:1.5rem">
+      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1rem 0 .5rem">Display</h2>
+      <div class="form-group" style="display:flex;align-items:center;gap:.6rem">
+        <label for="ui-scale-settings" style="margin:0">UI scale</label>
+        <select id="ui-scale-settings" class="nd-ui-scale-select" style="max-width:140px">
+          <option value="90">90%</option>
+          <option value="100">100%</option>
+          <option value="110">110%</option>
+          <option value="125">125%</option>
+          <option value="150">150%</option>
+        </select>
+      </div>
+      <small style="color:var(--text-dim)">Applies instantly and is remembered on this browser/device only — like the theme toggle in the nav bar, this isn't saved to the server, so it's set per-person rather than for the whole instance. Also available from the nav bar next to the theme toggle.</small>
+    </div>
   </div>
 
   <div id="pane-visibility" {% if active_tab != 'visibility' %}style="display:none"{% endif %}>
@@ -285,6 +300,14 @@ function switchSettingsTab(t) {
       applyBtn.disabled = false;
     }
   });
+})();
+
+// ── UI scale (Display section) ──────────────────────────────────────────────
+(function () {
+  const sel = document.getElementById('ui-scale-settings');
+  if (!sel) return;
+  sel.value = document.documentElement.dataset.scale || '100';
+  sel.addEventListener('change', () => window.ndSetUIScale(sel.value));
 })();
 </script>
 {% endblock %}

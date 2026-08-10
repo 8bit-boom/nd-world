@@ -53,6 +53,16 @@
   --text-dim: #5a5f72;
 }
 
+/* ── UI scale ────────────────────────────────────────────────────────────────
+   Root font-size drives every `rem`-based measurement in the app (spacing,
+   most widths, most font sizes) — scaling it here is what makes the whole UI
+   grow/shrink together. Set from Settings > Options or the nav-bar picker
+   (see base.html), persisted client-side like the theme choice. */
+html[data-scale="90"]  { font-size: 90%; }
+html[data-scale="110"] { font-size: 110%; }
+html[data-scale="125"] { font-size: 125%; }
+html[data-scale="150"] { font-size: 150%; }
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html { scroll-behavior: smooth; }
@@ -761,8 +771,13 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
 /* ── List layout with folder sidebar ── */
 .list-layout { display: flex; gap: 1.5rem; align-items: flex-start; }
 .folder-sidebar {
-  min-width: 200px;
-  width: 200px;
+  /* rem, not a fixed pixel width, so this scales in step with the UI-scale
+     setting/browser zoom instead of staying visually fixed while its
+     (rem-sized) contents grow around it — also widened since real folder
+     names longer than ~8 characters (e.g. "Player Characters") were
+     clipped by the count badge eating the remaining space. */
+  min-width: 15rem;
+  width: 15rem;
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 6px;

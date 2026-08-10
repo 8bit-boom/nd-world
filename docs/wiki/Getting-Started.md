@@ -37,8 +37,9 @@ actually contains:
 - GM-only: an **🤖 AI Tools** dropdown (AI Chat, Image Studio, Content
   Editor), **⚙ Settings**, and the **+ New** button (defaults to whatever
   kind you're currently browsing).
-- Far right: your account badge, theme toggle, and **👤 Account** / **⏻
-  Logout**.
+- Far right: your account badge, the theme toggle, a **UI scale** picker
+  (90–150%, for readability — also available from Settings > Options), and
+  **👤 Account** / **⏻ Logout**.
 
 On mobile, all of this collapses behind a hamburger menu.
 

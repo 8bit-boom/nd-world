@@ -4,11 +4,22 @@ light-touch nav regroup (Boards into Tools, a new AI Tools dropdown), the
 empty-world onboarding hint, and the context-aware "+ New" nav button.
 Nothing here removes functionality — every underlying route still works,
 just reorganized/labeled more clearly.
+
+Also covers two follow-up visual-bug fixes reported from real screenshots
+(folder names in the entity list sidebar getting clipped past readability,
+and the AI page's RAG Entities/Notes slider value labels getting hard-clipped
+by an overflow:hidden ancestor because the <input type="range"> couldn't
+shrink below its intrinsic width as a flex child) plus the new UI-scale
+preference.
 """
+from pathlib import Path
+
 from app.database import SessionLocal
 from app.models import Entity
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+
+_STYLE_CSS = (Path(__file__).parent.parent / "static" / "style.css").read_text()
 
 
 # ── Export & Backup hub ──────────────────────────────────────────────────────
@@ -142,3 +153,97 @@ def test_new_button_matches_current_kind_page(client, seed):
     r = client.get("/kind/location")
     assert r.status_code == 200
     assert "/new?kind=location" in r.text
+
+
+# ── Folder-sidebar truncation (screenshot: "Player C..." instead of the
+#    full name) — was a fixed 200px sidebar too narrow for realistic folder
+#    names once the count badge ate its share of the space. ─────────────────
+
+def test_folder_sidebar_widened_and_scales_with_root_font_size():
+    """Locks in the regression: the sidebar must not go back to a fixed px
+    width, since px widths don't grow with the new UI-scale setting (or
+    browser zoom) while their rem-sized contents do — which is what caused
+    the clipping in the first place."""
+    assert ".folder-sidebar {" in _STYLE_CSS
+    block = _STYLE_CSS.split(".folder-sidebar {", 1)[1].split("}", 1)[0]
+    assert "200px" not in block
+    assert "rem" in block
+
+
+def test_folder_names_render_in_full_in_the_dom(client, seed):
+    """The ellipsis is CSS-only truncation for pathological cases — the
+    actual folder name must always be the real, untruncated text in the
+    rendered HTML (a screen reader / copy-paste / browser search must see
+    "Player Characters", not "Player C...")."""
+    db = SessionLocal()
+    try:
+        db.add(Entity(world_id=seed.world_a.id, kind="character", name="Bob", folder="Player Characters"))
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/kind/character")
+    assert r.status_code == 200
+    assert "Player Characters" in r.text
+
+
+# ── RAG slider value clipping (screenshot: "20" showing as "2") ─────────────
+
+def test_rag_sliders_can_shrink_to_make_room_for_their_value_label(client, seed):
+    """The <input type="range"> siblings must have min-width:0 so they can
+    actually shrink as flex children — without it a range input's intrinsic
+    width can push the value span past the sidebar's right edge, where
+    .ai-sidebar's overflow-x:hidden silently clips it instead of the ellipsis
+    CSS visibly kicking in (there's no ellipsis on these — a hard clip)."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/ai")
+    assert r.status_code == 200
+    for input_id in ("ctx-limit", "notes-limit", "ctx-limit-mob", "notes-limit-mob"):
+        needle = f'id="{input_id}"'
+        idx = r.text.index(needle)
+        # The style attribute immediately follows the id on these inputs.
+        tag_end = r.text.index(">", idx)
+        assert "min-width:0" in r.text[idx:tag_end], f"#{input_id} can't shrink — will clip its value label"
+    for val_id in ("ctx-limit-val", "notes-limit-val", "ctx-limit-mob-val", "notes-limit-mob-val"):
+        needle = f'id="{val_id}"'
+        idx = r.text.index(needle)
+        tag_end = r.text.index(">", idx)
+        assert "min-width:2.4rem" in r.text[idx:tag_end]
+
+
+def test_ai_sidebar_width_scales_with_root_font_size():
+    with open(Path(__file__).parent.parent / "app" / "templates" / "ai_chat.html") as f:
+        content = f.read()
+    block = content.split(".ai-sidebar {", 1)[1].split("}", 1)[0]
+    assert "260px" not in block
+    assert "rem" in block
+
+
+# ── UI scale preference ──────────────────────────────────────────────────────
+
+def test_ui_scale_css_rules_present():
+    for pct in ("90", "110", "125", "150"):
+        assert f'html[data-scale="{pct}"]' in _STYLE_CSS
+
+
+def test_ui_scale_picker_available_to_gm_and_players(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert 'id="scale-select"' in r.text
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r2 = client.get("/")
+    assert 'id="scale-select"' in r2.text
+
+
+def test_ui_scale_control_also_in_settings_options_tab(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get("/settings")
+    assert r.status_code == 200
+    assert 'id="ui-scale-settings"' in r.text
+    assert 'class="nd-ui-scale-select"' in r.text
