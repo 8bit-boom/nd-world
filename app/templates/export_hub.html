@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Export & Backup — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="form-page" style="max-width:720px">
+  <h1>📦 Export &amp; Backup</h1>
+
+  {% if request.query_params.get('imported') %}
+  <div class="import-notice">
+    Import complete — {{ request.query_params.get('imported') }} created,
+    {{ request.query_params.get('updated') }} updated.
+  </div>
+  {% endif %}
+
+  <p style="font-size:.85rem;color:var(--text-dim);margin-bottom:1.4rem">
+    Four different things, each for a different job — pick the one that matches what you're
+    actually trying to do.
+  </p>
+
+  <div class="export-option">
+    <h2>🗄 Full Backup <span class="export-tag">recommended for disaster recovery</span></h2>
+    <p>
+      A complete zip snapshot: the whole database (every world, character, session,
+      combat, quest, party, calendar, table, and note — not just lore), every uploaded
+      and AI-generated image, and every map. Safe to download while the app is running.
+      This is the one to use for routine backups — see <code>scripts/backup.sh</code> for
+      an unattended cron version.
+    </p>
+    <a href="/admin/backup.zip" class="btn-primary">⬇ Download Full Backup</a>
+  </div>
+
+  {% if not world %}
+  <p style="color:var(--text-dim);font-size:.85rem;margin-top:1.4rem">
+    Pick a world from the nav bar to see its export options below.
+  </p>
+  {% else %}
+  <div class="export-option">
+    <h2>📖 World Book</h2>
+    <p>
+      A readable, self-contained zip of <strong>{{ world.name }}</strong>'s lore — every
+      entity, board, and map, plus the rules — as browsable HTML. Good for sharing with
+      players offline, printing, or archiving a snapshot of the setting itself. Doesn't
+      include characters, sessions, or anything re-importable.
+    </p>
+    <a href="/export/book.zip" class="btn-primary">⬇ Download World Book</a>
+  </div>
+
+  <div class="export-option">
+    <h2>📦 World JSON</h2>
+    <p>
+      <strong>{{ world.name }}</strong>'s entities as JSON with images embedded — the
+      format the Import box below reads. Use this to move a world's lore into another
+      nd-world instance, or as a lore-only backup separate from the full database.
+    </p>
+    <div style="display:flex;gap:.6rem;flex-wrap:wrap">
+      <a href="/worlds/{{ world.id }}/export" class="btn-export">⬇ Single file</a>
+      <a href="/worlds/{{ world.id }}/export/split" class="btn-export" title="Rules, characters, templates, and content by kind as separate files — for scripts/external tooling">⬇ Split into separate files</a>
+    </div>
+  </div>
+
+  <div class="export-option">
+    <h2>⬆ Import World JSON</h2>
+    <p>Upload a previously exported "World JSON" (single file) into <strong>{{ world.name }}</strong> — matching entities are updated, new ones are created.</p>
+    <form action="/worlds/{{ world.id }}/import" method="post" enctype="multipart/form-data" class="import-form">
+      <input type="file" name="file" accept=".json" required/>
+      <button type="submit" class="btn-save">Import</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+
+<style>
+.export-option { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.2rem; margin-bottom: 1rem; }
+.export-option h2 { font-size: .95rem; margin: 0 0 .5rem; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.export-option p { font-size: .82rem; color: var(--text-dim); margin: 0 0 .8rem; line-height: 1.5; }
+.export-tag { font-size: .68rem; font-weight: normal; color: var(--neon); border: 1px solid var(--neon); border-radius: 10px; padding: .1rem .5rem; }
+</style>
+{% endblock %}

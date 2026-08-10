@@ -5,13 +5,6 @@
   <h1>🌐 WORLDS</h1>
 </div>
 
-{% if request.query_params.get('imported') %}
-<div class="import-notice">
-  Import complete — {{ request.query_params.get('imported') }} created,
-  {{ request.query_params.get('updated') }} updated.
-</div>
-{% endif %}
-
 <div class="worlds-grid">
   {% for w in worlds %}
   <div class="world-card {% if current and current.id == w.id %}active{% endif %}" style="--w-accent: {{ w.accent }};position:relative">
@@ -24,8 +17,7 @@
         <span class="entity-sub">{{ w.entities|length }} entries</span>
         <div class="world-actions">
           <a href="/worlds/switch/{{ w.slug }}" class="btn-edit" style="font-size:.75rem">Switch</a>
-          <a href="/worlds/{{ w.id }}/export" class="btn-export" title="Export world to JSON">⬇ Export</a>
-          <a href="/worlds/{{ w.id }}/export/split" class="btn-edit" style="font-size:.75rem" title="Export rules, characters, templates, and content by kind as separate files">⬇ Export (separate files)</a>
+          <a href="/export?w={{ w.slug }}" class="btn-export" title="Export or back up this world">⬇ Export &amp; Backup</a>
           {% if worlds|length > 1 %}
           <form action="/worlds/{{ w.id }}/delete" method="post"
                 onsubmit="return confirm('Delete world {{ w.name }} and ALL its entries?')">
@@ -34,13 +26,6 @@
           {% endif %}
         </div>
       </div>
-      <details class="import-panel">
-        <summary>⬆ Import from JSON</summary>
-        <form action="/worlds/{{ w.id }}/import" method="post" enctype="multipart/form-data" class="import-form">
-          <input type="file" name="file" accept=".json" required/>
-          <button type="submit" class="btn-save" style="font-size:.8rem">Import</button>
-        </form>
-      </details>
     </div>
   </div>
   {% endfor %}

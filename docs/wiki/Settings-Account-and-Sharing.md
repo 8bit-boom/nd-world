@@ -56,16 +56,27 @@ the recommended Cloudflare Tunnel walkthrough.
 
 ## Import / Export / Backups
 
-- **⬇ Export** (per-world) — a self-contained JSON export of that world's
-  entities with images embedded as base64. **Import** it back on the same
-  page under **Worlds → Manage**.
-- **📥 Import** (🎯 Tools) — bulk JSON import (auto-detects entity/character/
-  table/etc. shape), bulk portrait matching by filename, and bulk AVIF/WebP
-  re-encoding of everything already uploaded.
-- **🗄 Backup** (nav bar) — a full-fidelity zip: a consistent snapshot of the
-  whole database plus every upload and map file. This is the one to use for
-  disaster recovery, not the per-world JSON export (which deliberately
-  drops characters, combat, quests, parties, sessions, calendar, tables, and
-  schematics). See the README's [Data & Backups](https://github.com/8bit-boom/nd-world/blob/main/README.md#data--backups)
-  section for the full restore procedure and the unattended-backup cron
-  script.
+**🎯 Tools → 📦 Export & Backup** is the single page for all of this — it
+gathers what used to be scattered across the nav bar and the Worlds page
+into one place, with a one-line explanation of when to use each:
+
+- **🗄 Full Backup** — a complete zip snapshot: the whole database (every
+  world, character, session, combat, quest, party, calendar, table, and
+  note — not just lore), plus every upload and map file. **This is the one
+  to use for disaster recovery.** See the README's
+  [Data & Backups](https://github.com/8bit-boom/nd-world/blob/main/README.md#data--backups)
+  section for the full restore procedure and the unattended-backup cron script.
+- **📖 World Book** — a readable HTML zip of the active world's lore (every
+  entity, board, and map, plus the rules) for sharing with players offline,
+  printing, or archiving the setting itself. Doesn't include characters,
+  sessions, or anything re-importable — deliberately **not** a backup.
+- **📦 World JSON** (single file, or split into separate files for external
+  tooling) — the active world's entities as JSON with images embedded,
+  re-importable into another nd-world instance via the **Import** box on the
+  same page.
+
+**🎯 Tools → 📥 Import** is the separate bulk-content importer — auto-detects
+entity/character/table/etc. shape, plus bulk portrait matching by filename
+and bulk AVIF/WebP re-encoding of everything already uploaded. Not to be
+confused with the World JSON re-import above, which is specifically for
+round-tripping nd-world's own export format.

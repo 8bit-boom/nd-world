@@ -53,12 +53,12 @@
     <a href="{{ '/races'|wq }}" draggable="true" data-ql-ref="/races"               class="nav-kind {% if request.url.path.startswith('/races') %}active{% endif %}">🧬 Race Catalog</a>
     <a href="{{ '/professions'|wq }}" draggable="true" data-ql-ref="/professions"   class="nav-kind {% if request.url.path.startswith('/professions') %}active{% endif %}">🎭 Profession Catalog</a>
     {% if request.state.user and request.state.user.is_gm %}
-    <a href="{{ '/boards'|wq }}" draggable="true" data-ql-ref="/boards"             class="nav-kind {% if request.url.path.startswith('/boards') %}active{% endif %}">📌 Boards</a>
     <div class="tools-switcher">
       <button type="button" class="tools-btn" onclick="event.stopPropagation(); this.parentElement.classList.toggle('open')">
         🎯 Tools ▾
       </button>
       <div class="tools-dropdown">
+        <a href="{{ '/boards'|wq }}" draggable="true" data-ql-ref="/boards"     class="tools-option {% if request.url.path.startswith('/boards') %}active{% endif %}">📌 Boards</a>
         <a href="{{ '/tables'|wq }}" draggable="true" data-ql-ref="/tables"     class="tools-option {% if request.url.path.startswith('/tables') %}active{% endif %}">🎲 Random Tables</a>
         <a href="{{ '/combat'|wq }}" draggable="true" data-ql-ref="/combat"     class="tools-option {% if request.url.path.startswith('/combat') %}active{% endif %}">⚔ Combat Tracker</a>
         <a href="{{ '/parties'|wq }}" draggable="true" data-ql-ref="/parties"   class="tools-option {% if request.url.path.startswith('/parties') %}active{% endif %}">🛡 Parties</a>
@@ -67,6 +67,7 @@
         <a href="{{ '/facts'|wq }}" draggable="true" data-ql-ref="/facts"       class="tools-option {% if request.url.path.startswith('/facts') %}active{% endif %}">🗒 Facts</a>
         <a href="{{ '/calendar'|wq }}" draggable="true" data-ql-ref="/calendar" class="tools-option {% if request.url.path.startswith('/calendar') %}active{% endif %}">🗓 Calendar</a>
         <a href="{{ '/import'|wq }}" draggable="true" data-ql-ref="/import"     class="tools-option {% if request.url.path.startswith('/import') %}active{% endif %}">📥 Import</a>
+        <a href="{{ '/export'|wq }}" draggable="true" data-ql-ref="/export"     class="tools-option {% if request.url.path == '/export' %}active{% endif %}">📦 Export &amp; Backup</a>
         {% if dreamlands_enabled %}
         <a href="{{ '/dreamlands'|wq }}" draggable="true" data-ql-ref="/dreamlands" class="tools-option {% if request.url.path == '/dreamlands' %}active{% endif %}">🌙 Dreamlands</a>
         {% endif %}
@@ -75,8 +76,6 @@
         {% endif %}
       </div>
     </div>
-    <a href="{{ '/export'|wq }}" draggable="true" data-ql-ref="/export" class="nav-kind">⬇ Export</a>
-    <a href="/admin/backup.zip" class="nav-kind" title="Full database + uploads + maps snapshot">🗄 Backup</a>
     {% endif %}
     <a href="{{ '/chronicler'|wq }}" draggable="true" data-ql-ref="/chronicler" class="nav-kind {% if request.url.path == '/chronicler' %}active{% endif %}">📜 Chronicler</a>
     <a href="{{ '/session-log'|wq }}" draggable="true" data-ql-ref="/session-log" class="nav-kind {% if request.url.path.startswith('/session-log') %}active{% endif %}">📓 Session Log</a>
@@ -88,12 +87,20 @@
        class="nav-kind {% if request.url.path.startswith('/worlds/'+world.id|string+'/notes/') %}active{% endif %}">🔒 My Notes</a>
     {% endif %}
     {% if request.state.user and request.state.user.is_gm %}
-    <a href="{{ '/ai'|wq }}" draggable="true" data-ql-ref="/ai"                 class="nav-kind {% if request.url.path == '/ai' %}active{% endif %}">🤖 AI</a>
-    <a href="{{ '/imagestudio'|wq }}" draggable="true" data-ql-ref="/imagestudio" class="nav-kind {% if request.url.path == '/imagestudio' %}active{% endif %}">🎨 Image Studio</a>
-    <a href="{{ '/editor'|wq }}" draggable="true" data-ql-ref="/editor" class="nav-kind {% if request.url.path == '/editor' %}active{% endif %}">🛠 Content Editor</a>
+    <div class="tools-switcher">
+      <button type="button" class="tools-btn" onclick="event.stopPropagation(); this.parentElement.classList.toggle('open')">
+        🤖 AI Tools ▾
+      </button>
+      <div class="tools-dropdown">
+        <a href="{{ '/ai'|wq }}" draggable="true" data-ql-ref="/ai"                 class="tools-option {% if request.url.path == '/ai' %}active{% endif %}">🤖 AI Chat</a>
+        <a href="{{ '/imagestudio'|wq }}" draggable="true" data-ql-ref="/imagestudio" class="tools-option {% if request.url.path == '/imagestudio' %}active{% endif %}">🎨 Image Studio</a>
+        <a href="{{ '/editor'|wq }}" draggable="true" data-ql-ref="/editor" class="tools-option {% if request.url.path == '/editor' %}active{% endif %}">🛠 Content Editor</a>
+      </div>
+      <span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle"></span>
+    </div>
     <a href="{{ '/settings'|wq }}" draggable="true" data-ql-ref="/settings"     class="nav-kind {% if request.url.path == '/settings' %}active{% endif %}">⚙ Settings</a>
-    <a href="{{ '/new'|wq }}" class="btn-new">+ New</a>
-    <span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.4rem;vertical-align:middle"></span>
+    {% set _current_kind = request.url.path[6:] if request.url.path.startswith('/kind/') else 'character' %}
+    <a href="{{ ('/new?kind=' + _current_kind)|wq }}" class="btn-new" title="New {{ _current_kind }}">+ New</a>
     {% endif %}
     <button type="button" id="theme-toggle" class="nav-kind" title="Switch theme" style="cursor:pointer;background:none;border:none;font-family:inherit;font-size:inherit"></button>
     {% if request.state.user %}

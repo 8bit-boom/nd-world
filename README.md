@@ -531,17 +531,28 @@ All persistent data lives in the `/data` volume:
 - `world.db` — SQLite database with all worlds, entities, and relationships
 - `uploads/` — uploaded images and AI-generated images (`uploads/ai-images/`)
 
+### Export & Backup hub
+
+**🎯 Tools → 📦 Export & Backup** (`GET /export`) is the one page for all of
+this — Full Backup, World Book, World JSON, and Import to World JSON, each
+with a one-line explanation of when to use it, instead of guessing between
+similarly-named buttons scattered across the nav bar and the Worlds page.
+
 ### Export a world
 
-Click **Export** in the nav bar. The download is a self-contained JSON file with all entities and images embedded as base64.
+From the hub, download **World JSON** (single file, or split into separate
+files for external tooling) — a self-contained JSON export of that world's
+entities with images embedded as base64.
 
 ### Import a world
 
-Go to **Worlds** → **Manage** → **Import** and upload a previously exported JSON file.
+From the hub, use the **Import World JSON** box to upload a previously
+exported World JSON file back into the active world.
 
 ### Bulk image import
 
-On the **Import** page, the **🖼 Bulk Image Import** section lets you select many
+On the **Import** page (🎯 Tools → 📥 Import, separate from World JSON
+import above), the **🖼 Bulk Image Import** section lets you select many
 portrait/art files at once — each one is matched to an entity in the current world
 by filename (e.g. `Gandalf.png` → the entity named "Gandalf"; underscores/dashes and
 case are ignored, so `aragorn_king.png` matches "Aragorn" too). Review the matches
@@ -550,10 +561,10 @@ before importing — files left on "— Skip —" aren't uploaded.
 
 ### Full backup (recommended)
 
-The **⬇ Export** button above only covers one world's entities and lore — it drops
+The **World JSON** export above only covers one world's entities and lore — it drops
 characters, combat, quests, parties, sessions, calendar, tables, notes and schematics.
-For a full-fidelity backup, log in as the GM and click **🗄 Backup** in the nav bar
-(`GET /admin/backup.zip`). It streams a zip containing:
+For a full-fidelity backup, log in as the GM and download **Full Backup** from
+the Export & Backup hub (`GET /admin/backup.zip`). It streams a zip containing:
 
 - `world.db` — a consistent snapshot of the whole database (built with SQLite's
   `VACUUM INTO`, so it's safe to download while the app is running — no risk of

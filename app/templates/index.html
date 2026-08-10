@@ -10,6 +10,19 @@
 <section class="home-welcome">{{ world.home_welcome_md | md | safe }}</section>
 {% endif %}
 
+{% if world_is_empty and request.state.user and request.state.user.is_gm %}
+<section class="getting-started">
+  <h2>👋 Get started with {{ world.name }}</h2>
+  <p>This world doesn't have any lore yet — here's where most GMs start:</p>
+  <div class="getting-started-links">
+    <a href="{{ '/new?kind=character'|wq }}" class="getting-started-link">🧑 Add your first NPC</a>
+    <a href="{{ '/import'|wq }}" class="getting-started-link">📥 Bulk-import existing lore</a>
+    <a href="/worlds/{{ world.id }}/edit" class="getting-started-link">🔗 Invite players</a>
+    <a href="/worlds/{{ world.id }}/rules/edit" class="getting-started-link">📖 Set your rules</a>
+  </div>
+</section>
+{% endif %}
+
 {% if home_sections %}
 <section class="dash-section quick-links-section">
   {% if home_sections|length > 1 %}
@@ -177,6 +190,12 @@
 .home-welcome { margin:1.5rem 0; padding:1rem 1.25rem; background:#161616; border:1px solid #2a2a2a; border-radius:6px; color:#ddd; font-size:.9rem; line-height:1.5; }
 .home-welcome :first-child { margin-top:0; }
 .home-welcome :last-child { margin-bottom:0; }
+.getting-started { margin:1.5rem 0; padding:1.1rem 1.25rem; background:#161616; border:1px solid var(--neon); border-radius:6px; }
+.getting-started h2 { margin:0 0 .4rem; font-size:1rem; color:var(--neon); }
+.getting-started > p { margin:0 0 .8rem; font-size:.85rem; color:#ccc; }
+.getting-started-links { display:flex; flex-wrap:wrap; gap:.6rem; }
+.getting-started-link { display:flex; align-items:center; gap:.5rem; text-decoration:none; color:#e0e0e0; background:#1a1a1a; border:1px solid #2a2a2a; border-radius:6px; padding:.55rem .9rem; font-size:.85rem; transition:border-color .15s; }
+.getting-started-link:hover { border-color:var(--neon); color:var(--neon); }
 .ql-tab-bar { display:flex; gap:.3rem; margin-bottom:.75rem; border-bottom:1px solid var(--border); padding-bottom:.5rem; flex-wrap:wrap; }
 .ql-tab { background:var(--bg2); border:1px solid var(--border); color:var(--text-dim); padding:.35rem .9rem; border-radius:4px 4px 0 0; cursor:pointer; font-family:var(--font); font-size:.85rem; }
 .ql-tab.active { border-color:var(--neon); color:var(--neon); }

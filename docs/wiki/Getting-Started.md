@@ -28,13 +28,15 @@ actually contains:
 - The **entity kind tabs** (🧑 Characters, 📍 Locations, 🏢 Organizations, etc.
   — 8 built-in, plus any custom ones the GM has added) always come first.
 - **🗺 Maps**, **🧬 Race Catalog**, **🎭 Profession Catalog** follow.
-- GM-only: **📌 Boards**, a **🎯 Tools** dropdown (Random Tables, Combat
-  Tracker, Parties, Quests, Sessions, Facts, Calendar, Import, and — once
-  enabled — Dreamlands/King in Yellow), **⬇ Export**, **🗄 Backup**.
+- GM-only: a **🎯 Tools** dropdown groups everything session-running and
+  world-management related — Boards, Random Tables, Combat Tracker, Parties,
+  Quests, Sessions, Facts, Calendar, Import, Export & Backup, and — once
+  enabled — Dreamlands/King in Yellow.
 - **📜 Chronicler**, **📓 Session Log**, **📖 Rules**, **🎲 Player Characters**,
   **📱 Android App** are visible to everyone.
-- GM-only: **🤖 AI**, **🎨 Image Studio**, **🛠 Content Editor**, **⚙ Settings**,
-  and the **+ New** button.
+- GM-only: an **🤖 AI Tools** dropdown (AI Chat, Image Studio, Content
+  Editor), **⚙ Settings**, and the **+ New** button (defaults to whatever
+  kind you're currently browsing).
 - Far right: your account badge, theme toggle, and **👤 Account** / **⏻
   Logout**.
 

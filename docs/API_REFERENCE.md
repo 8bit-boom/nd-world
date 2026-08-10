@@ -469,7 +469,8 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/import/execute` | GM | Executes a reviewed/confirmed bulk import. |
 | POST | `/api/import/convert-images` | GM | Retroactively re-encodes every image already in the active world to a target format (AVIF/WebP). |
 | GET | `/api/worlds/{world_id}/content-pack` | Player | A world's homebrew races/professions/feats/items as JSON, for the NeonDragonsApp Android app's content sync. |
-| GET | `/export` | GM | Downloads a full-fidelity, human-readable "book" export (Markdown/HTML) of the active world's content. |
+| GET | `/export` | GM | **Export & Backup hub page** — one place linking Full Backup, World Book, World JSON (single/split), and Import, each with a one-line explanation of when to use it. Replaces the old scattered nav/world-card export buttons. |
+| GET | `/export/book.zip` | GM | Downloads a zip containing a readable HTML "book" export of the active world's lore (entities, boards, maps, rules) — linked from the hub above. |
 | GET | `/worlds/{world_id}/export/split` | GM | Split-export landing page — links to per-kind/per-resource JSON files below. |
 | GET | `/worlds/{world_id}/export/rules.json` | GM | This world's rules as JSON. |
 | GET | `/worlds/{world_id}/export/player-characters.json` | GM | All player characters in this world as JSON. |

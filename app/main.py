@@ -823,7 +823,7 @@ async def world_import(world_id: int, file: UploadFile = File(...), db: Session 
             ))
             created += 1
     db.commit()
-    return RedirectResponse(f"/worlds?imported={created}&updated={updated}", status_code=303)
+    return RedirectResponse(f"/export?w={w.slug}&imported={created}&updated={updated}", status_code=303)
 
 # ── Home ──────────────────────────────────────────────────────────────────────
 
@@ -970,6 +970,7 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
     ).order_by(Quest.updated_at.desc()).limit(3).all() if world else []
 
     home_sections = _resolve_home_sections(db, world, request) if world else []
+    world_is_empty = sum(counts.values()) == 0
 
     return templates.TemplateResponse("index.html", {
         "request": request, "counts": counts, "recent": recent,
@@ -977,7 +978,7 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
         "most_linked": most_linked, "top_tags": top_tags,
         "recent_boards": recent_boards, "recent_schematics": recent_schematics,
         "recent_sessions": recent_sessions, "active_quests": active_quests,
-        "home_sections": home_sections,
+        "home_sections": home_sections, "world_is_empty": world_is_empty,
     })
 
 def _map_data(jf: Path) -> Optional[dict]:
@@ -2445,9 +2446,21 @@ def board_export(slug: str, request: Request, db: Session = Depends(get_db), act
     resp.headers["Content-Disposition"] = f'attachment; filename="{slug}-board.html"'
     return resp
 
-# ── World Book Export ─────────────────────────────────────────────────────────
+# ── Export & Backup hub ─────────────────────────────────────────────────────────
+# nd-world has several distinct export/backup mechanisms (full DB+files backup,
+# a readable "book" export, single-file JSON, split-file JSON) that all sounded
+# like "Export" scattered across the nav bar and the /worlds page — this single
+# page gathers them with a one-line explanation of when to use which, instead of
+# guessing from near-identical button labels in two different places.
 
-@app.get("/export")
+@app.get("/export", response_class=HTMLResponse)
+def export_hub(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, worlds = get_world_ctx(request, db, active_world)
+    return templates.TemplateResponse("export_hub.html", {
+        "request": request, "world": world, "worlds": worlds,
+    })
+
+@app.get("/export/book.zip")
 def world_export_book(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     import zipfile, io as _io
     from datetime import date
