@@ -129,3 +129,52 @@ def test_heals_pre_settings_expansion_schema(tmp_path, monkeypatch):
         db.close()
 
     engine.dispose()
+
+
+def test_heals_pre_android_emulator_url_schema(tmp_path, monkeypatch):
+    """Reproduces a real production incident: an install whose app_settings
+    table predates the android_emulator_url/editor_external_url columns (they
+    were added to the model but never wired into database.py's heal-table
+    column list) crashed on every boot with `sqlalchemy.exc.OperationalError:
+    no such column: app_settings.android_emulator_url`, raised from
+    get_app_settings() -> db.query(AppSettings).first() -> startup(). init_db()
+    must ALTER TABLE the missing columns into existence so an already-deployed
+    database recovers on next boot instead of crash-looping."""
+    from app.database import get_app_settings
+
+    db_path = tmp_path / "pre_android_emulator_url.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE app_settings (id INTEGER PRIMARY KEY, static_format VARCHAR(16), "
+            "animated_format VARCHAR(16), ollama_model VARCHAR(256), ollama_url VARCHAR(512), "
+            "swarmui_external_url VARCHAR(512), hover_preview_enabled BOOLEAN, "
+            "hover_preview_delay_ms INTEGER, hover_preview_hide_delay_ms INTEGER, "
+            "hover_preview_width_px INTEGER, hover_preview_max_height_px INTEGER, "
+            "updated_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO app_settings (id, static_format, animated_format) VALUES (1, 'avif', 'avif')"
+        ))
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        settings_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(app_settings)")).fetchall()}
+    assert {"android_emulator_url", "editor_external_url"} <= settings_cols
+
+    # The exact call that crashed in production must now succeed.
+    db = SessionLocal()
+    try:
+        s = get_app_settings(db)
+        assert s.android_emulator_url == ""
+        assert s.editor_external_url == ""
+    finally:
+        db.close()
+
+    engine.dispose()
