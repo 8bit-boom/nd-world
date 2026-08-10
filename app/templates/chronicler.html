@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Chronicler — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<style>
+.chron-page { max-width: 760px; margin: 0 auto; padding: 1.5rem 1rem; display: flex; flex-direction: column; height: calc(100vh - 88px); }
+.chron-header { color: var(--neon); font-size: 1.2rem; margin: 0 0 .3rem; }
+.chron-sub { color: var(--text-dim); font-size: .82rem; margin: 0 0 1rem; }
+.chron-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: .7rem; padding: .5rem 0; }
+.chron-msg { display: flex; max-width: 100%; }
+.chron-msg--user { align-self: flex-end; flex-direction: row-reverse; }
+.chron-msg--assistant { align-self: flex-start; }
+.chron-bubble { padding: .55rem .9rem; border-radius: 10px; font-size: .88rem; line-height: 1.6; word-break: break-word; max-width: 640px; }
+.chron-msg--user .chron-bubble { background: var(--neon); color: #000; font-weight: 500; border-radius: 10px 10px 2px 10px; }
+.chron-msg--assistant .chron-bubble { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px 10px 10px 2px; }
+.chron-thinking .chron-bubble { color: var(--text-dim); font-style: italic; border-style: dashed; }
+.chron-bar { display: flex; gap: .6rem; align-items: flex-end; padding-top: .8rem; border-top: 1px solid var(--border); }
+.chron-bar textarea { flex: 1; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: .55rem .8rem; font-size: .9rem; resize: none; font-family: inherit; line-height: 1.5; max-height: 140px; }
+.chron-bar textarea:focus { outline: 1px solid var(--neon); }
+.chron-bar button { background: var(--neon); color: #000; border: none; border-radius: 6px; padding: .55rem 1.2rem; font-weight: 700; cursor: pointer; font-size: .9rem; white-space: nowrap; }
+.chron-bar button:disabled { opacity: .45; cursor: not-allowed; }
+@media (max-width: 700px) { .chron-page { height: auto; min-height: 60vh; } }
+</style>
+
+<div class="chron-page">
+  <h1 class="chron-header">📜 The Chronicler</h1>
+  <p class="chron-sub">Ask about what's happened so far in {{ world.name if world else 'this world' }} — answers are drawn only from logged facts and lore you're allowed to see.</p>
+
+  <div class="chron-messages" id="chron-messages">
+    <div class="chron-msg chron-msg--assistant">
+      <div class="chron-bubble">Greetings, traveler. Ask me about the campaign so far, and I shall tell you what is known.</div>
+    </div>
+  </div>
+
+  <div class="chron-bar">
+    <textarea id="chron-input" rows="1" placeholder="What happened at the tavern?" onkeydown="chronKey(event)" oninput="chronResize(this)"></textarea>
+    <button id="chron-send" onclick="chronSend()">Ask</button>
+  </div>
+</div>
+
+<script>
+function _chronMdToHtml(text) {
+  let h = text
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,'<em>$1</em>')
+    .replace(/\n\n/g,'</p><p>').replace(/\n/g,'<br>');
+  return '<p>' + h + '</p>';
+}
+function _chronEscHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function chronAdd(role, text, thinking) {
+  const box = document.getElementById('chron-messages');
+  const w = document.createElement('div');
+  w.className = 'chron-msg chron-msg--' + role + (thinking ? ' chron-thinking' : '');
+  const b = document.createElement('div');
+  b.className = 'chron-bubble';
+  b.innerHTML = role === 'user' ? _chronEscHtml(text) : (thinking ? text : _chronMdToHtml(text));
+  w.appendChild(b);
+  box.appendChild(w);
+  box.scrollTop = box.scrollHeight;
+  return b;
+}
+
+window.chronKey = function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chronSend(); } };
+window.chronResize = function (el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 140) + 'px'; };
+
+window.chronSend = async function () {
+  const inp = document.getElementById('chron-input');
+  const btn = document.getElementById('chron-send');
+  const question = inp.value.trim();
+  if (!question || btn.disabled) return;
+  inp.value = '';
+  chronResize(inp);
+  chronAdd('user', question);
+  btn.disabled = true;
+  const bubble = chronAdd('assistant', '…', true);
+  try {
+    const res = await fetch('/api/chronicler/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
+    });
+    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+    const data = await res.json();
+    bubble.parentElement.classList.remove('chron-thinking');
+    bubble.innerHTML = _chronMdToHtml(data.answer || '(no answer)');
+  } catch (e) {
+    bubble.parentElement.classList.remove('chron-thinking');
+    bubble.innerHTML = _chronEscHtml('Error: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    document.getElementById('chron-messages').scrollTop = 999999;
+    inp.focus();
+  }
+};
+</script>
+{% endblock %}

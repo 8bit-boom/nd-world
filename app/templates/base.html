@@ -64,6 +64,7 @@
         <a href="{{ '/parties'|wq }}" draggable="true" data-ql-ref="/parties"   class="tools-option {% if request.url.path.startswith('/parties') %}active{% endif %}">🛡 Parties</a>
         <a href="{{ '/quests'|wq }}" draggable="true" data-ql-ref="/quests"     class="tools-option {% if request.url.path.startswith('/quests') %}active{% endif %}">📜 Quests</a>
         <a href="{{ '/sessions'|wq }}" draggable="true" data-ql-ref="/sessions" class="tools-option {% if request.url.path.startswith('/sessions') %}active{% endif %}">📓 Sessions</a>
+        <a href="{{ '/facts'|wq }}" draggable="true" data-ql-ref="/facts"       class="tools-option {% if request.url.path.startswith('/facts') %}active{% endif %}">🗒 Facts</a>
         <a href="{{ '/calendar'|wq }}" draggable="true" data-ql-ref="/calendar" class="tools-option {% if request.url.path.startswith('/calendar') %}active{% endif %}">🗓 Calendar</a>
         <a href="{{ '/import'|wq }}" draggable="true" data-ql-ref="/import"     class="tools-option {% if request.url.path.startswith('/import') %}active{% endif %}">📥 Import</a>
       </div>
@@ -71,6 +72,7 @@
     <a href="{{ '/export'|wq }}" draggable="true" data-ql-ref="/export" class="nav-kind">⬇ Export</a>
     <a href="/admin/backup.zip" class="nav-kind" title="Full database + uploads + maps snapshot">🗄 Backup</a>
     {% endif %}
+    <a href="{{ '/chronicler'|wq }}" draggable="true" data-ql-ref="/chronicler" class="nav-kind {% if request.url.path == '/chronicler' %}active{% endif %}">📜 Chronicler</a>
     <a href="{{ '/rules'|wq }}" draggable="true" data-ql-ref="/rules"           class="nav-kind {% if request.url.path == '/rules' %}active{% endif %}">📖 Rules</a>
     <a href="{{ '/characters'|wq }}" draggable="true" data-ql-ref="/characters" class="nav-kind {% if request.url.path.startswith('/characters') %}active{% endif %}">🎲 Player Characters</a>
     <a href="{{ '/androidapp'|wq }}" draggable="true" data-ql-ref="/androidapp" class="nav-kind {% if request.url.path == '/androidapp' %}active{% endif %}">📱 Android App</a>

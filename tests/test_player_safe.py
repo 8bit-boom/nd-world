@@ -36,6 +36,13 @@ CASES = [
     ("GET", "/worlds/1/home/edit", False),
     ("POST", "/worlds/1/home/edit", False),
     ("POST", "/api/worlds/1/home/quick-link", False),
+    ("GET", "/facts", False),
+    ("POST", "/facts/new", False),
+    ("POST", "/facts/5/edit", False),
+    ("POST", "/facts/5/delete", False),
+    ("POST", "/api/facts/parse", False),
+    ("POST", "/api/facts/bulk", False),
+    ("POST", "/api/entities/bulk-visibility", False),
     # Player-safe — read-only world/lore browsing and their own character(s).
     ("GET", "/", True),
     ("GET", "/account", True),
@@ -58,6 +65,8 @@ CASES = [
     ("GET", "/uploads/portraits/x.png", True),
     ("GET", "/maps/some-map", True),
     ("GET", "/worlds/switch/some-world", True),
+    ("GET", "/chronicler", True),
+    ("POST", "/api/chronicler/ask", True),
 ]
 
 

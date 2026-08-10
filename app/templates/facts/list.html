@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block title %}Facts — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div style="max-width:860px;margin:0 auto;padding:1.5rem 1rem">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+    <h1 style="color:var(--neon);font-size:1.3rem;margin:0">🗒 Facts</h1>
+  </div>
+
+  <!-- Recap → Facts (local model) -->
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .5rem">✨ Turn a recap into facts</h2>
+    <p style="font-size:.82rem;color:var(--text-dim);margin:0 0 .8rem">
+      Write a terse recap of what happened — the local AI model splits it into discrete facts and
+      guesses which ones the players already know. Nothing is saved until you review and confirm below.
+    </p>
+    <textarea id="recap-input" rows="4" placeholder="went to the tavern, met Elyra, she's actually working for the cult, found a strange clock…"
+              style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .7rem;font-family:var(--font);font-size:.85rem;border-radius:3px"></textarea>
+    <div style="display:flex;align-items:center;gap:.6rem;margin-top:.6rem;flex-wrap:wrap">
+      <label style="font-size:.82rem;color:var(--text-dim)">Session</label>
+      <select id="recap-session">
+        <option value="">— none —</option>
+        {% for s in sessions.values() %}<option value="{{ s.id }}">#{{ s.session_num }} {{ s.title }}</option>{% endfor %}
+      </select>
+      <button type="button" id="parse-btn" style="background:var(--neon);color:#000;border:none;padding:.4rem 1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Parse with AI</button>
+      <span id="parse-status" style="font-size:.8rem;color:var(--text-dim)"></span>
+    </div>
+
+    <div id="draft-panel" style="display:none;margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border)">
+      <h3 style="color:var(--neon);font-size:.85rem;margin:0 0 .6rem">Review before saving</h3>
+      <div id="draft-list" style="display:flex;flex-direction:column;gap:.5rem;margin-bottom:.6rem"></div>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+        <button type="button" id="draft-add-btn" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.35rem .8rem;font-size:.8rem;border-radius:3px;cursor:pointer">+ Add row</button>
+        <button type="button" id="draft-save-btn" style="background:var(--neon);color:#000;border:none;padding:.4rem 1.1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Confirm &amp; Save</button>
+        <span id="draft-status" style="font-size:.8rem;color:var(--text-dim)"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quick add -->
+  <form method="post" action="{{ '/facts/new'|wq }}" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem;margin-bottom:1rem;display:flex;gap:.6rem;flex-wrap:wrap;align-items:flex-end">
+    <div class="form-group" style="flex:1;min-width:220px;margin:0">
+      <label>Add a fact directly</label>
+      <input name="content" placeholder="What happened…" required/>
+    </div>
+    <div class="form-group" style="margin:0">
+      <label>Session</label>
+      <select name="game_session_id">
+        <option value="">— none —</option>
+        {% for s in sessions.values() %}<option value="{{ s.id }}">#{{ s.session_num }} {{ s.title }}</option>{% endfor %}
+      </select>
+    </div>
+    <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;margin-bottom:.5rem">
+      <input type="checkbox" name="visible_to_players" value="1" checked style="width:auto">
+      Visible to players
+    </label>
+    <button type="submit" class="btn-primary">+ Add</button>
+  </form>
+
+  <!-- Existing facts -->
+  {% if facts %}
+  <div style="display:flex;flex-direction:column;gap:.5rem">
+    {% for f in facts %}
+    <div class="en-note{% if not f.visible_to_players %} en-hidden{% endif %}" style="background:var(--bg2)">
+      <div class="en-note-content rendered-md" id="fact-view-{{ f.id }}">{{ f.content | md | safe }}</div>
+      <form id="fact-edit-{{ f.id }}" method="post" action="/facts/{{ f.id }}/edit" style="display:none;margin-top:.4rem">
+        <textarea name="content" rows="2" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px" data-fmt>{{ f.content }}</textarea>
+        <div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem">
+          <select name="game_session_id">
+            <option value="">— none —</option>
+            {% for s in sessions.values() %}<option value="{{ s.id }}" {% if f.game_session_id == s.id %}selected{% endif %}>#{{ s.session_num }} {{ s.title }}</option>{% endfor %}
+          </select>
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem">
+            <input type="checkbox" name="visible_to_players" value="1" {% if f.visible_to_players %}checked{% endif %} style="width:auto">
+            Visible to players
+          </label>
+          <button type="submit" class="en-btn">Save</button>
+          <button type="button" class="en-btn" onclick="toggleFactEdit({{ f.id }})">Cancel</button>
+        </div>
+      </form>
+      <div class="en-note-footer">
+        <span class="en-note-date">{{ f.created_at.strftime('%Y-%m-%d %H:%M') if f.created_at else '' }}</span>
+        {% if f.game_session_id and sessions.get(f.game_session_id) %}
+        <span class="en-note-date">#{{ sessions[f.game_session_id].session_num }} {{ sessions[f.game_session_id].title }}</span>
+        {% endif %}
+        <span class="en-note-vis">{% if f.visible_to_players %}👁 visible to players{% else %}🔒 GM only{% endif %}</span>
+        <button type="button" class="en-btn" onclick="toggleFactEdit({{ f.id }})">Edit</button>
+        <form action="/facts/{{ f.id }}/delete" method="post" class="en-inline-form" onsubmit="return confirm('Delete this fact?')">
+          <button type="submit" class="en-btn en-btn-del">Delete</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty-small">No facts logged yet.</p>
+  {% endif %}
+</div>
+
+<script>
+function toggleFactEdit(id) {
+  const view = document.getElementById('fact-view-' + id);
+  const form = document.getElementById('fact-edit-' + id);
+  const editing = form.style.display !== 'none';
+  form.style.display = editing ? 'none' : 'block';
+  view.style.display = editing ? '' : 'none';
+}
+
+let draftFacts = [];
+
+function renderDraft() {
+  const panel = document.getElementById('draft-panel');
+  const list = document.getElementById('draft-list');
+  panel.style.display = draftFacts.length ? 'block' : 'none';
+  list.innerHTML = '';
+  draftFacts.forEach((f, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:.5rem;align-items:flex-start;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.5rem .6rem';
+    row.innerHTML = `
+      <textarea rows="2" style="flex:1;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.83rem;border-radius:3px"></textarea>
+      <label style="display:flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);white-space:nowrap;margin-top:.3rem">
+        <input type="checkbox" style="width:auto"> players know
+      </label>
+      <button type="button" style="background:none;border:none;color:#c44;cursor:pointer;font-size:1rem;margin-top:.2rem">✕</button>
+    `;
+    const ta = row.querySelector('textarea');
+    const cb = row.querySelector('input[type=checkbox]');
+    ta.value = f.content;
+    cb.checked = !!f.visible_to_players;
+    ta.addEventListener('input', () => { draftFacts[i].content = ta.value; });
+    cb.addEventListener('change', () => { draftFacts[i].visible_to_players = cb.checked; });
+    row.querySelector('button').addEventListener('click', () => { draftFacts.splice(i, 1); renderDraft(); });
+    list.appendChild(row);
+  });
+}
+
+document.getElementById('draft-add-btn').addEventListener('click', () => {
+  draftFacts.push({ content: '', visible_to_players: true });
+  renderDraft();
+});
+
+document.getElementById('parse-btn').addEventListener('click', async () => {
+  const text = document.getElementById('recap-input').value.trim();
+  if (!text) return;
+  const btn = document.getElementById('parse-btn');
+  const status = document.getElementById('parse-status');
+  btn.disabled = true;
+  status.textContent = 'Thinking…';
+  try {
+    const res = await fetch('/api/facts/parse', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+    const data = await res.json();
+    draftFacts = data.facts || [];
+    status.textContent = draftFacts.length ? `${draftFacts.length} fact(s) drafted — review below.` : 'No facts found — try rephrasing.';
+    renderDraft();
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('draft-save-btn').addEventListener('click', async () => {
+  const clean = draftFacts.map(f => ({ content: (f.content || '').trim(), visible_to_players: !!f.visible_to_players })).filter(f => f.content);
+  if (!clean.length) return;
+  const sessionId = document.getElementById('recap-session').value;
+  const btn = document.getElementById('draft-save-btn');
+  const status = document.getElementById('draft-status');
+  btn.disabled = true;
+  status.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/facts/bulk', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ facts: clean, game_session_id: sessionId || null }),
+    });
+    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+    window.location.reload();
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+    btn.disabled = false;
+  }
+});
+</script>
+<script src="/static/js/text-format-toolbar.js"></script>
+{% endblock %}

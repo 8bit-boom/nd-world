@@ -49,6 +49,8 @@ from .routers.handouts import router as handouts_router
 from .routers.home_content import router as home_content_router
 from .routers.export import router as export_router
 from .routers.kinds_admin import router as kinds_admin_router
+from .routers.facts import router as facts_router
+from .routers.chronicler import router as chronicler_router
 from . import ai as _ai_module
 from . import auth as _auth
 from .constants import KINDS, SUBTYPES, KIND_ICONS
@@ -89,6 +91,8 @@ app.include_router(handouts_router)
 app.include_router(home_content_router)
 app.include_router(export_router)
 app.include_router(kinds_admin_router)
+app.include_router(facts_router)
+app.include_router(chronicler_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 
@@ -176,9 +180,11 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if re.match(r"^/api/maps/schematic/[^/]+/buy-item$", path):
         return True
+    if path == "/api/chronicler/ask":
+        return True
     if method != "GET":
         return False
-    if path in ("/", "/rules", "/search", "/maps", "/races", "/professions", "/androidapp"):
+    if path in ("/", "/rules", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler"):
         return True
     if path.startswith("/kind/") or path.startswith("/uploads/"):
         return True

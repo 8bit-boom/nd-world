@@ -215,7 +215,10 @@ footer {
   flex-direction: column;
 }
 .entity-card:hover { transform: translateY(-2px); text-decoration: none; }
-.entity-card img { width: 100%; height: 130px; object-fit: cover; }
+/* No forced crop box — the image keeps its own ratio (1:1, 2:3, 16:9,
+   whatever it actually is) instead of being cover-cropped into a fixed
+   130px band, so portrait and landscape art both show uncropped. */
+.entity-card img { width: 100%; height: auto; max-height: 260px; object-fit: contain; background: var(--bg3); display: block; }
 .entity-card-body { padding: .8rem; flex: 1; }
 .entity-card-body h3 { font-size: .95rem; color: var(--text); margin: .3rem 0; }
 .entity-card-body p { font-size: .78rem; color: var(--text-dim); margin-top: .3rem; }
@@ -1222,7 +1225,7 @@ input[type="file"]:hover { border-color: var(--neon); }
 
   /* Cards — 2-up on tablet/mobile */
   .card-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
-  .entity-card img { height: 100px; }
+  .entity-card img { max-height: 160px; }
 
   /* Dashboard — 3-up minimum */
   .dashboard { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: .5rem; }
