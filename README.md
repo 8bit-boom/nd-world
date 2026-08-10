@@ -184,18 +184,22 @@ Also set `SWARMUI_EXTERNAL_URL: "http://192.168.1.100:7801"` in `docker-compose.
 
 ### Step 7 — Add image generation models
 
-Place `.safetensors` or `.ckpt` checkpoint files into the SwarmUI models volume. With Docker named volumes, the easiest way is to copy via a temporary container:
+Ollama's text models and SwarmUI's image checkpoints/LoRAs/VAEs both live under one shared host directory — `./ai-models/` next to `docker-compose.yml` by default, or wherever `AI_MODELS_DIR` in `.env` points (see [Environment Variables](#environment-variables)) — instead of separate Docker-managed volumes, so there's one place to drop files, back up, or point at models you already have elsewhere. Just copy checkpoint files in directly:
 
 ```bash
-# Find the volume mount path
-docker volume inspect nd-world_swarmui-models
-
-# Or copy directly via docker
-docker run --rm -v nd-world_swarmui-models:/models \
-  -v $(pwd):/src alpine cp /src/your-model.safetensors /models/Stable-Diffusion/
+cp your-model.safetensors ./ai-models/swarmui/Stable-Diffusion/
 ```
 
 Then open the **AI → Image Gen** tab, click the model dropdown refresh button — your model will appear.
+
+> **Upgrading an existing install:** if you already had SwarmUI/Ollama running before this change, your models are sitting in the old `nd-world_swarmui-models`/`nd-world_ollama-data` Docker volumes, which `docker compose up -d` will no longer mount. Copy them into the new location once, then the old volumes can be removed:
+> ```bash
+> mkdir -p ai-models/swarmui ai-models/ollama
+> docker run --rm -v nd-world_swarmui-models:/from -v "$(pwd)/ai-models/swarmui":/to alpine cp -a /from/. /to/
+> docker run --rm -v nd-world_ollama-data:/from -v "$(pwd)/ai-models/ollama":/to alpine cp -a /from/. /to/
+> docker compose up -d
+> docker volume rm nd-world_swarmui-models nd-world_ollama-data   # once you've confirmed everything still works
+> ```
 
 ### Managing the service
 
@@ -434,6 +438,7 @@ The script auto-detects the correct path and installs ComfyUI-Manager into `cust
 | `GM_NAME` | `GM` | Display name for the bootstrapped GM account |
 | `COOKIE_SECURE` | `false` | Set `true` once served over HTTPS (see [Accounts, Invites & Going Public](#accounts-invites--going-public)) |
 | `COMPOSE_PROFILES` | _(empty)_ | Not read by the app itself — Docker Compose reads it to decide which optional services to start. Empty starts just `world`; set `ollama`, `swarmui`, or `ollama,swarmui` to also start those containers |
+| `AI_MODELS_DIR` | `./ai-models` | Not read by the app itself — Docker Compose reads it to pick where Ollama's text models and SwarmUI's image checkpoints/LoRAs/VAEs are stored on the host (in `ollama/` and `swarmui/` subfolders), instead of separate Docker-managed volumes. Only matters if the `ollama`/`swarmui` profiles are enabled |
 
 ---
 

@@ -51,7 +51,12 @@ services:
     ports:
       - "11434:11434"
     volumes:
-      - ollama-data:/root/.ollama
+      # Same parent directory as swarmui's model volume below (see
+      # AI_MODELS_DIR) — not because Ollama and SwarmUI can read each
+      # other's model files (they can't; totally different formats), but so
+      # every downloaded model — text or image — lives under one directory
+      # tree you can point at existing models, back up, or browse as a unit.
+      - ${AI_MODELS_DIR:-./ai-models}/ollama:/root/.ollama
     # To pull a model after first start:
     #   docker compose exec ollama ollama pull gemma4:26b
     # For NVIDIA GPU, uncomment the deploy block below:
@@ -76,7 +81,8 @@ services:
     volumes:
       - swarmui-data:/SwarmUI/Data
       - swarmui-ac:/SwarmUI/Data/Autocompletions   # shared with world for tag autocompletions
-      - swarmui-models:/SwarmUI/Models
+      # Same parent directory as ollama's model volume above — see AI_MODELS_DIR.
+      - ${AI_MODELS_DIR:-./ai-models}/swarmui:/SwarmUI/Models
       - swarmui-dlbackend:/SwarmUI/dlbackend
     environment:
       SWARMUI_NETWORK_BIND_ADDRESS: "0.0.0.0"
@@ -149,11 +155,7 @@ volumes:
     driver: local
   swarmui-ac:
     driver: local
-  swarmui-models:
-    driver: local
   swarmui-dlbackend:
-    driver: local
-  ollama-data:
     driver: local
   android-apk:
     driver: local
