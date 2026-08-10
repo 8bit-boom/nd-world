@@ -311,7 +311,8 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
 .detail-img {
   width: 160px;
   height: 160px;
-  object-fit: cover;
+  object-fit: contain;
+  background: var(--bg3);
   border-radius: 4px;
   border: 1px solid var(--border);
   cursor: zoom-in;
