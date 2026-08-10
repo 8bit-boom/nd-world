@@ -67,6 +67,12 @@
         <a href="{{ '/facts'|wq }}" draggable="true" data-ql-ref="/facts"       class="tools-option {% if request.url.path.startswith('/facts') %}active{% endif %}">🗒 Facts</a>
         <a href="{{ '/calendar'|wq }}" draggable="true" data-ql-ref="/calendar" class="tools-option {% if request.url.path.startswith('/calendar') %}active{% endif %}">🗓 Calendar</a>
         <a href="{{ '/import'|wq }}" draggable="true" data-ql-ref="/import"     class="tools-option {% if request.url.path.startswith('/import') %}active{% endif %}">📥 Import</a>
+        {% if dreamlands_enabled %}
+        <a href="{{ '/dreamlands'|wq }}" draggable="true" data-ql-ref="/dreamlands" class="tools-option {% if request.url.path == '/dreamlands' %}active{% endif %}">🌙 Dreamlands</a>
+        {% endif %}
+        {% if king_in_yellow_enabled %}
+        <a href="{{ '/king-in-yellow'|wq }}" draggable="true" data-ql-ref="/king-in-yellow" class="tools-option {% if request.url.path == '/king-in-yellow' %}active{% endif %}">🎭 King in Yellow</a>
+        {% endif %}
       </div>
     </div>
     <a href="{{ '/export'|wq }}" draggable="true" data-ql-ref="/export" class="nav-kind">⬇ Export</a>

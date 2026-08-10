@@ -18,7 +18,7 @@ from fastapi.templating import Jinja2Templates
 
 from . import deps
 from .constants import KIND_ICONS, KINDS, SUBTYPES
-from .database import SessionLocal
+from .database import SessionLocal, get_app_settings
 from .rendering import body_summary, entry_text, parse_stats, render_md, strip_md
 
 # Duplicated from main.py's DEFAULT_WORLD_COOKIE — same rationale as this
@@ -43,7 +43,12 @@ def _kinds_context_processor(request: Request) -> dict:
     try:
         world, _ = deps.get_world_ctx(request, db, request.cookies.get(_ACTIVE_WORLD_COOKIE))
         kinds, kind_icons = deps.effective_kinds(world)
-        return {"kinds": kinds, "kind_icons": kind_icons, "subtypes": deps.effective_subtypes(world)}
+        settings = get_app_settings(db)
+        return {
+            "kinds": kinds, "kind_icons": kind_icons, "subtypes": deps.effective_subtypes(world),
+            "dreamlands_enabled": bool(settings.dreamlands_enabled),
+            "king_in_yellow_enabled": bool(settings.king_in_yellow_enabled),
+        }
     finally:
         db.close()
 

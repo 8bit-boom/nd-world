@@ -1,11 +1,29 @@
 """Tests for the ported NeonDragonsWorld extras: dreamlands/king-in-yellow
 pages, the two InvestBoard generators, and handouts — all GM-only by
 default, all reusing existing Entity/InvestBoard machinery.
+
+Dreamlands and King in Yellow are additionally gated behind an instance-wide
+AppSettings toggle (off by default) — see Settings > System > Optional
+extras — so a table that doesn't use them doesn't see the nav clutter.
 """
 from app.database import SessionLocal
-from app.models import Entity, InvestBoard
+from app.models import AppSettings, Entity, InvestBoard
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+
+
+def _enable_lore_extras(world_a_slug=None):
+    db = SessionLocal()
+    try:
+        s = db.query(AppSettings).first()
+        if not s:
+            s = AppSettings(id=1)
+            db.add(s)
+        s.dreamlands_enabled = True
+        s.king_in_yellow_enabled = True
+        db.commit()
+    finally:
+        db.close()
 
 
 def test_dreamlands_and_kiy_pages_are_gm_only(client, seed):
@@ -16,9 +34,42 @@ def test_dreamlands_and_kiy_pages_are_gm_only(client, seed):
     assert client.get("/king-in-yellow").status_code == 403
 
 
+def test_dreamlands_and_kiy_disabled_by_default(client, seed):
+    """Off by default — a GM hitting the URL directly sees a friendly
+    'enable this in Settings' page, not the full feature (and definitely
+    not a 404/500, since the routes themselves still exist)."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.get("/dreamlands")
+    assert r.status_code == 200
+    assert "disabled" in r.text.lower()
+    assert "Settings" in r.text
+
+    r = client.get("/king-in-yellow")
+    assert r.status_code == 200
+    assert "disabled" in r.text.lower()
+
+
+def test_dreamlands_and_kiy_nav_links_hidden_until_enabled(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    page = client.get("/")
+    assert "/dreamlands" not in page.text
+    assert "/king-in-yellow" not in page.text
+
+    _enable_lore_extras()
+
+    page = client.get("/")
+    assert "/dreamlands" in page.text
+    assert "/king-in-yellow" in page.text
+
+
 def test_dreamlands_and_kiy_pages_load_for_gm(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
+    _enable_lore_extras()
 
     assert client.get("/dreamlands").status_code == 200
     assert client.get("/king-in-yellow").status_code == 200

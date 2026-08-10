@@ -48,8 +48,45 @@ def test_settings_system_roundtrip(client, seed):
         assert settings.swarmui_external_url == "http://127.0.0.1:7801"
         assert settings.android_emulator_url == "http://127.0.0.1:6080"
         assert settings.editor_external_url == "http://127.0.0.1:6081"
+        assert settings.dreamlands_enabled is False
+        assert settings.king_in_yellow_enabled is False
     finally:
         db.close()
+
+
+def test_lore_extras_toggles_default_off_and_roundtrip(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+
+    # Unchecked checkboxes aren't sent by a real browser at all — omitting
+    # the keys must persist as disabled, not error or leave a stale value.
+    client.post("/settings/system", data={
+        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+        "android_emulator_url": "", "editor_external_url": "",
+    }, follow_redirects=False)
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        assert settings.dreamlands_enabled is False
+        assert settings.king_in_yellow_enabled is False
+    finally:
+        db.close()
+
+    client.post("/settings/system", data={
+        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+        "android_emulator_url": "", "editor_external_url": "",
+        "dreamlands_enabled": "1", "king_in_yellow_enabled": "1",
+    }, follow_redirects=False)
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        assert settings.dreamlands_enabled is True
+        assert settings.king_in_yellow_enabled is True
+    finally:
+        db.close()
+
+    page = client.get("/settings?tab=system")
+    assert 'name="dreamlands_enabled"' in page.text
+    assert 'name="king_in_yellow_enabled"' in page.text
 
 
 def test_settings_system_invalid_url_rejected(client, seed):

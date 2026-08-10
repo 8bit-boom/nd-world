@@ -178,3 +178,48 @@ def test_heals_pre_android_emulator_url_schema(tmp_path, monkeypatch):
         db.close()
 
     engine.dispose()
+
+
+def test_heals_pre_lore_extras_toggle_schema(tmp_path, monkeypatch):
+    """Same class of bug as test_heals_pre_android_emulator_url_schema above,
+    for the dreamlands_enabled/king_in_yellow_enabled columns added alongside
+    the optional-lore-extras feature — an existing app_settings row predating
+    them must heal onto a false/off default, not crash get_app_settings()."""
+    from app.database import get_app_settings
+
+    db_path = tmp_path / "pre_lore_extras.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE app_settings (id INTEGER PRIMARY KEY, static_format VARCHAR(16), "
+            "animated_format VARCHAR(16), ollama_model VARCHAR(256), ollama_url VARCHAR(512), "
+            "swarmui_external_url VARCHAR(512), android_emulator_url VARCHAR(512), "
+            "editor_external_url VARCHAR(512), hover_preview_enabled BOOLEAN, "
+            "hover_preview_delay_ms INTEGER, hover_preview_hide_delay_ms INTEGER, "
+            "hover_preview_width_px INTEGER, hover_preview_max_height_px INTEGER, "
+            "updated_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO app_settings (id, static_format, animated_format) VALUES (1, 'avif', 'avif')"
+        ))
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        settings_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(app_settings)")).fetchall()}
+    assert {"dreamlands_enabled", "king_in_yellow_enabled"} <= settings_cols
+
+    db = SessionLocal()
+    try:
+        s = get_app_settings(db)
+        assert not s.dreamlands_enabled
+        assert not s.king_in_yellow_enabled
+    finally:
+        db.close()
+
+    engine.dispose()

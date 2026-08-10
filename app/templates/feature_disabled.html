@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ feature_name }} — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="empty-state" style="max-width:520px;margin:3rem auto;text-align:center">
+  <p style="font-size:2rem">{{ feature_icon }}</p>
+  <h1 style="font-size:1.1rem;margin-bottom:.6rem">{{ feature_name }} is disabled</h1>
+  <p style="color:var(--text-dim);font-size:.9rem;margin-bottom:1.2rem">
+    This is an optional lore extra, off by default. A GM can turn it on from
+    Settings → System → Optional extras.
+  </p>
+  <a href="{{ '/settings?tab=system'|wq }}" class="btn-primary">⚙ Open Settings</a>
+</div>
+{% endblock %}

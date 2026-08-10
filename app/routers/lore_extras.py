@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .. import ai as _ai_module
-from ..database import get_db
+from ..database import get_db, get_app_settings
 from ..deps import get_world_ctx
 from ..templating import templates
 
@@ -35,12 +35,22 @@ _KIY_PLAYS_FILE = Path(__import__("os").environ.get("DB_PATH", "/data/world.db")
 @router.get("/dreamlands", response_class=HTMLResponse)
 def dreamlands_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not get_app_settings(db).dreamlands_enabled:
+        return templates.TemplateResponse("feature_disabled.html", {
+            "request": request, "world": world, "worlds": worlds,
+            "feature_name": "Dreamlands", "feature_icon": "🌙",
+        })
     return templates.TemplateResponse("dreamlands.html", {"request": request, "world": world, "worlds": worlds})
 
 
 @router.get("/king-in-yellow", response_class=HTMLResponse)
 def king_in_yellow_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not get_app_settings(db).king_in_yellow_enabled:
+        return templates.TemplateResponse("feature_disabled.html", {
+            "request": request, "world": world, "worlds": worlds,
+            "feature_name": "King in Yellow", "feature_icon": "🎭",
+        })
     return templates.TemplateResponse("king_in_yellow.html", {"request": request, "world": world, "worlds": worlds})
 
 

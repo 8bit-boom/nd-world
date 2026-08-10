@@ -2300,6 +2300,8 @@ def settings_system_save(
     swarmui_external_url: str = Form(""),
     android_emulator_url: str = Form(""),
     editor_external_url: str = Form(""),
+    dreamlands_enabled: Optional[str] = Form(None),
+    king_in_yellow_enabled: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
@@ -2327,6 +2329,8 @@ def settings_system_save(
     settings.swarmui_external_url = swarmui_external_url
     settings.android_emulator_url = android_emulator_url
     settings.editor_external_url = editor_external_url
+    settings.dreamlands_enabled = dreamlands_enabled is not None
+    settings.king_in_yellow_enabled = king_in_yellow_enabled is not None
     db.commit()
     _refresh_settings_overrides(db)
     return RedirectResponse("/settings?tab=system", status_code=303)

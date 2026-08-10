@@ -177,6 +177,21 @@
         <label for="editor-external-url">Content editor URL (Content Editor iframe)</label>
         <input id="editor-external-url" name="editor_external_url" value="{{ settings.editor_external_url or '' }}" placeholder="{{ env_editor_external_url or 'not set' }}">
       </div>
+      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Optional extras</h2>
+      <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
+        Off by default to keep the nav bar focused — turn on whichever bundled lore extras
+        your table actually uses. Each adds a link under 🎯 Tools once enabled.
+      </p>
+      <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+        <input type="checkbox" id="dreamlands-enabled" name="dreamlands_enabled" value="1"
+               style="width:auto;accent-color:var(--neon)" {% if settings.dreamlands_enabled %}checked{% endif %}>
+        <label for="dreamlands-enabled" style="margin:0">🌙 Enable Dreamlands (atlas write-up + generated map board)</label>
+      </div>
+      <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+        <input type="checkbox" id="king-in-yellow-enabled" name="king_in_yellow_enabled" value="1"
+               style="width:auto;accent-color:var(--neon)" {% if settings.king_in_yellow_enabled %}checked{% endif %}>
+        <label for="king-in-yellow-enabled" style="margin:0">🎭 Enable King in Yellow (AI play generator + saved-play library)</label>
+      </div>
       <div class="form-actions">
         <button type="submit" class="btn-primary">Save</button>
       </div>

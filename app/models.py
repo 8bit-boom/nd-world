@@ -607,4 +607,9 @@ class AppSettings(Base):
     hover_preview_hide_delay_ms = Column(Integer, default=400)
     hover_preview_width_px = Column(Integer, default=340)
     hover_preview_max_height_px = Column(Integer, default=420)
+    # Optional GM-facing lore extras (see app/routers/lore_extras.py) — off by
+    # default so they don't clutter the nav for tables that don't want them,
+    # toggle on from Settings > System.
+    dreamlands_enabled = Column(Boolean, default=False)
+    king_in_yellow_enabled = Column(Boolean, default=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
