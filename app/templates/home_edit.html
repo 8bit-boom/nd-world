@@ -17,11 +17,42 @@
     External URL links don't have this limitation.
   </p>
 
-  <form method="post" action="/worlds/{{ edit_world.id }}/home/edit" class="entity-form" id="home-form">
+  <form method="post" action="/worlds/{{ edit_world.id }}/home/edit" class="entity-form" id="home-form" enctype="multipart/form-data">
+    <div class="form-group">
+      <label for="home-title">Page Title <small>(optional — leave blank for the default "WORLD DATABASE")</small></label>
+      <input type="text" id="home-title" name="home_title" maxlength="200" value="{{ edit_world.home_title or '' }}" placeholder="WORLD DATABASE"/>
+    </div>
+    <div class="form-group">
+      <label for="home-subtitle">Page Subtitle <small>(optional)</small></label>
+      <input type="text" id="home-subtitle" name="home_subtitle" maxlength="300" value="{{ edit_world.home_subtitle or '' }}" placeholder="Neon &amp; Dragons worldbuilding codex"/>
+    </div>
+    <div class="form-group">
+      <label>Background Image <small>(shown behind the title above)</small></label>
+      {% if edit_world.home_background_url %}
+      <div class="current-image"><img src="{{ edit_world.home_background_url }}" alt=""/></div>
+      <label class="ql-vis-toggle"><input type="checkbox" name="remove_home_background" value="1"/> Remove current background</label>
+      {% endif %}
+      <input type="file" name="home_background_file" accept="image/*"/>
+      <input type="text" name="home_background_url" placeholder="…or paste an image URL instead" style="margin-top:.4rem"/>
+    </div>
+
     <div class="form-group">
       <label for="welcome-md">Welcome Message <small>(Markdown, optional)</small></label>
       <textarea id="welcome-md" name="home_welcome_md" rows="6" placeholder="Session 12 is next Tuesday — see the Quick Links below for prep notes."
                 style="font-family:var(--font);font-size:.85rem">{{ edit_world.home_welcome_md or '' }}</textarea>
+    </div>
+
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin:1rem 0">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.9rem">
+        <h2 style="color:var(--neon);font-size:.95rem;margin:0">📌 Pinned Dashboard Tiles</h2>
+        <button type="button" onclick="addPinnedTile()" class="ql-btn-add">+ Add Tile</button>
+      </div>
+      <p style="font-size:.78rem;color:var(--text-dim);margin:0 0 .7rem">
+        Extra tiles shown alongside the built-in Character/Location/etc. counters on the home page —
+        drag any nav tab directly onto those tiles to add one instantly, or manage them here.
+      </p>
+      <div id="pinned-tiles-list"></div>
+      <input type="hidden" name="home_pinned_tiles_json" id="pinned-tiles-json-input"/>
     </div>
 
     <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin:1rem 0">
@@ -120,7 +151,12 @@ function renderRefField(si, li, link) {
       `</select>`;
   }
   if (t === 'url') {
-    return `<input type="url" placeholder="https://..." value="${esc(link.target_ref)}" oninput="updateLink(${si},${li},'target_ref',this.value)"/>`;
+    // type="text", not "url" — a native <input type="url"> rejects the
+    // relative paths (e.g. "/maps") that a dragged nav tab produces and
+    // _sanitize_link explicitly accepts, silently blocking the whole
+    // form's submit with no visible error. Server-side validation already
+    // covers the scheme check; the placeholder is guidance enough here.
+    return `<input type="text" placeholder="https://..." value="${esc(link.target_ref)}" oninput="updateLink(${si},${li},'target_ref',this.value)"/>`;
   }
   return `<input type="text" list="${t}-options" placeholder="Search ${t}s…" value="${esc(link.ref_name)}" oninput="updateLinkRef(${si},${li},this.value)"/>`;
 }
@@ -160,6 +196,82 @@ function renderSection(sec, si) {
 function renderAll() {
   document.getElementById('sections-list').innerHTML = _sections.map(renderSection).join('');
   syncHidden();
+}
+
+// ── Pinned Dashboard Tiles — same link shape as a Quick Link, but a flat
+// list rendered inline on the stat-tile dashboard instead of a tabbed
+// section, so it gets its own small parallel set of row functions rather
+// than reusing si/li-indexed updateLink()/renderLinkRow() above.
+const INIT_PINNED = {{ initial_pinned_tiles | tojson }};
+let _pinnedTiles = INIT_PINNED.map(l => ({
+  label: l.label || '', icon: l.icon || '',
+  target_type: l.target_type || 'entity',
+  target_ref: l.target_ref || '',
+  ref_name: refNameFor(l.target_type || 'entity', l.target_ref || ''),
+  visible_to_players: l.visible_to_players !== false,
+}));
+
+function renderPinnedRefField(li, tile) {
+  const t = tile.target_type;
+  if (t === 'kind') {
+    return `<select onchange="updatePinnedTile(${li},'target_ref',this.value)">` +
+      KINDS.map(k => `<option value="${k}" ${k === tile.target_ref ? 'selected' : ''}>${k}</option>`).join('') +
+      `</select>`;
+  }
+  if (t === 'url') {
+    return `<input type="text" placeholder="https://..." value="${esc(tile.target_ref)}" oninput="updatePinnedTile(${li},'target_ref',this.value)"/>`;
+  }
+  return `<input type="text" list="${t}-options" placeholder="Search ${t}s…" value="${esc(tile.ref_name)}" oninput="updatePinnedRef(${li},this.value)"/>`;
+}
+
+function renderPinnedRow(li, tile) {
+  return `
+    <div class="ql-link-row">
+      <input type="text" placeholder="Label" value="${esc(tile.label)}" oninput="updatePinnedTile(${li},'label',this.value)"/>
+      <input type="text" placeholder="📌" maxlength="4" value="${esc(tile.icon)}" oninput="updatePinnedTile(${li},'icon',this.value)"/>
+      <select onchange="updatePinnedType(${li},this.value)">
+        ${LINK_TYPES.map(([v, l]) => `<option value="${v}" ${v === tile.target_type ? 'selected' : ''}>${l}</option>`).join('')}
+      </select>
+      ${renderPinnedRefField(li, tile)}
+      <label class="ql-vis-toggle"><input type="checkbox" ${tile.visible_to_players ? 'checked' : ''} onchange="updatePinnedTile(${li},'visible_to_players',this.checked)"/> Players</label>
+      <button type="button" class="link-del" onclick="removePinnedTile(${li})" title="Remove tile">✕</button>
+    </div>
+  `;
+}
+
+function renderPinned() {
+  document.getElementById('pinned-tiles-list').innerHTML = _pinnedTiles.map((t, li) => renderPinnedRow(li, t)).join('');
+  syncPinnedHidden();
+}
+
+function addPinnedTile() {
+  _pinnedTiles.push({ label: '', icon: '', target_type: 'entity', target_ref: '', ref_name: '', visible_to_players: true });
+  renderPinned();
+}
+function removePinnedTile(li) { _pinnedTiles.splice(li, 1); renderPinned(); }
+function updatePinnedTile(li, key, val) { _pinnedTiles[li][key] = val; syncPinnedHidden(); }
+function updatePinnedRef(li, val) {
+  const t = _pinnedTiles[li].target_type;
+  _pinnedTiles[li].ref_name = val;
+  _pinnedTiles[li].target_ref = (NAME_TO_REF[t] && NAME_TO_REF[t][val]) || '';
+  syncPinnedHidden();
+}
+function updatePinnedType(li, val) {
+  _pinnedTiles[li].target_type = val;
+  _pinnedTiles[li].target_ref = '';
+  _pinnedTiles[li].ref_name = '';
+  renderPinned();
+}
+
+function syncPinnedHidden() {
+  document.getElementById('pinned-tiles-json-input').value = JSON.stringify(
+    _pinnedTiles
+      .filter(t => t.label && t.target_ref)
+      .map(t => ({
+        label: t.label, icon: t.icon, target_type: t.target_type,
+        target_ref: t.target_ref, visible_to_players: !!t.visible_to_players,
+      }))
+  );
 }
 
 function addSection() { _sections.push({ name: 'New Section', visible_to_players: true, links: [] }); renderAll(); }
@@ -206,7 +318,8 @@ function syncHidden() {
   );
 }
 
-document.getElementById('home-form').addEventListener('submit', syncHidden);
+document.getElementById('home-form').addEventListener('submit', function() { syncHidden(); syncPinnedHidden(); });
 renderAll();
+renderPinned();
 </script>
 {% endblock %}

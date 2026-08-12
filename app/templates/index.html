@@ -1,9 +1,13 @@
 {% extends "base.html" %}
 {% block title %}Neon & Dragons — World{% endblock %}
 {% block content %}
-<section class="hero">
+<section class="hero"{% if world and world.home_background_url %} style="background-image:linear-gradient(rgba(5,5,10,.55),rgba(5,5,10,.55)),url('{{ world.home_background_url }}')"{% endif %}>
+  {% if world and world.home_title %}
+  <h1 class="hero-custom">{{ world.home_title }}</h1>
+  {% else %}
   <h1>WORLD<br><span>DATABASE</span></h1>
-  <p class="hero-sub">Neon &amp; Dragons worldbuilding codex</p>
+  {% endif %}
+  <p class="hero-sub">{{ (world.home_subtitle if world and world.home_subtitle else 'Neon & Dragons worldbuilding codex') }}</p>
 </section>
 
 {% if world.home_welcome_md %}
@@ -57,7 +61,7 @@
 <a href="/worlds/{{ world.id }}/home/edit" class="home-edit-link">✏ Customize this page</a>
 {% endif %}
 
-<section class="dashboard">
+<section class="dashboard" id="dashboard-dropzone">
   {% for k in kinds %}
   <a href="{{ ('/kind/' + k)|wq }}" class="dash-card kind-{{ k }}">
     <span class="dash-icon">{{ kind_icons[k] }}</span>
@@ -65,7 +69,17 @@
     <span class="dash-label">{{ k|capitalize }}s</span>
   </a>
   {% endfor %}
+  {% for t in pinned_tiles %}
+  <a href="{{ t.href }}" class="dash-card dash-card-pinned">
+    <span class="dash-icon">{{ t.icon or '📌' }}</span>
+    {% if t.count is not none %}<span class="dash-count">{{ t.count }}</span>{% endif %}
+    <span class="dash-label">{{ t.label }}</span>
+  </a>
+  {% endfor %}
 </section>
+{% if request.state.user and request.state.user.is_gm %}
+<p class="dash-dropzone-hint">📌 Drag a tab from the top nav onto these tiles to pin it here</p>
+{% endif %}
 
 {% if preview_maps %}
 <section class="map-preview-section">
@@ -287,6 +301,41 @@ function switchQuickLinksTab(i) {
   });
   var emptyZone = document.getElementById('ql-empty-dropzone');
   if (emptyZone) wireDropTarget(emptyZone, null, true);
+
+  // Dragging a nav tab directly onto the stat-tile dashboard pins it there
+  // (a plain link tile, no count unless it's a "kind" tab) — a second,
+  // simpler drop target alongside the Quick Links sections above, backed by
+  // its own home_pinned_tiles_json list rather than a Quick Links section.
+  function appendDashCard(link) {
+    var dash = document.getElementById('dashboard-dropzone');
+    if (!dash) return;
+    var a = document.createElement('a');
+    a.href = computeHref(link.target_type, link.target_ref);
+    a.className = 'dash-card dash-card-pinned';
+    a.innerHTML = '<span class="dash-icon">📌</span><span class="dash-label"></span>';
+    a.querySelector('.dash-label').textContent = link.label;
+    dash.appendChild(a);
+  }
+
+  var dashZone = document.getElementById('dashboard-dropzone');
+  if (dashZone) {
+    dashZone.addEventListener('dragover', function(e) { e.preventDefault(); dashZone.classList.add('drag-over'); });
+    dashZone.addEventListener('dragleave', function() { dashZone.classList.remove('drag-over'); });
+    dashZone.addEventListener('drop', async function(e) {
+      e.preventDefault();
+      dashZone.classList.remove('drag-over');
+      var payload = parsePayload(e);
+      if (!payload) return;
+      try {
+        var r = await fetch('/api/worlds/{{ world.id }}/home/pinned-tile', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) return;
+        appendDashCard(payload);
+      } catch (err) {}
+    });
+  }
 })();
 {% endif %}
 </script>

@@ -910,6 +910,35 @@ def _resolve_home_sections(db: Session, world: World, request: Request) -> list[
     return out
 
 
+def _resolve_pinned_tiles(db: Session, world: World, request: Request, counts: dict) -> list[dict]:
+    """world.home_pinned_tiles_json -> renderable dashboard tiles:
+    [{label, icon, href, count}, ...] (count is None for anything that
+    isn't a kind tile — the built-in counters are the only stat this app
+    tracks per-target). Same visibility/href-resolution rules as
+    _resolve_home_sections above, just flat instead of nested in sections."""
+    user = getattr(request.state, "user", None)
+    is_gm = bool(user and getattr(user, "is_gm", False))
+    try:
+        raw_tiles = json.loads(world.home_pinned_tiles_json or "[]")
+    except Exception:
+        raw_tiles = []
+    out = []
+    for t in raw_tiles if isinstance(raw_tiles, list) else []:
+        if not isinstance(t, dict):
+            continue
+        if not is_gm and not t.get("visible_to_players", True):
+            continue
+        href = _resolve_home_link_href(db, world, t, is_gm)
+        if href is None:
+            continue
+        count = counts.get(t.get("target_ref")) if t.get("target_type") == "kind" else None
+        out.append({
+            "label": t.get("label", ""), "icon": t.get("icon", ""),
+            "href": with_world(href, world), "count": count,
+        })
+    return out
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world = get_active_world(request, db, active_world)
@@ -970,6 +999,7 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
     ).order_by(Quest.updated_at.desc()).limit(3).all() if world else []
 
     home_sections = _resolve_home_sections(db, world, request) if world else []
+    pinned_tiles = _resolve_pinned_tiles(db, world, request, counts) if world else []
     world_is_empty = sum(counts.values()) == 0
 
     return templates.TemplateResponse("index.html", {
@@ -979,6 +1009,7 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
         "recent_boards": recent_boards, "recent_schematics": recent_schematics,
         "recent_sessions": recent_sessions, "active_quests": active_quests,
         "home_sections": home_sections, "world_is_empty": world_is_empty,
+        "pinned_tiles": pinned_tiles,
     })
 
 def _map_data(jf: Path) -> Optional[dict]:

@@ -64,6 +64,28 @@ class World(Base):
     # effective_kinds()/load_custom_kinds() for parsing/merging and
     # app/routers/kinds_admin.py for validation on write.
     custom_kinds_json = Column(Text, default="[]")
+    # Home page hero customization. NULL for either text field falls back to
+    # the bundled "WORLD DATABASE" / "Neon & Dragons worldbuilding codex"
+    # default in index.html, so existing worlds render unchanged until a GM
+    # opts in. Rendered as plain (auto-escaped) text, never markdown/HTML —
+    # unlike home_welcome_md, this sits inside the page's <h1>/<p>, and a
+    # custom title losing its two-tone "WORLD\nDATABASE" styling is an
+    # acceptable trade for not having to trust GM-authored HTML there.
+    home_title = Column(String(200), nullable=True)
+    home_subtitle = Column(String(300), nullable=True)
+    # /uploads/... path (or GM-pasted http(s) URL) shown as the hero
+    # section's background-image. Same upload path as any other image in
+    # this app (see app/routers/home_content.py's _upload_home_background).
+    home_background_url = Column(String(512), nullable=True)
+    # Extra tiles pinned onto the home page's stat-tile dashboard, alongside
+    # the built-in per-kind counters — the drag-a-nav-tab-onto-the-dashboard
+    # interaction (index.html) appends here via
+    # POST /api/worlds/{id}/home/pinned-tile, reusing the exact same link
+    # shape (and sanitizer) as one entry in home_sections_json's `links`:
+    # [{label, icon, target_type, target_ref, visible_to_players}, ...].
+    # Kept as a flat list (not sections) since these render inline in one
+    # grid, not tabbed panes like Quick Links.
+    home_pinned_tiles_json = Column(Text, default="[]")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     entities = relationship("Entity", back_populates="world", cascade="all, delete-orphan")
