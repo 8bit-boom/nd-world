@@ -112,6 +112,34 @@
 .entity-combo-list [data-combo-item]:hover, .entity-combo-list [data-combo-item].hl {
   background:rgba(0,240,255,0.12);
 }
+.entity-picker-trigger {
+  width:100%; box-sizing:border-box; background:var(--bg3); border:1px solid var(--border); color:var(--text);
+  padding:.3rem .5rem; font-size:.8rem; border-radius:3px; text-align:left; cursor:pointer; font-family:var(--font);
+}
+.entity-picker-trigger:hover, .entity-picker-trigger:focus { border-color:var(--neon); outline:none; }
+.entity-picker-overlay {
+  display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:999;
+  align-items:flex-start; justify-content:center; padding:4rem 1.5rem;
+}
+.entity-picker-overlay.open { display:flex; }
+.entity-picker-dialog {
+  background:var(--bg2); border:1px solid var(--border); border-radius:6px; width:100%; max-width:420px;
+  max-height:70vh; display:flex; flex-direction:column; box-shadow:0 8px 30px rgba(0,0,0,.5);
+}
+.entity-picker-header { display:flex; gap:.5rem; align-items:center; padding:.8rem; border-bottom:1px solid var(--border); }
+.entity-picker-header input {
+  flex:1; background:var(--bg3); border:1px solid var(--border); color:var(--text);
+  padding:.4rem .6rem; font-size:.85rem; border-radius:3px; font-family:var(--font);
+}
+.entity-picker-header button {
+  background:none; border:1px solid var(--border); color:var(--text-dim); font-size:.85rem;
+  cursor:pointer; padding:.3rem .6rem; border-radius:3px; line-height:1;
+}
+.entity-picker-header button:hover { border-color:#c44; color:#c44; }
+#entity-picker-list.entity-combo-list {
+  position:static; display:block; max-height:none; overflow-y:auto; flex:1;
+  background:transparent; border:none; box-shadow:none; border-radius:0;
+}
 </style>
 
 <script>
@@ -570,9 +598,128 @@ function matchEntityByFilename(filename) {
   return { entity: candidates[0], confidence: 'fuzzy' };
 }
 
-// Only one row's search dropdown open at a time — otherwise a batch of 100
-// rows could end up with a dozen open lists cluttering the page at once.
-let _openComboClose = null;
+// Entities grouped by kind once, not per-row — every row's picker shares
+// this same fixed list, and a 100-file batch used to rebuild it 100 times.
+const ENTITIES_BY_KIND = {};
+ENTITIES.forEach(e => { (ENTITIES_BY_KIND[e.kind] = ENTITIES_BY_KIND[e.kind] || []).push(e); });
+
+// A single shared picker dialog, not a per-row dropdown — with a world's
+// entity list running into the hundreds, a plain <select> only supports
+// "jump to the option starting with the next key pressed," not real
+// search, and a per-row inline dropdown (the previous approach) had to
+// live somewhere in the page's layout: nested inside the row list, it got
+// silently clipped by that list's own overflow-y:auto (added so a 100-file
+// batch doesn't make the page unusably tall) the moment a GM opened it to
+// fix a fuzzy/no/ambiguous match; portaled to fixed coordinates instead,
+// its own internal item list couldn't be scrolled without the scroll event
+// racing a close-on-scroll listener. A centered modal sidesteps both: nothing
+// it needs to render is nested inside any other scrollable container.
+const entityPickerOverlay = document.createElement('div');
+entityPickerOverlay.className = 'entity-picker-overlay';
+entityPickerOverlay.innerHTML = `
+  <div class="entity-picker-dialog">
+    <div class="entity-picker-header">
+      <input type="text" id="entity-picker-search" autocomplete="off" spellcheck="false" placeholder="Search entities…"/>
+      <button type="button" id="entity-picker-close" title="Cancel">✕</button>
+    </div>
+    <div id="entity-picker-list" class="entity-combo-list" role="listbox"></div>
+  </div>
+`;
+document.body.appendChild(entityPickerOverlay);
+const entityPickerSearch = document.getElementById('entity-picker-search');
+const entityPickerList = document.getElementById('entity-picker-list');
+let _activeSel = null;
+let _pickerHighlighted = -1;
+
+function entityPickerItems() { return Array.from(entityPickerList.querySelectorAll('[data-combo-item]')); }
+function entityPickerSetHighlighted(i) {
+  const els = entityPickerItems();
+  els.forEach(el => el.classList.remove('hl'));
+  _pickerHighlighted = Math.max(-1, Math.min(i, els.length - 1));
+  if (_pickerHighlighted >= 0) {
+    els[_pickerHighlighted].classList.add('hl');
+    els[_pickerHighlighted].scrollIntoView({ block: 'nearest' });
+  }
+}
+function entityPickerSelectValue(value) {
+  if (!_activeSel) return;
+  const sel = _activeSel;
+  Array.from(sel.options).forEach(o => { o.selected = o.value === value; });
+  sel._refreshLabel();
+  closeEntityPicker();
+  sel.dispatchEvent(new Event('change'));
+}
+function renderEntityPickerList() {
+  const filter = entityPickerSearch.value.trim().toLowerCase();
+  entityPickerList.innerHTML = '';
+  let any = false;
+  if (!filter || '— skip —'.includes(filter)) {
+    const item = document.createElement('div');
+    item.dataset.comboItem = '1';
+    item.setAttribute('role', 'option');
+    item.textContent = '— Skip —';
+    item.style.cssText = 'padding:.5rem .7rem;cursor:pointer;font-size:.85rem;color:var(--text-dim)';
+    item.addEventListener('mouseenter', () => entityPickerSetHighlighted(entityPickerItems().indexOf(item)));
+    item.addEventListener('click', () => entityPickerSelectValue(''));
+    entityPickerList.appendChild(item);
+    any = true;
+  }
+  Object.keys(ENTITIES_BY_KIND).sort().forEach(k => {
+    const matches = ENTITIES_BY_KIND[k].filter(e => e.name.toLowerCase().includes(filter));
+    if (!matches.length) return;
+    any = true;
+    const header = document.createElement('div');
+    header.textContent = k.charAt(0).toUpperCase() + k.slice(1) + 's';
+    header.style.cssText = 'padding:.4rem .7rem .15rem;font-size:.7rem;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);opacity:.7';
+    entityPickerList.appendChild(header);
+    matches.forEach(e => {
+      const item = document.createElement('div');
+      item.dataset.comboItem = '1';
+      item.setAttribute('role', 'option');
+      item.textContent = e.name + (e.has_image ? ' (has image)' : '');
+      // Entities that already have an image get a distinct color so
+      // assigning one to a new file — silently overwriting the existing
+      // image — stands out before the GM clicks Import, not after.
+      item.style.cssText = 'padding:.5rem .7rem;cursor:pointer;font-size:.85rem;' +
+        (e.has_image ? 'color:#7fe3a1' : '');
+      item.addEventListener('mouseenter', () => entityPickerSetHighlighted(entityPickerItems().indexOf(item)));
+      item.addEventListener('click', () => entityPickerSelectValue(String(e.id)));
+      entityPickerList.appendChild(item);
+    });
+  });
+  if (!any) {
+    const none = document.createElement('div');
+    none.textContent = 'No matches';
+    none.style.cssText = 'padding:.5rem .7rem;font-size:.85rem;opacity:.5';
+    entityPickerList.appendChild(none);
+  }
+  _pickerHighlighted = -1;
+}
+function openEntityPicker(sel) {
+  _activeSel = sel;
+  entityPickerSearch.value = '';
+  renderEntityPickerList();
+  entityPickerOverlay.classList.add('open');
+  entityPickerSearch.focus();
+}
+function closeEntityPicker() {
+  entityPickerOverlay.classList.remove('open');
+  _activeSel = null;
+}
+entityPickerSearch.addEventListener('input', renderEntityPickerList);
+entityPickerSearch.addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown') { e.preventDefault(); entityPickerSetHighlighted(_pickerHighlighted + 1); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); entityPickerSetHighlighted(_pickerHighlighted - 1); }
+  else if (e.key === 'Enter') {
+    e.preventDefault();
+    const els = entityPickerItems();
+    if (_pickerHighlighted >= 0 && els[_pickerHighlighted]) els[_pickerHighlighted].click();
+  } else if (e.key === 'Escape') { closeEntityPicker(); }
+});
+document.getElementById('entity-picker-close').addEventListener('click', closeEntityPicker);
+// Click on the dark backdrop (not the dialog itself) cancels, same as the
+// existing image lightbox's overlay-click-to-close behavior.
+entityPickerOverlay.addEventListener('click', e => { if (e.target === entityPickerOverlay) closeEntityPicker(); });
 
 function buildEntitySelect(selectedId) {
   // Hidden native <select> — kept as the actual source of truth so the rest
@@ -584,13 +731,11 @@ function buildEntitySelect(selectedId) {
   const skipOpt = document.createElement('option');
   skipOpt.value = ''; skipOpt.textContent = '— Skip —';
   sel.appendChild(skipOpt);
-  const byKind = {};
-  ENTITIES.forEach(e => { (byKind[e.kind] = byKind[e.kind] || []).push(e); });
   const optionByValue = {};
-  Object.keys(byKind).sort().forEach(k => {
+  Object.keys(ENTITIES_BY_KIND).sort().forEach(k => {
     const grp = document.createElement('optgroup');
     grp.label = k.charAt(0).toUpperCase() + k.slice(1) + 's';
-    byKind[k].forEach(e => {
+    ENTITIES_BY_KIND[k].forEach(e => {
       const opt = document.createElement('option');
       opt.value = e.id;
       opt.textContent = e.name + (e.has_image ? ' (has image)' : '');
@@ -601,179 +746,25 @@ function buildEntitySelect(selectedId) {
     sel.appendChild(grp);
   });
 
-  // Searchable combobox — with a world's entity list running into the
-  // hundreds, a plain <select> only supports "jump to the option starting
-  // with the next key pressed," not substring search, and native <option>
-  // background-color styling is unreliable across browsers, so entities
-  // that already have an image (and would be overwritten by this
-  // assignment) couldn't be visually flagged. This gives both a real
-  // type-to-filter search and a color cue for those.
   const wrap = document.createElement('div');
   wrap.className = 'entity-combo';
-  wrap.style.cssText = 'position:relative;flex:1;max-width:260px';
+  wrap.style.cssText = 'flex:1;max-width:260px';
   wrap.appendChild(sel);
 
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.autocomplete = 'off';
-  input.spellcheck = false;
-  input.setAttribute('role', 'combobox');
-  input.setAttribute('aria-autocomplete', 'list');
-  input.setAttribute('aria-expanded', 'false');
-  input.style.cssText = 'width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-size:.8rem;border-radius:3px';
-  wrap.appendChild(input);
-
-  // Appended to <body> (not `wrap`) and positioned with `fixed` coordinates
-  // computed from the input's own rect — the row list above this combobox
-  // is capped with overflow-y:auto so a 100-file batch doesn't make the
-  // page unusably tall, and an ordinary position:absolute dropdown nested
-  // inside that scrolling container gets silently clipped to its bounds
-  // (invisible/cut off) the moment it would extend past the container's
-  // own (usually much shorter, content-sized) height — exactly the state
-  // a GM hits opening this picker to fix a fuzzy/no/ambiguous match.
-  const listEl = document.createElement('div');
-  listEl.setAttribute('role', 'listbox');
-  listEl.className = 'entity-combo-list';
-  listEl.style.cssText = 'display:none;position:fixed;z-index:999;max-height:260px;overflow-y:auto;background:var(--bg2);border:1px solid var(--border);border-radius:3px;box-shadow:0 4px 12px rgba(0,0,0,.4)';
-  document.body.appendChild(listEl);
-
-  sel._comboInput = input;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'entity-picker-trigger';
+  wrap.appendChild(btn);
 
   function currentLabel() {
     const opt = optionByValue[sel.value];
     return opt ? opt.textContent : (sel.value === '' ? '— Skip —' : '');
   }
-  input.value = currentLabel();
+  sel._refreshLabel = () => { btn.textContent = currentLabel(); };
+  sel._comboButton = btn;
+  sel._refreshLabel();
 
-  let highlighted = -1;
-  function items() { return Array.from(listEl.querySelectorAll('[data-combo-item]')); }
-  function setHighlighted(i) {
-    const els = items();
-    els.forEach(el => el.classList.remove('hl'));
-    highlighted = Math.max(-1, Math.min(i, els.length - 1));
-    if (highlighted >= 0) {
-      els[highlighted].classList.add('hl');
-      els[highlighted].scrollIntoView({ block: 'nearest' });
-    }
-  }
-  function selectValue(value) {
-    Array.from(sel.options).forEach(o => { o.selected = o.value === value; });
-    input.value = currentLabel();
-    closeList();
-    sel.dispatchEvent(new Event('change'));
-  }
-  function closeList() {
-    listEl.style.display = 'none';
-    input.setAttribute('aria-expanded', 'false');
-    highlighted = -1;
-    if (_openComboClose === closeList) _openComboClose = null;
-    // capture:true so this also fires for a scroll inside the row-list's
-    // own overflow-y:auto container, which doesn't bubble to window —
-    // without this, scrolling that container while the dropdown is open
-    // leaves it visually stranded over whatever is now underneath it.
-    window.removeEventListener('scroll', closeList, true);
-  }
-  function positionList() {
-    const r = input.getBoundingClientRect();
-    listEl.style.left = r.left + 'px';
-    listEl.style.top = (r.bottom + 2) + 'px';
-    listEl.style.width = r.width + 'px';
-  }
-  function renderList() {
-    const q = input.value.trim().toLowerCase();
-    // The input holds the current *selection's* label until the user
-    // actually types something different — comparing against that label
-    // (not against '') is what makes clicking into an already-assigned row
-    // show every option again instead of a filtered list containing only
-    // itself.
-    const filter = q === currentLabel().toLowerCase() ? '' : q;
-    listEl.innerHTML = '';
-    let any = false;
-    if (!filter || '— skip —'.includes(filter)) {
-      const item = document.createElement('div');
-      item.dataset.comboItem = '1';
-      item.setAttribute('role', 'option');
-      item.textContent = '— Skip —';
-      item.style.cssText = 'padding:.35rem .6rem;cursor:pointer;font-size:.8rem;color:var(--text-dim)';
-      item.addEventListener('mouseenter', () => setHighlighted(items().indexOf(item)));
-      item.addEventListener('mousedown', e => { e.preventDefault(); selectValue(''); });
-      listEl.appendChild(item);
-      any = true;
-    }
-    Object.keys(byKind).sort().forEach(k => {
-      const matches = byKind[k].filter(e => e.name.toLowerCase().includes(filter));
-      if (!matches.length) return;
-      any = true;
-      const header = document.createElement('div');
-      header.textContent = k.charAt(0).toUpperCase() + k.slice(1) + 's';
-      header.style.cssText = 'padding:.3rem .6rem .1rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);opacity:.7';
-      listEl.appendChild(header);
-      matches.forEach(e => {
-        const item = document.createElement('div');
-        item.dataset.comboItem = '1';
-        item.setAttribute('role', 'option');
-        item.textContent = e.name + (e.has_image ? ' (has image)' : '');
-        // Entities that already have an image get a distinct color so
-        // assigning one to a new file — silently overwriting the existing
-        // image — stands out before the GM clicks Import, not after.
-        item.style.cssText = 'padding:.35rem .6rem;cursor:pointer;font-size:.8rem;' +
-          (e.has_image ? 'color:#7fe3a1' : '');
-        item.addEventListener('mouseenter', () => setHighlighted(items().indexOf(item)));
-        item.addEventListener('mousedown', ev => { ev.preventDefault(); selectValue(String(e.id)); });
-        listEl.appendChild(item);
-      });
-    });
-    if (!any) {
-      const none = document.createElement('div');
-      none.textContent = 'No matches';
-      none.style.cssText = 'padding:.35rem .6rem;font-size:.8rem;opacity:.5';
-      listEl.appendChild(none);
-    }
-    highlighted = -1;
-  }
-  function openList() {
-    if (_openComboClose && _openComboClose !== closeList) _openComboClose();
-    _openComboClose = closeList;
-    renderList();
-    positionList();
-    listEl.style.display = 'block';
-    input.setAttribute('aria-expanded', 'true');
-    // Deferred one tick: focusing this input can itself trigger the
-    // browser's native "scroll the focused element into view" inside the
-    // row-list's own overflow-y:auto container, which fires a scroll event
-    // as part of that same focus — attaching synchronously here caught
-    // that event and closed the dropdown the instant it opened.
-    setTimeout(() => window.addEventListener('scroll', closeList, true), 0);
-  }
-
-  input.addEventListener('focus', () => { openList(); input.select(); });
-  input.addEventListener('input', () => { renderList(); positionList(); listEl.style.display = 'block'; input.setAttribute('aria-expanded', 'true'); });
-  input.addEventListener('keydown', e => {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      if (listEl.style.display === 'none') openList(); else setHighlighted(highlighted + 1);
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setHighlighted(highlighted - 1);
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      const els = items();
-      if (highlighted >= 0 && els[highlighted]) els[highlighted].dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-      else input.blur();
-    } else if (e.key === 'Escape') {
-      input.value = currentLabel();
-      closeList();
-      input.blur();
-    }
-  });
-  input.addEventListener('blur', () => {
-    // An item's mousedown handler already called preventDefault() and ran
-    // before blur fires, so by now either a selection was made (input.value
-    // is the new label) or nothing was — either way, resync the input to
-    // the real selection and close.
-    input.value = currentLabel();
-    closeList();
-  });
+  btn.addEventListener('click', () => openEntityPicker(sel));
 
   return wrap;
 }
@@ -792,11 +783,7 @@ function renderImgPreview() {
   // narrowing down a folder) leaked memory for the rest of the page's life.
   imgObjectUrls.forEach(u => URL.revokeObjectURL(u));
   imgObjectUrls = [];
-  _openComboClose = null; // rows about to be destroyed below — drop any stale reference to their (now-detached) dropdown
-  // Each row's searchable-entity dropdown lives in document.body, not under
-  // `box` (see buildEntitySelect) — box.innerHTML below won't reach it, so
-  // it has to be swept up explicitly or a re-select leaks one per old row.
-  document.querySelectorAll('body > .entity-combo-list').forEach(el => el.remove());
+  closeEntityPicker(); // rows about to be destroyed below — drop any reference to one of their now-detached selects
   const box = document.getElementById('img-preview-table');
   box.innerHTML = '';
   if (!selectedImgFiles.length) { disableImgImport(); return; }
@@ -859,10 +846,10 @@ function updateDuplicateWarnings() {
   selects.forEach(sel => { if (sel.value) counts[sel.value] = (counts[sel.value] || 0) + 1; });
   selects.forEach(sel => {
     const isDupe = sel.value && counts[sel.value] > 1;
-    // The select itself is hidden (display:none) — the visible combo input
-    // is what the outline/tooltip actually needs to land on for the GM to
-    // see it, so style that instead when the searchable combobox built it.
-    const target = sel._comboInput || sel;
+    // The select itself is hidden (display:none) — the visible trigger
+    // button is what the outline/tooltip actually needs to land on for the
+    // GM to see it, so style that instead when the picker built it.
+    const target = sel._comboButton || sel;
     target.style.outline = isDupe ? '2px solid #e8a94a' : '';
     target.title = isDupe ? 'Another file is also assigned to this entity — the last one uploaded wins' : '';
   });

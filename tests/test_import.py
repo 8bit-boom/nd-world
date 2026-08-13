@@ -644,23 +644,22 @@ def test_import_page_warns_on_duplicate_entity_assignment(client, seed):
     assert "function updateDuplicateWarnings" in r.text
     # The per-row picker's underlying <select> is hidden (display:none) —
     # the duplicate-assignment outline/tooltip has to land on the visible
-    # combo input instead, or a GM would never actually see the warning.
+    # trigger button instead, or a GM would never actually see the warning.
     idx = r.text.index("function updateDuplicateWarnings")
     fn_end = r.text.index("\n}", idx)
-    assert "sel._comboInput || sel" in r.text[idx:fn_end]
+    assert "sel._comboButton || sel" in r.text[idx:fn_end]
 
 
 def test_import_page_bulk_image_entity_picker_is_searchable(client, seed):
     """Per explicit request: with a world's entity list running into the
     hundreds, the per-row picker (previously a plain <select>) only
     supported "jump to the option starting with the next key pressed," not
-    real search. Replaced with a searchable combobox: a visible text input
-    filters entities by substring as the GM types, while a hidden <select>
-    (kept in the DOM, not just in memory) stays the source of truth every
-    other part of this page already reads via
-    document.querySelectorAll('select')/`.value` — updateDuplicateWarnings
-    and the Import Images click handler needed no changes at all because of
-    that. Source-level guard (no JS runtime in this test suite)."""
+    real search. A hidden <select> (kept in the DOM, not just in memory)
+    stays the source of truth every other part of this page already reads
+    via document.querySelectorAll('select')/`.value` —
+    updateDuplicateWarnings and the Import Images click handler needed no
+    changes at all because of that. Source-level guard (no JS runtime in
+    this test suite)."""
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/import")
@@ -668,7 +667,7 @@ def test_import_page_bulk_image_entity_picker_is_searchable(client, seed):
     assert "wrap.className = 'entity-combo'" in r.text
     assert "wrap.appendChild(sel)" in r.text  # the hidden select must actually be in the DOM, not just built in memory
     assert "e.name.toLowerCase().includes(filter)" in r.text
-    assert "role', 'combobox'" in r.text
+    assert "openEntityPicker(sel)" in r.text
     idx = r.text.index("function renderImgPreview()")
     fn_end = r.text.index("\nfunction ", idx + len("function renderImgPreview()"))
     render_src = r.text[idx:fn_end]
@@ -682,7 +681,7 @@ def test_import_page_entity_picker_colors_has_image_entries(client, seed):
     anyone relying on the text rather than color) so assigning one — which
     silently overwrites its existing image — stands out before the GM
     clicks Import. Native <option> background-color styling is unreliable
-    across browsers, which is part of why this needed the custom combobox
+    across browsers, which is part of why this needed the custom picker
     above rather than just styling the old <select>'s options."""
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
@@ -692,30 +691,41 @@ def test_import_page_entity_picker_colors_has_image_entries(client, seed):
     assert "e.name + (e.has_image ? ' (has image)' : '')" in r.text
 
 
-def test_import_page_entity_picker_dropdown_is_not_clipped_by_row_list(client, seed):
-    """Per bug report: the per-row combobox's dropdown used to be
-    position:absolute inside `wrap` (a child of the row-list container,
-    which is capped with max-height:420px;overflow-y:auto so a 100-file
-    batch doesn't make the page unusably tall). That overflow:auto ancestor
-    silently clips ANY descendant that extends past its own (usually much
-    shorter, content-sized) box — including the absolutely-positioned
-    dropdown — the moment a GM opens it to fix a fuzzy/ambiguous/no match,
-    making the picker look empty/broken. Fix: the dropdown is appended to
-    document.body and positioned with `fixed` coordinates computed from the
-    input's own getBoundingClientRect(), so it can never be clipped by the
-    row list's scroll container. Source-level guard (no JS runtime here)."""
+def test_import_page_entity_picker_is_a_scrollable_modal_not_a_clipped_dropdown(client, seed):
+    """Per bug report: the per-row picker's match list used to be a small
+    dropdown anchored to that row. First it was position:absolute inside
+    the row-list container (which is capped with
+    max-height:420px;overflow-y:auto so a 100-file batch doesn't make the
+    page unusably tall) — that overflow:auto ancestor silently clipped the
+    dropdown the instant a GM opened it to fix a fuzzy/ambiguous/no match.
+    Portaling it to fixed coordinates fixed the clipping but broke
+    scrolling the match list itself (the list's own internal
+    overflow-y:auto scroll fired a 'scroll' event that a close-on-scroll
+    listener, added to stop the dropdown from stranding when the *page*
+    scrolled, also caught — closing the list the instant the GM tried to
+    scroll it).
+
+    Fix: replace the per-row dropdown entirely with one shared, centered
+    modal dialog. Its match list is a plain block with its own
+    overflow-y:auto and nothing above it in the DOM that could clip or
+    intercept its scrolling — it isn't nested inside the row list's scroll
+    container, isn't position:fixed, and has no scroll-to-close listener at
+    all. Source-level guard (no JS runtime in this test suite)."""
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/import")
     assert r.status_code == 200
-    assert "document.body.appendChild(listEl)" in r.text
-    assert "position:fixed" in r.text
-    assert "function positionList()" in r.text
-    assert "input.getBoundingClientRect()" in r.text
-    # Cleanup on re-render: renderImgPreview() wipes #img-preview-table via
-    # innerHTML, which no longer reaches a body-level dropdown — it must be
-    # swept up explicitly or every re-selection of files leaks one.
-    assert "document.querySelectorAll('body > .entity-combo-list')" in r.text
+    assert "entityPickerOverlay.classList.add('open')" in r.text
+    assert "document.body.appendChild(entityPickerOverlay)" in r.text
+    assert "function openEntityPicker(sel)" in r.text
+    # The match list must not be clipped by, or living inside, the row
+    # list's own overflow-y:auto container (#img-preview-table's `list`).
+    idx = r.text.index("function renderImgPreview()")
+    fn_end = r.text.index("\nfunction ", idx + len("function renderImgPreview()"))
+    assert "entity-picker" not in r.text[idx:fn_end]
+    # No scroll-driven close handler left anywhere that could race the
+    # match list's own internal scrolling.
+    assert "addEventListener('scroll'" not in r.text
 
 
 def test_import_page_revokes_object_urls_on_rerender(client, seed):
