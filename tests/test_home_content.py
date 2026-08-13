@@ -5,6 +5,7 @@ title/subtitle/background-image and pinned-dashboard-tile customization
 covered further below.
 """
 import json
+import re
 
 from app.database import SessionLocal
 from app.models import Entity, World
@@ -731,6 +732,75 @@ def test_pinned_tile_rejects_full_dashboard(client, seed):
         json={"label": "One More", "target_type": "url", "target_ref": "/one-more"},
     )
     assert r.status_code == 400
+
+
+def test_pinned_tile_remove_api_deletes_by_index(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    for label, ref in [("Maps", "/maps"), ("Race Catalog", "/races"), ("Profession Catalog", "/professions")]:
+        r = client.post(
+            f"/api/worlds/{seed.world_a.id}/home/pinned-tile",
+            json={"label": label, "target_type": "url", "target_ref": ref},
+        )
+        assert r.status_code == 200
+
+    r = client.post(f"/api/worlds/{seed.world_a.id}/home/pinned-tile/remove", json={"index": 1})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        labels = [t["label"] for t in json.loads(w.home_pinned_tiles_json)]
+        assert labels == ["Maps", "Profession Catalog"]
+    finally:
+        db.close()
+
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    dash = re.search(r'<section class="dashboard".*?</section>', r.text, re.S).group(0)
+    pinned_labels = re.findall(r'dash-card-pinned">.*?dash-label">([^<]*)<', dash, re.S)
+    assert pinned_labels == ["Maps", "Profession Catalog"]
+    assert "dash-card-pinned-remove" in r.text
+
+
+def test_pinned_tile_remove_api_is_gm_only(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post(
+        f"/api/worlds/{seed.world_a.id}/home/pinned-tile",
+        json={"label": "Maps", "target_type": "url", "target_ref": "/maps"},
+    )
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post(f"/api/worlds/{seed.world_a.id}/home/pinned-tile/remove", json={"index": 0})
+    assert r.status_code == 403
+
+
+def test_pinned_tile_remove_api_rejects_out_of_range_index(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post(
+        f"/api/worlds/{seed.world_a.id}/home/pinned-tile",
+        json={"label": "Maps", "target_type": "url", "target_ref": "/maps"},
+    )
+    r = client.post(f"/api/worlds/{seed.world_a.id}/home/pinned-tile/remove", json={"index": 5})
+    assert r.status_code == 400
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        assert len(json.loads(w.home_pinned_tiles_json)) == 1
+    finally:
+        db.close()
+
+
+def test_pinned_tile_remove_button_not_shown_to_players(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post(
+        f"/api/worlds/{seed.world_a.id}/home/pinned-tile",
+        json={"label": "Maps", "target_type": "url", "target_ref": "/maps"},
+    )
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert "dash-card-pinned-remove" not in r.text
 
 
 def test_cross_world_pinned_entity_tile_resolves_to_nothing(client, seed):

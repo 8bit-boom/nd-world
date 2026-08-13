@@ -214,6 +214,16 @@ footer {
 .dash-icon { font-size: 1.8rem; }
 .dash-count { font-size: 2rem; font-weight: bold; line-height: 1.2; }
 .dash-label { font-size: .75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: .1em; }
+.dash-card-pinned { position: relative; }
+.dash-card-pinned-remove {
+  position: absolute; top: .3rem; right: .3rem;
+  width: 1.3rem; height: 1.3rem; line-height: 1;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 3px;
+  color: var(--text-dim); font-size: .75rem; cursor: pointer;
+  display: none; align-items: center; justify-content: center; padding: 0;
+}
+.dash-card-pinned:hover .dash-card-pinned-remove { display: flex; }
+.dash-card-pinned-remove:hover { border-color: #c44; color: #c44; }
 
 {% for k, col in [('character','--kind-character'),('location','--kind-location'),('organization','--kind-organization'),('creature','--kind-creature'),('event','--kind-event'),('item','--kind-item'),('feat','--kind-feat'),('note','--kind-note')] %}
 .kind-{{ k }} .dash-count, .dash-card.kind-{{ k }} .dash-count { color: var({{ col }}); }

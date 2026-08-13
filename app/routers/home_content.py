@@ -265,3 +265,30 @@ async def world_home_pinned_tile(world_id: int, request: Request, db: Session = 
     w.home_pinned_tiles_json = json.dumps(tiles)
     db.commit()
     return {"ok": True, "tile": tile}
+
+
+@router.post("/api/worlds/{world_id}/home/pinned-tile/remove")
+async def world_home_pinned_tile_remove(world_id: int, request: Request, db: Session = Depends(get_db)):
+    """Removes one tile from the home page's pinned dashboard by its
+    position in the saved list — the ✕ button rendered directly on each
+    pinned tile in index.html (GM view only) posts here, so deleting a
+    pinned tile no longer requires a trip through the full /home/edit form.
+    Same target audience/shape as world_home_pinned_tile above, just the
+    inverse operation."""
+    w = db.get(World, world_id)
+    if not w:
+        raise HTTPException(404)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid payload")
+    index = payload.get("index")
+    if not isinstance(index, int):
+        raise HTTPException(400, "Invalid index")
+    world_kinds = deps.effective_kinds(w)[0]
+    tiles = _sanitize_pinned_tiles(w.home_pinned_tiles_json, world_kinds)
+    if not (0 <= index < len(tiles)):
+        raise HTTPException(400, "No such tile")
+    tiles.pop(index)
+    w.home_pinned_tiles_json = json.dumps(tiles)
+    db.commit()
+    return {"ok": True}

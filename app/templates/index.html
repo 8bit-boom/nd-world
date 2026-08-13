@@ -71,6 +71,9 @@
   {% endfor %}
   {% for t in pinned_tiles %}
   <a href="{{ t.href }}" class="dash-card dash-card-pinned">
+    {% if request.state.user and request.state.user.is_gm %}
+    <button type="button" class="dash-card-pinned-remove" title="Remove this tile" onclick="removePinnedDashboardTile(event, {{ loop.index0 }})">✕</button>
+    {% endif %}
     <span class="dash-icon">{{ t.icon or '📌' }}</span>
     {% if t.count is not none %}<span class="dash-count">{{ t.count }}</span>{% endif %}
     <span class="dash-label">{{ t.label }}</span>
@@ -316,6 +319,27 @@ function switchQuickLinksTab(i) {
     a.querySelector('.dash-label').textContent = link.label;
     dash.appendChild(a);
   }
+
+  // The ✕ button rendered on each pinned tile (see the pinned_tiles loop
+  // above) — deletes by the tile's position in the saved list without a
+  // trip through the full /home/edit form. loop.index0 there matches this
+  // list's storage order exactly because only a GM ever sees the button,
+  // and a GM viewer's pinned_tiles is never visibility-filtered (see
+  // _resolve_pinned_tiles in main.py). Reloads on success rather than
+  // patching the DOM in place — every OTHER pinned tile's onclick still
+  // carries its now-stale pre-delete index, so removing a second tile
+  // without a reload would delete the wrong one.
+  window.removePinnedDashboardTile = async function(event, index) {
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      var r = await fetch('/api/worlds/{{ world.id }}/home/pinned-tile/remove', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ index: index }),
+      });
+      if (r.ok) location.reload();
+    } catch (err) {}
+  };
 
   var dashZone = document.getElementById('dashboard-dropzone');
   if (dashZone) {
