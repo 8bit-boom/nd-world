@@ -1447,6 +1447,9 @@ input[type="file"]:hover { border-color: var(--neon); }
   width: 1.5rem; height: 1.3rem; padding: 0; border: 1px solid var(--border);
   border-radius: 3px; cursor: pointer; background: none;
 }
+textarea[data-fmt].fmt-drag-over {
+  outline: 2px dashed var(--neon); outline-offset: -2px; background: rgba(0,240,255,0.06);
+}
 
 @media (max-width: 480px) {
   .pc-grid { grid-template-columns: 1fr 1fr; }

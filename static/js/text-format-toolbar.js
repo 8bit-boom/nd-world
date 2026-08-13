@@ -100,6 +100,50 @@ function ndFmtWrapSelection(ta, before, after) {
 // in card summaries (strip_md), so this button is purely a convenience for
 // getting a file onto disk and its URL into the textarea — nothing new to
 // teach the renderer.
+//
+// Shared by both the toolbar button (one file, alt text pulled from the
+// current selection) and drag-and-drop (one or more files, dropped in
+// sequence at `pos` — see ndFmtSetupDragDrop below). Returns the cursor
+// position immediately after the inserted markdown, so a caller inserting
+// several files in a row knows where to place the next one.
+async function ndFmtUploadOneImage(ta, file, start, end, alt) {
+  const placeholder = `![Uploading ${file.name}…]()`;
+  ta.value = ta.value.slice(0, start) + placeholder + ta.value.slice(end);
+  ta.dispatchEvent(new Event("input", { bubbles: true }));
+  const fd = new FormData();
+  fd.append("file", file);
+  // Which endpoint to POST to is per-textarea (data-fmt-upload) — entity/
+  // rules/board/private-note bodies are GM-only pages so the default
+  // GM-only /api/upload-image is fine, but the character backstory/notes
+  // fields are player-writable and need the player-safe
+  // /api/characters/upload-image instead (see characters.py).
+  const endpoint = ta.dataset.fmtUpload || "/api/upload-image";
+  let endPos = start + placeholder.length;
+  try {
+    const res = await fetch(endpoint, { method: "POST", body: fd });
+    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+    const data = await res.json();
+    const at = ta.value.indexOf(placeholder);
+    const markdown = `![${alt}](${data.url})`;
+    if (at !== -1) {
+      ta.value = ta.value.slice(0, at) + markdown + ta.value.slice(at + placeholder.length);
+      endPos = at + markdown.length;
+      ta.selectionStart = ta.selectionEnd = endPos;
+    }
+  } catch (e) {
+    const at = ta.value.indexOf(placeholder);
+    if (at !== -1) {
+      ta.value = ta.value.slice(0, at) + ta.value.slice(at + placeholder.length);
+      endPos = at;
+    }
+    alert("Image upload failed: " + e.message);
+  } finally {
+    ta.focus();
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  return endPos;
+}
+
 function ndFmtInsertImage(ta, btn) {
   const input = document.createElement("input");
   input.type = "file";
@@ -112,40 +156,66 @@ function ndFmtInsertImage(ta, btn) {
     if (!file) return;
     const start = ta.selectionStart, end = ta.selectionEnd;
     const alt = ta.value.slice(start, end).trim();
-    const placeholder = `![Uploading ${file.name}…]()`;
-    ta.value = ta.value.slice(0, start) + placeholder + ta.value.slice(end);
-    ta.dispatchEvent(new Event("input", { bubbles: true }));
     btn.disabled = true;
-    const fd = new FormData();
-    fd.append("file", file);
-    // Which endpoint to POST to is per-textarea (data-fmt-upload) — entity/
-    // rules/board/private-note bodies are GM-only pages so the default
-    // GM-only /api/upload-image is fine, but the character backstory/notes
-    // fields are player-writable and need the player-safe
-    // /api/characters/upload-image instead (see characters.py).
-    const endpoint = ta.dataset.fmtUpload || "/api/upload-image";
     try {
-      const res = await fetch(endpoint, { method: "POST", body: fd });
-      if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
-      const data = await res.json();
-      const at = ta.value.indexOf(placeholder);
-      const markdown = `![${alt}](${data.url})`;
-      if (at !== -1) {
-        ta.value = ta.value.slice(0, at) + markdown + ta.value.slice(at + placeholder.length);
-        ta.selectionStart = ta.selectionEnd = at + markdown.length;
-      }
-    } catch (e) {
-      const at = ta.value.indexOf(placeholder);
-      if (at !== -1) ta.value = ta.value.slice(0, at) + ta.value.slice(at + placeholder.length);
-      alert("Image upload failed: " + e.message);
+      await ndFmtUploadOneImage(ta, file, start, end, alt);
     } finally {
       btn.disabled = false;
-      ta.focus();
-      ta.dispatchEvent(new Event("input", { bubbles: true }));
     }
   });
   input.click();
 }
+
+// Drag a file (or several) from the desktop straight onto the textarea.
+// Native <textarea> content has no DOM text nodes for the drop event's
+// coordinates to resolve against, so — same as every plain-textarea
+// drag-drop implementation — this inserts at the current cursor position
+// rather than trying to land exactly under the pointer; multiple files
+// drop in sequence, one upload at a time, each starting where the last one
+// left off. Only intercepts drags that actually carry files, so it never
+// interferes with this app's other drag-and-drop (e.g. dragging a nav tab
+// onto the home page's Quick Links, which carries plain-text data instead).
+function ndFmtHasFiles(dt) {
+  return !!dt && Array.from(dt.types || []).includes("Files");
+}
+
+async function ndFmtHandleDroppedFiles(ta, fileList) {
+  const files = Array.from(fileList || []).filter((f) => f.type && f.type.startsWith("image/"));
+  if (!files.length) return;
+  let pos = ta.selectionStart;
+  for (const file of files) {
+    pos = await ndFmtUploadOneImage(ta, file, pos, pos, "");
+    if (files.length > 1) {
+      ta.value = ta.value.slice(0, pos) + "\n" + ta.value.slice(pos);
+      pos += 1;
+      ta.selectionStart = ta.selectionEnd = pos;
+    }
+  }
+}
+
+function ndFmtSetupDragDrop(ta) {
+  ta.addEventListener("dragover", (e) => {
+    if (!ndFmtHasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    ta.classList.add("fmt-drag-over");
+  });
+  ta.addEventListener("dragleave", () => ta.classList.remove("fmt-drag-over"));
+  ta.addEventListener("drop", (e) => {
+    if (!ndFmtHasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    ta.classList.remove("fmt-drag-over");
+    ndFmtHandleDroppedFiles(ta, e.dataTransfer.files);
+  });
+}
+
+// A drop that misses the (usually short) textarea and lands elsewhere on
+// the page would otherwise make the browser navigate away and open the
+// image file directly, discarding whatever the GM was mid-editing. Only
+// suppressed for actual file drags — the app's own text/plain drag payloads
+// (nav-tab-onto-Quick-Links, etc.) are untouched.
+document.addEventListener("dragover", (e) => { if (ndFmtHasFiles(e.dataTransfer)) e.preventDefault(); });
+document.addEventListener("drop", (e) => { if (ndFmtHasFiles(e.dataTransfer)) e.preventDefault(); });
 
 function ndFmtButton(label, title, onClick) {
   const b = document.createElement("button");
@@ -202,6 +272,7 @@ function ndFmtInit() {
     if (ta.dataset.fmtReady) return;
     ta.dataset.fmtReady = "1";
     ndFmtBuildToolbar(ta);
+    ndFmtSetupDragDrop(ta);
   });
 }
 

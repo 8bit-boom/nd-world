@@ -48,6 +48,38 @@ def test_gm_can_also_use_character_upload_image(client, seed):
     assert r.status_code == 200
 
 
+def test_toolbar_js_supports_drag_and_drop_image_upload(client, seed):
+    r = client.get("/static/js/text-format-toolbar.js")
+    assert r.status_code == 200
+    js = r.text
+    assert "function ndFmtSetupDragDrop(ta)" in js
+    assert 'ta.addEventListener("drop"' in js
+    assert 'ta.addEventListener("dragover"' in js
+    assert "ndFmtSetupDragDrop(ta);" in js
+
+
+def test_toolbar_js_drag_drop_ignores_non_file_drags(client, seed):
+    r = client.get("/static/js/text-format-toolbar.js")
+    js = r.text
+    fn_start = js.index("function ndFmtHasFiles")
+    fn_end = js.index("\n}", fn_start)
+    fn_body = js[fn_start:fn_end]
+    assert "Files" in fn_body
+    assert "ndFmtHasFiles(e.dataTransfer)" in js
+
+
+def test_toolbar_js_shares_upload_logic_between_click_and_drop(client, seed):
+    r = client.get("/static/js/text-format-toolbar.js")
+    js = r.text
+    assert "async function ndFmtUploadOneImage(" in js
+    insert_fn_start = js.index("function ndFmtInsertImage")
+    insert_fn_end = js.index("\n}", insert_fn_start)
+    assert "ndFmtUploadOneImage(" in js[insert_fn_start:insert_fn_end]
+    drop_fn_start = js.index("async function ndFmtHandleDroppedFiles")
+    drop_fn_end = js.index("\n}", drop_fn_start)
+    assert "ndFmtUploadOneImage(" in js[drop_fn_start:drop_fn_end]
+
+
 def test_entity_note_content_renders_markdown_image(client, seed):
     db = SessionLocal()
     try:
