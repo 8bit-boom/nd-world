@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Images — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="form-page" style="max-width:1100px">
+  <h1>🖼 Images — {{ world.name }}</h1>
+  <p style="color:var(--text-dim);font-size:.85rem;margin:.3rem 0 1.2rem">
+    Every image already used somewhere in this world — entity portraits, inline body/note images,
+    and player character portraits — in one place. Select any and add them to an album, or open an
+    album to upload something new directly into it.
+  </p>
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.5rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">📁 Albums</h2>
+    <form method="post" action="/images/albums/new" style="display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap">
+      <input type="text" name="name" placeholder="New album name" maxlength="120" required
+             style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
+      <button type="submit" class="btn-save">+ Create Album</button>
+    </form>
+    {% if albums %}
+    <div class="gallery-album-grid">
+      {% for a in albums %}
+      <a class="gallery-album-card" href="/images/albums/{{ a.id }}">
+        {% set urls = album_urls.get(a.id, []) %}
+        {% if urls %}
+        <img src="{{ urls[0] }}" alt=""/>
+        {% else %}
+        <div class="gallery-album-empty">No images yet</div>
+        {% endif %}
+        <div class="gallery-album-name">{{ a.name }}</div>
+        <div class="gallery-album-count">{{ urls|length }} image{{ '' if urls|length == 1 else 's' }}</div>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p style="color:var(--text-dim);font-size:.82rem;margin:0">No albums yet — create one above, or add images below and assign them to a new album.</p>
+    {% endif %}
+  </div>
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.6rem;margin-bottom:.8rem">
+      <h2 style="color:var(--neon);font-size:.95rem;margin:0">🗂 All Images ({{ images|length }})</h2>
+      {% if images %}
+      <div style="display:flex;gap:.5rem;align-items:center">
+        <button type="button" class="btn-cancel" onclick="galleryToggleAll()">Select All / None</button>
+        <select id="add-to-album-select" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
+          {% if albums %}
+            {% for a in albums %}<option value="{{ a.id }}">{{ a.name }}</option>{% endfor %}
+          {% else %}
+            <option value="">Create an album first</option>
+          {% endif %}
+        </select>
+        <button type="button" class="btn-save" onclick="galleryAddSelectedToAlbum()" {% if not albums %}disabled{% endif %}>Add selected to album</button>
+      </div>
+      {% endif %}
+    </div>
+    {% if images %}
+    <div class="gallery-img-grid">
+      {% for img in images %}
+      <label class="gallery-img-cell">
+        <input type="checkbox" class="gallery-img-check" value="{{ img.url }}"/>
+        <img src="{{ img.url }}" alt="" loading="lazy"/>
+        <div class="gallery-img-uses" title="{{ img.uses | map(attribute='label') | join(', ') }}">
+          used in {{ img.uses|length }} place{{ '' if img.uses|length == 1 else 's' }}
+        </div>
+      </label>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p style="color:var(--text-dim);font-size:.82rem;margin:0">No images found yet — add a portrait or embed an image in an entity's description to see it here.</p>
+    {% endif %}
+  </div>
+</div>
+
+<style>
+.gallery-album-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:.7rem; }
+.gallery-album-card { display:block; background:var(--bg3); border:1px solid var(--border); border-radius:5px; overflow:hidden; text-decoration:none; color:var(--text); }
+.gallery-album-card:hover { border-color:var(--neon); }
+.gallery-album-card img { width:100%; height:100px; object-fit:cover; display:block; background:var(--bg); }
+.gallery-album-empty { width:100%; height:100px; display:flex; align-items:center; justify-content:center; color:var(--text-dim); font-size:.7rem; background:var(--bg); }
+.gallery-album-name { padding:.4rem .5rem 0; font-size:.82rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gallery-album-count { padding:0 .5rem .5rem; font-size:.7rem; color:var(--text-dim); }
+
+.gallery-img-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:.6rem; }
+.gallery-img-cell { position:relative; display:block; background:var(--bg3); border:1px solid var(--border); border-radius:5px; overflow:hidden; cursor:pointer; }
+.gallery-img-cell:has(.gallery-img-check:checked) { border-color:var(--neon); box-shadow:0 0 0 1px var(--neon); }
+.gallery-img-cell img { width:100%; height:100px; object-fit:cover; display:block; background:var(--bg); }
+.gallery-img-check { position:absolute; top:.3rem; left:.3rem; z-index:1; width:16px; height:16px; }
+.gallery-img-uses { padding:.3rem .4rem; font-size:.65rem; color:var(--text-dim); background:var(--bg2); }
+</style>
+
+<script>
+function galleryToggleAll() {
+  const boxes = document.querySelectorAll('.gallery-img-check');
+  const anyUnchecked = Array.from(boxes).some(b => !b.checked);
+  boxes.forEach(b => b.checked = anyUnchecked);
+}
+
+async function galleryAddSelectedToAlbum() {
+  const sel = document.getElementById('add-to-album-select');
+  const albumId = sel && sel.value;
+  if (!albumId) { alert('Create an album first.'); return; }
+  const urls = Array.from(document.querySelectorAll('.gallery-img-check:checked')).map(b => b.value);
+  if (!urls.length) { alert('Select at least one image.'); return; }
+  const res = await fetch(`/images/albums/${albumId}/add`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ urls }),
+  });
+  if (res.ok) {
+    location.href = `/images/albums/${albumId}`;
+  } else {
+    alert('Failed to add images to album.');
+  }
+}
+</script>
+{% endblock %}

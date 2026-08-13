@@ -17,7 +17,7 @@ import pytest
 from app.database import SessionLocal
 from app.main import _MAPS_DIR
 from app.models import (
-    CombatSession, Entity, EntityNote, GameSession, InvestBoard, InviteCode,
+    CombatSession, Entity, EntityNote, GameSession, ImageAlbum, InvestBoard, InviteCode,
     MapOverlay, Party, PlayerCharacter, PrivateNote, Quest, RandomTable,
     Schematic, WorldCalendar, WorldMembership, entity_links, entity_player_access,
 )
@@ -58,6 +58,7 @@ def test_world_delete_cascades_every_child_table(client, seed):
         db.add(WorldCalendar(world_id=world_id))
         db.add(PrivateNote(world_id=world_id, player_user_id=seed.player_a.id, title="Note"))
         db.add(InviteCode(world_id=world_id, code="INVITE1"))
+        db.add(ImageAlbum(world_id=world_id, name="Doomed Album", image_urls_json="[]"))
         db.commit()
 
         membership_before = db.query(WorldMembership).filter(WorldMembership.world_id == world_id).count()
@@ -88,6 +89,7 @@ def test_world_delete_cascades_every_child_table(client, seed):
         assert db.query(PrivateNote).filter(PrivateNote.world_id == world_id).count() == 0
         assert db.query(InviteCode).filter(InviteCode.world_id == world_id).count() == 0
         assert db.query(WorldMembership).filter(WorldMembership.world_id == world_id).count() == 0
+        assert db.query(ImageAlbum).filter(ImageAlbum.world_id == world_id).count() == 0
     finally:
         db.close()
 

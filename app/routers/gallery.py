@@ -1,0 +1,189 @@
+"""The /images gallery tab: browse every image already used somewhere in
+the active world (via app/gallery.py's discover_world_images) and organize
+any of them — or brand-new uploads — into GM-defined named albums
+(ImageAlbum in app/models.py). GM-only by default (not in main.py's
+_is_player_safe allowlist)."""
+import json
+import os
+import uuid
+from pathlib import Path
+from typing import Optional
+
+from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from sqlalchemy.orm import Session
+
+from ..database import get_app_settings, get_db
+from ..deps import get_world_ctx
+from ..gallery import discover_world_images
+from ..imaging import convert_image
+from ..models import ImageAlbum, World
+from ..templating import templates
+from ..uploads import copy_upload_bounded
+
+router = APIRouter()
+
+_MAX_ALBUMS_PER_WORLD = 100
+_MAX_ALBUM_NAME = 120
+_MAX_IMAGES_PER_ALBUM = 500
+
+# Duplicated locally rather than imported from main.py — main.py imports
+# this router, so the reverse would be circular (same rationale as every
+# other router's local _UPLOADS_DIR copy, e.g. home_content.py).
+_UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+_ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+
+def _upload_album_image(file: Optional[UploadFile], db: Session) -> Optional[str]:
+    if not file or not file.filename:
+        return None
+    ext = Path(file.filename).suffix.lower()
+    if ext not in _ALLOWED_EXTS:
+        return None
+    target_dir = _UPLOADS_DIR / "gallery"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / f"{uuid.uuid4().hex}{ext}"
+    copy_upload_bounded(file, dest)
+    settings = get_app_settings(db)
+    dest = convert_image(dest, static_format=settings.static_format, animated_format=settings.animated_format)
+    return f"/uploads/gallery/{dest.name}"
+
+
+def _load_urls(album: ImageAlbum) -> list:
+    try:
+        urls = json.loads(album.image_urls_json or "[]")
+    except (TypeError, ValueError):
+        urls = []
+    return urls if isinstance(urls, list) else []
+
+
+def _album_or_404(db: Session, world_id: int, album_id: int) -> ImageAlbum:
+    album = db.get(ImageAlbum, album_id)
+    if not album or album.world_id != world_id:
+        raise HTTPException(404)
+    return album
+
+
+@router.get("/images", response_class=HTMLResponse)
+def images_gallery(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    images = discover_world_images(db, world)
+    albums = db.query(ImageAlbum).filter(ImageAlbum.world_id == world.id).order_by(ImageAlbum.name).all()
+    album_urls = {a.id: _load_urls(a) for a in albums}
+    return templates.TemplateResponse("gallery_index.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "images": images, "albums": albums, "album_urls": album_urls,
+    })
+
+
+@router.post("/images/albums/new")
+async def album_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    form = await request.form()
+    name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME] or "Untitled Album"
+    count = db.query(ImageAlbum).filter(ImageAlbum.world_id == world.id).count()
+    if count >= _MAX_ALBUMS_PER_WORLD:
+        raise HTTPException(400, f"This world already has the maximum of {_MAX_ALBUMS_PER_WORLD} albums.")
+    album = ImageAlbum(world_id=world.id, name=name, image_urls_json="[]")
+    db.add(album)
+    db.commit()
+    db.refresh(album)
+    return RedirectResponse(f"/images/albums/{album.id}", status_code=303)
+
+
+@router.get("/images/albums/{album_id}", response_class=HTMLResponse)
+def album_detail(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    album = _album_or_404(db, world.id, album_id)
+    return templates.TemplateResponse("gallery_album.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "album": album, "image_urls": _load_urls(album),
+    })
+
+
+@router.post("/images/albums/{album_id}/rename")
+async def album_rename(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    album = _album_or_404(db, world.id, album_id)
+    form = await request.form()
+    name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME]
+    if name:
+        album.name = name
+        db.commit()
+    return RedirectResponse(f"/images/albums/{album_id}", status_code=303)
+
+
+@router.post("/images/albums/{album_id}/delete")
+def album_delete(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    album = _album_or_404(db, world.id, album_id)
+    db.delete(album)
+    db.commit()
+    return RedirectResponse("/images", status_code=303)
+
+
+@router.post("/images/albums/{album_id}/add")
+async def album_add_images(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    album = _album_or_404(db, world.id, album_id)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid payload")
+    urls = payload.get("urls")
+    if not isinstance(urls, list):
+        raise HTTPException(400, "Invalid urls")
+    current = _load_urls(album)
+    for u in urls:
+        if isinstance(u, str) and u and u not in current and len(current) < _MAX_IMAGES_PER_ALBUM:
+            current.append(u)
+    album.image_urls_json = json.dumps(current)
+    db.commit()
+    return {"ok": True, "count": len(current)}
+
+
+@router.post("/images/albums/{album_id}/remove")
+async def album_remove_image(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    album = _album_or_404(db, world.id, album_id)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid payload")
+    url = payload.get("url")
+    current = [u for u in _load_urls(album) if u != url]
+    album.image_urls_json = json.dumps(current)
+    db.commit()
+    return {"ok": True, "count": len(current)}
+
+
+@router.post("/images/albums/{album_id}/upload")
+async def album_upload_image(
+    album_id: int, request: Request, file: UploadFile = File(...),
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    album = _album_or_404(db, world.id, album_id)
+    url = _upload_album_image(file, db)
+    if not url:
+        raise HTTPException(400, "Unsupported file type")
+    current = _load_urls(album)
+    if url not in current and len(current) < _MAX_IMAGES_PER_ALBUM:
+        current.append(url)
+    album.image_urls_json = json.dumps(current)
+    db.commit()
+    return RedirectResponse(f"/images/albums/{album_id}", status_code=303)

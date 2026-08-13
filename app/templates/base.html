@@ -67,6 +67,7 @@
         <a href="{{ '/sessions'|wq }}" draggable="true" data-ql-ref="/sessions" class="tools-option {% if request.url.path.startswith('/sessions') %}active{% endif %}">📓 Sessions</a>
         <a href="{{ '/facts'|wq }}" draggable="true" data-ql-ref="/facts"       class="tools-option {% if request.url.path.startswith('/facts') %}active{% endif %}">🗒 Facts</a>
         <a href="{{ '/calendar'|wq }}" draggable="true" data-ql-ref="/calendar" class="tools-option {% if request.url.path.startswith('/calendar') %}active{% endif %}">🗓 Calendar</a>
+        <a href="{{ '/images'|wq }}" draggable="true" data-ql-ref="/images"     class="tools-option {% if request.url.path.startswith('/images') %}active{% endif %}">🖼 Images</a>
         <a href="{{ '/import'|wq }}" draggable="true" data-ql-ref="/import"     class="tools-option {% if request.url.path.startswith('/import') %}active{% endif %}">📥 Import</a>
         <a href="{{ '/export'|wq }}" draggable="true" data-ql-ref="/export"     class="tools-option {% if request.url.path == '/export' %}active{% endif %}">📦 Export &amp; Backup</a>
         {% if dreamlands_enabled %}

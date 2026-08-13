@@ -30,7 +30,7 @@ from .imaging import convert_image
 from .rendering import parse_stats, render_md
 from .templating import templates
 from .uploads import copy_upload_bounded, BULK_IMAGE_MAX_FILES
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, ApiToken
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, ApiToken, ImageAlbum
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -53,6 +53,7 @@ from .routers.export import router as export_router
 from .routers.kinds_admin import router as kinds_admin_router
 from .routers.facts import router as facts_router
 from .routers.chronicler import router as chronicler_router
+from .routers.gallery import router as gallery_router
 from . import mcp_server
 from . import ai as _ai_module
 from . import auth as _auth
@@ -96,6 +97,7 @@ app.include_router(export_router)
 app.include_router(kinds_admin_router)
 app.include_router(facts_router)
 app.include_router(chronicler_router)
+app.include_router(gallery_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 
@@ -537,7 +539,7 @@ def world_delete(world_id: int, db: Session = Depends(get_db)):
 
     for model in (Entity, PlayerCharacter, Schematic, WorldMembership, InviteCode, PrivateNote,
                   InvestBoard, RandomTable, CombatSession, Party, Quest, GameSession,
-                  WorldCalendar, CalendarEvent):
+                  WorldCalendar, CalendarEvent, ImageAlbum):
         db.query(model).filter(model.world_id == world_id).delete(synchronize_session=False)
 
     db.delete(w)

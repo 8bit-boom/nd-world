@@ -477,6 +477,22 @@ class Quest(Base):
     party = relationship("Party")
 
 
+class ImageAlbum(Base):
+    """A GM-curated named collection of images for the /images gallery tab —
+    just an ordered list of /uploads/... URLs, not a copy of the files
+    themselves. An image can belong to any number of albums (or none); an
+    image already used somewhere in the world (an entity portrait, an
+    inline body/note embed, a character portrait) can be added here, and an
+    album can also receive brand-new uploads not used anywhere else yet."""
+    __tablename__ = "image_albums"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    image_urls_json = Column(Text, default="[]")  # ordered list of "/uploads/..." strings
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class GameSession(Base):
     """A per-session prep/recap log: prep checklist, NPCs featured, loot
     given, XP awarded. Named GameSession (not Session) to avoid colliding
