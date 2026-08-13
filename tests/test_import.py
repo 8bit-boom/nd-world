@@ -692,6 +692,32 @@ def test_import_page_entity_picker_colors_has_image_entries(client, seed):
     assert "e.name + (e.has_image ? ' (has image)' : '')" in r.text
 
 
+def test_import_page_entity_picker_dropdown_is_not_clipped_by_row_list(client, seed):
+    """Per bug report: the per-row combobox's dropdown used to be
+    position:absolute inside `wrap` (a child of the row-list container,
+    which is capped with max-height:420px;overflow-y:auto so a 100-file
+    batch doesn't make the page unusably tall). That overflow:auto ancestor
+    silently clips ANY descendant that extends past its own (usually much
+    shorter, content-sized) box — including the absolutely-positioned
+    dropdown — the moment a GM opens it to fix a fuzzy/ambiguous/no match,
+    making the picker look empty/broken. Fix: the dropdown is appended to
+    document.body and positioned with `fixed` coordinates computed from the
+    input's own getBoundingClientRect(), so it can never be clipped by the
+    row list's scroll container. Source-level guard (no JS runtime here)."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/import")
+    assert r.status_code == 200
+    assert "document.body.appendChild(listEl)" in r.text
+    assert "position:fixed" in r.text
+    assert "function positionList()" in r.text
+    assert "input.getBoundingClientRect()" in r.text
+    # Cleanup on re-render: renderImgPreview() wipes #img-preview-table via
+    # innerHTML, which no longer reaches a body-level dropdown — it must be
+    # swept up explicitly or every re-selection of files leaks one.
+    assert "document.querySelectorAll('body > .entity-combo-list')" in r.text
+
+
 def test_import_page_revokes_object_urls_on_rerender(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)

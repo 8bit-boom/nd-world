@@ -623,11 +623,19 @@ function buildEntitySelect(selectedId) {
   input.style.cssText = 'width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-size:.8rem;border-radius:3px';
   wrap.appendChild(input);
 
+  // Appended to <body> (not `wrap`) and positioned with `fixed` coordinates
+  // computed from the input's own rect — the row list above this combobox
+  // is capped with overflow-y:auto so a 100-file batch doesn't make the
+  // page unusably tall, and an ordinary position:absolute dropdown nested
+  // inside that scrolling container gets silently clipped to its bounds
+  // (invisible/cut off) the moment it would extend past the container's
+  // own (usually much shorter, content-sized) height — exactly the state
+  // a GM hits opening this picker to fix a fuzzy/no/ambiguous match.
   const listEl = document.createElement('div');
   listEl.setAttribute('role', 'listbox');
   listEl.className = 'entity-combo-list';
-  listEl.style.cssText = 'display:none;position:absolute;top:100%;left:0;right:0;z-index:30;max-height:260px;overflow-y:auto;background:var(--bg2);border:1px solid var(--border);border-radius:3px;margin-top:2px;box-shadow:0 4px 12px rgba(0,0,0,.4)';
-  wrap.appendChild(listEl);
+  listEl.style.cssText = 'display:none;position:fixed;z-index:999;max-height:260px;overflow-y:auto;background:var(--bg2);border:1px solid var(--border);border-radius:3px;box-shadow:0 4px 12px rgba(0,0,0,.4)';
+  document.body.appendChild(listEl);
 
   sel._comboInput = input;
 
@@ -659,6 +667,17 @@ function buildEntitySelect(selectedId) {
     input.setAttribute('aria-expanded', 'false');
     highlighted = -1;
     if (_openComboClose === closeList) _openComboClose = null;
+    // capture:true so this also fires for a scroll inside the row-list's
+    // own overflow-y:auto container, which doesn't bubble to window —
+    // without this, scrolling that container while the dropdown is open
+    // leaves it visually stranded over whatever is now underneath it.
+    window.removeEventListener('scroll', closeList, true);
+  }
+  function positionList() {
+    const r = input.getBoundingClientRect();
+    listEl.style.left = r.left + 'px';
+    listEl.style.top = (r.bottom + 2) + 'px';
+    listEl.style.width = r.width + 'px';
   }
   function renderList() {
     const q = input.value.trim().toLowerCase();
@@ -716,12 +735,19 @@ function buildEntitySelect(selectedId) {
     if (_openComboClose && _openComboClose !== closeList) _openComboClose();
     _openComboClose = closeList;
     renderList();
+    positionList();
     listEl.style.display = 'block';
     input.setAttribute('aria-expanded', 'true');
+    // Deferred one tick: focusing this input can itself trigger the
+    // browser's native "scroll the focused element into view" inside the
+    // row-list's own overflow-y:auto container, which fires a scroll event
+    // as part of that same focus — attaching synchronously here caught
+    // that event and closed the dropdown the instant it opened.
+    setTimeout(() => window.addEventListener('scroll', closeList, true), 0);
   }
 
   input.addEventListener('focus', () => { openList(); input.select(); });
-  input.addEventListener('input', () => { renderList(); listEl.style.display = 'block'; input.setAttribute('aria-expanded', 'true'); });
+  input.addEventListener('input', () => { renderList(); positionList(); listEl.style.display = 'block'; input.setAttribute('aria-expanded', 'true'); });
   input.addEventListener('keydown', e => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
@@ -767,6 +793,10 @@ function renderImgPreview() {
   imgObjectUrls.forEach(u => URL.revokeObjectURL(u));
   imgObjectUrls = [];
   _openComboClose = null; // rows about to be destroyed below — drop any stale reference to their (now-detached) dropdown
+  // Each row's searchable-entity dropdown lives in document.body, not under
+  // `box` (see buildEntitySelect) — box.innerHTML below won't reach it, so
+  // it has to be swept up explicitly or a re-select leaks one per old row.
+  document.querySelectorAll('body > .entity-combo-list').forEach(el => el.remove());
   const box = document.getElementById('img-preview-table');
   box.innerHTML = '';
   if (!selectedImgFiles.length) { disableImgImport(); return; }
