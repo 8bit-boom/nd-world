@@ -109,10 +109,18 @@ def test_wq_filter_registered():
     assert "wq" in templates.env.filters
 
 
-def test_base_template_nav_links_use_wq_filter():
-    html = open("app/templates/base.html", encoding="utf-8").read()
-    assert "'/rules'|wq" in html
-    assert "'/maps'|wq" in html
+def test_base_template_nav_links_use_wq_filter(client, seed):
+    """/maps and /rules are catalog-driven nav items (see app/nav_menus.py)
+    rendered through the shared nav_item_link macro's `item.href|wq` rather
+    than hardcoded `'/maps'|wq` markup, so this renders the real page and
+    checks the resulting hrefs carry ?w=<slug> instead of grepping
+    base.html's source for a literal string that no longer appears there."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert f'href="/maps?w={seed.world_a.slug}"' in r.text
+    assert f'href="/rules?w={seed.world_a.slug}"' in r.text
 
 
 def test_base_template_draggable_links_carry_clean_data_ql_ref(client, seed):

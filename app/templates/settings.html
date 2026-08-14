@@ -217,9 +217,11 @@
   <div id="pane-navigation" {% if active_tab != 'navigation' %}style="display:none"{% endif %}>
     {% if world %}
     <p style="font-size:.82rem;color:var(--text-dim);margin:1rem 0 1.25rem">
-      Group the GM-only tool pages below into dropdown menus in the top nav, or leave
-      an item on "— Flat tab —" to show it directly in the nav bar instead. Up to
-      {{ nav_max_menus }} menus, each item in at most one menu at a time.
+      Group any top-nav tab below into dropdown menus, or leave an item on
+      "— Flat tab —" to show it directly in the nav bar instead. Up to
+      {{ nav_max_menus }} menus, each item in at most one menu at a time. Items
+      marked <span style="color:var(--neon)">👁 players see this</span> are visible
+      to players too — moving one into a menu changes what players see, not just GMs.
     </p>
     <form method="post" action="/worlds/{{ world.id }}/nav-menus/edit" id="nav-menus-form" class="entity-form">
       <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 .7rem">
@@ -261,6 +263,7 @@
 .nav-btn-add { background:var(--bg3); border:1px solid var(--neon); color:var(--neon); padding:.3rem .75rem; font-size:.78rem; border-radius:3px; cursor:pointer; }
 .nav-item-row { display:flex; align-items:center; justify-content:space-between; gap:.6rem; background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.45rem .7rem; margin-bottom:.3rem; }
 .nav-item-label { font-size:.83rem; }
+.nav-item-player-visible { color:var(--neon); font-size:.78rem; }
 .nav-item-row select { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.3rem .5rem; font-family:var(--font); font-size:.8rem; border-radius:3px; min-width:180px; }
 </style>
 
@@ -388,7 +391,7 @@ function switchSettingsTab(t) {
       );
       return `
         <div class="nav-item-row">
-          <span class="nav-item-label">${esc(item.icon)} ${esc(item.label)}</span>
+          <span class="nav-item-label">${esc(item.icon)} ${esc(item.label)}${item.gm_only ? '' : ' <span class="nav-item-player-visible" title="Players see this tab too">👁</span>'}</span>
           <select onchange="assignNavItem('${item.id}', this.value)">${opts.join('')}</select>
         </div>
       `;

@@ -22,6 +22,6 @@ async def nav_menus_edit_save(world_id: int, request: Request, db: Session = Dep
     if not w:
         raise HTTPException(404)
     form = await request.form()
-    w.nav_menus_json = json.dumps(sanitize_nav_menus(str(form.get("nav_menus_json", "[]") or "[]")))
+    w.nav_menus_json = json.dumps(sanitize_nav_menus(str(form.get("nav_menus_json", "[]") or "[]"), w))
     db.commit()
     return RedirectResponse("/settings?tab=navigation", status_code=303)

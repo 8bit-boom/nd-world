@@ -2313,7 +2313,7 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "vis_entities": vis_entities,
         "world_players": world_players,
         "allowed_by_entity": allowed_by_entity,
-        "nav_catalog": _nav_menus_module.NAV_CATALOG,
+        "nav_catalog": _nav_menus_module.build_catalog(world),
         "initial_nav_menus": _nav_menus_module.load_nav_menus(world) if world else [],
         "nav_max_menus": _nav_menus_module.MAX_NAV_MENUS,
     }

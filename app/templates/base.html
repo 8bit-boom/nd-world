@@ -45,17 +45,10 @@
   </form>
   <button class="nav-hamburger" id="nav-toggle" aria-label="Toggle navigation">☰</button>
   <div class="nav-kinds" id="nav-kinds">
-    {% for k in kinds %}
-    <a href="{{ ('/kind/' + k)|wq }}" draggable="true" data-ql-type="kind" data-ql-ref="{{ k }}" class="nav-kind {% if request.url.path == '/kind/'+k %}active{% endif %}">
-      {{ kind_icons[k] }} {{ k|capitalize }}
-    </a>
-    {% endfor %}
-    <a href="{{ '/maps'|wq }}" draggable="true" data-ql-ref="/maps"                 class="nav-kind {% if request.url.path == '/maps' %}active{% endif %}">🗺 Maps</a>
-    <a href="{{ '/races'|wq }}" draggable="true" data-ql-ref="/races"               class="nav-kind {% if request.url.path.startswith('/races') %}active{% endif %}">🧬 Race Catalog</a>
-    <a href="{{ '/professions'|wq }}" draggable="true" data-ql-ref="/professions"   class="nav-kind {% if request.url.path.startswith('/professions') %}active{% endif %}">🎭 Profession Catalog</a>
-    {% if request.state.user and request.state.user.is_gm %}
     {% macro nav_item_link(item, cls) %}
-    <a href="{{ item.href|wq }}" draggable="true" data-ql-ref="{{ item.href }}" class="{{ cls }} {% if (item.exact and request.url.path == item.href) or (not item.exact and request.url.path.startswith(item.href)) %}active{% endif %}">{{ item.icon }} {{ item.label }}{% if item.id == 'ai' %}<span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle"></span>{% endif %}</a>
+    <a href="{{ item.href|wq }}" draggable="true"
+       {% if item.ql_type %}data-ql-type="{{ item.ql_type }}" data-ql-ref="{{ item.ql_ref }}"{% else %}data-ql-ref="{{ item.href }}"{% endif %}
+       class="{{ cls }} {% if (item.exact and request.url.path == item.href) or (not item.exact and request.url.path.startswith(item.href)) %}active{% endif %}">{{ item.icon }} {{ item.label }}{% if item.id == 'ai' %}<span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle"></span>{% endif %}</a>
     {% endmacro %}
     {% for menu in nav_menus %}
     <div class="tools-switcher">
@@ -72,12 +65,6 @@
     {% for item in nav_ungrouped_items %}
     {{ nav_item_link(item, 'nav-kind') }}
     {% endfor %}
-    {% endif %}
-    <a href="{{ '/chronicler'|wq }}" draggable="true" data-ql-ref="/chronicler" class="nav-kind {% if request.url.path == '/chronicler' %}active{% endif %}">📜 Chronicler</a>
-    <a href="{{ '/session-log'|wq }}" draggable="true" data-ql-ref="/session-log" class="nav-kind {% if request.url.path.startswith('/session-log') %}active{% endif %}">📓 Session Log</a>
-    <a href="{{ '/rules'|wq }}" draggable="true" data-ql-ref="/rules"           class="nav-kind {% if request.url.path == '/rules' %}active{% endif %}">📖 Rules</a>
-    <a href="{{ '/characters'|wq }}" draggable="true" data-ql-ref="/characters" class="nav-kind {% if request.url.path.startswith('/characters') %}active{% endif %}">🎲 Player Characters</a>
-    <a href="{{ '/androidapp'|wq }}" draggable="true" data-ql-ref="/androidapp" class="nav-kind {% if request.url.path == '/androidapp' %}active{% endif %}">📱 Android App</a>
     {% if world and request.state.user and not request.state.user.is_gm %}
     <a href="/worlds/{{ world.id }}/notes/{{ request.state.user.id }}"
        class="nav-kind {% if request.url.path.startswith('/worlds/'+world.id|string+'/notes/') %}active{% endif %}">🔒 My Notes</a>

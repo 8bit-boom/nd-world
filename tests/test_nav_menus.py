@@ -8,7 +8,7 @@ import json
 
 from app.database import SessionLocal
 from app.models import World
-from app.nav_menus import NAV_CATALOG_BY_ID, load_nav_menus, resolve_nav_menus, sanitize_nav_menus
+from app.nav_menus import build_catalog, load_nav_menus, resolve_nav_menus, sanitize_nav_menus
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -56,7 +56,7 @@ def test_load_nav_menus_null_column_falls_back_to_default(client, seed):
 
     # No world at all (e.g. a GM logged in with nothing active) hits the
     # same "never customized" path as a real, un-customized world.
-    menus, ungrouped = resolve_nav_menus(None, dreamlands_enabled=False, king_in_yellow_enabled=False)
+    menus, ungrouped = resolve_nav_menus(None, dreamlands_enabled=False, king_in_yellow_enabled=False, is_gm=True)
     assert [m["id"] for m in menus] == ["menu_tools", "menu_ai_tools"]
 
 
@@ -211,5 +211,74 @@ def test_navigation_tab_renders_catalog_and_current_menus(client, seed):
     assert r.status_code == 200
     assert 'id="tab-navigation" class="settings-tab active"' in r.text or "tab-navigation" in r.text
     assert "nav-menus-list" in r.text
-    for item_id in NAV_CATALOG_BY_ID:
-        assert item_id in r.text
+    for item in build_catalog(seed.world_a):
+        assert item["id"] in r.text
+
+
+# ── Extended catalog: kinds + always-flat player-visible tabs ───────────────
+# The Navigation tab originally only covered the 16 GM-only tool pages that
+# used to live in the hardcoded Tools/AI Tools dropdowns — a GM reported
+# "a lot of top tabs are missing (Characters, Locations, Creatures...)",
+# since the per-world entity kinds and the other always-present tabs (Maps,
+# Race/Profession Catalog, Chronicler, Session Log, Rules, Player
+# Characters, Android App) weren't manageable at all. build_catalog(world)
+# now includes all of those too, each tagged gm_only so a player never sees
+# more than they already could.
+
+def test_catalog_includes_kinds_and_flat_tabs_not_just_gm_tools(client, seed):
+    catalog_by_id = {item["id"]: item for item in build_catalog(seed.world_a)}
+    for kind_id in ("character", "location", "organization", "creature", "race", "profession"):
+        item = catalog_by_id[f"kind_{kind_id}"]
+        assert item["gm_only"] is False
+        assert item["href"] == f"/kind/{kind_id}"
+    for item_id, href in (
+        ("maps", "/maps"), ("races", "/races"), ("professions", "/professions"),
+        ("chronicler", "/chronicler"), ("session_log", "/session-log"), ("rules", "/rules"),
+        ("characters", "/characters"), ("androidapp", "/androidapp"),
+    ):
+        assert catalog_by_id[item_id]["gm_only"] is False
+        assert catalog_by_id[item_id]["href"] == href
+    # The original 16 GM-tool items are still gm_only.
+    assert catalog_by_id["boards"]["gm_only"] is True
+    assert catalog_by_id["ai"]["gm_only"] is True
+
+
+def test_grouping_a_player_visible_item_shows_it_to_players_too(client, seed):
+    _set_nav_menus(seed.world_a.id, [
+        {"id": "menu_pc", "label": "Party Stuff", "icon": "🛡", "item_ids": ["characters"]},
+    ])
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "Party Stuff" in r.text
+    assert 'data-ql-ref="/characters"' in r.text
+
+
+def test_menu_mixing_gm_only_and_player_items_filters_per_viewer(client, seed):
+    _set_nav_menus(seed.world_a.id, [
+        {"id": "menu_mix", "label": "Mixed", "icon": "🗂", "item_ids": ["boards", "characters"]},
+    ])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert "Mixed" in r.text
+    assert 'data-ql-ref="/boards"' in r.text
+    assert 'data-ql-ref="/characters"' in r.text
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.get("/")
+    assert "Mixed" in r.text  # menu survives — it still has a visible item
+    assert 'data-ql-ref="/boards"' not in r.text  # GM-only item dropped
+    assert 'data-ql-ref="/characters"' in r.text
+
+
+def test_kind_item_keeps_kind_drag_type_when_grouped(client, seed):
+    _set_nav_menus(seed.world_a.id, [
+        {"id": "menu_lore", "label": "Lore", "icon": "📚", "item_ids": ["kind_character"]},
+    ])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert "Lore" in r.text
+    assert 'data-ql-type="kind" data-ql-ref="character"' in r.text

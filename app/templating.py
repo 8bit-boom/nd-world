@@ -45,8 +45,10 @@ def _kinds_context_processor(request: Request) -> dict:
         world, _ = deps.get_world_ctx(request, db, request.cookies.get(_ACTIVE_WORLD_COOKIE))
         kinds, kind_icons = deps.effective_kinds(world)
         settings = get_app_settings(db)
+        user = getattr(request.state, "user", None)
         nav_menus, nav_ungrouped_items = _nav_menus.resolve_nav_menus(
             world, bool(settings.dreamlands_enabled), bool(settings.king_in_yellow_enabled),
+            bool(user and user.is_gm),
         )
         return {
             "kinds": kinds, "kind_icons": kind_icons, "subtypes": deps.effective_subtypes(world),
