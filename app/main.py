@@ -24,6 +24,7 @@ import io
 from pathlib import Path
 
 from . import deps
+from . import nav_menus as _nav_menus_module
 from .database import init_db, get_db, SessionLocal, get_app_settings
 from .deps import get_world_ctx, resolve_world_slug, with_world
 from .imaging import convert_image
@@ -54,6 +55,7 @@ from .routers.kinds_admin import router as kinds_admin_router
 from .routers.facts import router as facts_router
 from .routers.chronicler import router as chronicler_router
 from .routers.gallery import router as gallery_router
+from .routers.nav_menus_admin import router as nav_menus_admin_router
 from . import mcp_server
 from . import ai as _ai_module
 from . import auth as _auth
@@ -98,6 +100,7 @@ app.include_router(kinds_admin_router)
 app.include_router(facts_router)
 app.include_router(chronicler_router)
 app.include_router(gallery_router)
+app.include_router(nav_menus_admin_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 
@@ -2300,7 +2303,7 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
     return {
         "request": request, "world": world, "worlds": worlds,
         "settings": settings,
-        "active_tab": tab if tab in ("options", "system", "visibility") else "options",
+        "active_tab": tab if tab in ("options", "system", "visibility", "navigation") else "options",
         "env_ollama_model": _ai_module.OLLAMA_MODEL,
         "env_ollama_url": _ai_module.OLLAMA_URL,
         "env_swarmui_external_url": SWARMUI_EXTERNAL_URL,
@@ -2310,6 +2313,9 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "vis_entities": vis_entities,
         "world_players": world_players,
         "allowed_by_entity": allowed_by_entity,
+        "nav_catalog": _nav_menus_module.NAV_CATALOG,
+        "initial_nav_menus": _nav_menus_module.load_nav_menus(world) if world else [],
+        "nav_max_menus": _nav_menus_module.MAX_NAV_MENUS,
     }
 
 @app.get("/settings", response_class=HTMLResponse)

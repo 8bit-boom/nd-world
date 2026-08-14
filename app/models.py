@@ -93,6 +93,16 @@ class World(Base):
     # Default Tiles checklist on home_edit.html manages the full set,
     # including restoring one. Just a list of ids: ["races", "professions"].
     home_hidden_kinds_json = Column(Text, default="[]")
+    # GM-defined grouping of the top-nav's GM-only utility pages (Boards,
+    # Quests, AI Chat, ...) into dropdown menus. Deliberately nullable with
+    # NO string default (unlike every other *_json column on this model) —
+    # NULL means "never customized," which app/nav_menus.py's
+    # load_nav_menus() takes as a signal to fall back to the shipped
+    # Tools/AI Tools grouping, while an explicitly-saved "[]" (the GM wants
+    # everything as flat tabs) is honored as real. See
+    # app/routers/nav_menus_admin.py for the sanitizer and the Navigation
+    # tab on /settings for the editor.
+    nav_menus_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     entities = relationship("Entity", back_populates="world", cascade="all, delete-orphan")

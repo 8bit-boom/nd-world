@@ -372,6 +372,12 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN home_pinned_tiles_json TEXT DEFAULT '[]'"))
             if "home_hidden_kinds_json" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN home_hidden_kinds_json TEXT DEFAULT '[]'"))
+            if "nav_menus_json" not in w_cols:
+                # Deliberately no DEFAULT clause — existing rows get NULL,
+                # which app/nav_menus.py's load_nav_menus() treats as "never
+                # customized" and falls back to the shipped Tools/AI Tools
+                # grouping (see World.nav_menus_json's docstring).
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN nav_menus_json TEXT"))
         # random_tables table — some installs ended up with a table that
         # doesn't match the model: missing columns (e.g. slug), and/or
         # world_id incorrectly marked NOT NULL (the model allows NULL there

@@ -1,13 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Settings — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
-<div class="form-page" style="max-width:{{ '960px' if active_tab == 'visibility' else '640px' }}">
+<div class="form-page" style="max-width:{{ '960px' if active_tab in ('visibility', 'navigation') else '640px' }}">
   <h1>⚙ Settings</h1>
 
   <div class="settings-tab-bar">
     <button type="button" class="settings-tab {% if active_tab == 'options' %}active{% endif %}" id="tab-options" onclick="switchSettingsTab('options')">Options</button>
     <button type="button" class="settings-tab {% if active_tab == 'visibility' %}active{% endif %}" id="tab-visibility" onclick="switchSettingsTab('visibility')">Visibility</button>
     <button type="button" class="settings-tab {% if active_tab == 'system' %}active{% endif %}" id="tab-system" onclick="switchSettingsTab('system')">System</button>
+    <button type="button" class="settings-tab {% if active_tab == 'navigation' %}active{% endif %}" id="tab-navigation" onclick="switchSettingsTab('navigation')">Navigation</button>
   </div>
 
   <div id="pane-options" {% if active_tab != 'options' %}style="display:none"{% endif %}>
@@ -212,6 +213,36 @@
       </div>
     </form>
   </div>
+
+  <div id="pane-navigation" {% if active_tab != 'navigation' %}style="display:none"{% endif %}>
+    {% if world %}
+    <p style="font-size:.82rem;color:var(--text-dim);margin:1rem 0 1.25rem">
+      Group the GM-only tool pages below into dropdown menus in the top nav, or leave
+      an item on "— Flat tab —" to show it directly in the nav bar instead. Up to
+      {{ nav_max_menus }} menus, each item in at most one menu at a time.
+    </p>
+    <form method="post" action="/worlds/{{ world.id }}/nav-menus/edit" id="nav-menus-form" class="entity-form">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 .7rem">
+        <h2 style="font-size:.9rem;color:var(--text-dim);margin:0">Menus</h2>
+        <button type="button" onclick="addNavMenu()" class="nav-btn-add">+ Add Menu</button>
+      </div>
+      <div id="nav-menus-list"></div>
+      <p id="nav-menus-empty-hint" style="font-size:.8rem;color:var(--text-dim);display:none">
+        No menus — every item below renders as a flat top-level tab.
+      </p>
+
+      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .7rem">Nav Items</h2>
+      <div id="nav-items-list"></div>
+
+      <input type="hidden" name="nav_menus_json" id="nav-menus-json-input"/>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary">Save</button>
+      </div>
+    </form>
+    {% else %}
+    <p style="font-size:.82rem;color:var(--text-dim);margin:1rem 0">Select a world first to manage its nav menus.</p>
+    {% endif %}
+  </div>
 </div>
 
 <style>
@@ -222,6 +253,15 @@
   font-family:var(--font); font-size:.85rem;
 }
 .settings-tab.active { border-color:var(--neon); color:var(--neon); }
+.nav-menu-row { display:grid; grid-template-columns:1fr 70px auto auto auto; gap:.5rem; align-items:center; background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.5rem .6rem; margin-bottom:.4rem; }
+.nav-menu-row input { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.35rem .55rem; font-family:var(--font); font-size:.8rem; border-radius:3px; width:100%; box-sizing:border-box; }
+.nav-icon-btn { background:none; border:1px solid var(--border); color:var(--text-dim); font-size:.85rem; cursor:pointer; padding:.25rem .5rem; border-radius:3px; line-height:1; }
+.nav-icon-btn:hover { border-color:var(--neon); color:var(--neon); }
+.nav-icon-btn.danger:hover { border-color:#c44; color:#c44; }
+.nav-btn-add { background:var(--bg3); border:1px solid var(--neon); color:var(--neon); padding:.3rem .75rem; font-size:.78rem; border-radius:3px; cursor:pointer; }
+.nav-item-row { display:flex; align-items:center; justify-content:space-between; gap:.6rem; background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.45rem .7rem; margin-bottom:.3rem; }
+.nav-item-label { font-size:.83rem; }
+.nav-item-row select { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.3rem .5rem; font-family:var(--font); font-size:.8rem; border-radius:3px; min-width:180px; }
 </style>
 
 <script>
@@ -308,6 +348,97 @@ function switchSettingsTab(t) {
   if (!sel) return;
   sel.value = document.documentElement.dataset.scale || '100';
   sel.addEventListener('change', () => window.ndSetUIScale(sel.value));
+})();
+
+// ── Navigation: GM-manageable top-nav dropdown menus ────────────────────────
+(function () {
+  const list = document.getElementById('nav-menus-list');
+  if (!list) return; // Navigation pane not rendered (no active world)
+
+  const NAV_CATALOG_ITEMS = {{ nav_catalog | tojson }};
+  const INIT_NAV_MENUS = {{ initial_nav_menus | tojson }};
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+  let _navMenus = INIT_NAV_MENUS.map(m => ({
+    id: m.id, label: m.label || '', icon: m.icon || '', item_ids: Array.isArray(m.item_ids) ? m.item_ids.slice() : [],
+  }));
+
+  function navMenuIdForItem(itemId) {
+    const m = _navMenus.find(m => m.item_ids.includes(itemId));
+    return m ? m.id : '';
+  }
+
+  function renderNavMenuRow(m, i) {
+    return `
+      <div class="nav-menu-row">
+        <input type="text" value="${esc(m.label)}" placeholder="Menu name" oninput="updateNavMenu(${i},'label',this.value)"/>
+        <input type="text" value="${esc(m.icon)}" placeholder="🗂" maxlength="8" oninput="updateNavMenu(${i},'icon',this.value)"/>
+        <button type="button" class="nav-icon-btn" onclick="moveNavMenu(${i},-1)" title="Move up">▲</button>
+        <button type="button" class="nav-icon-btn" onclick="moveNavMenu(${i},1)" title="Move down">▼</button>
+        <button type="button" class="nav-icon-btn danger" onclick="removeNavMenu(${i})" title="Delete menu">✕</button>
+      </div>
+    `;
+  }
+
+  function renderNavItemAssignments() {
+    document.getElementById('nav-items-list').innerHTML = NAV_CATALOG_ITEMS.map(item => {
+      const current = navMenuIdForItem(item.id);
+      const opts = ['<option value="">— Flat tab —</option>'].concat(
+        _navMenus.map(m => `<option value="${esc(m.id)}" ${m.id === current ? 'selected' : ''}>${esc(m.icon)} ${esc(m.label) || 'Untitled Menu'}</option>`)
+      );
+      return `
+        <div class="nav-item-row">
+          <span class="nav-item-label">${esc(item.icon)} ${esc(item.label)}</span>
+          <select onchange="assignNavItem('${item.id}', this.value)">${opts.join('')}</select>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function renderNavMenus() {
+    list.innerHTML = _navMenus.map(renderNavMenuRow).join('');
+    document.getElementById('nav-menus-empty-hint').style.display = _navMenus.length ? 'none' : '';
+    renderNavItemAssignments();
+    syncNavMenusHidden();
+  }
+
+  window.addNavMenu = function () {
+    if (_navMenus.length >= {{ nav_max_menus }}) { alert('Maximum of {{ nav_max_menus }} menus.'); return; }
+    let base = 'menu_new', id = base, n = 2;
+    while (_navMenus.some(m => m.id === id)) { id = base + '_' + n; n++; }
+    _navMenus.push({ id, label: 'New Menu', icon: '🗂', item_ids: [] });
+    renderNavMenus();
+  };
+  window.removeNavMenu = function (i) {
+    if (!confirm('Delete this menu? Its items become flat tabs again, not deleted.')) return;
+    _navMenus.splice(i, 1);
+    renderNavMenus();
+  };
+  window.moveNavMenu = function (i, dir) {
+    const j = i + dir;
+    if (j < 0 || j >= _navMenus.length) return;
+    [_navMenus[i], _navMenus[j]] = [_navMenus[j], _navMenus[i]];
+    renderNavMenus();
+  };
+  window.updateNavMenu = function (i, key, val) { _navMenus[i][key] = val; renderNavItemAssignments(); syncNavMenusHidden(); };
+  window.assignNavItem = function (itemId, menuId) {
+    for (const m of _navMenus) {
+      const idx = m.item_ids.indexOf(itemId);
+      if (idx !== -1) m.item_ids.splice(idx, 1);
+    }
+    if (menuId) {
+      const m = _navMenus.find(m => m.id === menuId);
+      if (m) m.item_ids.push(itemId);
+    }
+    syncNavMenusHidden();
+  };
+
+  function syncNavMenusHidden() {
+    document.getElementById('nav-menus-json-input').value = JSON.stringify(_navMenus);
+  }
+
+  document.getElementById('nav-menus-form').addEventListener('submit', syncNavMenusHidden);
+  renderNavMenus();
 })();
 </script>
 {% endblock %}

@@ -115,16 +115,25 @@ def test_base_template_nav_links_use_wq_filter():
     assert "'/maps'|wq" in html
 
 
-def test_base_template_draggable_links_carry_clean_data_ql_ref():
+def test_base_template_draggable_links_carry_clean_data_ql_ref(client, seed):
     """Regression guard: once nav hrefs carry ?w=<slug>, the drag-and-drop
     Quick Links feature's dragstart handler must not fall back to reading
     that decorated href as target_ref (app/templates/index.html's
     computeHref would then bake the world active at drag-time into the
     saved link forever) — every non-kind draggable anchor needs its own
-    clean data-ql-ref."""
-    html = open("app/templates/base.html", encoding="utf-8").read()
-    for ref in ("/maps", "/races", "/professions", "/boards", "/rules", "/characters"):
-        assert f'data-ql-ref="{ref}"' in html, f"missing data-ql-ref for {ref}"
+    clean data-ql-ref.
+
+    /boards, /ai, etc. are GM-manageable nav-menu items (see
+    app/nav_menus.py) rendered from a Jinja macro rather than hardcoded
+    markup, so this renders the real page (as a GM, so those items are
+    actually in the DOM) instead of just grepping base.html's source."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert r.status_code == 200
+    for ref in ("/maps", "/races", "/professions", "/boards", "/rules", "/characters", "/ai", "/imagestudio"):
+        assert f'data-ql-ref="{ref}"' in r.text, f"missing clean data-ql-ref for {ref}"
+        assert f'data-ql-ref="{ref}?w=' not in r.text, f"data-ql-ref for {ref} was decorated with ?w="
 
 
 def test_search_form_has_hidden_w_input():

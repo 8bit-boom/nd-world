@@ -54,23 +54,24 @@
     <a href="{{ '/races'|wq }}" draggable="true" data-ql-ref="/races"               class="nav-kind {% if request.url.path.startswith('/races') %}active{% endif %}">🧬 Race Catalog</a>
     <a href="{{ '/professions'|wq }}" draggable="true" data-ql-ref="/professions"   class="nav-kind {% if request.url.path.startswith('/professions') %}active{% endif %}">🎭 Profession Catalog</a>
     {% if request.state.user and request.state.user.is_gm %}
-    <a href="{{ '/boards'|wq }}" draggable="true" data-ql-ref="/boards"     class="nav-kind {% if request.url.path.startswith('/boards') %}active{% endif %}">📌 Boards</a>
-    <a href="{{ '/tables'|wq }}" draggable="true" data-ql-ref="/tables"     class="nav-kind {% if request.url.path.startswith('/tables') %}active{% endif %}">🎲 Random Tables</a>
-    <a href="{{ '/combat'|wq }}" draggable="true" data-ql-ref="/combat"     class="nav-kind {% if request.url.path.startswith('/combat') %}active{% endif %}">⚔ Combat Tracker</a>
-    <a href="{{ '/parties'|wq }}" draggable="true" data-ql-ref="/parties"   class="nav-kind {% if request.url.path.startswith('/parties') %}active{% endif %}">🛡 Parties</a>
-    <a href="{{ '/quests'|wq }}" draggable="true" data-ql-ref="/quests"     class="nav-kind {% if request.url.path.startswith('/quests') %}active{% endif %}">📜 Quests</a>
-    <a href="{{ '/sessions'|wq }}" draggable="true" data-ql-ref="/sessions" class="nav-kind {% if request.url.path.startswith('/sessions') %}active{% endif %}">📓 Sessions</a>
-    <a href="{{ '/facts'|wq }}" draggable="true" data-ql-ref="/facts"       class="nav-kind {% if request.url.path.startswith('/facts') %}active{% endif %}">🗒 Facts</a>
-    <a href="{{ '/calendar'|wq }}" draggable="true" data-ql-ref="/calendar" class="nav-kind {% if request.url.path.startswith('/calendar') %}active{% endif %}">🗓 Calendar</a>
-    <a href="{{ '/images'|wq }}" draggable="true" data-ql-ref="/images"     class="nav-kind {% if request.url.path.startswith('/images') %}active{% endif %}">🖼 Images</a>
-    <a href="{{ '/import'|wq }}" draggable="true" data-ql-ref="/import"     class="nav-kind {% if request.url.path.startswith('/import') %}active{% endif %}">📥 Import</a>
-    <a href="{{ '/export'|wq }}" draggable="true" data-ql-ref="/export"     class="nav-kind {% if request.url.path == '/export' %}active{% endif %}">📦 Export &amp; Backup</a>
-    {% if dreamlands_enabled %}
-    <a href="{{ '/dreamlands'|wq }}" draggable="true" data-ql-ref="/dreamlands" class="nav-kind {% if request.url.path == '/dreamlands' %}active{% endif %}">🌙 Dreamlands</a>
-    {% endif %}
-    {% if king_in_yellow_enabled %}
-    <a href="{{ '/king-in-yellow'|wq }}" draggable="true" data-ql-ref="/king-in-yellow" class="nav-kind {% if request.url.path == '/king-in-yellow' %}active{% endif %}">🎭 King in Yellow</a>
-    {% endif %}
+    {% macro nav_item_link(item, cls) %}
+    <a href="{{ item.href|wq }}" draggable="true" data-ql-ref="{{ item.href }}" class="{{ cls }} {% if (item.exact and request.url.path == item.href) or (not item.exact and request.url.path.startswith(item.href)) %}active{% endif %}">{{ item.icon }} {{ item.label }}{% if item.id == 'ai' %}<span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle"></span>{% endif %}</a>
+    {% endmacro %}
+    {% for menu in nav_menus %}
+    <div class="tools-switcher">
+      <button type="button" class="tools-btn" onclick="event.stopPropagation(); this.parentElement.classList.toggle('open')">
+        {{ menu.icon }} {{ menu.label }} ▾
+      </button>
+      <div class="tools-dropdown">
+        {% for item in menu.links %}
+        {{ nav_item_link(item, 'tools-option') }}
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+    {% for item in nav_ungrouped_items %}
+    {{ nav_item_link(item, 'nav-kind') }}
+    {% endfor %}
     {% endif %}
     <a href="{{ '/chronicler'|wq }}" draggable="true" data-ql-ref="/chronicler" class="nav-kind {% if request.url.path == '/chronicler' %}active{% endif %}">📜 Chronicler</a>
     <a href="{{ '/session-log'|wq }}" draggable="true" data-ql-ref="/session-log" class="nav-kind {% if request.url.path.startswith('/session-log') %}active{% endif %}">📓 Session Log</a>
@@ -82,9 +83,6 @@
        class="nav-kind {% if request.url.path.startswith('/worlds/'+world.id|string+'/notes/') %}active{% endif %}">🔒 My Notes</a>
     {% endif %}
     {% if request.state.user and request.state.user.is_gm %}
-    <a href="{{ '/ai'|wq }}" draggable="true" data-ql-ref="/ai"                 class="nav-kind {% if request.url.path == '/ai' %}active{% endif %}">🤖 AI Chat<span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle"></span></a>
-    <a href="{{ '/imagestudio'|wq }}" draggable="true" data-ql-ref="/imagestudio" class="nav-kind {% if request.url.path == '/imagestudio' %}active{% endif %}">🎨 Image Studio</a>
-    <a href="{{ '/editor'|wq }}" draggable="true" data-ql-ref="/editor" class="nav-kind {% if request.url.path == '/editor' %}active{% endif %}">🛠 Content Editor</a>
     <a href="{{ '/settings'|wq }}" draggable="true" data-ql-ref="/settings"     class="nav-kind {% if request.url.path == '/settings' %}active{% endif %}">⚙ Settings</a>
     {% set _current_kind = request.url.path[6:] if request.url.path.startswith('/kind/') else 'character' %}
     <a href="{{ ('/new?kind=' + _current_kind)|wq }}" class="btn-new" title="New {{ _current_kind }}">+ New</a>
@@ -317,6 +315,9 @@ document.addEventListener('keydown', e => {
 document.addEventListener('click', e => {
   if (!e.target.closest('.world-switcher')) {
     document.querySelectorAll('.world-switcher').forEach(el => el.classList.remove('open'));
+  }
+  if (!e.target.closest('.tools-switcher')) {
+    document.querySelectorAll('.tools-switcher').forEach(el => el.classList.remove('open'));
   }
 });
 </script>

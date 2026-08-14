@@ -40,17 +40,18 @@ def test_login_page_renders_without_error(client):
     assert r.status_code == 200
 
 
-def test_tools_menus_are_flat_tabs_not_dropdowns(client, seed):
-    """The GM Tools/AI Tools nav items used to be click-to-open dropdown
-    menus (tools-switcher/tools-btn/tools-dropdown/tools-option) — per an
-    explicit UX request they're now flat top-level tabs like every other
-    nav-kind link, with no menu to open first."""
+def test_tools_dropdowns_contain_every_relocated_link(client, seed):
+    """A brief flat-tab experiment made the nav too crowded (~30 top-level
+    tabs) — the GM Tools/AI Tools items are back to click-to-open dropdown
+    menus (tools-switcher/tools-btn/tools-dropdown/tools-option). This just
+    confirms every relocated page's link still renders somewhere in the nav,
+    regardless of grouping."""
     login(client, seed.gm.email, GM_PASSWORD)
     r = client.get("/")
     assert r.status_code == 200
-    for dead_class in ("tools-switcher", "tools-btn", "tools-dropdown", "tools-option"):
-        assert dead_class not in r.text
+    for cls in ("tools-switcher", "tools-btn", "tools-dropdown", "tools-option"):
+        assert cls in r.text
     for ref in ("/boards", "/tables", "/combat", "/parties", "/quests", "/sessions",
                 "/facts", "/calendar", "/images", "/import", "/export",
                 "/ai", "/imagestudio", "/editor"):
-        assert f'data-ql-ref="{ref}"' in r.text, f"expected a flat nav-kind link for {ref}"
+        assert f'data-ql-ref="{ref}"' in r.text, f"expected a nav link for {ref}"
