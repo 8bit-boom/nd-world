@@ -56,6 +56,7 @@ from .routers.facts import router as facts_router
 from .routers.chronicler import router as chronicler_router
 from .routers.gallery import router as gallery_router
 from .routers.nav_menus_admin import router as nav_menus_admin_router
+from . import gallery as _gallery_module
 from . import mcp_server
 from . import ai as _ai_module
 from . import auth as _auth
@@ -2990,12 +2991,14 @@ def new_form(request: Request, kind: str = "character", folder: str = "",
     world_players = _world_player_list(db, world.id) if world else []
     folder_options = _kind_folders(db, world.id, kind) if world else []
     entity_templates = _entity_templates_payload(db, world.id) if world else []
+    gallery_images = _gallery_module.all_world_image_urls(db, world) if world else []
     return templates.TemplateResponse("entities/form.html", {
         "request": request, "entity": None, "kind": kind,
         "world": world, "worlds": worlds,
         "world_players": world_players, "allowed_player_ids": set(),
         "folder_options": folder_options, "prefill_folder": folder,
         "entity_templates": entity_templates, "custom_fields": {},
+        "gallery_images": gallery_images,
     })
 
 @app.post("/new")
@@ -3045,12 +3048,18 @@ def edit_form(request: Request, entity_id: int, db: Session = Depends(get_db), a
     folder_options = _kind_folders(db, entity.world_id, entity.kind)
     entity_templates = _entity_templates_payload(db, entity.world_id)
     custom_fields = json.loads(entity.custom_fields_json or "{}")
+    # entity's own world, not the ambient active_world cookie (`world` above) —
+    # same reasoning as world_players just above using entity.world_id: the GM
+    # could be editing an entity while a different world is active.
+    entity_world = db.get(World, entity.world_id)
+    gallery_images = _gallery_module.all_world_image_urls(db, entity_world) if entity_world else []
     return templates.TemplateResponse("entities/form.html", {
         "request": request, "entity": entity, "kind": entity.kind,
         "world": world, "worlds": worlds,
         "world_players": world_players, "allowed_player_ids": allowed_player_ids,
         "folder_options": folder_options, "prefill_folder": "",
         "entity_templates": entity_templates, "custom_fields": custom_fields,
+        "gallery_images": gallery_images,
     })
 
 @app.post("/entity/{entity_id}/edit")

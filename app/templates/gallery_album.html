@@ -33,8 +33,9 @@
   <div class="gallery-img-grid">
     {% for url in image_urls %}
     <div class="gallery-album-img-cell">
-      <img src="{{ url }}" alt="" loading="lazy"/>
+      <img src="{{ url }}" alt="{{ image_names.get(url, url) }}" loading="lazy" onclick="openLightbox(this.src, this.alt)"/>
       <button type="button" class="gallery-remove-btn" title="Remove from album" onclick="galleryRemoveFromAlbum('{{ url|e }}')">✕</button>
+      <div class="gallery-img-name" title="{{ image_names.get(url, url) }}">{{ image_names.get(url, url) }}</div>
     </div>
     {% endfor %}
   </div>
@@ -49,9 +50,10 @@
 .gallery-dropzone.drag-over { border:2px dashed var(--neon); background:rgba(0,240,255,0.06); }
 .gallery-img-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:.6rem; }
 .gallery-album-img-cell { position:relative; background:var(--bg3); border:1px solid var(--border); border-radius:5px; overflow:hidden; }
-.gallery-album-img-cell img { width:100%; height:130px; object-fit:contain; display:block; background:var(--bg); }
+.gallery-album-img-cell img { width:100%; height:130px; object-fit:contain; display:block; background:var(--bg); cursor:zoom-in; }
 .gallery-remove-btn { position:absolute; top:.3rem; right:.3rem; background:rgba(0,0,0,.6); border:1px solid var(--border); color:#fff; width:22px; height:22px; border-radius:50%; cursor:pointer; line-height:1; font-size:.8rem; }
 .gallery-remove-btn:hover { border-color:#c44; color:#c44; }
+.gallery-img-name { padding:.3rem .4rem; font-size:.7rem; color:var(--text-dim); background:var(--bg2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 </style>
 
 <script>

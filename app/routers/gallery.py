@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx
-from ..gallery import discover_world_images
+from ..gallery import discover_world_images, image_display_name
 from ..imaging import convert_image
 from ..models import ImageAlbum, World
 from ..templating import templates
@@ -101,9 +101,15 @@ def album_detail(album_id: int, request: Request, db: Session = Depends(get_db),
     if not world:
         raise HTTPException(404)
     album = _album_or_404(db, world.id, album_id)
+    urls = _load_urls(album)
+    # A name for each image: the label of wherever it's already used (an
+    # entity/PC name — what the GM actually thinks of it as), falling back
+    # to its filename for an image that only lives in this album so far.
+    discovered_names = {e["url"]: e["name"] for e in discover_world_images(db, world)}
+    image_names = {u: discovered_names.get(u, image_display_name(u)) for u in urls}
     return templates.TemplateResponse("gallery_album.html", {
         "request": request, "world": world, "worlds": worlds,
-        "album": album, "image_urls": _load_urls(album),
+        "album": album, "image_urls": urls, "image_names": image_names,
     })
 
 

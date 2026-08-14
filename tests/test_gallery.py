@@ -6,7 +6,8 @@ import io
 import json
 
 from app.database import SessionLocal
-from app.models import Entity, EntityNote, ImageAlbum, PlayerCharacter
+from app.gallery import all_world_image_urls
+from app.models import Entity, EntityNote, ImageAlbum, PlayerCharacter, World
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -259,3 +260,121 @@ def test_album_upload_rejects_bad_extension(client, seed):
     r = client.post(f"/images/albums/{album_id}/upload",
                      files={"file": ("evil.exe", io.BytesIO(b"MZ"), "application/octet-stream")})
     assert r.status_code == 400
+
+
+# ── Full-resolution lightbox on thumbnails ──────────────────────────────────
+
+def test_album_thumbnail_opens_lightbox(client, seed):
+    album_id = _make_album(seed.world_a.id, "Album", urls=["/uploads/pic.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/images/albums/{album_id}")
+    assert 'onclick="openLightbox(this.src, this.alt)"' in r.text
+
+
+def test_index_thumbnail_has_expand_button_that_opens_lightbox_without_toggling_checkbox(client, seed):
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=seed.world_a.id, kind="character", name="A", image_url="/uploads/shared.png")
+        db.add(e)
+        db.commit()
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/images")
+    assert "gallery-img-expand" in r.text
+    assert "openLightbox(this.nextElementSibling.src, this.nextElementSibling.alt)" in r.text
+    assert "event.preventDefault(); event.stopPropagation();" in r.text  # doesn't also toggle the select checkbox
+
+
+# ── all_world_image_urls (entity form's "choose from gallery" picker) ──────
+
+def test_all_world_image_urls_unions_discovered_and_album_only(client, seed):
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=seed.world_a.id, kind="character", name="A", image_url="/uploads/discovered.png")
+        db.add(e)
+        db.commit()
+        world = db.get(World, seed.world_a.id)
+        # discovered.png is referenced by an entity; album-only.png sits only
+        # in an album (e.g. a fresh upload nobody has attached anywhere yet).
+        db.add(ImageAlbum(world_id=seed.world_a.id, name="A",
+                           image_urls_json=json.dumps(["/uploads/discovered.png", "/uploads/album-only.png"])))
+        db.commit()
+        entries = all_world_image_urls(db, world)
+    finally:
+        db.close()
+    assert [e["url"] for e in entries] == ["/uploads/album-only.png", "/uploads/discovered.png"]  # deduped + sorted
+    by_url = {e["url"]: e["name"] for e in entries}
+    assert by_url["/uploads/discovered.png"] == "A"  # used by entity "A" -> named after it
+    assert by_url["/uploads/album-only.png"] == "album-only.png"  # no use yet -> falls back to filename
+
+
+def test_all_world_image_urls_is_world_scoped(client, seed):
+    db = SessionLocal()
+    try:
+        db.add(ImageAlbum(world_id=seed.world_b.id, name="B", image_urls_json=json.dumps(["/uploads/other.png"])))
+        db.commit()
+        world_a = db.get(World, seed.world_a.id)
+        entries = all_world_image_urls(db, world_a)
+    finally:
+        db.close()
+    assert entries == []
+
+
+def test_album_view_shows_image_names(client, seed):
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=seed.world_a.id, kind="character", name="Named NPC", image_url="/uploads/npc.png")
+        db.add(e)
+        db.commit()
+    finally:
+        db.close()
+    album_id = _make_album(seed.world_a.id, "Album", urls=["/uploads/npc.png", "/uploads/orphan.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/images/albums/{album_id}")
+    assert "Named NPC" in r.text  # discovered use's label
+    assert "orphan.png" in r.text  # no use -> filename fallback
+
+
+def test_entity_new_form_includes_gallery_picker(client, seed):
+    _make_album(seed.world_a.id, "Album", urls=["/uploads/pickme.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/new")
+    assert r.status_code == 200
+    assert "Choose from Gallery" in r.text
+    assert "/uploads/pickme.png" in r.text
+    assert "gallery-picker-overlay" in r.text
+
+
+def test_entity_edit_form_includes_gallery_picker_scoped_to_entitys_own_world(client, seed):
+    """Uses entity.world_id, not whatever world happens to be active in the
+    cookie — the GM could be editing an entity while a different world is
+    active elsewhere in the UI."""
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=seed.world_a.id, kind="character", name="Edit Me")
+        db.add(e)
+        db.commit()
+        db.refresh(e)
+        eid = e.id
+    finally:
+        db.close()
+    _make_album(seed.world_a.id, "Album", urls=["/uploads/pickme-a.png"])
+    _make_album(seed.world_b.id, "Album", urls=["/uploads/pickme-b.png"])
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_b.slug)  # different world active than the entity's own
+    r = client.get(f"/entity/{eid}/edit")
+    assert r.status_code == 200
+    assert "/uploads/pickme-a.png" in r.text
+    assert "/uploads/pickme-b.png" not in r.text
+
+
+def test_entity_form_gallery_picker_is_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get("/new").status_code == 403
