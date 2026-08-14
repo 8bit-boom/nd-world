@@ -266,3 +266,53 @@ def test_heals_pre_home_customization_worlds_schema(tmp_path, monkeypatch):
         db.close()
 
     engine.dispose()
+
+
+def test_heals_pre_nested_albums_schema(tmp_path, monkeypatch):
+    """An image_albums table predating parent_id (added so an album can
+    nest inside another as a folder) must heal onto a NULL (top-level)
+    default, not crash the /images gallery on every boot."""
+    from app.models import ImageAlbum
+
+    db_path = tmp_path / "pre_nested_albums.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE worlds (id INTEGER PRIMARY KEY, name VARCHAR(256) NOT NULL, "
+            "slug VARCHAR(64) UNIQUE NOT NULL, description VARCHAR(512), accent VARCHAR(16), "
+            "players_see_party BOOLEAN, rules_md TEXT, home_welcome_md TEXT, "
+            "home_sections_json TEXT, custom_kinds_json TEXT, created_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO worlds (id, name, slug, home_sections_json, custom_kinds_json) "
+            "VALUES (1, 'World', 'world', '[]', '[]')"
+        ))
+        conn.execute(text(
+            "CREATE TABLE image_albums (id INTEGER PRIMARY KEY, world_id INTEGER NOT NULL, "
+            "name VARCHAR(120) NOT NULL, image_urls_json TEXT, created_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO image_albums (id, world_id, name, image_urls_json) "
+            "VALUES (1, 1, 'Pre-existing Album', '[]')"
+        ))
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        album_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(image_albums)")).fetchall()}
+    assert "parent_id" in album_cols
+
+    db = SessionLocal()
+    try:
+        album = db.get(ImageAlbum, 1)
+        assert album.parent_id is None  # healed as top-level, not lost
+        assert album.name == "Pre-existing Album"
+    finally:
+        db.close()
+
+    engine.dispose()

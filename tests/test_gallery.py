@@ -18,10 +18,10 @@ def _png_file(name="pic.png"):
     return {"file": (name, io.BytesIO(_PNG_BYTES), "image/png")}
 
 
-def _make_album(world_id, name="Album", urls=None):
+def _make_album(world_id, name="Album", urls=None, parent_id=None):
     db = SessionLocal()
     try:
-        a = ImageAlbum(world_id=world_id, name=name, image_urls_json=json.dumps(urls or []))
+        a = ImageAlbum(world_id=world_id, name=name, image_urls_json=json.dumps(urls or []), parent_id=parent_id)
         db.add(a)
         db.commit()
         db.refresh(a)
@@ -378,3 +378,100 @@ def test_entity_form_gallery_picker_is_gm_only(client, seed):
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     assert client.get("/new").status_code == 403
+
+
+# ── Nested albums (folders inside albums) ───────────────────────────────────
+
+def test_create_sub_album_nests_under_parent(client, seed):
+    parent_id = _make_album(seed.world_a.id, "Parent")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/images/albums/new", data={"name": "Child", "parent_id": str(parent_id)}, follow_redirects=False)
+    assert r.status_code == 303
+    child_id = int(r.headers["location"].rsplit("/", 1)[-1])
+
+    db = SessionLocal()
+    try:
+        child = db.get(ImageAlbum, child_id)
+        assert child.parent_id == parent_id
+    finally:
+        db.close()
+
+    r = client.get(f"/images/albums/{parent_id}")
+    assert "Child" in r.text
+
+
+def test_index_page_only_lists_top_level_albums(client, seed):
+    parent_id = _make_album(seed.world_a.id, "Parent")
+    _make_album(seed.world_a.id, "Sub Album Q", parent_id=parent_id)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/images")
+    assert "Parent" in r.text
+    assert "Sub Album Q" not in r.text
+    assert "1 sub-album" in r.text
+
+
+def test_breadcrumb_shows_full_ancestor_chain(client, seed):
+    grandparent_id = _make_album(seed.world_a.id, "Grandparent")
+    parent_id = _make_album(seed.world_a.id, "Parent", parent_id=grandparent_id)
+    child_id = _make_album(seed.world_a.id, "Child", parent_id=parent_id)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/images/albums/{child_id}")
+    assert f'href="/images/albums/{grandparent_id}"' in r.text
+    assert f'href="/images/albums/{parent_id}"' in r.text
+    assert "Grandparent" in r.text and "Parent" in r.text
+
+
+def test_sub_album_parent_must_be_in_same_world(client, seed):
+    other_world_album_id = _make_album(seed.world_b.id, "Foreign")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/images/albums/new", data={"name": "Child", "parent_id": str(other_world_album_id)})
+    assert r.status_code == 404
+
+
+def test_deleting_parent_album_cascades_to_sub_albums(client, seed):
+    parent_id = _make_album(seed.world_a.id, "Parent")
+    child_id = _make_album(seed.world_a.id, "Child", parent_id=parent_id)
+    grandchild_id = _make_album(seed.world_a.id, "Grandchild", parent_id=child_id)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/images/albums/{parent_id}/delete", follow_redirects=False)
+    assert r.status_code == 303
+
+    db = SessionLocal()
+    try:
+        assert db.get(ImageAlbum, parent_id) is None
+        assert db.get(ImageAlbum, child_id) is None
+        assert db.get(ImageAlbum, grandchild_id) is None
+    finally:
+        db.close()
+
+
+def test_deleting_sub_album_leaves_parent_intact(client, seed):
+    parent_id = _make_album(seed.world_a.id, "Parent")
+    child_id = _make_album(seed.world_a.id, "Child", parent_id=parent_id)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post(f"/images/albums/{child_id}/delete")
+
+    db = SessionLocal()
+    try:
+        assert db.get(ImageAlbum, parent_id) is not None
+        assert db.get(ImageAlbum, child_id) is None
+    finally:
+        db.close()
+
+
+def test_all_world_image_urls_includes_images_in_nested_sub_albums(client, seed):
+    parent_id = _make_album(seed.world_a.id, "Parent")
+    _make_album(seed.world_a.id, "Child", urls=["/uploads/nested-only.png"], parent_id=parent_id)
+    db = SessionLocal()
+    try:
+        world = db.get(World, seed.world_a.id)
+        entries = all_world_image_urls(db, world)
+    finally:
+        db.close()
+    assert "/uploads/nested-only.png" in [e["url"] for e in entries]

@@ -64,17 +64,59 @@ def _album_or_404(db: Session, world_id: int, album_id: int) -> ImageAlbum:
     return album
 
 
+def _breadcrumb(db: Session, album: ImageAlbum) -> list:
+    """Root-to-current chain of parent albums (not including `album`
+    itself). Capped at 50 hops as cheap insurance against a corrupted
+    parent_id chain — normal nesting never gets remotely this deep since
+    _MAX_ALBUMS_PER_WORLD bounds the whole tree per world anyway."""
+    chain = []
+    current = album
+    for _ in range(50):
+        if not current.parent_id:
+            break
+        parent = db.get(ImageAlbum, current.parent_id)
+        if not parent:
+            break
+        chain.append(parent)
+        current = parent
+    chain.reverse()
+    return chain
+
+
+def _descendant_albums(db: Session, root_id: int) -> list:
+    """Every ImageAlbum nested (at any depth) under root_id, for cascade
+    delete — deleting a folder/album removes its sub-albums with it (the
+    images themselves are just URLs and are never deleted)."""
+    result = []
+    frontier = [root_id]
+    while frontier:
+        children = db.query(ImageAlbum).filter(ImageAlbum.parent_id.in_(frontier)).all()
+        if not children:
+            break
+        result.extend(children)
+        frontier = [c.id for c in children]
+    return result
+
+
 @router.get("/images", response_class=HTMLResponse)
 def images_gallery(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     images = discover_world_images(db, world)
-    albums = db.query(ImageAlbum).filter(ImageAlbum.world_id == world.id).order_by(ImageAlbum.name).all()
+    albums = (
+        db.query(ImageAlbum)
+        .filter(ImageAlbum.world_id == world.id, ImageAlbum.parent_id.is_(None))
+        .order_by(ImageAlbum.name).all()
+    )
     album_urls = {a.id: _load_urls(a) for a in albums}
+    sub_album_counts = {
+        a.id: db.query(ImageAlbum).filter(ImageAlbum.parent_id == a.id).count() for a in albums
+    }
     return templates.TemplateResponse("gallery_index.html", {
         "request": request, "world": world, "worlds": worlds,
         "images": images, "albums": albums, "album_urls": album_urls,
+        "sub_album_counts": sub_album_counts,
     })
 
 
@@ -88,7 +130,11 @@ async def album_create(request: Request, db: Session = Depends(get_db), active_w
     count = db.query(ImageAlbum).filter(ImageAlbum.world_id == world.id).count()
     if count >= _MAX_ALBUMS_PER_WORLD:
         raise HTTPException(400, f"This world already has the maximum of {_MAX_ALBUMS_PER_WORLD} albums.")
-    album = ImageAlbum(world_id=world.id, name=name, image_urls_json="[]")
+    parent_id_raw = str(form.get("parent_id", "")).strip()
+    parent_id = None
+    if parent_id_raw.isdigit():
+        parent_id = _album_or_404(db, world.id, int(parent_id_raw)).id
+    album = ImageAlbum(world_id=world.id, name=name, image_urls_json="[]", parent_id=parent_id)
     db.add(album)
     db.commit()
     db.refresh(album)
@@ -107,9 +153,15 @@ def album_detail(album_id: int, request: Request, db: Session = Depends(get_db),
     # to its filename for an image that only lives in this album so far.
     discovered_names = {e["url"]: e["name"] for e in discover_world_images(db, world)}
     image_names = {u: discovered_names.get(u, image_display_name(u)) for u in urls}
+    child_albums = (
+        db.query(ImageAlbum).filter(ImageAlbum.parent_id == album.id).order_by(ImageAlbum.name).all()
+    )
+    child_album_urls = {a.id: _load_urls(a) for a in child_albums}
     return templates.TemplateResponse("gallery_album.html", {
         "request": request, "world": world, "worlds": worlds,
         "album": album, "image_urls": urls, "image_names": image_names,
+        "breadcrumb": _breadcrumb(db, album),
+        "child_albums": child_albums, "child_album_urls": child_album_urls,
     })
 
 
@@ -133,6 +185,11 @@ def album_delete(album_id: int, request: Request, db: Session = Depends(get_db),
     if not world:
         raise HTTPException(404)
     album = _album_or_404(db, world.id, album_id)
+    # Deleting a folder/album removes its sub-albums with it — they have no
+    # meaning without their parent. The images themselves are just URLs
+    # (see ImageAlbum's docstring) and are never touched.
+    for descendant in _descendant_albums(db, album.id):
+        db.delete(descendant)
     db.delete(album)
     db.commit()
     return RedirectResponse("/images", status_code=303)

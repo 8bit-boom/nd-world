@@ -523,6 +523,16 @@ def _migrate():
             ("world_id", "worlds", "id"),
             ("entity_id", "entities", "id"),
         ], indexes=["world_id", "entity_id"])
+        _heal_table(conn, "image_albums", [
+            ("world_id",          "INTEGER", False),
+            ("name",              "VARCHAR(120)", False),
+            ("image_urls_json",   "TEXT DEFAULT '[]'", True),
+            ("parent_id",         "INTEGER", True),
+            ("created_at",        "DATETIME", True),
+        ], foreign_keys=[
+            ("world_id", "worlds", "id"),
+            ("parent_id", "image_albums", "id"),
+        ], indexes=["world_id", "parent_id"])
 
 def _seed():
     db = SessionLocal()

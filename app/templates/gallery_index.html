@@ -11,6 +11,7 @@
 
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.5rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">📁 Albums</h2>
+    <p style="color:var(--text-dim);font-size:.78rem;margin:0 0 .8rem">Open an album to nest a sub-album inside it — useful for folders within folders.</p>
     <form method="post" action="/images/albums/new" style="display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap">
       <input type="text" name="name" placeholder="New album name" maxlength="120" required
              style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
@@ -27,7 +28,10 @@
         <div class="gallery-album-empty">No images yet</div>
         {% endif %}
         <div class="gallery-album-name">{{ a.name }}</div>
-        <div class="gallery-album-count">{{ urls|length }} image{{ '' if urls|length == 1 else 's' }}</div>
+        <div class="gallery-album-count">
+          {{ urls|length }} image{{ '' if urls|length == 1 else 's' }}
+          {% if sub_album_counts.get(a.id) %}&middot; {{ sub_album_counts[a.id] }} sub-album{{ '' if sub_album_counts[a.id] == 1 else 's' }}{% endif %}
+        </div>
       </a>
       {% endfor %}
     </div>

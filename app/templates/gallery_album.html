@@ -2,12 +2,16 @@
 {% block title %}{{ album.name }} — Images — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div class="form-page" style="max-width:1100px">
-  <p style="margin:0 0 .6rem"><a href="/images" style="color:var(--text-dim);font-size:.82rem">&larr; All Images</a></p>
+  <p class="gallery-breadcrumb">
+    <a href="/images">All Images</a>
+    {% for b in breadcrumb %} / <a href="/images/albums/{{ b.id }}">{{ b.name }}</a>{% endfor %}
+    {% if breadcrumb %} / {{ album.name }}{% endif %}
+  </p>
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.6rem;margin-bottom:.3rem">
     <h1 style="margin:0">📁 {{ album.name }}</h1>
     <div style="display:flex;gap:.5rem">
       <button type="button" class="btn-cancel" onclick="document.getElementById('rename-form').classList.toggle('open')">Rename</button>
-      <form method="post" action="/images/albums/{{ album.id }}/delete" onsubmit="return confirm('Delete album {{ album.name|e }}? The images themselves are not deleted.')">
+      <form method="post" action="/images/albums/{{ album.id }}/delete" onsubmit="return confirm('Delete album {{ album.name|e }}? Any sub-albums inside it are deleted too — the images themselves are not deleted.')">
         <button type="submit" class="btn-cancel" style="color:#c44;border-color:#c44">Delete Album</button>
       </form>
     </div>
@@ -18,6 +22,36 @@
     <button type="submit" class="btn-save">Save</button>
   </form>
   <p style="color:var(--text-dim);font-size:.85rem;margin:.3rem 0 1.2rem">{{ image_urls|length }} image{{ '' if image_urls|length == 1 else 's' }}</p>
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.2rem">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.6rem;margin-bottom:.8rem">
+      <h2 style="color:var(--neon);font-size:.9rem;margin:0">📁 Sub-Albums{% if child_albums %} ({{ child_albums|length }}){% endif %}</h2>
+    </div>
+    <form method="post" action="/images/albums/new" style="display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap">
+      <input type="hidden" name="parent_id" value="{{ album.id }}"/>
+      <input type="text" name="name" placeholder="New sub-album name" maxlength="120" required
+             style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
+      <button type="submit" class="btn-save">+ Create Sub-Album</button>
+    </form>
+    {% if child_albums %}
+    <div class="gallery-album-grid">
+      {% for a in child_albums %}
+      <a class="gallery-album-card" href="/images/albums/{{ a.id }}">
+        {% set urls = child_album_urls.get(a.id, []) %}
+        {% if urls %}
+        <img src="{{ urls[0] }}" alt=""/>
+        {% else %}
+        <div class="gallery-album-empty">No images yet</div>
+        {% endif %}
+        <div class="gallery-album-name">{{ a.name }}</div>
+        <div class="gallery-album-count">{{ urls|length }} image{{ '' if urls|length == 1 else 's' }}</div>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p style="color:var(--text-dim);font-size:.82rem;margin:0">No sub-albums yet — nest one inside this album to organize further.</p>
+    {% endif %}
+  </div>
 
   <div id="album-dropzone" class="gallery-dropzone">
     <h2 style="color:var(--neon);font-size:.9rem;margin:0 0 .5rem">Upload new images into this album</h2>
@@ -45,7 +79,17 @@
 </div>
 
 <style>
+.gallery-breadcrumb { margin:0 0 .6rem; font-size:.82rem; color:var(--text-dim); }
+.gallery-breadcrumb a { color:var(--text-dim); }
+.gallery-breadcrumb a:hover { color:var(--neon); }
 #rename-form.open { display:flex !important; }
+.gallery-album-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:.7rem; }
+.gallery-album-card { display:block; background:var(--bg3); border:1px solid var(--border); border-radius:5px; overflow:hidden; text-decoration:none; color:var(--text); }
+.gallery-album-card:hover { border-color:var(--neon); }
+.gallery-album-card img { width:100%; height:110px; object-fit:contain; display:block; background:var(--bg); }
+.gallery-album-empty { width:100%; height:110px; display:flex; align-items:center; justify-content:center; color:var(--text-dim); font-size:.7rem; background:var(--bg); }
+.gallery-album-name { padding:.4rem .5rem 0; font-size:.82rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gallery-album-count { padding:0 .5rem .5rem; font-size:.7rem; color:var(--text-dim); }
 .gallery-dropzone { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:1.1rem; margin-bottom:1.2rem; transition:border-color .15s,background .15s; }
 .gallery-dropzone.drag-over { border:2px dashed var(--neon); background:rgba(0,240,255,0.06); }
 .gallery-img-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:.6rem; }

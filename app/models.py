@@ -500,13 +500,19 @@ class ImageAlbum(Base):
     themselves. An image can belong to any number of albums (or none); an
     image already used somewhere in the world (an entity portrait, an
     inline body/note embed, a character portrait) can be added here, and an
-    album can also receive brand-new uploads not used anywhere else yet."""
+    album can also receive brand-new uploads not used anywhere else yet.
+
+    parent_id lets an album nest inside another (a "folder" is just an
+    album used purely for organization) — self-referential, so albums form
+    an arbitrarily deep tree per world. NULL means top-level. See
+    app/routers/gallery.py for breadcrumb/cascade-delete handling."""
     __tablename__ = "image_albums"
 
     id = Column(Integer, primary_key=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     name = Column(String(120), nullable=False)
     image_urls_json = Column(Text, default="[]")  # ordered list of "/uploads/..." strings
+    parent_id = Column(Integer, ForeignKey("image_albums.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
