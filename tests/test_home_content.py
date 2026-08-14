@@ -820,3 +820,126 @@ def test_cross_world_pinned_entity_tile_resolves_to_nothing(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/")
     assert "Cross World Pin" not in r.text
+
+
+# ── Hidden default (built-in/custom kind) dashboard tiles ──────────────────
+
+def test_hide_kind_api_hides_default_tile(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert 'class="dash-card kind-character"' in r.text
+
+    r = client.post(f"/api/worlds/{seed.world_a.id}/home/hide-kind", json={"kind": "character"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        assert json.loads(w.home_hidden_kinds_json) == ["character"]
+    finally:
+        db.close()
+
+    r = client.get("/")
+    assert 'class="dash-card kind-character"' not in r.text
+    assert 'class="dash-card kind-location"' in r.text  # other kinds unaffected
+
+
+def test_hide_kind_api_is_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post(f"/api/worlds/{seed.world_a.id}/home/hide-kind", json={"kind": "character"})
+    assert r.status_code == 403
+
+
+def test_hide_kind_api_rejects_invalid_kind(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(f"/api/worlds/{seed.world_a.id}/home/hide-kind", json={"kind": "not_a_real_kind"})
+    assert r.status_code == 400
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        assert json.loads(w.home_hidden_kinds_json or "[]") == []
+    finally:
+        db.close()
+
+
+def test_hide_kind_api_is_idempotent(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    for _ in range(3):
+        r = client.post(f"/api/worlds/{seed.world_a.id}/home/hide-kind", json={"kind": "character"})
+        assert r.status_code == 200
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        assert json.loads(w.home_hidden_kinds_json) == ["character"]
+    finally:
+        db.close()
+
+
+def test_hidden_kind_tile_remove_button_shown_only_to_gm(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert 'data-kind="character"' in r.text
+    assert "hideDashboardKindTile(event, this.dataset.kind)" in r.text
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert 'data-kind="character"' not in r.text
+
+
+def test_hidden_kind_tile_button_uses_data_attribute_not_tojson_in_attribute(client, seed):
+    """Regression test: an earlier version used
+    onclick="hideDashboardKindTile(event, {{ k|tojson }})" inside a
+    double-quoted attribute — tojson's own double quotes prematurely closed
+    the onclick attribute, silently truncating the handler so
+    event.preventDefault() never ran and clicking the button navigated to
+    the kind page instead of hiding the tile. This asserts the fixed
+    data-kind attribute pattern renders as one intact, valid attribute."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert 'onclick="hideDashboardKindTile(event, this.dataset.kind)"' in r.text
+    assert "|tojson" not in r.text
+    # the broken pattern would have produced a stray `"=""` from the
+    # premature attribute close — make sure that's gone for good.
+    assert '"=""' not in r.text
+
+
+def test_hide_kind_restored_via_home_edit_checklist(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post(f"/api/worlds/{seed.world_a.id}/home/hide-kind", json={"kind": "character"})
+
+    r = client.get(f"/worlds/{seed.world_a.id}/home/edit")
+    assert r.status_code == 200
+    assert '"character"' in r.text  # present in initial_hidden_kinds json blob
+
+    r = client.post(f"/worlds/{seed.world_a.id}/home/edit", data={
+        "home_hidden_kinds_json": "[]",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        assert json.loads(w.home_hidden_kinds_json) == []
+    finally:
+        db.close()
+
+    r = client.get("/")
+    assert 'class="dash-card kind-character"' in r.text
+
+
+def test_hidden_kinds_cross_world_isolated(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post(f"/api/worlds/{seed.world_a.id}/home/hide-kind", json={"kind": "character"})
+
+    client.cookies.set("active_world", seed.world_b.slug)
+    r = client.get("/")
+    assert 'class="dash-card kind-character"' in r.text

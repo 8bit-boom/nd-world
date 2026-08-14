@@ -370,6 +370,8 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN home_background_url VARCHAR(512)"))
             if "home_pinned_tiles_json" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN home_pinned_tiles_json TEXT DEFAULT '[]'"))
+            if "home_hidden_kinds_json" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN home_hidden_kinds_json TEXT DEFAULT '[]'"))
         # random_tables table — some installs ended up with a table that
         # doesn't match the model: missing columns (e.g. slug), and/or
         # world_id incorrectly marked NOT NULL (the model allows NULL there

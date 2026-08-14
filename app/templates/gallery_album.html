@@ -19,12 +19,14 @@
   </form>
   <p style="color:var(--text-dim);font-size:.85rem;margin:.3rem 0 1.2rem">{{ image_urls|length }} image{{ '' if image_urls|length == 1 else 's' }}</p>
 
-  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.2rem">
-    <h2 style="color:var(--neon);font-size:.9rem;margin:0 0 .7rem">Upload a new image into this album</h2>
-    <form method="post" action="/images/albums/{{ album.id }}/upload" enctype="multipart/form-data" style="display:flex;gap:.5rem;flex-wrap:wrap">
-      <input type="file" name="file" accept="image/*" required/>
-      <button type="submit" class="btn-save">Upload</button>
-    </form>
+  <div id="album-dropzone" class="gallery-dropzone">
+    <h2 style="color:var(--neon);font-size:.9rem;margin:0 0 .5rem">Upload new images into this album</h2>
+    <p style="color:var(--text-dim);font-size:.78rem;margin:0 0 .7rem">Drag and drop image files here, or choose files below. Several at once is fine.</p>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+      <input type="file" id="album-file-input" accept="image/*" multiple/>
+      <button type="button" id="album-upload-btn" class="btn-save" onclick="albumUploadFiles(document.getElementById('album-file-input').files)">Upload</button>
+      <span id="album-upload-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+    </div>
   </div>
 
   {% if image_urls %}
@@ -43,9 +45,11 @@
 
 <style>
 #rename-form.open { display:flex !important; }
-.gallery-img-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:.6rem; }
+.gallery-dropzone { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:1.1rem; margin-bottom:1.2rem; transition:border-color .15s,background .15s; }
+.gallery-dropzone.drag-over { border:2px dashed var(--neon); background:rgba(0,240,255,0.06); }
+.gallery-img-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:.6rem; }
 .gallery-album-img-cell { position:relative; background:var(--bg3); border:1px solid var(--border); border-radius:5px; overflow:hidden; }
-.gallery-album-img-cell img { width:100%; height:120px; object-fit:cover; display:block; background:var(--bg); }
+.gallery-album-img-cell img { width:100%; height:130px; object-fit:contain; display:block; background:var(--bg); }
 .gallery-remove-btn { position:absolute; top:.3rem; right:.3rem; background:rgba(0,0,0,.6); border:1px solid var(--border); color:#fff; width:22px; height:22px; border-radius:50%; cursor:pointer; line-height:1; font-size:.8rem; }
 .gallery-remove-btn:hover { border-color:#c44; color:#c44; }
 </style>
@@ -59,5 +63,52 @@ async function galleryRemoveFromAlbum(url) {
   if (res.ok) location.reload();
   else alert('Failed to remove image.');
 }
+
+function galleryHasFiles(dt) {
+  return !!dt && Array.from(dt.types || []).includes('Files');
+}
+
+async function albumUploadFiles(fileList) {
+  const files = Array.from(fileList || []).filter(f => f.type && f.type.startsWith('image/'));
+  if (!files.length) return;
+  const btn = document.getElementById('album-upload-btn');
+  const status = document.getElementById('album-upload-status');
+  btn.disabled = true;
+  let ok = 0;
+  for (let i = 0; i < files.length; i++) {
+    status.textContent = `Uploading ${i + 1} of ${files.length}…`;
+    const fd = new FormData();
+    fd.append('file', files[i]);
+    try {
+      const res = await fetch(`/images/albums/{{ album.id }}/upload`, { method: 'POST', body: fd });
+      if (res.ok) ok++;
+    } catch (err) {}
+  }
+  if (ok) {
+    location.reload();
+  } else {
+    btn.disabled = false;
+    status.textContent = 'Upload failed.';
+  }
+}
+
+(function() {
+  const zone = document.getElementById('album-dropzone');
+  zone.addEventListener('dragover', e => {
+    if (!galleryHasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    zone.classList.add('drag-over');
+  });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    if (!galleryHasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    albumUploadFiles(e.dataTransfer.files);
+  });
+  document.addEventListener('dragover', e => { if (galleryHasFiles(e.dataTransfer)) e.preventDefault(); });
+  document.addEventListener('drop', e => { if (galleryHasFiles(e.dataTransfer)) e.preventDefault(); });
+})();
 </script>
 {% endblock %}

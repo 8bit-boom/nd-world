@@ -43,6 +43,16 @@
     </div>
 
     <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin:1rem 0">
+      <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .5rem">🗂 Default Tiles</h2>
+      <p style="font-size:.78rem;color:var(--text-dim);margin:0 0 .7rem">
+        Uncheck any built-in category you don't want cluttering the home page dashboard
+        (its entities and nav tab are untouched — this only hides the counter tile below).
+      </p>
+      <div id="hidden-kinds-list" style="display:flex;flex-wrap:wrap;gap:.5rem .9rem"></div>
+      <input type="hidden" name="home_hidden_kinds_json" id="hidden-kinds-json-input"/>
+    </div>
+
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin:1rem 0">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.9rem">
         <h2 style="color:var(--neon);font-size:.95rem;margin:0">📌 Pinned Dashboard Tiles</h2>
         <button type="button" onclick="addPinnedTile()" class="ql-btn-add">+ Add Tile</button>
@@ -198,6 +208,28 @@ function renderAll() {
   syncHidden();
 }
 
+// ── Default Tiles — a checkbox per built-in/custom kind (checked = shown
+// on the dashboard). Storage is the inverse (a list of HIDDEN kind ids), so
+// syncHiddenKinds() below only collects the unchecked ones.
+const KIND_ICONS = {{ kind_icons | tojson }};
+const INITIAL_HIDDEN_KINDS = new Set({{ initial_hidden_kinds | tojson }});
+
+function renderHiddenKindsChecklist() {
+  document.getElementById('hidden-kinds-list').innerHTML = KINDS.map(k => `
+    <label style="font-size:.82rem;color:var(--text);display:flex;align-items:center;gap:.3rem;white-space:nowrap">
+      <input type="checkbox" class="hidden-kind-check" value="${esc(k)}" ${INITIAL_HIDDEN_KINDS.has(k) ? '' : 'checked'} onchange="syncHiddenKinds()"/>
+      ${esc(KIND_ICONS[k] || '')} ${esc(k.charAt(0).toUpperCase() + k.slice(1))}
+    </label>
+  `).join('');
+  syncHiddenKinds();
+}
+
+function syncHiddenKinds() {
+  const hidden = Array.from(document.querySelectorAll('.hidden-kind-check'))
+    .filter(b => !b.checked).map(b => b.value);
+  document.getElementById('hidden-kinds-json-input').value = JSON.stringify(hidden);
+}
+
 // ── Pinned Dashboard Tiles — same link shape as a Quick Link, but a flat
 // list rendered inline on the stat-tile dashboard instead of a tabbed
 // section, so it gets its own small parallel set of row functions rather
@@ -318,8 +350,9 @@ function syncHidden() {
   );
 }
 
-document.getElementById('home-form').addEventListener('submit', function() { syncHidden(); syncPinnedHidden(); });
+document.getElementById('home-form').addEventListener('submit', function() { syncHidden(); syncPinnedHidden(); syncHiddenKinds(); });
 renderAll();
 renderPinned();
+renderHiddenKindsChecklist();
 </script>
 {% endblock %}

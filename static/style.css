@@ -200,6 +200,7 @@ footer {
 .dashboard.drag-over { outline-color: var(--neon); }
 .dash-dropzone-hint { font-size: .72rem; color: var(--text-dim); margin: -1.4rem 0 1.5rem; text-align: right; }
 .dash-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -214,7 +215,6 @@ footer {
 .dash-icon { font-size: 1.8rem; }
 .dash-count { font-size: 2rem; font-weight: bold; line-height: 1.2; }
 .dash-label { font-size: .75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: .1em; }
-.dash-card-pinned { position: relative; }
 .dash-card-pinned-remove {
   position: absolute; top: .3rem; right: .3rem;
   width: 1.3rem; height: 1.3rem; line-height: 1;
@@ -222,7 +222,7 @@ footer {
   color: var(--text-dim); font-size: .75rem; cursor: pointer;
   display: none; align-items: center; justify-content: center; padding: 0;
 }
-.dash-card-pinned:hover .dash-card-pinned-remove { display: flex; }
+.dash-card:hover .dash-card-pinned-remove { display: flex; }
 .dash-card-pinned-remove:hover { border-color: #c44; color: #c44; }
 
 {% for k, col in [('character','--kind-character'),('location','--kind-location'),('organization','--kind-organization'),('creature','--kind-creature'),('event','--kind-event'),('item','--kind-item'),('feat','--kind-feat'),('note','--kind-note')] %}
@@ -1008,44 +1008,6 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
 .world-option:hover { background: var(--bg3); color: var(--neon); text-decoration: none; }
 .world-option.active { border-left-color: var(--w-accent, var(--neon)); color: var(--w-accent, var(--neon)); }
 .world-option.manage { color: var(--text-dim); border-top: 1px solid var(--border); margin-top: .2rem; }
-
-/* ── Tools switcher (Combat/Parties/Quests/Sessions/Calendar/Tables) ── */
-.tools-switcher { position: relative; display: inline-block; }
-.tools-btn {
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: .3rem .6rem;
-  cursor: pointer;
-  font-family: var(--font);
-  font-size: .82rem;
-  border-radius: 2px;
-  white-space: nowrap;
-}
-.tools-btn:hover { border-color: var(--neon); color: var(--neon); }
-.tools-dropdown {
-  display: none;
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  min-width: 180px;
-  z-index: 200;
-  overflow: hidden;
-}
-.tools-switcher.open .tools-dropdown { display: block; }
-.tools-option {
-  display: block;
-  padding: .5rem .9rem;
-  font-size: .82rem;
-  color: var(--text);
-  text-decoration: none;
-  border-left: 3px solid transparent;
-}
-.tools-option:hover { background: var(--bg3); color: var(--neon); text-decoration: none; }
-.tools-option.active { border-left-color: var(--neon); color: var(--neon); }
 
 /* ── Worlds page ── */
 .worlds-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }

@@ -133,6 +133,30 @@ def _sanitize_pinned_tiles(raw_json: str, kinds) -> list[dict]:
     return [l for l in (_sanitize_link(x, kinds) for x in data[:_MAX_PINNED_TILES]) if l]
 
 
+def _sanitize_hidden_kinds(raw_json, kinds) -> list[str]:
+    """A list of kind ids the GM has hidden from the home page's default
+    stat-tile dashboard. Accepts either a JSON string (as stored) or an
+    already-parsed list (the two callers below). Anything not a currently
+    valid kind id for this world is dropped, so this can't be used to smuggle
+    in an arbitrary string or keep a stale id alive after a custom kind is
+    deleted."""
+    if isinstance(raw_json, str):
+        try:
+            data = json.loads(raw_json or "[]")
+        except Exception:
+            data = []
+    else:
+        data = raw_json
+    if not isinstance(data, list):
+        data = []
+    kind_set = set(kinds)
+    seen = []
+    for k in data:
+        if isinstance(k, str) and k in kind_set and k not in seen:
+            seen.append(k)
+    return seen
+
+
 @router.get("/worlds/{world_id}/home/edit", response_class=HTMLResponse)
 def world_home_edit_form(world_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     w = db.get(World, world_id)
@@ -147,7 +171,9 @@ def world_home_edit_form(world_id: int, request: Request, db: Session = Depends(
         "request": request, "world": world, "worlds": worlds, "edit_world": w,
         "initial_sections": sections,
         "initial_pinned_tiles": _sanitize_pinned_tiles(w.home_pinned_tiles_json, world_kinds),
+        "initial_hidden_kinds": _sanitize_hidden_kinds(w.home_hidden_kinds_json, world_kinds),
         "kinds": world_kinds,
+        "kind_icons": deps.effective_kinds(w)[1],
         "entities": db.query(Entity).filter(Entity.world_id == w.id).order_by(Entity.name).all(),
         "sessions": db.query(GameSession).filter(GameSession.world_id == w.id).order_by(GameSession.session_num).all(),
         "quests": db.query(Quest).filter(Quest.world_id == w.id).order_by(Quest.title).all(),
@@ -174,6 +200,9 @@ async def world_home_edit_post(
     ))
     w.home_pinned_tiles_json = json.dumps(_sanitize_pinned_tiles(
         str(form.get("home_pinned_tiles_json", "[]") or "[]"), world_kinds,
+    ))
+    w.home_hidden_kinds_json = json.dumps(_sanitize_hidden_kinds(
+        str(form.get("home_hidden_kinds_json", "[]") or "[]"), world_kinds,
     ))
     w.home_title = str(form.get("home_title", "")).strip()[:200] or None
     w.home_subtitle = str(form.get("home_subtitle", "")).strip()[:300] or None
@@ -290,5 +319,30 @@ async def world_home_pinned_tile_remove(world_id: int, request: Request, db: Ses
         raise HTTPException(400, "No such tile")
     tiles.pop(index)
     w.home_pinned_tiles_json = json.dumps(tiles)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/api/worlds/{world_id}/home/hide-kind")
+async def world_home_hide_kind(world_id: int, request: Request, db: Session = Depends(get_db)):
+    """Hides one built-in/custom kind's tile from the home page's default
+    stat-tile dashboard — the hover ✕ on each tile (index.html, GM view
+    only) posts here. Idempotent: hiding an already-hidden kind is a no-op,
+    not an error. The Default Tiles checklist on home_edit.html is the
+    inverse (un-hide / bulk manage)."""
+    w = db.get(World, world_id)
+    if not w:
+        raise HTTPException(404)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid payload")
+    kind = payload.get("kind")
+    world_kinds = deps.effective_kinds(w)[0]
+    if not isinstance(kind, str) or kind not in world_kinds:
+        raise HTTPException(400, "Not a valid kind for this world")
+    hidden = _sanitize_hidden_kinds(w.home_hidden_kinds_json, world_kinds)
+    if kind not in hidden:
+        hidden.append(kind)
+    w.home_hidden_kinds_json = json.dumps(hidden)
     db.commit()
     return {"ok": True}

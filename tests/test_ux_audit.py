@@ -83,18 +83,18 @@ def test_worlds_page_has_single_export_link_not_scattered_buttons(client, seed):
 # ── Nav regroup (light touch) ────────────────────────────────────────────────
 
 def test_gm_nav_still_reaches_every_relocated_page(client, seed):
-    """Boards moved into the Tools dropdown, and AI/Image Studio/Content
-    Editor moved into a new AI Tools dropdown — confirm the links (and thus
-    the underlying pages) are still present in the rendered nav, just
-    regrouped, not removed."""
+    """Boards/AI/Image Studio/Content Editor once lived in click-to-open
+    Tools/AI Tools dropdown menus; those were later flattened into ordinary
+    top-level tabs per an explicit UX request (dropdowns are harder to scan
+    than a flat row of tabs). This just confirms the links — and thus the
+    underlying pages — are still present in the rendered nav regardless of
+    how they're grouped/labeled."""
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/")
     assert r.status_code == 200
     for href in ("/boards", "/ai", "/imagestudio", "/editor", "/export", "/settings"):
         assert f'data-ql-ref="{href}"' in r.text, f"{href} missing from nav"
-    assert "🎯 Tools" in r.text
-    assert "🤖 AI Tools" in r.text
     # The routes themselves are unaffected regardless of nav placement.
     assert client.get("/boards").status_code == 200
 
@@ -104,8 +104,8 @@ def test_player_nav_unaffected_by_gm_only_regroup(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/")
     assert r.status_code == 200
-    assert "🎯 Tools" not in r.text
-    assert "🤖 AI Tools" not in r.text
+    for href in ("/boards", "/ai", "/imagestudio", "/editor", "/export", "/settings"):
+        assert f'data-ql-ref="{href}"' not in r.text, f"{href} unexpectedly visible to a player"
 
 
 # ── Empty-world onboarding hint ──────────────────────────────────────────────

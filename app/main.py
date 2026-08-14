@@ -941,6 +941,19 @@ def _resolve_pinned_tiles(db: Session, world: World, request: Request, counts: d
     return out
 
 
+def _resolve_hidden_kinds(world: World) -> set:
+    """world.home_hidden_kinds_json -> a set of kind ids to skip in the home
+    page's default stat-tile dashboard loop (index.html). GM-only concept —
+    a hidden tile is just not rendered for anyone, there's no
+    visible_to_players split here since it's about the GM's own dashboard
+    clutter, not player-facing spoilers."""
+    try:
+        raw = json.loads(world.home_hidden_kinds_json or "[]")
+    except Exception:
+        raw = []
+    return {k for k in raw if isinstance(k, str)} if isinstance(raw, list) else set()
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world = get_active_world(request, db, active_world)
@@ -1002,6 +1015,7 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
 
     home_sections = _resolve_home_sections(db, world, request) if world else []
     pinned_tiles = _resolve_pinned_tiles(db, world, request, counts) if world else []
+    hidden_kinds = _resolve_hidden_kinds(world) if world else set()
     world_is_empty = sum(counts.values()) == 0
 
     return templates.TemplateResponse("index.html", {
@@ -1011,7 +1025,7 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
         "recent_boards": recent_boards, "recent_schematics": recent_schematics,
         "recent_sessions": recent_sessions, "active_quests": active_quests,
         "home_sections": home_sections, "world_is_empty": world_is_empty,
-        "pinned_tiles": pinned_tiles,
+        "pinned_tiles": pinned_tiles, "hidden_kinds": hidden_kinds,
     })
 
 def _map_data(jf: Path) -> Optional[dict]:

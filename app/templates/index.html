@@ -62,8 +62,11 @@
 {% endif %}
 
 <section class="dashboard" id="dashboard-dropzone">
-  {% for k in kinds %}
+  {% for k in kinds if k not in hidden_kinds %}
   <a href="{{ ('/kind/' + k)|wq }}" class="dash-card kind-{{ k }}">
+    {% if request.state.user and request.state.user.is_gm %}
+    <button type="button" class="dash-card-pinned-remove" title="Hide this tile" data-kind="{{ k }}" onclick="hideDashboardKindTile(event, this.dataset.kind)">✕</button>
+    {% endif %}
     <span class="dash-icon">{{ kind_icons[k] }}</span>
     <span class="dash-count">{{ counts[k] }}</span>
     <span class="dash-label">{{ k|capitalize }}s</span>
@@ -336,6 +339,22 @@ function switchQuickLinksTab(i) {
       var r = await fetch('/api/worlds/{{ world.id }}/home/pinned-tile/remove', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ index: index }),
+      });
+      if (r.ok) location.reload();
+    } catch (err) {}
+  };
+
+  // The ✕ button rendered on each default (built-in/custom kind) dashboard
+  // tile — hides that kind's tile from this world's dashboard going
+  // forward. Restoring a hidden tile is managed from the Default Tiles
+  // checklist on the /home/edit page, not from here.
+  window.hideDashboardKindTile = async function(event, kind) {
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      var r = await fetch('/api/worlds/{{ world.id }}/home/hide-kind', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: kind }),
       });
       if (r.ok) location.reload();
     } catch (err) {}

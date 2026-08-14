@@ -224,6 +224,34 @@ def test_album_access_is_world_scoped(client, seed):
     assert r.status_code == 404
 
 
+def test_gallery_thumbnails_use_object_fit_contain(client, seed):
+    """Thumbnails used to crop with object-fit:cover — per an explicit UX
+    request they now show the full image, letterboxed, via
+    object-fit:contain."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.get("/images")
+    assert "object-fit:contain" in r.text
+    assert "object-fit:cover" not in r.text
+
+    album_id = _make_album(seed.world_a.id, "Album")
+    r = client.get(f"/images/albums/{album_id}")
+    assert "object-fit:contain" in r.text
+    assert "object-fit:cover" not in r.text
+
+
+def test_album_page_has_drag_and_drop_upload(client, seed):
+    album_id = _make_album(seed.world_a.id, "Album")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/images/albums/{album_id}")
+    assert 'id="album-dropzone"' in r.text
+    assert "function galleryHasFiles(dt)" in r.text
+    assert "async function albumUploadFiles(fileList)" in r.text
+    assert "multiple" in r.text  # file input accepts several files at once
+
+
 def test_album_upload_rejects_bad_extension(client, seed):
     album_id = _make_album(seed.world_a.id, "Album")
     login(client, seed.gm.email, GM_PASSWORD)

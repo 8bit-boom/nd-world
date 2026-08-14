@@ -86,6 +86,13 @@ class World(Base):
     # Kept as a flat list (not sections) since these render inline in one
     # grid, not tabbed panes like Quick Links.
     home_pinned_tiles_json = Column(Text, default="[]")
+    # Kind ids (built-in or custom) the GM has chosen to hide from the home
+    # page's default stat-tile dashboard — e.g. Races/Professions in a world
+    # that isn't using them. A hover ✕ on each tile (index.html, GM view
+    # only) appends here via POST /api/worlds/{id}/home/hidden-kinds; the
+    # Default Tiles checklist on home_edit.html manages the full set,
+    # including restoring one. Just a list of ids: ["races", "professions"].
+    home_hidden_kinds_json = Column(Text, default="[]")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     entities = relationship("Entity", back_populates="world", cascade="all, delete-orphan")

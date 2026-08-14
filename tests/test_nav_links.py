@@ -38,3 +38,19 @@ def test_login_page_renders_without_error(client):
     canary for the shared-templates wiring breaking something unrelated."""
     r = client.get("/login")
     assert r.status_code == 200
+
+
+def test_tools_menus_are_flat_tabs_not_dropdowns(client, seed):
+    """The GM Tools/AI Tools nav items used to be click-to-open dropdown
+    menus (tools-switcher/tools-btn/tools-dropdown/tools-option) — per an
+    explicit UX request they're now flat top-level tabs like every other
+    nav-kind link, with no menu to open first."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get("/")
+    assert r.status_code == 200
+    for dead_class in ("tools-switcher", "tools-btn", "tools-dropdown", "tools-option"):
+        assert dead_class not in r.text
+    for ref in ("/boards", "/tables", "/combat", "/parties", "/quests", "/sessions",
+                "/facts", "/calendar", "/images", "/import", "/export",
+                "/ai", "/imagestudio", "/editor"):
+        assert f'data-ql-ref="{ref}"' in r.text, f"expected a flat nav-kind link for {ref}"
