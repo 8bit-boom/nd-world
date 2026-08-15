@@ -3,7 +3,6 @@ import html
 import io
 import json
 import os
-import uuid
 import random
 from datetime import datetime
 from pathlib import Path
@@ -23,7 +22,7 @@ from ..database import get_db, get_app_settings
 from ..deps import get_world_ctx
 from ..imaging import convert_image
 from ..templating import templates
-from ..uploads import copy_upload_bounded
+from ..uploads import copy_upload_bounded, unique_upload_filename
 from ..models import PlayerCharacter, SheetTemplate, User, World, WorldMembership
 
 router = APIRouter()
@@ -205,7 +204,7 @@ def _upload_portrait(file: UploadFile, db: Optional[Session] = None) -> Optional
         return None
     portraits_dir = UPLOADS_DIR / "portraits"
     portraits_dir.mkdir(parents=True, exist_ok=True)
-    fname = uuid.uuid4().hex + ext
+    fname = unique_upload_filename(file.filename, ext)
     dest = portraits_dir / fname
     copy_upload_bounded(file, dest)
     if db is not None:

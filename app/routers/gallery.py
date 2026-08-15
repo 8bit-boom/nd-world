@@ -5,7 +5,6 @@ any of them — or brand-new uploads — into GM-defined named albums
 _is_player_safe allowlist)."""
 import json
 import os
-import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -19,7 +18,7 @@ from ..gallery import discover_world_images, image_display_name
 from ..imaging import convert_image
 from ..models import ImageAlbum, World
 from ..templating import templates
-from ..uploads import copy_upload_bounded
+from ..uploads import copy_upload_bounded, unique_upload_filename
 
 router = APIRouter()
 
@@ -42,7 +41,7 @@ def _upload_album_image(file: Optional[UploadFile], db: Session) -> Optional[str
         return None
     target_dir = _UPLOADS_DIR / "gallery"
     target_dir.mkdir(parents=True, exist_ok=True)
-    dest = target_dir / f"{uuid.uuid4().hex}{ext}"
+    dest = target_dir / unique_upload_filename(file.filename, ext)
     copy_upload_bounded(file, dest)
     settings = get_app_settings(db)
     dest = convert_image(dest, static_format=settings.static_format, animated_format=settings.animated_format)

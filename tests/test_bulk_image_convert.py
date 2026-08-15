@@ -1,8 +1,9 @@
 """Tests for POST /api/import/convert-images — retroactive bulk conversion
 of every image already referenced by a world (entity/character art,
-schematic backgrounds and embedded images, investigation board cards, and
-uploaded maps) to a single GM-chosen format/quality. The counterpart to
-app/imaging.py's convert_image, which only ever runs once at upload time.
+schematic backgrounds and embedded images, investigation board cards,
+gallery albums, and uploaded maps) to a single GM-chosen format/quality.
+The counterpart to app/imaging.py's convert_image, which only ever runs
+once at upload time.
 """
 import io
 import json
@@ -11,7 +12,7 @@ from PIL import Image
 
 from app.database import SessionLocal
 from app.main import UPLOADS_DIR
-from app.models import Entity, InvestBoard, PlayerCharacter, Schematic
+from app.models import Entity, ImageAlbum, InvestBoard, PlayerCharacter, Schematic
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -220,6 +221,86 @@ def test_convert_images_idempotent_skip(client, seed):
     body = r.json()
     assert body["converted"] == 0
     assert body["results"][0]["status"] == "skipped"
+
+
+def test_convert_images_updates_album_only_image(client, seed):
+    """An image sitting only in a gallery album (never attached to any
+    entity/PC/schematic/board) must still get converted — not just the
+    images convert_world_images already knew how to find via other tables."""
+    _write_upload("gallery", "orphan-upload.png")
+    db = SessionLocal()
+    try:
+        album = ImageAlbum(world_id=seed.world_a.id, name="Loose Uploads",
+                            image_urls_json=json.dumps(["/uploads/gallery/orphan-upload.png"]))
+        db.add(album)
+        db.commit()
+        db.refresh(album)
+        album_id = album.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/import/convert-images", json={"format": "webp", "quality": 80})
+    assert r.status_code == 200
+    body = r.json()
+    album_result = next(res for res in body["results"] if res["scope"].startswith("album:"))
+    assert album_result["status"] == "ok"
+    assert album_result["new_url"] == "/uploads/gallery/orphan-upload.webp"
+
+    db = SessionLocal()
+    try:
+        refreshed = db.query(ImageAlbum).filter(ImageAlbum.id == album_id).first()
+        assert json.loads(refreshed.image_urls_json) == ["/uploads/gallery/orphan-upload.webp"]
+    finally:
+        db.close()
+    assert (UPLOADS_DIR / "gallery" / "orphan-upload.webp").is_file()
+    assert not (UPLOADS_DIR / "gallery" / "orphan-upload.png").exists()
+
+
+def test_convert_images_keeps_shared_image_in_sync_across_references(client, seed):
+    """The same image can be both an entity's image_url AND filed into a
+    gallery album. Converting must update BOTH references to the one new
+    filename — not convert (and rename) the file once for the entity, then
+    fail to find it again for the album and leave a stale/broken URL there."""
+    _write_upload("gallery", "shared.png")
+    shared_url = "/uploads/gallery/shared.png"
+    db = SessionLocal()
+    try:
+        ent = Entity(world_id=seed.world_a.id, kind="character", name="Shared Art", image_url=shared_url)
+        db.add(ent)
+        album = ImageAlbum(world_id=seed.world_a.id, name="Album", image_urls_json=json.dumps([shared_url]))
+        db.add(album)
+        db.commit()
+        db.refresh(ent)
+        db.refresh(album)
+        ent_id, album_id = ent.id, album.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/import/convert-images", json={"format": "webp", "quality": 80})
+    assert r.status_code == 200
+    body = r.json()
+    entity_result = next(res for res in body["results"] if res["scope"] == "entity")
+    album_result = next(res for res in body["results"] if res["scope"].startswith("album:"))
+    assert entity_result["status"] == "ok"
+    assert album_result["status"] == "ok"  # NOT "skipped" — this is the bug being guarded against
+    assert entity_result["new_url"] == album_result["new_url"] == "/uploads/gallery/shared.webp"
+
+    db = SessionLocal()
+    try:
+        refreshed_ent = db.query(Entity).filter(Entity.id == ent_id).first()
+        refreshed_album = db.query(ImageAlbum).filter(ImageAlbum.id == album_id).first()
+        assert refreshed_ent.image_url == "/uploads/gallery/shared.webp"
+        assert json.loads(refreshed_album.image_urls_json) == ["/uploads/gallery/shared.webp"]
+    finally:
+        db.close()
+    # Only one physical re-encode happened — the file was renamed once, not
+    # converted-then-orphaned-then-left-broken.
+    assert (UPLOADS_DIR / "gallery" / "shared.webp").is_file()
+    assert not (UPLOADS_DIR / "gallery" / "shared.png").exists()
 
 
 def test_convert_images_is_gm_only(client, seed):

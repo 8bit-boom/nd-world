@@ -473,7 +473,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/import/images` | GM | Bulk portrait/art import — files matched by filename to existing entities. |
 | POST | `/api/import/detect` | GM | Inspects an uploaded JSON payload and classifies each item's likely kind/shape before import. |
 | POST | `/api/import/execute` | GM | Executes a reviewed/confirmed bulk import. |
-| POST | `/api/import/convert-images` | GM | Retroactively re-encodes every image already in the active world to a target format (AVIF/WebP). |
+| POST | `/api/import/convert-images` | GM | Retroactively re-encodes every image already in the active world (entity/character art, schematic/board images, gallery albums, maps) to a target format (AVIF/WebP/PNG/JPG). Preserves each image's readable filename (see `app/uploads.py`'s `unique_upload_filename`) — only the extension changes — and rewrites every reference to that image consistently, even one shared across an entity and a gallery album. |
 | GET | `/api/worlds/{world_id}/content-pack` | Player | A world's homebrew races/professions/feats/items as JSON, for the NeonDragonsApp Android app's content sync. |
 | GET | `/export` | GM | **Export & Backup hub page** — one place linking Full Backup, World Book, World JSON (single/split), and Import, each with a one-line explanation of when to use it. Replaces the old scattered nav/world-card export buttons. |
 | GET | `/export/book.zip` | GM | Downloads a zip containing a readable HTML "book" export of the active world's lore (entities, boards, maps, rules) — linked from the hub above. |

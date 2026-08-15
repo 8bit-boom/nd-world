@@ -30,7 +30,7 @@ from .deps import get_world_ctx, resolve_world_slug, with_world
 from .imaging import convert_image
 from .rendering import parse_stats, render_md
 from .templating import templates
-from .uploads import copy_upload_bounded, BULK_IMAGE_MAX_FILES
+from .uploads import copy_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, ApiToken, ImageAlbum
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
@@ -305,7 +305,7 @@ def save_upload(file: UploadFile, subdir: str = "", db: Optional[Session] = None
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_EXTS:
         return None
-    filename = f"{uuid.uuid4().hex}{ext}"
+    filename = unique_upload_filename(file.filename, ext)
     target_dir = UPLOADS_DIR / subdir if subdir else UPLOADS_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / filename
@@ -805,7 +805,10 @@ async def world_import(world_id: int, file: UploadFile = File(...), db: Session 
             ext = "." + ext if not ext.startswith(".") else ext
             if ext not in ALLOWED_EXTS:
                 ext = ".jpg"
-            filename = f"{uuid.uuid4().hex}{ext}"
+            # No original upload filename survives in a full-fidelity backup's
+            # embedded data: URI — the entity's own name is the best available
+            # label for the restored file.
+            filename = unique_upload_filename(name, ext)
             (UPLOADS_DIR / filename).write_bytes(base64.b64decode(b64))
             image_url = f"/uploads/{filename}"
         existing = db.query(Entity).filter(
@@ -1977,7 +1980,7 @@ async def schematic_embed_image(slug: str, file: UploadFile = File(...), db: Ses
         raise HTTPException(400, "Unsupported file type")
     embeds_dir = UPLOADS_DIR / "schematics" / "embeds"
     embeds_dir.mkdir(parents=True, exist_ok=True)
-    fname = uuid.uuid4().hex + ext
+    fname = unique_upload_filename(file.filename, ext)
     copy_upload_bounded(file, embeds_dir / fname)
     return {"url": f"/uploads/schematics/embeds/{fname}"}
 

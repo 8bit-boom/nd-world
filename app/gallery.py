@@ -12,6 +12,12 @@ from .models import Entity, ImageAlbum, PlayerCharacter, World
 
 _MD_IMG_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
 
+# Matches the random hex prefix app/uploads.py's unique_upload_filename()
+# puts on every stored filename (e.g. "a1b2c3d4e5f6-goblin-portrait.jpg") so
+# it can be stripped back off, revealing the uploader's original name
+# instead of a meaningless hex string.
+_UPLOAD_PREFIX_RE = re.compile(r"^[0-9a-f]{12}-")
+
 
 def _extract_md_images(text):
     if not text:
@@ -22,11 +28,12 @@ def _extract_md_images(text):
 def image_display_name(url: str, uses: list = None) -> str:
     """Best human-readable label for an image: the name of the first place
     it's used (e.g. "Portrait NPC" — what a GM actually thinks of the image
-    as), or its filename if it isn't used anywhere yet (e.g. a fresh upload
-    sitting only in an album)."""
+    as), or its (de-prefixed) filename if it isn't used anywhere yet (e.g. a
+    fresh upload sitting only in an album)."""
     if uses:
         return uses[0]["label"]
-    return url.rsplit("/", 1)[-1]
+    fname = url.rsplit("/", 1)[-1]
+    return _UPLOAD_PREFIX_RE.sub("", fname) or fname
 
 
 def discover_world_images(db: Session, world: World) -> list:

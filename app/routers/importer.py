@@ -16,7 +16,7 @@ from ..constants import KINDS, ND_DEFAULT_CURRENCY, ND_DEFAULT_STATS
 from ..database import get_db
 from ..deps import get_world_ctx
 from ..imaging import CONVERT_QUALITY, convert_image_to
-from ..models import Entity, EntityTemplate, InvestBoard, MapOverlay, PlayerCharacter, RandomTable, Schematic, SheetTemplate, World
+from ..models import Entity, EntityTemplate, ImageAlbum, InvestBoard, MapOverlay, PlayerCharacter, RandomTable, Schematic, SheetTemplate, World
 from ..templating import templates
 from ..uploads import BULK_IMAGE_MAX_FILES
 from .characters import _apply_form, _current_user
@@ -220,18 +220,33 @@ def _resolve_upload_path(url) -> Optional[Path]:
     return path
 
 
-def _convert_one(old_url, target_format: str, quality: int) -> Optional[str]:
+def _convert_one(old_url, target_format: str, quality: int, cache: dict) -> Optional[str]:
     """Convert the uploaded file behind old_url to target_format/quality in
     place. Returns the new /uploads/... URL on success, or None if nothing
     changed (not a local upload, already that format, or decode failure) —
-    the caller should leave its reference untouched in that case."""
+    the caller should leave its reference untouched in that case.
+
+    `cache` is shared across a whole convert_world_images() run and keyed by
+    old_url: the same image is often referenced from more than one place
+    (an entity's image_url AND a gallery album, say), and converting it
+    twice would fail the second time — the file has already been renamed
+    away by the first conversion, so _resolve_upload_path can't find it
+    anymore, silently orphaning that second reference at the old URL. Every
+    repeat reference reuses the first call's outcome instead of re-touching
+    the filesystem."""
+    if old_url in cache:
+        return cache[old_url]
     path = _resolve_upload_path(old_url)
     if path is None:
+        cache[old_url] = None
         return None
     new_path = convert_image_to(path, target_format, quality)
     if new_path is None:
+        cache[old_url] = None
         return None
-    return old_url.rsplit("/", 1)[0] + "/" + new_path.name
+    new_url = old_url.rsplit("/", 1)[0] + "/" + new_path.name
+    cache[old_url] = new_url
+    return new_url
 
 
 def _conversion_result(scope: str, label: str, old_url: str, new_url: Optional[str]) -> dict:
@@ -245,13 +260,22 @@ def convert_world_images(db: Session, world: World, target_format: str, quality:
     """Retroactively convert every already-uploaded image referenced by
     `world` to target_format/quality: entity portraits/art, player character
     portraits, schematic backgrounds and embedded images, investigation
-    board card images, and user-uploaded (not bundled) maps. Commits once at
-    the end; returns a per-image result list."""
+    board card images, gallery albums (app/gallery.py — including images
+    sitting only in an album, not yet attached anywhere else), and
+    user-uploaded (not bundled) maps. Commits once at the end; returns a
+    per-image result list.
+
+    A single `cache` dict is threaded through every _convert_one call so an
+    image referenced from more than one place (e.g. an entity's image_url
+    that's also filed into a gallery album) only actually gets re-encoded
+    once — the second and later references reuse that outcome instead of
+    trying to convert a file the first call already renamed away."""
     results = []
+    cache: dict = {}
 
     entities = db.query(Entity).filter(Entity.world_id == world.id, Entity.image_url.isnot(None)).all()
     for e in entities:
-        new_url = _convert_one(e.image_url, target_format, quality)
+        new_url = _convert_one(e.image_url, target_format, quality, cache)
         results.append(_conversion_result("entity", e.name, e.image_url, new_url))
         if new_url:
             e.image_url = new_url
@@ -260,7 +284,7 @@ def convert_world_images(db: Session, world: World, target_format: str, quality:
         PlayerCharacter.world_id == world.id, PlayerCharacter.portrait_url != ""
     ).all()
     for pc in pcs:
-        new_url = _convert_one(pc.portrait_url, target_format, quality)
+        new_url = _convert_one(pc.portrait_url, target_format, quality, cache)
         results.append(_conversion_result("character", pc.name, pc.portrait_url, new_url))
         if new_url:
             pc.portrait_url = new_url
@@ -268,7 +292,7 @@ def convert_world_images(db: Session, world: World, target_format: str, quality:
     schematics = db.query(Schematic).filter(Schematic.world_id == world.id).all()
     for s in schematics:
         if s.image_url:
-            new_url = _convert_one(s.image_url, target_format, quality)
+            new_url = _convert_one(s.image_url, target_format, quality, cache)
             results.append(_conversion_result(f"schematic: {s.name}", "background", s.image_url, new_url))
             if new_url:
                 s.image_url = new_url
@@ -282,7 +306,7 @@ def convert_world_images(db: Session, world: World, target_format: str, quality:
                 continue
             href = el.get("href")
             if isinstance(href, str) and href.startswith("/uploads/schematics/embeds/"):
-                new_url = _convert_one(href, target_format, quality)
+                new_url = _convert_one(href, target_format, quality, cache)
                 results.append(_conversion_result(f"schematic: {s.name}", "embedded image", href, new_url))
                 if new_url:
                     el["href"] = new_url
@@ -302,13 +326,37 @@ def convert_world_images(db: Session, world: World, target_format: str, quality:
                 continue
             img = n.get("image_url")
             if isinstance(img, str) and img:
-                new_url = _convert_one(img, target_format, quality)
+                new_url = _convert_one(img, target_format, quality, cache)
                 results.append(_conversion_result(f"board: {b.name}", n.get("title") or "card", img, new_url))
                 if new_url:
                     n["image_url"] = new_url
                     changed = True
         if changed:
             b.nodes_json = json.dumps(nodes)
+
+    albums = db.query(ImageAlbum).filter(ImageAlbum.world_id == world.id).all()
+    for album in albums:
+        try:
+            urls = json.loads(album.image_urls_json or "[]")
+        except Exception:
+            urls = []
+        if not isinstance(urls, list):
+            continue
+        changed = False
+        new_urls = []
+        for u in urls:
+            if not isinstance(u, str):
+                new_urls.append(u)
+                continue
+            new_url = _convert_one(u, target_format, quality, cache)
+            results.append(_conversion_result(f"album: {album.name}", "image", u, new_url))
+            if new_url:
+                new_urls.append(new_url)
+                changed = True
+            else:
+                new_urls.append(u)
+        if changed:
+            album.image_urls_json = json.dumps(new_urls)
 
     for slug, name in _world_maps(world.id):
         for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif"):

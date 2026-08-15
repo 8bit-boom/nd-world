@@ -9,7 +9,6 @@ bundled catalog is reference content to start from, not something a GM is
 required to use.
 """
 import re
-import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -23,7 +22,7 @@ from ..imaging import convert_image
 from ..models import Entity
 from ..rendering import render_md
 from ..templating import templates
-from ..uploads import copy_upload_bounded
+from ..uploads import copy_upload_bounded, unique_upload_filename
 
 router = APIRouter()
 
@@ -42,7 +41,7 @@ def _upload_race_image(file: Optional[UploadFile], db: Optional[Session] = None)
         return None
     races_dir = UPLOADS_DIR / "races"
     races_dir.mkdir(parents=True, exist_ok=True)
-    fname = uuid.uuid4().hex + ext
+    fname = unique_upload_filename(file.filename, ext)
     dest = races_dir / fname
     copy_upload_bounded(file, dest)
     if db is not None:
