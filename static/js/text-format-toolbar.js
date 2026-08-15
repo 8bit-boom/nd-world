@@ -166,6 +166,44 @@ function ndFmtInsertImage(ta, btn) {
   input.click();
 }
 
+// Loads a local .md file's text straight into the textarea — read entirely
+// client-side via FileReader, never uploaded anywhere (unlike the image
+// button above, there's no server round trip: markdown text just becomes
+// the field's value). Replacing rather than inserting-at-cursor matches
+// what "import a file" means for a notes field — this IS the note, not a
+// snippet to weave into existing text — so a non-empty textarea gets a
+// confirm() first to guard against silently discarding a draft in
+// progress, same instinct as this app's other destructive-action confirms
+// (album delete, image-remove, etc.).
+function ndFmtImportMdFile(ta, btn) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".md,.markdown,text/markdown,text/plain";
+  input.style.display = "none";
+  document.body.appendChild(input);
+  input.addEventListener("change", () => {
+    const file = input.files[0];
+    input.remove();
+    if (!file) return;
+    if (ta.value.trim() && !confirm(`Replace the current text with the contents of "${file.name}"?`)) return;
+    btn.disabled = true;
+    const reader = new FileReader();
+    reader.onload = () => {
+      ta.value = String(reader.result || "");
+      ta.focus();
+      ta.selectionStart = ta.selectionEnd = ta.value.length;
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+      btn.disabled = false;
+    };
+    reader.onerror = () => {
+      alert("Couldn't read that file.");
+      btn.disabled = false;
+    };
+    reader.readAsText(file);
+  });
+  input.click();
+}
+
 // Drag a file (or several) from the desktop straight onto the textarea.
 // Native <textarea> content has no DOM text nodes for the drop event's
 // coordinates to resolve against, so — same as every plain-textarea
@@ -239,6 +277,9 @@ function ndFmtBuildToolbar(ta) {
 
   const imgBtn = ndFmtButton("🖼", "Insert image", () => ndFmtInsertImage(ta, imgBtn));
   bar.appendChild(imgBtn);
+
+  const importBtn = ndFmtButton("📄", "Import .md file", () => ndFmtImportMdFile(ta, importBtn));
+  bar.appendChild(importBtn);
 
   const sep = document.createElement("div");
   sep.className = "fmt-sep";
