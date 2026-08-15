@@ -164,7 +164,7 @@ def health():
 # own character(s). Anything not allowlisted is GM-only. New routes are therefore
 # GM-only by default unless deliberately added to _is_player_safe.
 
-_PUBLIC_PATHS = {"/login", "/api/login", "/logout", "/health", "/favicon.ico"}
+_PUBLIC_PATHS = {"/login", "/login/2fa", "/api/login", "/logout", "/health", "/favicon.ico"}
 _PUBLIC_PREFIXES = ("/join/", "/static/")
 
 

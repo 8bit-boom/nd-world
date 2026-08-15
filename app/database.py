@@ -299,6 +299,13 @@ def _migrate():
             u_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(users)")).fetchall()]
             if "session_version" not in u_cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN session_version INTEGER DEFAULT 1"))
+            # Optional two-step (TOTP) authentication — see app/totp.py.
+            if "totp_secret" not in u_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN totp_secret VARCHAR(64)"))
+            if "totp_enabled" not in u_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN totp_enabled BOOLEAN DEFAULT 0"))
+            if "totp_backup_codes_json" not in u_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN totp_backup_codes_json TEXT DEFAULT '[]'"))
         # player_characters table — add any missing columns to existing installs
         pc_exists = conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='player_characters'"

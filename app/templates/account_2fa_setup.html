@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Two-Step Authentication Setup — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="form-page" style="max-width:520px">
+  <h1>🔐 Set Up Two-Step Authentication</h1>
+  <p style="font-size:.82rem;color:var(--text-dim);margin:.5rem 0 1.2rem">
+    Scan this QR code with an authenticator app (Google Authenticator, Authy, 1Password, etc.),
+    or enter the key manually, then confirm with the 6-digit code it generates to turn this on.
+  </p>
+
+  <div style="text-align:center;background:#fff;padding:1rem;border-radius:6px;margin-bottom:1rem">
+    <img src="{{ qr_data_uri }}" alt="Two-step authentication QR code" style="max-width:220px"/>
+  </div>
+
+  <div class="form-group">
+    <label>Manual entry key <small>(if you can't scan the code)</small></label>
+    <code style="display:block;word-break:break-all;font-size:.85rem;background:var(--bg3);padding:.6rem;border-radius:3px">{{ secret }}</code>
+  </div>
+
+  <form method="post" action="/account/2fa/setup" class="entity-form">
+    <div class="form-group">
+      <label for="totp-code">Code from your app</label>
+      <input id="totp-code" type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus
+             style="letter-spacing:.15em">
+    </div>
+    {% if error %}
+    <p style="color:var(--neon2);font-size:.82rem">{{ error }}</p>
+    {% endif %}
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Confirm and enable</button>
+      <a href="/account" class="btn-cancel">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

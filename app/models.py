@@ -123,6 +123,16 @@ class User(Base):
     # this user (see /account/password); compared against a value stashed in the
     # signed session cookie at login. No server-side session store otherwise exists.
     session_version = Column(Integer, default=1, nullable=False)
+    # Optional TOTP-based two-step authentication (see app/totp.py). totp_secret
+    # is only meaningful once totp_enabled is True — a GM/player can start setup
+    # (POST /account/2fa/setup GET) without committing to it; the secret is
+    # stashed in the session, not here, until the confirmation code is verified.
+    # totp_backup_codes_json holds sha256 hashes of unused single-use backup
+    # codes (see app/totp.py's hash_backup_code/consume_backup_code) — never the
+    # raw codes, same rationale as ApiToken.token_hash.
+    totp_secret = Column(String(64), nullable=True)
+    totp_enabled = Column(Boolean, default=False, nullable=False)
+    totp_backup_codes_json = Column(Text, default="[]")
 
 
 class WorldMembership(Base):

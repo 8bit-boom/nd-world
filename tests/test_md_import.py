@@ -16,7 +16,7 @@ def test_toolbar_js_has_import_md_button(client, seed):
     assert r.status_code == 200
     js = r.text
     assert "function ndFmtImportMdFile(ta, btn)" in js
-    assert 'ndFmtButton("📄", "Import .md file"' in js
+    assert 'ndFmtButton("📄 Import .md"' in js
     assert "ndFmtImportMdFile(ta, importBtn)" in js
 
 

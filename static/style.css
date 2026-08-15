@@ -1435,6 +1435,7 @@ input[type="file"]:hover { border-color: var(--neon); }
   font-family: var(--font); font-size: .78rem; line-height: 1.2;
 }
 .fmt-btn:hover { border-color: var(--neon); color: var(--neon); }
+.fmt-btn-labeled { white-space: nowrap; }
 .fmt-btn[data-active="true"] { border-color: var(--neon); color: var(--neon); }
 .fmt-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 .15rem; }
 .fmt-color-group { display: flex; align-items: center; gap: .25rem; }

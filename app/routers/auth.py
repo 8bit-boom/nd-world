@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from .. import auth
+from .. import totp as _totp
 from ..database import get_db
 from ..models import InviteCode, User, World, WorldMembership
 from ..templating import templates
@@ -51,6 +52,55 @@ def _rl_clear(key) -> None:
     _failed_logins.pop(key, None)
 
 
+# ── Two-step (TOTP) verification-attempt throttling ─────────────────────────
+# Separate dict from _failed_logins above: keyed by user id (the account is
+# already password-verified at this point — this guards the second factor
+# against online brute-forcing of a 6-digit code or a backup code), not
+# (ip, email). Same shape/constants as app/routers/account.py's password-
+# change throttle.
+_failed_2fa: dict = {}  # user_id -> (count, window_started_monotonic)
+
+
+def _rl_2fa_lock_remaining(user_id: int) -> int:
+    rec = _failed_2fa.get(user_id)
+    if not rec:
+        return 0
+    count, started = rec
+    if count < _MAX_ATTEMPTS:
+        return 0
+    elapsed = time.monotonic() - started
+    if elapsed >= _LOCKOUT_SECONDS:
+        _failed_2fa.pop(user_id, None)
+        return 0
+    return int(_LOCKOUT_SECONDS - elapsed)
+
+
+def _rl_2fa_record_failure(user_id: int) -> None:
+    count, started = _failed_2fa.get(user_id, (0, time.monotonic()))
+    if time.monotonic() - started >= _LOCKOUT_SECONDS:
+        count, started = 0, time.monotonic()
+    _failed_2fa[user_id] = (count + 1, started)
+
+
+def _rl_2fa_clear(user_id: int) -> None:
+    _failed_2fa.pop(user_id, None)
+
+
+def _begin_2fa_or_login(request: Request, user: User) -> bool:
+    """Call once password verification succeeds. If the account has
+    two-step auth enabled, stashes a *pending* (not-yet-authenticated)
+    marker in the session and returns True so the caller redirects to
+    /login/2fa instead of finishing login; otherwise establishes the real
+    session immediately and returns False, same as before this feature
+    existed."""
+    if user.totp_enabled:
+        request.session["pending_2fa_user_id"] = user.id
+        return True
+    request.session["user_id"] = user.id
+    request.session["session_version"] = user.session_version
+    return False
+
+
 @router.get("/login", response_class=HTMLResponse)
 def login_form(request: Request, next: str = "/"):
     next_url = auth.safe_next_url(next)
@@ -87,8 +137,69 @@ async def login_submit(request: Request, db: Session = Depends(get_db)):
         }, status_code=400)
 
     _rl_clear(key)
+    if _begin_2fa_or_login(request, user):
+        request.session["pending_2fa_next"] = next_url
+        return RedirectResponse("/login/2fa", status_code=303)
+    return RedirectResponse(next_url, status_code=303)
+
+
+@router.get("/login/2fa", response_class=HTMLResponse)
+def login_2fa_form(request: Request):
+    if request.session.get("user_id"):
+        return RedirectResponse("/", status_code=303)
+    if not request.session.get("pending_2fa_user_id"):
+        return RedirectResponse("/login", status_code=303)
+    return templates.TemplateResponse("auth/login_2fa.html", {"request": request, "error": None})
+
+
+@router.post("/login/2fa")
+async def login_2fa_submit(request: Request, db: Session = Depends(get_db)):
+    pending_id = request.session.get("pending_2fa_user_id")
+    if not pending_id:
+        return RedirectResponse("/login", status_code=303)
+    user = db.query(User).filter(User.id == pending_id).first()
+    if not user or not user.totp_enabled:
+        # Account was deleted or 2FA disabled elsewhere mid-flow — nothing
+        # valid left to verify against.
+        request.session.pop("pending_2fa_user_id", None)
+        request.session.pop("pending_2fa_next", None)
+        request.session.pop("pending_2fa_invite_code", None)
+        return RedirectResponse("/login", status_code=303)
+
+    locked_for = _rl_2fa_lock_remaining(pending_id)
+    if locked_for:
+        return templates.TemplateResponse("auth/login_2fa.html", {
+            "request": request,
+            "error": f"Too many failed attempts. Try again in {locked_for // 60 + 1} minute(s).",
+        }, status_code=429)
+
+    form = await request.form()
+    code = str(form.get("code", "")).strip()
+
+    ok = _totp.verify_code(user.totp_secret, code)
+    if not ok:
+        ok = _totp.consume_backup_code(user, code)
+        if ok:
+            db.commit()
+    if not ok:
+        _rl_2fa_record_failure(pending_id)
+        return templates.TemplateResponse("auth/login_2fa.html", {
+            "request": request, "error": "Incorrect code. Try again.",
+        }, status_code=400)
+
+    _rl_2fa_clear(pending_id)
+    next_url = auth.safe_next_url(request.session.pop("pending_2fa_next", "/"))
+    pending_invite_code = request.session.pop("pending_2fa_invite_code", None)
+    request.session.pop("pending_2fa_user_id", None)
+
     request.session["user_id"] = user.id
     request.session["session_version"] = user.session_version
+
+    if pending_invite_code:
+        invite = db.query(InviteCode).filter(InviteCode.code == pending_invite_code).first()
+        error = _invite_error(invite)
+        if invite and not error:
+            return _redeem(request, db, invite)
     return RedirectResponse(next_url, status_code=303)
 
 
@@ -101,6 +212,7 @@ async def api_login(request: Request, db: Session = Depends(get_db)):
     body = await request.json()
     email = str(body.get("email", "")).strip().lower()
     password = str(body.get("password", ""))
+    totp_code = str(body.get("totp_code", "")).strip()
 
     key = _rl_key(request, email)
     locked_for = _rl_lock_remaining(key)
@@ -119,6 +231,29 @@ async def api_login(request: Request, db: Session = Depends(get_db)):
     if not ok:
         _rl_record_failure(key)
         return JSONResponse({"ok": False, "detail": "Incorrect email or password."}, status_code=401)
+
+    if user.totp_enabled:
+        # No separate pending-session round trip here (unlike the form-based
+        # /login below) — a JSON client is expected to prompt for the code
+        # and resend this same request with totp_code filled in, one extra
+        # call rather than a page redirect. Still throttled per-user so a
+        # client that already has the password can't hammer the 6-digit code.
+        locked_2fa = _rl_2fa_lock_remaining(user.id)
+        if locked_2fa:
+            return JSONResponse({
+                "ok": False, "requires_2fa": True,
+                "detail": f"Too many failed attempts. Try again in {locked_2fa // 60 + 1} minute(s).",
+            }, status_code=429)
+        totp_ok = _totp.verify_code(user.totp_secret, totp_code)
+        if not totp_ok:
+            totp_ok = _totp.consume_backup_code(user, totp_code)
+            if totp_ok:
+                db.commit()
+        if not totp_ok:
+            _rl_2fa_record_failure(user.id)
+            detail = "Two-step code required." if not totp_code else "Invalid two-step code."
+            return JSONResponse({"ok": False, "requires_2fa": True, "detail": detail}, status_code=401)
+        _rl_2fa_clear(user.id)
 
     _rl_clear(key)
     request.session["user_id"] = user.id
@@ -208,8 +343,9 @@ async def join_submit(code: str, request: Request, db: Session = Depends(get_db)
         db.commit()
         db.refresh(user)
 
-    request.session["user_id"] = user.id
-    request.session["session_version"] = user.session_version
+    if _begin_2fa_or_login(request, user):
+        request.session["pending_2fa_invite_code"] = code
+        return RedirectResponse("/login/2fa", status_code=303)
     return _redeem(request, db, invite)
 
 

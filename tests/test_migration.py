@@ -316,3 +316,46 @@ def test_heals_pre_nested_albums_schema(tmp_path, monkeypatch):
         db.close()
 
     engine.dispose()
+
+
+def test_heals_pre_two_step_auth_schema(tmp_path, monkeypatch):
+    """A users table predating totp_secret/totp_enabled/totp_backup_codes_json
+    (added for optional two-step authentication, see app/totp.py) must heal
+    onto NULL/false/'[]' defaults — a pre-existing user should come back with
+    two-step authentication off, not crash the first login after upgrade."""
+    from app.models import User
+
+    db_path = tmp_path / "pre_two_step_auth.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR(256) UNIQUE NOT NULL, "
+            "password_hash VARCHAR(256) NOT NULL, display_name VARCHAR(256), "
+            "is_gm BOOLEAN, created_at DATETIME, session_version INTEGER DEFAULT 1)"
+        ))
+        conn.execute(text(
+            "INSERT INTO users (id, email, password_hash, display_name, is_gm, session_version) "
+            "VALUES (1, 'pre-existing@test.local', 'x', 'Pre-existing', 0, 1)"
+        ))
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        user_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(users)")).fetchall()}
+    assert {"totp_secret", "totp_enabled", "totp_backup_codes_json"} <= user_cols
+
+    db = SessionLocal()
+    try:
+        u = db.get(User, 1)
+        assert u.totp_secret is None
+        assert not u.totp_enabled
+        assert u.totp_backup_codes_json in (None, "[]")
+    finally:
+        db.close()
+
+    engine.dispose()

@@ -278,7 +278,8 @@ function ndFmtBuildToolbar(ta) {
   const imgBtn = ndFmtButton("🖼", "Insert image", () => ndFmtInsertImage(ta, imgBtn));
   bar.appendChild(imgBtn);
 
-  const importBtn = ndFmtButton("📄", "Import .md file", () => ndFmtImportMdFile(ta, importBtn));
+  const importBtn = ndFmtButton("📄 Import .md", "Import a .md file into this field", () => ndFmtImportMdFile(ta, importBtn));
+  importBtn.classList.add("fmt-btn-labeled");
   bar.appendChild(importBtn);
 
   const sep = document.createElement("div");

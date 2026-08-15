@@ -2,7 +2,7 @@
 
 Every HTTP route exposed by nd-world (`app/main.py` + `app/routers/*.py`), grouped by
 feature area, plus the MCP server's tools (`app/mcp_server.py`). Generated from a full
-audit of the route table — **277 HTTP routes** and **8 MCP tools** as of this writing.
+audit of the route table — **296 HTTP routes** and **8 MCP tools** as of this writing.
 
 This is a reference for developers and AI agents working on the codebase, not
 end-user documentation — see the [README](../README.md) for how to use the app
@@ -80,11 +80,13 @@ worlds they've been invited into (`WorldMembership`).
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/login` | Public | Login form. |
-| POST | `/login` | Public | Authenticates by email/password, sets the session cookie, redirects to `?next=`. |
-| POST | `/api/login` | Public | JSON login for non-browser clients (the NeonDragonsApp Android app) — same credential check, returns a JSON body instead of a redirect. |
+| POST | `/login` | Public | Authenticates by email/password. If the account has two-step auth enabled (`User.totp_enabled`), stashes a pending marker in the session and redirects to `/login/2fa` instead of finishing login; otherwise sets the session cookie and redirects to `?next=`. |
+| GET | `/login/2fa` | Public | Second-step form (code from an authenticator app or a backup code) — only reachable with a pending login from `/login`, `/api/login`, or `/join/{code}`; redirects to `/login` if nothing is pending. |
+| POST | `/login/2fa` | Public | Verifies the TOTP/backup code for the pending login; on success sets the session cookie and redirects to the original `?next=` (or completes a pending invite redemption). Rate-limited per account (8 attempts / 5 min) via a process-local dict, same pattern as the password login lockout below. |
+| POST | `/api/login` | Public | JSON login for non-browser clients (the NeonDragonsApp Android app) — same credential check, returns a JSON body instead of a redirect. Body may include `totp_code` (string). If the account has two-step auth enabled and `totp_code` is missing/incorrect, responds `401` with `{"ok": false, "requires_2fa": true, "detail": "..."}` instead of logging in — the client re-sends the same request with `totp_code` filled in (a TOTP code or a backup code). Same per-account rate limit as `/login/2fa`. |
 | GET | `/logout` | Player | Clears the session and redirects to `/login`. |
 | GET | `/join/{code}` | Public | Invite-redemption form for a `InviteCode` — lets a new player create an account (or log an existing one in) and joins them to the issuing world. |
-| POST | `/join/{code}` | Public | Submits the join form: creates the account, redeems the invite, creates the `WorldMembership`. |
+| POST | `/join/{code}` | Public | Submits the join form: creates the account, redeems the invite, creates the `WorldMembership`. In "log an existing account in" mode, same two-step gate as `/login` — redirects to `/login/2fa` first if the account has it enabled, and the invite is redeemed only after the code is verified. |
 
 ## Account
 
@@ -92,9 +94,13 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/account` | Player | Profile page: display name, password change, MCP access tokens. |
+| GET | `/account` | Player | Profile page: display name, password change, two-step auth, MCP access tokens. |
 | POST | `/account/name` | Player | Updates the caller's own display name. |
 | POST | `/account/password` | Player | Changes the caller's own password; bumps `User.session_version`, invalidating every other logged-in session for that account. |
+| GET | `/account/2fa/setup` | Player | Starts two-step auth setup: generates a TOTP secret (stashed in the session, not saved yet) and renders a QR code (`app/totp.py`, rendered server-side as an inline data URI — no third-party call) plus the manual entry key. No-ops (redirects to `/account`) if already enabled. |
+| POST | `/account/2fa/setup` | Player | Confirms setup with a code from the authenticator app; on success saves `User.totp_secret`/`totp_enabled=True` and 8 single-use backup codes (shown once, stored as sha256 hashes). |
+| POST | `/account/2fa/disable` | Player | Turns off two-step auth for the caller's own account (requires re-entering the current password; rate-limited like `/account/password`). Clears the secret and backup codes. |
+| POST | `/account/2fa/backup-codes/regenerate` | Player | Replaces the caller's backup codes with a fresh set of 8 (requires the current password); the old codes stop working immediately. |
 | POST | `/account/tokens/new` | Player | Issues a new MCP bearer token (`ApiToken`) for the caller — the raw token is shown once at creation and only its sha256 hash is stored. |
 | POST | `/account/tokens/{token_id}/revoke` | Player | Revokes (deletes) one of the caller's own MCP tokens. |
 

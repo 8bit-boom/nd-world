@@ -8,6 +8,8 @@
   <p style="color:var(--neon3);font-size:.85rem">Display name updated.</p>
   {% elif request.query_params.get('saved') == 'password' %}
   <p style="color:var(--neon3);font-size:.85rem">Password changed. Your other sessions have been logged out.</p>
+  {% elif request.query_params.get('saved') == '2fa-off' %}
+  <p style="color:var(--neon3);font-size:.85rem">Two-step authentication turned off.</p>
   {% endif %}
 
   <form method="post" action="/account/name" class="entity-form">
@@ -53,6 +55,51 @@
       <button type="submit" class="btn-primary">Change password</button>
     </div>
   </form>
+
+  <div class="entity-form" style="margin-top:2rem">
+    <h2 style="font-size:.9rem;color:var(--text-dim);margin:1rem 0 .5rem">Two-step authentication</h2>
+
+    {% if new_backup_codes %}
+    <div style="background:#1a3a1a;border:1px solid #4f4;border-radius:4px;padding:.7rem 1rem;margin-bottom:1rem">
+      <p style="font-size:.82rem;margin:0 0 .4rem;color:#4f4">
+        Save these backup codes somewhere safe — each works once, in place of your
+        authenticator app, if you ever lose access to it. They won't be shown again.
+      </p>
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:.3rem;background:var(--bg3);padding:.6rem;border-radius:3px">
+        {% for c in new_backup_codes %}<code style="font-size:.85rem">{{ c }}</code>{% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    {% if user.totp_enabled %}
+    <p style="font-size:.85rem;color:var(--neon3);margin-bottom:.8rem">
+      ✓ Enabled — you'll be asked for a code from your authenticator app each time you sign in.
+    </p>
+    <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:flex-start">
+      <form method="post" action="/account/2fa/backup-codes/regenerate" style="display:flex;gap:.5rem;align-items:center">
+        <input type="password" name="current_password" placeholder="Current password" required style="width:170px">
+        <button type="submit" class="btn-cancel">Regenerate backup codes</button>
+      </form>
+      <form method="post" action="/account/2fa/disable" style="display:flex;gap:.5rem;align-items:center"
+            onsubmit="return confirm('Turn off two-step authentication? Anyone who has your password will be able to sign in without a code.')">
+        <input type="password" name="current_password" placeholder="Current password" required style="width:170px">
+        <button type="submit" style="background:transparent;border:1px solid #c44;color:#c44;border-radius:3px;padding:.5rem .9rem;font-size:.85rem;cursor:pointer;font-family:var(--font)">Disable</button>
+      </form>
+    </div>
+    {% if totp_error %}
+    <p style="color:var(--neon2);font-size:.82rem;margin-top:.5rem">{{ totp_error }}</p>
+    {% endif %}
+    {% else %}
+    <p style="font-size:.78rem;color:var(--text-dim);margin-bottom:.8rem">
+      Off — anyone who has your password can sign in. Turning this on requires a code from an
+      authenticator app (Google Authenticator, Authy, 1Password, etc.) in addition to your password.
+    </p>
+    {% if totp_error %}
+    <p style="color:var(--neon2);font-size:.82rem;margin-bottom:.6rem">{{ totp_error }}</p>
+    {% endif %}
+    <a href="/account/2fa/setup" class="btn-primary" style="display:inline-block;text-decoration:none">Enable two-step authentication</a>
+    {% endif %}
+  </div>
 
   <div class="entity-form" style="margin-top:2rem">
     <h2 style="font-size:.9rem;color:var(--text-dim);margin:1rem 0 .5rem">MCP access tokens</h2>
