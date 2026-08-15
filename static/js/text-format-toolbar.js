@@ -174,32 +174,43 @@ function ndFmtInsertImage(ta, btn) {
 // snippet to weave into existing text — so a non-empty textarea gets a
 // confirm() first to guard against silently discarding a draft in
 // progress, same instinct as this app's other destructive-action confirms
-// (album delete, image-remove, etc.).
-function ndFmtImportMdFile(ta, btn) {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = ".md,.markdown,text/markdown,text/plain";
-  input.style.display = "none";
-  document.body.appendChild(input);
-  input.addEventListener("change", () => {
-    const file = input.files[0];
-    input.remove();
-    if (!file) return;
-    if (ta.value.trim() && !confirm(`Replace the current text with the contents of "${file.name}"?`)) return;
-    btn.disabled = true;
+// (album delete, image-remove, etc.). Shared by both the toolbar button
+// (ndFmtImportMdFile below) and drag-and-drop (ndFmtHandleDroppedFiles).
+function ndFmtLoadMdFileIntoTextarea(ta, file) {
+  return new Promise((resolve) => {
+    if (ta.value.trim() && !confirm(`Replace the current text with the contents of "${file.name}"?`)) {
+      resolve(false);
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       ta.value = String(reader.result || "");
       ta.focus();
       ta.selectionStart = ta.selectionEnd = ta.value.length;
       ta.dispatchEvent(new Event("input", { bubbles: true }));
-      btn.disabled = false;
+      resolve(true);
     };
     reader.onerror = () => {
       alert("Couldn't read that file.");
-      btn.disabled = false;
+      resolve(false);
     };
     reader.readAsText(file);
+  });
+}
+
+function ndFmtImportMdFile(ta, btn) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".md,.markdown,text/markdown,text/plain";
+  input.style.display = "none";
+  document.body.appendChild(input);
+  input.addEventListener("change", async () => {
+    const file = input.files[0];
+    input.remove();
+    if (!file) return;
+    btn.disabled = true;
+    await ndFmtLoadMdFileIntoTextarea(ta, file);
+    btn.disabled = false;
   });
   input.click();
 }
@@ -217,13 +228,31 @@ function ndFmtHasFiles(dt) {
   return !!dt && Array.from(dt.types || []).includes("Files");
 }
 
+// File.type is unreliable for .md (many OSes report "" rather than
+// text/markdown), so the extension is checked first and the MIME type only
+// as a fallback — same two ways the button's <input accept> already matches.
+function ndFmtIsMarkdownFile(file) {
+  const name = (file.name || "").toLowerCase();
+  if (name.endsWith(".md") || name.endsWith(".markdown") || name.endsWith(".txt")) return true;
+  return file.type === "text/markdown" || file.type === "text/plain";
+}
+
 async function ndFmtHandleDroppedFiles(ta, fileList) {
-  const files = Array.from(fileList || []).filter((f) => f.type && f.type.startsWith("image/"));
-  if (!files.length) return;
+  const files = Array.from(fileList || []);
+  // A dropped .md/.txt file means "import", not "insert" — same one-file,
+  // replace-with-confirm behavior as the toolbar button. Takes priority over
+  // any images in the same drop rather than mixing both actions from one drop.
+  const mdFile = files.find(ndFmtIsMarkdownFile);
+  if (mdFile) {
+    await ndFmtLoadMdFileIntoTextarea(ta, mdFile);
+    return;
+  }
+  const images = files.filter((f) => f.type && f.type.startsWith("image/"));
+  if (!images.length) return;
   let pos = ta.selectionStart;
-  for (const file of files) {
+  for (const file of images) {
     pos = await ndFmtUploadOneImage(ta, file, pos, pos, "");
-    if (files.length > 1) {
+    if (images.length > 1) {
       ta.value = ta.value.slice(0, pos) + "\n" + ta.value.slice(pos);
       pos += 1;
       ta.selectionStart = ta.selectionEnd = pos;
@@ -278,7 +307,7 @@ function ndFmtBuildToolbar(ta) {
   const imgBtn = ndFmtButton("🖼", "Insert image", () => ndFmtInsertImage(ta, imgBtn));
   bar.appendChild(imgBtn);
 
-  const importBtn = ndFmtButton("📄 Import .md", "Import a .md file into this field", () => ndFmtImportMdFile(ta, importBtn));
+  const importBtn = ndFmtButton("📄 Import .md", "Import a .md file into this field (or drag and drop one onto the text area)", () => ndFmtImportMdFile(ta, importBtn));
   importBtn.classList.add("fmt-btn-labeled");
   bar.appendChild(importBtn);
 

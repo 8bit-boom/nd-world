@@ -1,8 +1,11 @@
-"""Tests for the shared formatting toolbar's "Import .md file" button:
-loads a local markdown file's text straight into any data-fmt textarea
-(EntityNote content, Entity body/"Notes", World rules, etc.) via
-FileReader — no server round trip, unlike the image-insert button covered
-in test_inline_images.py."""
+"""Tests for the shared formatting toolbar's "Import .md file" button and its
+drag-and-drop equivalent: both load a local markdown file's text straight
+into any data-fmt textarea (EntityNote content, Entity body/"Notes", World
+rules, etc.) via FileReader — no server round trip, unlike the image-insert
+button/drop path covered in test_inline_images.py. The actual FileReader/
+confirm/replace logic lives in one shared helper, ndFmtLoadMdFileIntoTextarea,
+called by both the button's file-picker handler (ndFmtImportMdFile) and the
+drop handler (ndFmtHandleDroppedFiles)."""
 
 
 def _fn_body(js, name, next_name="function "):
@@ -20,33 +23,12 @@ def test_toolbar_js_has_import_md_button(client, seed):
     assert "ndFmtImportMdFile(ta, importBtn)" in js
 
 
-def test_import_md_reads_file_client_side_only_no_upload(client, seed):
-    r = client.get("/static/js/text-format-toolbar.js")
-    fn = _fn_body(r.text, "ndFmtImportMdFile")
-    assert "new FileReader()" in fn
-    assert "readAsText(file)" in fn
-    assert "fetch(" not in fn  # unlike ndFmtInsertImage, nothing is ever uploaded
-
-
-def test_import_md_accepts_markdown_and_text_files(client, seed):
+def test_import_md_button_accepts_markdown_and_text_files(client, seed):
     r = client.get("/static/js/text-format-toolbar.js")
     fn = _fn_body(r.text, "ndFmtImportMdFile")
     assert ".md" in fn
     assert "text/markdown" in fn
     assert "text/plain" in fn
-
-
-def test_import_md_confirms_before_replacing_nonempty_content(client, seed):
-    r = client.get("/static/js/text-format-toolbar.js")
-    fn = _fn_body(r.text, "ndFmtImportMdFile")
-    assert "confirm(" in fn
-    assert "ta.value.trim()" in fn
-
-
-def test_import_md_dispatches_input_event_so_listeners_stay_in_sync(client, seed):
-    r = client.get("/static/js/text-format-toolbar.js")
-    fn = _fn_body(r.text, "ndFmtImportMdFile")
-    assert 'new Event("input", { bubbles: true })' in fn
 
 
 def test_import_md_button_reaches_every_data_fmt_textarea_via_shared_toolbar(client, seed):
@@ -58,6 +40,57 @@ def test_import_md_button_reaches_every_data_fmt_textarea_via_shared_toolbar(cli
     r = client.get("/static/js/text-format-toolbar.js")
     fn = _fn_body(r.text, "ndFmtBuildToolbar")
     assert "ndFmtImportMdFile(ta, importBtn)" in fn
+
+
+def test_load_md_file_reads_file_client_side_only_no_upload(client, seed):
+    r = client.get("/static/js/text-format-toolbar.js")
+    fn = _fn_body(r.text, "ndFmtLoadMdFileIntoTextarea")
+    assert "new FileReader()" in fn
+    assert "readAsText(file)" in fn
+    assert "fetch(" not in fn  # unlike ndFmtUploadOneImage, nothing is ever uploaded
+
+
+def test_load_md_file_confirms_before_replacing_nonempty_content(client, seed):
+    r = client.get("/static/js/text-format-toolbar.js")
+    fn = _fn_body(r.text, "ndFmtLoadMdFileIntoTextarea")
+    assert "confirm(" in fn
+    assert "ta.value.trim()" in fn
+
+
+def test_load_md_file_dispatches_input_event_so_listeners_stay_in_sync(client, seed):
+    r = client.get("/static/js/text-format-toolbar.js")
+    fn = _fn_body(r.text, "ndFmtLoadMdFileIntoTextarea")
+    assert 'new Event("input", { bubbles: true })' in fn
+
+
+def test_import_md_button_shares_the_load_helper_with_drag_and_drop(client, seed):
+    r = client.get("/static/js/text-format-toolbar.js")
+    js = r.text
+    btn_fn = _fn_body(js, "ndFmtImportMdFile")
+    assert "ndFmtLoadMdFileIntoTextarea(" in btn_fn
+    drop_fn = _fn_body(js, "ndFmtHandleDroppedFiles")
+    assert "ndFmtLoadMdFileIntoTextarea(" in drop_fn
+
+
+def test_dropped_markdown_file_is_recognized_by_extension_or_mime_type(client, seed):
+    r = client.get("/static/js/text-format-toolbar.js")
+    fn = _fn_body(r.text, "ndFmtIsMarkdownFile")
+    assert '.endsWith(".md")' in fn
+    assert '.endsWith(".markdown")' in fn
+    assert '.endsWith(".txt")' in fn
+    assert '"text/markdown"' in fn
+    assert '"text/plain"' in fn
+
+
+def test_dropped_markdown_file_takes_priority_over_images_in_the_same_drop(client, seed):
+    """A drop mixing a .md file with image files is ambiguous (import vs.
+    insert) — the handler must resolve it by treating the whole drop as an
+    import and returning before it ever reaches the image-upload branch,
+    rather than doing both."""
+    r = client.get("/static/js/text-format-toolbar.js")
+    fn = _fn_body(r.text, "ndFmtHandleDroppedFiles")
+    md_branch = fn[fn.index("mdFile"):]
+    assert "return" in md_branch.split("ndFmtUploadOneImage")[0]
 
 
 def test_entity_note_textarea_has_data_fmt(client, seed):
