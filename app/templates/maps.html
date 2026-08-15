@@ -28,12 +28,16 @@
         {% if m.markers %} · {{ m.markers }} marker{{ 's' if m.markers != 1 }}{% endif %}
       </div>
       {% if _is_gm %}
-      <form action="/maps/{{ m.slug }}/upload" method="post" enctype="multipart/form-data" class="map-upload-form">
-        <label class="map-upload-label" title="Upload map image">
-          📎 {% if m.image_url %}Replace{% else %}Upload{% endif %} image
-          <input type="file" name="file" accept="image/*" onchange="this.form.submit()" style="display:none"/>
-        </label>
-      </form>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <form action="/maps/{{ m.slug }}/upload" method="post" enctype="multipart/form-data" class="map-upload-form">
+          <label class="map-upload-label" title="Upload map image">
+            📎 {% if m.image_url %}Replace{% else %}Upload{% endif %} image
+            <input type="file" name="file" accept="image/*" onchange="this.form.submit()" style="display:none"/>
+          </label>
+        </form>
+        <button type="button" class="btn-gallery-pick" style="padding:.25rem .55rem;font-size:.75rem"
+                onclick="ndMapGalleryPick(this)">🖼 Gallery</button>
+      </div>
       <div style="display:flex;gap:.4rem;margin-top:.4rem">
         <form action="/maps/{{ m.slug }}/rename" method="post" style="display:inline">
           <input type="hidden" name="name" value="">
@@ -91,12 +95,16 @@
       </div>
       {% if _is_gm %}
       {% if not s.is_html %}
-      <form action="/maps/schematic/{{ s.slug }}/upload" method="post" enctype="multipart/form-data" class="map-upload-form">
-        <label class="map-upload-label" title="Upload background image">
-          📎 {% if s.image_url %}Replace{% else %}Upload{% endif %} background
-          <input type="file" name="file" accept="image/*" onchange="this.form.submit()" style="display:none"/>
-        </label>
-      </form>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
+        <form action="/maps/schematic/{{ s.slug }}/upload" method="post" enctype="multipart/form-data" class="map-upload-form">
+          <label class="map-upload-label" title="Upload background image">
+            📎 {% if s.image_url %}Replace{% else %}Upload{% endif %} background
+            <input type="file" name="file" accept="image/*" onchange="this.form.submit()" style="display:none"/>
+          </label>
+        </form>
+        <button type="button" class="btn-gallery-pick" style="padding:.25rem .55rem;font-size:.75rem"
+                onclick="ndMapGalleryPick(this)">🖼 Gallery</button>
+      </div>
       {% endif %}
       <div style="display:flex;gap:.4rem;margin-top:.4rem">
         <form action="/maps/schematic/{{ s.slug }}/rename" method="post" style="display:inline">
@@ -116,7 +124,32 @@
   {% endfor %}
 </div>
 
+{% if _is_gm %}
+{% include "_gallery_picker_modal.html" %}
+{% endif %}
 <script>
+// Shared by both the map-image and schematic-background "🖼 Gallery"
+// buttons above — each button sits next to its own upload <form>/<label>,
+// so walking up to the shared wrapper div finds the right one regardless
+// of which card triggered the picker. Setting .files via JS doesn't fire
+// a native change event, so (unlike the click-to-browse and drag&drop
+// paths) this submits the form explicitly.
+function ndMapGalleryPick(btn) {
+  const form = btn.parentElement.querySelector('.map-upload-form');
+  const input = form.querySelector('input[type=file]');
+  ndGalleryPickerOpen(async (entry) => {
+    try {
+      const file = await ndGalleryUrlToFile(entry.url);
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      input.files = dt.files;
+      form.submit();
+    } catch (e) {
+      alert('Could not use that image: ' + e.message);
+    }
+  });
+}
+
 // Reads the map/schematic name from a data-name attribute rather than
 // embedding it via |tojson inside this onclick string — tojson wraps its
 // output in literal double quotes, which terminates a double-quoted HTML

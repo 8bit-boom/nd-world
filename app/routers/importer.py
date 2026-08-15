@@ -359,7 +359,7 @@ def convert_world_images(db: Session, world: World, target_format: str, quality:
             album.image_urls_json = json.dumps(new_urls)
 
     for slug, name in _world_maps(world.id):
-        for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif"):
+        for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif", ".avif"):
             map_path = _UPLOADS_DIR / "maps" / (slug + ext)
             if map_path.is_file():
                 new_path = convert_image_to(map_path, target_format, quality)

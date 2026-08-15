@@ -30,7 +30,7 @@ router = APIRouter()
 UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
 # Raster only — see the matching note on main.py's ALLOWED_EXTS. SVG is excluded
 # because it can carry <script> and portrait upload is a player-reachable path.
-ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

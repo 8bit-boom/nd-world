@@ -1,0 +1,16 @@
+<!-- Shared "Choose from Gallery" modal — see static/js/gallery-picker.js for
+     the JS driving it. Include this once per page (not once per trigger
+     button); every button on the page can share it via
+     ndGalleryPickerOpen(onPick). Requires `gallery_images` in the template
+     context (app/gallery.py's all_world_image_urls). -->
+<script>window.NDGalleryImages = {{ gallery_images | tojson }};</script>
+<script src="/static/js/gallery-picker.js"></script>
+<div id="gallery-picker-overlay" class="gallery-picker-overlay" onclick="ndGalleryPickerClose()">
+  <div class="gallery-picker-box" onclick="event.stopPropagation()">
+    <div class="gallery-picker-head">
+      <span>Choose an image</span>
+      <button type="button" class="gallery-picker-close" onclick="ndGalleryPickerClose()" aria-label="Close">✕</button>
+    </div>
+    <div id="gallery-picker-grid" class="gallery-picker-grid"></div>
+  </div>
+</div>

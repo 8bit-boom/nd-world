@@ -37,7 +37,7 @@ _HOME_LINK_TYPES = {"entity", "session", "quest", "board", "schematic", "map", "
 # _upload_portrait) — routers can't import these from main.py without a
 # circular import.
 _UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
-_ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+_ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"}
 
 
 def _upload_home_background(file: Optional[UploadFile], db: Session) -> Optional[str]:

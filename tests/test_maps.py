@@ -205,6 +205,56 @@ def test_map_upload_succeeds_for_own_world_map(client, seed):
     assert (UPLOADS_DIR / "maps" / "own-map.png").exists()
 
 
+def _real_avif_bytes(color=(30, 160, 210), size=(16, 16)):
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, format="AVIF", quality=80)
+    return buf.getvalue()
+
+
+def test_map_upload_accepts_avif(client, seed):
+    """AVIF wasn't originally in ALLOWED_EXTS as an accepted upload *source*
+    (only ever a conversion target) — but the "Choose from Gallery" picker
+    (app/templates/_gallery_picker_modal.html) re-uploads an existing
+    gallery image through this exact route, and that image is very often
+    already AVIF (the default upload-conversion format). This route never
+    re-encodes (copy_upload_bounded only), so accepting AVIF here is a pure
+    byte-copy, same as any other format."""
+    from app.main import UPLOADS_DIR
+    _make_map(seed.world_a.id, "avif-map")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(
+        "/maps/avif-map/upload",
+        files={"file": ("map.avif", io.BytesIO(_real_avif_bytes()), "image/avif")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert (UPLOADS_DIR / "maps" / "avif-map.avif").exists()
+
+    # And the maps list page must actually *find* it (a separate hardcoded
+    # extension-lookup list from ALLOWED_EXTS, used for display) — not just
+    # accept the upload and then silently show no background.
+    r = client.get("/maps")
+    assert r.status_code == 200
+    assert 'src="/uploads/maps/avif-map.avif"' in r.text
+
+
+def test_map_new_accepts_avif_background(client, seed):
+    from app.main import UPLOADS_DIR
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(
+        "/maps/new",
+        data={"name": "Avif Town", "width": 1000, "height": 1000},
+        files={"image_file": ("bg.avif", io.BytesIO(_real_avif_bytes()), "image/avif")},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    slug = r.headers["location"].rsplit("/", 1)[-1]
+    assert (UPLOADS_DIR / "maps" / f"{slug}.avif").exists()
+
+
 def test_map_overlay_404s_for_nonexistent_slug(client, seed):
     """Same missing-existence-check hazard as map_upload_image, for the
     overlay save route: previously any slug got (and kept) a MapOverlay row
@@ -592,6 +642,51 @@ def test_embed_image_404s_for_nonexistent_schematic(client, seed):
     r = client.post("/maps/schematic/does-not-exist/embed-image",
                      files={"file": ("small.png", small_png, "image/png")})
     assert r.status_code == 404
+
+
+def test_embed_image_accepts_avif(client, seed):
+    """Same rationale as test_map_upload_accepts_avif: the schematic
+    editor's "Choose from Gallery" trigger for the embed-image tool doesn't
+    actually re-upload (it references the picked URL directly, see
+    pickImageFromGallery() in schematic.html), but the *background*-replace
+    gallery pick (maps.html) does re-upload through this route's sibling
+    /upload endpoint — both must accept an AVIF source."""
+    from app.main import UPLOADS_DIR
+    db = SessionLocal()
+    try:
+        s = _make_schematic(db, seed.world_a.id, "embed-avif")
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(f"/maps/schematic/{s.slug}/embed-image",
+                     files={"file": ("pic.avif", io.BytesIO(_real_avif_bytes()), "image/avif")})
+    assert r.status_code == 200
+    url = r.json()["url"]
+    assert url.endswith(".avif")
+    fname = url.rsplit("/", 1)[-1]
+    assert (UPLOADS_DIR / "schematics" / "embeds" / fname).exists()
+
+
+def test_schematic_background_upload_accepts_avif(client, seed):
+    from app.main import UPLOADS_DIR
+    db = SessionLocal()
+    try:
+        s = _make_schematic(db, seed.world_a.id, "bg-avif")
+        slug = s.slug
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/maps/schematic/{slug}/upload",
+                     files={"file": ("bg.avif", io.BytesIO(_real_avif_bytes()), "image/avif")})
+    assert r.status_code == 200
+    assert (UPLOADS_DIR / "schematics" / f"{slug}.avif").exists()
+
+    # Discovered correctly by the maps list page too (separate hardcoded
+    # extension-lookup list from ALLOWED_EXTS).
+    r = client.get("/maps")
+    assert r.status_code == 200
+    assert f'src="/uploads/schematics/{slug}.avif"' in r.text
 
 
 def test_schematic_editor_uploads_image_instead_of_embedding_base64(client, seed):

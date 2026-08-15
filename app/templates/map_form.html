@@ -22,6 +22,9 @@
         <div id="map-img-dropzone-label">Choose a file, or drag&nbsp;&amp;&nbsp;drop an image here</div>
         <input type="file" name="image_file" accept="image/*" style="margin-top:.4rem"/>
       </div>
+      <div style="margin-top:.4rem">
+        <button type="button" class="btn-gallery-pick" onclick="ndGalleryPickerOpen(onMapGalleryPick)">🖼 Choose from Gallery</button>
+      </div>
     </div>
     <div class="form-actions">
       <button type="submit" class="btn-primary">Create Map</button>
@@ -29,6 +32,7 @@
     </div>
   </form>
 </div>
+{% include "_gallery_picker_modal.html" %}
 <script>
 // Same drag&drop pattern as the schematic editor's background drop zone
 // (app/templates/schematic.html) and the maps-list upload labels — here it
@@ -62,5 +66,24 @@
     if (input.files[0]) label.textContent = input.files[0].name;
   });
 })();
+
+// A gallery pick just needs to land in the same file input the form
+// already submits (image_file) — turning the picked URL back into a File
+// (ndGalleryUrlToFile, static/js/gallery-picker.js) means POST /maps/new
+// doesn't need to know or care whether the bytes came from a fresh upload
+// or an existing gallery image.
+async function onMapGalleryPick(entry) {
+  const input = document.querySelector('#map-img-dropzone input[type=file]');
+  const label = document.getElementById('map-img-dropzone-label');
+  try {
+    const file = await ndGalleryUrlToFile(entry.url);
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    label.textContent = entry.name;
+  } catch (e) {
+    alert('Could not use that image: ' + e.message);
+  }
+}
 </script>
 {% endblock %}

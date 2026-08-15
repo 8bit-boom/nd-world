@@ -23,6 +23,7 @@
     <button class="tb"    id="t-pencil"  onclick="setTool('pencil')"  title="Pencil · K">✏</button>
     <button class="tb"    id="t-measure" onclick="setTool('measure')" title="Measure · M">📏</button>
     <button class="tb"    id="t-image"   onclick="pickImage()"        title="Embed image · I">🖼</button>
+    <button class="tb"    id="t-image-gallery" onclick="pickImageFromGallery()" title="Embed image from Gallery">🖼📁</button>
     <button class="tb"    id="t-stamp"   onclick="toggleStamps()"     title="Symbols · S">🏠</button>
     <button id="oct-btn" onclick="octilinear=!octilinear;this.classList.toggle('active',octilinear);this.classList.toggle('on',octilinear)" title="Octilinear snap (O)" style="font-size:.75rem;padding:2px 6px" class="tb">⬡ 45°</button>
     <div class="tb-sep"></div>
@@ -398,6 +399,8 @@
 
 <!-- Hidden file input for image upload -->
 <input type="file" id="img-input" accept="image/*" style="display:none" onchange="onImageFile(event)"/>
+
+{% include "_gallery_picker_modal.html" %}
 
 <style>
 #sch-wrap { display:flex; flex-direction:column; height:calc(100vh - 56px); user-select:none; }
@@ -1662,15 +1665,25 @@ function addMeasure(a, b) {
 function pickImage() {
   document.getElementById('img-input').click();
 }
+// Shared by onImageFile (fresh upload) and pickImageFromGallery (existing
+// gallery image, already hosted — no upload needed) below: places a new
+// image element on the canvas, sized down to fit within `max` px on its
+// longest side, using the picked file/URL's natural pixel dimensions.
+function _placeImageElement(url, naturalW, naturalH) {
+  const max = 600;
+  let w = naturalW, h = naturalH;
+  if (w > max || h > max) { const r = max/Math.max(w,h); w*=r; h*=r; }
+  const el = {id:uid(), type:'image', x:CW/2 - w/2, y:CH/2 - h/2, w, h,
+    href:url, opacity:1, fill:'none', stroke:'none', strokeW:0, label:'', dash:'', layer:activeLayer};
+  elements.push(el); selIds.clear(); selIds.add(el.id); redraw(); snapshot();
+}
 function onImageFile(e) {
   const f = e.target.files[0]; if (!f) return;
   e.target.value = '';
   const objectUrl = URL.createObjectURL(f);
   const img = new Image();
   img.onload = async () => {
-    const max = 600;
-    let w = img.width, h = img.height;
-    if (w > max || h > max) { const r = max/Math.max(w,h); w*=r; h*=r; }
+    const naturalW = img.width, naturalH = img.height;
     URL.revokeObjectURL(objectUrl);
     const fd = new FormData();
     fd.append('file', f);
@@ -1684,12 +1697,21 @@ function onImageFile(e) {
       }
       url = (await res.json()).url;
     } catch (err) { alert('Image upload failed — network error'); return; }
-    const el = {id:uid(), type:'image', x:CW/2 - w/2, y:CH/2 - h/2, w, h,
-      href:url, opacity:1, fill:'none', stroke:'none', strokeW:0, label:'', dash:'', layer:activeLayer};
-    elements.push(el); selIds.clear(); selIds.add(el.id); redraw(); snapshot();
+    _placeImageElement(url, naturalW, naturalH);
   };
   img.onerror = () => URL.revokeObjectURL(objectUrl);
   img.src = objectUrl;
+}
+// A gallery image is already hosted at its picked URL — embedding it just
+// means adding a canvas element that references that URL directly, no
+// upload round trip (and no duplicate copy on disk) needed.
+function pickImageFromGallery() {
+  ndGalleryPickerOpen((entry) => {
+    const img = new Image();
+    img.onload = () => _placeImageElement(entry.url, img.width, img.height);
+    img.onerror = () => alert('Could not load that image.');
+    img.src = entry.url;
+  });
 }
 
 // ── Background drag & drop ──────────────────────────────────────────────────

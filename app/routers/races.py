@@ -27,7 +27,7 @@ from ..uploads import copy_upload_bounded, unique_upload_filename
 router = APIRouter()
 
 UPLOADS_DIR = Path(__import__("os").environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
-ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"}
 
 _RACES_DIR = Path(__file__).parent.parent / "races"
 _RACE_TIERS = ["standard", "advanced", "exceptional"]

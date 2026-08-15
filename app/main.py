@@ -109,8 +109,13 @@ SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 # Raster only, deliberately. SVG is excluded because it can contain <script> and is
 # served from this app's own origin — imaging.convert_image can't neutralize it either
 # (re-encoding a vector would rasterize it). Every raster format here is auto-converted
-# to AVIF/WebP on upload, so dropping SVG costs little.
-ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+# to AVIF/WebP on upload, so dropping SVG costs little. AVIF is included as an accepted
+# *source* format too (not just a conversion target) — Pillow already decodes it
+# everywhere else in this app (imaging.py's _CONVERTIBLE_EXTS, the bulk converter), and
+# the "Choose from Gallery" picker (static/js/gallery-picker.js) re-uploads an existing
+# gallery image through these same routes, which is very often already AVIF (the
+# default conversion target) by the time it's picked.
+ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"}
 ENTITY_COLS = {"kind", "subtype", "folder", "name", "tags", "summary", "body", "image_url", "world_id"}
 
 def _refresh_settings_overrides(db: Session = None):
@@ -535,7 +540,7 @@ def world_delete(world_id: int, db: Session = Depends(get_db)):
         jf = _MAPS_DIR / f"{slug}.json"
         if jf.exists():
             jf.unlink()
-        for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif"):
+        for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif", ".avif"):
             img = UPLOADS_DIR / "maps" / (slug + ext)
             if img.exists():
                 img.unlink()
@@ -974,7 +979,7 @@ def home(request: Request, db: Session = Depends(get_db), active_world: str = Co
     _sm = BASE_DIR / "static" / "maps"
     for s, d in list(_iter_world_maps(world.id))[:6]:
         img = None
-        for ext in (".webp", ".jpg", ".jpeg", ".png"):
+        for ext in (".webp", ".jpg", ".jpeg", ".png", ".avif"):
             if (_sm / (s + ext)).exists(): img = f"/static/maps/{s}{ext}"; break
             if (UPLOADS_DIR / "maps" / (s + ext)).exists(): img = f"/uploads/maps/{s}{ext}"; break
         preview_maps.append({"slug": s, "name": d.get("name", s), "image_url": img})
@@ -1064,7 +1069,7 @@ def maps_page(request: Request, db: Session = Depends(get_db), active_world: str
     for slug, data in _iter_world_maps(world.id):
         image_url = None
         # Check static/maps first (bundled), then uploads/maps (user-uploaded)
-        for ext in (".webp", ".jpg", ".jpeg", ".png"):
+        for ext in (".webp", ".jpg", ".jpeg", ".png", ".avif"):
             if (_STATIC_MAPS / (slug + ext)).exists():
                 image_url = f"/static/maps/{slug}{ext}"
                 break
@@ -1080,9 +1085,16 @@ def maps_page(request: Request, db: Session = Depends(get_db), active_world: str
             "image_url": image_url,
         })
     schematics = db.query(Schematic).filter(Schematic.world_id == world.id).order_by(Schematic.name).all()
+    # /maps is player-safe (read-only) unlike the entity form's picker, which
+    # only GM-only routes ever reach — all_world_image_urls() returns every
+    # image used anywhere in the world, including on GM-only/hidden entities,
+    # so this must stay empty for a non-GM viewer rather than leaking that
+    # list into the page.
+    is_gm = bool(request.state.user and request.state.user.is_gm)
+    gallery_images = _gallery_module.all_world_image_urls(db, world) if is_gm else []
     return templates.TemplateResponse("maps.html", {
         "request": request, "world": world, "worlds": worlds, "maps": maps,
-        "schematics": schematics,
+        "schematics": schematics, "gallery_images": gallery_images,
     })
 
 @app.get("/maps/new", response_class=HTMLResponse)
@@ -1091,7 +1103,10 @@ def map_new_form(request: Request, db: Session = Depends(get_db), active_world: 
     if not world:
         return RedirectResponse("/worlds")
     worlds = _visible_worlds(request, db)
-    return templates.TemplateResponse("map_form.html", {"request": request, "world": world, "worlds": worlds})
+    gallery_images = _gallery_module.all_world_image_urls(db, world)
+    return templates.TemplateResponse("map_form.html", {
+        "request": request, "world": world, "worlds": worlds, "gallery_images": gallery_images,
+    })
 
 @app.post("/maps/new")
 async def map_new(
@@ -1164,7 +1179,7 @@ def map_delete(slug: str, request: Request, db: Session = Depends(get_db), activ
         raise HTTPException(404)
     jf.unlink()
     maps_upload_dir = UPLOADS_DIR / "maps"
-    for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif"):
+    for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif", ".avif"):
         img = maps_upload_dir / (slug + ext)
         if img.exists():
             img.unlink()
@@ -1199,7 +1214,7 @@ async def map_upload_image(slug: str, request: Request, file: UploadFile = File(
         raise HTTPException(400, "Unsupported file type")
     maps_upload_dir = UPLOADS_DIR / "maps"
     maps_upload_dir.mkdir(parents=True, exist_ok=True)
-    for old_ext in (".webp", ".jpg", ".jpeg", ".png", ".gif"):
+    for old_ext in (".webp", ".jpg", ".jpeg", ".png", ".gif", ".avif"):
         old = maps_upload_dir / (slug + old_ext)
         if old.exists():
             old.unlink()
@@ -1250,7 +1265,7 @@ def map_viewer(slug: str, request: Request, db: Session = Depends(get_db), activ
         raise HTTPException(404)
     _sm = BASE_DIR / "static" / "maps"
     image_url = None
-    for ext in (".webp", ".jpg", ".jpeg", ".png"):
+    for ext in (".webp", ".jpg", ".jpeg", ".png", ".avif"):
         if (_sm / (slug + ext)).exists(): image_url = f"/static/maps/{slug}{ext}"; break
         if (UPLOADS_DIR / "maps" / (slug + ext)).exists(): image_url = f"/uploads/maps/{slug}{ext}"; break
     worlds = _visible_worlds(request, db)
@@ -1468,6 +1483,7 @@ def schematic_view(slug: str, request: Request, db: Session = Depends(get_db), a
         if ordered and 0 <= linked_combat.active_idx < len(ordered):
             active_combatant_id = ordered[linked_combat.active_idx].get("id")
         combat_round = linked_combat.round_num
+    gallery_images = _gallery_module.all_world_image_urls(db, world) if world else []
     return templates.TemplateResponse("schematic.html", {
         "request": request, "world": world, "worlds": worlds,
         "schematic": s, "elements_json": json.dumps(elements),
@@ -1483,6 +1499,7 @@ def schematic_view(slug: str, request: Request, db: Session = Depends(get_db), a
         "linked_combat": linked_combat,
         "combat_active_combatant_id": active_combatant_id,
         "combat_round": combat_round,
+        "gallery_images": gallery_images,
     })
 
 @app.post("/maps/schematic/{slug}/link-combat")
@@ -1946,7 +1963,7 @@ async def schematic_upload_image(slug: str, file: UploadFile = File(...), db: Se
         raise HTTPException(400, "Unsupported file type")
     sch_dir = UPLOADS_DIR / "schematics"
     sch_dir.mkdir(parents=True, exist_ok=True)
-    for old_ext in (".webp", ".jpg", ".jpeg", ".png", ".gif"):
+    for old_ext in (".webp", ".jpg", ".jpeg", ".png", ".gif", ".avif"):
         old = sch_dir / (slug + old_ext)
         if old.exists(): old.unlink()
     dest = sch_dir / (slug + ext)
@@ -2011,7 +2028,7 @@ def _delete_schematic_files(s: Schematic) -> None:
         if html_path.exists():
             html_path.unlink()
     elif s.image_url:
-        for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif"):
+        for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif", ".avif"):
             img = UPLOADS_DIR / "schematics" / (s.slug + ext)
             if img.exists():
                 img.unlink()

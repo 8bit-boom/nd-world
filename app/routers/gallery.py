@@ -30,7 +30,7 @@ _MAX_IMAGES_PER_ALBUM = 500
 # this router, so the reverse would be circular (same rationale as every
 # other router's local _UPLOADS_DIR copy, e.g. home_content.py).
 _UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
-_ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+_ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"}
 
 
 def _upload_album_image(file: Optional[UploadFile], db: Session) -> Optional[str]:
