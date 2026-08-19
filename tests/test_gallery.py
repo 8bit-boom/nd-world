@@ -475,3 +475,88 @@ def test_all_world_image_urls_includes_images_in_nested_sub_albums(client, seed)
     finally:
         db.close()
     assert "/uploads/nested-only.png" in [e["url"] for e in entries]
+
+
+# ── Permanent image delete ──────────────────────────────────────────────────
+# The album ✕ (galleryRemoveFromAlbum) only unlinks an image from that one
+# album — it stays on disk and (if it's in other albums too) still shows up
+# there. These cover the actual file-delete endpoint, which the reported bug
+# was that no such thing existed for images sitting unused in a sub-album.
+
+def test_delete_unused_album_image_removes_file_and_album_entry(client, seed):
+    from app.main import UPLOADS_DIR
+    album_id = _make_album(seed.world_a.id, "Album")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post(f"/images/albums/{album_id}/upload", files=_png_file())
+    url = _album_urls(album_id)[0]
+    fname = url.rsplit("/", 1)[-1]
+    path = UPLOADS_DIR / "gallery" / fname
+    assert path.exists()
+
+    r = client.post("/images/delete", json={"url": url})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert not path.exists()
+    assert _album_urls(album_id) == []
+
+
+def test_delete_removes_image_from_every_album_that_references_it(client, seed):
+    album1 = _make_album(seed.world_a.id, "One", urls=["/uploads/shared-orphan.png"])
+    album2 = _make_album(seed.world_a.id, "Two", urls=["/uploads/shared-orphan.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/images/delete", json={"url": "/uploads/shared-orphan.png"})
+    assert r.status_code == 200
+    assert _album_urls(album1) == []
+    assert _album_urls(album2) == []
+
+
+def test_delete_blocked_while_image_still_in_use(client, seed):
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=seed.world_a.id, kind="character", name="In Use NPC",
+                    image_url="/uploads/in-use.png")
+        db.add(e)
+        db.commit()
+    finally:
+        db.close()
+    album_id = _make_album(seed.world_a.id, "Album", urls=["/uploads/in-use.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.post("/images/delete", json={"url": "/uploads/in-use.png"})
+    assert r.status_code == 400
+    assert "In Use NPC" in r.json()["detail"]
+    assert _album_urls(album_id) == ["/uploads/in-use.png"]  # untouched — nothing removed on a blocked delete
+
+
+def test_delete_is_world_scoped(client, seed):
+    _make_album(seed.world_b.id, "World B Album", urls=["/uploads/foreign-orphan.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/images/delete", json={"url": "/uploads/foreign-orphan.png"})
+    assert r.status_code == 404
+
+
+def test_delete_unknown_image_404s(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/images/delete", json={"url": "/uploads/never-existed.png"})
+    assert r.status_code == 404
+
+
+def test_album_page_has_delete_button(client, seed):
+    album_id = _make_album(seed.world_a.id, "Album", urls=["/uploads/pic.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/images/albums/{album_id}")
+    assert "galleryDeleteImage(" in r.text
+    assert "/images/delete" in r.text
+
+
+def test_image_delete_is_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/images/delete", json={"url": "/uploads/whatever.png"})
+    assert r.status_code == 403

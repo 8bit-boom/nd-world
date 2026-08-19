@@ -56,6 +56,22 @@ def _load_urls(album: ImageAlbum) -> list:
     return urls if isinstance(urls, list) else []
 
 
+def _resolve_upload_path(url: str) -> Optional[Path]:
+    """Map an /uploads/... URL back to the file it names, or None if it
+    isn't a local upload or would escape UPLOADS_DIR — same containment
+    check as importer.py's _resolve_upload_path / main.py's serve_upload."""
+    if not isinstance(url, str) or not url.startswith("/uploads/"):
+        return None
+    root = _UPLOADS_DIR.resolve()
+    try:
+        path = (root / url[len("/uploads/"):]).resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not path.is_relative_to(root) or not path.is_file():
+        return None
+    return path
+
+
 def _album_or_404(db: Session, world_id: int, album_id: int) -> ImageAlbum:
     album = db.get(ImageAlbum, album_id)
     if not album or album.world_id != world_id:
@@ -117,6 +133,55 @@ def images_gallery(request: Request, db: Session = Depends(get_db), active_world
         "images": images, "albums": albums, "album_urls": album_urls,
         "sub_album_counts": sub_album_counts,
     })
+
+
+@router.post("/images/delete")
+async def image_delete(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Permanently delete an image file. Only allowed while the image is
+    unused (no entity/PC references it) — the common case for something
+    sitting in an album that was uploaded but never attached to anything,
+    which is otherwise unreachable to clean up (the album's ✕ only unlinks
+    it from the album, it doesn't remove the file). An image still in use
+    must be detached from whatever references it first, so deleting here
+    can never leave a dangling <img> in an entity's body/notes."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid payload")
+    url = payload.get("url")
+    if not isinstance(url, str) or not url:
+        raise HTTPException(400, "Missing url")
+
+    discovered = {e["url"]: e for e in discover_world_images(db, world)}
+    entry = discovered.get(url)
+    if entry and entry["uses"]:
+        places = ", ".join(u["label"] for u in entry["uses"][:3])
+        if len(entry["uses"]) > 3:
+            places += f", and {len(entry['uses']) - 3} more"
+        raise HTTPException(400, f"Still used in {len(entry['uses'])} place(s) ({places}) — remove it there first.")
+
+    # Authorization boundary: only an image already reachable from this
+    # world (in one of its albums, since discover_world_images found
+    # nothing above) may be deleted — a GM can't blindly delete an
+    # arbitrary uploaded file by URL.
+    albums = db.query(ImageAlbum).filter(ImageAlbum.world_id == world.id).all()
+    found_in_album = False
+    for album in albums:
+        urls = _load_urls(album)
+        if url in urls:
+            found_in_album = True
+            album.image_urls_json = json.dumps([u for u in urls if u != url])
+    if not found_in_album and not entry:
+        raise HTTPException(404, "Image not found")
+    db.commit()
+
+    path = _resolve_upload_path(url)
+    if path:
+        path.unlink()
+
+    return {"ok": True}
 
 
 @router.post("/images/albums/new")
