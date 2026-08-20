@@ -284,7 +284,7 @@ def test_index_thumbnail_has_expand_button_that_opens_lightbox_without_toggling_
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/images")
     assert "gallery-img-expand" in r.text
-    assert "openLightbox(this.nextElementSibling.src, this.nextElementSibling.alt)" in r.text
+    assert "closest('.gallery-img-cell').querySelector('img')" in r.text
     assert "event.preventDefault(); event.stopPropagation();" in r.text  # doesn't also toggle the select checkbox
 
 
@@ -560,3 +560,183 @@ def test_image_delete_is_gm_only(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.post("/images/delete", json={"url": "/uploads/whatever.png"})
     assert r.status_code == 403
+
+
+# ── Spotlight (send an image to players as a popup) ─────────────────────────
+
+def _world(world_id):
+    db = SessionLocal()
+    try:
+        return db.get(World, world_id)
+    finally:
+        db.close()
+
+
+def test_gm_send_spotlight_then_player_poll_sees_it(client, seed):
+    _make_album(seed.world_a.id, "Album", urls=["/uploads/scene.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/images/spotlight", json={"url": "/uploads/scene.png"})
+    assert r.status_code == 200
+    assert _world(seed.world_a.id).spotlight_image_url == "/uploads/scene.png"
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/api/spotlight")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["image_url"] == "/uploads/scene.png"
+    assert data["version"] >= 1
+
+
+def test_gm_clear_spotlight(client, seed):
+    _make_album(seed.world_a.id, "Album", urls=["/uploads/scene.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/images/spotlight", json={"url": "/uploads/scene.png"})
+    version_after_send = _world(seed.world_a.id).spotlight_version
+
+    r = client.post("/images/spotlight/clear")
+    assert r.status_code == 200
+    w = _world(seed.world_a.id)
+    assert w.spotlight_image_url is None
+    assert w.spotlight_version == version_after_send + 1  # bumped so pollers actively close it
+
+
+def test_send_spotlight_rejects_url_not_in_this_world(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/images/spotlight", json={"url": "/uploads/never-existed.png"})
+    assert r.status_code == 404
+    assert _world(seed.world_a.id).spotlight_image_url is None
+
+
+def test_spotlight_is_world_scoped(client, seed):
+    _make_album(seed.world_a.id, "Album A", urls=["/uploads/scene-a.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/images/spotlight", json={"url": "/uploads/scene-a.png"})
+
+    client.cookies.set("active_world", seed.world_b.slug)
+    r = client.get("/api/spotlight")
+    assert r.json()["image_url"] is None
+
+
+def test_spotlight_version_unchanged_across_repeated_polls(client, seed):
+    """The player poller only re-opens the popup when the version changes —
+    two polls with nothing new sent in between must return the same
+    version."""
+    _make_album(seed.world_a.id, "Album", urls=["/uploads/scene.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/images/spotlight", json={"url": "/uploads/scene.png"})
+
+    v1 = client.get("/api/spotlight").json()["version"]
+    v2 = client.get("/api/spotlight").json()["version"]
+    assert v1 == v2
+
+
+def test_send_spotlight_is_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/images/spotlight", json={"url": "/uploads/whatever.png"})
+    assert r.status_code == 403
+    r = client.post("/images/spotlight/clear")
+    assert r.status_code == 403
+
+
+def test_api_spotlight_is_player_safe(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/api/spotlight")
+    assert r.status_code == 200
+
+
+def test_api_spotlight_default_shape_before_anything_sent(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/api/spotlight")
+    assert r.status_code == 200
+    assert r.json() == {"version": 0, "image_url": None, "label": None}
+
+
+def test_album_page_has_send_to_players_button(client, seed):
+    album_id = _make_album(seed.world_a.id, "Album", urls=["/uploads/pic.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/images/albums/{album_id}")
+    assert "ndSendSpotlight(" in r.text
+    assert "/images/spotlight" in r.text
+
+
+def test_all_images_page_has_send_to_players_button(client, seed):
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=seed.world_a.id, kind="character", name="A", image_url="/uploads/shared.png")
+        db.add(e)
+        db.commit()
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/images")
+    assert "ndSendSpotlight(" in r.text
+    assert "gallery-img-send" in r.text
+
+
+def test_gm_only_status_banner_shown_when_spotlight_active(client, seed):
+    _make_album(seed.world_a.id, "Album", urls=["/uploads/scene.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/images/spotlight", json={"url": "/uploads/scene.png"})
+
+    r = client.get("/images")
+    assert "spotlight-banner" in r.text
+    assert "ndSpotlightClear()" in r.text
+
+
+def test_sender_suppresses_own_reopened_popup(client, seed):
+    """Regression test found via live Playwright verification: the sender's
+    own page also runs the poller (so they see their broadcast as
+    confirmation), and ndSendSpotlight/ndSpotlightClear reload the page to
+    refresh the status banner afterward — without suppression, that reload's
+    first poll tick would immediately reopen the just-sent popup on top of
+    the banner's own Stop button, making it unclickable. Both action
+    functions must arm the one-shot suppression before reloading, and
+    base.html's poller must consume it."""
+    album_id = _make_album(seed.world_a.id, "Album", urls=["/uploads/scene.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.get(f"/images/albums/{album_id}")
+    assert "ndSpotlightSuppressNextPoll();" in r.text  # from ndSendSpotlight
+
+    r = client.get("/")
+    assert "function ndSpotlightSuppressNextPoll()" in r.text
+    assert "nd_spotlight_suppress_once" in r.text
+    assert "if (suppressOnce) { suppressOnce = false; return; }" in r.text
+    assert "ndSpotlightSuppressNextPoll();\n  location.reload();" in r.text  # from ndSpotlightClear
+
+
+def test_status_banner_hidden_from_players_and_when_inactive(client, seed):
+    _make_album(seed.world_a.id, "Album", urls=["/uploads/scene.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.get("/images")
+    assert "spotlight-banner" not in r.text  # nothing active yet
+
+    client.post("/images/spotlight", json={"url": "/uploads/scene.png"})
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/images")
+    assert "spotlight-banner" not in r.text  # GM-only, even while active
+
+
+def test_base_html_poller_present_for_gm_and_player(client, seed):
+    for email, password in ((seed.gm.email, GM_PASSWORD), (seed.player_a.email, PLAYER_PASSWORD)):
+        login(client, email, password)
+        client.cookies.set("active_world", seed.world_a.slug)
+        r = client.get("/")
+        assert "pollSpotlight" in r.text
+        assert "openLightbox(data.image_url, data.label" in r.text

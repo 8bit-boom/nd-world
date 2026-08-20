@@ -1079,6 +1079,11 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
 .import-form input[type=file] { font-size: .78rem; color: var(--text-dim); flex: 1; min-width: 0; }
 .import-notice { background: #0f3; color: #000; padding: .6rem 1rem; border-radius: 3px; margin-bottom: 1rem; font-size: .9rem; font-weight: 600; }
 
+.spotlight-banner { background: var(--bg2); border-bottom: 1px solid var(--neon); color: var(--text); padding: .5rem 1.2rem; font-size: .85rem; display: flex; align-items: center; gap: .6rem; }
+.spotlight-banner strong { color: var(--neon); }
+.spotlight-banner button { background: none; border: 1px solid var(--border); color: var(--text-dim); font-size: .78rem; padding: .2rem .6rem; border-radius: 3px; cursor: pointer; margin-left: auto; }
+.spotlight-banner button:hover { border-color: var(--neon); color: var(--neon); }
+
 /* ── Image upload ── */
 .current-image {
   display: flex;

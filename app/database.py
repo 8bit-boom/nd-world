@@ -385,6 +385,12 @@ def _migrate():
                 # customized" and falls back to the shipped Tools/AI Tools
                 # grouping (see World.nav_menus_json's docstring).
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN nav_menus_json TEXT"))
+            if "spotlight_image_url" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN spotlight_image_url VARCHAR(512)"))
+            if "spotlight_label" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN spotlight_label VARCHAR(256)"))
+            if "spotlight_version" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN spotlight_version INTEGER DEFAULT 0"))
         # random_tables table — some installs ended up with a table that
         # doesn't match the model: missing columns (e.g. slug), and/or
         # world_id incorrectly marked NOT NULL (the model allows NULL there

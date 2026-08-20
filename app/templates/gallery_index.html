@@ -62,8 +62,12 @@
       {% for img in images %}
       <label class="gallery-img-cell">
         <input type="checkbox" class="gallery-img-check" value="{{ img.url }}"/>
-        <button type="button" class="gallery-img-expand" title="View full size"
-                onclick="event.preventDefault(); event.stopPropagation(); openLightbox(this.nextElementSibling.src, this.nextElementSibling.alt);">🔍</button>
+        <div class="gallery-img-actions">
+          <button type="button" class="gallery-img-send" title="Send to players"
+                  onclick="event.preventDefault(); event.stopPropagation(); ndSendSpotlight('{{ img.url|e }}');">📤</button>
+          <button type="button" class="gallery-img-expand" title="View full size"
+                  onclick="event.preventDefault(); event.stopPropagation(); const img = this.closest('.gallery-img-cell').querySelector('img'); openLightbox(img.src, img.alt);">🔍</button>
+        </div>
         <img src="{{ img.url }}" alt="{{ img.name }}" loading="lazy"/>
         <div class="gallery-img-name" title="{{ img.name }}">{{ img.name }}</div>
         <div class="gallery-img-uses" title="{{ img.uses | map(attribute='label') | join(', ') }}">
@@ -92,13 +96,27 @@
 .gallery-img-cell:has(.gallery-img-check:checked) { border-color:var(--neon); box-shadow:0 0 0 1px var(--neon); }
 .gallery-img-cell img { width:100%; height:130px; object-fit:contain; display:block; background:var(--bg); }
 .gallery-img-check { position:absolute; top:.3rem; left:.3rem; z-index:1; width:16px; height:16px; }
-.gallery-img-expand { position:absolute; top:.2rem; right:.2rem; z-index:1; background:rgba(0,0,0,.6); border:1px solid var(--border); color:#fff; width:22px; height:22px; border-radius:50%; cursor:pointer; line-height:1; font-size:.75rem; padding:0; }
-.gallery-img-expand:hover { border-color:var(--neon); color:var(--neon); }
+.gallery-img-actions { position:absolute; top:.2rem; right:.2rem; z-index:1; display:flex; gap:.25rem; }
+.gallery-img-send, .gallery-img-expand { background:rgba(0,0,0,.6); border:1px solid var(--border); color:#fff; width:22px; height:22px; border-radius:50%; cursor:pointer; line-height:1; font-size:.75rem; padding:0; }
+.gallery-img-send:hover, .gallery-img-expand:hover { border-color:var(--neon); color:var(--neon); }
 .gallery-img-name { padding:.3rem .4rem 0; font-size:.72rem; color:var(--text); background:var(--bg2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .gallery-img-uses { padding:0 .4rem .3rem; font-size:.65rem; color:var(--text-dim); background:var(--bg2); }
 </style>
 
 <script>
+async function ndSendSpotlight(url) {
+  const res = await fetch('/images/spotlight', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
+  });
+  if (res.ok) {
+    ndSpotlightSuppressNextPoll();
+    location.reload();
+  } else {
+    const body = await res.json().catch(() => ({}));
+    alert(body.detail || 'Failed to send image.');
+  }
+}
+
 function galleryToggleAll() {
   const boxes = document.querySelectorAll('.gallery-img-check');
   const anyUnchecked = Array.from(boxes).some(b => !b.checked);

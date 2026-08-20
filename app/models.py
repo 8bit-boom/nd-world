@@ -103,6 +103,18 @@ class World(Base):
     # app/routers/nav_menus_admin.py for the sanitizer and the Navigation
     # tab on /settings for the editor.
     nav_menus_json = Column(Text, nullable=True)
+    # The image currently pushed to players as a full-screen popup
+    # ("Spotlight"), or NULL when nothing is being shown. Set by
+    # POST /images/spotlight, cleared by POST /images/spotlight/clear (both
+    # GM-only, see app/routers/gallery.py). spotlight_version increments on
+    # every set/clear so the player-side poller (GET /api/spotlight,
+    # app/templates/base.html) can tell "new broadcast" apart from "still
+    # the same one, don't re-open the popup" — same distinct-change-
+    # detection idea as the schematic view.json poller, just via a version
+    # counter instead of a content diff.
+    spotlight_image_url = Column(String(512), nullable=True)
+    spotlight_label = Column(String(256), nullable=True)
+    spotlight_version = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     entities = relationship("Entity", back_populates="world", cascade="all, delete-orphan")

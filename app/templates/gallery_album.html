@@ -69,6 +69,7 @@
     <div class="gallery-album-img-cell">
       <img src="{{ url }}" alt="{{ image_names.get(url, url) }}" loading="lazy" onclick="openLightbox(this.src, this.alt)"/>
       <div class="gallery-img-actions">
+        <button type="button" class="gallery-icon-btn" title="Send to players" onclick="ndSendSpotlight('{{ url|e }}')">📤</button>
         <button type="button" class="gallery-icon-btn" title="Delete image permanently" onclick="galleryDeleteImage('{{ url|e }}')">🗑</button>
         <button type="button" class="gallery-icon-btn" title="Remove from album" onclick="galleryRemoveFromAlbum('{{ url|e }}')">✕</button>
       </div>
@@ -105,6 +106,19 @@
 </style>
 
 <script>
+async function ndSendSpotlight(url) {
+  const res = await fetch('/images/spotlight', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
+  });
+  if (res.ok) {
+    ndSpotlightSuppressNextPoll();
+    location.reload();
+  } else {
+    const body = await res.json().catch(() => ({}));
+    alert(body.detail || 'Failed to send image.');
+  }
+}
+
 async function galleryRemoveFromAlbum(url) {
   if (!confirm('Remove this image from the album?')) return;
   const res = await fetch(`/images/albums/{{ album.id }}/remove`, {

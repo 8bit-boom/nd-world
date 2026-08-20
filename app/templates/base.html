@@ -13,7 +13,7 @@
       } catch(e) {}
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=15"/>
+  <link rel="stylesheet" href="/static/style.css?v=16"/>
   {% if world %}<style>:root { --neon: {{ world.accent }} !important; }</style>{% endif %}
 </head>
 <body>
@@ -91,6 +91,12 @@
     {% endif %}
   </div>
 </nav>
+{% if world and world.spotlight_image_url and request.state.user and request.state.user.is_gm %}
+<div class="spotlight-banner">
+  📤 Showing players: <strong>{{ world.spotlight_label or 'an image' }}</strong>
+  <button type="button" onclick="ndSpotlightClear()">Stop</button>
+</div>
+{% endif %}
 <script>
 (function(){
   var dot=document.getElementById('ai-dot');
@@ -195,6 +201,64 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeLightbox();
 });
 </script>
+
+{% if world and request.state.user %}
+<script>
+// GM "Spotlight" — send an album image to every player as a popup
+// (app/routers/gallery.py's POST /images/spotlight). Reuses the lightbox
+// above rather than a separate modal. Polls the same way the schematic
+// battle-map player view does (setInterval + fetch a small JSON endpoint,
+// see app/templates/schematic_view.html) — the only other GM-action-
+// becomes-visible-to-players mechanism in this app.
+(function() {
+  let seenVersion = null;  // null (not the current server value) so the
+                            // first poll after any page load treats an
+                            // already-active spotlight as "new" and shows
+                            // it — landing on a page mid-broadcast re-syncs
+                            // you to what's currently being shown.
+  // A GM who just sent/cleared the spotlight reloads their own page
+  // (ndSendSpotlight/ndSpotlightClear below) to refresh the status banner —
+  // without this, their own poller would immediately reopen the very
+  // popup they just sent on top of that banner's Stop button. Set right
+  // before that reload, consumed (and cleared) by the very first poll
+  // tick after it, so it only ever suppresses that one reload's own echo —
+  // every other page load still re-syncs to the current broadcast.
+  let suppressOnce = false;
+  try {
+    if (sessionStorage.getItem('nd_spotlight_suppress_once') === '1') {
+      suppressOnce = true;
+      sessionStorage.removeItem('nd_spotlight_suppress_once');
+    }
+  } catch (e) {}
+
+  async function pollSpotlight() {
+    let data;
+    try {
+      const res = await fetch('/api/spotlight');
+      if (!res.ok) return;
+      data = await res.json();
+    } catch (e) { return; }
+    if (data.version === seenVersion) return;
+    seenVersion = data.version;
+    if (suppressOnce) { suppressOnce = false; return; }
+    if (data.image_url) openLightbox(data.image_url, data.label || '');
+    else closeLightbox();
+  }
+  pollSpotlight();
+  setInterval(pollSpotlight, 4000);
+})();
+
+function ndSpotlightSuppressNextPoll() {
+  try { sessionStorage.setItem('nd_spotlight_suppress_once', '1'); } catch (e) {}
+}
+
+async function ndSpotlightClear() {
+  await fetch('/images/spotlight/clear', { method: 'POST' });
+  ndSpotlightSuppressNextPoll();
+  location.reload();
+}
+</script>
+{% endif %}
 
 <script>
 // Hover-preview popup: hover any /entity/{id} link long enough (Settings >

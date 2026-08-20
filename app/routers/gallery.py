@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx
-from ..gallery import discover_world_images, image_display_name
+from ..gallery import all_world_image_urls, discover_world_images, image_display_name
 from ..imaging import convert_image
 from ..models import ImageAlbum, World
 from ..templating import templates
@@ -181,6 +181,47 @@ async def image_delete(request: Request, db: Session = Depends(get_db), active_w
     if path:
         path.unlink()
 
+    return {"ok": True}
+
+
+@router.post("/images/spotlight")
+async def image_spotlight_send(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Push an image to every player's screen as a full-screen popup — see
+    GET /api/spotlight (main.py) for the player-side poller that picks this
+    up, and app/templates/base.html for where it's shown (reuses the
+    existing lightbox). GM-only (not in main.py's _is_player_safe)."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid payload")
+    url = payload.get("url")
+    if not isinstance(url, str) or not url:
+        raise HTTPException(400, "Missing url")
+
+    # Same authorization boundary as image_delete: only an image already
+    # reachable from this world may be broadcast to its players.
+    entries = {e["url"]: e["name"] for e in all_world_image_urls(db, world)}
+    if url not in entries:
+        raise HTTPException(404, "Image not found")
+
+    world.spotlight_image_url = url
+    world.spotlight_label = entries[url][:256]
+    world.spotlight_version = (world.spotlight_version or 0) + 1
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/images/spotlight/clear")
+def image_spotlight_clear(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    world.spotlight_image_url = None
+    world.spotlight_label = None
+    world.spotlight_version = (world.spotlight_version or 0) + 1
+    db.commit()
     return {"ok": True}
 
 

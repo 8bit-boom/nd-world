@@ -182,6 +182,8 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if path == "/api/hover-preview/config":
         return True
+    if path == "/api/spotlight":
+        return True
     if re.match(r"^/api/entity/\d+/preview$", path):
         return True
     if path == "/account" or path.startswith("/account/"):
@@ -2863,6 +2865,24 @@ def hover_preview_config(db: Session = Depends(get_db)):
         "hide_delay_ms": settings.hover_preview_hide_delay_ms if settings.hover_preview_hide_delay_ms is not None else 400,
         "width_px": settings.hover_preview_width_px or 340,
         "max_height_px": settings.hover_preview_max_height_px or 420,
+    }
+
+
+@app.get("/api/spotlight")
+def api_spotlight(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Polled every 4s by base.html's spotlight poller (both GM and
+    players) — reports the image, if any, a GM has pushed to the world via
+    POST /images/spotlight (app/routers/gallery.py). world=None (no active
+    world, or the active_world cookie points at a world this user can't
+    access — get_world_ctx already filters that out silently) is not an
+    error here since this is polled unconditionally on every page."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        return {"version": 0, "image_url": None, "label": None}
+    return {
+        "version": world.spotlight_version or 0,
+        "image_url": world.spotlight_image_url,
+        "label": world.spotlight_label,
     }
 
 
