@@ -68,6 +68,29 @@ def test_toolbar_js_drag_drop_ignores_non_file_drags(client, seed):
     assert "ndFmtHasFiles(e.dataTransfer)" in js
 
 
+def test_toolbar_js_page_wide_drop_guard_excludes_file_inputs(client, seed):
+    """Regression test: the document-wide dragover/drop handler that stops a
+    stray drop from navigating the browser away used to preventDefault() on
+    *any* file-carrying drop, anywhere on the page — including a drop landing
+    directly on a plain <input type=file> like the entity form's portrait
+    upload (app/templates/entities/form.html), which has no drag-drop
+    handling of its own and relied entirely on the browser's native
+    "populate the input" default action. That default action only applies if
+    nothing in the event's propagation chain called preventDefault(), so the
+    blanket handler silently broke dragging an image onto that input."""
+    r = client.get("/static/js/text-format-toolbar.js")
+    assert r.status_code == 200
+    js = r.text
+    assert "function ndFmtIsFileInputTarget(target)" in js
+    guard_start = js.index("function ndFmtIsFileInputTarget")
+    guard_end = js.index("\n}", guard_start)
+    assert 'input[type="file"]' in js[guard_start:guard_end]
+    listeners_start = js.index('document.addEventListener("dragover"', guard_end)
+    listeners_end = js.index("\n\n", listeners_start)
+    listeners_body = js[listeners_start:listeners_end]
+    assert "!ndFmtIsFileInputTarget(e.target)" in listeners_body
+
+
 def test_toolbar_js_shares_upload_logic_between_click_and_drop(client, seed):
     r = client.get("/static/js/text-format-toolbar.js")
     js = r.text

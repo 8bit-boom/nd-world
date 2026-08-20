@@ -281,8 +281,22 @@ function ndFmtSetupDragDrop(ta) {
 // image file directly, discarding whatever the GM was mid-editing. Only
 // suppressed for actual file drags — the app's own text/plain drag payloads
 // (nav-tab-onto-Quick-Links, etc.) are untouched.
-document.addEventListener("dragover", (e) => { if (ndFmtHasFiles(e.dataTransfer)) e.preventDefault(); });
-document.addEventListener("drop", (e) => { if (ndFmtHasFiles(e.dataTransfer)) e.preventDefault(); });
+//
+// Excludes drops landing directly on a plain <input type=file> (e.g. the
+// entity form's portrait upload, which has no drag-drop handling of its
+// own) — the browser's native default action for that case is exactly
+// "populate the input with the dropped file", not a page navigation, so
+// preventDefault() here would silently break it instead of protecting
+// anything.
+function ndFmtIsFileInputTarget(target) {
+  return !!(target && target.closest && target.closest('input[type="file"]'));
+}
+document.addEventListener("dragover", (e) => {
+  if (ndFmtHasFiles(e.dataTransfer) && !ndFmtIsFileInputTarget(e.target)) e.preventDefault();
+});
+document.addEventListener("drop", (e) => {
+  if (ndFmtHasFiles(e.dataTransfer) && !ndFmtIsFileInputTarget(e.target)) e.preventDefault();
+});
 
 function ndFmtButton(label, title, onClick) {
   const b = document.createElement("button");
