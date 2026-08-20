@@ -52,7 +52,10 @@
         <label for="remove-image" style="margin:0;font-size:.82rem">Remove current image</label>
       </div>
       {% endif %}
-      <input type="file" name="image_file" accept="image/*" id="img-file" onchange="previewImage(this)"/>
+      <div class="form-dropzone" data-dropzone>
+        <div class="form-dropzone-hint">Choose a file, or drag &amp; drop an image here</div>
+        <input type="file" name="image_file" accept="image/*" id="img-file" onchange="previewImage(this)"/>
+      </div>
       <div style="margin-top:.4rem">
         <button type="button" class="btn-gallery-pick" onclick="openGalleryPicker()">🖼 Choose from Gallery</button>
       </div>
@@ -564,4 +567,5 @@ async function aiGenerate() {
 }
 </script>
 <script src="/static/js/text-format-toolbar.js"></script>
+<script src="/static/js/file-dropzone.js"></script>
 {% endblock %}

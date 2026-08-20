@@ -15,7 +15,9 @@
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem">
       <label for="json-input" style="font-size:.82rem;color:var(--text-dim)">JSON content</label>
-      <input type="file" id="file-input" accept=".json,application/json" style="font-size:.78rem;max-width:220px"/>
+      <div class="form-dropzone" data-dropzone style="padding:.15rem .4rem" title="Drag &amp; drop a JSON file here">
+        <input type="file" id="file-input" accept=".json,application/json" style="font-size:.78rem;max-width:220px"/>
+      </div>
     </div>
     <textarea id="json-input" rows="14" placeholder="Paste JSON here, or choose a file above…"
       style="width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.6rem .75rem;font-family:monospace;font-size:.8rem;border-radius:3px"></textarea>
@@ -46,7 +48,10 @@
       instead.
     </p>
     <label for="bulk-json-files-input" style="font-size:.82rem;color:var(--text-dim);display:block;margin-bottom:.3rem">JSON files</label>
-    <input type="file" id="bulk-json-files-input" multiple accept=".json,application/json" style="font-size:.8rem"/>
+    <div class="form-dropzone" data-dropzone>
+      <div class="form-dropzone-hint">Choose files, or drag &amp; drop JSON files here</div>
+      <input type="file" id="bulk-json-files-input" multiple accept=".json,application/json" style="font-size:.8rem"/>
+    </div>
     <div id="bulk-json-preview" style="margin-top:1rem"></div>
     <div style="display:flex;gap:.75rem;margin-top:.9rem;align-items:center">
       <button type="button" id="bulk-json-import-btn" disabled style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer;opacity:.5">Import All</button>
@@ -63,7 +68,10 @@
       "— Skip —" aren't uploaded at all.
     </p>
     <label for="img-files-input" style="font-size:.82rem;color:var(--text-dim);display:block;margin-bottom:.3rem">Image files</label>
-    <input type="file" id="img-files-input" multiple accept="image/jpeg,image/png,image/gif,image/webp" style="font-size:.8rem"/>
+    <div class="form-dropzone" data-dropzone>
+      <div class="form-dropzone-hint">Choose files, or drag &amp; drop image files here</div>
+      <input type="file" id="img-files-input" multiple accept="image/jpeg,image/png,image/gif,image/webp" style="font-size:.8rem"/>
+    </div>
     <div id="img-preview-table" style="margin-top:1rem"></div>
     <div style="display:flex;gap:.75rem;margin-top:.9rem;align-items:center">
       <button type="button" id="img-import-btn" disabled style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer;opacity:.5">Import Images</button>
@@ -142,6 +150,7 @@
 }
 </style>
 
+<script src="/static/js/file-dropzone.js"></script>
 <script>
 // JSON.parse(...|tojson) — not |safe — so a schematic/map name can't break
 // out of this inline script (tojson HTML-escapes <, >, &; |safe on a raw

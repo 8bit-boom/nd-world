@@ -32,7 +32,10 @@
       <div class="current-image"><img src="{{ edit_world.home_background_url }}" alt=""/></div>
       <label class="ql-vis-toggle"><input type="checkbox" name="remove_home_background" value="1"/> Remove current background</label>
       {% endif %}
-      <input type="file" name="home_background_file" accept="image/*"/>
+      <div class="form-dropzone" data-dropzone>
+        <div class="form-dropzone-hint">Choose a file, or drag &amp; drop an image here</div>
+        <input type="file" name="home_background_file" accept="image/*"/>
+      </div>
       <input type="text" name="home_background_url" placeholder="…or paste an image URL instead" style="margin-top:.4rem"/>
     </div>
 
@@ -117,6 +120,7 @@
 .ql-btn-add-link:hover { border-color:var(--neon); color:var(--neon); }
 </style>
 
+<script src="/static/js/file-dropzone.js"></script>
 <script>
 const KINDS = {{ kinds | tojson }};
 const LINK_TYPES = [

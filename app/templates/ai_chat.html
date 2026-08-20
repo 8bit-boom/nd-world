@@ -1128,8 +1128,10 @@
         <div class="ig-section-body">
           <div>
             <label class="ig-label">Source image</label>
+            <div class="form-dropzone" data-dropzone style="border:none;padding:0" title="Drag &amp; drop an image here">
             <input type="file" id="ig-init-file" accept="image/*" onchange="igPreviewInit(this)"
                    style="width:100%;font-size:.78rem;color:var(--text-dim);background:var(--bg3);border:1px dashed var(--border);border-radius:4px;padding:.3rem .5rem;cursor:pointer;box-sizing:border-box">
+            </div>
           </div>
           <div class="ig-i2i-preview" id="ig-i2i-preview" style="display:none">
             <img id="ig-init-img" src="" alt="source">
@@ -1153,8 +1155,10 @@
         <div class="ig-section-body">
           <div>
             <label class="ig-label">Control image</label>
+            <div class="form-dropzone" data-dropzone style="border:none;padding:0" title="Drag &amp; drop an image here">
             <input type="file" id="ig-cn-file" accept="image/*" onchange="igPreviewCN(this)"
                    style="width:100%;font-size:.78rem;color:var(--text-dim);background:var(--bg3);border:1px dashed var(--border);border-radius:4px;padding:.3rem .5rem;cursor:pointer;box-sizing:border-box">
+            </div>
           </div>
           <div id="ig-cn-preview" style="display:none">
             <img id="ig-cn-img" src="" alt="control" style="max-width:100%;max-height:120px;border-radius:4px;border:1px solid var(--border);display:block;margin:.3rem 0">
@@ -1193,8 +1197,10 @@
         <div class="ig-section-body">
           <div>
             <label class="ig-label">Reference image</label>
+            <div class="form-dropzone" data-dropzone style="border:none;padding:0" title="Drag &amp; drop an image here">
             <input type="file" id="ig-ipa-file" accept="image/*" onchange="igPreviewIPA(this)"
                    style="width:100%;font-size:.78rem;color:var(--text-dim);background:var(--bg3);border:1px dashed var(--border);border-radius:4px;padding:.3rem .5rem;cursor:pointer;box-sizing:border-box">
+            </div>
           </div>
           <div id="ig-ipa-preview" style="display:none">
             <img id="ig-ipa-img" src="" alt="reference" style="max-width:100%;max-height:120px;border-radius:4px;border:1px solid var(--border);display:block;margin:.3rem 0">
@@ -1395,6 +1401,7 @@
   </div>
 </div>
 
+<script src="/static/js/file-dropzone.js"></script>
 <script>
 const WORLD_SYSTEM = {{ world_system | tojson }};
 let history = [];

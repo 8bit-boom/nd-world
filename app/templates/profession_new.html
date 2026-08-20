@@ -25,7 +25,10 @@
 
   <div class="form-field">
     <label>Image (optional)</label>
-    <input type="file" name="file" accept="image/*" onchange="previewImg(this)"/>
+    <div class="form-dropzone" data-dropzone>
+      <div class="form-dropzone-hint">Choose a file, or drag &amp; drop an image here</div>
+      <input type="file" name="file" accept="image/*" onchange="previewImg(this)"/>
+    </div>
     <div id="preview-wrap" style="display:none;margin-top:.5rem">
       <img id="preview-img" src="" alt="preview"
            style="max-width:240px;max-height:200px;border:1px solid var(--border);border-radius:4px;object-fit:cover"/>
@@ -68,6 +71,7 @@
 }
 </style>
 
+<script src="/static/js/file-dropzone.js"></script>
 <script>
 function previewImg(input) {
   const file = input.files[0];

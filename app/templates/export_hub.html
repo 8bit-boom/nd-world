@@ -61,7 +61,9 @@
     <h2>⬆ Import World JSON</h2>
     <p>Upload a previously exported "World JSON" (single file) into <strong>{{ world.name }}</strong> — matching entities are updated, new ones are created.</p>
     <form action="/worlds/{{ world.id }}/import" method="post" enctype="multipart/form-data" class="import-form">
-      <input type="file" name="file" accept=".json" required/>
+      <div class="form-dropzone" data-dropzone style="padding:.3rem .6rem;flex:1;min-width:200px">
+        <input type="file" name="file" accept=".json" required/>
+      </div>
       <button type="submit" class="btn-save">Import</button>
     </form>
   </div>
@@ -74,4 +76,5 @@
 .export-option p { font-size: .82rem; color: var(--text-dim); margin: 0 0 .8rem; line-height: 1.5; }
 .export-tag { font-size: .68rem; font-weight: normal; color: var(--neon); border: 1px solid var(--neon); border-radius: 10px; padding: .1rem .5rem; }
 </style>
+<script src="/static/js/file-dropzone.js"></script>
 {% endblock %}

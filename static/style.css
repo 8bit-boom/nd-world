@@ -765,7 +765,9 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
 .map-upload-label { font-size: .75rem; color: var(--text-dim); cursor: pointer; border: 1px dashed var(--border); border-radius: 2px; padding: .25rem .5rem; display: inline-block; }
 .map-upload-label:hover, .map-upload-label.drag-over { border-color: var(--neon); color: var(--neon); }
 .map-upload-label.drag-over { background: rgba(0, 240, 255, 0.08); }
+.form-dropzone { border: 1px dashed var(--border); border-radius: 4px; padding: .8rem; text-align: center; }
 .form-dropzone.drag-over { border-color: var(--neon); background: rgba(0, 240, 255, 0.08); }
+.form-dropzone-hint { font-size: .82rem; color: var(--text-dim); margin-bottom: .4rem; }
 .rules-page { max-width: 860px; margin: 0 auto; padding: 1.5rem 1rem; }
 .rules-header { margin-bottom: 1.5rem; border-bottom: 1px solid var(--border); padding-bottom: .8rem; }
 .rules-body { line-height: 1.75; }
