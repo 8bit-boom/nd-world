@@ -322,6 +322,7 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages, system: EP_SYSTEM })
       });
+      if (!res.ok) throw new Error('Server error ' + res.status);
       bubble.parentElement.classList.remove('ai-thinking');
       bubble.innerHTML = '';
       let full = '';

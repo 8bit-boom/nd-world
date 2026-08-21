@@ -34,6 +34,11 @@
              style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_download_entities %}checked{% endif %}>
       <label for="players-download-entities" style="margin:0">Players can download entities as .md/.zip files</label>
     </div>
+    <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+      <input type="checkbox" id="players-ask-ai" name="players_can_ask_ai" value="1"
+             style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_ask_ai %}checked{% endif %}>
+      <label for="players-ask-ai" style="margin:0">Players can use the "Ask AI" panel on entity pages</label>
+    </div>
     <div class="form-actions">
       <button type="submit" class="btn-primary">Save changes</button>
       <a href="/worlds" class="btn-cancel">Cancel</a>

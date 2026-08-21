@@ -200,6 +200,13 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if path == "/api/chronicler/ask":
         return True
+    if path == "/api/ai/stream":
+        # Middleware only decides "reachable" — the handler (app/routers/ai.py)
+        # still gates a non-GM caller behind World.players_can_ask_ai, off by
+        # default. The dedicated GM "/ai" World Chat page is a GET route and
+        # stays off this allowlist entirely, so this only opens the shared
+        # streaming endpoint, not that page's GM-only quick-prompt toolkit.
+        return True
     if re.match(r"^/api/session-log/\d+/recap$", path):
         return True
     if method != "GET":
@@ -598,6 +605,7 @@ def world_edit_post(
     players_see_party: Optional[str] = Form(None),
     players_can_download_rules: Optional[str] = Form(None),
     players_can_download_entities: Optional[str] = Form(None),
+    players_can_ask_ai: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     w = db.get(World, world_id)
@@ -609,6 +617,7 @@ def world_edit_post(
     w.players_see_party = bool(players_see_party)
     w.players_can_download_rules = bool(players_can_download_rules)
     w.players_can_download_entities = bool(players_can_download_entities)
+    w.players_can_ask_ai = bool(players_can_ask_ai)
     db.commit()
     return RedirectResponse("/worlds", status_code=303)
 

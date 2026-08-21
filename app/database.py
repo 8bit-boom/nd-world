@@ -473,6 +473,8 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN players_can_download_rules BOOLEAN DEFAULT 0"))
             if "players_can_download_entities" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN players_can_download_entities BOOLEAN DEFAULT 0"))
+            if "players_can_ask_ai" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN players_can_ask_ai BOOLEAN DEFAULT 0"))
             if "rules_md" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN rules_md TEXT"))
             if "home_welcome_md" not in w_cols:

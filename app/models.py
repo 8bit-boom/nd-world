@@ -42,6 +42,11 @@ class World(Base):
     # at all; this only governs whether a visible entity can be extracted as
     # a file. Off by default.
     players_can_download_entities = Column(Boolean, default=False)
+    # Whether players may use the "Ask AI" panel on an entity's page (POST
+    # /api/ai/stream). Off by default — a GM must opt in per world. The
+    # dedicated GM "/ai" World Chat page/tools stay GM-only regardless of
+    # this toggle; it only governs the focused per-entity chat panel.
+    players_can_ask_ai = Column(Boolean, default=False)
     # Per-world rules text (Markdown) shown on the /rules page. NULL = fall back
     # to the bundled Neon & Dragons core_rules.md, for worlds actually running
     # N&D and any world created before this field existed.

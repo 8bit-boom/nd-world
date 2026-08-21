@@ -1,19 +1,52 @@
+import asyncio as _asyncio
 import json as _json
 import csv as _csv
 import logging
 import os as _os
 import ollama as _ollama
 import urllib.request as _urllib
-from fastapi import APIRouter, Request, Depends
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse as _SR
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from pathlib import Path as _Path
 from .. import ai as _ai
 from ..database import get_db
+from ..deps import get_world_ctx
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 _log = logging.getLogger("nd.ai.router")
+
+
+async def _with_heartbeat(agen, interval: float = 12.0):
+    """Interleave an async generator's items with periodic `None` pings so a
+    reverse proxy sitting in front of this app (e.g. Cloudflare, whose 524
+    "origin timeout" fires after ~100s with no bytes in flight) doesn't kill
+    the connection while a slow or cold-starting Ollama model is still
+    working on the first token."""
+    q: _asyncio.Queue = _asyncio.Queue()
+    _done = object()
+
+    async def _pump():
+        try:
+            async for item in agen:
+                await q.put(item)
+        finally:
+            await q.put(_done)
+
+    task = _asyncio.ensure_future(_pump())
+    try:
+        while True:
+            try:
+                item = await _asyncio.wait_for(q.get(), timeout=interval)
+            except _asyncio.TimeoutError:
+                yield None
+                continue
+            if item is _done:
+                break
+            yield item
+    finally:
+        task.cancel()
 
 
 class ChatMessage(BaseModel):
@@ -34,15 +67,33 @@ async def ai_chat(body: ChatBody):
 
 
 @router.post("/stream")
-async def ai_stream(body: ChatBody):
+async def ai_stream(
+    body: ChatBody,
+    request: Request,
+    db=Depends(get_db),
+    active_world: Optional[str] = Cookie(None),
+):
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        world, _ = get_world_ctx(request, db, active_world)
+        if not (world and world.players_can_ask_ai):
+            raise HTTPException(403)
+
     msgs = [{"role": m.role, "content": m.content} for m in body.messages]
     requested = body.model
     _log.info("stream requested model=%r msgs=%d", requested, len(body.messages))
 
-    async def _gen():
+    async def _chat():
         model = await _ai.resolve_model(requested)
         async for token in _ai.stream_chat(msgs, body.system, model):
-            yield f"data: {_json.dumps({'token': token})}\n\n"
+            yield token
+
+    async def _gen():
+        async for token in _with_heartbeat(_chat()):
+            if token is None:
+                yield ": keep-alive\n\n"
+            else:
+                yield f"data: {_json.dumps({'token': token})}\n\n"
         yield "data: [DONE]\n\n"
 
     return _SR(
