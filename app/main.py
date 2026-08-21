@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, Depends, Form, HTTPException, UploadFile, File, Cookie
+from fastapi import FastAPI, Request, Depends, Form, HTTPException, UploadFile, File, Cookie, Query
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -2940,9 +2940,22 @@ def entity_download(entity_id: int, request: Request, db: Session = Depends(get_
     )
 
 
+def _entities_zip(db: Session, entities, request: Request) -> io.BytesIO:
+    """Zip one .md file per entity (via _entity_to_markdown) — shared by the
+    per-kind bulk download and the "Download Selected" bulk-action-bar button
+    so both produce identically-shaped zips."""
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for e in entities:
+            fname = "".join(c if c.isalnum() or c in " -_" else "" for c in (e.name or "entity")) or "entity"
+            zf.writestr(f"{fname}-{e.id}.md", _entity_to_markdown(db, e, request))
+    buf.seek(0)
+    return buf
+
+
 @app.get("/kind/{kind}/download.zip")
 def kind_download(kind: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    import zipfile
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -2951,13 +2964,32 @@ def kind_download(kind: str, request: Request, db: Session = Depends(get_db), ac
         raise HTTPException(403)
     q = db.query(Entity).filter(Entity.world_id == world.id, Entity.kind == kind)
     entities = _filter_visible_entities(q, request).order_by(Entity.name).all()
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for e in entities:
-            fname = "".join(c if c.isalnum() or c in " -_" else "" for c in (e.name or "entity")) or "entity"
-            zf.writestr(f"{fname}-{e.id}.md", _entity_to_markdown(db, e, request))
-    buf.seek(0)
+    buf = _entities_zip(db, entities, request)
     filename = f"{world.slug}-{kind}.zip"
+    return StreamingResponse(
+        buf, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/kind/{kind}/download-selected.zip")
+def kind_download_selected(
+    kind: str, request: Request, db: Session = Depends(get_db),
+    active_world: str = Cookie(None), ids: list[int] = Query(default=[], alias="id"),
+):
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm) and not world.players_can_download_entities:
+        raise HTTPException(403)
+    q = db.query(Entity).filter(Entity.world_id == world.id, Entity.kind == kind, Entity.id.in_(ids))
+    # Same _filter_visible_entities pass as the bulk-kind download — a player
+    # can't smuggle a hidden entity's id into the query string to bypass
+    # visible_to_players, even with the download toggle on.
+    entities = _filter_visible_entities(q, request).order_by(Entity.name).all()
+    buf = _entities_zip(db, entities, request)
+    filename = f"{world.slug}-{kind}-selected.zip"
     return StreamingResponse(
         buf, media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},

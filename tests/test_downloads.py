@@ -213,6 +213,66 @@ def test_kind_download_empty_kind_returns_valid_empty_zip(client, seed):
     assert zf.namelist() == []
 
 
+# ── "Download Selected" (bulk-action-bar, a specific id list) ──────────────
+
+def test_kind_download_selected_gm_gets_only_the_ids_requested(client, seed):
+    id1 = _add_entity(seed.world_a.id, name="Alpha", kind="character", visible_to_players=True)
+    id2 = _add_entity(seed.world_a.id, name="Beta", kind="character", visible_to_players=True)
+    _add_entity(seed.world_a.id, name="Gamma", kind="character", visible_to_players=True)  # not selected
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/kind/character/download-selected.zip?id={id1}&id={id2}")
+    assert r.status_code == 200
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    names = zf.namelist()
+    assert any("Alpha" in n for n in names)
+    assert any("Beta" in n for n in names)
+    assert not any("Gamma" in n for n in names)
+    assert len(names) == 2
+
+
+def test_kind_download_selected_player_denied_by_default(client, seed):
+    eid = _add_entity(seed.world_a.id, name="Alpha", kind="character", visible_to_players=True)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/kind/character/download-selected.zip?id={eid}")
+    assert r.status_code == 403
+
+
+def test_kind_download_selected_player_cannot_smuggle_a_hidden_id(client, seed):
+    """The download toggle doesn't bypass visible_to_players — even if a
+    player puts a GM-only entity's id directly in the query string, it's
+    silently dropped rather than included in the zip."""
+    visible_id = _add_entity(seed.world_a.id, name="Visible", kind="character", visible_to_players=True)
+    hidden_id = _add_entity(seed.world_a.id, name="Hidden", kind="character", visible_to_players=False)
+    _set_world(seed.world_a.id, players_can_download_entities=True)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/kind/character/download-selected.zip?id={visible_id}&id={hidden_id}")
+    assert r.status_code == 200
+    names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
+    assert any("Visible" in n for n in names)
+    assert not any("Hidden" in n for n in names)
+
+
+def test_kind_download_selected_ignores_ids_from_another_world_or_kind(client, seed):
+    other_world_id = _add_entity(seed.world_b.id, name="OtherWorld", kind="character", visible_to_players=True)
+    other_kind_id = _add_entity(seed.world_a.id, name="OtherKind", kind="location", visible_to_players=True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/kind/character/download-selected.zip?id={other_world_id}&id={other_kind_id}")
+    assert r.status_code == 200
+    assert zipfile.ZipFile(io.BytesIO(r.content)).namelist() == []
+
+
+def test_kind_download_selected_no_ids_returns_valid_empty_zip(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/kind/character/download-selected.zip")
+    assert r.status_code == 200
+    assert zipfile.ZipFile(io.BytesIO(r.content)).namelist() == []
+
+
 # ── Export & Backup: Rules and Notes bundle ─────────────────────────────────
 # Unlike the three routes above, this one lives under /export, which is
 # GM-only end-to-end via _is_player_safe (see test_player_safe.py) — so there

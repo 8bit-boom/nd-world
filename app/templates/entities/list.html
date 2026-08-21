@@ -64,6 +64,7 @@
     <div id="bulk-action-bar" style="display:none">
       <button type="button" id="bulk-select-all-btn">☑ Select All</button>
       <span><span id="bulk-count">0</span> selected</span>
+      <button type="button" id="bulk-download-btn" disabled>⬇ Download Selected</button>
       <button type="button" id="bulk-delete-btn" disabled>🗑 Delete Selected</button>
     </div>
 
@@ -207,6 +208,12 @@
   padding:.3rem .7rem; font-size:.8rem; cursor:pointer;
 }
 #bulk-select-all-btn:hover { border-color:var(--neon); color:var(--neon); }
+#bulk-download-btn {
+  background:var(--bg3); color:var(--text-dim); border:1px solid var(--border); border-radius:3px;
+  padding:.3rem .7rem; font-size:.8rem; cursor:pointer;
+}
+#bulk-download-btn:hover:not(:disabled) { border-color:var(--neon); color:var(--neon); }
+#bulk-download-btn:disabled { opacity:.5; cursor:default; }
 .entity-card-wrap { position:relative; }
 .entity-card-wrap .card-cb {
   position:absolute; top:.5rem; left:.5rem; z-index:2; width:16px; height:16px; cursor:pointer;
@@ -462,6 +469,7 @@ function updateBulkBar() {
   const bar = document.getElementById('bulk-action-bar');
   bar.style.display = all.length ? 'flex' : 'none';
   document.getElementById('bulk-count').textContent = checked.length;
+  document.getElementById('bulk-download-btn').disabled = checked.length === 0;
   document.getElementById('bulk-delete-btn').disabled = checked.length === 0;
   const allSelected = all.length > 0 && checked.length === all.length;
   document.getElementById('bulk-select-all-btn').textContent = allSelected ? '☐ Deselect All' : '☑ Select All';
@@ -491,6 +499,14 @@ document.getElementById('bulk-select-all-btn').addEventListener('click', () => {
   const selectAll = checked.length !== all.length;
   all.forEach(cb => { cb.checked = selectAll; });
   updateBulkBar();
+});
+
+document.getElementById('bulk-download-btn').addEventListener('click', () => {
+  const checked = allRowCbs().filter(cb => cb.checked);
+  if (!checked.length) return;
+  let url = `/kind/${KIND}/download-selected.zip?` + checked.map(cb => `id=${encodeURIComponent(cb.dataset.id)}`).join('&');
+  if (WORLD_SLUG) url += `&w=${encodeURIComponent(WORLD_SLUG)}`;
+  window.location.href = url;
 });
 
 document.getElementById('bulk-delete-btn').addEventListener('click', async () => {
