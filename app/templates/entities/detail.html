@@ -192,6 +192,7 @@
     <summary>🤖 Ask AI about {{ entity.name }}</summary>
     <div class="ai-panel-body">
       <div class="ep-messages" id="ep-messages"></div>
+      <div class="ep-status-row"><span id="ep-stats"></span></div>
       <div class="ep-bar">
         <textarea id="ep-input" rows="1" placeholder="Ask about this entity… (Enter to send)" onkeydown="epKey(event)" oninput="epResize(this)"></textarea>
         <button id="ep-send" onclick="epSend()">Ask</button>
@@ -251,6 +252,7 @@
 .ai-panel .ai-msg--user .ai-bubble { background:var(--neon); color:#000; font-weight:500; }
 .ai-panel .ai-msg--assistant .ai-bubble { background:var(--bg2); border:1px solid var(--border); }
 .ai-panel .ai-thinking .ai-bubble { color:var(--text-dim); font-style:italic; border-style:dashed; }
+.ai-panel .ep-status-row { text-align:right; font-size:.7rem; min-height:1.1em; margin-bottom:.25rem; transition:color .3s; }
 .ai-panel .ep-bar { display:flex; gap:.5rem; align-items:flex-end; }
 .ai-panel .ep-bar textarea { flex:1; background:var(--bg3); border:1px solid var(--border); border-radius:5px; color:var(--text); padding:.4rem .65rem; font-size:.85rem; resize:none; font-family:inherit; line-height:1.5; max-height:100px; overflow-y:auto; }
 .ai-panel .ep-bar textarea:focus { outline:1px solid var(--neon); }
@@ -304,6 +306,7 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
   window.epSend = async function() {
     const inp = document.getElementById('ep-input');
     const btn = document.getElementById('ep-send');
+    const statsEl = document.getElementById('ep-stats');
     const text = inp.value.trim();
     if (!text || btn.disabled) return;
     inp.value = ''; epResize(inp);
@@ -311,6 +314,9 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
     epHistory.push({ role: 'user', content: text });
     btn.disabled = true;
     const bubble = epAdd('assistant', '…', true);
+    statsEl.textContent = '⏳ Connecting…';
+    statsEl.style.color = 'var(--text-dim)';
+    let statsTimer = null;
     try {
       const messages = [
         { role: 'user', content: 'Entity context:\n\n' + ENTITY_CTX },
@@ -320,12 +326,15 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
       const res = await fetch('/api/ai/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages, system: EP_SYSTEM })
+        body: JSON.stringify({ messages, system: EP_SYSTEM, surface: 'ask_ai' })
       });
       if (!res.ok) throw new Error('Server error ' + res.status);
       bubble.parentElement.classList.remove('ai-thinking');
       bubble.innerHTML = '';
       let full = '';
+      let tokenCount = 0;
+      let firstToken = true;
+      let startTime = 0;
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = '';
@@ -339,13 +348,34 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
           const pay = p.slice(6);
           if (pay === '[DONE]') break;
           const { token } = JSON.parse(pay);
+          if (firstToken) {
+            firstToken = false;
+            startTime = Date.now();
+            statsEl.style.color = 'var(--neon)';
+            statsTimer = setInterval(() => {
+              const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+              statsEl.textContent = `⚡ ${tokenCount} tok · ${elapsed}s`;
+            }, 250);
+          }
           full += token;
+          tokenCount++;
           bubble.innerHTML = _mdToHtml(full);
           document.getElementById('ep-messages').scrollTop = 99999;
         }
       }
+      clearInterval(statsTimer);
+      if (full && startTime) {
+        const elapsedSec = (Date.now() - startTime) / 1000;
+        const tps = elapsedSec > 0 ? (tokenCount / elapsedSec).toFixed(1) : '—';
+        statsEl.textContent = `✓ ${tokenCount} tok · ${elapsedSec.toFixed(1)}s · ${tps}/s`;
+        statsEl.style.color = 'var(--text-dim)';
+      } else if (!full) {
+        statsEl.textContent = '';
+      }
       epHistory.push({ role: 'assistant', content: full });
     } catch(e) {
+      if (statsTimer) clearInterval(statsTimer);
+      statsEl.textContent = '';
       bubble.parentElement.classList.remove('ai-thinking');
       bubble.textContent = 'Error: ' + e.message;
     } finally { btn.disabled = false; inp.focus(); }

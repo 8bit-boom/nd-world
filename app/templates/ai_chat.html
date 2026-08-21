@@ -1333,6 +1333,32 @@
     <button class="ig-btn" onclick="mpRefresh()" style="white-space:nowrap">↺ Refresh</button>
   </div>
 
+  <!-- Default models per surface -->
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-bottom:1.2rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.6rem">🎯 Default Models</div>
+    <div style="display:flex;flex-direction:column;gap:.5rem" id="mp-defaults">
+      <label style="display:flex;align-items:center;gap:.6rem;font-size:.82rem;color:var(--text-dim)">
+        <span style="width:70px;flex-shrink:0">Chat</span>
+        <select id="mp-default-chat" class="ig-select" style="flex:1" onchange="mpSetDefault('chat', this.value)">
+          <option value="">— use system default —</option>
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;gap:.6rem;font-size:.82rem;color:var(--text-dim)">
+        <span style="width:70px;flex-shrink:0">Ask AI</span>
+        <select id="mp-default-ask_ai" class="ig-select" style="flex:1" onchange="mpSetDefault('ask_ai', this.value)">
+          <option value="">— use system default —</option>
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;gap:.6rem;font-size:.82rem;color:var(--text-dim)">
+        <span style="width:70px;flex-shrink:0">Image</span>
+        <select id="mp-default-image" class="ig-select" style="flex:1" onchange="mpSetDefault('image', this.value)">
+          <option value="">— none set —</option>
+        </select>
+      </label>
+    </div>
+    <div id="mp-defaults-status" style="font-size:.7rem;color:var(--text-dim);margin-top:.4rem;min-height:1em"></div>
+  </div>
+
   <!-- Model list -->
   <div id="mp-model-list" style="display:flex;flex-direction:column;gap:.55rem;margin-bottom:1.2rem">
     <div style="color:var(--text-dim);font-size:.82rem">⏳ Loading…</div>
@@ -1605,9 +1631,10 @@ async function loadModels() {
     const r = await fetch('/api/ai/models');
     const d = await r.json();
     if (!activeModel) {
-      const defaultLoaded = d.models.find(m => m.id === d.default && m.loaded);
+      const preferredId  = (d.defaults && d.defaults.chat) || d.default;
+      const defaultLoaded = d.models.find(m => m.id === preferredId && m.loaded);
       const firstLoaded   = d.models.find(m => m.loaded);
-      activeModel = (defaultLoaded || firstLoaded || d.models[0] || {id: d.default}).id;
+      activeModel = (defaultLoaded || firstLoaded || d.models[0] || {id: preferredId}).id;
     }
     const shortId = activeModel.split('/').pop().split(':')[0] || activeModel;
     document.getElementById('active-model-label').textContent = shortId;
@@ -2008,7 +2035,7 @@ async function sendMessage() {
     const res = await fetch('/api/ai/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: messagesWithCtx, system: WORLD_SYSTEM, model: activeModel })
+      body: JSON.stringify({ messages: messagesWithCtx, system: WORLD_SYSTEM, model: activeModel, surface: 'chat' })
     });
     if (!res.ok) throw new Error('Server error ' + res.status);
 
@@ -2063,9 +2090,9 @@ async function sendMessage() {
     if (_activeDot) _activeDot.classList.remove('model-dot--active');
 
     if (fullText && startTime) {
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      const tps = (tokenCount / parseFloat(elapsed)).toFixed(1);
-      statsEl.textContent = `✓ ${tokenCount} tok · ${elapsed}s · ${tps}/s`;
+      const elapsedSec = (Date.now() - startTime) / 1000;
+      const tps = elapsedSec > 0 ? (tokenCount / elapsedSec).toFixed(1) : '—';
+      statsEl.textContent = `✓ ${tokenCount} tok · ${elapsedSec.toFixed(1)}s · ${tps}/s`;
       statsEl.style.color = 'var(--text-dim)';
     } else if (!fullText) {
       statsEl.textContent = '';
@@ -2251,6 +2278,9 @@ function igClearCN() {
     const sel = document.getElementById('ig-model');
     if (mr.models && mr.models.length) {
       sel.innerHTML = mr.models.map(m => `<option value="${m}">${m}</option>`).join('');
+      const dr = await fetch('/api/ai/defaults').then(r => r.json()).catch(() => null);
+      const imageDefault = dr && dr.image;
+      if (imageDefault && mr.models.includes(imageDefault)) sel.value = imageDefault;
     } else {
       sel.innerHTML = '<option value="">— no models found —</option>';
     }
@@ -2299,7 +2329,7 @@ async function igBuildPrompt() {
     const resp = await fetch('/api/ai/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: [{ role: 'user', content: userMsg }], system, model: activeModel }),
+      body: JSON.stringify({ messages: [{ role: 'user', content: userMsg }], system, model: activeModel, surface: 'chat' }),
     });
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
@@ -3319,12 +3349,54 @@ async function mpLoad() {
     const d = await fetch('/api/ai/models').then(r => r.json());
     _mpModels = d.models || [];
     mpRender(_mpModels, d.available || []);
+    mpLoadDefaults(d.defaults || {});
   } catch(e) {
     dot.style.background = '#c44';
     txt.textContent = 'Error: ' + e.message;
     txt.style.color = '#c44';
     list.innerHTML = '<div style="color:#c44;font-size:.82rem">✗ Could not load models</div>';
   }
+}
+
+async function mpLoadDefaults(defaults) {
+  const chatSel = document.getElementById('mp-default-chat');
+  const askSel  = document.getElementById('mp-default-ask_ai');
+  const imgSel  = document.getElementById('mp-default-image');
+
+  const llmOptions = _mpModels.map(m => `<option value="${m.id}">${m.label || m.id}</option>`).join('');
+  chatSel.innerHTML = '<option value="">— use system default —</option>' + llmOptions;
+  askSel.innerHTML  = '<option value="">— use system default —</option>' + llmOptions;
+  chatSel.value = defaults.chat || '';
+  askSel.value  = defaults.ask_ai || '';
+
+  try {
+    const mr = await fetch('/api/ai/imagegen/models').then(r => r.json());
+    const imgModels = mr.models || [];
+    imgSel.innerHTML = '<option value="">— none set —</option>' +
+      imgModels.map(m => `<option value="${m}">${m}</option>`).join('');
+    imgSel.value = defaults.image || '';
+  } catch (_) {
+    imgSel.innerHTML = '<option value="">— image models unavailable —</option>';
+  }
+}
+
+async function mpSetDefault(surface, modelId) {
+  const statusEl = document.getElementById('mp-defaults-status');
+  statusEl.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/ai/defaults', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ surface, model_id: modelId }),
+    });
+    if (!r.ok) throw new Error('Server error ' + r.status);
+    statusEl.style.color = '#4f4';
+    statusEl.textContent = modelId ? `✓ Default ${surface.replace('_', ' ')} model saved.` : `✓ Cleared — back to system default.`;
+  } catch (e) {
+    statusEl.style.color = '#c44';
+    statusEl.textContent = '✗ Could not save: ' + e.message;
+  }
+  setTimeout(() => { statusEl.textContent = ''; }, 3000);
 }
 
 function mpRender(models, available) {

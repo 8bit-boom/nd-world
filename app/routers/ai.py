@@ -58,6 +58,10 @@ class ChatBody(BaseModel):
     messages: List[ChatMessage]
     system: str = ""
     model: str = ""
+    # Which per-surface default (see app.ai.DEFAULT_SURFACES) to fall back to
+    # when `model` is blank — lets "Chat" and "Ask AI" run different models
+    # without the caller having to know the configured default itself.
+    surface: str = "chat"
 
 
 @router.post("/chat")
@@ -80,8 +84,8 @@ async def ai_stream(
             raise HTTPException(403)
 
     msgs = [{"role": m.role, "content": m.content} for m in body.messages]
-    requested = body.model
-    _log.info("stream requested model=%r msgs=%d", requested, len(body.messages))
+    requested = body.model or _ai.get_defaults().get(body.surface, "")
+    _log.info("stream requested model=%r surface=%r msgs=%d", requested, body.surface, len(body.messages))
 
     async def _chat():
         model = await _ai.resolve_model(requested)
@@ -123,7 +127,28 @@ async def ai_models():
         ll = lid.lower()
         if not any(ll == r or ll in r or r in ll for r in listed_lower):
             result.append({"id": lid, "label": lid, "loaded": True, "builtin": False})
-    return {"models": result, "default": _ai.effective_ollama_model(), "available": loaded}
+    return {
+        "models": result, "default": _ai.effective_ollama_model(), "available": loaded,
+        "defaults": _ai.get_defaults(),
+    }
+
+
+@router.get("/defaults")
+async def ai_get_defaults():
+    return _ai.get_defaults()
+
+
+class SetDefaultBody(BaseModel):
+    surface: str
+    model_id: str = ""
+
+
+@router.post("/defaults")
+async def ai_set_default(body: SetDefaultBody):
+    if body.surface not in _ai.DEFAULT_SURFACES:
+        raise HTTPException(400, f"unknown surface {body.surface!r}")
+    _ai.set_default(body.surface, body.model_id.strip())
+    return {"ok": True, "defaults": _ai.get_defaults()}
 
 
 @router.get("/debug")

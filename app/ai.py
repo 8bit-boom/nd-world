@@ -93,6 +93,28 @@ def reset_hidden() -> None:
     _save_data(data)
 
 
+# Per-surface default model — separate from the single system-wide
+# OLLAMA_MODEL/effective_ollama_model() fallback, so a GM can e.g. run a
+# bigger model for the deliberate "Chat" world-building tool while keeping
+# the per-entity "Ask AI" panel on something faster. "image" is a SwarmUI/
+# ComfyUI checkpoint name, not an Ollama model — a completely different
+# namespace, but stored alongside the other two since all three are
+# configured from the same Models tab.
+DEFAULT_SURFACES = ("chat", "ask_ai", "image")
+
+
+def get_defaults() -> dict:
+    d = _load_data().get("defaults", {})
+    return {s: d.get(s, "") for s in DEFAULT_SURFACES}
+
+
+def set_default(surface: str, model_id: str) -> None:
+    data = _load_data()
+    defaults = data.setdefault("defaults", {})
+    defaults[surface] = model_id
+    _save_data(data)
+
+
 def all_models() -> list[dict]:
     hidden = load_hidden_ids()
     custom = load_custom_models()
