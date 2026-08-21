@@ -18,6 +18,7 @@
       <div class="detail-date">Updated: {{ entity.updated_at.strftime('%Y-%m-%d %H:%M') }}</div>
     </div>
     <div class="detail-actions">
+      <a href="/entity/{{ entity.id }}/download.md" class="btn-edit" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim)">⬇ Download .md</a>
       <a href="{{ ('/entity/' + entity.id|string + '/edit')|wq }}" class="btn-edit">Edit</a>
       <form action="/entity/{{ entity.id }}/delete" method="post" onsubmit="return confirm('Delete {{ entity.name }}?')">
         <button class="btn-delete" type="submit">Delete</button>

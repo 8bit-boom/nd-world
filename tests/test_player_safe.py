@@ -43,12 +43,18 @@ CASES = [
     ("POST", "/api/facts/parse", False),
     ("POST", "/api/facts/bulk", False),
     ("POST", "/api/entities/bulk-visibility", False),
+    # /export and everything under it (including the new Rules-and-Notes
+    # bundle) is GM-only — it includes notes hidden from players unfiltered,
+    # same trust level as /admin/backup.zip.
+    ("GET", "/export", False),
+    ("GET", "/export/rules-and-notes.md", False),
     # Player-safe — read-only world/lore browsing and their own character(s).
     ("GET", "/", True),
     ("GET", "/account", True),
     ("POST", "/account/name", True),
     ("POST", "/account/password", True),
     ("GET", "/rules", True),
+    ("GET", "/rules/download.md", True),
     ("GET", "/search", True),
     ("GET", "/maps", True),
     # A plain map named e.g. "Schematic Vault" slugifies to "schematic-vault" —
@@ -59,9 +65,11 @@ CASES = [
     ("GET", "/characters/new", True),
     ("POST", "/api/characters/5/hp-async", True),
     ("GET", "/entity/5", True),
+    ("GET", "/entity/5/download.md", True),
     ("GET", "/api/entity/5/preview", True),
     ("GET", "/api/hover-preview/config", True),
     ("GET", "/kind/character", True),
+    ("GET", "/kind/character/download.zip", True),
     ("GET", "/uploads/portraits/x.png", True),
     ("GET", "/maps/some-map", True),
     ("GET", "/worlds/switch/some-world", True),

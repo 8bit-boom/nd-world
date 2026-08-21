@@ -204,11 +204,11 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if method != "GET":
         return False
-    if path in ("/", "/rules", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log"):
+    if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log"):
         return True
     if path.startswith("/kind/") or path.startswith("/uploads/"):
         return True
-    if re.match(r"^/entity/\d+$", path):
+    if re.match(r"^/entity/\d+(/download\.md)?$", path):
         return True
     if re.match(r"^/session-log/\d+$", path):
         return True
@@ -596,6 +596,8 @@ def world_edit_post(
     description: str = Form(""),
     accent: str = Form("#00f0ff"),
     players_see_party: Optional[str] = Form(None),
+    players_can_download_rules: Optional[str] = Form(None),
+    players_can_download_entities: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     w = db.get(World, world_id)
@@ -605,6 +607,8 @@ def world_edit_post(
     w.description = description
     w.accent = accent
     w.players_see_party = bool(players_see_party)
+    w.players_can_download_rules = bool(players_can_download_rules)
+    w.players_can_download_entities = bool(players_can_download_entities)
     db.commit()
     return RedirectResponse("/worlds", status_code=303)
 
@@ -1361,6 +1365,21 @@ def rules_page(request: Request, db: Session = Depends(get_db), active_world: st
         "request": request, "world": world, "worlds": worlds, "content": content, "toc": toc,
         "is_custom_rules": is_custom, "can_edit": bool(user and user.is_gm),
     })
+
+
+@app.get("/rules/download.md")
+def rules_download(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world = get_active_world(request, db, active_world)
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        if not (world and world.players_can_download_rules):
+            raise HTTPException(403)
+    content = _world_rules_markdown(world)
+    filename = f"{world.slug}-rules.md" if world else "core-rules.md"
+    return StreamingResponse(
+        io.BytesIO(content.encode()), media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/worlds/{world_id}/rules/edit", response_class=HTMLResponse)
@@ -2610,6 +2629,39 @@ def world_export_book(request: Request, db: Session = Depends(get_db), active_wo
     )
 
 
+@app.get("/export/rules-and-notes.md")
+def export_rules_and_notes(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    # Not in _is_player_safe, so /export and everything under it is already
+    # GM-only via the auth_gate middleware — unlike the per-entity/kind
+    # downloads above, this always includes every note unfiltered (it's a GM
+    # prep/archival export, same trust level as Full Backup and World Book).
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    parts = [f"# {world.name} — Rules & Notes", "", _world_rules_markdown(world).rstrip(), ""]
+    notes = (
+        db.query(EntityNote)
+        .join(Entity, EntityNote.entity_id == Entity.id)
+        .filter(Entity.world_id == world.id)
+        .order_by(Entity.kind, Entity.name, EntityNote.created_at)
+        .all()
+    )
+    if notes:
+        parts += ["---", "", "## Notes", ""]
+        last_entity_id = None
+        for note in notes:
+            if note.entity_id != last_entity_id:
+                parts += [f"### {note.entity.name} ({note.entity.kind.capitalize()})", ""]
+                last_entity_id = note.entity_id
+            parts += [note.content, ""]
+    content = "\n".join(parts).rstrip() + "\n"
+    filename = f"{world.slug}-rules-and-notes.md"
+    return StreamingResponse(
+        io.BytesIO(content.encode()), media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/admin/backup.zip")
 def admin_backup(db: Session = Depends(get_db)):
     # Not in _is_player_safe, so the auth_gate middleware already denies this to
@@ -2831,6 +2883,78 @@ def _entity_view_gate(db: Session, request: Request, entity_id: int) -> Entity:
     return entity
 
 
+def _visible_entity_notes(db: Session, entity_id: int, request: Request):
+    """This entity's notes, filtered to visible_to_players for a non-GM
+    viewer — the same rule the detail page and the .md download both need,
+    factored out so they can't drift apart."""
+    user = getattr(request.state, "user", None)
+    notes_q = db.query(EntityNote).filter(EntityNote.entity_id == entity_id)
+    if not (user and user.is_gm):
+        notes_q = notes_q.filter(EntityNote.visible_to_players.is_(True))
+    return notes_q.order_by(EntityNote.created_at).all()
+
+
+def _entity_to_markdown(db: Session, entity: Entity, request: Request) -> str:
+    """Render an entity (name/kind/summary/body) plus whatever notes the
+    current viewer can see into a single standalone .md document — used by
+    both the single-entity download and the per-kind bulk zip."""
+    ent_world = db.get(World, entity.world_id) if entity.world_id else None
+    kind_icons = deps.effective_kinds(ent_world)[1]
+    kind_label = f"{kind_icons.get(entity.kind, '')} {entity.kind.capitalize()}".strip()
+    if entity.subtype:
+        kind_label += f" — {entity.subtype}"
+    parts = [f"# {entity.name}", "", f"*{kind_label}*", ""]
+    if entity.summary:
+        parts += [f"*{entity.summary}*", ""]
+    parts += ["---", "", entity.body or "", ""]
+    notes = _visible_entity_notes(db, entity.id, request)
+    if notes:
+        parts += ["## Notes", ""]
+        for note in notes:
+            parts += [note.content, "", "---", ""]
+    return "\n".join(parts).rstrip() + "\n"
+
+
+@app.get("/entity/{entity_id}/download.md")
+def entity_download(entity_id: int, request: Request, db: Session = Depends(get_db)):
+    entity = _entity_view_gate(db, request, entity_id)
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        ent_world = db.get(World, entity.world_id) if entity.world_id else None
+        if not (ent_world and ent_world.players_can_download_entities):
+            raise HTTPException(403)
+    content = _entity_to_markdown(db, entity, request)
+    fname = "".join(c if c.isalnum() or c in " -_" else "" for c in (entity.name or "entity")) or "entity"
+    return StreamingResponse(
+        io.BytesIO(content.encode()), media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{fname}.md"'},
+    )
+
+
+@app.get("/kind/{kind}/download.zip")
+def kind_download(kind: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    import zipfile
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm) and not world.players_can_download_entities:
+        raise HTTPException(403)
+    q = db.query(Entity).filter(Entity.world_id == world.id, Entity.kind == kind)
+    entities = _filter_visible_entities(q, request).order_by(Entity.name).all()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for e in entities:
+            fname = "".join(c if c.isalnum() or c in " -_" else "" for c in (e.name or "entity")) or "entity"
+            zf.writestr(f"{fname}-{e.id}.md", _entity_to_markdown(db, e, request))
+    buf.seek(0)
+    filename = f"{world.slug}-{kind}.zip"
+    return StreamingResponse(
+        buf, media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/api/entity/{entity_id}/preview")
 def entity_preview(entity_id: int, request: Request, db: Session = Depends(get_db)):
     """Hover-preview popup content (see base.html's dragstart-adjacent
@@ -2901,10 +3025,7 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         .filter(entity_links.c.target_id == entity_id),
         request,
     ).order_by(Entity.kind, Entity.name).all()
-    notes_q = db.query(EntityNote).filter(EntityNote.entity_id == entity_id)
-    if not (user and user.is_gm):
-        notes_q = notes_q.filter(EntityNote.visible_to_players.is_(True))
-    entity_notes = notes_q.order_by(EntityNote.created_at).all()
+    entity_notes = _visible_entity_notes(db, entity_id, request)
     custom_sections = []
     if entity.template_id:
         tpl_fields = json.loads(entity.template.fields_json or "[]") if entity.template else []

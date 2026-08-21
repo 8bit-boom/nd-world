@@ -32,6 +32,16 @@ class World(Base):
     accent = Column(String(16), default="#00f0ff")
     # Whether player members can see each other's Player Characters (read-only) or only their own.
     players_see_party = Column(Boolean, default=True)
+    # Whether players may use the "Download as .md" button on the Rules page.
+    # Off by default — a GM must opt in per world. Independent of whether the
+    # rules content itself is visible (it always is; /rules is player-safe).
+    players_can_download_rules = Column(Boolean, default=False)
+    # Whether players may download an entity (or a kind's entities in bulk)
+    # as .md/.zip files. A separate axis from visible_to_players/
+    # _entity_view_gate — that still governs whether an entity can be VIEWED
+    # at all; this only governs whether a visible entity can be extracted as
+    # a file. Off by default.
+    players_can_download_entities = Column(Boolean, default=False)
     # Per-world rules text (Markdown) shown on the /rules page. NULL = fall back
     # to the bundled Neon & Dragons core_rules.md, for worlds actually running
     # N&D and any world created before this field existed.

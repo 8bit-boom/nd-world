@@ -24,6 +24,16 @@
              style="width:auto;accent-color:var(--neon)" {% if edit_world.players_see_party %}checked{% endif %}>
       <label for="players-see-party" style="margin:0">Players can see each other's characters (party roster)</label>
     </div>
+    <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+      <input type="checkbox" id="players-download-rules" name="players_can_download_rules" value="1"
+             style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_download_rules %}checked{% endif %}>
+      <label for="players-download-rules" style="margin:0">Players can download the Rules as a .md file</label>
+    </div>
+    <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+      <input type="checkbox" id="players-download-entities" name="players_can_download_entities" value="1"
+             style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_download_entities %}checked{% endif %}>
+      <label for="players-download-entities" style="margin:0">Players can download entities as .md/.zip files</label>
+    </div>
     <div class="form-actions">
       <button type="submit" class="btn-primary">Save changes</button>
       <a href="/worlds" class="btn-cancel">Cancel</a>

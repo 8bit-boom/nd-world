@@ -18,6 +18,7 @@
          class="view-btn {% if view == 'table' %}active{% endif %}" title="Table view">≡</a>
     </div>
     {% endif %}
+    <a href="/kind/{{ kind }}/download.zip" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;text-decoration:none;display:inline-flex;align-items:center">⬇ Download all as .md</a>
     <a href="{{ '/entity-templates'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;text-decoration:none;display:inline-flex;align-items:center">🗒 Field Templates</a>
     <a href="{{ ('/new?kind=' + kind + ('&folder=' + active_folder|urlencode if active_folder else ''))|wq }}" class="btn-new">+ New {{ kind }}</a>
   </div>

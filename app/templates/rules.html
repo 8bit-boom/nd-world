@@ -19,9 +19,12 @@
   <div class="rules-content">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
       <h1>📖 {{ 'Rules' if is_custom_rules else 'Core Rules' }}</h1>
-      {% if can_edit and world %}
-      <a href="/worlds/{{ world.id }}/rules/edit" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.3rem .8rem;font-size:.8rem;border-radius:4px;text-decoration:none">✏ Edit Rules</a>
-      {% endif %}
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+        <a href="/rules/download.md" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.3rem .8rem;font-size:.8rem;border-radius:4px;text-decoration:none">⬇ Download .md</a>
+        {% if can_edit and world %}
+        <a href="/worlds/{{ world.id }}/rules/edit" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.3rem .8rem;font-size:.8rem;border-radius:4px;text-decoration:none">✏ Edit Rules</a>
+        {% endif %}
+      </div>
     </div>
     {% if not is_custom_rules %}
     <p style="color:var(--text-dim);font-size:.8rem;margin:.3rem 0 1rem">
