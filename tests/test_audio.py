@@ -9,7 +9,7 @@ check in each handler.
 import io
 
 from app.database import SessionLocal
-from app.models import AudioClip
+from app.models import AudioAlbum, AudioClip
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -18,6 +18,18 @@ _MP3_BYTES = b"ID3\x03\x00\x00\x00\x00\x00\x00" + b"\x00" * 500
 
 def _mp3_file(name="clip.mp3"):
     return {"file": (name, io.BytesIO(_MP3_BYTES), "audio/mpeg")}
+
+
+def _add_album(world_id, **kw):
+    db = SessionLocal()
+    try:
+        a = AudioAlbum(world_id=world_id, name=kw.pop("name", "Album"), **kw)
+        db.add(a)
+        db.commit()
+        db.refresh(a)
+        return a.id
+    finally:
+        db.close()
 
 
 def _add_clip(world_id, **kw):
@@ -170,3 +182,187 @@ def test_audio_edit_cross_world_404s(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.post(f"/audio/{cid}/edit", data={"name": "Hijacked"})
     assert r.status_code == 404
+
+
+# ── Albums and sub-albums ───────────────────────────────────────────────────
+
+def test_album_create_top_level(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/audio/albums/new", data={"name": "Session 1 Ambiance"}, follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        album = db.query(AudioAlbum).filter(AudioAlbum.world_id == seed.world_a.id).first()
+        assert album.name == "Session 1 Ambiance"
+        assert album.parent_id is None
+    finally:
+        db.close()
+
+
+def test_album_create_sub_album(client, seed):
+    parent_id = _add_album(seed.world_a.id, name="Parent")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/audio/albums/new", data={"name": "Child", "parent_id": str(parent_id)}, follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"].startswith("/audio/albums/")
+    db = SessionLocal()
+    try:
+        child = db.query(AudioAlbum).filter(AudioAlbum.name == "Child").first()
+        assert child.parent_id == parent_id
+    finally:
+        db.close()
+
+
+def test_album_create_forbidden_for_player(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/audio/albums/new", data={"name": "Hacked"})
+    assert r.status_code == 403
+
+
+def test_album_detail_page_reachable_by_gm_and_player(client, seed):
+    aid = _add_album(seed.world_a.id, name="Ambiance")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get(f"/audio/albums/{aid}").status_code == 200
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get(f"/audio/albums/{aid}").status_code == 200
+
+
+def test_album_breadcrumb_shows_full_chain(client, seed):
+    root_id = _add_album(seed.world_a.id, name="Root")
+    mid_id = _add_album(seed.world_a.id, name="Middle", parent_id=root_id)
+    leaf_id = _add_album(seed.world_a.id, name="Leaf", parent_id=mid_id)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/audio/albums/{leaf_id}")
+    assert r.status_code == 200
+    assert "Root" in r.text
+    assert "Middle" in r.text
+    assert "Leaf" in r.text
+
+
+def test_album_shows_only_own_clips_and_sub_albums(client, seed):
+    aid = _add_album(seed.world_a.id, name="Album A")
+    sub_id = _add_album(seed.world_a.id, name="Sub Album", parent_id=aid)
+    _add_clip(seed.world_a.id, name="In Album", album_id=aid, visible_to_players=True)
+    _add_clip(seed.world_a.id, name="Top Level Clip", album_id=None, visible_to_players=True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/audio/albums/{aid}")
+    assert "In Album" in r.text
+    assert "Top Level Clip" not in r.text
+    assert "Sub Album" in r.text
+
+
+def test_album_player_only_sees_visible_clips_inside(client, seed):
+    aid = _add_album(seed.world_a.id, name="Album A")
+    _add_clip(seed.world_a.id, name="Visible In Album", album_id=aid, visible_to_players=True)
+    _add_clip(seed.world_a.id, name="Hidden In Album", album_id=aid, visible_to_players=False)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/audio/albums/{aid}")
+    assert "Visible In Album" in r.text
+    assert "Hidden In Album" not in r.text
+
+
+def test_album_rename(client, seed):
+    aid = _add_album(seed.world_a.id, name="Old Name")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/audio/albums/{aid}/rename", data={"name": "New Name"}, follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        assert db.get(AudioAlbum, aid).name == "New Name"
+    finally:
+        db.close()
+
+
+def test_album_delete_cascades_to_sub_albums_and_clips(client, seed, tmp_path, monkeypatch):
+    import app.routers.audio as audio_module
+    monkeypatch.setattr(audio_module, "_UPLOADS_DIR", tmp_path)
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    f = audio_dir / "nested.mp3"
+    f.write_bytes(b"fake audio")
+
+    root_id = _add_album(seed.world_a.id, name="Root")
+    child_id = _add_album(seed.world_a.id, name="Child", parent_id=root_id)
+    clip_in_root_id = _add_clip(seed.world_a.id, name="Root Clip", album_id=root_id,
+                                 file_url="/uploads/audio/nested.mp3")
+    clip_in_child_id = _add_clip(seed.world_a.id, name="Child Clip", album_id=child_id)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/audio/albums/{root_id}/delete", follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/audio"
+    assert not f.exists()
+
+    db = SessionLocal()
+    try:
+        assert db.get(AudioAlbum, root_id) is None
+        assert db.get(AudioAlbum, child_id) is None
+        assert db.get(AudioClip, clip_in_root_id) is None
+        assert db.get(AudioClip, clip_in_child_id) is None
+    finally:
+        db.close()
+
+
+def test_album_delete_redirects_to_parent(client, seed):
+    root_id = _add_album(seed.world_a.id, name="Root")
+    child_id = _add_album(seed.world_a.id, name="Child", parent_id=root_id)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/audio/albums/{child_id}/delete", follow_redirects=False)
+    assert r.headers["location"] == f"/audio/albums/{root_id}"
+
+
+def test_album_delete_forbidden_for_player(client, seed):
+    aid = _add_album(seed.world_a.id)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/audio/albums/{aid}/delete")
+    assert r.status_code == 403
+
+
+def test_album_cross_world_404s(client, seed):
+    aid = _add_album(seed.world_b.id, name="Other World Album")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/audio/albums/{aid}")
+    assert r.status_code == 404
+
+
+def test_audio_upload_into_album(client, seed):
+    aid = _add_album(seed.world_a.id, name="Ambiance")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/audio/upload", data={"album_id": str(aid)}, files=_mp3_file(), follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/audio/albums/{aid}"
+    db = SessionLocal()
+    try:
+        clip = db.query(AudioClip).filter(AudioClip.world_id == seed.world_a.id).first()
+        assert clip.album_id == aid
+    finally:
+        db.close()
+
+
+def test_audio_edit_moves_clip_between_albums(client, seed):
+    aid = _add_album(seed.world_a.id, name="Destination")
+    cid = _add_clip(seed.world_a.id, name="Clip", album_id=None)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/audio/{cid}/edit", data={"name": "Clip", "album_id": str(aid)}, follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/audio/albums/{aid}"
+    db = SessionLocal()
+    try:
+        assert db.get(AudioClip, cid).album_id == aid
+    finally:
+        db.close()

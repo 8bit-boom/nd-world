@@ -1,8 +1,38 @@
 {% extends "base.html" %}
-{% block title %}Audio — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block title %}{{ album.name if album else 'Audio' }} — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div class="form-page" style="max-width:900px">
+  {% if album %}
+  <nav class="breadcrumb" style="margin-bottom:.4rem">
+    <a href="{{ '/audio'|wq }}">🎵 Audio</a>
+    {% for b in breadcrumb %}
+    <span class="bc-sep">›</span>
+    <a href="{{ ('/audio/albums/' + b.id|string)|wq }}">{{ b.name }}</a>
+    {% endfor %}
+    <span class="bc-sep">›</span>
+    <span class="bc-current">{{ album.name }}</span>
+  </nav>
+  <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.3rem;flex-wrap:wrap">
+    <h1 style="margin:0">📁 {{ album.name }}</h1>
+    {% if can_edit %}
+    <button type="button" class="btn-cancel" style="font-size:.75rem;padding:.25rem .6rem" onclick="audioToggleAlbumRename()">✏ Rename</button>
+    <form method="post" action="{{ ('/audio/albums/' + album.id|string + '/delete')|wq }}"
+          onsubmit="return confirm('Delete this album? Every sub-album and clip inside it is deleted permanently — this can\'t be undone.');" style="display:inline">
+      <button type="submit" class="btn-cancel" style="font-size:.75rem;padding:.25rem .6rem;border-color:#a33;color:#e07">🗑 Delete Album</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if can_edit %}
+  <form method="post" action="{{ ('/audio/albums/' + album.id|string + '/rename')|wq }}" id="audio-album-rename-form" style="display:none;margin-bottom:1rem;gap:.5rem">
+    <input type="text" name="name" value="{{ album.name }}" maxlength="120" required
+           style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
+    <button type="submit" class="btn-save" style="font-size:.8rem">Save</button>
+  </form>
+  {% endif %}
+  {% else %}
   <h1>🎵 Audio — {{ world.name }}</h1>
+  {% endif %}
+
   <p style="color:var(--text-dim);font-size:.85rem;margin:.3rem 0 1.2rem">
     Ambiance, sound effects, NPC voice lines, or recorded handouts.
     {% if can_edit %}Upload a clip below — it's visible to players by default unless you hide it.
@@ -11,8 +41,19 @@
 
   {% if can_edit %}
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.5rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">📁 {{ 'New Sub-album' if album else 'New Album' }}</h2>
+    <form method="post" action="{{ '/audio/albums/new'|wq }}" style="display:flex;gap:.5rem;flex-wrap:wrap">
+      {% if album %}<input type="hidden" name="parent_id" value="{{ album.id }}"/>{% endif %}
+      <input type="text" name="name" placeholder="Album name" maxlength="120" required
+             style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
+      <button type="submit" class="btn-save">+ Create</button>
+    </form>
+  </div>
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.5rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">⬆ Upload a Clip</h2>
     <form method="post" action="{{ '/audio/upload'|wq }}" enctype="multipart/form-data" style="display:flex;flex-direction:column;gap:.6rem">
+      {% if album %}<input type="hidden" name="album_id" value="{{ album.id }}"/>{% endif %}
       <div class="form-dropzone" data-dropzone style="padding:.5rem .7rem">
         <input type="file" name="file" accept="audio/*" required/>
       </div>
@@ -27,9 +68,27 @@
           <input type="checkbox" name="visible_to_players" value="1" checked style="width:auto"/>
           Visible to players
         </label>
-        <button type="submit" class="btn-save">⬆ Upload</button>
+        <button type="submit" class="btn-save">⬆ Upload{{ ' to ' + album.name if album else '' }}</button>
       </div>
     </form>
+  </div>
+  {% endif %}
+
+  {% if albums %}
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.5rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">📁 Albums</h2>
+    <div class="audio-album-grid">
+      {% for a in albums %}
+      <a class="audio-album-card" href="{{ ('/audio/albums/' + a.id|string)|wq }}">
+        <div class="audio-album-icon">📁</div>
+        <div class="audio-album-name">{{ a.name }}</div>
+        <div class="audio-album-count">
+          {{ clip_counts.get(a.id, 0) }} clip{{ '' if clip_counts.get(a.id, 0) == 1 else 's' }}
+          {% if sub_album_counts.get(a.id) %}&middot; {{ sub_album_counts[a.id] }} sub-album{{ '' if sub_album_counts[a.id] == 1 else 's' }}{% endif %}
+        </div>
+      </a>
+      {% endfor %}
+    </div>
   </div>
   {% endif %}
 
@@ -59,6 +118,14 @@
                  style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.82rem;border-radius:3px;width:100%;box-sizing:border-box;margin-bottom:.4rem"/>
           <textarea name="description" maxlength="512" rows="2" placeholder="Description"
                     style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.82rem;border-radius:3px;width:100%;box-sizing:border-box;resize:vertical;margin-bottom:.4rem">{{ c.description }}</textarea>
+          <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-bottom:.4rem">
+            <label style="font-size:.78rem;color:var(--text-dim)">Album:</label>
+            <select name="album_id" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
+              <option value="" {% if not c.album_id %}selected{% endif %}>— Top level —</option>
+              {% if album %}<option value="{{ album.id }}" {% if c.album_id == album.id %}selected{% endif %}>{{ album.name }} (this album)</option>{% endif %}
+              {% for a in albums %}<option value="{{ a.id }}" {% if c.album_id == a.id %}selected{% endif %}>{{ a.name }}</option>{% endfor %}
+            </select>
+          </div>
           <div style="display:flex;align-items:center;justify-content:space-between;gap:.6rem">
             <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-dim)">
               <input type="checkbox" name="visible_to_players" value="1" {% if c.visible_to_players %}checked{% endif %} style="width:auto"/>
@@ -73,13 +140,20 @@
     </div>
     {% else %}
     <p style="color:var(--text-dim);font-size:.82rem;margin:0">
-      {% if can_edit %}No clips yet — upload one above.{% else %}Nothing here yet.{% endif %}
+      {% if can_edit %}No clips here yet — upload one above.{% else %}Nothing here yet.{% endif %}
     </p>
     {% endif %}
   </div>
 </div>
 
 <style>
+.audio-album-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:.7rem; }
+.audio-album-card { display:block; background:var(--bg3); border:1px solid var(--border); border-radius:5px; padding:.7rem .6rem; text-decoration:none; color:var(--text); text-align:center; }
+.audio-album-card:hover { border-color:var(--neon); }
+.audio-album-icon { font-size:1.6rem; }
+.audio-album-name { padding-top:.3rem; font-size:.82rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.audio-album-count { font-size:.7rem; color:var(--text-dim); padding-top:.1rem; }
+
 .audio-clip-list { display:flex; flex-direction:column; gap:.7rem; }
 .audio-clip-row { display:flex; flex-wrap:wrap; align-items:center; gap:.8rem; background:var(--bg3); border:1px solid var(--border); border-radius:5px; padding:.7rem .9rem; }
 .audio-clip-info { flex:1; min-width:160px; }
@@ -94,6 +168,10 @@
 function audioToggleEdit(id) {
   const form = document.getElementById('audio-edit-' + id);
   if (form) form.style.display = form.style.display === 'none' ? 'block' : 'none';
+}
+function audioToggleAlbumRename() {
+  const form = document.getElementById('audio-album-rename-form');
+  if (form) form.style.display = form.style.display === 'none' ? 'flex' : 'none';
 }
 </script>
 {% endblock %}

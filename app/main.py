@@ -31,7 +31,7 @@ from .imaging import convert_image
 from .rendering import parse_stats, render_md
 from .templating import templates
 from .uploads import copy_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, ApiToken, ImageAlbum, AudioClip
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, ApiToken, ImageAlbum, AudioClip, AudioAlbum
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -216,6 +216,8 @@ def _is_player_safe(method: str, path: str) -> bool:
     if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log", "/audio"):
         return True
     if path.startswith("/kind/") or path.startswith("/uploads/"):
+        return True
+    if re.match(r"^/audio/albums/\d+$", path):
         return True
     if re.match(r"^/entity/\d+(/download\.md)?$", path):
         return True
@@ -567,7 +569,7 @@ def world_delete(world_id: int, db: Session = Depends(get_db)):
 
     for model in (Entity, PlayerCharacter, Schematic, WorldMembership, InviteCode, PrivateNote,
                   InvestBoard, RandomTable, CombatSession, Party, Quest, GameSession,
-                  WorldCalendar, CalendarEvent, ImageAlbum, AudioClip):
+                  WorldCalendar, CalendarEvent, ImageAlbum, AudioClip, AudioAlbum):
         db.query(model).filter(model.world_id == world_id).delete(synchronize_session=False)
 
     db.delete(w)

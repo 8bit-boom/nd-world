@@ -553,13 +553,31 @@ class ImageAlbum(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class AudioAlbum(Base):
+    """A GM-created folder for organizing AudioClips into albums and nested
+    sub-albums — the same self-referential parent_id tree as ImageAlbum,
+    but a clip points back at its album directly (AudioClip.album_id)
+    rather than the album holding a list of ids: an audio clip, unlike a
+    shared image URL, only ever lives in one place. NULL parent_id means
+    top-level. See app/routers/audio.py for breadcrumb/cascade-delete
+    handling."""
+    __tablename__ = "audio_albums"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    parent_id = Column(Integer, ForeignKey("audio_albums.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class AudioClip(Base):
     """A GM-uploaded audio file (ambiance, a sound effect, an NPC voice
     line, a recorded handout) for the /audio library — see
     app/routers/audio.py. Unlike ImageAlbum, each row owns exactly one file
     (no sharing/reuse across rows), so deleting the row always deletes the
     file too. visible_to_players mirrors Entity's own default-visible
-    convention: a GM only has to act to hide a clip, not to reveal one."""
+    convention: a GM only has to act to hide a clip, not to reveal one.
+    album_id is NULL for a top-level (unfiled) clip."""
     __tablename__ = "audio_clips"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -568,6 +586,7 @@ class AudioClip(Base):
     description = Column(String(512), default="")
     file_url = Column(String(512), nullable=False)  # "/uploads/audio/<file>"
     visible_to_players = Column(Boolean, default=True)
+    album_id = Column(Integer, ForeignKey("audio_albums.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

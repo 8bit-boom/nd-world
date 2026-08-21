@@ -55,6 +55,9 @@ CASES = [
     ("POST", "/audio/upload", False),
     ("POST", "/audio/1/edit", False),
     ("POST", "/audio/1/delete", False),
+    ("POST", "/audio/albums/new", False),
+    ("POST", "/audio/albums/1/rename", False),
+    ("POST", "/audio/albums/1/delete", False),
     # Player-safe — read-only world/lore browsing and their own character(s).
     ("GET", "/", True),
     ("GET", "/account", True),
@@ -63,6 +66,7 @@ CASES = [
     ("GET", "/rules", True),
     ("GET", "/rules/download.md", True),
     ("GET", "/audio", True),
+    ("GET", "/audio/albums/1", True),
     ("GET", "/search", True),
     ("GET", "/maps", True),
     # A plain map named e.g. "Schematic Vault" slugifies to "schematic-vault" —

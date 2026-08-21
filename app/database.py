@@ -505,6 +505,17 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN spotlight_label VARCHAR(256)"))
             if "spotlight_version" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN spotlight_version INTEGER DEFAULT 0"))
+        # audio_clips table — add album_id if missing (added after the
+        # table's initial ship in a prior release; existing clips get
+        # NULL = top-level/unfiled, same as any newly-uploaded clip that
+        # isn't put in an album).
+        ac_exists = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='audio_clips'"
+        )).fetchone()
+        if ac_exists:
+            ac_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(audio_clips)")).fetchall()]
+            if "album_id" not in ac_cols:
+                conn.execute(text("ALTER TABLE audio_clips ADD COLUMN album_id INTEGER"))
         # random_tables table — some installs ended up with a table that
         # doesn't match the model: missing columns (e.g. slug), and/or
         # world_id incorrectly marked NOT NULL (the model allows NULL there
