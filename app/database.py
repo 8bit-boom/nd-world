@@ -163,6 +163,114 @@ _ASTERION_FIELDS = [
     _f("freeNotes", "GM / Free Notes", "textarea", "Notes"),
 ]
 
+# "Hunt in the Moonlight" — a moon-corruption hunter game. Ported from a
+# standalone reference character sheet (uploaded HTML) that used clickable
+# pip-trackers, <select> dropdowns, and colored chips for Race/Strain/Moon
+# Phase/Moon Color — none of which custom_sheet.html's renderer supports
+# (only text/textarea/number/list exist there, confirmed by reading its
+# Jinja: no select, no checkbox, no tracker widget). Trackers become
+# Current/Max number pairs; fixed-option pickers become text fields whose
+# label lists the intended options, e.g. "Race (Human / Elf / ...)".
+_HITM_FIELDS = [
+    _f("player", "Player", "text", "Identity"),
+    _f("hunter", "Hunter Name", "text", "Identity"),
+    _f("pronouns", "Pronouns", "text", "Identity"),
+    _f("company", "Company", "text", "Identity"),
+    _f("campaign", "Campaign", "text", "Identity"),
+    _f("hunt", "Current Hunt", "text", "Identity"),
+    _f("location", "Location", "text", "Identity"),
+    _f("race", "Race (Human / Elf / Drow / Dwarf / Deviltouched / Orc / Lamrossa Automaton)", "text", "Identity"),
+    _f("appearance", "Appearance, fashion, visible modifications, signature item", "textarea", "Identity"),
+
+    _f("use", "What I Use for the Hunt", "textarea", "Hunter's Oath"),
+    _f("reason", "Reason to Hunt", "textarea", "Hunter's Oath"),
+    _f("prey", "Who Is My Prey", "textarea", "Hunter's Oath"),
+    _f("signature", "Signature Move", "textarea", "Hunter's Oath"),
+    _f("desire", "Selfish Desire", "textarea", "Hunter's Oath"),
+    _f("protect", "Person or place I protect", "textarea", "Hunter's Oath"),
+    _f("fear", "Truth I fear / line I will not cross", "textarea", "Hunter's Oath"),
+    _f("refuse", "Why I refuse the Moon", "textarea", "Hunter's Oath"),
+
+    _f("healthCurrent", "Health — Current", "number", "Core Tracks", "5"),
+    _f("healthMax", "Health — Maximum (0 = Broken)", "number", "Core Tracks", "5"),
+    _f("staminaCurrent", "Stamina — Current", "number", "Core Tracks", "5"),
+    _f("staminaMax", "Stamina — Maximum", "number", "Core Tracks", "5"),
+    _f("hungerCurrent", "Hunger — Current", "number", "Core Tracks", "0"),
+    _f("hungerFloor", "Hunger — Floor (permanently filled/locked)", "number", "Core Tracks", "0"),
+    _f("arcaneCurrent", "Arcane Knowledge — Current", "number", "Core Tracks", "0"),
+    _f("arcaneMax", "Arcane Knowledge — Maximum", "number", "Core Tracks", "10"),
+    _f("alteration", "Alteration", "number", "Core Tracks", "0"),
+    _f("overcharge", "Overcharge", "number", "Core Tracks", "0"),
+    _f("staminaSpent", "Stamina Spent since Rest", "number", "Core Tracks", "0"),
+    _f("armor", "Armor", "number", "Core Tracks", "0"),
+    _f("movement", "Movement", "number", "Core Tracks", "6"),
+    _f("strain", "Strain (0 / 1 / 2 — Max Stamina -1 / 3 — Overextended)", "text", "Core Tracks", "0"),
+    _f("hungerTell", "Hunger tell", "textarea", "Core Tracks"),
+    _f("arcaneTell", "Arcane sign", "textarea", "Core Tracks"),
+    _f("alterTell", "Alteration tell", "textarea", "Core Tracks"),
+    _f("maintenance", "Maintenance / feeding", "textarea", "Core Tracks"),
+
+    _f("xpCurrent", "Current XP", "number", "Experience", "0"),
+    _f("xpLifetime", "Lifetime XP Earned", "number", "Experience", "0"),
+    _f("xpSpent", "Total XP Spent", "number", "Experience", "0"),
+    _list_f("xpLog", "XP Log", "Experience", [
+        {"id": "purchase", "label": "Purchase", "type": "text"},
+        {"id": "cost", "label": "XP Cost", "type": "text"},
+        {"id": "note", "label": "Session / Note", "type": "text"},
+    ]),
+
+    _f("moonPhase", "Moon Phase (New Moon / Crescent / Half Moon / Gibbous / Full Moon)", "text", "Moon Calendar"),
+    _f("moonColor", "Moon Color (Red / Violet / Green / Blue / White / Black / Pink / Teal / Amber / Bleeding Moon)", "text", "Moon Calendar"),
+    _f("moonNotes", "Current session's Moon notes (Bleeding Moon, story hooks, active Temptations)", "textarea", "Moon Calendar"),
+
+    _list_f("abilities", "Abilities", "Abilities", [
+        {"id": "source", "label": "Source / Ability", "type": "text"},
+        {"id": "tier", "label": "Tier", "type": "text"},
+        {"id": "cost", "label": "Cost", "type": "text"},
+        {"id": "rangeDamage", "label": "Range / Damage", "type": "text"},
+        {"id": "effect", "label": "Effect / Trade-Off", "type": "textarea"},
+        {"id": "used", "label": "Used?", "type": "text"},
+    ]),
+
+    _list_f("rites", "Moon-Gifts & Occult Rites", "Moon-Gifts & Occult Rites", [
+        {"id": "name", "label": "Name", "type": "text"},
+        {"id": "type", "label": "Type", "type": "text"},
+        {"id": "stamina", "label": "Stamina", "type": "text"},
+        {"id": "hungerArcane", "label": "Hunger / Arcane", "type": "text"},
+        {"id": "effect", "label": "Effect / Price", "type": "textarea"},
+    ]),
+
+    _list_f("tools", "Hunter Tools & Loadout", "Hunter Tools & Loadout", [
+        {"id": "toolForm", "label": "Tool / Form", "type": "text"},
+        {"id": "name", "label": "Name", "type": "text"},
+        {"id": "rangeDamage", "label": "Range / Damage", "type": "text"},
+        {"id": "advantage", "label": "Advantage", "type": "text"},
+        {"id": "look", "label": "Look / Operation", "type": "textarea"},
+    ]),
+
+    _list_f("mods", "Body Modifications", "Body Modifications", [
+        {"id": "modification", "label": "Modification", "type": "text"},
+        {"id": "grade", "label": "Cyber / Bio / Grade", "type": "text"},
+        {"id": "alteration", "label": "Alteration", "type": "text"},
+        {"id": "benefit", "label": "Benefit", "type": "text"},
+        {"id": "maintenance", "label": "Maintenance / Instinct / Failure", "type": "textarea"},
+    ]),
+
+    _list_f("sessions", "Session Record", "Session Record", [
+        {"id": "session", "label": "Session", "type": "text"},
+        {"id": "huntLocation", "label": "Hunt / Location", "type": "text"},
+        {"id": "marks", "label": "Marks", "type": "text"},
+        {"id": "xp", "label": "XP", "type": "text"},
+        {"id": "truth", "label": "Truth, Scar, or Change", "type": "textarea"},
+    ]),
+
+    _f("heritage", "Heritage ability / Moon Weakness", "textarea", "Notes"),
+    _f("patron", "Patron, Standing, Debt, and obligation", "textarea", "Notes"),
+    _f("relations", "Relationships, rival, companion", "textarea", "Notes"),
+    _f("investigation", "Current Moon, prey, clues, evidence", "textarea", "Notes"),
+    _f("notes", "Freeform notes: history, inventory, NPCs, plans, rules reminders", "textarea", "Notes"),
+]
+
 DB_PATH = os.environ.get("DB_PATH", "/data/world.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -592,6 +700,19 @@ def _seed():
                 is_builtin=True,
                 sheet_mode="custom",
                 fields_json=json.dumps(_ASTERION_FIELDS),
+            ))
+        # Seed built-in "Hunt in the Moonlight" sheet template (fully custom
+        # — moon-corruption hunter game, see _HITM_FIELDS)
+        if not db.query(SheetTemplate).filter(SheetTemplate.slug == "hunt-in-the-moonlight").first():
+            db.add(SheetTemplate(
+                world_id=None,
+                name="Hunt in the Moonlight",
+                slug="hunt-in-the-moonlight",
+                description="Hunter Ledger — moon-corruption hunter game: Health/Stamina/Hunger/Arcane "
+                             "resource tracks, Moon Phase & Color, Hunter's Oath prompts, and gear/rites/mod tables.",
+                is_builtin=True,
+                sheet_mode="custom",
+                fields_json=json.dumps(_HITM_FIELDS),
             ))
         # Seed built-in entity field templates
         if not db.query(EntityTemplate).filter(EntityTemplate.slug == "npc-details").first():
