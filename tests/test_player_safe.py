@@ -52,6 +52,9 @@ CASES = [
     # stays GM-only — only the shared streaming endpoint it and the entity
     # panel both call is opened up, gated per-world by players_can_ask_ai.
     ("GET", "/ai", False),
+    ("POST", "/audio/upload", False),
+    ("POST", "/audio/1/edit", False),
+    ("POST", "/audio/1/delete", False),
     # Player-safe — read-only world/lore browsing and their own character(s).
     ("GET", "/", True),
     ("GET", "/account", True),
@@ -59,6 +62,7 @@ CASES = [
     ("POST", "/account/password", True),
     ("GET", "/rules", True),
     ("GET", "/rules/download.md", True),
+    ("GET", "/audio", True),
     ("GET", "/search", True),
     ("GET", "/maps", True),
     # A plain map named e.g. "Schematic Vault" slugifies to "schematic-vault" —

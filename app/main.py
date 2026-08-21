@@ -31,7 +31,7 @@ from .imaging import convert_image
 from .rendering import parse_stats, render_md
 from .templating import templates
 from .uploads import copy_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, ApiToken, ImageAlbum
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, ApiToken, ImageAlbum, AudioClip
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -55,6 +55,7 @@ from .routers.kinds_admin import router as kinds_admin_router
 from .routers.facts import router as facts_router
 from .routers.chronicler import router as chronicler_router
 from .routers.gallery import router as gallery_router
+from .routers.audio import router as audio_router
 from .routers.nav_menus_admin import router as nav_menus_admin_router
 from . import gallery as _gallery_module
 from . import mcp_server
@@ -101,6 +102,7 @@ app.include_router(kinds_admin_router)
 app.include_router(facts_router)
 app.include_router(chronicler_router)
 app.include_router(gallery_router)
+app.include_router(audio_router)
 app.include_router(nav_menus_admin_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
@@ -211,7 +213,7 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if method != "GET":
         return False
-    if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log"):
+    if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log", "/audio"):
         return True
     if path.startswith("/kind/") or path.startswith("/uploads/"):
         return True
@@ -545,6 +547,14 @@ def world_delete(world_id: int, db: Session = Depends(get_db)):
     for s in db.query(Schematic).filter(Schematic.world_id == world_id).all():
         _delete_schematic_files(s)
 
+    # Unlike ImageAlbum (URLs that may be shared/reused elsewhere), each
+    # AudioClip row owns exactly one file, so it's always safe to delete here.
+    for clip in db.query(AudioClip).filter(AudioClip.world_id == world_id).all():
+        if clip.file_url and clip.file_url.startswith("/uploads/"):
+            p = (UPLOADS_DIR / clip.file_url[len("/uploads/"):]).resolve()
+            if p.is_relative_to(UPLOADS_DIR.resolve()) and p.is_file():
+                p.unlink()
+
     for slug, _data in list(_iter_world_maps(world_id)):
         jf = _MAPS_DIR / f"{slug}.json"
         if jf.exists():
@@ -557,7 +567,7 @@ def world_delete(world_id: int, db: Session = Depends(get_db)):
 
     for model in (Entity, PlayerCharacter, Schematic, WorldMembership, InviteCode, PrivateNote,
                   InvestBoard, RandomTable, CombatSession, Party, Quest, GameSession,
-                  WorldCalendar, CalendarEvent, ImageAlbum):
+                  WorldCalendar, CalendarEvent, ImageAlbum, AudioClip):
         db.query(model).filter(model.world_id == world_id).delete(synchronize_session=False)
 
     db.delete(w)

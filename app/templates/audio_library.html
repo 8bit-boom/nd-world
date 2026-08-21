@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Audio — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="form-page" style="max-width:900px">
+  <h1>🎵 Audio — {{ world.name }}</h1>
+  <p style="color:var(--text-dim);font-size:.85rem;margin:.3rem 0 1.2rem">
+    Ambiance, sound effects, NPC voice lines, or recorded handouts.
+    {% if can_edit %}Upload a clip below — it's visible to players by default unless you hide it.
+    {% else %}Anything your GM has shared with the party.{% endif %}
+  </p>
+
+  {% if can_edit %}
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.5rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">⬆ Upload a Clip</h2>
+    <form method="post" action="{{ '/audio/upload'|wq }}" enctype="multipart/form-data" style="display:flex;flex-direction:column;gap:.6rem">
+      <div class="form-dropzone" data-dropzone style="padding:.5rem .7rem">
+        <input type="file" name="file" accept="audio/*" required/>
+      </div>
+      <div style="display:flex;gap:.6rem;flex-wrap:wrap">
+        <input type="text" name="name" placeholder="Name (defaults to filename)" maxlength="256"
+               style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
+      </div>
+      <textarea name="description" placeholder="Description (optional)" maxlength="512" rows="2"
+                style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px;resize:vertical"></textarea>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:var(--text-dim)">
+          <input type="checkbox" name="visible_to_players" value="1" checked style="width:auto"/>
+          Visible to players
+        </label>
+        <button type="submit" class="btn-save">⬆ Upload</button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">🗂 Clips ({{ clips|length }})</h2>
+    {% if clips %}
+    <div class="audio-clip-list">
+      {% for c in clips %}
+      <div class="audio-clip-row">
+        <div class="audio-clip-info">
+          <div class="audio-clip-name">
+            {{ c.name }}
+            {% if can_edit and not c.visible_to_players %}<span class="audio-clip-hidden-tag">hidden from players</span>{% endif %}
+          </div>
+          {% if c.description %}<div class="audio-clip-desc">{{ c.description }}</div>{% endif %}
+        </div>
+        <audio controls preload="none" src="{{ c.file_url }}" style="width:100%;max-width:360px"></audio>
+        {% if can_edit %}
+        <div class="audio-clip-actions">
+          <button type="button" class="btn-cancel" style="font-size:.75rem;padding:.25rem .6rem" onclick="audioToggleEdit({{ c.id }})">✏ Edit</button>
+          <form method="post" action="{{ ('/audio/' + c.id|string + '/delete')|wq }}" onsubmit="return confirm('Delete this clip? This can\'t be undone.');" style="display:inline">
+            <button type="submit" class="btn-cancel" style="font-size:.75rem;padding:.25rem .6rem;border-color:#a33;color:#e07">🗑 Delete</button>
+          </form>
+        </div>
+        <form method="post" action="{{ ('/audio/' + c.id|string + '/edit')|wq }}" id="audio-edit-{{ c.id }}" class="audio-clip-edit-form" style="display:none">
+          <input type="text" name="name" value="{{ c.name }}" maxlength="256" placeholder="Name"
+                 style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.82rem;border-radius:3px;width:100%;box-sizing:border-box;margin-bottom:.4rem"/>
+          <textarea name="description" maxlength="512" rows="2" placeholder="Description"
+                    style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.82rem;border-radius:3px;width:100%;box-sizing:border-box;resize:vertical;margin-bottom:.4rem">{{ c.description }}</textarea>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:.6rem">
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-dim)">
+              <input type="checkbox" name="visible_to_players" value="1" {% if c.visible_to_players %}checked{% endif %} style="width:auto"/>
+              Visible to players
+            </label>
+            <button type="submit" class="btn-save" style="font-size:.78rem;padding:.3rem .7rem">Save</button>
+          </div>
+        </form>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p style="color:var(--text-dim);font-size:.82rem;margin:0">
+      {% if can_edit %}No clips yet — upload one above.{% else %}Nothing here yet.{% endif %}
+    </p>
+    {% endif %}
+  </div>
+</div>
+
+<style>
+.audio-clip-list { display:flex; flex-direction:column; gap:.7rem; }
+.audio-clip-row { display:flex; flex-wrap:wrap; align-items:center; gap:.8rem; background:var(--bg3); border:1px solid var(--border); border-radius:5px; padding:.7rem .9rem; }
+.audio-clip-info { flex:1; min-width:160px; }
+.audio-clip-name { font-weight:600; font-size:.9rem; display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }
+.audio-clip-hidden-tag { font-size:.65rem; color:var(--neon2); border:1px solid var(--neon2); border-radius:10px; padding:.05rem .4rem; font-weight:normal; text-transform:uppercase; letter-spacing:.03em; }
+.audio-clip-desc { font-size:.78rem; color:var(--text-dim); margin-top:.15rem; }
+.audio-clip-actions { display:flex; gap:.4rem; flex-shrink:0; }
+.audio-clip-edit-form { flex-basis:100%; margin-top:.5rem; padding-top:.6rem; border-top:1px solid var(--border); }
+</style>
+<script src="/static/js/file-dropzone.js"></script>
+<script>
+function audioToggleEdit(id) {
+  const form = document.getElementById('audio-edit-' + id);
+  if (form) form.style.display = form.style.display === 'none' ? 'block' : 'none';
+}
+</script>
+{% endblock %}

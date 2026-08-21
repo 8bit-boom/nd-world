@@ -553,6 +553,24 @@ class ImageAlbum(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class AudioClip(Base):
+    """A GM-uploaded audio file (ambiance, a sound effect, an NPC voice
+    line, a recorded handout) for the /audio library — see
+    app/routers/audio.py. Unlike ImageAlbum, each row owns exactly one file
+    (no sharing/reuse across rows), so deleting the row always deletes the
+    file too. visible_to_players mirrors Entity's own default-visible
+    convention: a GM only has to act to hide a clip, not to reveal one."""
+    __tablename__ = "audio_clips"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    name = Column(String(256), nullable=False)
+    description = Column(String(512), default="")
+    file_url = Column(String(512), nullable=False)  # "/uploads/audio/<file>"
+    visible_to_players = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class GameSession(Base):
     """A per-session prep/recap log: prep checklist, NPCs featured, loot
     given, XP awarded. Named GameSession (not Session) to avoid colliding
