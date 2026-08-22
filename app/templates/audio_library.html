@@ -51,26 +51,27 @@
   </div>
 
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.5rem">
-    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">⬆ Upload a Clip</h2>
-    <form method="post" action="{{ '/audio/upload'|wq }}" enctype="multipart/form-data" style="display:flex;flex-direction:column;gap:.6rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">⬆ Upload Clips</h2>
+    <form method="post" action="{{ '/audio/upload'|wq }}" enctype="multipart/form-data" id="audio-upload-form" style="display:flex;flex-direction:column;gap:.6rem">
       {% if album %}<input type="hidden" name="album_id" value="{{ album.id }}"/>{% endif %}
       <div class="form-dropzone" data-dropzone style="padding:.5rem .7rem">
-        <input type="file" name="file" accept="audio/*" required/>
+        <input type="file" name="file" id="audio-upload-file" accept="audio/*" multiple required/>
       </div>
-      <div style="font-size:.7rem;color:var(--text-dim);margin-top:-.3rem">Up to {{ max_audio_mb }} MB.</div>
+      <div style="font-size:.7rem;color:var(--text-dim);margin-top:-.3rem">Up to {{ max_audio_mb }} MB each. Select or drop several files to upload them one after another.</div>
       <div style="display:flex;gap:.6rem;flex-wrap:wrap">
-        <input type="text" name="name" placeholder="Name (defaults to filename)" maxlength="256"
+        <input type="text" name="name" placeholder="Name (defaults to filename; ignored when uploading several at once)" maxlength="256"
                style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
       </div>
-      <textarea name="description" placeholder="Description (optional)" maxlength="512" rows="2"
+      <textarea name="description" placeholder="Description (optional; applied to every file when uploading several at once)" maxlength="512" rows="2"
                 style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px;resize:vertical"></textarea>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap">
         <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:var(--text-dim)">
           <input type="checkbox" name="visible_to_players" value="1" checked style="width:auto"/>
           Visible to players
         </label>
-        <button type="submit" class="btn-save">⬆ Upload{{ ' to ' + album.name if album else '' }}</button>
+        <button type="submit" class="btn-save" id="audio-upload-submit">⬆ Upload{{ ' to ' + album.name if album else '' }}</button>
       </div>
+      <div id="audio-upload-progress" style="display:none;font-size:.78rem;color:var(--text-dim);border-top:1px solid var(--border);padding-top:.6rem;margin-top:.2rem"></div>
     </form>
   </div>
   {% endif %}
@@ -173,6 +174,79 @@ function audioToggleEdit(id) {
 function audioToggleAlbumRename() {
   const form = document.getElementById('audio-album-rename-form');
   if (form) form.style.display = form.style.display === 'none' ? 'flex' : 'none';
+}
+
+// Bulk upload: the file input accepts multiple files, but the server route
+// (POST /audio/upload) only ever takes one — so when more than one file is
+// picked/dropped, upload them here one request at a time instead of letting
+// the browser submit them all at once. A single file still takes the plain
+// form submission below (unchanged, including the custom "name" field,
+// which only makes sense for one file at a time).
+const audioUploadForm = document.getElementById('audio-upload-form');
+if (audioUploadForm) {
+  audioUploadForm.addEventListener('submit', function (e) {
+    const files = document.getElementById('audio-upload-file').files;
+    if (files.length <= 1) return;
+    e.preventDefault();
+    audioUploadBulk(this, Array.from(files));
+  });
+}
+
+function audioUploadLabel(file) {
+  return file.name.length > 44 ? file.name.slice(0, 41) + '…' : file.name;
+}
+
+async function audioUploadBulk(form, files) {
+  const submitBtn = document.getElementById('audio-upload-submit');
+  const progress = document.getElementById('audio-upload-progress');
+  const albumIdInput = form.querySelector('[name=album_id]');
+  const description = form.querySelector('[name=description]').value;
+  const visible = form.querySelector('[name=visible_to_players]').checked;
+
+  submitBtn.disabled = true;
+  progress.style.display = 'block';
+  progress.innerHTML = '';
+
+  let okCount = 0;
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const line = document.createElement('div');
+    line.textContent = `Uploading ${i + 1} / ${files.length}: ${audioUploadLabel(file)}…`;
+    progress.appendChild(line);
+
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('description', description);
+    if (visible) fd.append('visible_to_players', '1');
+    if (albumIdInput) fd.append('album_id', albumIdInput.value);
+
+    try {
+      const res = await fetch(form.action, { method: 'POST', body: fd });
+      if (res.ok) {
+        okCount++;
+        line.textContent = `✓ ${audioUploadLabel(file)}`;
+      } else {
+        let detail = res.status;
+        try { detail = (await res.json()).detail || detail; } catch (_) { /* non-JSON error body */ }
+        line.textContent = `✗ ${audioUploadLabel(file)} — ${detail}`;
+        line.style.color = '#e07';
+      }
+    } catch (err) {
+      line.textContent = `✗ ${audioUploadLabel(file)} — upload failed`;
+      line.style.color = '#e07';
+    }
+  }
+
+  const summary = document.createElement('div');
+  summary.style.cssText = 'margin-top:.4rem;font-weight:600';
+  summary.textContent = `Done: ${okCount} / ${files.length} uploaded.`;
+  progress.appendChild(summary);
+
+  if (okCount > 0) {
+    setTimeout(() => window.location.reload(), 900);
+  } else {
+    submitBtn.disabled = false;
+  }
 }
 </script>
 {% endblock %}

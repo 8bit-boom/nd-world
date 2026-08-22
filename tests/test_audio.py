@@ -125,6 +125,41 @@ def test_audio_upload_rejects_file_over_configured_limit(client, seed, monkeypat
         db.close()
 
 
+def test_audio_upload_file_input_allows_multiple(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/audio")
+    assert '<input type="file" name="file" id="audio-upload-file" accept="audio/*" multiple required/>' in r.text
+
+
+def test_audio_bulk_upload_sequential_requests_create_separate_clips(client, seed):
+    # The browser-side bulk upload (static/js/audio_library.html's
+    # audioUploadBulk) has no server component of its own — it just POSTs to
+    # /audio/upload once per selected file, in order, reusing the shared
+    # description/visibility for each. This exercises that same sequence
+    # server-side to confirm repeated single-file uploads land as distinct
+    # clips rather than overwriting/colliding with each other.
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    for fname in ("first_track.mp3", "second_track.mp3", "third_track.mp3"):
+        r = client.post(
+            "/audio/upload",
+            data={"description": "Shared batch description", "visible_to_players": "1"},
+            files=_mp3_file(fname),
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        clips = db.query(AudioClip).filter(AudioClip.world_id == seed.world_a.id).order_by(AudioClip.name).all()
+        assert [c.name for c in clips] == ["first_track", "second_track", "third_track"]
+        assert all(c.description == "Shared batch description" for c in clips)
+        assert all(c.visible_to_players for c in clips)
+        assert len({c.file_url for c in clips}) == 3  # distinct stored files, no collision
+    finally:
+        db.close()
+
+
 def test_audio_player_only_sees_visible_clips(client, seed):
     _add_clip(seed.world_a.id, name="Visible Track", visible_to_players=True)
     _add_clip(seed.world_a.id, name="GM Secret Track", visible_to_players=False)
