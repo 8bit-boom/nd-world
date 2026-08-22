@@ -173,6 +173,18 @@
   overflow-y: auto;
 }
 #ai-input:focus { outline: 1px solid var(--neon); }
+#ai-attach-btn {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 6px;
+  width: 2.4rem;
+  align-self: stretch;
+  cursor: pointer;
+  font-size: 1rem;
+}
+#ai-attach-btn:hover { border-color: var(--neon); color: var(--neon); }
+.ai-main.drag-over { outline: 2px dashed var(--neon); outline-offset: -4px; }
 #ai-send {
   background: var(--neon);
   color: #000;
@@ -764,23 +776,29 @@
     </div>
   </div>
 
-  <div class="ai-main">
+  <div class="ai-main" id="ai-main" data-dropzone>
+    <input type="file" id="ai-attach-input" multiple accept="image/*,audio/*,.txt,.md,.markdown,.pdf" style="display:none"
+           onchange="chatAttachments.addFiles(this.files); this.value='';"/>
     <div class="ai-messages" id="ai-messages">
       <div class="ai-msg ai-msg--assistant">
         <div class="ai-bubble">
           Hello! I'm your world-building assistant for <strong>{{ world.name if world else 'your world' }}</strong>.
           I'll look up relevant lore from your world automatically as you ask questions.
-          <br><br>Ask me anything — or try a quick prompt like "create an NPC" or "write a quest hook".
+          <br><br>Ask me anything — or try a quick prompt like "create an NPC" or "write a quest hook". You can also
+          attach an image, audio clip, or document (📎, or just drop it in here).
         </div>
       </div>
     </div>
 
     <div id="ai-bar"></div>
+    <div class="ai-attach-list" id="ai-attach-list"></div>
     <div style="padding:.25rem 1.2rem 0;font-size:.72rem;color:var(--text-dim);display:flex;justify-content:space-between;align-items:center">
       <span>Model: <span id="active-model-label" style="color:var(--neon)">—</span></span>
       <span id="gen-stats" style="color:var(--text-dim)"></span>
     </div>
     <div class="ai-input-bar">
+      <button type="button" id="ai-attach-btn" title="Attach an image, audio clip, or document"
+              onclick="document.getElementById('ai-attach-input').click()">📎</button>
       <textarea id="ai-input" rows="2" placeholder="Ask anything… (Enter to send, Shift+Enter for new line)" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
       <button id="ai-send" onclick="sendMessage()">Send ↵</button>
     </div>
@@ -1428,10 +1446,14 @@
 </div>
 
 <script src="/static/js/file-dropzone.js"></script>
+<script src="/static/js/ai-attachments.js"></script>
 <script>
 const WORLD_SYSTEM = {{ world_system | tojson }};
 let history = [];
 let activeModel = "";
+const chatAttachments = ndAiAttachments(document.getElementById('ai-attach-list'), () => {
+  document.getElementById('ai-send').disabled = chatAttachments.hasPending();
+});
 let activeReader = null;
 let currentSessionId = null;
 
@@ -1893,13 +1915,14 @@ function mdToHtml(text) {
   return '<p>' + h + '</p>';
 }
 
-function addMessage(role, text, isThinking) {
+function addMessage(role, text, isThinking, attachments) {
   const box = document.getElementById('ai-messages');
   const wrap = document.createElement('div');
   wrap.className = 'ai-msg ai-msg--' + role + (isThinking ? ' ai-thinking' : '');
   const bubble = document.createElement('div');
   bubble.className = 'ai-bubble';
   bubble.innerHTML = isThinking ? text : (role === 'user' ? escHtml(text).replace(/\n/g,'<br>') : mdToHtml(text));
+  if (attachments && attachments.length) bubble.appendChild(ndAiRenderAttachmentChips(attachments));
   wrap.appendChild(bubble);
   box.appendChild(wrap);
   box.scrollTop = box.scrollHeight;
@@ -1991,12 +2014,13 @@ async function sendMessage() {
   const btn = document.getElementById('ai-send');
   const aiBar = document.getElementById('ai-bar');
   const text = input.value.trim();
-  if (!text || activeReader) return;
+  const attachments = chatAttachments.take();
+  if ((!text && !attachments.length) || activeReader) return;
   input.value = '';
   autoResize(input);
 
-  addMessage('user', text, false);
-  history.push({ role: 'user', content: text });
+  addMessage('user', text, false, attachments);
+  history.push({ role: 'user', content: text, attachments });
 
   btn.textContent = 'Stop ■';
   btn.classList.add('stopping');
@@ -2139,6 +2163,9 @@ function saveChat() {
   const lines = ['# AI Chat — ' + worldName + ' (' + date + ')\n'];
   for (const m of history) {
     lines.push(m.role === 'user' ? '**You:** ' + m.content : '**AI:** ' + m.content);
+    if (m.attachments && m.attachments.length) {
+      lines.push('*Attached: ' + m.attachments.map((a) => a.name).join(', ') + '*');
+    }
     lines.push('');
   }
   const blob = new Blob([lines.join('\n')], { type: 'text/markdown' });
@@ -2154,6 +2181,7 @@ function saveChat() {
 
 function clearChat() {
   history = [];
+  chatAttachments.take();  // drop any not-yet-sent pending attachments too
   const box = document.getElementById('ai-messages');
   box.innerHTML = '';
   addMessage('assistant', 'Chat cleared — ask me anything about your world.', false);

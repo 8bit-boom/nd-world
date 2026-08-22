@@ -1,11 +1,12 @@
 import asyncio as _asyncio
+import base64 as _base64
 import json as _json
 import csv as _csv
 import logging
 import os as _os
 import ollama as _ollama
 import urllib.request as _urllib
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
+from fastapi import APIRouter, Cookie, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse as _SR
 from pydantic import BaseModel
 from typing import List, Optional
@@ -13,9 +14,82 @@ from pathlib import Path as _Path
 from .. import ai as _ai
 from ..database import get_db
 from ..deps import get_world_ctx
+from ..uploads import copy_upload_bounded, unique_upload_filename
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 _log = logging.getLogger("nd.ai.router")
+
+# Reused by the chat/ask-ai attachment picker (image/audio/document drag-and-
+# drop onto a chat message) — kept separate from the audio library's own
+# _ALLOWED_EXTS (app/routers/audio.py) since that set is scoped to what an
+# <audio> tag can play back, not what's reasonable to attach for reference.
+_ATTACH_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+_ATTACH_DOC_EXTS = {".txt", ".md", ".markdown", ".pdf"}
+_ATTACH_AUDIO_EXTS = {".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus", ".webm", ".aac"}
+_ATTACH_SUBDIR = "ai_attachments"
+# Env-overridable like MAX_UPLOAD_BYTES/MAX_AUDIO_UPLOAD_BYTES — a dropped
+# document or portrait-sized image should comfortably fit under 25 MB.
+_MAX_ATTACHMENT_BYTES = int(_os.environ.get("MAX_AI_ATTACHMENT_BYTES", str(25 * 1024 * 1024)))
+# How much of a document's extracted text gets folded into the prompt — long
+# enough for a handout or a few rulebook pages, bounded so one attachment
+# can't blow the model's context window on its own.
+_MAX_ATTACHMENT_TEXT_CHARS = 12000
+
+
+def _attachment_kind(ext: str) -> Optional[str]:
+    if ext in _ATTACH_IMAGE_EXTS:
+        return "image"
+    if ext in _ATTACH_DOC_EXTS:
+        return "document"
+    if ext in _ATTACH_AUDIO_EXTS:
+        return "audio"
+    return None
+
+
+def _uploads_root() -> _Path:
+    return _Path(_os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+
+
+def _attachment_disk_path(url: str) -> Optional[_Path]:
+    """Resolve an /uploads/... URL back to a file under this world's uploads
+    root, refusing anything that isn't (a nonexistent file, or a path that
+    escapes the uploads dir via a crafted "../" — same guard shape as
+    audio.py's _delete_clip_file)."""
+    if not url.startswith("/uploads/"):
+        return None
+    root = _uploads_root().resolve()
+    try:
+        path = (root / url[len("/uploads/"):]).resolve()
+    except (OSError, RuntimeError):
+        return None
+    return path if path.is_relative_to(root) and path.is_file() else None
+
+
+def _extract_document_text(path: _Path, ext: str) -> str:
+    if ext == ".pdf":
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(str(path))
+            return "\n\n".join((page.extract_text() or "") for page in reader.pages)
+        except Exception as exc:
+            _log.warning("PDF text extraction failed for %s: %s", path, exc)
+            return ""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _require_ask_ai_access(request: Request, db, active_world) -> None:
+    """Same permission shape as the rest of this router's GM/player split —
+    a GM always may, a player only if their world has opted in via
+    World.players_can_ask_ai (off by default, app/models.py)."""
+    user = getattr(request.state, "user", None)
+    if user and user.is_gm:
+        return
+    world, _ = get_world_ctx(request, db, active_world)
+    if not (world and world.players_can_ask_ai):
+        raise HTTPException(403)
 
 
 async def _with_heartbeat(agen, interval: float = 12.0):
@@ -49,9 +123,20 @@ async def _with_heartbeat(agen, interval: float = 12.0):
         task.cancel()
 
 
+class ChatAttachment(BaseModel):
+    kind: str  # "image" | "document" | "audio"
+    url: str
+    name: str = ""
+    # Extracted text (documents only) — filled in by /attachments/upload at
+    # upload time and just passed back through here so this endpoint never
+    # has to re-read/re-parse the file on every turn of a conversation.
+    text: str = ""
+
+
 class ChatMessage(BaseModel):
     role: str
     content: str
+    attachments: List[ChatAttachment] = []
 
 
 class ChatBody(BaseModel):
@@ -64,10 +149,79 @@ class ChatBody(BaseModel):
     surface: str = "chat"
 
 
+def _build_ollama_messages(messages: List[ChatMessage]) -> list[dict]:
+    """Turn the chat's {role, content, attachments} messages into the plain
+    {role, content[, images]} dicts app.ai.generate_chat/stream_chat forward
+    straight to Ollama. A document attachment's extracted text is folded
+    into the message content (same idea as how entities/detail.html already
+    text-interpolates entity context into a prompt); an image attachment's
+    bytes are base64-encoded into Ollama's per-message `images` field (only
+    used if the configured model is vision-capable — a text-only model just
+    ignores it); audio isn't transcribed (no speech-to-text in this app), so
+    it's noted by name only, honestly, rather than silently dropped."""
+    out = []
+    for m in messages:
+        content = m.content
+        images = []
+        for att in m.attachments:
+            if att.kind == "document" and att.text:
+                snippet = att.text[:_MAX_ATTACHMENT_TEXT_CHARS]
+                content += f"\n\n---\nAttached file: {att.name or 'document'}\n\n{snippet}\n---"
+            elif att.kind == "audio":
+                content += (
+                    f"\n\n[Attached audio file: {att.name or 'audio clip'} — "
+                    "not transcribed; mentioned for context only]"
+                )
+            elif att.kind == "image":
+                path = _attachment_disk_path(att.url)
+                if path:
+                    images.append(_base64.b64encode(path.read_bytes()).decode())
+        d = {"role": m.role, "content": content}
+        if images:
+            d["images"] = images
+        out.append(d)
+    return out
+
+
 @router.post("/chat")
 async def ai_chat(body: ChatBody):
-    msgs = [{"role": m.role, "content": m.content} for m in body.messages]
+    msgs = _build_ollama_messages(body.messages)
     return {"result": await _ai.generate_chat(msgs, body.system, body.model)}
+
+
+@router.post("/attachments/upload")
+async def ai_attachment_upload(
+    request: Request,
+    file: UploadFile = File(...),
+    db=Depends(get_db),
+    active_world: Optional[str] = Cookie(None),
+):
+    """Upload a file to attach to the next chat message on /ai or an
+    entity's Ask AI panel. Returns immediately with the extracted text for a
+    document so the client never has to re-upload/re-parse it; images and
+    audio are just stored and referenced by URL, read back from disk (see
+    _build_ollama_messages) only once the message is actually sent."""
+    _require_ask_ai_access(request, db, active_world)
+    if not file or not file.filename:
+        raise HTTPException(400, "No file uploaded")
+    ext = _Path(file.filename).suffix.lower()
+    kind = _attachment_kind(ext)
+    if not kind:
+        allowed = sorted(_ATTACH_IMAGE_EXTS | _ATTACH_DOC_EXTS | _ATTACH_AUDIO_EXTS)
+        raise HTTPException(400, f"Unsupported file type {ext!r} — allowed: {', '.join(allowed)}")
+
+    target_dir = _uploads_root() / _ATTACH_SUBDIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / unique_upload_filename(file.filename, ext)
+    copy_upload_bounded(file, dest, max_bytes=_MAX_ATTACHMENT_BYTES)
+
+    text = _extract_document_text(dest, ext) if kind == "document" else ""
+    return {
+        "kind": kind,
+        "url": f"/uploads/{_ATTACH_SUBDIR}/{dest.name}",
+        "name": file.filename,
+        "text": text,
+    }
 
 
 @router.post("/stream")
@@ -77,13 +231,9 @@ async def ai_stream(
     db=Depends(get_db),
     active_world: Optional[str] = Cookie(None),
 ):
-    user = getattr(request.state, "user", None)
-    if not (user and user.is_gm):
-        world, _ = get_world_ctx(request, db, active_world)
-        if not (world and world.players_can_ask_ai):
-            raise HTTPException(403)
+    _require_ask_ai_access(request, db, active_world)
 
-    msgs = [{"role": m.role, "content": m.content} for m in body.messages]
+    msgs = _build_ollama_messages(body.messages)
     requested = body.model or _ai.get_defaults().get(body.surface, "")
     _log.info("stream requested model=%r surface=%r msgs=%d", requested, body.surface, len(body.messages))
 

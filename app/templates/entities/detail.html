@@ -188,12 +188,17 @@
     </details>
   </section>
 
-  <details class="ai-panel">
+  <details class="ai-panel" id="ep-panel" data-dropzone>
     <summary>🤖 Ask AI about {{ entity.name }}</summary>
     <div class="ai-panel-body">
+      <input type="file" id="ep-attach-input" multiple accept="image/*,audio/*,.txt,.md,.markdown,.pdf" style="display:none"
+             onchange="epAttachments.addFiles(this.files); this.value='';"/>
       <div class="ep-messages" id="ep-messages"></div>
       <div class="ep-status-row"><span id="ep-stats"></span></div>
+      <div class="ai-attach-list" id="ep-attach-list"></div>
       <div class="ep-bar">
+        <button type="button" id="ep-attach-btn" title="Attach an image, audio clip, or document"
+                onclick="document.getElementById('ep-attach-input').click()">📎</button>
         <textarea id="ep-input" rows="1" placeholder="Ask about this entity… (Enter to send)" onkeydown="epKey(event)" oninput="epResize(this)"></textarea>
         <button id="ep-send" onclick="epSend()">Ask</button>
       </div>
@@ -258,8 +263,14 @@
 .ai-panel .ep-bar textarea:focus { outline:1px solid var(--neon); }
 .ai-panel .ep-bar button { background:var(--neon); color:#000; border:none; border-radius:5px; padding:.4rem .9rem; font-weight:700; cursor:pointer; font-size:.85rem; white-space:nowrap; }
 .ai-panel .ep-bar button:disabled { opacity:.45; cursor:not-allowed; }
+.ai-panel .ep-bar #ep-attach-btn { background:var(--bg3); color:var(--text-dim); border:1px solid var(--border); font-weight:400; padding:.4rem .6rem; }
+.ai-panel .ep-bar #ep-attach-btn:hover { border-color:var(--neon); color:var(--neon); }
+.ai-panel .ai-attach-list { padding:0 0 .4rem; }
+.ai-panel.drag-over { outline:2px dashed var(--neon); outline-offset:-3px; }
 </style>
 
+<script src="/static/js/file-dropzone.js"></script>
+<script src="/static/js/ai-attachments.js"></script>
 <script>
 let _activeKind = 'all';
 function setKindFilter(btn, kind) {
@@ -302,16 +313,20 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
 
   const EP_SYSTEM = "You are a world-building assistant. Answer questions about the entity provided. Be concise and in-world.";
   let epHistory = [];
+  window.epAttachments = ndAiAttachments(document.getElementById('ep-attach-list'), () => {
+    document.getElementById('ep-send').disabled = epAttachments.hasPending();
+  });
 
   window.epSend = async function() {
     const inp = document.getElementById('ep-input');
     const btn = document.getElementById('ep-send');
     const statsEl = document.getElementById('ep-stats');
     const text = inp.value.trim();
-    if (!text || btn.disabled) return;
+    const attachments = epAttachments.take();
+    if ((!text && !attachments.length) || btn.disabled) return;
     inp.value = ''; epResize(inp);
-    epAdd('user', text);
-    epHistory.push({ role: 'user', content: text });
+    epAdd('user', text, false, attachments);
+    epHistory.push({ role: 'user', content: text, attachments });
     btn.disabled = true;
     const bubble = epAdd('assistant', '…', true);
     statsEl.textContent = '⏳ Connecting…';
@@ -381,13 +396,14 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
     } finally { btn.disabled = false; inp.focus(); }
   };
 
-  function epAdd(role, text, thinking) {
+  function epAdd(role, text, thinking, attachments) {
     const box = document.getElementById('ep-messages');
     const w = document.createElement('div');
     w.className = 'ai-msg ai-msg--' + role + (thinking ? ' ai-thinking' : '');
     const b = document.createElement('div');
     b.className = 'ai-bubble';
     b.innerHTML = role === 'user' ? _escHtml(text) : (thinking ? text : _mdToHtml(text));
+    if (attachments && attachments.length) b.appendChild(ndAiRenderAttachmentChips(attachments));
     w.appendChild(b); box.appendChild(w);
     box.scrollTop = box.scrollHeight;
     return b;

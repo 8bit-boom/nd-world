@@ -85,6 +85,7 @@ CASES = [
     ("GET", "/kind/character/download.zip", True),
     ("GET", "/kind/character/download-selected.zip", True),
     ("POST", "/api/ai/stream", True),
+    ("POST", "/api/ai/attachments/upload", True),
     ("GET", "/uploads/portraits/x.png", True),
     ("GET", "/maps/some-map", True),
     ("GET", "/worlds/switch/some-world", True),

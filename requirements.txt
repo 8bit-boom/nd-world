@@ -13,3 +13,4 @@ pyotp==2.10.0
 qrcode==8.2
 mcp==1.29.0
 sse-starlette==2.4.1
+pypdf==6.16.1

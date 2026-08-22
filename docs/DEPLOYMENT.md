@@ -134,8 +134,9 @@ rejected with a page that says **"413 Payload Too Large" / cloudflare** at
 the bottom hit that edge limit before it ever reached nd-world — it's not
 something `.env` or nd-world's own settings can raise. nd-world's own
 per-upload caps sit *below* whatever Cloudflare allows through (see
-`MAX_UPLOAD_BYTES` and `MAX_AUDIO_UPLOAD_BYTES` in `.env.example`), so raise
-both if you need bigger files end to end.
+`MAX_UPLOAD_BYTES`, `MAX_AUDIO_UPLOAD_BYTES`, and `MAX_AI_ATTACHMENT_BYTES`
+in `.env.example`), so raise the relevant one if you need bigger files end
+to end.
 
 ### Option 2: Port forwarding + reverse proxy (more advanced)
 

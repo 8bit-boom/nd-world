@@ -121,14 +121,37 @@ def test_import_page_has_three_dropzones(client, seed):
     assert r.text.count("data-dropzone") == 3
 
 
-def test_ai_chat_page_has_three_dropzones(client, seed):
+def test_ai_chat_page_has_four_dropzones(client, seed):
     """ai_chat.html has 3 independent reference-image pickers (img2img,
-    ControlNet, IP-Adapter)."""
+    ControlNet, IP-Adapter) plus the chat compose area's own attachment
+    dropzone (static/js/ai-attachments.js)."""
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/ai")
     assert r.status_code == 200
-    assert r.text.count("data-dropzone") == 3
+    assert r.text.count("data-dropzone") == 4
+
+
+def test_entity_detail_ask_ai_panel_has_dropzone(client, seed):
+    """The Ask AI panel on an entity's detail page (entities/detail.html)
+    gets the same attachment dropzone as the main /ai chat page."""
+    from app.database import SessionLocal as SL
+    from app.models import Entity
+    db = SL()
+    try:
+        e = Entity(world_id=seed.world_a.id, kind="character", name="Dropzone NPC")
+        db.add(e)
+        db.commit()
+        db.refresh(e)
+        entity_id = e.id
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/entity/{entity_id}")
+    assert r.status_code == 200
+    assert "data-dropzone" in r.text
+    assert "/static/js/ai-attachments.js" in r.text
 
 
 def test_schematic_embed_tool_intentionally_not_wrapped(client, seed):
