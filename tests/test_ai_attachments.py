@@ -137,16 +137,41 @@ def test_document_attachment_text_is_folded_into_content():
     assert "images" not in built[0]
 
 
-def test_audio_attachment_is_noted_but_not_sent_as_images():
+def test_audio_attachment_is_noted_and_not_sent_as_images(tmp_path, monkeypatch):
+    """No disk path resolves (no such file), so the attachment can only
+    produce the text note — confirms it never gets misfiled into `images`
+    regardless of whether the encode step succeeds."""
     from app.routers.ai import ChatAttachment, ChatMessage, _build_ollama_messages
 
+    monkeypatch.setattr(ai_router, "_uploads_root", lambda: tmp_path)
     msgs = [ChatMessage(role="user", content="Listen to this", attachments=[
         ChatAttachment(kind="audio", url="/uploads/ai_attachments/x.mp3", name="growl.mp3"),
     ])]
     built = _build_ollama_messages(msgs)
     assert "growl.mp3" in built[0]["content"]
-    assert "not transcribed" in built[0]["content"]
     assert "images" not in built[0]
+    assert "audio" not in built[0]  # file doesn't actually exist on disk
+
+
+def test_audio_attachment_is_base64_encoded_into_audio_field(tmp_path, monkeypatch):
+    """Best-effort real audio support (e.g. for an audio-native model like
+    Gemma 3n) — see _build_ollama_messages' docstring for why an unrecognized
+    `audio` key still reaches Ollama's server instead of being stripped."""
+    from app.routers.ai import ChatAttachment, ChatMessage, _build_ollama_messages
+    import base64
+
+    monkeypatch.setattr(ai_router, "_uploads_root", lambda: tmp_path)
+    audio_dir = tmp_path / "ai_attachments"
+    audio_dir.mkdir()
+    (audio_dir / "growl.mp3").write_bytes(_MP3_BYTES)
+
+    msgs = [ChatMessage(role="user", content="Listen to this", attachments=[
+        ChatAttachment(kind="audio", url="/uploads/ai_attachments/growl.mp3", name="growl.mp3"),
+    ])]
+    built = _build_ollama_messages(msgs)
+    assert built[0]["audio"] == [base64.b64encode(_MP3_BYTES).decode()]
+    assert "images" not in built[0]
+    assert "growl.mp3" in built[0]["content"]
 
 
 def test_image_attachment_is_base64_encoded_into_images_field(tmp_path, monkeypatch):

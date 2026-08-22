@@ -151,27 +151,41 @@ class ChatBody(BaseModel):
 
 def _build_ollama_messages(messages: List[ChatMessage]) -> list[dict]:
     """Turn the chat's {role, content, attachments} messages into the plain
-    {role, content[, images]} dicts app.ai.generate_chat/stream_chat forward
-    straight to Ollama. A document attachment's extracted text is folded
-    into the message content (same idea as how entities/detail.html already
-    text-interpolates entity context into a prompt); an image attachment's
-    bytes are base64-encoded into Ollama's per-message `images` field (only
-    used if the configured model is vision-capable — a text-only model just
-    ignores it); audio isn't transcribed (no speech-to-text in this app), so
-    it's noted by name only, honestly, rather than silently dropped."""
+    {role, content[, images][, audio]} dicts app.ai.generate_chat/stream_chat
+    forward straight to Ollama. A document attachment's extracted text is
+    folded into the message content (same idea as how entities/detail.html
+    already text-interpolates entity context into a prompt); an image
+    attachment's bytes are base64-encoded into Ollama's per-message `images`
+    field. Audio is base64-encoded into a same-shaped `audio` field on a
+    best-effort basis — this app has no speech-to-text of its own, so this
+    only does anything for a genuinely audio-native model (e.g. a Gemma 3n-
+    style model with an audio tower); the installed `ollama` client has no
+    typed field for this (only `images` is declared on its Message model),
+    but it validates messages permissively enough that an extra `audio` key
+    still passes through untouched to the server (verified against the
+    installed client — see ChatRequest.messages' Union[Mapping[str, Any],
+    Message] typing) rather than being silently stripped. A model without
+    audio support just never looks at the key, so this is harmless either
+    way — and the text note below still gives every model *some* context
+    about the attachment regardless of whether it can actually hear it."""
     out = []
     for m in messages:
         content = m.content
         images = []
+        audio = []
         for att in m.attachments:
             if att.kind == "document" and att.text:
                 snippet = att.text[:_MAX_ATTACHMENT_TEXT_CHARS]
                 content += f"\n\n---\nAttached file: {att.name or 'document'}\n\n{snippet}\n---"
             elif att.kind == "audio":
                 content += (
-                    f"\n\n[Attached audio file: {att.name or 'audio clip'} — "
-                    "not transcribed; mentioned for context only]"
+                    f"\n\n[Attached audio file: {att.name or 'audio clip'} — sent to the "
+                    "model directly for models with audio input support; noted here for "
+                    "context either way]"
                 )
+                path = _attachment_disk_path(att.url)
+                if path:
+                    audio.append(_base64.b64encode(path.read_bytes()).decode())
             elif att.kind == "image":
                 path = _attachment_disk_path(att.url)
                 if path:
@@ -179,6 +193,8 @@ def _build_ollama_messages(messages: List[ChatMessage]) -> list[dict]:
         d = {"role": m.role, "content": content}
         if images:
             d["images"] = images
+        if audio:
+            d["audio"] = audio
         out.append(d)
     return out
 
