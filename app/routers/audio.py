@@ -12,11 +12,14 @@ express "GET is fine, POST isn't" for a single path — main.py's auth_gate
 already lets any POST through to whatever _is_player_safe allows, so the
 real gate has to live here."""
 import os
+import re
+import shutil
+import time
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -46,6 +49,40 @@ _ALLOWED_EXTS = {".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus", ".web
 # the request ever reaches this app) may still reject a large upload before
 # this limit is even checked; raising this alone doesn't raise that one.
 _MAX_AUDIO_BYTES = int(os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(200 * 1024 * 1024)))
+
+# A big audio file (a whole session recording, a long ambiance loop) can
+# still be blocked by a reverse proxy/CDN's own per-request body cap even
+# once _MAX_AUDIO_BYTES itself is raised — Cloudflare's free tier is a fixed
+# 100 MB with no way to raise it (see docs/DEPLOYMENT.md's "Upload size
+# limit" section). The browser-side upload (static/js's audioUploadChunked
+# in audio_library.html) works around that by splitting a large file into
+# sub-100MB parts and sending each as its own request; these two routes
+# receive those parts and reassemble them server-side, so the result is one
+# ordinary AudioClip identical to what a small direct upload would create.
+_CHUNK_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_MAX_CHUNK_INDEX = 2000  # generous upper bound on parts per upload — catches a runaway/misbehaving client, not a real ceiling on file size
+_STALE_CHUNK_SESSION_SECONDS = 24 * 60 * 60  # sweep an abandoned session (browser closed mid-upload) next time a new one starts, rather than running a background job for this
+
+
+def _chunks_root() -> Path:
+    return _UPLOADS_DIR / "audio" / "_chunks"
+
+
+def _chunk_session_dir(upload_id: str) -> Path:
+    return _chunks_root() / upload_id
+
+
+def _sweep_stale_chunk_sessions() -> None:
+    root = _chunks_root()
+    if not root.is_dir():
+        return
+    cutoff = time.time() - _STALE_CHUNK_SESSION_SECONDS
+    for child in root.iterdir():
+        try:
+            if child.is_dir() and child.stat().st_mtime < cutoff:
+                shutil.rmtree(child, ignore_errors=True)
+        except OSError:
+            pass
 
 
 def _is_gm(request: Request) -> bool:
@@ -285,6 +322,107 @@ async def audio_upload(
     db.add(clip)
     db.commit()
     return RedirectResponse(f"/audio/albums/{target_album_id}" if target_album_id else "/audio", status_code=303)
+
+
+@router.post("/audio/upload/chunk")
+async def audio_upload_chunk(
+    request: Request, file: UploadFile = File(...),
+    upload_id: str = Form(...), chunk_index: int = Form(...),
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Receive one part of a large audio file (see the _CHUNK_ID_RE block
+    above) and stash it on disk under its upload_id; /audio/upload/complete
+    reassembles all parts once every one has arrived."""
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    if not _CHUNK_ID_RE.match(upload_id):
+        raise HTTPException(400, "Invalid upload id")
+    if not (0 <= chunk_index <= _MAX_CHUNK_INDEX):
+        raise HTTPException(400, "Invalid chunk index")
+
+    session_dir = _chunk_session_dir(upload_id)
+    if chunk_index == 0 and not session_dir.exists():
+        _sweep_stale_chunk_sessions()
+    session_dir.mkdir(parents=True, exist_ok=True)
+    dest = session_dir / f"{chunk_index:06d}.part"
+    # A single part can never legitimately exceed the whole clip's own cap.
+    copy_upload_bounded(file, dest, max_bytes=_MAX_AUDIO_BYTES)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/audio/upload/complete")
+async def audio_upload_complete(
+    request: Request, upload_id: str = Form(...), filename: str = Form(...),
+    total_chunks: int = Form(...), name: str = Form(""),
+    description: str = Form(""), visible_to_players: Optional[str] = Form(None),
+    album_id: str = Form(""),
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Reassemble the parts uploaded via /audio/upload/chunk into one file
+    and create the AudioClip — same validation and result shape as the
+    single-request /audio/upload, just fed from disk instead of the request
+    body directly."""
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    if not _CHUNK_ID_RE.match(upload_id):
+        raise HTTPException(400, "Invalid upload id")
+    if not filename:
+        raise HTTPException(400, "No filename given")
+    ext = Path(filename).suffix.lower()
+    if ext not in _ALLOWED_EXTS:
+        raise HTTPException(400, f"Unsupported file type {ext!r} — allowed: {', '.join(sorted(_ALLOWED_EXTS))}")
+    if not (1 <= total_chunks <= _MAX_CHUNK_INDEX + 1):
+        raise HTTPException(400, "Invalid total_chunks")
+    if db.query(AudioClip).filter(AudioClip.world_id == world.id).count() >= _MAX_CLIPS_PER_WORLD:
+        raise HTTPException(400, f"This world already has the maximum of {_MAX_CLIPS_PER_WORLD} audio clips.")
+
+    session_dir = _chunk_session_dir(upload_id)
+    parts = [session_dir / f"{i:06d}.part" for i in range(total_chunks)]
+    if not session_dir.is_dir() or not all(p.is_file() for p in parts):
+        raise HTTPException(400, "Upload incomplete — one or more parts are missing. Please retry the upload.")
+
+    target_album_id = None
+    album_id = (album_id or "").strip()
+    if album_id.isdigit():
+        target_album_id = _album_or_404(db, world.id, int(album_id)).id
+
+    target_dir = _UPLOADS_DIR / "audio"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / unique_upload_filename(filename, ext)
+    try:
+        total_bytes = 0
+        with dest.open("wb") as out:
+            for part in parts:
+                with part.open("rb") as pf:
+                    while True:
+                        buf = pf.read(1024 * 1024)
+                        if not buf:
+                            break
+                        total_bytes += len(buf)
+                        if total_bytes > _MAX_AUDIO_BYTES:
+                            raise HTTPException(
+                                413, f"File too large — limit is {_MAX_AUDIO_BYTES // (1024 * 1024)} MB"
+                            )
+                        out.write(buf)
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
+    finally:
+        shutil.rmtree(session_dir, ignore_errors=True)
+
+    clip_name = name.strip()[:_MAX_NAME] or Path(filename).stem[:_MAX_NAME] or "Untitled clip"
+    clip = AudioClip(
+        world_id=world.id, name=clip_name, description=description.strip()[:_MAX_DESCRIPTION],
+        file_url=f"/uploads/audio/{dest.name}", visible_to_players=bool(visible_to_players),
+        album_id=target_album_id,
+    )
+    db.add(clip)
+    db.commit()
+    return JSONResponse({"ok": True})
 
 
 @router.post("/audio/{clip_id}/edit")

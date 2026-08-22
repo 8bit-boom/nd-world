@@ -129,14 +129,18 @@ over a size that depends on your Cloudflare plan (Free is capped at 100 MB
 with no way to raise it; paid plans can raise the cap from the dashboard via
 **Rules → Configuration Rules → Maximum Upload Size** — see
 [Cloudflare's own docs](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-4xx-errors/error-413/)
-for current numbers). A big upload (a long audio track, a large map image)
-rejected with a page that says **"413 Payload Too Large" / cloudflare** at
-the bottom hit that edge limit before it ever reached nd-world — it's not
-something `.env` or nd-world's own settings can raise. nd-world's own
-per-upload caps sit *below* whatever Cloudflare allows through (see
-`MAX_UPLOAD_BYTES`, `MAX_AUDIO_UPLOAD_BYTES`, and `MAX_AI_ATTACHMENT_BYTES`
-in `.env.example`), so raise the relevant one if you need bigger files end
-to end.
+for current numbers). A big upload (a large map image, most Audio Library
+uploads) rejected with a page that says **"413 Payload Too Large" /
+cloudflare** at the bottom hit that edge limit before it ever reached
+nd-world — it's not something `.env` or nd-world's own settings can raise.
+nd-world's own per-upload caps sit *below* whatever Cloudflare allows
+through (see `MAX_UPLOAD_BYTES`, `MAX_AUDIO_UPLOAD_BYTES`, and
+`MAX_AI_ATTACHMENT_BYTES` in `.env.example`), so raise the relevant one if
+you need bigger files end to end. The Audio Library (`/audio`) is the one
+exception: any file over 100 MB is automatically split into smaller parts
+in the browser before upload and reassembled on the server, so a long
+session recording or ambiance track gets through Cloudflare's fixed cap
+regardless of plan — nothing to configure for this one.
 
 ### Option 2: Port forwarding + reverse proxy (more advanced)
 
