@@ -654,6 +654,26 @@ class ApiToken(Base):
     user = relationship("User")
 
 
+class TrustedDevice(Base):
+    """A "trust this device for 30 days" 2FA opt-out, set from the
+    /login/2fa checkbox — see app/routers/auth.py's _begin_2fa_or_login and
+    app/totp.py's trust-token helpers. Only the sha256 hash of the raw
+    cookie value is ever stored (same pattern as ApiToken), so a stolen DB
+    row alone can't be replayed as a working cookie. Deleting the row (via
+    expiry, or an explicit revoke from /account) makes this device prompt
+    for a 2FA code again on its next login."""
+    __tablename__ = "trusted_devices"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)  # sha256 hex digest
+    label = Column(String(256), default="")  # raw User-Agent at creation, so a GM can tell devices apart
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User")
+
+
 class WorldCalendar(Base):
     """One custom in-world calendar per world — era name, current day, and
     configurable month lengths. Lazily created on first /calendar visit."""

@@ -92,3 +92,15 @@ def consume_backup_code(user, code: str) -> bool:
         user.totp_backup_codes_json = json.dumps(hashes)
         return True
     return False
+
+
+# ── "Trust this device" (TrustedDevice in app/models.py) ────────────────────
+
+def generate_trust_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def hash_trust_token(raw_token: str) -> str:
+    """sha256, not PBKDF2 — like ApiToken's token_hash, this is already a
+    high-entropy generated value (not a user-chosen password)."""
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()

@@ -31,6 +31,10 @@
         <label>Code</label>
         <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus>
       </div>
+      <label style="display:flex;align-items:center;gap:.5rem;font-size:.8rem;color:var(--text-dim);margin-bottom:.9rem;letter-spacing:normal">
+        <input type="checkbox" name="trust_device" value="1" style="width:auto">
+        Trust this device for 30 days
+      </label>
       <button type="submit" class="btn-primary auth-submit">Verify</button>
     </form>
   </div>

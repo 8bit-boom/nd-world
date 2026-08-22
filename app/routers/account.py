@@ -5,6 +5,7 @@ controls "my own account."
 """
 import json
 import time
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, Form, Request
@@ -15,7 +16,7 @@ from .. import auth
 from .. import totp as _totp
 from ..database import get_db
 from ..deps import get_world_ctx
-from ..models import ApiToken, User
+from ..models import ApiToken, TrustedDevice, User
 from ..templating import templates
 
 router = APIRouter()
@@ -61,11 +62,17 @@ def _render(request: Request, db: Session, user: User, active_world: Optional[st
             new_token: str = None, totp_error: str = None, new_backup_codes: list = None):
     world, worlds = get_world_ctx(request, db, active_world)
     tokens = db.query(ApiToken).filter(ApiToken.user_id == user.id).order_by(ApiToken.created_at.desc()).all()
+    trusted_devices = (
+        db.query(TrustedDevice)
+        .filter(TrustedDevice.user_id == user.id, TrustedDevice.expires_at > datetime.utcnow())
+        .order_by(TrustedDevice.created_at.desc()).all()
+    )
     return templates.TemplateResponse("account.html", {
         "request": request, "world": world, "worlds": worlds,
         "user": user, "name_error": name_error, "password_error": password_error,
         "tokens": tokens, "new_token": new_token,
         "totp_error": totp_error, "new_backup_codes": new_backup_codes,
+        "trusted_devices": trusted_devices,
     }, status_code=status_code)
 
 
@@ -114,8 +121,12 @@ def account_change_password(request: Request, current_password: str = Form(""),
     user.password_hash = auth.hash_password(new_password)
     # Invalidate every other session for this user (see auth_gate in main.py) —
     # bump first, then immediately re-stamp *this* session so the request that
-    # just changed the password doesn't log itself out too.
+    # just changed the password doesn't log itself out too. A changed password
+    # also revokes every "trust this device" cookie — same reasoning as
+    # bumping session_version, so a stale trusted device can't skip 2FA past
+    # whatever prompted the password change.
     user.session_version += 1
+    db.query(TrustedDevice).filter(TrustedDevice.user_id == user.id).delete()
     db.commit()
     request.session["session_version"] = user.session_version
     return RedirectResponse("/account?saved=password", status_code=303)
@@ -186,6 +197,10 @@ def account_2fa_disable(request: Request, current_password: str = Form(""),
     user.totp_enabled = False
     user.totp_secret = None
     user.totp_backup_codes_json = "[]"
+    # No 2FA left to skip, and re-enabling later should start from a clean
+    # slate rather than silently trusting whatever devices were trusted
+    # under the old setup.
+    db.query(TrustedDevice).filter(TrustedDevice.user_id == user.id).delete()
     db.commit()
     return RedirectResponse("/account?saved=2fa-off", status_code=303)
 
@@ -235,5 +250,19 @@ def account_token_revoke(token_id: int, db: Session = Depends(get_db),
     token = db.query(ApiToken).filter(ApiToken.id == token_id, ApiToken.user_id == user.id).first()
     if token:
         db.delete(token)
+        db.commit()
+    return RedirectResponse("/account", status_code=303)
+
+
+@router.post("/account/trusted-devices/{device_id}/revoke")
+def account_trusted_device_revoke(device_id: int, db: Session = Depends(get_db),
+                                   user: User = Depends(auth.require_login)):
+    # Scoped to this user's own trusted devices — a player can't revoke
+    # someone else's by guessing an id. This only removes the DB row (the
+    # cookie itself, if it's the same browser, just stops matching
+    # anything on the next login and gets silently ignored).
+    device = db.query(TrustedDevice).filter(TrustedDevice.id == device_id, TrustedDevice.user_id == user.id).first()
+    if device:
+        db.delete(device)
         db.commit()
     return RedirectResponse("/account", status_code=303)

@@ -89,6 +89,31 @@
     {% if totp_error %}
     <p style="color:var(--neon2);font-size:.82rem;margin-top:.5rem">{{ totp_error }}</p>
     {% endif %}
+
+    <h3 style="font-size:.8rem;color:var(--text-dim);margin:1.1rem 0 .5rem;font-weight:normal">Trusted devices</h3>
+    {% if trusted_devices %}
+    <div style="display:flex;flex-direction:column;gap:.4rem;margin-bottom:.5rem">
+      {% for d in trusted_devices %}
+      <div style="display:flex;align-items:center;gap:.6rem;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:.5rem .7rem;font-size:.82rem">
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ d.label }}">
+          {{ d.label or 'Unknown device' }}
+          <span style="color:var(--text-dim)">
+            — trusted until {{ d.expires_at.strftime('%Y-%m-%d') if d.expires_at else '' }}
+          </span>
+        </span>
+        <form method="post" action="/account/trusted-devices/{{ d.id }}/revoke"
+              onsubmit="return confirm('Revoke trust for this device? It will need a 2FA code again next time.')">
+          <button type="submit" style="background:transparent;border:1px solid #c44;color:#c44;border-radius:3px;padding:.2rem .6rem;font-size:.78rem;cursor:pointer">Revoke</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p style="font-size:.78rem;color:var(--text-dim);margin-bottom:.5rem">
+      No trusted devices — check "Trust this device for 30 days" at the 2FA prompt to skip the code
+      on that device until it expires.
+    </p>
+    {% endif %}
     {% else %}
     <p style="font-size:.78rem;color:var(--text-dim);margin-bottom:.8rem">
       Off — anyone who has your password can sign in. Turning this on requires a code from an

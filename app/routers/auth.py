@@ -1,5 +1,6 @@
+import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Cookie, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -8,10 +9,17 @@ from sqlalchemy.orm import Session
 from .. import auth
 from .. import totp as _totp
 from ..database import get_db
-from ..models import InviteCode, User, World, WorldMembership
+from ..models import InviteCode, TrustedDevice, User, World, WorldMembership
 from ..templating import templates
 
 router = APIRouter()
+
+# Duplicated locally rather than imported from main.py — main.py imports this
+# router, so the reverse would be circular (same rationale as every router's
+# own local copy of a main.py-defined constant elsewhere in this app).
+_COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").strip().lower() == "true"
+_TRUST_COOKIE_NAME = "trusted_device"
+_TRUST_DAYS = 30
 
 # ── Failed-login throttling ───────────────────────────────────────────────────
 # Process-local, which is sufficient because the Dockerfile starts uvicorn with a
@@ -86,14 +94,33 @@ def _rl_2fa_clear(user_id: int) -> None:
     _failed_2fa.pop(user_id, None)
 
 
-def _begin_2fa_or_login(request: Request, user: User) -> bool:
+def _is_device_trusted(request: Request, db: Session, user: User) -> bool:
+    """True if the request carries a still-valid "trust this device"
+    cookie for `user` specifically — see login_2fa_submit's trust_device
+    checkbox. Expired rows are opportunistically cleaned up here rather
+    than needing a separate sweep job."""
+    raw = request.cookies.get(_TRUST_COOKIE_NAME)
+    if not raw:
+        return False
+    token_hash = _totp.hash_trust_token(raw)
+    device = db.query(TrustedDevice).filter(TrustedDevice.token_hash == token_hash).first()
+    if not device:
+        return False
+    if device.expires_at < datetime.utcnow():
+        db.delete(device)
+        db.commit()
+        return False
+    return device.user_id == user.id
+
+
+def _begin_2fa_or_login(request: Request, db: Session, user: User) -> bool:
     """Call once password verification succeeds. If the account has
-    two-step auth enabled, stashes a *pending* (not-yet-authenticated)
-    marker in the session and returns True so the caller redirects to
-    /login/2fa instead of finishing login; otherwise establishes the real
-    session immediately and returns False, same as before this feature
-    existed."""
-    if user.totp_enabled:
+    two-step auth enabled *and* this isn't a device the user previously
+    chose to trust, stashes a *pending* (not-yet-authenticated) marker in
+    the session and returns True so the caller redirects to /login/2fa
+    instead of finishing login; otherwise establishes the real session
+    immediately and returns False, same as before this feature existed."""
+    if user.totp_enabled and not _is_device_trusted(request, db, user):
         request.session["pending_2fa_user_id"] = user.id
         return True
     request.session["user_id"] = user.id
@@ -137,7 +164,7 @@ async def login_submit(request: Request, db: Session = Depends(get_db)):
         }, status_code=400)
 
     _rl_clear(key)
-    if _begin_2fa_or_login(request, user):
+    if _begin_2fa_or_login(request, db, user):
         request.session["pending_2fa_next"] = next_url
         return RedirectResponse("/login/2fa", status_code=303)
     return RedirectResponse(next_url, status_code=303)
@@ -195,12 +222,28 @@ async def login_2fa_submit(request: Request, db: Session = Depends(get_db)):
     request.session["user_id"] = user.id
     request.session["session_version"] = user.session_version
 
+    resp = None
     if pending_invite_code:
         invite = db.query(InviteCode).filter(InviteCode.code == pending_invite_code).first()
         error = _invite_error(invite)
         if invite and not error:
-            return _redeem(request, db, invite)
-    return RedirectResponse(next_url, status_code=303)
+            resp = _redeem(request, db, invite)
+    if resp is None:
+        resp = RedirectResponse(next_url, status_code=303)
+
+    if str(form.get("trust_device", "")).strip():
+        raw_token = _totp.generate_trust_token()
+        db.add(TrustedDevice(
+            user_id=user.id, token_hash=_totp.hash_trust_token(raw_token),
+            label=request.headers.get("user-agent", "")[:256],
+            expires_at=datetime.utcnow() + timedelta(days=_TRUST_DAYS),
+        ))
+        db.commit()
+        resp.set_cookie(
+            _TRUST_COOKIE_NAME, raw_token, max_age=_TRUST_DAYS * 24 * 60 * 60,
+            httponly=True, secure=_COOKIE_SECURE, samesite="lax",
+        )
+    return resp
 
 
 @router.post("/api/login")
@@ -343,7 +386,7 @@ async def join_submit(code: str, request: Request, db: Session = Depends(get_db)
         db.commit()
         db.refresh(user)
 
-    if _begin_2fa_or_login(request, user):
+    if _begin_2fa_or_login(request, db, user):
         request.session["pending_2fa_invite_code"] = code
         return RedirectResponse("/login/2fa", status_code=303)
     return _redeem(request, db, invite)
