@@ -35,6 +35,7 @@ from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_li
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
+from .routers.characters import _pc_to_foundry_journal
 from .routers.auth import router as auth_router
 from .routers.tables import router as tables_router
 from .routers.combat import router as combat_router
@@ -2679,6 +2680,63 @@ def export_rules_and_notes(request: Request, db: Session = Depends(get_db), acti
     filename = f"{world.slug}-rules-and-notes.md"
     return StreamingResponse(
         io.BytesIO(content.encode()), media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _entity_to_foundry_journal(db: Session, entity: Entity) -> dict:
+    """A single Foundry VTT JournalEntry document (v10+ page-based schema)
+    for one entity — same system-agnostic approach as characters.py's
+    _pc_to_foundry_journal, so it imports cleanly into any Foundry world
+    regardless of which game system module is installed there. GM-only
+    export, so (like Rules and Notes) notes are included unfiltered."""
+    kind_label = entity.kind.capitalize() + (f" — {entity.subtype}" if entity.subtype else "")
+    parts = []
+    if entity.summary:
+        parts.append(f"<p><em>{html.escape(entity.summary)}</em></p>")
+    parts.append(render_md(entity.body) if entity.body else "<p><em>No description.</em></p>")
+    pages = [{"name": "Overview", "type": "text", "text": {"format": 1, "content": "".join(parts)}, "sort": 0}]
+
+    notes = db.query(EntityNote).filter(EntityNote.entity_id == entity.id).order_by(EntityNote.created_at).all()
+    if notes:
+        notes_html = "".join(render_md(n.content) for n in notes)
+        pages.append({"name": "Notes", "type": "text", "text": {"format": 1, "content": notes_html}, "sort": 100})
+
+    return {
+        "name": f"[{kind_label}] {entity.name}",
+        "folder": None,
+        "pages": pages,
+        "flags": {"nd-world": {"source": "nd-world", "entity_id": entity.id, "kind": entity.kind}},
+    }
+
+
+def _rules_to_foundry_journal(world: World) -> dict:
+    content = render_md(_world_rules_markdown(world))
+    return {
+        "name": "Rules",
+        "folder": None,
+        "pages": [{"name": "Rules", "type": "text", "text": {"format": 1, "content": content}, "sort": 0}],
+        "flags": {"nd-world": {"source": "nd-world", "kind": "rules"}},
+    }
+
+
+@app.get("/export/foundry.json")
+def export_foundry(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    # Not in _is_player_safe, so /export and everything under it is already
+    # GM-only via the auth_gate middleware — same trust level as Rules and
+    # Notes, Full Backup, and World Book.
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    documents = [_rules_to_foundry_journal(world)]
+    entities = db.query(Entity).filter(Entity.world_id == world.id).order_by(Entity.kind, Entity.name).all()
+    documents += [_entity_to_foundry_journal(db, e) for e in entities]
+    pcs = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == world.id).order_by(PlayerCharacter.name).all()
+    documents += [_pc_to_foundry_journal(pc) for pc in pcs]
+    payload = json.dumps(documents, ensure_ascii=False, indent=2)
+    filename = f"{world.slug}-foundry.json"
+    return StreamingResponse(
+        io.BytesIO(payload.encode("utf-8")), media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
