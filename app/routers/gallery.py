@@ -225,6 +225,52 @@ def image_spotlight_clear(request: Request, db: Session = Depends(get_db), activ
     return {"ok": True}
 
 
+@router.get("/api/gallery/browse")
+def gallery_browse(
+    request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
+    album_id: Optional[int] = None,
+):
+    """Lazy-loaded data for the shared "Choose from Gallery" picker
+    (static/js/gallery-picker.js) — lets it browse the same album/sub-album
+    tree as the /images page without every host template (entity forms,
+    map forms, ...) having to fetch and pass the whole tree upfront just in
+    case the picker gets opened. GM-only, same as /images itself."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+
+    if album_id:
+        album = _album_or_404(db, world.id, album_id)
+        child_albums = db.query(ImageAlbum).filter(ImageAlbum.parent_id == album.id).order_by(ImageAlbum.name).all()
+        urls = _load_urls(album)
+        discovered_names = {e["url"]: e["name"] for e in discover_world_images(db, world)}
+        images = [{"url": u, "name": discovered_names.get(u, image_display_name(u))} for u in urls]
+        breadcrumb = _breadcrumb(db, album) + [album]
+    else:
+        child_albums = (
+            db.query(ImageAlbum)
+            .filter(ImageAlbum.world_id == world.id, ImageAlbum.parent_id.is_(None))
+            .order_by(ImageAlbum.name).all()
+        )
+        images = None
+        breadcrumb = []
+
+    def _album_payload(a):
+        urls = _load_urls(a)
+        return {
+            "id": a.id, "name": a.name,
+            "cover_url": urls[0] if urls else None,
+            "image_count": len(urls),
+            "sub_album_count": db.query(ImageAlbum).filter(ImageAlbum.parent_id == a.id).count(),
+        }
+
+    return {
+        "breadcrumb": [{"id": b.id, "name": b.name} for b in breadcrumb],
+        "albums": [_album_payload(a) for a in child_albums],
+        "images": images,
+    }
+
+
 @router.post("/images/albums/new")
 async def album_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, _ = get_world_ctx(request, db, active_world)

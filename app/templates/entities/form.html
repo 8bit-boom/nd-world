@@ -57,22 +57,14 @@
         <input type="file" name="image_file" accept="image/*" id="img-file" onchange="previewImage(this)"/>
       </div>
       <div style="margin-top:.4rem">
-        <button type="button" class="btn-gallery-pick" onclick="openGalleryPicker()">🖼 Choose from Gallery</button>
+        <button type="button" class="btn-gallery-pick" onclick="ndGalleryPickerOpen(pickGalleryImage)">🖼 Choose from Gallery</button>
       </div>
       <div id="img-preview" style="display:none"><img id="img-preview-img" src="" alt="preview"/></div>
       <label style="margin-top:.5rem">Or paste URL</label>
       <input name="image_url" id="image-url-input" value="{{ entity.image_url if entity and entity.image_url and not entity.image_url.startswith('/uploads/') else '' }}" placeholder="https://…"/>
     </div>
 
-    <div id="gallery-picker-overlay" class="gallery-picker-overlay" onclick="closeGalleryPicker()">
-      <div class="gallery-picker-box" onclick="event.stopPropagation()">
-        <div class="gallery-picker-head">
-          <span>Choose an image</span>
-          <button type="button" class="gallery-picker-close" onclick="closeGalleryPicker()" aria-label="Close">✕</button>
-        </div>
-        <div id="gallery-picker-grid" class="gallery-picker-grid"></div>
-      </div>
-    </div>
+    {% include "_gallery_picker_modal.html" %}
 
     <div class="form-group">
       <label>Folder <small>(pick an existing folder or type a new one — use "Parent/Child" to nest)</small></label>
@@ -185,20 +177,9 @@
 .cf-list-remove { position:absolute;top:.4rem;right:.4rem;background:transparent;border:1px solid var(--neon2);color:var(--neon2);padding:.1rem .45rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.68rem; }
 .cf-list-add { background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.25rem .65rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.75rem;margin-top:.2rem; }
 
-.btn-gallery-pick { background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.3rem .7rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.8rem; }
-.btn-gallery-pick:hover { background:var(--bg2); }
-.gallery-picker-overlay { display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:200;align-items:center;justify-content:center; }
-.gallery-picker-overlay.open { display:flex; }
-.gallery-picker-box { background:var(--bg2);border:1px solid var(--border);border-radius:8px;width:min(700px,92vw);max-height:82vh;display:flex;flex-direction:column; }
-.gallery-picker-head { display:flex;align-items:center;justify-content:space-between;padding:.7rem 1rem;border-bottom:1px solid var(--border);font-size:.85rem;color:var(--text-dim); }
-.gallery-picker-close { background:none;border:none;color:var(--text-dim);font-size:1rem;cursor:pointer; }
-.gallery-picker-close:hover { color:var(--neon2); }
-.gallery-picker-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:.5rem;padding:1rem;overflow-y:auto; }
-.gallery-picker-cell { background:var(--bg3);border:1px solid var(--border);border-radius:4px;overflow:hidden;cursor:pointer; }
-.gallery-picker-cell:hover { border-color:var(--neon); }
-.gallery-picker-cell img { width:100%;height:90px;object-fit:contain;display:block; }
-.gallery-picker-cell-name { padding:.2rem .35rem;font-size:.68rem;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
-.gallery-picker-empty { padding:1rem;color:var(--text-dim);font-size:.82rem; }
+/* .btn-gallery-pick and .gallery-picker-* rules now live in static/style.css,
+   shared with every other page using the picker (see _gallery_picker_modal.html) —
+   this template used to hand-duplicate them here. */
 </style>
 <script>
 function previewImage(input) {
@@ -211,54 +192,18 @@ function previewImage(input) {
 }
 
 // ── Choose from Gallery picker ──────────────────────────────────────────────
-const GALLERY_IMAGES = {{ gallery_images | tojson }};
-let _galleryPickerRendered = false;
-
-function renderGalleryPicker() {
-  const grid = document.getElementById('gallery-picker-grid');
-  if (!GALLERY_IMAGES.length) {
-    grid.innerHTML = '<div class="gallery-picker-empty">No images yet — upload one above, or add some from the <a href="/images" style="color:var(--neon)">Images gallery</a> first.</div>';
-    return;
-  }
-  grid.innerHTML = '';
-  GALLERY_IMAGES.forEach(entry => {
-    const cell = document.createElement('div');
-    cell.className = 'gallery-picker-cell';
-    const img = document.createElement('img');
-    img.src = entry.url;
-    img.alt = entry.name;
-    img.loading = 'lazy';
-    cell.appendChild(img);
-    const name = document.createElement('div');
-    name.className = 'gallery-picker-cell-name';
-    name.title = entry.name;
-    name.textContent = entry.name;
-    cell.appendChild(name);
-    cell.onclick = function () { pickGalleryImage(entry.url); };
-    grid.appendChild(cell);
-  });
-}
-
-function pickGalleryImage(url) {
-  document.getElementById('image-url-input').value = url;
+// Modal/overlay/album-browsing is the shared component now (see
+// _gallery_picker_modal.html + static/js/gallery-picker.js) — this template
+// used to hand-duplicate all of that; only the picked-image callback stays
+// page-specific.
+function pickGalleryImage(entry) {
+  document.getElementById('image-url-input').value = entry.url;
   document.getElementById('img-file').value = '';
   const preview = document.getElementById('img-preview');
   const previewImg = document.getElementById('img-preview-img');
-  previewImg.src = url;
+  previewImg.src = entry.url;
   preview.style.display = 'block';
-  closeGalleryPicker();
 }
-
-function openGalleryPicker() {
-  if (!_galleryPickerRendered) { renderGalleryPicker(); _galleryPickerRendered = true; }
-  document.getElementById('gallery-picker-overlay').classList.add('open');
-}
-function closeGalleryPicker() {
-  document.getElementById('gallery-picker-overlay').classList.remove('open');
-}
-document.addEventListener('keydown', function (e) {
-  if (e.key === 'Escape') closeGalleryPicker();
-});
 
 const subtypesData = {{ subtypes | tojson }};
 function updateSubtypes() {

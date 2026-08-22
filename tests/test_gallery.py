@@ -740,3 +740,79 @@ def test_base_html_poller_present_for_gm_and_player(client, seed):
         r = client.get("/")
         assert "pollSpotlight" in r.text
         assert "openLightbox(data.image_url, data.label" in r.text
+
+
+# ── GET /api/gallery/browse — lazy album browsing for the shared picker ────
+
+def test_gallery_browse_root_lists_top_level_albums_only(client, seed):
+    top_id = _make_album(seed.world_a.id, "Top Album", urls=["/uploads/a.png", "/uploads/b.png"])
+    _make_album(seed.world_a.id, "Sub Album", urls=["/uploads/c.png"], parent_id=top_id)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.get("/api/gallery/browse")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["breadcrumb"] == []
+    assert body["images"] is None
+    assert [a["name"] for a in body["albums"]] == ["Top Album"]  # sub-album not shown at root
+    top = body["albums"][0]
+    assert top["id"] == top_id
+    assert top["image_count"] == 2
+    assert top["sub_album_count"] == 1
+    assert top["cover_url"] == "/uploads/a.png"
+
+
+def test_gallery_browse_into_album_lists_its_images_and_sub_albums(client, seed):
+    top_id = _make_album(seed.world_a.id, "Top Album", urls=["/uploads/a.png"])
+    sub_id = _make_album(seed.world_a.id, "Sub Album", urls=["/uploads/c.png"], parent_id=top_id)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.get(f"/api/gallery/browse?album_id={top_id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert [b["name"] for b in body["breadcrumb"]] == ["Top Album"]
+    assert [a["name"] for a in body["albums"]] == ["Sub Album"]
+    assert body["albums"][0]["id"] == sub_id
+    assert [i["url"] for i in body["images"]] == ["/uploads/a.png"]
+
+
+def test_gallery_browse_breadcrumb_reflects_full_nesting_depth(client, seed):
+    root_id = _make_album(seed.world_a.id, "Root")
+    mid_id = _make_album(seed.world_a.id, "Middle", parent_id=root_id)
+    leaf_id = _make_album(seed.world_a.id, "Leaf", urls=["/uploads/leaf.png"], parent_id=mid_id)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.get(f"/api/gallery/browse?album_id={leaf_id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert [b["name"] for b in body["breadcrumb"]] == ["Root", "Middle", "Leaf"]
+    assert body["images"] == [{"url": "/uploads/leaf.png", "name": "leaf.png"}]
+
+
+def test_gallery_browse_is_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get("/api/gallery/browse").status_code == 403
+
+
+def test_gallery_browse_unknown_album_404s(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get("/api/gallery/browse?album_id=999999").status_code == 404
+
+
+def test_gallery_browse_cross_world_album_404s(client, seed):
+    other_id = _make_album(seed.world_b.id, "Other World Album")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get(f"/api/gallery/browse?album_id={other_id}").status_code == 404
+
+
+def test_gallery_picker_modal_includes_breadcrumb_container(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/new")
+    assert 'id="gallery-picker-breadcrumb"' in r.text
