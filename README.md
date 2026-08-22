@@ -530,12 +530,16 @@ Whisper is defined in both `docker-compose.yml` and `truenas-compose.yml` behind
 an audio file attached to an AI Chat/Ask AI message into text, so the chat model
 understands it regardless of whether that model has any native audio support itself.
 
-**Downloading a model:** unlike Ollama, there's no in-app download UI for this yet —
-download a whisper.cpp-compatible model file yourself into `<AI_MODELS_DIR>/whisper/`
-(default `./ai-models/whisper/`), then set `WHISPER_MODEL_FILE` in `.env` to its exact
-filename. [`xkeyC/whisper-large-v3-turbo-gguf`](https://huggingface.co/xkeyC/whisper-large-v3-turbo-gguf)
-is a good default — turbo trades a little accuracy from `large-v3` for several times
-the speed, and is light enough to run acceptably on CPU.
+**Downloading a model:** start the `whisper` profile once, log in as the GM, and click
+**⬇ Download Whisper Model** on the AI page's **🤖 Models** tab — nd-world streams
+`whisper-large-v3-turbo` straight into the shared volume the `whisper` service reads
+from (turbo trades a little accuracy from `large-v3` for several times the speed, and
+is light enough to run acceptably on CPU). Restart the `whisper` service once
+afterward to load it — nd-world only writes the file, it doesn't (and can't safely)
+hot-swap the running server's model, since whisper.cpp itself exits if a reload fails.
+To use a different model instead, either paste its download URL into the same panel,
+or download one yourself into `<AI_MODELS_DIR>/whisper/` and set `WHISPER_MODEL_FILE`
+in `.env` to its exact filename — any whisper.cpp-compatible `.bin`/`.gguf` file works.
 
 **GPU acceleration:** change the image to `ghcr.io/ggml-org/whisper.cpp:main-cuda` and
 uncomment the `deploy` block in the Whisper service (same shape as Ollama's, above).

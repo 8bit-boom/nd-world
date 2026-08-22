@@ -455,6 +455,31 @@ async def ai_pull(body: PullBody):
     )
 
 
+@router.get("/whisper/model-status")
+async def api_whisper_model_status():
+    return _ai.whisper_model_status()
+
+
+class WhisperPullBody(BaseModel):
+    url: str = ""
+
+
+@router.post("/whisper/pull")
+async def api_whisper_pull(body: WhisperPullBody):
+    _log.info("whisper model pull url=%r", body.url or "(default)")
+
+    async def _gen():
+        async for progress in _ai.download_whisper_model(body.url):
+            yield f"data: {_json.dumps(progress)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return _SR(
+        _gen(),
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
+
+
 class EntityBody(BaseModel):
     name: str
     type: str

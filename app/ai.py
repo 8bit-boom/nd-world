@@ -462,6 +462,87 @@ async def transcribe_audio(path: Path) -> str:
         return ""
 
 
+# ── Whisper model download ──────────────────────────────────────────────────
+# nd-world's own container and the "whisper" Compose service both mount the
+# same host directory (see docker-compose.yml/truenas-compose.yml), just at
+# different internal paths — the same pattern SWARMUI_AC_DIR already uses to
+# share the tag-autocomplete folder between `world` and `swarmui`. That lets
+# a GM download a model file through nd-world instead of SSHing into the
+# host, without nd-world needing any access to the whisper.cpp container
+# itself (which has no download-a-model API of its own, unlike Ollama).
+
+WHISPER_MODELS_DIR = Path(os.getenv("WHISPER_MODELS_DIR", "/data/whisper-models"))
+# Must match the "-m /models/<this>" filename the "whisper" Compose service
+# loads by default (its WHISPER_MODEL_FILE env var) — downloading under any
+# other name would still need a manual step to line the two up.
+WHISPER_MODEL_FILENAME = os.getenv("WHISPER_MODEL_FILE", "whisper-large-v3-turbo-q8_0.gguf")
+# oxide-lab's mirror, not xkeyC's original repo — this is the one exact
+# filename verified to exist (via a direct blob-URL citation) while writing
+# this; xkeyC's own repo is still a fine choice if you'd rather pick a
+# different quantization, just paste its file's URL in manually instead of
+# using this default.
+DEFAULT_WHISPER_MODEL_URL = (
+    "https://huggingface.co/oxide-lab/whisper-large-v3-turbo-GGUF/resolve/main/"
+    "whisper-large-v3-turbo-q8_0.gguf"
+)
+
+
+def whisper_model_status() -> dict:
+    """Whether a model file nd-world can see is already sitting in the
+    shared volume — checked from nd-world's own side (WHISPER_MODELS_DIR),
+    not by asking the whisper.cpp server itself (that's whisper_status()),
+    since the file needs to exist before the server can even be pointed at
+    it. Doesn't mean the *running* server has loaded it yet — that only
+    happens on container start/restart (see download_whisper_model)."""
+    path = WHISPER_MODELS_DIR / WHISPER_MODEL_FILENAME
+    if path.is_file():
+        return {"downloaded": True, "filename": WHISPER_MODEL_FILENAME, "bytes": path.stat().st_size}
+    return {"downloaded": False, "filename": WHISPER_MODEL_FILENAME}
+
+
+async def download_whisper_model(url: str = "") -> AsyncGenerator[dict, None]:
+    """Stream a whisper.cpp-compatible model file from `url` (or
+    DEFAULT_WHISPER_MODEL_URL if blank) into WHISPER_MODELS_DIR, yielding
+    {"total":, "completed":} progress dicts as bytes arrive — same shape
+    Ollama's own /api/pull progress already uses (app/routers/ai.py's
+    /pull), so the client-side JS can reuse the same parsing — and a final
+    {"status": "done", ...} or {"error": "..."}.
+
+    Written to a "<filename>.part" file and only renamed into place once
+    fully downloaded, so an interrupted/failed download can never leave a
+    corrupt file behind for the whisper.cpp server to trip over — which
+    matters more here than most partial-download cases: whisper.cpp's own
+    /load endpoint calls exit(1) (killing the whole server process) if the
+    model file it's given fails to parse, rather than returning an error.
+    This app deliberately never calls that endpoint itself for exactly that
+    reason (see docs/DEPLOYMENT.md) — a downloaded model only takes effect
+    on the *next* container start/restart of the "whisper" service, which
+    the GM does themselves once, same as installing any other model."""
+    fetch_url = (url or "").strip() or DEFAULT_WHISPER_MODEL_URL
+    WHISPER_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = WHISPER_MODELS_DIR / WHISPER_MODEL_FILENAME
+    tmp = dest.with_name(dest.name + ".part")
+    try:
+        async with _httpx.AsyncClient(follow_redirects=True, timeout=60) as c:
+            async with c.stream("GET", fetch_url) as resp:
+                if resp.status_code >= 400:
+                    yield {"error": f"HTTP {resp.status_code} fetching model file"}
+                    return
+                total = int(resp.headers.get("content-length") or 0)
+                completed = 0
+                with tmp.open("wb") as f:
+                    async for chunk in resp.aiter_bytes(1024 * 1024):
+                        f.write(chunk)
+                        completed += len(chunk)
+                        yield {"total": total, "completed": completed}
+        tmp.replace(dest)
+        yield {"status": "done", "filename": WHISPER_MODEL_FILENAME, "bytes": dest.stat().st_size}
+    except Exception as exc:
+        tmp.unlink(missing_ok=True)
+        _log.warning("whisper model download failed: %s: %s", type(exc).__name__, exc)
+        yield {"error": f"{type(exc).__name__}: {exc}"}
+
+
 async def imagegen_status() -> dict:
     t, u = _get_type(), _get_url()
     if not t or not u:

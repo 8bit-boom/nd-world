@@ -8,6 +8,7 @@ services:
     volumes:
       - /mnt/DeadPool/apps/nd-world:/data
       - /mnt/DeadPool/apps/swarmui/data/Autocompletions:/data/swarmui-ac  # shared with swarmui for native tag autocompletions
+      - /mnt/DeadPool/apps/whisper:/data/whisper-models  # shared with whisper — lets nd-world download a model file into the same place the "whisper" service loads from
     environment:
       DB_PATH: /data/world.db
       # AI chat / image generation are optional (see the "ollama"/"swarmui" Compose
@@ -27,6 +28,8 @@ services:
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: gemma4:26b   # change to whichever model you've pulled
       WHISPER_URL: http://whisper:8080
+      WHISPER_MODELS_DIR: /data/whisper-models
+      WHISPER_MODEL_FILE: whisper-large-v3-turbo-q8_0.gguf   # must match the "whisper" service's own -m filename below
       # Auth — see .env.example. GM_EMAIL/GM_PASSWORD bootstrap the one GM account;
       # everyone else joins as a player via a GM-issued invite link.
       SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env — see scripts/setup.sh or .env.example}
@@ -101,12 +104,15 @@ services:
   # (or add it to your existing list), or run
   # `docker compose -f truenas-compose.yml --profile whisper up -d`.
   #
-  # Download a model first (any whisper.cpp-compatible ggml/gguf file works —
-  # whisper-large-v3-turbo is a good default: most of large-v3's accuracy,
-  # several times faster, small enough to run acceptably on CPU) into
-  # /mnt/DeadPool/apps/whisper/, e.g. from
-  # https://huggingface.co/xkeyC/whisper-large-v3-turbo-gguf , then set
-  # WHISPER_MODEL_FILE in .env to that exact filename.
+  # Get a model file the easy way: start this profile once, log in as the
+  # GM, and use the "⬇ Download Whisper Model" button on the AI page's
+  # Models tab — nd-world downloads whisper-large-v3-turbo (a good default:
+  # most of large-v3's accuracy, several times faster, small enough to run
+  # acceptably on CPU) straight into /mnt/DeadPool/apps/whisper/. Or
+  # download one yourself (any whisper.cpp-compatible ggml/gguf file works)
+  # into that same folder and set WHISPER_MODEL_FILE in .env to its exact
+  # filename if you'd rather pick a different one. Either way, restart this
+  # "whisper" service once afterward to load it.
   whisper:
     profiles: ["whisper"]
     image: ghcr.io/ggml-org/whisper.cpp:main
@@ -128,7 +134,7 @@ services:
     # actually reaching the binary.
     entrypoint: ["whisper-server"]
     command: ["--host", "0.0.0.0", "--port", "8080", "--convert",
-               "-m", "/models/${WHISPER_MODEL_FILE:-ggml-large-v3-turbo.bin}"]
+               "-m", "/models/${WHISPER_MODEL_FILE:-whisper-large-v3-turbo-q8_0.gguf}"]
     labels:
       net.ix-portals.whisper.scheme: "http"
       net.ix-portals.whisper.port: "8080"

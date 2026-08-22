@@ -266,25 +266,39 @@ gap for good: it transcribes **any** uploaded audio format (mp3, ogg, m4a,
 ...) into text, which then works with **any** chat model, not just an
 audio-native one. This is opt-in, like the Android/Editor add-ons above.
 
-**1. Get a model file** — download any whisper.cpp-compatible model
-(`.bin` or `.gguf`) into `<AI_MODELS_DIR>/whisper/` (default
-`./ai-models/whisper/`).
-[`xkeyC/whisper-large-v3-turbo-gguf`](https://huggingface.co/xkeyC/whisper-large-v3-turbo-gguf)
-is a good default — "turbo" trades a little of `large-v3`'s accuracy for
-several times the transcription speed, light enough to run acceptably on
-CPU. Note the exact filename you downloaded.
-
-**2. Enable the profile** — add `whisper` to `COMPOSE_PROFILES` in `.env`
-(comma-separated with any other profiles you're already running), and set
-`WHISPER_MODEL_FILE` in `.env` to the filename from step 1, then:
+**1. Enable the profile** — add `whisper` to `COMPOSE_PROFILES` in `.env`
+(comma-separated with any other profiles you're already running), then:
 ```bash
 docker compose up -d
 ```
-This starts a whisper.cpp server on port `8090`. `docker compose logs -f
-whisper` should show it load the model and start listening within a few
-seconds to a minute or so, depending on model size and CPU speed.
+This starts a whisper.cpp server on port `8090` (with no model loaded yet —
+that's expected) and gives nd-world's own `world` container access to the
+same model-storage volume, so the next step can write to it.
 
-**3. That's it** — nd-world's `world` service already points at
+**2. Download a model** — log in as the GM, open the **AI** page's
+**🤖 Models** tab, and click **⬇ Download Whisper Model** in the
+"🎙 Whisper" panel near the bottom. nd-world streams
+`whisper-large-v3-turbo` (a good default — trades a little of `large-v3`'s
+accuracy for several times the transcription speed, light enough to run
+acceptably on CPU) straight into the shared volume, with a live progress
+bar. Prefer a different model? Paste its direct download URL into the same
+panel instead, or skip the in-app download entirely and place a file
+yourself into `<AI_MODELS_DIR>/whisper/` (default `./ai-models/whisper/`),
+setting `WHISPER_MODEL_FILE` in `.env` to its exact filename.
+
+**3. Restart the whisper service** to load what you just downloaded:
+```bash
+docker compose restart whisper
+```
+nd-world only writes the model file — it deliberately doesn't try to
+hot-swap the running server's model itself, since whisper.cpp's own
+`/load` endpoint kills the whole server process if a reload ever fails,
+and a one-time restart is a small price for not risking that. `docker
+compose logs -f whisper` should show it load the model and start listening
+within a few seconds to a minute or so, depending on model size and CPU
+speed.
+
+**That's it** — nd-world's `world` service already points at
 `http://whisper:8080` internally (see `WHISPER_URL` in `docker-compose.yml`)
 with no further configuration needed. From then on, any audio attachment
 gets transcribed automatically at upload time; if the Whisper server isn't

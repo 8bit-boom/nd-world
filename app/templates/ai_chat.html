@@ -1431,6 +1431,33 @@
     </div>
   </div>
 
+  <!-- Whisper (audio transcription) model -->
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-top:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">🎙 Whisper (audio transcription)</div>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
+      Transcribes an audio file attached to an AI Chat/Ask AI message into text — see
+      <strong>docs/DEPLOYMENT.md</strong> to enable the "whisper" service first. This downloads a
+      model file into the shared volume it reads from; it doesn't need the service already running.
+    </div>
+    <div id="wp-status" style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">⏳ Checking…</div>
+    <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
+      <button class="ig-btn" id="wp-download-btn" onclick="wpDownload()"
+              style="border-color:var(--neon);color:var(--neon);padding:.38rem 1rem;white-space:nowrap">⬇ Download Whisper Model</button>
+      <span style="font-size:.72rem;color:var(--text-dim)">whisper-large-v3-turbo, ~1.6 GB</span>
+    </div>
+    <div style="margin-top:.5rem">
+      <input id="wp-custom-url" type="text" placeholder="Or paste a direct download URL for a different model (optional)"
+             style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:.8rem;padding:.35rem .55rem;width:100%;box-sizing:border-box"
+             onkeydown="if(event.key==='Enter')wpDownload()">
+    </div>
+    <div id="wp-progress" style="display:none;margin-top:.65rem">
+      <div style="font-size:.78rem;color:var(--neon);margin-bottom:.25rem" id="wp-progress-label">Starting…</div>
+      <div style="height:5px;background:var(--bg3);border-radius:3px;overflow:hidden">
+        <div id="wp-progress-bar" style="height:100%;width:0%;background:var(--neon);border-radius:3px;transition:width .2s"></div>
+      </div>
+    </div>
+  </div>
+
 </div><!-- /models-panel -->
 
 <!-- ── Starred Images Panel ── -->
@@ -2220,7 +2247,7 @@ function switchTab(tab) {
     document.getElementById('tab-' + t)?.classList.toggle('active', t === tab);
   });
 
-  if (tab === 'models')  mpLoad();
+  if (tab === 'models')  { mpLoad(); wpLoadStatus(); }
   if (tab === 'starred') igLoadStarred();
 }
 
@@ -3704,6 +3731,79 @@ function mpQuickPull(modelId) {
 }
 
 function mpRefresh() { mpLoad(); loadModels(); }
+
+// ── Whisper model download ──────────────────────────────────────────────────
+
+async function wpLoadStatus() {
+  const el = document.getElementById('wp-status');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/ai/whisper/model-status');
+    const d = await r.json();
+    el.textContent = d.downloaded
+      ? `✓ ${d.filename} downloaded (${(d.bytes / 1e9).toFixed(2)} GB)`
+      : `○ No model downloaded yet (${d.filename})`;
+  } catch (e) {
+    el.textContent = '✗ Could not check status';
+  }
+}
+
+let _wpDownloading = false;
+async function wpDownload() {
+  if (_wpDownloading) return;
+  _wpDownloading = true;
+  const btn = document.getElementById('wp-download-btn');
+  const prog = document.getElementById('wp-progress');
+  const bar = document.getElementById('wp-progress-bar');
+  const lbl = document.getElementById('wp-progress-label');
+  const urlInput = document.getElementById('wp-custom-url');
+  const customUrl = (urlInput?.value || '').trim();
+  btn.disabled = true;
+  prog.style.display = 'block';
+  bar.style.width = '0%';
+  lbl.textContent = 'Starting download…';
+  try {
+    const res = await fetch('/api/ai/whisper/pull', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: customUrl }),
+    });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n'); buf = parts.pop();
+      for (const p of parts) {
+        if (!p.startsWith('data: ')) continue;
+        const raw = p.slice(6);
+        if (raw === '[DONE]') break;
+        try {
+          const obj = JSON.parse(raw);
+          if (obj.error) throw new Error(obj.error);
+          if (obj.total && obj.completed) {
+            const pct = obj.total ? Math.round(obj.completed / obj.total * 100) : 0;
+            bar.style.width = pct + '%';
+            lbl.textContent = `Downloading… ${pct}% (${(obj.completed / 1e9).toFixed(2)} / ${(obj.total / 1e9).toFixed(2)} GB)`;
+          } else if (obj.status === 'done') {
+            bar.style.width = '100%';
+            lbl.textContent = `✓ Downloaded — restart the "whisper" service to load it`;
+          }
+        } catch (pe) {
+          if (pe.message && !pe.message.includes('JSON')) throw pe;
+        }
+      }
+    }
+  } catch (e) {
+    lbl.textContent = '✗ Failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    _wpDownloading = false;
+    wpLoadStatus();
+  }
+}
 
 // ── Attach generated image to an entity ──────────────────────────────────────
 
