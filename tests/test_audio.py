@@ -99,6 +99,32 @@ def test_audio_page_reachable_by_gm_and_player(client, seed):
     assert client.get("/audio").status_code == 200
 
 
+def test_audio_upload_form_shows_configured_size_limit(client, seed, monkeypatch):
+    import app.routers.audio as audio_module
+
+    monkeypatch.setattr(audio_module, "_MAX_AUDIO_BYTES", 75 * 1024 * 1024)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/audio")
+    assert "Up to 75 MB" in r.text
+
+
+def test_audio_upload_rejects_file_over_configured_limit(client, seed, monkeypatch):
+    import app.routers.audio as audio_module
+
+    monkeypatch.setattr(audio_module, "_MAX_AUDIO_BYTES", 100)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/audio/upload", files=_mp3_file())
+    assert r.status_code == 413
+    assert "60 MB" not in r.text  # old hardcoded limit shouldn't leak into the message
+    db = SessionLocal()
+    try:
+        assert db.query(AudioClip).filter(AudioClip.world_id == seed.world_a.id).count() == 0
+    finally:
+        db.close()
+
+
 def test_audio_player_only_sees_visible_clips(client, seed):
     _add_clip(seed.world_a.id, name="Visible Track", visible_to_players=True)
     _add_clip(seed.world_a.id, name="GM Secret Track", visible_to_players=False)

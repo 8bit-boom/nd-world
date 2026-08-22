@@ -39,8 +39,13 @@ _UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploa
 _ALLOWED_EXTS = {".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus", ".webm", ".aac"}
 # Audio runs longer than a portrait image, so give it more room than the
 # generic 20 MB upload default — still bounded so a batch of uploads can't
-# fill the /data volume.
-_MAX_AUDIO_BYTES = 60 * 1024 * 1024
+# fill the /data volume. Env-overridable like MAX_UPLOAD_BYTES (app/uploads.py)
+# since a long ambiance/session-length track can legitimately want more —
+# but a reverse proxy or CDN in front of this app (e.g. Cloudflare, whose
+# free-tier edge caps request bodies at 100MB with a 413 of its own, before
+# the request ever reaches this app) may still reject a large upload before
+# this limit is even checked; raising this alone doesn't raise that one.
+_MAX_AUDIO_BYTES = int(os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 
 
 def _is_gm(request: Request) -> bool:
@@ -155,6 +160,7 @@ def audio_library(request: Request, db: Session = Depends(get_db), active_world:
         "album": None, "albums": albums, "breadcrumb": [],
         "sub_album_counts": _sub_album_counts(db, album_ids),
         "clip_counts": _clip_counts(db, request, album_ids),
+        "max_audio_mb": _MAX_AUDIO_BYTES // (1024 * 1024),
     })
 
 
@@ -176,6 +182,7 @@ def audio_album_detail(album_id: int, request: Request, db: Session = Depends(ge
         "album": album, "albums": albums, "breadcrumb": _breadcrumb(db, album),
         "sub_album_counts": _sub_album_counts(db, album_ids),
         "clip_counts": _clip_counts(db, request, album_ids),
+        "max_audio_mb": _MAX_AUDIO_BYTES // (1024 * 1024),
     })
 
 

@@ -123,6 +123,20 @@ works too).
 `docker compose up -d` again to apply it. (This matters — without it, logins
 won't stay signed in when accessed over `https://`.)
 
+**Upload size limit:** every request routed through Cloudflare — tunnel or
+not — passes through Cloudflare's edge first, which rejects any request body
+over a size that depends on your Cloudflare plan (Free is capped at 100 MB
+with no way to raise it; paid plans can raise the cap from the dashboard via
+**Rules → Configuration Rules → Maximum Upload Size** — see
+[Cloudflare's own docs](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-4xx-errors/error-413/)
+for current numbers). A big upload (a long audio track, a large map image)
+rejected with a page that says **"413 Payload Too Large" / cloudflare** at
+the bottom hit that edge limit before it ever reached nd-world — it's not
+something `.env` or nd-world's own settings can raise. nd-world's own
+per-upload caps sit *below* whatever Cloudflare allows through (see
+`MAX_UPLOAD_BYTES` and `MAX_AUDIO_UPLOAD_BYTES` in `.env.example`), so raise
+both if you need bigger files end to end.
+
 ### Option 2: Port forwarding + reverse proxy (more advanced)
 
 Only do this if Option 1 doesn't work for your situation. This method opens a
