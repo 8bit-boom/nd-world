@@ -225,6 +225,50 @@ def test_heals_pre_lore_extras_toggle_schema(tmp_path, monkeypatch):
     engine.dispose()
 
 
+def test_heals_pre_whisper_url_schema(tmp_path, monkeypatch):
+    """Same class of bug as the android_emulator_url/lore-extras heal tests
+    above, for the whisper_url column added alongside the optional Whisper
+    audio-transcription integration — an existing app_settings row predating
+    it must heal onto a blank default, not crash get_app_settings()."""
+    from app.database import get_app_settings
+
+    db_path = tmp_path / "pre_whisper_url.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE app_settings (id INTEGER PRIMARY KEY, static_format VARCHAR(16), "
+            "animated_format VARCHAR(16), ollama_model VARCHAR(256), ollama_url VARCHAR(512), "
+            "swarmui_external_url VARCHAR(512), android_emulator_url VARCHAR(512), "
+            "editor_external_url VARCHAR(512), hover_preview_enabled BOOLEAN, "
+            "hover_preview_delay_ms INTEGER, hover_preview_hide_delay_ms INTEGER, "
+            "hover_preview_width_px INTEGER, hover_preview_max_height_px INTEGER, "
+            "dreamlands_enabled BOOLEAN, king_in_yellow_enabled BOOLEAN, updated_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO app_settings (id, static_format, animated_format) VALUES (1, 'avif', 'avif')"
+        ))
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        settings_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(app_settings)")).fetchall()}
+    assert "whisper_url" in settings_cols
+
+    db = SessionLocal()
+    try:
+        s = get_app_settings(db)
+        assert s.whisper_url == ""
+    finally:
+        db.close()
+
+    engine.dispose()
+
+
 def test_heals_pre_home_customization_worlds_schema(tmp_path, monkeypatch):
     """A worlds table predating home_title/home_subtitle/home_background_url/
     home_pinned_tiles_json (added for hero-text/background-image/pinned-

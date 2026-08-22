@@ -388,6 +388,7 @@ def _migrate():
                 ("swarmui_external_url", "VARCHAR(512) DEFAULT ''"),
                 ("android_emulator_url", "VARCHAR(512) DEFAULT ''"),
                 ("editor_external_url", "VARCHAR(512) DEFAULT ''"),
+                ("whisper_url", "VARCHAR(512) DEFAULT ''"),
                 ("hover_preview_enabled", "BOOLEAN DEFAULT 1"),
                 ("hover_preview_delay_ms", "INTEGER DEFAULT 5000"),
                 ("hover_preview_hide_delay_ms", "INTEGER DEFAULT 400"),

@@ -29,6 +29,7 @@ def test_settings_system_roundtrip(client, seed):
         "swarmui_external_url": "http://127.0.0.1:7801",
         "android_emulator_url": "http://127.0.0.1:6080",
         "editor_external_url": "http://127.0.0.1:6081",
+        "whisper_url": "http://127.0.0.1:8090",
     }, follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == "/settings?tab=system"
@@ -39,6 +40,7 @@ def test_settings_system_roundtrip(client, seed):
     assert "127.0.0.1:7801" in page.text
     assert "127.0.0.1:6080" in page.text
     assert "127.0.0.1:6081" in page.text
+    assert "127.0.0.1:8090" in page.text
 
     db = SessionLocal()
     try:
@@ -48,6 +50,7 @@ def test_settings_system_roundtrip(client, seed):
         assert settings.swarmui_external_url == "http://127.0.0.1:7801"
         assert settings.android_emulator_url == "http://127.0.0.1:6080"
         assert settings.editor_external_url == "http://127.0.0.1:6081"
+        assert settings.whisper_url == "http://127.0.0.1:8090"
         assert settings.dreamlands_enabled is False
         assert settings.king_in_yellow_enabled is False
     finally:
@@ -132,6 +135,35 @@ def test_ollama_override_takes_effect_after_save(client, seed):
     r = client.get("/api/ai/models")
     assert r.status_code == 200
     assert r.json()["default"] == "llama3.1"
+
+
+def test_whisper_env_fallback_when_blank(client, seed):
+    assert ai_module.effective_whisper_url() == ai_module.WHISPER_URL
+
+
+def test_whisper_override_takes_effect_after_save(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/settings/system", data={
+        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+        "whisper_url": "http://127.0.0.1:8090",
+    })
+    assert ai_module.effective_whisper_url() == "http://127.0.0.1:8090"
+
+
+def test_settings_system_invalid_whisper_url_rejected(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/settings/system", data={
+        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+        "whisper_url": "not-a-url",
+    })
+    assert r.status_code == 400
+
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        assert not settings or settings.whisper_url in (None, "")
+    finally:
+        db.close()
 
 
 def test_swarmui_env_fallback_when_blank(client, seed):

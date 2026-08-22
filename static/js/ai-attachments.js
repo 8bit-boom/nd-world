@@ -21,10 +21,11 @@ function ndAiAttachments(pendingListEl, onChange) {
         + (att.uploading ? " ai-attach-chip--uploading" : "")
         + (att.error ? " ai-attach-chip--error" : "");
       const icon = ICONS[att.kind] || "📎";
+      const transcribed = att.kind === "audio" && !att.uploading && !att.error && att.text ? " (transcribed)" : "";
       const label = document.createElement("span");
       label.textContent = att.uploading
         ? `${icon} ${att.name}…`
-        : (att.error ? `⚠ ${att.name}: ${att.error}` : `${icon} ${att.name}`);
+        : (att.error ? `⚠ ${att.name}: ${att.error}` : `${icon} ${att.name}${transcribed}`);
       chip.appendChild(label);
       const rm = document.createElement("button");
       rm.type = "button";

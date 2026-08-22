@@ -339,12 +339,14 @@ In the TrueNAS web UI go to **Datasets** and create the following datasets under
 | `DeadPool/apps/swarmui/models` | Checkpoint/LoRA model files |
 | `DeadPool/apps/swarmui/dlbackend` | ComfyUI backend (auto-downloaded) |
 | `DeadPool/apps/ollama` | Ollama model storage |
+| `DeadPool/apps/whisper` | Whisper transcription model storage |
 
 > **Or** create them all via SSH shell:
 > ```bash
 > mkdir -p /mnt/DeadPool/apps/nd-world
 > mkdir -p /mnt/DeadPool/apps/swarmui/{data,models,dlbackend}
 > mkdir -p /mnt/DeadPool/apps/ollama
+> mkdir -p /mnt/DeadPool/apps/whisper
 > ```
 
 If your pool is named differently, search and replace `DeadPool` throughout `truenas-compose.yml`.
@@ -377,7 +379,7 @@ If your datasets are on a different pool or path, update all volume bind mounts 
    - Paste the full contents of your edited `truenas-compose.yml`
 4. Click **Install**
 
-TrueNAS will pull the images and start all containers (`world`, `swarmui`, `ollama`, `watchtower`).
+TrueNAS will pull the images and start all containers (`world`, `swarmui`, `ollama`, `whisper`, `watchtower`).
 
 ### Step 4 — Open the portals
 
@@ -437,19 +439,21 @@ The script auto-detects the correct path and installs ComfyUI-Manager into `cust
 | `GM_EMAIL` / `GM_PASSWORD` | _(empty)_ | Bootstraps the GM account on first start. Leave blank if the GM account already exists |
 | `GM_NAME` | `GM` | Display name for the bootstrapped GM account |
 | `COOKIE_SECURE` | `false` | Set `true` once served over HTTPS (see [Accounts, Invites & Going Public](#accounts-invites--going-public)) |
-| `COMPOSE_PROFILES` | _(empty)_ | Not read by the app itself — Docker Compose reads it to decide which optional services to start. Empty starts just `world`; set `ollama`, `swarmui`, or `ollama,swarmui` to also start those containers |
-| `AI_MODELS_DIR` | `./ai-models` | Not read by the app itself — Docker Compose reads it to pick where Ollama's text models and SwarmUI's image checkpoints/LoRAs/VAEs are stored on the host (in `ollama/` and `swarmui/` subfolders), instead of separate Docker-managed volumes. Only matters if the `ollama`/`swarmui` profiles are enabled |
+| `COMPOSE_PROFILES` | _(empty)_ | Not read by the app itself — Docker Compose reads it to decide which optional services to start. Empty starts just `world`; set any comma-separated combination of `ollama`, `whisper`, `swarmui` to also start those containers |
+| `AI_MODELS_DIR` | `./ai-models` | Not read by the app itself — Docker Compose reads it to pick where Ollama's text models, Whisper's transcription model, and SwarmUI's image checkpoints/LoRAs/VAEs are stored on the host (in `ollama/`, `whisper/`, and `swarmui/` subfolders), instead of separate Docker-managed volumes. Only matters if the corresponding profile(s) are enabled |
+| `WHISPER_MODEL_FILE` | `ggml-large-v3-turbo.bin` | Not read by the app itself — Docker Compose reads it to pick which file under `<AI_MODELS_DIR>/whisper/` the Whisper server loads. Only matters if the `whisper` profile is enabled |
 
 ---
 
 ## AI Setup
 
-Ollama (AI chat) and SwarmUI (AI image generation) are **optional** — nd-world runs
-fine without either and just shows those features as unavailable (grey status dot,
-"AI unavailable"). They're skipped by default; `bash scripts/setup.sh` asks whether
-to enable them, or set `COMPOSE_PROFILES` in `.env` yourself (see table above) and
-run `docker compose up -d`. Both are sizeable downloads and Ollama in particular
-wants a decent CPU/GPU, so it's worth leaving off if you don't plan to use AI chat.
+Ollama (AI chat), Whisper (audio-attachment transcription), and SwarmUI (AI image
+generation) are all **optional** — nd-world runs fine without any of them and just
+shows those features as unavailable (grey status dot, "AI unavailable"). They're
+skipped by default; `bash scripts/setup.sh` asks whether to enable them, or set
+`COMPOSE_PROFILES` in `.env` yourself (see table above) and run `docker compose up -d`.
+All three are sizeable downloads and Ollama in particular wants a decent CPU/GPU, so
+it's worth leaving any of them off you don't plan to use.
 
 ### Ollama (chat)
 
@@ -518,6 +522,23 @@ The **AI → Image Gen** panel supports:
 - **Upscaling** — model selector (pulls from SwarmUI Upscale model folder) + ×1.5/×2/×3/×4 scale factor
 - Image-to-image (img2img) — upload an init image and set denoising strength
 - **Generation history** — last 50 generations stored in browser localStorage with one-click parameter reuse
+
+### Whisper (audio transcription)
+
+Whisper is defined in both `docker-compose.yml` and `truenas-compose.yml` behind the
+`whisper` Compose profile — it only starts if that profile is active. It transcribes
+an audio file attached to an AI Chat/Ask AI message into text, so the chat model
+understands it regardless of whether that model has any native audio support itself.
+
+**Downloading a model:** unlike Ollama, there's no in-app download UI for this yet —
+download a whisper.cpp-compatible model file yourself into `<AI_MODELS_DIR>/whisper/`
+(default `./ai-models/whisper/`), then set `WHISPER_MODEL_FILE` in `.env` to its exact
+filename. [`xkeyC/whisper-large-v3-turbo-gguf`](https://huggingface.co/xkeyC/whisper-large-v3-turbo-gguf)
+is a good default — turbo trades a little accuracy from `large-v3` for several times
+the speed, and is light enough to run acceptably on CPU.
+
+**GPU acceleration:** change the image to `ghcr.io/ggml-org/whisper.cpp:main-cuda` and
+uncomment the `deploy` block in the Whisper service (same shape as Ollama's, above).
 
 ### ComfyUI (alternative backend)
 

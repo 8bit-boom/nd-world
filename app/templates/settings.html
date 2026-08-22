@@ -193,6 +193,10 @@
         <label for="editor-external-url">Content editor URL (Content Editor iframe)</label>
         <input id="editor-external-url" name="editor_external_url" value="{{ settings.editor_external_url or '' }}" placeholder="{{ env_editor_external_url or 'not set' }}">
       </div>
+      <div class="form-group">
+        <label for="whisper-url">Whisper URL (audio attachment transcription)</label>
+        <input id="whisper-url" name="whisper_url" value="{{ settings.whisper_url or '' }}" placeholder="{{ env_whisper_url or 'not set' }}">
+      </div>
       <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Optional extras</h2>
       <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
         Off by default to keep the nav bar focused — turn on whichever bundled lore extras

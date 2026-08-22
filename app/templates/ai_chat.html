@@ -1585,6 +1585,7 @@ async function loadDebug() {
   try {
     const r = await fetch('/api/ai/debug');
     const d = await r.json();
+    const w = d.whisper || {};
     const lines = [
       'URL: ' + d.ollama_url,
       'Reachable: ' + (d.ollama_reachable ? '✓ yes' : '✗ no'),
@@ -1593,6 +1594,9 @@ async function loadDebug() {
       '',
       'Loaded (' + (d.loaded_models || []).length + '):',
       ...(d.loaded_models || []).map(m => '  · ' + m),
+      '',
+      'Whisper (audio transcription): ' + (w.url ? w.url : '(not configured)'),
+      w.url ? 'Whisper reachable: ' + (w.ok ? '✓ yes' : '✗ no' + (w.reason ? ' — ' + w.reason : '')) : null,
     ].filter(l => l !== null);
     el.textContent = lines.join('\n');
   } catch(e) {

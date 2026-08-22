@@ -131,6 +131,7 @@ def _refresh_settings_overrides(db: Session = None):
     try:
         settings = get_app_settings(db)
         _ai_module.set_ollama_override(settings.ollama_url or "", settings.ollama_model or "")
+        _ai_module.set_whisper_override(settings.whisper_url or "")
     finally:
         if owns:
             db.close()
@@ -2378,6 +2379,7 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "env_swarmui_external_url": SWARMUI_EXTERNAL_URL,
         "env_android_emulator_url": ANDROID_EMULATOR_URL,
         "env_editor_external_url": EDITOR_EXTERNAL_URL,
+        "env_whisper_url": _ai_module.WHISPER_URL,
         "system_error": system_error,
         "vis_entities": vis_entities,
         "world_players": world_players,
@@ -2423,6 +2425,7 @@ def settings_system_save(
     swarmui_external_url: str = Form(""),
     android_emulator_url: str = Form(""),
     editor_external_url: str = Form(""),
+    whisper_url: str = Form(""),
     dreamlands_enabled: Optional[str] = Form(None),
     king_in_yellow_enabled: Optional[str] = Form(None),
     db: Session = Depends(get_db),
@@ -2433,11 +2436,13 @@ def settings_system_save(
     swarmui_external_url = swarmui_external_url.strip().rstrip("/")
     android_emulator_url = android_emulator_url.strip().rstrip("/")
     editor_external_url = editor_external_url.strip().rstrip("/")
+    whisper_url = whisper_url.strip().rstrip("/")
     for label, val in (
         ("Ollama URL", ollama_url),
         ("SwarmUI external URL", swarmui_external_url),
         ("Android emulator URL", android_emulator_url),
         ("Content editor URL", editor_external_url),
+        ("Whisper URL", whisper_url),
     ):
         if val and not (val.startswith("http://") or val.startswith("https://")):
             return templates.TemplateResponse(
@@ -2452,6 +2457,7 @@ def settings_system_save(
     settings.swarmui_external_url = swarmui_external_url
     settings.android_emulator_url = android_emulator_url
     settings.editor_external_url = editor_external_url
+    settings.whisper_url = whisper_url
     settings.dreamlands_enabled = dreamlands_enabled is not None
     settings.king_in_yellow_enabled = king_in_yellow_enabled is not None
     db.commit()

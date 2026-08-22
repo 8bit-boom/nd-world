@@ -86,6 +86,21 @@ def test_attachment_upload_audio_kind(client, seed):
     r = _upload_file(client, "clip.mp3", _MP3_BYTES, "audio/mpeg")
     assert r.status_code == 200
     assert r.json()["kind"] == "audio"
+    assert r.json()["text"] == ""  # Whisper not configured in this test — no crash, just no transcript
+
+
+def test_attachment_upload_audio_is_transcribed_when_whisper_available(client, seed, monkeypatch):
+    async def _fake_transcribe(path):
+        return "the secret door is behind the waterfall"
+    monkeypatch.setattr(ai_router._ai, "transcribe_audio", _fake_transcribe)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = _upload_file(client, "clip.mp3", _MP3_BYTES, "audio/mpeg")
+    assert r.status_code == 200
+    assert r.json()["text"] == "the secret door is behind the waterfall"
+
+
 
 
 def test_attachment_upload_rejects_unsupported_extension(client, seed):
@@ -190,6 +205,48 @@ def test_wav_audio_attachment_is_base64_encoded_into_audios_field(tmp_path, monk
     assert built[0]["audios"] == [base64.b64encode(wav_bytes).decode()]
     assert "images" not in built[0]
     assert "growl.wav" in built[0]["content"]
+
+
+def test_non_wav_audio_with_transcript_is_folded_into_content(tmp_path, monkeypatch):
+    """The reliable path: whisper.cpp transcribes any format (see
+    app.ai.transcribe_audio, called at upload time), so an mp3's transcript
+    still reaches the model as plain text even though it can't go in
+    `audios` — this works regardless of which chat model is configured."""
+    from app.routers.ai import ChatAttachment, ChatMessage, _build_ollama_messages
+
+    monkeypatch.setattr(ai_router, "_uploads_root", lambda: tmp_path)
+    msgs = [ChatMessage(role="user", content="Listen to this", attachments=[
+        ChatAttachment(kind="audio", url="/uploads/ai_attachments/growl.mp3", name="growl.mp3",
+                       text="a low, threatening growl"),
+    ])]
+    built = _build_ollama_messages(msgs)
+    assert "a low, threatening growl" in built[0]["content"]
+    assert "growl.mp3" in built[0]["content"]
+    assert "audios" not in built[0]
+    assert "not sent to the model" not in built[0]["content"]
+
+
+def test_wav_audio_with_transcript_sends_both_text_and_audios(tmp_path, monkeypatch):
+    """A .wav attachment that also got transcribed sends both: the
+    transcript as reliable text context, and the raw bytes as the
+    best-effort audio-native path — not mutually exclusive."""
+    from app.routers.ai import ChatAttachment, ChatMessage, _build_ollama_messages
+    import base64
+
+    monkeypatch.setattr(ai_router, "_uploads_root", lambda: tmp_path)
+    audio_dir = tmp_path / "ai_attachments"
+    audio_dir.mkdir()
+    wav_bytes = b"RIFF....WAVEfmt "
+    (audio_dir / "growl.wav").write_bytes(wav_bytes)
+
+    msgs = [ChatMessage(role="user", content="Listen to this", attachments=[
+        ChatAttachment(kind="audio", url="/uploads/ai_attachments/growl.wav", name="growl.wav",
+                       text="a low, threatening growl"),
+    ])]
+    built = _build_ollama_messages(msgs)
+    assert built[0]["audios"] == [base64.b64encode(wav_bytes).decode()]
+    assert "a low, threatening growl" in built[0]["content"]
+    assert "not sent to the model" not in built[0]["content"]
 
 
 def test_image_attachment_is_base64_encoded_into_images_field(tmp_path, monkeypatch):

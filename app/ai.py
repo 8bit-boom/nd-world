@@ -11,11 +11,18 @@ _log = logging.getLogger("nd.ai")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:26b")
 
+# Optional whisper.cpp server (see the "whisper" Compose profile) for
+# transcribing an audio chat attachment into text — blank like IMAGEGEN_URL
+# below, since it's an optional add-on with no sane always-on default rather
+# than something like Ollama a bare install is expected to reach locally.
+WHISPER_URL = os.getenv("WHISPER_URL", "").rstrip("/")
+
 # Runtime overrides (set from AppSettings via POST /settings/system, without
 # needing a restart — see main.py's _refresh_settings_overrides()). Blank means
 # "use the env-var default above."
 _ollama_url_override: str = ""
 _ollama_model_override: str = ""
+_whisper_url_override: str = ""
 
 
 def set_ollama_override(url: str, model: str) -> None:
@@ -30,6 +37,15 @@ def effective_ollama_url() -> str:
 
 def effective_ollama_model() -> str:
     return _ollama_model_override or OLLAMA_MODEL
+
+
+def set_whisper_override(url: str) -> None:
+    global _whisper_url_override
+    _whisper_url_override = (url or "").rstrip("/")
+
+
+def effective_whisper_url() -> str:
+    return _whisper_url_override or WHISPER_URL
 
 _DATA_DIR = Path(os.getenv("DB_PATH", "/data/world.db")).parent
 _CUSTOM_MODELS_FILE = _DATA_DIR / "ai_models.json"
@@ -333,6 +349,7 @@ async def status() -> dict:
 
 
 async def debug_info() -> dict:
+    whisper = await whisper_status()
     try:
         resp = await _client().list()
         models = [m.model for m in resp.models]
@@ -341,6 +358,7 @@ async def debug_info() -> dict:
             "ollama_reachable": True,
             "loaded_models": models,
             "default_model": effective_ollama_model(),
+            "whisper": whisper,
         }
     except Exception as exc:
         return {
@@ -348,6 +366,7 @@ async def debug_info() -> dict:
             "ollama_reachable": False,
             "error": f"{type(exc).__name__}: {exc}",
             "default_model": effective_ollama_model(),
+            "whisper": whisper,
         }
 
 
@@ -395,6 +414,52 @@ async def _swarmui_session(u: str, c: _httpx.AsyncClient) -> str:
         return r.json().get("session_id", "ndworld")
     except Exception:
         return "ndworld"
+
+
+# ── Audio transcription (whisper.cpp server) ────────────────────────────────
+# See app/routers/ai.py's /attachments/upload — an uploaded audio attachment
+# is transcribed here (regardless of its original format; the server itself
+# transcodes via ffmpeg, see the "--convert" flag on the "whisper" Compose
+# service) so its content reaches the chat model as plain text, the same
+# reliable path a document attachment already uses — independent of whether
+# the chat model itself has any native audio understanding.
+
+async def whisper_status() -> dict:
+    url = effective_whisper_url()
+    if not url:
+        return {"ok": False, "reason": "not configured"}
+    try:
+        async with _httpx.AsyncClient(timeout=5) as c:
+            r = await c.get(f"{url}/health")
+            return {"ok": r.status_code == 200 and r.json().get("status") == "ok", "url": url}
+    except Exception as e:
+        return {"ok": False, "reason": str(e), "url": url}
+
+
+async def transcribe_audio(path: Path) -> str:
+    """POST an audio file to whisper.cpp's /inference endpoint and return the
+    transcript, or "" if Whisper isn't configured or the request fails for
+    any reason (network, model still loading, unreadable audio, ...) — a
+    failed transcription should never block the rest of the attachment
+    upload, just mean this one attachment stays without transcript text."""
+    url = effective_whisper_url()
+    if not url:
+        return ""
+    try:
+        async with _httpx.AsyncClient(timeout=120) as c:
+            with path.open("rb") as f:
+                r = await c.post(
+                    f"{url}/inference",
+                    files={"file": (path.name, f, "application/octet-stream")},
+                    data={"response_format": "json"},
+                )
+            if r.status_code != 200:
+                _log.warning("whisper transcription failed: HTTP %s: %s", r.status_code, r.text[:300])
+                return ""
+            return (r.json().get("text") or "").strip()
+    except Exception as exc:
+        _log.warning("whisper transcription unavailable: %s: %s", type(exc).__name__, exc)
+        return ""
 
 
 async def imagegen_status() -> dict:

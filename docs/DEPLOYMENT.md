@@ -254,6 +254,57 @@ world and needs no git at all.
 
 ---
 
+## Optional: audio transcription (Whisper)
+
+Attaching an audio file to an AI Chat message or an entity's "Ask AI" panel
+(see the 📎 button/drag-and-drop) only reaches the chat model as text unless
+it's transcribed first — otherwise the model just sees the filename, or (for
+a `.wav` file specifically, and only for a genuinely audio-native chat
+model) the raw audio bytes on a best-effort basis. A self-hosted
+[whisper.cpp](https://github.com/ggml-org/whisper.cpp) server closes that
+gap for good: it transcribes **any** uploaded audio format (mp3, ogg, m4a,
+...) into text, which then works with **any** chat model, not just an
+audio-native one. This is opt-in, like the Android/Editor add-ons above.
+
+**1. Get a model file** — download any whisper.cpp-compatible model
+(`.bin` or `.gguf`) into `<AI_MODELS_DIR>/whisper/` (default
+`./ai-models/whisper/`).
+[`xkeyC/whisper-large-v3-turbo-gguf`](https://huggingface.co/xkeyC/whisper-large-v3-turbo-gguf)
+is a good default — "turbo" trades a little of `large-v3`'s accuracy for
+several times the transcription speed, light enough to run acceptably on
+CPU. Note the exact filename you downloaded.
+
+**2. Enable the profile** — add `whisper` to `COMPOSE_PROFILES` in `.env`
+(comma-separated with any other profiles you're already running), and set
+`WHISPER_MODEL_FILE` in `.env` to the filename from step 1, then:
+```bash
+docker compose up -d
+```
+This starts a whisper.cpp server on port `8090`. `docker compose logs -f
+whisper` should show it load the model and start listening within a few
+seconds to a minute or so, depending on model size and CPU speed.
+
+**3. That's it** — nd-world's `world` service already points at
+`http://whisper:8080` internally (see `WHISPER_URL` in `docker-compose.yml`)
+with no further configuration needed. From then on, any audio attachment
+gets transcribed automatically at upload time; if the Whisper server isn't
+reachable for any reason, the attachment just falls back to text-only
+context (filename mentioned, no transcript) instead of blocking the upload.
+Settings → System also has a **Whisper URL** field if you'd rather point at
+an externally-hosted whisper.cpp instance instead of the bundled service.
+
+**GPU acceleration**: change the image to
+`ghcr.io/ggml-org/whisper.cpp:main-cuda` and uncomment the `deploy` block in
+the Whisper service (same shape as Ollama's).
+
+**Known limitation**: real transcription accuracy and speed depend heavily
+on which model file you picked and your host's CPU/GPU — a long or noisy
+recording on a small model may transcribe slowly or imperfectly. This is
+the same "check your hardware first" tradeoff as the Android/Editor add-ons
+above, just for audio instead of a GUI session.
+
+---
+
 ## Inviting players
 
 Once nd-world is reachable (locally or over the internet):

@@ -158,28 +158,41 @@ def _build_ollama_messages(messages: List[ChatMessage]) -> list[dict]:
     attachment's bytes are base64-encoded into Ollama's per-message `images`
     field.
 
-    Audio (e.g. for a Gemma 3n/Gemma 4-style audio-native model) goes into
-    an `audios` field the same way — this isn't in any released Ollama
-    version yet (the installed client's Message type only declares `images`
-    — verified directly against its source), but it validates messages
-    permissively enough that an extra key still reaches the server rather
-    than being silently stripped (verified: ChatRequest.messages is typed
-    Union[Mapping[str, Any], Message], and pydantic keeps a plain dict as a
-    Mapping instead of coercing it through Message, which would drop
-    anything Message doesn't declare). The field name and shape here match
-    ollama/ollama#15243 (open PR at the time of writing, linked from
-    ollama/ollama#11798 and #15427 — the latter is someone finding an
-    `audio` tag on a Gemma4 Ollama model page with no docs yet, which is
-    what this was originally built against before finding the PR): `Audios
-    []ImageData` — i.e. base64 bytes, same as `images`. That PR's server
-    code only accepts WAV ("models already detect WAV format by magic
-    bytes"; its OpenAI-compat shim explicitly rejects anything else) — the
-    audio library takes several formats for playback, so a non-WAV
-    attachment here is intentionally NOT put in `audios` (an mp3's bytes
-    would just fail WAV detection) and only gets the text note instead.
-    A model without audio support never looks at the key either way, and
-    the text note gives every model *some* context about the attachment
-    regardless of whether it can actually hear it."""
+    Audio has two independent paths, and either or both can fire for the
+    same attachment:
+
+    1. A transcript (any audio format — see app.ai.transcribe_audio, which
+       runs at upload time via an optional self-hosted whisper.cpp server)
+       gets folded into `content` as plain text, exactly like a document.
+       This is the reliable path: it works regardless of which chat model
+       is configured, since the model never needs to understand audio at
+       all — just text, same as everything else in the prompt.
+    2. If the attachment is specifically a .wav file, its bytes are ALSO
+       base64-encoded into an `audios` field, the same shape as `images`,
+       on a best-effort basis for a genuinely audio-native chat model (e.g.
+       a Gemma 3n/Gemma 4-style model) to additionally hear directly. This
+       isn't in any released Ollama version yet (the installed client's
+       Message type only declares `images` — verified directly against its
+       source), but it validates messages permissively enough that an extra
+       key still reaches the server rather than being silently stripped
+       (verified: ChatRequest.messages is typed Union[Mapping[str, Any],
+       Message], and pydantic keeps a plain dict as a Mapping instead of
+       coercing it through Message, which would drop anything Message
+       doesn't declare). The field name/shape match ollama/ollama#15243
+       (open PR at the time of writing, linked from ollama/ollama#11798 and
+       #15427 — the latter is someone finding an undocumented `audio` tag
+       on a Gemma4 Ollama model page, which is what this was originally
+       built against before finding the PR): `Audios []ImageData`. That
+       PR's server only accepts WAV ("models already detect WAV format by
+       magic bytes"; its OpenAI-compat shim explicitly rejects anything
+       else), so a non-.wav attachment never goes in `audios` — its bytes
+       would just fail WAV detection — regardless of whether it has a
+       transcript from path 1.
+
+    If neither path produced anything (no Whisper configured/reachable, and
+    not a .wav file), the attachment still gets a plain text note so every
+    model has *some* context about it rather than the upload silently doing
+    nothing."""
     out = []
     for m in messages:
         content = m.content
@@ -191,19 +204,29 @@ def _build_ollama_messages(messages: List[ChatMessage]) -> list[dict]:
                 content += f"\n\n---\nAttached file: {att.name or 'document'}\n\n{snippet}\n---"
             elif att.kind == "audio":
                 is_wav = _Path(att.url).suffix.lower() == ".wav"
-                if is_wav:
+                sent_something = False
+                if att.text:
+                    snippet = att.text[:_MAX_ATTACHMENT_TEXT_CHARS]
                     content += (
-                        f"\n\n[Attached audio file: {att.name or 'audio clip'} — sent to "
-                        "the model directly for models with audio input support]"
+                        f"\n\n---\nTranscript of attached audio file: {att.name or 'audio clip'}"
+                        f"\n\n{snippet}\n---"
                     )
+                    sent_something = True
+                if is_wav:
                     path = _attachment_disk_path(att.url)
                     if path:
                         audios.append(_base64.b64encode(path.read_bytes()).decode())
-                else:
+                        if not att.text:
+                            content += (
+                                f"\n\n[Attached audio file: {att.name or 'audio clip'} — sent "
+                                "to the model directly for models with audio input support]"
+                            )
+                        sent_something = True
+                if not sent_something:
                     content += (
                         f"\n\n[Attached audio file: {att.name or 'audio clip'} — not sent "
-                        "to the model: audio input currently requires a .wav file and this "
-                        "isn't one; mentioned here for context only]"
+                        "to the model: no transcription available and it isn't a .wav file "
+                        "for direct audio input; mentioned here for context only]"
                     )
             elif att.kind == "image":
                 path = _attachment_disk_path(att.url)
@@ -232,10 +255,11 @@ async def ai_attachment_upload(
     active_world: Optional[str] = Cookie(None),
 ):
     """Upload a file to attach to the next chat message on /ai or an
-    entity's Ask AI panel. Returns immediately with the extracted text for a
-    document so the client never has to re-upload/re-parse it; images and
-    audio are just stored and referenced by URL, read back from disk (see
-    _build_ollama_messages) only once the message is actually sent."""
+    entity's Ask AI panel. Returns immediately with the extracted/transcribed
+    text for a document or audio file so the client never has to re-upload/
+    re-parse it; an image is just stored and referenced by URL, read back
+    from disk (see _build_ollama_messages) only once the message is
+    actually sent."""
     _require_ask_ai_access(request, db, active_world)
     if not file or not file.filename:
         raise HTTPException(400, "No file uploaded")
@@ -250,7 +274,17 @@ async def ai_attachment_upload(
     dest = target_dir / unique_upload_filename(file.filename, ext)
     copy_upload_bounded(file, dest, max_bytes=_MAX_ATTACHMENT_BYTES)
 
-    text = _extract_document_text(dest, ext) if kind == "document" else ""
+    if kind == "document":
+        text = _extract_document_text(dest, ext)
+    elif kind == "audio":
+        # Whisper transcodes via ffmpeg server-side, so this works for any
+        # of _ATTACH_AUDIO_EXTS, not just .wav — see app.ai.transcribe_audio.
+        # "" (Whisper not configured, or the request failed) just means this
+        # attachment falls back to _build_ollama_messages' non-transcript
+        # handling instead of blocking the upload.
+        text = await _ai.transcribe_audio(dest)
+    else:
+        text = ""
     return {
         "kind": kind,
         "url": f"/uploads/{_ATTACH_SUBDIR}/{dest.name}",
