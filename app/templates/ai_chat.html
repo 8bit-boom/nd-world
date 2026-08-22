@@ -797,7 +797,7 @@
       <span id="gen-stats" style="color:var(--text-dim)"></span>
     </div>
     <div class="ai-input-bar">
-      <button type="button" id="ai-attach-btn" title="Attach an image, audio clip, or document"
+      <button type="button" id="ai-attach-btn" title="Attach an image, audio clip, or document (audio needs a .wav model with audio support to be understood, not just uploaded)"
               onclick="document.getElementById('ai-attach-input').click()">📎</button>
       <textarea id="ai-input" rows="2" placeholder="Ask anything… (Enter to send, Shift+Enter for new line)" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
       <button id="ai-send" onclick="sendMessage()">Send ↵</button>

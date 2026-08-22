@@ -151,41 +151,60 @@ class ChatBody(BaseModel):
 
 def _build_ollama_messages(messages: List[ChatMessage]) -> list[dict]:
     """Turn the chat's {role, content, attachments} messages into the plain
-    {role, content[, images][, audio]} dicts app.ai.generate_chat/stream_chat
+    {role, content[, images][, audios]} dicts app.ai.generate_chat/stream_chat
     forward straight to Ollama. A document attachment's extracted text is
     folded into the message content (same idea as how entities/detail.html
     already text-interpolates entity context into a prompt); an image
     attachment's bytes are base64-encoded into Ollama's per-message `images`
-    field. Audio is base64-encoded into a same-shaped `audio` field on a
-    best-effort basis — this app has no speech-to-text of its own, so this
-    only does anything for a genuinely audio-native model (e.g. a Gemma 3n-
-    style model with an audio tower); the installed `ollama` client has no
-    typed field for this (only `images` is declared on its Message model),
-    but it validates messages permissively enough that an extra `audio` key
-    still passes through untouched to the server (verified against the
-    installed client — see ChatRequest.messages' Union[Mapping[str, Any],
-    Message] typing) rather than being silently stripped. A model without
-    audio support just never looks at the key, so this is harmless either
-    way — and the text note below still gives every model *some* context
-    about the attachment regardless of whether it can actually hear it."""
+    field.
+
+    Audio (e.g. for a Gemma 3n/Gemma 4-style audio-native model) goes into
+    an `audios` field the same way — this isn't in any released Ollama
+    version yet (the installed client's Message type only declares `images`
+    — verified directly against its source), but it validates messages
+    permissively enough that an extra key still reaches the server rather
+    than being silently stripped (verified: ChatRequest.messages is typed
+    Union[Mapping[str, Any], Message], and pydantic keeps a plain dict as a
+    Mapping instead of coercing it through Message, which would drop
+    anything Message doesn't declare). The field name and shape here match
+    ollama/ollama#15243 (open PR at the time of writing, linked from
+    ollama/ollama#11798 and #15427 — the latter is someone finding an
+    `audio` tag on a Gemma4 Ollama model page with no docs yet, which is
+    what this was originally built against before finding the PR): `Audios
+    []ImageData` — i.e. base64 bytes, same as `images`. That PR's server
+    code only accepts WAV ("models already detect WAV format by magic
+    bytes"; its OpenAI-compat shim explicitly rejects anything else) — the
+    audio library takes several formats for playback, so a non-WAV
+    attachment here is intentionally NOT put in `audios` (an mp3's bytes
+    would just fail WAV detection) and only gets the text note instead.
+    A model without audio support never looks at the key either way, and
+    the text note gives every model *some* context about the attachment
+    regardless of whether it can actually hear it."""
     out = []
     for m in messages:
         content = m.content
         images = []
-        audio = []
+        audios = []
         for att in m.attachments:
             if att.kind == "document" and att.text:
                 snippet = att.text[:_MAX_ATTACHMENT_TEXT_CHARS]
                 content += f"\n\n---\nAttached file: {att.name or 'document'}\n\n{snippet}\n---"
             elif att.kind == "audio":
-                content += (
-                    f"\n\n[Attached audio file: {att.name or 'audio clip'} — sent to the "
-                    "model directly for models with audio input support; noted here for "
-                    "context either way]"
-                )
-                path = _attachment_disk_path(att.url)
-                if path:
-                    audio.append(_base64.b64encode(path.read_bytes()).decode())
+                is_wav = _Path(att.url).suffix.lower() == ".wav"
+                if is_wav:
+                    content += (
+                        f"\n\n[Attached audio file: {att.name or 'audio clip'} — sent to "
+                        "the model directly for models with audio input support]"
+                    )
+                    path = _attachment_disk_path(att.url)
+                    if path:
+                        audios.append(_base64.b64encode(path.read_bytes()).decode())
+                else:
+                    content += (
+                        f"\n\n[Attached audio file: {att.name or 'audio clip'} — not sent "
+                        "to the model: audio input currently requires a .wav file and this "
+                        "isn't one; mentioned here for context only]"
+                    )
             elif att.kind == "image":
                 path = _attachment_disk_path(att.url)
                 if path:
@@ -193,8 +212,8 @@ def _build_ollama_messages(messages: List[ChatMessage]) -> list[dict]:
         d = {"role": m.role, "content": content}
         if images:
             d["images"] = images
-        if audio:
-            d["audio"] = audio
+        if audios:
+            d["audios"] = audios
         out.append(d)
     return out
 

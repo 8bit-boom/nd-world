@@ -197,7 +197,7 @@
       <div class="ep-status-row"><span id="ep-stats"></span></div>
       <div class="ai-attach-list" id="ep-attach-list"></div>
       <div class="ep-bar">
-        <button type="button" id="ep-attach-btn" title="Attach an image, audio clip, or document"
+        <button type="button" id="ep-attach-btn" title="Attach an image, audio clip, or document (audio needs a .wav file and an audio-capable model to be understood)"
                 onclick="document.getElementById('ep-attach-input').click()">📎</button>
         <textarea id="ep-input" rows="1" placeholder="Ask about this entity… (Enter to send)" onkeydown="epKey(event)" oninput="epResize(this)"></textarea>
         <button id="ep-send" onclick="epSend()">Ask</button>
