@@ -544,6 +544,16 @@ in `.env` to its exact filename — stick to the classic `ggml-*.bin` format fro
 format used elsewhere in the ggml ecosystem isn't supported by this image's
 whisper-server yet and fails to load with "invalid model data (bad magic)".
 
+**"Illegal instruction" crash loop (exit code 132):** the prebuilt image is compiled
+with whatever CPU instruction set its GitHub Actions build runner happened to
+support, which silently includes AVX-512 on many runners — any host CPU without
+AVX-512 (common even on otherwise-modern hardware) then crashes the instant the
+model finishes loading. Comment out the `image:` line on the `whisper` service and
+uncomment the `build:` line right below it instead — it compiles `whisper-server`
+from source with AVX-512 excluded, using [`docker/whisper/Dockerfile`](docker/whisper/Dockerfile).
+See that file's comments, or [ggml-org/whisper.cpp#2928](https://github.com/ggml-org/whisper.cpp/issues/2928),
+for the full explanation.
+
 **GPU acceleration:** change the image to `ghcr.io/ggml-org/whisper.cpp:main-cuda` and
 uncomment the `deploy` block in the Whisper service (same shape as Ollama's, above).
 

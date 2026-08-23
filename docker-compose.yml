@@ -94,6 +94,18 @@ services:
   whisper:
     profiles: ["whisper"]
     image: ghcr.io/ggml-org/whisper.cpp:main
+    # If this crash-loops with "Illegal instruction" in `docker compose logs
+    # whisper` (container exit code 132) right after the model finishes
+    # loading, your CPU doesn't support AVX-512 — the prebuilt image above
+    # is compiled assuming whatever instruction set its GitHub Actions build
+    # runner happened to have, which silently includes AVX-512 on many
+    # runners even though it's not required for good CPU performance. Comment
+    # out the `image:` line above and uncomment this `build:` instead — it
+    # compiles whisper-server from source with AVX-512 excluded, which fixes
+    # it on any x86_64 CPU from roughly the last decade. See
+    # docker/whisper/Dockerfile for the full explanation and
+    # https://github.com/ggml-org/whisper.cpp/issues/2928 for the upstream bug.
+    # build: ./docker/whisper
     container_name: whisper
     restart: unless-stopped
     ports:
