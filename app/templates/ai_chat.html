@@ -173,7 +173,7 @@
   overflow-y: auto;
 }
 #ai-input:focus { outline: 1px solid var(--neon); }
-#ai-attach-btn {
+#ai-attach-btn, #ai-mic-btn {
   background: var(--bg3);
   border: 1px solid var(--border);
   color: var(--text-dim);
@@ -183,7 +183,7 @@
   cursor: pointer;
   font-size: 1rem;
 }
-#ai-attach-btn:hover { border-color: var(--neon); color: var(--neon); }
+#ai-attach-btn:hover, #ai-mic-btn:hover { border-color: var(--neon); color: var(--neon); }
 .ai-main.drag-over { outline: 2px dashed var(--neon); outline-offset: -4px; }
 #ai-send {
   background: var(--neon);
@@ -800,6 +800,8 @@
     <div class="ai-input-bar">
       <button type="button" id="ai-attach-btn" title="Attach an image, audio clip, or document (audio needs a .wav model with audio support to be understood, not just uploaded)"
               onclick="document.getElementById('ai-attach-input').click()">📎</button>
+      <button type="button" id="ai-mic-btn" title="Record a voice message — transcribed via Whisper and sent to the model as text"
+              onclick="ndToggleAttachMic('ai-mic-btn', chatAttachments)">🎤</button>
       <textarea id="ai-input" rows="2" placeholder="Ask anything… (Enter to send, Shift+Enter for new line)" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
       <button id="ai-send" onclick="sendMessage()">Send ↵</button>
     </div>
@@ -1485,6 +1487,8 @@
              style="color:var(--text);font-size:.82rem;max-width:100%">
       <button class="ig-btn" id="wt-transcribe-btn" onclick="wtTranscribe()"
               style="border-color:var(--neon);color:var(--neon);padding:.38rem 1rem;white-space:nowrap">▶ Transcribe</button>
+      <button class="ig-btn" id="wt-mic-btn" onclick="wtToggleMic()"
+              style="padding:.38rem 1rem;white-space:nowrap">🎤 Record</button>
     </div>
     <div id="wt-result" style="margin-top:.8rem;display:none">
       <div style="font-size:.72rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem">Transcript</div>
@@ -3883,22 +3887,21 @@ async function wtLoadStatus() {
   }
 }
 
-async function wtTranscribe() {
-  const fileInput = document.getElementById('wt-file');
+async function wtTranscribeFile(file) {
   const btn = document.getElementById('wt-transcribe-btn');
+  const micBtn = document.getElementById('wt-mic-btn');
   const resultBox = document.getElementById('wt-result');
   const resultText = document.getElementById('wt-result-text');
-  const file = fileInput.files[0];
-  if (!file) { alert('Pick an audio file first'); return; }
 
   btn.disabled = true;
+  micBtn.disabled = true;
   const origLabel = btn.textContent;
   btn.textContent = '⏳ Transcribing…';
   resultBox.style.display = 'block';
   resultText.textContent = '';
   try {
     const fd = new FormData();
-    fd.append('file', file);
+    fd.append('file', file, file.name);
     const res = await fetch('/api/ai/attachments/upload', { method: 'POST', body: fd });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
@@ -3910,8 +3913,33 @@ async function wtTranscribe() {
     resultText.textContent = '✗ ' + e.message;
   } finally {
     btn.disabled = false;
+    micBtn.disabled = false;
     btn.textContent = origLabel;
   }
+}
+
+function wtTranscribe() {
+  const file = document.getElementById('wt-file').files[0];
+  if (!file) { alert('Pick an audio file first'); return; }
+  wtTranscribeFile(file);
+}
+
+let _wtMicRecorder = null;
+function wtToggleMic() {
+  const micBtn = document.getElementById('wt-mic-btn');
+  if (_wtMicRecorder && _wtMicRecorder.isRecording()) { _wtMicRecorder.stop(); return; }
+  _wtMicRecorder = ndMicRecorder(
+    (blob, mimeType) => {
+      micBtn.textContent = '🎤 Record';
+      wtTranscribeFile(new File([blob], ndMicFilename(mimeType), { type: mimeType }));
+    },
+    (err) => {
+      micBtn.textContent = '🎤 Record';
+      document.getElementById('wt-result').style.display = 'block';
+      document.getElementById('wt-result-text').textContent = '✗ Microphone error: ' + err.message;
+    },
+  );
+  _wtMicRecorder.start().then(started => { if (started) micBtn.textContent = '⏹ Stop'; });
 }
 
 // ── Attach generated image to an entity ──────────────────────────────────────

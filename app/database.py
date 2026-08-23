@@ -643,6 +643,7 @@ def _migrate():
             ("loot_json",     "TEXT DEFAULT '[]'", True),
             ("xp_awarded",    "INTEGER DEFAULT 0", True),
             ("party_id",      "INTEGER", True),
+            ("live_transcript", "TEXT DEFAULT ''", True),
             ("created_at",    "DATETIME", True),
             ("updated_at",    "DATETIME", True),
         ], foreign_keys=[

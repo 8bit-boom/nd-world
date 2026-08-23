@@ -103,6 +103,215 @@ def test_player_cannot_call_gm_ai_endpoints(client, seed):
     assert r2.status_code == 403
 
 
+# ── Audio → transcript → recap (file drop/picker or mic recording) ─────────
+
+def _upload_audio(client, filename="audio.wav", data=b"fake-audio-bytes", content_type="audio/wav"):
+    import io
+    return client.post(
+        "/api/sessions/ai/summarize-from-audio",
+        files={"file": (filename, io.BytesIO(data), content_type)},
+    )
+
+
+def test_summarize_from_audio_transcribes_and_summarizes(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_transcribe(path):
+        captured["path_exists_during_call"] = path.is_file()
+        return "the party met elena at the bazaar"
+    async def fake_summarize(transcript, model=""):
+        captured["transcript"] = transcript
+        return "The party met Elena at the bazaar."
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = _upload_audio(client, filename="session.wav")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["transcript"] == "the party met elena at the bazaar"
+    assert body["recap"] == "The party met Elena at the bazaar."
+    assert captured["transcript"] == "the party met elena at the bazaar"
+    assert captured["path_exists_during_call"] is True
+
+
+def test_summarize_from_audio_is_session_independent(client, seed, monkeypatch):
+    """Works with no session_id in the path at all — usable on the New
+    Session form before anything has been saved, like expand-notes/
+    condense-recap above."""
+    async def fake_transcribe(path):
+        return "some transcript"
+    async def fake_summarize(transcript, model=""):
+        return "A recap."
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = _upload_audio(client)
+    assert r.status_code == 200
+
+
+def test_summarize_from_audio_does_not_persist_the_file(client, seed, monkeypatch, tmp_path):
+    seen_paths = []
+
+    async def fake_transcribe(path):
+        seen_paths.append(path)
+        return "transcript"
+    async def fake_summarize(t, model=""):
+        return "recap"
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = _upload_audio(client)
+    assert r.status_code == 200
+    assert len(seen_paths) == 1
+    assert not seen_paths[0].exists()  # cleaned up after the call
+
+
+def test_summarize_from_audio_rejects_unsupported_extension(client, seed):
+    _login_gm_in(client, seed, seed.world_a)
+    r = _upload_audio(client, filename="malware.exe", content_type="application/octet-stream")
+    assert r.status_code == 400
+
+
+def test_summarize_from_audio_empty_transcript_rejected(client, seed, monkeypatch):
+    async def fake_transcribe(path):
+        return ""
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = _upload_audio(client)
+    assert r.status_code == 400
+
+
+def test_summarize_from_audio_oversized_file_rejected(client, seed, monkeypatch):
+    monkeypatch.setattr("app.routers.sessions.MAX_SESSION_AUDIO_BYTES", 10)
+    _login_gm_in(client, seed, seed.world_a)
+    r = _upload_audio(client, data=b"a" * 100)
+    assert r.status_code == 413
+
+
+def test_summarize_from_audio_requires_gm(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = _upload_audio(client)
+    assert r.status_code == 403
+
+
+# ── Live session recording: chunk-append, clear, summarize ─────────────────
+
+def _append_chunk(client, session_id, filename="chunk1.webm", data=b"chunk-bytes", content_type="audio/webm"):
+    import io
+    return client.post(
+        f"/api/sessions/{session_id}/live-transcript/append",
+        files={"file": (filename, io.BytesIO(data), content_type)},
+    )
+
+
+def test_live_transcript_append_accumulates_across_chunks(client, seed, monkeypatch):
+    session_id = _make_session(seed.world_a)
+    texts = iter(["The party entered the tavern.", "They met a stranger."])
+    async def fake_transcribe(path):
+        return next(texts)
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = _append_chunk(client, session_id, filename="c1.webm")
+    assert r1.status_code == 200
+    assert r1.json() == {"chunk_text": "The party entered the tavern.", "transcript": "The party entered the tavern."}
+
+    r2 = _append_chunk(client, session_id, filename="c2.webm")
+    assert r2.status_code == 200
+    assert r2.json()["transcript"] == "The party entered the tavern. They met a stranger."
+
+    db = SessionLocal()
+    try:
+        gs = db.get(GameSession, session_id)
+        assert gs.live_transcript == "The party entered the tavern. They met a stranger."
+    finally:
+        db.close()
+
+
+def test_live_transcript_append_silent_chunk_appends_nothing(client, seed, monkeypatch):
+    session_id = _make_session(seed.world_a)
+    async def fake_transcribe(path):
+        return ""
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = _append_chunk(client, session_id)
+    assert r.status_code == 200
+    assert r.json() == {"chunk_text": "", "transcript": ""}
+
+
+def test_live_transcript_append_requires_existing_session(client, seed):
+    _login_gm_in(client, seed, seed.world_a)
+    r = _append_chunk(client, 999999)
+    assert r.status_code == 404
+
+
+def test_live_transcript_append_requires_gm(client, seed):
+    session_id = _make_session(seed.world_a)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = _append_chunk(client, session_id)
+    assert r.status_code == 403
+
+
+def test_live_transcript_clear(client, seed):
+    session_id = _make_session(seed.world_a)
+    db = SessionLocal()
+    try:
+        db.get(GameSession, session_id).live_transcript = "Some accumulated transcript."
+        db.commit()
+    finally:
+        db.close()
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(f"/api/sessions/{session_id}/live-transcript/clear")
+    assert r.status_code == 200
+    assert r.json() == {"transcript": ""}
+
+    db = SessionLocal()
+    try:
+        assert db.get(GameSession, session_id).live_transcript == ""
+    finally:
+        db.close()
+
+
+def test_summarize_live_transcript(client, seed, monkeypatch):
+    session_id = _make_session(seed.world_a)
+    db = SessionLocal()
+    try:
+        db.get(GameSession, session_id).live_transcript = "raw messy asr text about the tavern"
+        db.commit()
+    finally:
+        db.close()
+
+    async def fake_summarize(transcript, model=""):
+        assert transcript == "raw messy asr text about the tavern"
+        return "The party visited the tavern."
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(f"/api/sessions/{session_id}/ai/summarize-live-transcript")
+    assert r.status_code == 200
+    assert r.json()["recap"] == "The party visited the tavern."
+
+
+def test_summarize_live_transcript_empty_rejected(client, seed):
+    session_id = _make_session(seed.world_a)
+    db = SessionLocal()
+    try:
+        db.get(GameSession, session_id).live_transcript = ""
+        db.commit()
+    finally:
+        db.close()
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(f"/api/sessions/{session_id}/ai/summarize-live-transcript")
+    assert r.status_code == 400
+
+
 # ── Player-facing session log ────────────────────────────────────────────────
 
 def test_session_log_list_reachable_by_player(client, seed):

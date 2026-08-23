@@ -1,6 +1,9 @@
 import json
+import os
+import tempfile
+from pathlib import Path
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
+from fastapi import APIRouter, Cookie, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -10,8 +13,41 @@ from ..database import get_db
 from ..deps import get_world_ctx, paginate
 from ..models import CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, World
 from ..templating import templates
+from ..uploads import read_upload_bounded
 
 router = APIRouter()
+
+# Same allowed set as the AI-attachment and Audio Library upload pipelines
+# (app/routers/ai.py's _ATTACH_AUDIO_EXTS, app/routers/audio.py's
+# _ALLOWED_EXTS) — .webm/.ogg covers what MediaRecorder produces in-browser.
+_SESSION_AUDIO_EXTS = {".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus", ".webm", ".aac"}
+# A session recording can run long — same default ceiling as the Audio
+# Library's own MAX_AUDIO_UPLOAD_BYTES, reusing that env var rather than
+# introducing a second one for what's really the same kind of upload.
+MAX_SESSION_AUDIO_BYTES = int(os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(200 * 1024 * 1024)))
+# One live-recording chunk (see the "Live session recording" section below)
+# is only ever a minute or so of audio — this just needs to be generous
+# enough that a slightly-longer-than-expected chunk (a slow browser tab, a
+# missed stop/restart) doesn't 413 and silently drop that segment.
+MAX_LIVE_CHUNK_BYTES = int(os.environ.get("MAX_LIVE_CHUNK_BYTES", str(25 * 1024 * 1024)))
+
+
+async def _transcribe_chunk(file: UploadFile, max_bytes: int = MAX_LIVE_CHUNK_BYTES) -> str:
+    """Save an uploaded audio file to a temp path just long enough to run it
+    through Whisper, then delete it — shared by the one-shot
+    summarize-from-audio route and the live-transcript chunk-append route
+    below, neither of which needs the audio itself kept afterward."""
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in _SESSION_AUDIO_EXTS:
+        raise HTTPException(400, f"Unsupported audio type {ext!r} — allowed: {', '.join(sorted(_SESSION_AUDIO_EXTS))}")
+    raw = read_upload_bounded(file, max_bytes=max_bytes)
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        tmp.write(raw)
+        tmp_path = Path(tmp.name)
+    try:
+        return await _ai_module.transcribe_audio(tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 @router.get("/sessions", response_class=HTMLResponse)
@@ -223,6 +259,75 @@ async def api_condense_recap(request: Request):
     if not recap:
         raise HTTPException(400, "No recap provided")
     return {"recap": await _ai_module.condense_recap(recap)}
+
+
+@router.post("/api/sessions/ai/summarize-from-audio")
+async def api_summarize_from_audio(file: UploadFile = File(...)):
+    """Transcribe an uploaded (file-picked, dropped, or mic-recorded) session
+    recording via Whisper, then summarize the transcript into a narrative
+    recap — same one-shot "AI draft, GM reviews/applies" flow as the notes/
+    facts recap buttons on this page. Session-independent, like expand-notes/
+    condense-recap above (works on the New Session form too, before anything
+    has been saved) — unlike summarize-from-facts, nothing here depends on a
+    session already existing in the database.
+
+    The audio itself only ever sits in a temp file for the duration of the
+    transcription call and is never saved permanently; a GM who wants to
+    keep the recording should upload it to the Audio Library separately."""
+    transcript = await _transcribe_chunk(file, max_bytes=MAX_SESSION_AUDIO_BYTES)
+    if not transcript:
+        raise HTTPException(
+            400,
+            "Could not transcribe this audio — check that Whisper is configured and reachable "
+            "(see the AI page's 🎙 Whisper tab) and that the clip actually has speech in it.",
+        )
+    recap = await _ai_module.summarize_transcript(transcript)
+    return {"transcript": transcript, "recap": recap}
+
+
+# ── Live session recording: short chunks, transcribed and saved as they
+# arrive, so a multi-hour recording survives a crashed tab or dropped
+# connection with at most one chunk lost instead of the whole session. The
+# browser side (sessions/detail.html) stops and restarts a fresh short
+# MediaRecorder segment every ~minute and uploads each one here in order as
+# it finishes — this endpoint has no idea how long the overall recording
+# has been running, it only ever sees one chunk at a time (see
+# _transcribe_chunk above, shared with summarize-from-audio).
+
+@router.post("/api/sessions/{session_id}/live-transcript/append")
+async def api_live_transcript_append(session_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    if not gs:
+        raise HTTPException(404)
+    chunk_text = (await _transcribe_chunk(file)).strip()
+    if chunk_text:
+        gs.live_transcript = (gs.live_transcript or "") + (" " if gs.live_transcript else "") + chunk_text
+        db.commit()
+    # chunk_text can legitimately be "" (a silent segment) — that's not an
+    # error, just nothing to append; the client still needs the running
+    # total either way to keep its live display in sync.
+    return {"chunk_text": chunk_text, "transcript": gs.live_transcript}
+
+
+@router.post("/api/sessions/{session_id}/live-transcript/clear")
+def api_live_transcript_clear(session_id: int, db: Session = Depends(get_db)):
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    if not gs:
+        raise HTTPException(404)
+    gs.live_transcript = ""
+    db.commit()
+    return {"transcript": ""}
+
+
+@router.post("/api/sessions/{session_id}/ai/summarize-live-transcript")
+async def api_summarize_live_transcript(session_id: int, db: Session = Depends(get_db)):
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    if not gs:
+        raise HTTPException(404)
+    if not (gs.live_transcript or "").strip():
+        raise HTTPException(400, "No live transcript recorded for this session yet.")
+    recap = await _ai_module.summarize_transcript(gs.live_transcript)
+    return {"transcript": gs.live_transcript, "recap": recap}
 
 
 @router.post("/api/sessions/{session_id}/ai/summarize-from-facts")

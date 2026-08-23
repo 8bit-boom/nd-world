@@ -51,9 +51,25 @@
           {% endif %}
           <span id="ai-recap-status" style="font-size:.78rem;color:var(--text-dim)"></span>
         </div>
+
+        <div id="audio-dropzone" style="margin-top:.6rem;border:1px dashed var(--border);border-radius:4px;padding:.7rem;text-align:center;font-size:.8rem;color:var(--text-dim)">
+          🎙 Drop a session recording here, or
+          <label class="ai-recap-btn" style="display:inline-block;cursor:pointer">
+            Browse…
+            <input type="file" id="audio-file-input" accept=".mp3,.ogg,.oga,.wav,.m4a,.flac,.opus,.webm,.aac,audio/*" style="display:none">
+          </label>
+          <button type="button" id="mic-record-btn" class="ai-recap-btn" onclick="toggleMicRecording()">🎤 Record</button>
+          <span id="mic-record-status" style="font-size:.75rem;color:var(--text-dim)"></span>
+          <div style="font-size:.72rem;margin-top:.3rem">Transcribed via Whisper, then summarized into a recap draft below — the audio itself isn't kept (use the Audio Library separately to save a recording).</div>
+        </div>
+
         <div id="ai-recap-preview" style="display:none;margin-top:.6rem;background:var(--bg3);border:1px solid var(--neon);border-radius:4px;padding:.7rem">
           <div style="font-size:.78rem;color:var(--neon);margin-bottom:.4rem">AI draft — review before applying</div>
           <div id="ai-recap-preview-text" style="font-size:.85rem;white-space:pre-wrap;max-height:220px;overflow-y:auto;margin-bottom:.5rem"></div>
+          <details id="ai-recap-transcript-wrap" style="display:none;margin-bottom:.5rem">
+            <summary style="cursor:pointer;font-size:.75rem;color:var(--text-dim)">Raw transcript</summary>
+            <div id="ai-recap-transcript-text" style="font-size:.78rem;color:var(--text-dim);white-space:pre-wrap;max-height:160px;overflow-y:auto;margin-top:.3rem"></div>
+          </details>
           <div style="display:flex;gap:.5rem;flex-wrap:wrap">
             <button type="button" class="ai-recap-btn" onclick="aiApplyRecap('replace')">Replace summary</button>
             <button type="button" class="ai-recap-btn" onclick="aiApplyRecap('append')">Append to summary</button>
@@ -93,6 +109,25 @@
   </form>
 
   {% if gsession %}
+  <!-- Live session recording: records in short chunks, transcribing and
+       saving each one as it finishes, so a long session survives a crashed
+       tab or dropped connection with at most one chunk lost. -->
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">🔴 Live Session Recording</h2>
+    <p style="font-size:.8rem;color:var(--text-dim);margin:0 0 .6rem">
+      Records in ~1-minute chunks, each transcribed and saved to this session as it finishes — safe for a
+      multi-hour session, and nothing is lost beyond the current chunk if your browser or connection drops.
+      Leave this tab open and awake for the duration; the recording stops if the tab is closed.
+    </p>
+    <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem">
+      <button type="button" id="live-record-btn" class="ai-recap-btn" onclick="toggleLiveRecording()">🔴 Start Recording</button>
+      <button type="button" class="ai-recap-btn" onclick="summarizeLiveTranscript()">✨ Summarize transcript</button>
+      <button type="button" class="ai-recap-btn" onclick="clearLiveTranscript()">🗑 Clear transcript</button>
+      <span id="live-record-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+    </div>
+    <div id="live-transcript-text" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem .75rem;font-size:.82rem;color:var(--text-dim);white-space:pre-wrap;max-height:200px;overflow-y:auto">{{ gsession.live_transcript or '(nothing recorded yet)' }}</div>
+  </div>
+
   <!-- Prep checklist -->
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">✅ Prep Checklist</h2>
@@ -200,7 +235,96 @@ function aiApplyRecap(mode) {
 
 function aiDiscardRecap() {
   document.getElementById('ai-recap-preview').style.display = 'none';
+  document.getElementById('ai-recap-transcript-wrap').style.display = 'none';
   _aiRecapDraft = '';
+}
+
+// ── Audio → transcript → recap (file drop/picker or live mic recording) ────
+
+async function aiSummarizeFromAudio(file) {
+  const status = document.getElementById('ai-recap-status');
+  const micStatus = document.getElementById('mic-record-status');
+  status.textContent = 'Transcribing & summarizing…';
+  micStatus.textContent = '';
+  _aiRecapButtons().forEach(b => b.disabled = true);
+  const micBtn = document.getElementById('mic-record-btn');
+  micBtn.disabled = true;
+  try {
+    const fd = new FormData();
+    fd.append('file', file, file.name);
+    const res = await fetch('/api/sessions/ai/summarize-from-audio', { method: 'POST', body: fd });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    _aiRecapDraft = data.recap || '';
+    document.getElementById('ai-recap-preview-text').textContent = _aiRecapDraft || '(empty recap)';
+    document.getElementById('ai-recap-preview').style.display = 'block';
+    if (data.transcript) {
+      document.getElementById('ai-recap-transcript-text').textContent = data.transcript;
+      document.getElementById('ai-recap-transcript-wrap').style.display = 'block';
+    }
+    status.textContent = '';
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  } finally {
+    _aiRecapButtons().forEach(b => b.disabled = false);
+    micBtn.disabled = false;
+  }
+}
+
+document.getElementById('audio-file-input').addEventListener('change', function () {
+  if (this.files[0]) aiSummarizeFromAudio(this.files[0]);
+  this.value = '';
+});
+
+const _audioDropzone = document.getElementById('audio-dropzone');
+['dragover', 'dragenter'].forEach(ev => _audioDropzone.addEventListener(ev, e => {
+  e.preventDefault();
+  _audioDropzone.style.borderColor = 'var(--neon)';
+}));
+['dragleave', 'drop'].forEach(ev => _audioDropzone.addEventListener(ev, e => {
+  e.preventDefault();
+  _audioDropzone.style.borderColor = 'var(--border)';
+}));
+_audioDropzone.addEventListener('drop', e => {
+  const file = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (file) aiSummarizeFromAudio(file);
+});
+
+let _micRecorder = null;
+let _micStartedAt = 0;
+let _micTimerId = null;
+
+function toggleMicRecording() {
+  if (_micRecorder && _micRecorder.isRecording()) {
+    clearInterval(_micTimerId);
+    _micRecorder.stop();
+    return;
+  }
+  const micBtn = document.getElementById('mic-record-btn');
+  const micStatus = document.getElementById('mic-record-status');
+  _micRecorder = ndMicRecorder(
+    (blob, mimeType) => {
+      micBtn.textContent = '🎤 Record';
+      micStatus.textContent = '';
+      aiSummarizeFromAudio(new File([blob], ndMicFilename(mimeType), { type: mimeType }));
+    },
+    (err) => {
+      micBtn.textContent = '🎤 Record';
+      micStatus.textContent = 'Mic error: ' + err.message;
+    },
+  );
+  _micRecorder.start().then(started => {
+    if (!started) return;
+    micBtn.textContent = '⏹ Stop';
+    _micStartedAt = Date.now();
+    _micTimerId = setInterval(() => {
+      const secs = Math.floor((Date.now() - _micStartedAt) / 1000);
+      micStatus.textContent = `Recording… ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+    }, 500);
+  });
 }
 
 {% if gsession %}
@@ -209,6 +333,134 @@ let prep = {{ prep | tojson }};
 let loot = {{ loot | tojson }};
 
 function esc(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+// ── Live session recording — records in short chunks (see
+// MAX_LIVE_CHUNK_SECONDS below), uploading each one to
+// /api/sessions/{id}/live-transcript/append as soon as it finishes and
+// immediately starting the next segment, so a multi-hour session never
+// holds more than about a minute of unsaved audio at once. Uploads are
+// processed through a sequential queue (one at a time, in order) rather
+// than fired in parallel, both so the transcript can't end up scrambled
+// out of order and so a self-hosted Whisper server that's slower than
+// realtime just falls behind gracefully instead of being hit with a burst
+// of concurrent requests.
+
+const LIVE_CHUNK_SECONDS = 60;
+let _liveRecording = false;
+let _liveCurrentRecorder = null;
+let _liveChunkTimer = null;
+let _liveQueue = [];
+let _liveQueueBusy = false;
+
+function liveSetTranscriptDisplay(text) {
+  const el = document.getElementById('live-transcript-text');
+  el.textContent = text && text.trim() ? text : '(nothing recorded yet)';
+  el.scrollTop = el.scrollHeight;
+}
+
+async function liveProcessQueue() {
+  if (_liveQueueBusy) return;
+  _liveQueueBusy = true;
+  const status = document.getElementById('live-record-status');
+  while (_liveQueue.length) {
+    const file = _liveQueue[0];
+    let uploaded = false;
+    for (let attempt = 1; attempt <= 3 && !uploaded; attempt++) {
+      try {
+        const fd = new FormData();
+        fd.append('file', file, file.name);
+        const res = await fetch(`/api/sessions/${SESSION_ID}/live-transcript/append`, { method: 'POST', body: fd });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        liveSetTranscriptDisplay(data.transcript);
+        uploaded = true;
+      } catch (e) {
+        if (attempt >= 3) {
+          status.textContent = '⚠ Lost a ~1min chunk after 3 failed upload attempts: ' + e.message;
+        } else {
+          await new Promise(r => setTimeout(r, 1500 * attempt));
+        }
+      }
+    }
+    _liveQueue.shift();
+  }
+  _liveQueueBusy = false;
+  if (_liveRecording) status.textContent = 'Recording…';
+}
+
+function liveStartSegment() {
+  _liveCurrentRecorder = ndMicRecorder(
+    (blob, mimeType) => {
+      _liveQueue.push(new File([blob], ndMicFilename(mimeType), { type: mimeType }));
+      liveProcessQueue();
+      if (_liveRecording) liveStartSegment();  // immediately pick up the next segment, no gap
+    },
+    (err) => {
+      _liveRecording = false;
+      document.getElementById('live-record-btn').textContent = '🔴 Start Recording';
+      document.getElementById('live-record-status').textContent = 'Mic error: ' + err.message;
+    },
+  );
+  _liveCurrentRecorder.start().then(started => {
+    if (!started) { _liveRecording = false; return; }
+    clearTimeout(_liveChunkTimer);
+    _liveChunkTimer = setTimeout(() => {
+      if (_liveCurrentRecorder) _liveCurrentRecorder.stop();
+    }, LIVE_CHUNK_SECONDS * 1000);
+  });
+}
+
+// Best-effort only — keeps the screen (and, on most platforms, this tab's
+// timers) from being throttled by the OS during a long recording. Silently
+// does nothing on browsers without the Wake Lock API; the recording itself
+// doesn't depend on it. The lock is released automatically by the browser
+// whenever the tab is hidden, so it's re-requested on visibilitychange.
+let _liveWakeLock = null;
+async function liveAcquireWakeLock() {
+  try {
+    if ('wakeLock' in navigator) _liveWakeLock = await navigator.wakeLock.request('screen');
+  } catch (e) { /* best-effort only */ }
+}
+function liveReleaseWakeLock() {
+  if (_liveWakeLock) { _liveWakeLock.release().catch(() => {}); _liveWakeLock = null; }
+}
+document.addEventListener('visibilitychange', () => {
+  if (_liveRecording && document.visibilityState === 'visible') liveAcquireWakeLock();
+});
+
+function toggleLiveRecording() {
+  const btn = document.getElementById('live-record-btn');
+  const status = document.getElementById('live-record-status');
+  if (_liveRecording) {
+    _liveRecording = false;
+    clearTimeout(_liveChunkTimer);
+    if (_liveCurrentRecorder) _liveCurrentRecorder.stop();
+    liveReleaseWakeLock();
+    btn.textContent = '🔴 Start Recording';
+    status.textContent = 'Stopped — finishing the last chunk…';
+    return;
+  }
+  _liveRecording = true;
+  btn.textContent = '⏹ Stop Recording';
+  status.textContent = 'Recording…';
+  liveAcquireWakeLock();
+  liveStartSegment();
+}
+
+async function clearLiveTranscript() {
+  if (!confirm('Clear the live transcript? This cannot be undone.')) return;
+  const res = await fetch(`/api/sessions/${SESSION_ID}/live-transcript/clear`, { method: 'POST' });
+  const data = await res.json();
+  liveSetTranscriptDisplay(data.transcript);
+}
+
+function summarizeLiveTranscript() {
+  aiRunRecap(`/api/sessions/${SESSION_ID}/ai/summarize-live-transcript`, {});
+}
+
+window.addEventListener('beforeunload', (e) => {
+  if (_liveRecording) { e.preventDefault(); e.returnValue = ''; }
+});
 
 function renderPrep() {
   const list = document.getElementById('prep-list');

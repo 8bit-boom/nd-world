@@ -615,6 +615,16 @@ class GameSession(Base):
     loot_json = Column(Text, default="[]")   # [{name, qty, notes}]
     xp_awarded = Column(Integer, default=0)
     party_id = Column(Integer, ForeignKey("parties.id"), nullable=True, index=True)
+    # Raw Whisper transcript accumulated live during a session recording,
+    # one short chunk (see MAX_LIVE_CHUNK_SECONDS in routers/sessions.py) at
+    # a time via /api/sessions/{id}/live-transcript/append — persisted to
+    # the DB immediately after every chunk (not held in browser memory
+    # until the end) specifically so a multi-hour recording survives a
+    # crashed tab or dropped connection with at most one chunk's worth of
+    # audio lost. Separate from `summary`, which is the polished recap a GM
+    # writes/applies an AI draft into — this is the messy raw material that
+    # feeds it, via summarize_transcript.
+    live_transcript = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

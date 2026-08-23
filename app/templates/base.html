@@ -195,6 +195,93 @@ function ndAccentFromHex(hexInput) {
   if (pickEl) pickEl.value = hex;
   if (prevEl) prevEl.style.background = hex;
 }
+
+// Shared microphone recorder used by the Sessions audio-recap dropzone, the
+// AI Chat/Ask AI attachment picker, and the Whisper Test tab — implemented
+// once here instead of three times. onStop(blob, mimeType) fires with the
+// finished recording once the caller stops it; onError(err) fires if the
+// browser denies mic access or has no MediaRecorder support at all. Returns
+// {start, stop, isRecording} — start() is async (awaits the mic permission
+// prompt) and resolves to false (after calling onError) if it couldn't
+// start, true otherwise.
+function ndMicRecorder(onStop, onError) {
+  var mediaRecorder = null;
+  var chunks = [];
+  var stream = null;
+
+  async function start() {
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      if (onError) onError(new Error('Microphone recording is not supported in this browser'));
+      return false;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      if (onError) onError(e);
+      return false;
+    }
+    chunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+    mediaRecorder.onstop = function () {
+      stream.getTracks().forEach(function (t) { t.stop(); });
+      var mimeType = mediaRecorder.mimeType || 'audio/webm';
+      onStop(new Blob(chunks, { type: mimeType }), mimeType);
+    };
+    mediaRecorder.start();
+    return true;
+  }
+
+  function stop() {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  }
+
+  function isRecording() {
+    return !!mediaRecorder && mediaRecorder.state === 'recording';
+  }
+
+  return { start: start, stop: stop, isRecording: isRecording };
+}
+
+// Picks a filename+extension the server's extension allowlists (all of
+// which include .webm/.ogg/.wav) will accept, based on the MediaRecorder
+// mimeType actually used — browsers don't agree on one default.
+function ndMicFilename(mimeType) {
+  var m = (mimeType || '').toLowerCase();
+  var ext = m.indexOf('ogg') !== -1 ? 'ogg' : (m.indexOf('wav') !== -1 ? 'wav' : 'webm');
+  return 'recording.' + ext;
+}
+
+// "Record → feed into an ndAiAttachments() picker" toggle for a mic button —
+// used by /ai's chat compose bar and an entity's Ask AI panel, one instance
+// per btnId. The recorded clip becomes a normal audio attachment, which
+// already gets auto-transcribed via Whisper on upload and its transcript
+// folded into the message content when sent (see _build_ollama_messages) —
+// so this is how a mic turns into input for Ollama too, not just Whisper.
+var _ndMicRecorders = {};
+function ndToggleAttachMic(btnId, attachments) {
+  var btn = document.getElementById(btnId);
+  var rec = _ndMicRecorders[btnId];
+  if (rec && rec.isRecording()) { rec.stop(); return; }
+  rec = ndMicRecorder(
+    function (blob, mimeType) {
+      btn.textContent = '🎤';
+      btn.style.color = '';
+      attachments.addFiles([new File([blob], ndMicFilename(mimeType), { type: mimeType })]);
+    },
+    function (err) {
+      btn.textContent = '🎤';
+      btn.style.color = '';
+      alert('Microphone error: ' + err.message);
+    }
+  );
+  _ndMicRecorders[btnId] = rec;
+  rec.start().then(function (started) {
+    if (!started) return;
+    btn.textContent = '⏺';
+    btn.style.color = '#ff2d78';
+  });
+}
 </script>
 <main>
   {% block content %}{% endblock %}

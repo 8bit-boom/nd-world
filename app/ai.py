@@ -339,6 +339,28 @@ async def condense_recap(recap: str, model: str = "") -> str:
     return await generate_chat([{"role": "user", "content": recap}], system=_CONDENSE_RECAP_SYSTEM, model=model)
 
 
+_SUMMARIZE_TRANSCRIPT_SYSTEM = (
+    "You are a scribe for a tabletop RPG campaign. Below is a raw Whisper transcript of an "
+    "actual-play session recording — expect filler words, misheard names, and no punctuation "
+    "structure. Turn it into a short, readable narrative recap in flowing prose — a few "
+    "paragraphs, past tense, third person. Use your judgment to skip out-of-character chatter, "
+    "rules discussion, and filler, keeping only what happened in the story. Don't invent details "
+    "that aren't in the transcript. Respond with the recap text only, no preamble or commentary."
+)
+
+
+async def summarize_transcript(transcript: str, model: str = "") -> str:
+    """Turn a raw Whisper transcript (see transcribe_audio) of a session
+    recording into a narrative recap — same one-off generate_chat wrapper
+    shape as summarize_session_from_facts/expand_recap_notes, just with a
+    system prompt tuned for messy ASR output instead of clean GM notes or a
+    discrete fact list."""
+    transcript = (transcript or "").strip()
+    if not transcript:
+        return ""
+    return await generate_chat([{"role": "user", "content": transcript}], system=_SUMMARIZE_TRANSCRIPT_SYSTEM, model=model)
+
+
 async def status() -> dict:
     try:
         resp = await _client().list()
