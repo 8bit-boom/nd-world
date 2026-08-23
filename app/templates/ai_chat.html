@@ -693,6 +693,7 @@
   <button class="ai-tab active" id="tab-chat"    onclick="switchTab('chat')">💬 Chat</button>
   <button class="ai-tab"        id="tab-image"   onclick="switchTab('image')">🎨 Image Gen</button>
   <button class="ai-tab"        id="tab-models"  onclick="switchTab('models')">🤖 Models</button>
+  <button class="ai-tab"        id="tab-whisper" onclick="switchTab('whisper')">🎙 Whisper</button>
   <button class="ai-tab"        id="tab-starred" onclick="switchTab('starred')">⭐ Starred</button>
   <span id="ig-dot" title="Image gen unavailable"
         style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle;flex-shrink:0"></span>
@@ -1459,6 +1460,34 @@
   </div>
 
 </div><!-- /models-panel -->
+
+<!-- ── Whisper Test Panel ── -->
+<div id="whisper-panel" style="display:none;padding:1.2rem;max-width:800px;margin:0 auto">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+    <span style="font-size:1rem;color:var(--neon);font-weight:700;letter-spacing:.05em">🎙 Whisper Test</span>
+    <button class="ig-btn" onclick="wtLoadStatus()" style="white-space:nowrap">↺ Refresh</button>
+  </div>
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-bottom:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Status</div>
+    <div id="wt-status" style="font-size:.85rem;color:var(--text-dim);white-space:pre-line">⏳ Checking…</div>
+  </div>
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2)">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Test transcription</div>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
+      Pick an audio file and it's sent straight to Whisper to transcribe — nothing is saved or attached to a chat message, this is just a connectivity/sanity check.
+    </div>
+    <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
+      <input type="file" id="wt-file" accept=".mp3,.ogg,.oga,.wav,.m4a,.flac,.opus,.webm,.aac,audio/*"
+             style="color:var(--text);font-size:.82rem;max-width:100%">
+      <button class="ig-btn" id="wt-transcribe-btn" onclick="wtTranscribe()"
+              style="border-color:var(--neon);color:var(--neon);padding:.38rem 1rem;white-space:nowrap">▶ Transcribe</button>
+    </div>
+    <div id="wt-result" style="margin-top:.8rem;display:none">
+      <div style="font-size:.72rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem">Transcript</div>
+      <pre id="wt-result-text" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem .75rem;font-size:.85rem;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;margin:0"></pre>
+    </div>
+  </div>
+</div><!-- /whisper-panel -->
 
 <!-- ── Starred Images Panel ── -->
 <div id="starred-panel" style="display:none;padding:1.2rem;max-width:1200px;margin:0 auto">
@@ -2236,18 +2265,21 @@ function switchTab(tab) {
   const chatPage      = document.querySelector('.ai-page');
   const imgPanel      = document.getElementById('image-panel');
   const modelsPanel   = document.getElementById('models-panel');
+  const whisperPanel  = document.getElementById('whisper-panel');
   const starredPanel  = document.getElementById('starred-panel');
 
   chatPage.style.display     = tab === 'chat'    ? 'flex'  : 'none';
   imgPanel.style.display     = tab === 'image'   ? 'block' : 'none';
   modelsPanel.style.display  = tab === 'models'  ? 'block' : 'none';
+  whisperPanel.style.display = tab === 'whisper' ? 'block' : 'none';
   starredPanel.style.display = tab === 'starred' ? 'block' : 'none';
 
-  ['chat','image','models','starred'].forEach(t => {
+  ['chat','image','models','whisper','starred'].forEach(t => {
     document.getElementById('tab-' + t)?.classList.toggle('active', t === tab);
   });
 
   if (tab === 'models')  { mpLoad(); wpLoadStatus(); }
+  if (tab === 'whisper') wtLoadStatus();
   if (tab === 'starred') igLoadStarred();
 }
 
@@ -3802,6 +3834,62 @@ async function wpDownload() {
     btn.disabled = false;
     _wpDownloading = false;
     wpLoadStatus();
+  }
+}
+
+// ── Whisper test tab ─────────────────────────────────────────────────────────
+
+async function wtLoadStatus() {
+  const el = document.getElementById('wt-status');
+  if (!el) return;
+  el.textContent = '⏳ Checking…';
+  try {
+    const [debugRes, modelRes] = await Promise.all([
+      fetch('/api/ai/debug').then(r => r.json()),
+      fetch('/api/ai/whisper/model-status').then(r => r.json()),
+    ]);
+    const w = debugRes.whisper || {};
+    const lines = [
+      w.url ? `Server: ${w.url}` : 'Server: not configured — set WHISPER_URL or the Whisper URL field in Settings',
+      w.url ? `Reachable: ${w.ok ? '✓ yes' : '✗ no' + (w.reason ? ' — ' + w.reason : '')}` : null,
+      modelRes.downloaded
+        ? `Model: ✓ ${modelRes.filename} (${(modelRes.bytes / 1e9).toFixed(2)} GB)`
+        : `Model: ○ not downloaded yet (${modelRes.filename}) — see the 🤖 Models tab`,
+    ].filter(l => l !== null);
+    el.textContent = lines.join('\n');
+  } catch (e) {
+    el.textContent = '✗ Could not check status: ' + e.message;
+  }
+}
+
+async function wtTranscribe() {
+  const fileInput = document.getElementById('wt-file');
+  const btn = document.getElementById('wt-transcribe-btn');
+  const resultBox = document.getElementById('wt-result');
+  const resultText = document.getElementById('wt-result-text');
+  const file = fileInput.files[0];
+  if (!file) { alert('Pick an audio file first'); return; }
+
+  btn.disabled = true;
+  const origLabel = btn.textContent;
+  btn.textContent = '⏳ Transcribing…';
+  resultBox.style.display = 'block';
+  resultText.textContent = '';
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const res = await fetch('/api/ai/attachments/upload', { method: 'POST', body: fd });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+    if (data.kind !== 'audio') throw new Error(`Not recognized as audio (got kind=${data.kind})`);
+    resultText.textContent = data.text
+      ? data.text
+      : '(empty transcript — Whisper may be unreachable, still loading the model, or the clip has no detected speech; check Status above)';
+  } catch (e) {
+    resultText.textContent = '✗ ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origLabel;
   }
 }
 
