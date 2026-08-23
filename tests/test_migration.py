@@ -444,4 +444,17 @@ def test_heals_pre_two_step_auth_schema(tmp_path, monkeypatch):
     finally:
         db.close()
 
+
+def test_sqlite_wal_mode_and_busy_timeout_enabled(client):
+    """Regression test for a production incident: SQLite's default
+    rollback-journal mode blocks every reader behind any in-flight writer,
+    and base.html's spotlight poller alone hits GET /api/spotlight every 4s
+    from every open tab — so a single slow write backed up enough concurrent
+    readers to exhaust the SQLAlchemy pool (5 + 10 overflow) and the app
+    started failing app-wide with QueuePool TimeoutError until the write
+    cleared. See app/database.py's engine "connect" event."""
+    with database_module.engine.connect() as conn:
+        assert conn.execute(text("PRAGMA journal_mode")).scalar() == "wal"
+        assert conn.execute(text("PRAGMA busy_timeout")).scalar() == 30000
+
     engine.dispose()

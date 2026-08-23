@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 from .models import (
     Base, World, Schematic, MapOverlay, InvestBoard, PlayerCharacter, SheetTemplate,
@@ -273,6 +273,26 @@ _HITM_FIELDS = [
 
 DB_PATH = os.environ.get("DB_PATH", "/data/world.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
+
+
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragma(dbapi_connection, connection_record):
+    """SQLite's default rollback-journal mode blocks every reader behind any
+    in-flight writer. base.html's spotlight poller alone hits GET
+    /api/spotlight every 4s from every open tab, so a single slow write
+    (saving an entity, appending a live-transcript chunk, ...) can back up
+    enough concurrent readers to exhaust the SQLAlchemy pool (5 + 10
+    overflow) and start throwing QueuePool TimeoutErrors app-wide. WAL lets
+    readers proceed concurrently with a writer instead of queuing behind
+    it; busy_timeout makes a connection that still loses a lock race wait
+    and retry rather than raising "database is locked" immediately.
+    """
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.close()
+
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
