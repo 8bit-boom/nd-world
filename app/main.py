@@ -499,6 +499,16 @@ def serve_upload(filepath: str):
 
 # ── Worlds management ─────────────────────────────────────────────────────────
 
+_ACCENT_HEX_RE = re.compile(r"^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+def _sanitize_accent(value: str, fallback: str = "#00f0ff") -> str:
+    # world.accent is interpolated directly into a <style> block in base.html
+    # (see the world-switcher/world-card CSS custom properties too) — reject
+    # anything that isn't a plain hex color so a malformed/malicious value
+    # can never break out of that declaration.
+    value = (value or "").strip()
+    return value if _ACCENT_HEX_RE.match(value) else fallback
+
 @app.get("/worlds", response_class=HTMLResponse)
 def worlds_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     worlds = _visible_worlds(request, db)
@@ -514,7 +524,7 @@ def world_create(
 ):
     slug = name.lower().replace(" ", "-").replace("&", "and")
     slug = "".join(c for c in slug if c.isalnum() or c == "-")
-    w = World(name=name, slug=slug, description=description or None, accent=accent)
+    w = World(name=name, slug=slug, description=description or None, accent=_sanitize_accent(accent))
     db.add(w)
     db.commit()
     db.refresh(w)
@@ -632,7 +642,7 @@ def world_edit_post(
         raise HTTPException(404)
     w.name = name.strip() or w.name
     w.description = description
-    w.accent = accent
+    w.accent = _sanitize_accent(accent, fallback=w.accent)
     w.players_see_party = bool(players_see_party)
     w.players_can_download_rules = bool(players_can_download_rules)
     w.players_can_download_entities = bool(players_can_download_entities)
@@ -3849,7 +3859,7 @@ def api_create_world(payload: dict, db: Session = Depends(get_db)):
     if existing:
         return {"id": existing.id, "slug": existing.slug, "created": False}
     w = World(name=payload["name"], slug=slug,
-              description=payload.get("description"), accent=payload.get("accent", "#b44fff"))
+              description=payload.get("description"), accent=_sanitize_accent(payload.get("accent"), fallback="#b44fff"))
     db.add(w)
     db.commit()
     db.refresh(w)

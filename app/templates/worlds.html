@@ -45,7 +45,14 @@
         </div>
         <div class="form-group">
           <label>Accent color</label>
-          <input type="color" name="accent" value="#b44fff" style="height:2rem;padding:.1rem"/>
+          <div style="display:flex;align-items:center;gap:.5rem">
+            <input type="color" name="accent" id="new-accent-pick" value="#b44fff" style="height:2rem;padding:.1rem"
+                   data-hex-id="new-accent-hex" oninput="ndAccentFromPicker(this)"/>
+            <input type="text" id="new-accent-hex" value="#b44fff" placeholder="#b44fff" maxlength="7" autocomplete="off" spellcheck="false"
+                   pattern="^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$" title="Hex color code, e.g. #b44fff"
+                   style="width:6.5rem;font-family:var(--font);background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;border-radius:4px"
+                   data-pick-id="new-accent-pick" oninput="ndAccentFromHex(this)"/>
+          </div>
         </div>
         <button class="btn-save" type="submit">Create</button>
       </form>

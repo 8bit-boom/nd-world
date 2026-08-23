@@ -15,7 +15,12 @@
     <div class="form-group">
       <label>Accent colour</label>
       <div style="display:flex;align-items:center;gap:.75rem">
-        <input type="color" name="accent" id="accent-pick" value="{{ edit_world.accent or '#00f0ff' }}" style="width:48px;height:36px;border:none;background:none;cursor:pointer" oninput="document.getElementById('accent-prev').style.background=this.value"/>
+        <input type="color" name="accent" id="accent-pick" value="{{ edit_world.accent or '#00f0ff' }}" style="width:48px;height:36px;border:none;background:none;cursor:pointer"
+               data-hex-id="accent-hex" data-prev-id="accent-prev" oninput="ndAccentFromPicker(this)"/>
+        <input type="text" id="accent-hex" value="{{ edit_world.accent or '#00f0ff' }}" placeholder="#00f0ff" maxlength="7" autocomplete="off" spellcheck="false"
+               pattern="^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$" title="Hex color code, e.g. #00f0ff"
+               style="width:6.5rem;font-family:var(--font);background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;border-radius:4px"
+               data-pick-id="accent-pick" data-prev-id="accent-prev" oninput="ndAccentFromHex(this)"/>
         <div id="accent-prev" style="width:80px;height:24px;border-radius:4px;background:{{ edit_world.accent or '#00f0ff' }}"></div>
       </div>
     </div>
