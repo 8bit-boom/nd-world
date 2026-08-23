@@ -26,7 +26,14 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends build-essential cmake git ca-certificates && \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 RUN git clone --depth 1 https://github.com/ggml-org/whisper.cpp.git .
-RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_AVX512=OFF && \
+# BUILD_SHARED_LIBS=OFF: ggml/whisper.cpp default to ON for a normal native
+# build, which links whisper-server against libwhisper.so/libggml*.so at
+# runtime instead of baking them in — those .so files never make it into
+# the runtime stage below, so the binary fails to even start with "error
+# while loading shared libraries: libwhisper.so.1: cannot open shared
+# object file". Forcing a static build avoids needing to track down and
+# copy every shared lib ggml's CMake might produce.
+RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_AVX512=OFF -DBUILD_SHARED_LIBS=OFF && \
     cmake --build build --config Release -j --target whisper-server
 
 FROM ubuntu:22.04 AS runtime
