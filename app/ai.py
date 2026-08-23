@@ -492,6 +492,29 @@ DEFAULT_WHISPER_MODEL_URL = (
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin"
 )
 
+# A curated subset of ggerganov/whisper.cpp's official model list (see its
+# models/README.md) spanning the speed/accuracy range — not the full ~16
+# variants, same "curated, not exhaustive" choice as KNOWN_MODELS below for
+# Ollama. Sizes are the real download sizes from that README, not estimates.
+# Every filename here is downloaded from
+# f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{filename}" —
+# nd-world only ever fetches from that one trusted host for these, unlike
+# the free-text custom-URL field download_whisper_model also accepts.
+WHISPER_KNOWN_MODELS = [
+    {"filename": "ggml-tiny.bin", "label": "Tiny", "size": "75 MiB"},
+    {"filename": "ggml-tiny.en.bin", "label": "Tiny (English only)", "size": "75 MiB"},
+    {"filename": "ggml-base.bin", "label": "Base", "size": "142 MiB"},
+    {"filename": "ggml-base.en.bin", "label": "Base (English only)", "size": "142 MiB"},
+    {"filename": "ggml-small.bin", "label": "Small", "size": "466 MiB"},
+    {"filename": "ggml-small.en.bin", "label": "Small (English only)", "size": "466 MiB"},
+    {"filename": "ggml-medium.bin", "label": "Medium", "size": "1.5 GiB"},
+    {"filename": "ggml-medium.en.bin", "label": "Medium (English only)", "size": "1.5 GiB"},
+    {"filename": "ggml-large-v3.bin", "label": "Large v3", "size": "2.9 GiB"},
+    {"filename": "ggml-large-v3-turbo.bin", "label": "Large v3 Turbo", "size": "1.5 GiB"},
+    {"filename": "ggml-large-v3-turbo-q5_0.bin", "label": "Large v3 Turbo (quantized)", "size": "547 MiB"},
+]
+_WHISPER_KNOWN_FILENAMES = {m["filename"] for m in WHISPER_KNOWN_MODELS}
+
 
 def whisper_model_status() -> dict:
     """Whether a model file nd-world can see is already sitting in the
@@ -499,20 +522,50 @@ def whisper_model_status() -> dict:
     not by asking the whisper.cpp server itself (that's whisper_status()),
     since the file needs to exist before the server can even be pointed at
     it. Doesn't mean the *running* server has loaded it yet — that only
-    happens on container start/restart (see download_whisper_model)."""
-    path = WHISPER_MODELS_DIR / WHISPER_MODEL_FILENAME
-    if path.is_file():
-        return {"downloaded": True, "filename": WHISPER_MODEL_FILENAME, "bytes": path.stat().st_size}
-    return {"downloaded": False, "filename": WHISPER_MODEL_FILENAME}
+    happens on container start/restart (see download_whisper_model).
+
+    "downloaded"/"filename"/"bytes" describe the *active* model — the one
+    the "whisper" Compose service is actually configured to load (i.e.
+    WHISPER_MODEL_FILENAME, its own WHISPER_MODEL_FILE env var mirrored
+    here) — kept as top-level keys for whatever already reads this shape.
+    "models" is the fuller picture: every known model's own download state
+    and whether it's the currently-active one, so a GM can download several
+    without any of them clobbering another."""
+    active = WHISPER_MODELS_DIR / WHISPER_MODEL_FILENAME
+    models = []
+    for m in WHISPER_KNOWN_MODELS:
+        p = WHISPER_MODELS_DIR / m["filename"]
+        downloaded = p.is_file()
+        models.append({
+            **m,
+            "downloaded": downloaded,
+            "bytes": p.stat().st_size if downloaded else 0,
+            "active": m["filename"] == WHISPER_MODEL_FILENAME,
+        })
+    return {
+        "downloaded": active.is_file(),
+        "filename": WHISPER_MODEL_FILENAME,
+        "bytes": active.stat().st_size if active.is_file() else 0,
+        "models": models,
+    }
 
 
-async def download_whisper_model(url: str = "") -> AsyncGenerator[dict, None]:
-    """Stream a whisper.cpp-compatible model file from `url` (or
-    DEFAULT_WHISPER_MODEL_URL if blank) into WHISPER_MODELS_DIR, yielding
-    {"total":, "completed":} progress dicts as bytes arrive — same shape
-    Ollama's own /api/pull progress already uses (app/routers/ai.py's
+async def download_whisper_model(url: str = "", filename: str = "") -> AsyncGenerator[dict, None]:
+    """Stream a whisper.cpp-compatible model file into WHISPER_MODELS_DIR,
+    yielding {"total":, "completed":} progress dicts as bytes arrive — same
+    shape Ollama's own /api/pull progress already uses (app/routers/ai.py's
     /pull), so the client-side JS can reuse the same parsing — and a final
     {"status": "done", ...} or {"error": "..."}.
+
+    `filename`, when given, must be one of WHISPER_KNOWN_MODELS' filenames
+    (checked here, not just trusted from the caller — this becomes a
+    filesystem path, so anything else is rejected outright rather than
+    risking a path-traversal write) — it's downloaded from the same
+    official ggerganov/whisper.cpp host every known model uses, to a file
+    of its own, so it can coexist with whatever's currently active. `url`
+    is ignored in that case. With no `filename`, behavior is unchanged from
+    before this parameter existed: `url` (or DEFAULT_WHISPER_MODEL_URL if
+    blank) downloads to WHISPER_MODEL_FILENAME, the currently-active slot.
 
     Written to a "<filename>.part" file and only renamed into place once
     fully downloaded, so an interrupted/failed download can never leave a
@@ -522,11 +575,22 @@ async def download_whisper_model(url: str = "") -> AsyncGenerator[dict, None]:
     model file it's given fails to parse, rather than returning an error.
     This app deliberately never calls that endpoint itself for exactly that
     reason (see docs/DEPLOYMENT.md) — a downloaded model only takes effect
-    on the *next* container start/restart of the "whisper" service, which
-    the GM does themselves once, same as installing any other model."""
-    fetch_url = (url or "").strip() or DEFAULT_WHISPER_MODEL_URL
+    on the *next* container start/restart of the "whisper" service, and
+    only if WHISPER_MODEL_FILE is (re)pointed at it — nd-world has no way
+    to change a sibling container's env vars or restart it itself, so
+    switching which downloaded model is active is still a manual step the
+    GM does once, same as installing any other model."""
+    if filename:
+        if filename not in _WHISPER_KNOWN_FILENAMES:
+            yield {"error": f"Unknown model filename: {filename!r}"}
+            return
+        fetch_url = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{filename}"
+        target_filename = filename
+    else:
+        fetch_url = (url or "").strip() or DEFAULT_WHISPER_MODEL_URL
+        target_filename = WHISPER_MODEL_FILENAME
     WHISPER_MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    dest = WHISPER_MODELS_DIR / WHISPER_MODEL_FILENAME
+    dest = WHISPER_MODELS_DIR / target_filename
     tmp = dest.with_name(dest.name + ".part")
     try:
         async with _httpx.AsyncClient(follow_redirects=True, timeout=60) as c:
@@ -542,7 +606,7 @@ async def download_whisper_model(url: str = "") -> AsyncGenerator[dict, None]:
                         completed += len(chunk)
                         yield {"total": total, "completed": completed}
         tmp.replace(dest)
-        yield {"status": "done", "filename": WHISPER_MODEL_FILENAME, "bytes": dest.stat().st_size}
+        yield {"status": "done", "filename": target_filename, "bytes": dest.stat().st_size}
     except Exception as exc:
         tmp.unlink(missing_ok=True)
         _log.warning("whisper model download failed: %s: %s", type(exc).__name__, exc)

@@ -1437,20 +1437,24 @@
     <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">🎙 Whisper (audio transcription)</div>
     <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
       Transcribes an audio file attached to an AI Chat/Ask AI message into text — see
-      <strong>docs/DEPLOYMENT.md</strong> to enable the "whisper" service first. This downloads a
-      model file into the shared volume it reads from; it doesn't need the service already running.
+      <strong>docs/DEPLOYMENT.md</strong> to enable the "whisper" service first. Downloading a model
+      below just writes it into the shared volume (the "whisper" service doesn't need to be running
+      yet) — download as many as you like, they won't overwrite each other. To make a different one
+      <strong>active</strong>, set <code>WHISPER_MODEL_FILE</code> to its filename in your compose
+      config and restart the "whisper" service; nd-world has no way to do that part for you.
     </div>
     <div id="wp-status" style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">⏳ Checking…</div>
-    <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
-      <button class="ig-btn" id="wp-download-btn" onclick="wpDownload()"
-              style="border-color:var(--neon);color:var(--neon);padding:.38rem 1rem;white-space:nowrap">⬇ Download Whisper Model</button>
-      <span style="font-size:.72rem;color:var(--text-dim)">whisper-large-v3-turbo, ~1.5 GB</span>
-    </div>
-    <div style="margin-top:.5rem">
-      <input id="wp-custom-url" type="text" placeholder="Or paste a direct download URL for a different model (optional)"
-             style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:.8rem;padding:.35rem .55rem;width:100%;box-sizing:border-box"
-             onkeydown="if(event.key==='Enter')wpDownload()">
-    </div>
+    <div id="wp-model-list" style="display:flex;flex-direction:column;gap:.35rem;margin-bottom:.6rem"></div>
+    <details>
+      <summary style="cursor:pointer;font-size:.78rem;color:var(--text-dim)">Download a different model by URL…</summary>
+      <div style="margin-top:.5rem">
+        <input id="wp-custom-url" type="text" placeholder="Direct download URL — saved to the currently-active model's file"
+               style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:.8rem;padding:.35rem .55rem;width:100%;box-sizing:border-box"
+               onkeydown="if(event.key==='Enter')wpDownload()">
+        <button class="ig-btn" onclick="wpDownload()"
+                style="margin-top:.4rem;border-color:var(--neon);color:var(--neon);padding:.3rem .8rem;font-size:.78rem">⬇ Download to active slot</button>
+      </div>
+    </details>
     <div id="wp-progress" style="display:none;margin-top:.65rem">
       <div style="font-size:.78rem;color:var(--neon);margin-bottom:.25rem" id="wp-progress-label">Starting…</div>
       <div style="height:5px;background:var(--bg3);border-radius:3px;overflow:hidden">
@@ -3766,6 +3770,23 @@ function mpRefresh() { mpLoad(); loadModels(); }
 
 // ── Whisper model download ──────────────────────────────────────────────────
 
+function wpRenderModelList(models) {
+  const list = document.getElementById('wp-model-list');
+  if (!list) return;
+  list.innerHTML = (models || []).map(m => {
+    const status = m.active ? '🟢 active' : (m.downloaded ? '✓ downloaded' : '○ not downloaded');
+    const btnLabel = m.downloaded ? '↺ Re-download' : '⬇ Download';
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:.6rem;padding:.35rem .55rem;background:var(--bg3);border-radius:4px;font-size:.8rem">
+      <div><strong>${m.label}</strong><span style="color:var(--text-dim);margin-left:.5rem">${m.size}</span></div>
+      <div style="display:flex;align-items:center;gap:.6rem">
+        <span style="color:var(--text-dim);white-space:nowrap;font-size:.75rem">${status}</span>
+        <button class="ig-btn wp-model-dl-btn" data-filename="${m.filename}" onclick="wpDownload(this.dataset.filename)"
+                style="padding:.25rem .6rem;font-size:.72rem;white-space:nowrap">${btnLabel}</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
 async function wpLoadStatus() {
   const el = document.getElementById('wp-status');
   if (!el) return;
@@ -3773,24 +3794,24 @@ async function wpLoadStatus() {
     const r = await fetch('/api/ai/whisper/model-status');
     const d = await r.json();
     el.textContent = d.downloaded
-      ? `✓ ${d.filename} downloaded (${(d.bytes / 1e9).toFixed(2)} GB)`
-      : `○ No model downloaded yet (${d.filename})`;
+      ? `Active: ${d.filename} (${(d.bytes / 1e9).toFixed(2)} GB)`
+      : `Active model file not downloaded yet: ${d.filename}`;
+    wpRenderModelList(d.models);
   } catch (e) {
     el.textContent = '✗ Could not check status';
   }
 }
 
 let _wpDownloading = false;
-async function wpDownload() {
+async function wpDownload(filename) {
   if (_wpDownloading) return;
   _wpDownloading = true;
-  const btn = document.getElementById('wp-download-btn');
+  document.querySelectorAll('.wp-model-dl-btn').forEach(b => b.disabled = true);
   const prog = document.getElementById('wp-progress');
   const bar = document.getElementById('wp-progress-bar');
   const lbl = document.getElementById('wp-progress-label');
   const urlInput = document.getElementById('wp-custom-url');
-  const customUrl = (urlInput?.value || '').trim();
-  btn.disabled = true;
+  const customUrl = filename ? '' : (urlInput?.value || '').trim();
   prog.style.display = 'block';
   bar.style.width = '0%';
   lbl.textContent = 'Starting download…';
@@ -3798,7 +3819,7 @@ async function wpDownload() {
     const res = await fetch('/api/ai/whisper/pull', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: customUrl }),
+      body: JSON.stringify({ url: customUrl, filename: filename || '' }),
     });
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -3821,7 +3842,7 @@ async function wpDownload() {
             lbl.textContent = `Downloading… ${pct}% (${(obj.completed / 1e9).toFixed(2)} / ${(obj.total / 1e9).toFixed(2)} GB)`;
           } else if (obj.status === 'done') {
             bar.style.width = '100%';
-            lbl.textContent = `✓ Downloaded — restart the "whisper" service to load it`;
+            lbl.textContent = `✓ Downloaded ${obj.filename} — set WHISPER_MODEL_FILE to it and restart the "whisper" service to make it active`;
           }
         } catch (pe) {
           if (pe.message && !pe.message.includes('JSON')) throw pe;
@@ -3831,7 +3852,7 @@ async function wpDownload() {
   } catch (e) {
     lbl.textContent = '✗ Failed: ' + e.message;
   } finally {
-    btn.disabled = false;
+    document.querySelectorAll('.wp-model-dl-btn').forEach(b => b.disabled = false);
     _wpDownloading = false;
     wpLoadStatus();
   }

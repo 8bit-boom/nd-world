@@ -462,14 +462,19 @@ async def api_whisper_model_status():
 
 class WhisperPullBody(BaseModel):
     url: str = ""
+    # One of app.ai.WHISPER_KNOWN_MODELS' filenames — downloads that known
+    # model to a file of its own instead of overwriting the active slot.
+    # download_whisper_model validates this against the known list itself
+    # (rejecting anything else) since it becomes a filesystem path.
+    filename: str = ""
 
 
 @router.post("/whisper/pull")
 async def api_whisper_pull(body: WhisperPullBody):
-    _log.info("whisper model pull url=%r", body.url or "(default)")
+    _log.info("whisper model pull url=%r filename=%r", body.url or "(default)", body.filename or "(active)")
 
     async def _gen():
-        async for progress in _ai.download_whisper_model(body.url):
+        async for progress in _ai.download_whisper_model(body.url, body.filename):
             yield f"data: {_json.dumps(progress)}\n\n"
         yield "data: [DONE]\n\n"
 
