@@ -8,7 +8,9 @@ Jinja2Templates instance instead of sharing one (see app/templating.py).
 """
 import re
 
+import html2text
 import markdown2
+import nh3
 
 
 _COLOR_NAMES = {
@@ -64,6 +66,84 @@ def render_md(text):
     # (links, emphasis, tables, ...) is unaffected.
     html = markdown2.markdown(text, extras=["fenced-code-blocks", "tables", "strike"], safe_mode="escape")
     return _apply_inline_styles(html)
+
+
+def html_to_markdown(raw_html: str) -> str:
+    """Convert an uploaded .html/.htm file's contents into markdown suitable
+    for EntityNote.content — used by /entity/{id}/notes/import (main.py).
+
+    html2text drops <script>/<style> elements and any other markup entirely
+    rather than converting their contents to text, so those never reach the
+    stored note. Images are dropped too (ignore_images) — an imported note
+    embedding a remote <img src="https://..."> would otherwise turn into a
+    live markdown image reference that auto-loads whenever anyone views the
+    note, a tracking-pixel risk for content pulled from an untrusted source.
+    A dangerous URL scheme on a link (javascript:, data:, ...) survives
+    html2text as literal markdown link syntax, but render_md's own
+    safe_mode="escape" markdown2 pass already neutralizes those to href="#"
+    at render time — the same protection every other markdown-authored
+    field in this app already relies on, so no extra sanitizing is needed
+    here specifically for that case. Verified against a real payload
+    (script/style/onclick/javascript:/data: URLs) during development."""
+    if not raw_html or not raw_html.strip():
+        return ""
+    converter = html2text.HTML2Text()
+    converter.body_width = 0  # don't hard-wrap paragraphs at 78 cols
+    converter.ignore_images = True
+    return converter.handle(raw_html).strip()
+
+
+# Allowlist for sanitize_note_html below — deliberately no <img> (an
+# imported <img src="https://..."> would become a live remote reference
+# that auto-loads and phones home to that URL whenever anyone views the
+# note, a tracking-pixel risk for content pulled from an untrusted source —
+# same reasoning html_to_markdown's ignore_images applies) and no
+# script/style/iframe/object/embed/form/svg — the tags that actually carry
+# executable or network-fetching behavior.
+_NOTE_HTML_TAGS = {
+    "p", "br", "b", "strong", "i", "em", "u", "s", "strike",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "ul", "ol", "li", "blockquote", "pre", "code",
+    "table", "thead", "tbody", "tr", "td", "th",
+    "span", "div", "hr", "sub", "sup", "a",
+}
+_NOTE_HTML_ATTRS = {
+    "a": {"href"},
+    "span": {"style"},
+    "td": {"colspan", "rowspan"},
+    "th": {"colspan", "rowspan"},
+}
+_NOTE_HTML_STYLE_PROPS = {"color", "background-color", "font-weight", "font-style", "text-decoration"}
+_NOTE_HTML_STRIP_CONTENT_TAGS = {"script", "style", "iframe", "object", "embed", "svg", "form"}
+
+
+def sanitize_note_html(raw_html: str) -> str:
+    """Allowlist-sanitize an uploaded .html/.htm file's contents for the
+    "preserve original formatting" note-import mode (main.py's
+    /entity/{id}/notes/import) — the result is stored as EntityNote.content
+    with content_is_html=True and rendered with the `safe` filter directly,
+    bypassing render_md's markdown2 pass entirely (that pass's safe_mode
+    only escapes raw HTML, which is exactly the formatting this mode exists
+    to keep). nh3 (Rust-backed, actively maintained — bleach, the older
+    pure-Python alternative, has no further releases as of mid-2026) does
+    the real safety work: strips every tag/attribute not on the allowlist,
+    strips javascript:/data:/etc. hrefs (only http/https/mailto survive),
+    and drops <script>/<style>/<iframe>/... together with their contents
+    rather than leaving the text behind. Verified against a real payload
+    (script/style/onclick/onerror/onload/javascript: href/iframe) during
+    development — every dangerous piece was removed, formatting (headings,
+    bold, lists, tables, allowlisted inline color) survived intact."""
+    if not raw_html or not raw_html.strip():
+        return ""
+    return nh3.clean(
+        raw_html,
+        tags=_NOTE_HTML_TAGS,
+        attributes=_NOTE_HTML_ATTRS,
+        clean_content_tags=_NOTE_HTML_STRIP_CONTENT_TAGS,
+        url_schemes={"http", "https", "mailto"},
+        filter_style_properties=_NOTE_HTML_STYLE_PROPS,
+        link_rel="noopener noreferrer nofollow",
+    ).strip()
 
 
 def strip_md(text):

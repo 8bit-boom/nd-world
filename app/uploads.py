@@ -81,3 +81,22 @@ def copy_upload_bounded(file: UploadFile, dest: Path, max_bytes: int = None) -> 
     except Exception:
         dest.unlink(missing_ok=True)
         raise
+
+
+def read_upload_bounded(file: UploadFile, max_bytes: int = None) -> bytes:
+    """Same chunked-read-with-cap shape as copy_upload_bounded above, but for
+    an upload that only needs to be held in memory and converted (e.g. an
+    HTML note import) rather than saved to disk — avoids a giant multi-GB
+    upload being fully buffered before the size check ever runs."""
+    limit = MAX_UPLOAD_BYTES if max_bytes is None else max_bytes
+    chunks = []
+    written = 0
+    while True:
+        chunk = file.file.read(_CHUNK)
+        if not chunk:
+            break
+        written += len(chunk)
+        if written > limit:
+            raise HTTPException(413, f"File too large — limit is {limit // (1024 * 1024)} MB")
+        chunks.append(chunk)
+    return b"".join(chunks)

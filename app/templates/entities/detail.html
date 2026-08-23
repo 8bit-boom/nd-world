@@ -96,7 +96,11 @@
     <div class="en-list">
       {% for n in entity_notes %}
       <div class="en-note{% if not n.visible_to_players %} en-hidden{% endif %}">
+        {% if n.content_is_html %}
+        <div class="en-note-content rendered-md">{{ n.content | safe }}</div>
+        {% else %}
         <div class="en-note-content rendered-md">{{ n.content | md | safe }}</div>
+        {% endif %}
         <div class="en-note-footer">
           <span class="en-note-date">{{ n.created_at.strftime('%Y-%m-%d %H:%M') if n.created_at else '' }}</span>
           {% if request.state.user and request.state.user.is_gm %}
@@ -127,6 +131,26 @@
         <button type="submit" class="btn-add-attr">+ Add note</button>
       </div>
     </form>
+
+    <details class="conn-section">
+      <summary>Import note from file…</summary>
+      <form action="/entity/{{ entity.id }}/notes/import" method="post" enctype="multipart/form-data" class="en-add-form">
+        <input type="file" name="file" accept=".md,.markdown,.txt,.html,.htm,.pdf,.png,.jpg,.jpeg,.gif,.webp" required>
+        <div class="en-add-row">
+          <label class="en-vis-check">
+            <input type="checkbox" name="preserve_html" value="1" style="width:auto">
+            Preserve original formatting (.html/.htm only — otherwise converted to plain text)
+          </label>
+        </div>
+        <div class="en-add-row">
+          <label class="en-vis-check">
+            <input type="checkbox" name="visible" value="1" style="width:auto">
+            Visible to players
+          </label>
+          <button type="submit" class="btn-add-attr">⬆ Import as note</button>
+        </div>
+      </form>
+    </details>
     {% endif %}
   </section>
 

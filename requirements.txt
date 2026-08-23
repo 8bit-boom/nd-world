@@ -14,3 +14,5 @@ qrcode==8.2
 mcp==1.29.0
 sse-starlette==2.4.1
 pypdf==6.16.1
+html2text==2025.4.15
+nh3==0.3.6

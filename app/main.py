@@ -28,9 +28,9 @@ from . import nav_menus as _nav_menus_module
 from .database import init_db, get_db, SessionLocal, get_app_settings
 from .deps import get_world_ctx, resolve_world_slug, with_world
 from .imaging import convert_image
-from .rendering import parse_stats, render_md
+from .rendering import parse_stats, render_md, html_to_markdown, sanitize_note_html
 from .templating import templates
-from .uploads import copy_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES
+from .uploads import copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, ApiToken, ImageAlbum, AudioClip, AudioAlbum
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
@@ -3541,6 +3541,81 @@ def add_entity_note(
         db.add(EntityNote(
             entity_id=entity_id, author_id=user.id if user else None,
             content=content, visible_to_players=bool(visible),
+        ))
+        db.commit()
+    return RedirectResponse(f"/entity/{entity_id}", status_code=303)
+
+# A converted/extracted note is just text — this is generous headroom for a
+# real session-notes export (which can carry a few embedded images even
+# though the html/pdf paths below never keep them) or a portrait-sized
+# image, without being an unbounded upload.
+MAX_NOTE_IMPORT_BYTES = int(os.environ.get("MAX_NOTE_IMPORT_BYTES", str(10 * 1024 * 1024)))
+_NOTE_IMPORT_TEXT_EXTS = {".md", ".markdown", ".txt"}
+_NOTE_IMPORT_HTML_EXTS = {".html", ".htm"}
+_NOTE_IMPORT_PDF_EXTS = {".pdf"}
+_NOTE_IMPORT_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+
+@app.post("/entity/{entity_id}/notes/import")
+def import_entity_note(
+    entity_id: int, request: Request,
+    file: UploadFile = File(...), visible: Optional[str] = Form(None),
+    preserve_html: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    """Create a note from an uploaded file instead of typing it — see the
+    "Import note from file" form on entities/detail.html. Each format lands
+    in EntityNote.content differently:
+      .md/.markdown/.txt — read as-is; it's already markdown/plain text.
+      .pdf               — text extracted via pypdf (same approach as the
+                            AI-attachment document extractor in
+                            routers/ai.py), no layout/formatting preserved.
+      .html/.htm         — converted to markdown by default (safe, but
+                            drops original styling); check "preserve_html"
+                            to instead keep it as sanitized HTML
+                            (content_is_html=True) — see
+                            rendering.sanitize_note_html for what survives.
+      .png/.jpg/.jpeg/.gif/.webp — saved as an upload, note content is just
+                            a markdown image reference to it.
+    """
+    entity = db.get(Entity, entity_id)
+    if not entity:
+        raise HTTPException(404)
+    ext = Path(file.filename or "").suffix.lower()
+    is_html = False
+
+    if ext in _NOTE_IMPORT_IMAGE_EXTS:
+        url = save_upload(file, subdir="entity_notes", db=db)
+        if not url:
+            raise HTTPException(400, "Could not save image")
+        content = f"![{entity.name}]({url})"
+    elif ext in _NOTE_IMPORT_TEXT_EXTS:
+        raw = read_upload_bounded(file, max_bytes=MAX_NOTE_IMPORT_BYTES)
+        content = raw.decode("utf-8", errors="replace").strip()
+    elif ext in _NOTE_IMPORT_PDF_EXTS:
+        raw = read_upload_bounded(file, max_bytes=MAX_NOTE_IMPORT_BYTES)
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(raw))
+            content = "\n\n".join((page.extract_text() or "") for page in reader.pages).strip()
+        except Exception:
+            raise HTTPException(400, "Could not extract text from this PDF")
+    elif ext in _NOTE_IMPORT_HTML_EXTS:
+        raw = read_upload_bounded(file, max_bytes=MAX_NOTE_IMPORT_BYTES)
+        text = raw.decode("utf-8", errors="replace")
+        if preserve_html:
+            content = sanitize_note_html(text).strip()
+            is_html = True
+        else:
+            content = html_to_markdown(text).strip()
+    else:
+        allowed = sorted(_NOTE_IMPORT_TEXT_EXTS | _NOTE_IMPORT_HTML_EXTS | _NOTE_IMPORT_PDF_EXTS | _NOTE_IMPORT_IMAGE_EXTS)
+        raise HTTPException(400, f"Unsupported file type {ext!r} — allowed: {', '.join(allowed)}")
+
+    if content:
+        user = getattr(request.state, "user", None)
+        db.add(EntityNote(
+            entity_id=entity_id, author_id=user.id if user else None,
+            content=content, visible_to_players=bool(visible), content_is_html=is_html,
         ))
         db.commit()
     return RedirectResponse(f"/entity/{entity_id}", status_code=303)

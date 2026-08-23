@@ -15,6 +15,7 @@ _TEST_DATA_DIR.mkdir(exist_ok=True)
 os.environ["DB_PATH"] = str(_TEST_DATA_DIR / "world.db")
 os.environ["SECRET_KEY"] = "test-secret-key-not-for-production"
 os.environ["MAX_UPLOAD_BYTES"] = "1048576"  # 1 MiB — small so the 413 test stays fast
+os.environ["MAX_NOTE_IMPORT_BYTES"] = "1048576"  # same reason, for /entity/{id}/notes/import
 os.environ.pop("GM_EMAIL", None)
 os.environ.pop("GM_PASSWORD", None)
 

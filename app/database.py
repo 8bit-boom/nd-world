@@ -330,6 +330,10 @@ def _migrate():
             conn.execute(text("ALTER TABLE entities ADD COLUMN template_id INTEGER"))
         if "custom_fields_json" not in cols:
             conn.execute(text("ALTER TABLE entities ADD COLUMN custom_fields_json TEXT DEFAULT '{}'"))
+
+        note_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(entity_notes)")).fetchall()]
+        if note_cols and "content_is_html" not in note_cols:
+            conn.execute(text("ALTER TABLE entity_notes ADD COLUMN content_is_html BOOLEAN DEFAULT 0"))
         # One-time repair of damage done by the earliest lore-import runs. Gated by
         # _once because none of it is safe to repeat: the DELETE is destructive, and
         # the kind='item' → 'feat' reclassification silently overrides a GM who

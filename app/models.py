@@ -252,6 +252,14 @@ class EntityNote(Base):
     content = Column(Text, nullable=False)
     # GM notes are hidden by default — un-hide to reveal to the party.
     visible_to_players = Column(Boolean, default=False)
+    # True only for a note imported from .html/.htm with "preserve original
+    # formatting" checked — content is then already-sanitized HTML (see
+    # rendering.sanitize_note_html) and must be rendered with the `safe`
+    # filter directly, NOT re-run through the `md` filter like every other
+    # note's plain markdown content. False (the default) covers every
+    # existing note plus every other import path (typed text, markdown/text
+    # file, PDF text, or the HTML-to-markdown conversion mode).
+    content_is_html = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
