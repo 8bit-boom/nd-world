@@ -456,5 +456,3 @@ def test_sqlite_wal_mode_and_busy_timeout_enabled(client):
     with database_module.engine.connect() as conn:
         assert conn.execute(text("PRAGMA journal_mode")).scalar() == "wal"
         assert conn.execute(text("PRAGMA busy_timeout")).scalar() == 30000
-
-    engine.dispose()
