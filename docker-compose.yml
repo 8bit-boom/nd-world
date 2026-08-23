@@ -31,7 +31,7 @@ services:
       OLLAMA_MODEL: gemma4:26b   # change to whichever model you've pulled
       WHISPER_URL: http://whisper:8080
       WHISPER_MODELS_DIR: /data/whisper-models
-      WHISPER_MODEL_FILE: whisper-large-v3-turbo-q8_0.gguf   # must match the "whisper" service's own -m filename below
+      WHISPER_MODEL_FILE: ggml-large-v3-turbo.bin   # must match the "whisper" service's own -m filename below
       # Auth — see .env.example. GM_EMAIL/GM_PASSWORD bootstrap the one GM account;
       # everyone else joins as a player via a GM-issued invite link.
       SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env — see scripts/setup.sh or .env.example}
@@ -85,7 +85,9 @@ services:
   # Models tab — nd-world downloads whisper-large-v3-turbo (a good default:
   # most of large-v3's accuracy, several times faster, small enough to run
   # acceptably on CPU) straight into this volume. Or download one yourself
-  # (any whisper.cpp-compatible ggml/gguf file works) into
+  # (a ggml-*.bin file from ggerganov/whisper.cpp — see below, the GGUF
+  # format used elsewhere in the ggml ecosystem isn't supported by this
+  # image's whisper-server yet) into
   # ${AI_MODELS_DIR:-./ai-models}/whisper and set WHISPER_MODEL_FILE in .env
   # to its exact filename if you'd rather pick a different one. Either way,
   # (re)start this "whisper" service once afterward to load it.
@@ -113,7 +115,7 @@ services:
     # actually reaching the binary.
     entrypoint: ["whisper-server"]
     command: ["--host", "0.0.0.0", "--port", "8080", "--convert",
-               "-m", "/models/${WHISPER_MODEL_FILE:-whisper-large-v3-turbo-q8_0.gguf}"]
+               "-m", "/models/${WHISPER_MODEL_FILE:-ggml-large-v3-turbo.bin}"]
     # For NVIDIA GPU, use ghcr.io/ggml-org/whisper.cpp:main-cuda above instead
     # and uncomment the deploy block below:
     # deploy:

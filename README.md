@@ -539,7 +539,10 @@ afterward to load it — nd-world only writes the file, it doesn't (and can't sa
 hot-swap the running server's model, since whisper.cpp itself exits if a reload fails.
 To use a different model instead, either paste its download URL into the same panel,
 or download one yourself into `<AI_MODELS_DIR>/whisper/` and set `WHISPER_MODEL_FILE`
-in `.env` to its exact filename — any whisper.cpp-compatible `.bin`/`.gguf` file works.
+in `.env` to its exact filename — stick to the classic `ggml-*.bin` format from
+[ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp); the newer GGUF
+format used elsewhere in the ggml ecosystem isn't supported by this image's
+whisper-server yet and fails to load with "invalid model data (bad magic)".
 
 **GPU acceleration:** change the image to `ghcr.io/ggml-org/whisper.cpp:main-cuda` and
 uncomment the `deploy` block in the Whisper service (same shape as Ollama's, above).

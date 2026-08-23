@@ -475,15 +475,21 @@ WHISPER_MODELS_DIR = Path(os.getenv("WHISPER_MODELS_DIR", "/data/whisper-models"
 # Must match the "-m /models/<this>" filename the "whisper" Compose service
 # loads by default (its WHISPER_MODEL_FILE env var) — downloading under any
 # other name would still need a manual step to line the two up.
-WHISPER_MODEL_FILENAME = os.getenv("WHISPER_MODEL_FILE", "whisper-large-v3-turbo-q8_0.gguf")
-# oxide-lab's mirror, not xkeyC's original repo — this is the one exact
-# filename verified to exist (via a direct blob-URL citation) while writing
-# this; xkeyC's own repo is still a fine choice if you'd rather pick a
-# different quantization, just paste its file's URL in manually instead of
-# using this default.
+WHISPER_MODEL_FILENAME = os.getenv("WHISPER_MODEL_FILE", "ggml-large-v3-turbo.bin")
+# ggerganov/whisper.cpp's own official model repo — confirmed against a real
+# deployment to be the format that actually loads. An earlier version of
+# this pointed at a third-party GGUF-format mirror instead, on the
+# assumption that ghcr.io/ggml-org/whisper.cpp:main's GGUF support (still an
+# open PR as of ollama/ollama#15243 and this being written — see
+# _build_ollama_messages' docstring in app/routers/ai.py, an unrelated
+# feature that hit the same open-PR situation) had landed for *audio*
+# models specifically; it hadn't — that image's whisper-server rejected the
+# GGUF file with "invalid model data (bad magic)" and crash-looped on every
+# restart. The classic ggml .bin format ggerganov/whisper.cpp itself
+# distributes doesn't have that risk, since it's what the image's own
+# loader has always targeted.
 DEFAULT_WHISPER_MODEL_URL = (
-    "https://huggingface.co/oxide-lab/whisper-large-v3-turbo-GGUF/resolve/main/"
-    "whisper-large-v3-turbo-q8_0.gguf"
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin"
 )
 
 
