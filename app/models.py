@@ -700,6 +700,27 @@ class ChatSession(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class PromptPreset(Base):
+    """A GM-editable, per-world named prompt — feeds AI Chat's Quick Prompts
+    sidebar (scope="chat", clicking one inserts `text` into the input for
+    the GM to edit/send, it does not send immediately) and Image Studio's
+    Prompt Presets (scope="image", `text`/`negative` loaded straight into
+    the generation form) — replacing the previous hardcoded generic-fantasy
+    quick prompts and the image presets' localStorage-only storage (which
+    vanished on a different browser, unlike everything else in this app)."""
+    __tablename__ = "prompt_presets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    scope = Column(String(16), nullable=False)  # "chat" | "image"
+    label = Column(String(128), nullable=False)
+    icon = Column(String(8), default="")  # chat only — an emoji on the quick-prompt button
+    text = Column(Text, default="")  # chat: inserted prompt text; image: the positive prompt
+    negative = Column(Text, default="")  # image only
+    sort_order = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Fact(Base):
     """A single, discrete piece of what-happened-in-play — unlike GameSession.summary
     (one free-text recap blob), each Fact is small enough to have its own

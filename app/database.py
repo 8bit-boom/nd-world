@@ -744,6 +744,18 @@ def _migrate():
             ("world_id", "worlds", "id"),
             ("user_id", "users", "id"),
         ], indexes=["world_id"])
+        _heal_table(conn, "prompt_presets", [
+            ("world_id",    "INTEGER", False),
+            ("scope",       "VARCHAR(16)", False),
+            ("label",       "VARCHAR(128)", False),
+            ("icon",        "VARCHAR(8) DEFAULT ''", True),
+            ("text",        "TEXT DEFAULT ''", True),
+            ("negative",    "TEXT DEFAULT ''", True),
+            ("sort_order",  "INTEGER DEFAULT 0", True),
+            ("created_at",  "DATETIME", True),
+        ], foreign_keys=[
+            ("world_id", "worlds", "id"),
+        ], indexes=["world_id"])
 
 def _seed():
     db = SessionLocal()

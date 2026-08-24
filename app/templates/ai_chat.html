@@ -739,15 +739,18 @@
     </div>
 
     <div>
-      <div class="ai-section-label">Quick prompts</div>
-      <button class="quick-btn" onclick="quickPrompt('Create a detailed NPC with a dark secret and a memorable quirk')">👤 Random NPC</button>
-      <button class="quick-btn" onclick="quickPrompt('Write a compelling quest hook for a party of adventurers')">⚡ Quest hook</button>
-      <button class="quick-btn" onclick="quickPrompt('Describe a location that feels dangerous but intriguing — something the players will remember')">🗺 Location</button>
-      <button class="quick-btn" onclick="quickPrompt('Generate 5 rumors the players might overhear in a bar or marketplace')">💬 Rumors</button>
-      <button class="quick-btn" onclick="quickPrompt('Design a secretive organization or faction with goals, methods, and internal tensions')">🏢 Faction</button>
-      <button class="quick-btn" onclick="quickPrompt('Generate a loot table with 6 interesting and flavourful items')">⚙ Loot table</button>
-      <button class="quick-btn" onclick="quickPrompt('Create a memorable villain with a believable motivation')">☠ Villain</button>
-      <button class="quick-btn" onclick="quickPrompt('Write a short piece of in-world lore or legend')">📄 Lore snippet</button>
+      <div class="ai-section-label">Quick prompts <small>(click to insert, edit before sending)</small></div>
+      <div id="quick-prompt-list"></div>
+      <button class="new-chat-btn" type="button" onclick="toggleQuickPromptManager()" style="margin-top:.4rem">⚙ Manage</button>
+      <div id="quick-prompt-manager" style="display:none;flex-direction:column;gap:.3rem;margin-top:.4rem">
+        <input id="qp-icon" placeholder="Icon (emoji, optional)"
+               style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:inherit;font-size:.78rem;border-radius:3px;box-sizing:border-box">
+        <input id="qp-label" placeholder="Button label"
+               style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:inherit;font-size:.78rem;border-radius:3px;box-sizing:border-box">
+        <textarea id="qp-text" rows="2" placeholder="Prompt text…"
+                  style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:inherit;font-size:.78rem;border-radius:3px;box-sizing:border-box;resize:vertical"></textarea>
+        <button class="new-chat-btn" type="button" onclick="addQuickPrompt()" style="border-color:var(--neon);color:var(--neon)">+ Add</button>
+      </div>
     </div>
 
     <div style="border-top:1px solid var(--border);padding-top:.75rem">
@@ -2476,9 +2479,80 @@ async function sendMessage() {
 }
 
 function quickPrompt(text) {
-  document.getElementById('ai-input').value = text;
-  sendMessage();
+  const input = document.getElementById('ai-input');
+  input.value = text;
+  autoResize(input);
+  input.focus();
 }
+
+// ── Quick Prompts library (GM-editable, per-world) ──────────────────────────
+async function loadQuickPrompts() {
+  const wrap = document.getElementById('quick-prompt-list');
+  try {
+    const d = await fetch('/api/ai/prompt-presets?scope=chat').then(r => r.json());
+    const presets = d.presets || [];
+    wrap.innerHTML = '';
+    presets.forEach((p) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:.3rem';
+      const btn = document.createElement('button');
+      btn.className = 'quick-btn';
+      btn.style.flex = '1';
+      btn.textContent = (p.icon ? p.icon + ' ' : '') + p.label;
+      btn.onclick = () => quickPrompt(p.text);
+      const del = document.createElement('button');
+      del.textContent = '✕';
+      del.title = 'Delete this quick prompt';
+      del.style.cssText = 'background:none;border:none;color:#c44;cursor:pointer;font-size:.8rem;display:none';
+      del.onclick = () => deleteQuickPrompt(p.id);
+      row.append(btn, del);
+      row.dataset.presetId = p.id;
+      wrap.appendChild(row);
+    });
+    _applyQuickPromptManagerVisibility();
+  } catch (e) { /* quick prompts are optional — a failed fetch just leaves none available */ }
+}
+
+function _applyQuickPromptManagerVisibility() {
+  const managing = document.getElementById('quick-prompt-manager').style.display !== 'none';
+  document.querySelectorAll('#quick-prompt-list button[title="Delete this quick prompt"]').forEach((b) => {
+    b.style.display = managing ? 'inline' : 'none';
+  });
+}
+
+function toggleQuickPromptManager() {
+  const el = document.getElementById('quick-prompt-manager');
+  el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+  _applyQuickPromptManagerVisibility();
+}
+
+async function addQuickPrompt() {
+  const label = document.getElementById('qp-label').value.trim();
+  const text = document.getElementById('qp-text').value.trim();
+  if (!label || !text) { alert('Enter both a label and a prompt.'); return; }
+  const icon = document.getElementById('qp-icon').value.trim();
+  try {
+    const r = await fetch('/api/ai/prompt-presets', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope: 'chat', label, icon, text }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    document.getElementById('qp-icon').value = '';
+    document.getElementById('qp-label').value = '';
+    document.getElementById('qp-text').value = '';
+    await loadQuickPrompts();
+  } catch (e) {
+    alert('Could not add quick prompt: ' + e.message);
+  }
+}
+
+async function deleteQuickPrompt(id) {
+  if (!confirm('Delete this quick prompt?')) return;
+  await fetch('/api/ai/prompt-presets/' + id, { method: 'DELETE' });
+  await loadQuickPrompts();
+}
+
+loadQuickPrompts();
 
 function saveChat() {
   if (!history.length) return;
@@ -3119,59 +3193,70 @@ async function igSendToImg2Img(url) {
 }
 
 // ── Prompt Presets ─────────────────────────────────────────────────────────────
+// GM-editable, per-world, server-side (see /api/ai/prompt-presets?scope=image)
+// — previously localStorage-only, so presets vanished on a different browser
+// while every other saved thing in this app (starred images, audio jobs,
+// model config) lives server-side; also shares its backing table with
+// Chat's Quick Prompts (scope="chat").
 
-const _PRESETS_KEY = 'nd_imagegen_presets';
-const _PRESETS_MAX = 20;
+let _igPresets = [];
 
-function igRenderPresets() {
+async function igRenderPresets() {
   const sel = document.getElementById('ig-preset-sel');
   if (!sel) return;
-  const presets = JSON.parse(localStorage.getItem(_PRESETS_KEY) || '[]');
+  try {
+    const d = await fetch('/api/ai/prompt-presets?scope=image').then(r => r.json());
+    _igPresets = d.presets || [];
+  } catch (e) {
+    _igPresets = [];
+  }
   const cur = sel.value;
   sel.innerHTML = '<option value="">— Saved presets —</option>' +
-    presets.map((p, i) => `<option value="${i}">${p.name}</option>`).join('');
+    _igPresets.map((p) => `<option value="${p.id}">${p.label}</option>`).join('');
   if (cur !== '' && sel.querySelector(`option[value="${cur}"]`)) sel.value = cur;
 }
 
-function igSavePreset() {
+async function igSavePreset() {
   const prompt = document.getElementById('ig-prompt')?.value.trim();
   if (!prompt) { alert('Enter a prompt first.'); return; }
   const name = window.prompt('Preset name:', '');
   if (!name || !name.trim()) return;
-  const presets = JSON.parse(localStorage.getItem(_PRESETS_KEY) || '[]');
-  if (presets.length >= _PRESETS_MAX) { alert(`Max ${_PRESETS_MAX} presets reached. Delete one first.`); return; }
-  presets.push({
-    name: name.trim(),
-    prompt,
-    negative: document.getElementById('ig-negative')?.value || '',
-  });
-  localStorage.setItem(_PRESETS_KEY, JSON.stringify(presets));
-  igRenderPresets();
-  const sel = document.getElementById('ig-preset-sel');
-  if (sel) sel.value = presets.length - 1;
+  try {
+    const r = await fetch('/api/ai/prompt-presets', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scope: 'image', label: name.trim(), text: prompt,
+        negative: document.getElementById('ig-negative')?.value || '',
+      }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const saved = await r.json();
+    await igRenderPresets();
+    const sel = document.getElementById('ig-preset-sel');
+    if (sel) sel.value = saved.id;
+  } catch (e) {
+    alert('Could not save preset: ' + e.message);
+  }
 }
 
 function igLoadPreset() {
   const sel = document.getElementById('ig-preset-sel');
-  const idx = parseInt(sel?.value);
-  if (isNaN(idx)) return;
-  const presets = JSON.parse(localStorage.getItem(_PRESETS_KEY) || '[]');
-  const p = presets[idx];
+  const id = parseInt(sel?.value);
+  if (isNaN(id)) return;
+  const p = _igPresets.find((x) => x.id === id);
   if (!p) return;
   const promptEl = document.getElementById('ig-prompt');
   const negEl = document.getElementById('ig-negative');
-  if (promptEl) { promptEl.value = p.prompt; autoResize(promptEl); }
+  if (promptEl) { promptEl.value = p.text; autoResize(promptEl); }
   if (negEl && p.negative) { negEl.value = p.negative; autoResize(negEl); }
 }
 
-function igDeletePreset() {
+async function igDeletePreset() {
   const sel = document.getElementById('ig-preset-sel');
-  const idx = parseInt(sel?.value);
-  if (isNaN(idx)) return;
-  const presets = JSON.parse(localStorage.getItem(_PRESETS_KEY) || '[]');
-  presets.splice(idx, 1);
-  localStorage.setItem(_PRESETS_KEY, JSON.stringify(presets));
-  igRenderPresets();
+  const id = parseInt(sel?.value);
+  if (isNaN(id)) return;
+  await fetch('/api/ai/prompt-presets/' + id, { method: 'DELETE' });
+  await igRenderPresets();
 }
 
 // ── Upscaler dynamic loading ───────────────────────────────────────────────────

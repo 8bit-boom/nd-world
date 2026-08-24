@@ -16,7 +16,7 @@ from .. import audio_jobs as _audio_jobs
 from ..constants import KINDS
 from ..database import get_db
 from ..deps import get_world_ctx
-from ..models import AudioJob, ChatSession
+from ..models import AudioJob, ChatSession, PromptPreset
 from ..uploads import (
     copy_upload_bounded, unique_upload_filename, reassemble_upload_chunks, save_upload_chunk,
 )
@@ -383,6 +383,100 @@ def api_chat_session_delete(session_id: int, request: Request, db=Depends(get_db
     if not session:
         raise HTTPException(404)
     db.delete(session)
+    db.commit()
+    return {"ok": True}
+
+
+# ── Prompt library (GM-editable, per-world, shared by Chat's Quick Prompts ──
+# and Image Studio's Prompt Presets) ─────────────────────────────────────────
+#
+# Replaces two previous implementations: Chat's Quick Prompts sidebar was a
+# hardcoded list of generic-fantasy prompts baked into ai_chat.html that
+# fired immediately on click; Image Studio's Prompt Presets were saved to
+# localStorage, so they vanished on a different browser while every other
+# saved thing in this app (starred images, audio jobs, model config) lives
+# server-side. One shared per-world table, scoped by "chat" or "image".
+_DEFAULT_CHAT_PRESETS = [
+    {"icon": "👤", "label": "Random NPC", "text": "Create a detailed NPC with a dark secret and a memorable quirk"},
+    {"icon": "⚡", "label": "Quest hook", "text": "Write a compelling quest hook for a party of adventurers"},
+    {"icon": "🗺", "label": "Location", "text": "Describe a location that feels dangerous but intriguing — something the players will remember"},
+    {"icon": "💬", "label": "Rumors", "text": "Generate 5 rumors the players might overhear in a bar or marketplace"},
+    {"icon": "🏢", "label": "Faction", "text": "Design a secretive organization or faction with goals, methods, and internal tensions"},
+    {"icon": "⚙", "label": "Loot table", "text": "Generate a loot table with 6 interesting and flavourful items"},
+    {"icon": "☠", "label": "Villain", "text": "Create a memorable villain with a believable motivation"},
+    {"icon": "📄", "label": "Lore snippet", "text": "Write a short piece of in-world lore or legend"},
+]
+
+
+def _preset_to_dict(p: PromptPreset) -> dict:
+    return {"id": p.id, "scope": p.scope, "label": p.label, "icon": p.icon or "", "text": p.text or "", "negative": p.negative or ""}
+
+
+@router.get("/prompt-presets")
+def api_prompt_presets_list(scope: str, request: Request, db=Depends(get_db), active_world: str = Cookie(None)):
+    _require_gm(request)
+    if scope not in ("chat", "image"):
+        raise HTTPException(400, "scope must be 'chat' or 'image'")
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    q = lambda: (
+        db.query(PromptPreset)
+        .filter(PromptPreset.world_id == world.id, PromptPreset.scope == scope)
+        .order_by(PromptPreset.sort_order, PromptPreset.id)
+    )
+    presets = q().all()
+    # A brand-new world's Quick Prompts start seeded with the same defaults
+    # that used to be hardcoded — as real, editable/deletable rows, not a
+    # client-side fallback, so a GM can trim or rewrite them like anything
+    # else here. Image scope starts empty (its old localStorage version did too).
+    if not presets and scope == "chat":
+        for i, d in enumerate(_DEFAULT_CHAT_PRESETS):
+            db.add(PromptPreset(world_id=world.id, scope="chat", label=d["label"], icon=d["icon"], text=d["text"], sort_order=i))
+        db.commit()
+        presets = q().all()
+    return {"presets": [_preset_to_dict(p) for p in presets]}
+
+
+class PromptPresetBody(BaseModel):
+    scope: str
+    label: str
+    icon: str = ""
+    text: str = ""
+    negative: str = ""
+
+
+@router.post("/prompt-presets")
+def api_prompt_presets_create(body: PromptPresetBody, request: Request, db=Depends(get_db), active_world: str = Cookie(None)):
+    _require_gm(request)
+    if body.scope not in ("chat", "image"):
+        raise HTTPException(400, "scope must be 'chat' or 'image'")
+    label = body.label.strip()
+    if not label:
+        raise HTTPException(400, "label is required")
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    p = PromptPreset(
+        world_id=world.id, scope=body.scope, label=label, icon=body.icon.strip(),
+        text=body.text, negative=body.negative,
+    )
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return _preset_to_dict(p)
+
+
+@router.delete("/prompt-presets/{preset_id}")
+def api_prompt_presets_delete(preset_id: int, request: Request, db=Depends(get_db), active_world: str = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    p = db.query(PromptPreset).filter(PromptPreset.id == preset_id, PromptPreset.world_id == world.id).first()
+    if not p:
+        raise HTTPException(404)
+    db.delete(p)
     db.commit()
     return {"ok": True}
 
