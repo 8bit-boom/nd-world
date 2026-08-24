@@ -54,6 +54,34 @@ services:
     restart: unless-stopped
     ports:
       - "11434:11434"
+    # Server-level tuning — these control the Ollama process itself and need
+    # a container restart to take effect (`docker compose up -d ollama`), so
+    # they live here rather than in nd-world's own Settings page (which only
+    # controls per-request options — see OLLAMA_TEMPERATURE etc. there).
+    # All optional; unset any you don't need. See .env.example for defaults
+    # and https://github.com/ollama/ollama/blob/main/docs/faq.md for more.
+    environment:
+      # f16 (default, most VRAM), q8_0, or q4_0 (least VRAM, some quality
+      # loss) — only takes effect with flash attention on.
+      OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-}
+      OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-}
+      # How many requests one loaded model serves concurrently.
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-}
+      # How many different models can be loaded into VRAM at once.
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-}
+      # How long an idle model stays loaded before being evicted, e.g. 5m,
+      # 1h, -1 (forever), 0 (unload immediately after each request).
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-}
+      # Default context window size in tokens, if a request doesn't set its
+      # own num_ctx (see nd-world's own Settings > System tab).
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-}
+      OLLAMA_MAX_QUEUE: ${OLLAMA_MAX_QUEUE:-}
+      OLLAMA_DEBUG: ${OLLAMA_DEBUG:-}
+      # AMD (ROCm) GPU selection — e.g. an RX 9070 XT is gfx1201, natively
+      # supported on Linux via ROCm 7+, no HSA_OVERRIDE_GFX_VERSION needed.
+      # Leave blank on NVIDIA/CPU-only hosts.
+      HSA_OVERRIDE_GFX_VERSION: ${HSA_OVERRIDE_GFX_VERSION:-}
+      ROCR_VISIBLE_DEVICES: ${ROCR_VISIBLE_DEVICES:-}
     volumes:
       # Same parent directory as swarmui's model volume below (see
       # AI_MODELS_DIR) — not because Ollama and SwarmUI can read each
@@ -71,6 +99,16 @@ services:
     #         - driver: nvidia
     #           count: all
     #           capabilities: [gpu]
+    # For an AMD GPU (ROCm) — e.g. an RX 9070 XT — uncomment this instead.
+    # Requires the host to have ROCm-capable kernel drivers installed; the
+    # container itself needs no ROCm install since ollama/ollama's default
+    # image already bundles ROCm support.
+    # devices:
+    #   - /dev/kfd
+    #   - /dev/dri
+    # group_add:
+    #   - video
+    #   - render
 
   # Optional: transcribe an audio file attached to an AI chat message into
   # text (see /ai and an entity's "Ask AI" panel), using a self-hosted

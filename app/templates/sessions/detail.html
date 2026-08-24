@@ -63,6 +63,9 @@
             🔒 Process in Background
             <input type="file" id="audio-bgjob-input" accept=".mp3,.ogg,.oga,.wav,.m4a,.flac,.opus,.webm,.aac,audio/*" style="display:none">
           </label>
+          <select id="audio-bgjob-model" title="Which AI model summarizes this recording — see the AI page's Models tab" style="font-size:.78rem;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:.25rem .4rem">
+            <option value="">(default model)</option>
+          </select>
           <span id="mic-record-status" style="font-size:.75rem;color:var(--text-dim)"></span>
           <div style="font-size:.72rem;margin-top:.3rem">Transcribed via Whisper, then summarized into a recap draft below — the audio itself isn't kept (use the Audio Library separately to save a recording). "Process in Background" survives closing this tab; check the jobs list below to see it finish and load the result later.</div>
         </div>
@@ -387,17 +390,33 @@ const sessionAudioJobs = ndAudioJobs(document.getElementById('audio-jobs-panel')
   },
 });
 
+(async function loadBgJobModelOptions() {
+  const sel = document.getElementById('audio-bgjob-model');
+  try {
+    const res = await fetch('/api/ai/models');
+    if (!res.ok) return;
+    const d = await res.json();
+    (d.models || []).forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label || m.id;
+      sel.appendChild(opt);
+    });
+  } catch (e) { /* picker just stays on "(default model)" */ }
+})();
+
 document.getElementById('audio-bgjob-input').addEventListener('change', async function () {
   const file = this.files[0];
   this.value = '';
   if (!file) return;
   const status = document.getElementById('ai-recap-status');
   const bar = ndProgressBar(document.getElementById('audio-recap-progress'));
+  const model = document.getElementById('audio-bgjob-model').value;
   bar.setPercent(0, 'Uploading… 0%');
   try {
     await sessionAudioJobs.startJob(
       file,
-      { game_session_id: '{{ gsession.id if gsession else "" }}' },
+      { game_session_id: '{{ gsession.id if gsession else "" }}', model: model },
       (e) => ndProgressFromUpload(bar, e, 'Job started — processing in background…'),
     );
     status.textContent = 'Background job started — see the jobs list below.';

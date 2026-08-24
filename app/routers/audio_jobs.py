@@ -9,7 +9,7 @@ the standalone "Background Jobs" page (GM-only) where a GM can see
 everything in flight across the whole world and cancel one, separate from
 the smaller inline panels embedded on each originating page.
 """
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
+from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
@@ -35,7 +35,7 @@ def _job_to_dict(job: AudioJob) -> dict:
         "id": job.id, "purpose": job.purpose,
         "purpose_label": PURPOSE_LABELS.get(job.purpose, job.purpose),
         "filename": job.filename, "status": job.status, "error": job.error,
-        "transcript": job.transcript, "recap": job.recap,
+        "transcript": job.transcript, "recap": job.recap, "model": job.model or "",
         "attachment_url": job.attachment_url, "game_session_id": job.game_session_id,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
@@ -93,3 +93,26 @@ def api_audio_job_cancel(job_id: int, request: Request, db: Session = Depends(ge
     if not _audio_jobs.cancel_job(job_id):
         raise HTTPException(400, "Job isn't currently running (it may have just finished)")
     return {"ok": True}
+
+
+@router.post("/api/audio-jobs/{job_id}/resummarize")
+async def api_audio_job_resummarize(
+    job_id: int, request: Request, model: str = Form(""),
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Re-run the summarization step against a job's already-saved
+    transcript — no re-upload or re-transcription needed. Lets a GM fix a
+    job that summarized with the wrong (or an unavailable) model, or just
+    try a different one, straight from the Background Jobs page."""
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = db.query(AudioJob).filter(AudioJob.id == job_id, AudioJob.world_id == world.id).first()
+    if not job:
+        raise HTTPException(404)
+    try:
+        job = await _audio_jobs.resummarize_job(job_id, model=model.strip())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return _job_to_dict(job)

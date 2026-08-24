@@ -420,6 +420,18 @@ def _migrate():
                 ("hover_preview_max_height_px", "INTEGER DEFAULT 420"),
                 ("dreamlands_enabled", "BOOLEAN DEFAULT 0"),
                 ("king_in_yellow_enabled", "BOOLEAN DEFAULT 0"),
+                ("ollama_temperature", "FLOAT"),
+                ("ollama_top_p", "FLOAT"),
+                ("ollama_top_k", "INTEGER"),
+                ("ollama_repeat_penalty", "FLOAT"),
+                ("ollama_num_predict", "INTEGER"),
+                ("ollama_num_ctx", "INTEGER"),
+                ("ollama_seed", "INTEGER"),
+                ("ollama_mirostat", "INTEGER"),
+                ("ollama_mirostat_tau", "FLOAT"),
+                ("ollama_mirostat_eta", "FLOAT"),
+                ("ollama_keep_alive", "VARCHAR(32) DEFAULT ''"),
+                ("ollama_num_gpu", "INTEGER"),
             ]:
                 if col not in as_cols:
                     conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN {col} {defn}"))
@@ -697,6 +709,29 @@ def _migrate():
             ("world_id", "worlds", "id"),
             ("parent_id", "image_albums", "id"),
         ], indexes=["world_id", "parent_id"])
+        # audio_jobs: new since this table shipped, so most installs already
+        # have rows here — model heals in via ALTER TABLE ADD COLUMN like
+        # everything else in this function, not create_all() (which never
+        # alters an existing table).
+        _heal_table(conn, "audio_jobs", [
+            ("world_id",            "INTEGER", False),
+            ("created_by_user_id",  "INTEGER", True),
+            ("purpose",             "VARCHAR(32)", False),
+            ("game_session_id",     "INTEGER", True),
+            ("filename",            "VARCHAR(256) DEFAULT ''", True),
+            ("status",              "VARCHAR(32) DEFAULT 'pending'", True),
+            ("error",               "TEXT DEFAULT ''", True),
+            ("transcript",          "TEXT DEFAULT ''", True),
+            ("recap",               "TEXT DEFAULT ''", True),
+            ("attachment_url",      "VARCHAR(512) DEFAULT ''", True),
+            ("model",               "VARCHAR(128)", True),
+            ("created_at",          "DATETIME", True),
+            ("updated_at",          "DATETIME", True),
+        ], foreign_keys=[
+            ("world_id", "worlds", "id"),
+            ("created_by_user_id", "users", "id"),
+            ("game_session_id", "game_sessions", "id"),
+        ], indexes=["world_id", "game_session_id"])
 
 def _seed():
     db = SessionLocal()

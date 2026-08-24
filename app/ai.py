@@ -59,6 +59,44 @@ def set_whisper_override(url: str) -> None:
 def effective_whisper_url() -> str:
     return _whisper_url_override or WHISPER_URL
 
+
+# Per-request Ollama generation tuning (temperature, num_ctx, mirostat, etc.)
+# from AppSettings — see main.py's _refresh_settings_overrides(). `options`
+# only ever holds fields the GM actually set (blank/None fields are stripped
+# before this is called), so anything unset here just omits that key and lets
+# Ollama/the model's own Modelfile default apply. keep_alive is a separate
+# top-level kwarg on .chat()/.generate(), not nested inside options.
+_ollama_options_override: dict = {}
+_ollama_keep_alive_override: str = ""
+
+
+def set_ollama_generation_overrides(options: dict, keep_alive: str = "") -> None:
+    global _ollama_options_override, _ollama_keep_alive_override
+    _ollama_options_override = dict(options) if options else {}
+    _ollama_keep_alive_override = keep_alive or ""
+
+
+def effective_ollama_options() -> dict:
+    return dict(_ollama_options_override)
+
+
+def effective_ollama_keep_alive() -> str:
+    return _ollama_keep_alive_override
+
+
+def _chat_kwargs() -> dict:
+    """Extra kwargs (options=, keep_alive=) to splat into every .chat() call
+    below — built fresh each call so a runtime settings change (no server
+    restart needed) takes effect on the very next request."""
+    kwargs = {}
+    opts = effective_ollama_options()
+    if opts:
+        kwargs["options"] = opts
+    keep_alive = effective_ollama_keep_alive()
+    if keep_alive:
+        kwargs["keep_alive"] = keep_alive
+    return kwargs
+
 _DATA_DIR = Path(os.getenv("DB_PATH", "/data/world.db")).parent
 _CUSTOM_MODELS_FILE = _DATA_DIR / "ai_models.json"
 
@@ -197,7 +235,7 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "")
         full.append({"role": "system", "content": system})
     full.extend(messages)
     try:
-        resp = await _client().chat(model=m, messages=full)
+        resp = await _client().chat(model=m, messages=full, **_chat_kwargs())
         content = resp.message.content
         return content if content else "[empty response]"
     except _ollama.ResponseError as exc:
@@ -214,7 +252,7 @@ async def stream_chat(messages: list[dict], system: str = "", model: str = "") -
     full = [{"role": "system", "content": system}] if system else []
     full.extend(messages)
     try:
-        async for chunk in await _client().chat(model=m, messages=full, stream=True):
+        async for chunk in await _client().chat(model=m, messages=full, stream=True, **_chat_kwargs()):
             token = chunk.message.content
             if token:
                 yield token
@@ -280,6 +318,7 @@ async def parse_facts_from_recap(raw_text: str, model: str = "") -> list[dict]:
                 {"role": "user", "content": raw_text},
             ],
             format=_RECAP_FACTS_SCHEMA,
+            **_chat_kwargs(),
         )
     except _ollama.ResponseError as exc:
         raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc

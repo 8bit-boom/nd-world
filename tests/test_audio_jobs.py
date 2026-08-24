@@ -534,3 +534,230 @@ def test_cancel_requires_gm(client, seed, _hanging_transcribe):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     client.post(f"/api/audio-jobs/{job_id}/cancel")
+
+
+# ── Per-job model selection + resummarize (retry with a different model) ───
+#
+# A job's own summarize_transcript() call passes model= (see
+# app.audio_jobs._run_job) — the `_fake_ai` fixture above accepts model="" by
+# default and ignores it; tests here that need to assert *which* model was
+# passed install their own capturing fake instead.
+
+@pytest.mark.asyncio
+async def test_create_job_stores_and_uses_chosen_model(client, seed, tmp_path, monkeypatch):
+    captured = {}
+
+    async def fake_summarize_capture(transcript, model=""):
+        captured["model"] = model
+        return "recap text"
+
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize_capture)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True, model="llama3.1",
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.model == "llama3.1"
+    assert captured["model"] == "llama3.1"
+
+
+@pytest.mark.asyncio
+async def test_create_job_blank_model_stored_as_none(client, seed, tmp_path):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    job = await _await_terminal(job_id)
+    assert job.model is None
+
+
+@pytest.mark.asyncio
+async def test_resummarize_job_uses_saved_transcript_and_new_model(client, seed, tmp_path, monkeypatch):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done"
+    original_transcript = job.transcript
+
+    captured = {}
+
+    async def fake_summarize_capture(transcript, model=""):
+        captured["transcript"] = transcript
+        captured["model"] = model
+        return "A different, better recap."
+
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize_capture)
+
+    updated = await audio_jobs.resummarize_job(job_id, model="llama3.1")
+    assert updated.status == "done"
+    assert updated.recap == "A different, better recap."
+    assert updated.model == "llama3.1"
+    assert captured["transcript"] == original_transcript
+    assert captured["model"] == "llama3.1"
+
+
+@pytest.mark.asyncio
+async def test_resummarize_job_falls_back_to_the_jobs_own_model_when_blank(client, seed, tmp_path, monkeypatch):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True, model="gemma4:26b",
+    )
+    await _await_terminal(job_id)
+
+    captured = {}
+
+    async def fake_summarize_capture(transcript, model=""):
+        captured["model"] = model
+        return "recap"
+
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize_capture)
+    await audio_jobs.resummarize_job(job_id, model="")
+    assert captured["model"] == "gemma4:26b"
+
+
+@pytest.mark.asyncio
+async def test_resummarize_job_rejects_attachment_purpose(client, seed, tmp_path):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="attachment", filename="clip.mp3",
+        audio_path=audio, delete_after=False, attachment_url="/uploads/ai_attachments/clip.mp3",
+    )
+    await _await_terminal(job_id)
+    with pytest.raises(ValueError):
+        await audio_jobs.resummarize_job(job_id)
+
+
+@pytest.mark.asyncio
+async def test_resummarize_job_rejects_missing_transcript(client, seed, tmp_path, monkeypatch):
+    async def empty_transcribe(path):
+        return ""
+
+    monkeypatch.setattr(ai_module, "transcribe_audio", empty_transcribe)
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "error"
+    with pytest.raises(ValueError):
+        await audio_jobs.resummarize_job(job_id)
+
+
+@pytest.mark.asyncio
+async def test_resummarize_job_rejects_unknown_job(client, seed):
+    with pytest.raises(ValueError):
+        await audio_jobs.resummarize_job(999999)
+
+
+def test_session_job_create_accepts_a_model_field(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/audio-jobs",
+                     files={"file": ("clip.mp3", io.BytesIO(b"fake"), "audio/mpeg")},
+                     data={"model": "llama3.1"})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    _poll_until_terminal(client, f"/api/sessions/ai/audio-jobs/{job_id}")
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.model == "llama3.1"
+    finally:
+        db.close()
+
+
+def test_resummarize_route_gm_only(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done",
+                        filename="x.mp3", transcript="hello there")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/api/audio-jobs/{job_id}/resummarize", data={"model": ""})
+    assert r.status_code == 403
+
+
+def test_resummarize_route_round_trip(client, seed, monkeypatch):
+    async def fake_summarize_capture(transcript, model=""):
+        return f"Recap via {model or 'default'}: {transcript}"
+
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize_capture)
+
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="error",
+                        filename="x.mp3", transcript="hello there", error="[AI error: Ollama 404]")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/api/audio-jobs/{job_id}/resummarize", data={"model": "llama3.1"})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["status"] == "done"
+    assert data["recap"] == "Recap via llama3.1: hello there"
+    assert data["model"] == "llama3.1"
+    assert data["error"] == ""
+
+
+def test_resummarize_route_rejects_job_with_no_transcript_yet(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="pending", filename="x.mp3")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/api/audio-jobs/{job_id}/resummarize", data={"model": ""})
+    assert r.status_code == 400
+
+
+def test_resummarize_route_cross_world_isolation(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_b.id, purpose="session_recap", status="done",
+                        filename="x.mp3", transcript="hello there")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/api/audio-jobs/{job_id}/resummarize", data={"model": ""})
+    assert r.status_code == 404

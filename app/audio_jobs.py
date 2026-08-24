@@ -27,6 +27,7 @@ def create_job(
     world_id: int, purpose: str, filename: str, audio_path: Path,
     delete_after: bool = True, game_session_id: Optional[int] = None,
     created_by_user_id: Optional[int] = None, attachment_url: str = "",
+    model: str = "",
 ) -> int:
     """Create the job row and start its background task immediately —
     returns the job id right away, well before transcription (let alone
@@ -34,13 +35,17 @@ def create_job(
     return instantly regardless of how long the actual work takes. The
     background task keeps running in the server process independent of
     this (or any) HTTP connection, so closing the tab that started it
-    doesn't stop it."""
+    doesn't stop it.
+
+    `model`, if given, is the Ollama model to use for the summarization
+    step (purpose="session_recap" only — ignored for "attachment", which
+    only transcribes). Blank means "whatever the instance default is."""
     db = SessionLocal()
     try:
         job = AudioJob(
             world_id=world_id, purpose=purpose, filename=filename,
             game_session_id=game_session_id, created_by_user_id=created_by_user_id,
-            attachment_url=attachment_url, status="pending",
+            attachment_url=attachment_url, status="pending", model=model or None,
         )
         db.add(job)
         db.commit()
@@ -49,13 +54,13 @@ def create_job(
     finally:
         db.close()
 
-    task = asyncio.create_task(_run_job(job_id, audio_path, purpose, delete_after))
+    task = asyncio.create_task(_run_job(job_id, audio_path, purpose, delete_after, model))
     _running_tasks[job_id] = task
     task.add_done_callback(lambda t: _running_tasks.pop(job_id, None))
     return job_id
 
 
-async def _run_job(job_id: int, audio_path: Path, purpose: str, delete_after: bool) -> None:
+async def _run_job(job_id: int, audio_path: Path, purpose: str, delete_after: bool, model: str = "") -> None:
     def _set(**fields):
         db = SessionLocal()
         try:
@@ -82,7 +87,7 @@ async def _run_job(job_id: int, audio_path: Path, purpose: str, delete_after: bo
 
         if purpose == "session_recap":
             _set(status="summarizing")
-            recap = await _ai_module.summarize_transcript(transcript)
+            recap = await _ai_module.summarize_transcript(transcript, model=model)
             _set(status="done", recap=recap)
         else:
             _set(status="done")
@@ -113,6 +118,49 @@ def cancel_job(job_id: int) -> bool:
         return False
     task.cancel()
     return True
+
+
+async def resummarize_job(job_id: int, model: str = "") -> AudioJob:
+    """Re-run just the summarization step against a job's already-saved
+    transcript, optionally with a different model — for when the first
+    summary failed (wrong/unpulled model, Ollama unreachable) or a GM just
+    wants a second pass, without re-uploading or re-transcribing the audio.
+    Runs inline (awaited directly by the caller, same as every other manual
+    summarize route in app/routers/sessions.py) rather than as a tracked
+    background task, since summarizing an already-transcribed text is fast
+    compared to transcription itself. Raises ValueError with a caller-
+    displayable message on any invalid state."""
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        if not job:
+            raise ValueError("Job not found.")
+        if job.purpose != "session_recap":
+            raise ValueError("Only session-recap jobs can be re-summarized.")
+        if not job.transcript:
+            raise ValueError("This job has no transcript yet to summarize.")
+        transcript = job.transcript
+        chosen_model = model or job.model or ""
+    finally:
+        db.close()
+
+    recap = await _ai_module.summarize_transcript(transcript, model=chosen_model)
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        if not job:
+            raise ValueError("Job not found.")
+        job.status = "done"
+        job.recap = recap
+        job.error = ""
+        if chosen_model:
+            job.model = chosen_model
+        db.commit()
+        db.refresh(job)
+        return job
+    finally:
+        db.close()
 
 
 def sweep_interrupted_jobs() -> None:

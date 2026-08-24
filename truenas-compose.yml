@@ -78,6 +78,24 @@ services:
     restart: unless-stopped
     ports:
       - "11434:11434"
+    # Server-level tuning — controls the Ollama process itself, needs a
+    # container restart to take effect. All optional; unset any you don't
+    # need. See .env.example for defaults, and nd-world's own Settings >
+    # System tab for the separate per-request options (temperature etc.)
+    # that don't need a restart.
+    environment:
+      OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-}
+      OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-}
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-}
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-}
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-}
+      OLLAMA_MAX_QUEUE: ${OLLAMA_MAX_QUEUE:-}
+      OLLAMA_DEBUG: ${OLLAMA_DEBUG:-}
+      # AMD (ROCm) GPU selection — e.g. an RX 9070 XT is gfx1201, natively
+      # supported on Linux via ROCm 7+, no HSA_OVERRIDE_GFX_VERSION needed.
+      HSA_OVERRIDE_GFX_VERSION: ${HSA_OVERRIDE_GFX_VERSION:-}
+      ROCR_VISIBLE_DEVICES: ${ROCR_VISIBLE_DEVICES:-}
     volumes:
       - /mnt/DeadPool/apps/ollama:/root/.ollama
     labels:
@@ -95,6 +113,16 @@ services:
     #         - driver: nvidia
     #           count: all
     #           capabilities: [gpu]
+    # For an AMD GPU (ROCm) — e.g. an RX 9070 XT — uncomment this instead.
+    # Requires ROCm-capable kernel drivers on the TrueNAS host; the
+    # container itself needs no ROCm install (ollama/ollama's default image
+    # already bundles it).
+    # devices:
+    #   - /dev/kfd
+    #   - /dev/dri
+    # group_add:
+    #   - video
+    #   - render
 
   # Optional: transcribe an audio file attached to an AI chat message into
   # text (see /ai and an entity's "Ask AI" panel), using a self-hosted

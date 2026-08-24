@@ -377,7 +377,7 @@ def _job_to_dict(job: AudioJob) -> dict:
     return {
         "id": job.id, "purpose": job.purpose, "filename": job.filename,
         "status": job.status, "error": job.error,
-        "transcript": job.transcript, "recap": job.recap,
+        "transcript": job.transcript, "recap": job.recap, "model": job.model or "",
         "game_session_id": job.game_session_id,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
@@ -387,6 +387,7 @@ def _job_to_dict(job: AudioJob) -> dict:
 @router.post("/api/sessions/ai/audio-jobs")
 async def api_audio_job_create(
     request: Request, file: UploadFile = File(...), game_session_id: str = Form(""),
+    model: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Start a durable background transcribe+summarize job for a session
@@ -407,7 +408,7 @@ async def api_audio_job_create(
     job_id = _audio_jobs.create_job(
         world_id=world.id, purpose="session_recap", filename=file.filename or "",
         audio_path=dest, delete_after=True, game_session_id=gs_id,
-        created_by_user_id=_current_user_id(request),
+        created_by_user_id=_current_user_id(request), model=model.strip(),
     )
     return {"job_id": job_id}
 
@@ -427,6 +428,7 @@ async def api_audio_job_chunk(
 async def api_audio_job_complete(
     request: Request, upload_id: str = Form(...), filename: str = Form(...),
     total_chunks: int = Form(...), game_session_id: str = Form(""),
+    model: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Reassemble the parts uploaded via .../audio-jobs/chunk and start a
@@ -446,7 +448,7 @@ async def api_audio_job_complete(
     job_id = _audio_jobs.create_job(
         world_id=world.id, purpose="session_recap", filename=filename,
         audio_path=dest, delete_after=True, game_session_id=gs_id,
-        created_by_user_id=_current_user_id(request),
+        created_by_user_id=_current_user_id(request), model=model.strip(),
     )
     return {"job_id": job_id}
 

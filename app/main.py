@@ -135,6 +135,22 @@ def _refresh_settings_overrides(db: Session = None):
         settings = get_app_settings(db)
         _ai_module.set_ollama_override(settings.ollama_url or "", settings.ollama_model or "")
         _ai_module.set_whisper_override(settings.whisper_url or "")
+        gen_options = {
+            k: v for k, v in {
+                "temperature": settings.ollama_temperature,
+                "top_p": settings.ollama_top_p,
+                "top_k": settings.ollama_top_k,
+                "repeat_penalty": settings.ollama_repeat_penalty,
+                "num_predict": settings.ollama_num_predict,
+                "num_ctx": settings.ollama_num_ctx,
+                "seed": settings.ollama_seed,
+                "mirostat": settings.ollama_mirostat,
+                "mirostat_tau": settings.ollama_mirostat_tau,
+                "mirostat_eta": settings.ollama_mirostat_eta,
+                "num_gpu": settings.ollama_num_gpu,
+            }.items() if v is not None
+        }
+        _ai_module.set_ollama_generation_overrides(gen_options, settings.ollama_keep_alive or "")
     finally:
         if owns:
             db.close()
@@ -2443,6 +2459,24 @@ def settings_save(
     db.commit()
     return RedirectResponse("/settings", status_code=303)
 
+def _parse_optional_number(label: str, raw: str, kind=float, lo=None, hi=None):
+    """Parse a blank-means-unset numeric Settings field. Returns (value, error) —
+    value is None (not the field's old value) when left blank, so a GM can
+    clear an override back to "use Ollama's default" by emptying the box."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None, None
+    try:
+        val = kind(raw)
+    except ValueError:
+        return None, f"{label} must be a {'whole number' if kind is int else 'number'}"
+    if lo is not None and val < lo:
+        return None, f"{label} must be at least {lo}"
+    if hi is not None and val > hi:
+        return None, f"{label} must be at most {hi}"
+    return val, None
+
+
 @app.post("/settings/system")
 def settings_system_save(
     request: Request,
@@ -2454,6 +2488,18 @@ def settings_system_save(
     whisper_url: str = Form(""),
     dreamlands_enabled: Optional[str] = Form(None),
     king_in_yellow_enabled: Optional[str] = Form(None),
+    ollama_temperature: str = Form(""),
+    ollama_top_p: str = Form(""),
+    ollama_top_k: str = Form(""),
+    ollama_repeat_penalty: str = Form(""),
+    ollama_num_predict: str = Form(""),
+    ollama_num_ctx: str = Form(""),
+    ollama_seed: str = Form(""),
+    ollama_mirostat: str = Form(""),
+    ollama_mirostat_tau: str = Form(""),
+    ollama_mirostat_eta: str = Form(""),
+    ollama_keep_alive: str = Form(""),
+    ollama_num_gpu: str = Form(""),
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
@@ -2463,6 +2509,7 @@ def settings_system_save(
     android_emulator_url = android_emulator_url.strip().rstrip("/")
     editor_external_url = editor_external_url.strip().rstrip("/")
     whisper_url = whisper_url.strip().rstrip("/")
+    ollama_keep_alive = ollama_keep_alive.strip()[:32]
     for label, val in (
         ("Ollama URL", ollama_url),
         ("SwarmUI external URL", swarmui_external_url),
@@ -2477,6 +2524,33 @@ def settings_system_save(
                                    system_error=f"{label} must start with http:// or https://"),
                 status_code=400,
             )
+
+    # Per-request Ollama generation tuning — every field is optional (blank =
+    # let Ollama/the model's Modelfile decide), so parse errors are the only
+    # failure mode here; range bounds match what Ollama itself accepts.
+    parsed = {}
+    for field, label, raw, kind, lo, hi in (
+        ("ollama_temperature", "Temperature", ollama_temperature, float, 0.0, 2.0),
+        ("ollama_top_p", "Top P", ollama_top_p, float, 0.0, 1.0),
+        ("ollama_top_k", "Top K", ollama_top_k, int, 0, None),
+        ("ollama_repeat_penalty", "Repeat penalty", ollama_repeat_penalty, float, 0.0, 5.0),
+        ("ollama_num_predict", "Max output tokens", ollama_num_predict, int, -2, None),
+        ("ollama_num_ctx", "Context length", ollama_num_ctx, int, 1, None),
+        ("ollama_seed", "Seed", ollama_seed, int, None, None),
+        ("ollama_mirostat", "Mirostat mode", ollama_mirostat, int, 0, 2),
+        ("ollama_mirostat_tau", "Mirostat tau", ollama_mirostat_tau, float, 0.0, 100.0),
+        ("ollama_mirostat_eta", "Mirostat eta", ollama_mirostat_eta, float, 0.0, 10.0),
+        ("ollama_num_gpu", "GPU layers", ollama_num_gpu, int, 0, None),
+    ):
+        val, err = _parse_optional_number(label, raw, kind, lo, hi)
+        if err:
+            return templates.TemplateResponse(
+                "settings.html",
+                _settings_context(request, db, active_world, "system", system_error=err),
+                status_code=400,
+            )
+        parsed[field] = val
+
     settings = get_app_settings(db)
     settings.ollama_model = ollama_model
     settings.ollama_url = ollama_url
@@ -2486,6 +2560,9 @@ def settings_system_save(
     settings.whisper_url = whisper_url
     settings.dreamlands_enabled = dreamlands_enabled is not None
     settings.king_in_yellow_enabled = king_in_yellow_enabled is not None
+    for field, val in parsed.items():
+        setattr(settings, field, val)
+    settings.ollama_keep_alive = ollama_keep_alive
     db.commit()
     _refresh_settings_overrides(db)
     return RedirectResponse("/settings?tab=system", status_code=303)

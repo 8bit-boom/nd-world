@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, Table, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, Table, ForeignKey, Float
 from sqlalchemy.orm import relationship, declarative_base
 
 Base = declarative_base()
@@ -669,6 +669,12 @@ class AudioJob(Base):
     # without re-uploading (same shape as /api/ai/attachments/upload's own
     # "url" field).
     attachment_url = Column(String(512), default="")
+    # Which Ollama model summarized this job's transcript (purpose=
+    # "session_recap" only — blank/None means "whatever the instance
+    # default was at the time"). Set at job creation from the picker on the
+    # session's audio upload panel, and updated whenever a GM re-summarizes
+    # with a different model — see POST /api/audio-jobs/{id}/resummarize.
+    model = Column(String(128), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -815,6 +821,28 @@ class AppSettings(Base):
     # an AI chat audio attachment into text — see app.ai's WHISPER_URL and
     # docs/DEPLOYMENT.md's "Optional: audio transcription (Whisper)".
     whisper_url = Column(String(512), default="")
+    # Per-request Ollama generation options (see app.ai.effective_ollama_options()
+    # and set_ollama_generation_overrides()) — all nullable/blank so an unset
+    # field just omits that key from the options= dict passed to the Ollama
+    # client, letting Ollama/the model's own Modelfile default apply. These
+    # tune inference quality/speed/VRAM use per chat call; they're distinct
+    # from the server-level env vars (OLLAMA_KV_CACHE_TYPE etc.) that must be
+    # set on the ollama container itself — see docker-compose.yml.
+    ollama_temperature = Column(Float, nullable=True)
+    ollama_top_p = Column(Float, nullable=True)
+    ollama_top_k = Column(Integer, nullable=True)
+    ollama_repeat_penalty = Column(Float, nullable=True)
+    ollama_num_predict = Column(Integer, nullable=True)
+    ollama_num_ctx = Column(Integer, nullable=True)
+    ollama_seed = Column(Integer, nullable=True)
+    ollama_mirostat = Column(Integer, nullable=True)
+    ollama_mirostat_tau = Column(Float, nullable=True)
+    ollama_mirostat_eta = Column(Float, nullable=True)
+    # Passed as the separate keep_alive= kwarg (not nested in options=) on
+    # .chat()/.generate() — how long Ollama keeps the model loaded in VRAM
+    # after this request, e.g. "5m", "1h", "-1" (forever), "0" (unload now).
+    ollama_keep_alive = Column(String(32), default="")
+    ollama_num_gpu = Column(Integer, nullable=True)
     # Hover-a-link-for-N-seconds entity preview popup (base.html's global
     # mouseover handler + GET /api/entity/{id}/preview) — instance-wide like
     # everything else on this row, editable from Settings > Options.

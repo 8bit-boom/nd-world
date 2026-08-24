@@ -43,6 +43,15 @@ const STATUS_LABEL = {
 let _bgPollTimer = null;
 const _bgExpanded = new Set();
 const _bgBars = {};
+let BG_MODELS = [];
+
+async function bgLoadModels() {
+  try {
+    const res = await fetch('/api/ai/models');
+    if (!res.ok) return;
+    BG_MODELS = (await res.json()).models || [];
+  } catch (e) { /* the retry-summary model picker just stays default-only */ }
+}
 
 function bgFmtTime(iso) {
   if (!iso) return '';
@@ -115,6 +124,34 @@ function bgRenderJob(job) {
     };
     actions.appendChild(toggleBtn);
   }
+  if (job.purpose === 'session_recap' && job.transcript && !IN_PROGRESS.has(job.status)) {
+    const retryWrap = document.createElement('span');
+    retryWrap.style.cssText = 'display:inline-flex;gap:.3rem;align-items:center';
+
+    const sel = document.createElement('select');
+    sel.title = 'Which model to re-summarize with — see the AI page\'s Models tab';
+    sel.style.cssText = 'font-size:.75rem;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:.2rem .3rem';
+    const defOpt = document.createElement('option');
+    defOpt.value = '';
+    defOpt.textContent = '(default model)';
+    sel.appendChild(defOpt);
+    BG_MODELS.forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label || m.id;
+      if (job.model && m.id === job.model) opt.selected = true;
+      sel.appendChild(opt);
+    });
+
+    const retryBtn = document.createElement('button');
+    retryBtn.type = 'button';
+    retryBtn.className = 'bg-job-btn';
+    retryBtn.textContent = '🔁 Retry summary';
+    retryBtn.onclick = () => bgResummarize(job.id, sel.value, retryBtn);
+
+    retryWrap.append(sel, retryBtn);
+    actions.appendChild(retryWrap);
+  }
   if (actions.children.length) card.appendChild(actions);
 
   if (_bgExpanded.has(job.id) && job.status === 'done') {
@@ -160,6 +197,28 @@ async function bgCancelJob(jobId, btn) {
   bgRefresh();
 }
 
+async function bgResummarize(jobId, model, btn) {
+  btn.disabled = true;
+  const origText = btn.textContent;
+  btn.textContent = 'Summarizing…';
+  try {
+    const res = await fetch(`/api/audio-jobs/${jobId}/resummarize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'model=' + encodeURIComponent(model || ''),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `HTTP ${res.status}`);
+    }
+  } catch (e) {
+    alert('Failed to re-summarize: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+  bgRefresh();
+}
+
 async function bgRefresh() {
   let jobs = [];
   try {
@@ -178,6 +237,7 @@ async function bgRefresh() {
   }
 }
 
+bgLoadModels();
 bgRefresh();
 </script>
 {% endblock %}
