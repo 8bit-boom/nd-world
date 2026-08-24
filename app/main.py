@@ -2200,16 +2200,31 @@ def ai_world_context(request: Request, db: Session = Depends(get_db), active_wor
     return {"context": "\n".join(lines), "world_name": world.name}
 
 
-def _find_relevant_entities(db: Session, world_id: int, query: str, limit: int = 25) -> list:
-    words = [w for w in re.split(r'\W+', query.lower()) if len(w) > 3]
-    if not words:
-        return (
-            db.query(Entity)
-            .filter(Entity.world_id == world_id)
-            .order_by(Entity.kind, Entity.name)
-            .limit(limit)
-            .all()
-        )
+def _find_relevant_entities_fts(db: Session, world_id: int, words: list, limit: int) -> list:
+    """FTS5 prefix search over Entity(name, summary, body, tags) — unlike the
+    _ilike fallback below, this also matches an entity's full body text, and
+    ranks results by SQLite's own bm25-based relevance (`rank`) instead of
+    "whatever order the table happens to be in". Raises on any failure
+    (FTS5 unavailable, entity_fts missing on an old/degraded DB) — the
+    caller falls back to _find_relevant_entities_ilike in that case."""
+    fts_query = " OR ".join(f'"{w.replace(chr(34), chr(34)*2)}"*' for w in words)
+    rows = db.execute(
+        text(
+            "SELECT entities.id FROM entity_fts "
+            "JOIN entities ON entities.id = entity_fts.rowid "
+            "WHERE entity_fts MATCH :q AND entities.world_id = :wid "
+            "ORDER BY rank LIMIT :lim"
+        ),
+        {"q": fts_query, "wid": world_id, "lim": limit},
+    ).fetchall()
+    ids = [r[0] for r in rows]
+    if not ids:
+        return []
+    by_id = {e.id: e for e in db.query(Entity).filter(Entity.id.in_(ids)).all()}
+    return [by_id[i] for i in ids if i in by_id]
+
+
+def _find_relevant_entities_ilike(db: Session, world_id: int, words: list, limit: int) -> list:
     filters = [
         or_(
             Entity.name.ilike(f'%{w}%'),
@@ -2225,6 +2240,22 @@ def _find_relevant_entities(db: Session, world_id: int, query: str, limit: int =
         .limit(limit)
         .all()
     )
+
+
+def _find_relevant_entities(db: Session, world_id: int, query: str, limit: int = 25) -> list:
+    words = [w for w in re.split(r'\W+', query.lower()) if len(w) > 3]
+    if not words:
+        return (
+            db.query(Entity)
+            .filter(Entity.world_id == world_id)
+            .order_by(Entity.kind, Entity.name)
+            .limit(limit)
+            .all()
+        )
+    try:
+        return _find_relevant_entities_fts(db, world_id, words, limit)
+    except Exception:
+        return _find_relevant_entities_ilike(db, world_id, words, limit)
 
 
 def _format_context_from_entities(entities: list) -> str:
