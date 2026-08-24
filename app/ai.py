@@ -17,6 +17,18 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:26b")
 # than something like Ollama a bare install is expected to reach locally.
 WHISPER_URL = os.getenv("WHISPER_URL", "").rstrip("/")
 
+# How long a single /inference call is allowed to run — this is actual
+# transcription time, not network latency, and CPU-only whisper.cpp can run
+# well under realtime speed depending on the host and model size, so a full
+# multi-hour session recording can legitimately take a long time to
+# transcribe. Defaults to 8 hours: a too-short timeout costs a lot (a silent
+# empty transcript — see transcribe_audio's except block — that looks
+# identical to "Whisper isn't configured" from the caller's side, after
+# potentially hours of otherwise-successful processing), while a too-long
+# one costs almost nothing (it only matters if Whisper is genuinely stuck,
+# not just slow). Env-overridable either direction.
+WHISPER_TIMEOUT_SECONDS = float(os.getenv("WHISPER_TIMEOUT_SECONDS", str(8 * 3600)))
+
 # Runtime overrides (set from AppSettings via POST /settings/system, without
 # needing a restart — see main.py's _refresh_settings_overrides()). Blank means
 # "use the env-var default above."
@@ -468,7 +480,7 @@ async def transcribe_audio(path: Path) -> str:
     if not url:
         return ""
     try:
-        async with _httpx.AsyncClient(timeout=120) as c:
+        async with _httpx.AsyncClient(timeout=WHISPER_TIMEOUT_SECONDS) as c:
             with path.open("rb") as f:
                 r = await c.post(
                     f"{url}/inference",

@@ -62,6 +62,7 @@
           <span id="mic-record-status" style="font-size:.75rem;color:var(--text-dim)"></span>
           <div style="font-size:.72rem;margin-top:.3rem">Transcribed via Whisper, then summarized into a recap draft below — the audio itself isn't kept (use the Audio Library separately to save a recording).</div>
         </div>
+        <div id="audio-recap-progress"></div>
 
         <div id="ai-recap-preview" style="display:none;margin-top:.6rem;background:var(--bg3);border:1px solid var(--neon);border-radius:4px;padding:.7rem">
           <div style="font-size:.78rem;color:var(--neon);margin-bottom:.4rem">AI draft — review before applying</div>
@@ -176,6 +177,7 @@
 </div>
 
 <script src="/static/js/chunked-upload.js"></script>
+<script src="/static/js/progress-bar.js"></script>
 <script>
 // ── AI recap assist — unconditional (works on the New Session form too,
 // where gsession doesn't exist yet, unlike the prep/loot/XP panels below) ──
@@ -245,17 +247,19 @@ function aiDiscardRecap() {
 async function aiSummarizeFromAudio(file) {
   const status = document.getElementById('ai-recap-status');
   const micStatus = document.getElementById('mic-record-status');
-  status.textContent = 'Transcribing & summarizing…';
+  const bar = ndProgressBar(document.getElementById('audio-recap-progress'));
+  status.textContent = '';
   micStatus.textContent = '';
   _aiRecapButtons().forEach(b => b.disabled = true);
   const micBtn = document.getElementById('mic-record-btn');
   micBtn.disabled = true;
+  bar.setPercent(0, 'Uploading… 0%');
   try {
     const data = await ndChunkedUpload(file, {
       directUrl: '/api/sessions/ai/summarize-from-audio',
       chunkUrl: '/api/sessions/ai/summarize-from-audio/chunk',
       completeUrl: '/api/sessions/ai/summarize-from-audio/complete',
-      onProgress: (idx, total) => { if (idx < total) status.textContent = `Uploading part ${idx + 1}/${total}…`; else status.textContent = 'Transcribing & summarizing…'; },
+      onProgress: (e) => ndProgressFromUpload(bar, e, 'Transcribing & summarizing — can take a while for a long recording…'),
     });
     _aiRecapDraft = data.recap || '';
     document.getElementById('ai-recap-preview-text').textContent = _aiRecapDraft || '(empty recap)';
@@ -264,10 +268,10 @@ async function aiSummarizeFromAudio(file) {
       document.getElementById('ai-recap-transcript-text').textContent = data.transcript;
       document.getElementById('ai-recap-transcript-wrap').style.display = 'block';
     }
-    status.textContent = '';
   } catch (e) {
     status.textContent = 'Failed: ' + e.message;
   } finally {
+    bar.clear();
     _aiRecapButtons().forEach(b => b.disabled = false);
     micBtn.disabled = false;
   }

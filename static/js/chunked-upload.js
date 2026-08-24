@@ -10,6 +10,13 @@
 // sub-100MB parts and upload them sequentially, then ask the server to
 // reassemble them — a file at or under the threshold just goes straight to
 // `directUrl` in one request, same as before this helper existed.
+//
+// Uses XMLHttpRequest rather than fetch specifically so upload progress is
+// observable (fetch has no upload-progress event) — real byte-level percent
+// while bytes are still going over the wire, then an explicit "processing"
+// phase once the request body has fully arrived and the server is doing
+// its (unmeasurable — Whisper transcription/Ollama summarization report no
+// progress of their own) work before responding.
 const ND_CHUNK_UPLOAD_THRESHOLD = 100 * 1024 * 1024;
 const ND_CHUNK_SIZE = 80 * 1024 * 1024; // safely under the 100MB cap, leaves headroom for multipart overhead
 
@@ -20,10 +27,30 @@ function ndChunkUploadRandomId() {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function ndChunkUploadJsonOrThrow(res) {
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
-  return data;
+// Promise-wrapped XHR POST of a FormData body. onUploadProgress(loaded,
+// total) fires repeatedly while the body is being sent (only when the
+// browser can report a content-length, i.e. lengthComputable) and once
+// more with loaded===total right as the body finishes sending — the caller
+// uses that to know when to switch from a real percent to an indeterminate
+// "processing" state.
+function ndXhrUpload(url, formData, onUploadProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    if (onUploadProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onUploadProgress(e.loaded, e.total);
+      };
+    }
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText || "{}"); } catch (e) { /* non-JSON error body */ }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new Error(data.detail || ("HTTP " + xhr.status)));
+    };
+    xhr.onerror = () => reject(new Error("Network error during upload"));
+    xhr.send(formData);
+  });
 }
 
 // opts:
@@ -33,37 +60,48 @@ async function ndChunkUploadJsonOrThrow(res) {
 //   extraFields — plain object of extra form fields sent alongside the file
 //                 on the direct request, or alongside the metadata on the
 //                 complete request (never resent on every /chunk request)
-//   onProgress  — optional (chunkIndex, totalChunks) callback while chunking
+//   onProgress  — optional ({phase, percent}) callback. phase is "upload"
+//                 (percent 0-100, real bytes-sent progress) or "processing"
+//                 (no percent — the request body has fully arrived and the
+//                 server is transcribing/summarizing/reassembling with no
+//                 progress signal of its own; render this as indeterminate)
 // Returns the parsed JSON body of whichever request actually finished the
 // upload (directUrl's response, or completeUrl's).
 async function ndChunkedUpload(file, opts) {
   const extraFields = opts.extraFields || {};
+  const report = (phase, percent) => { if (opts.onProgress) opts.onProgress({ phase, percent }); };
+
   if (file.size <= ND_CHUNK_UPLOAD_THRESHOLD) {
     const fd = new FormData();
     fd.append("file", file, file.name);
     for (const k in extraFields) fd.append(k, extraFields[k]);
-    const res = await fetch(opts.directUrl, { method: "POST", body: fd });
-    return ndChunkUploadJsonOrThrow(res);
+    return ndXhrUpload(opts.directUrl, fd, (loaded, total) => {
+      report("upload", Math.round((loaded / total) * 100));
+      if (loaded >= total) report("processing");
+    });
   }
 
   const uploadId = ndChunkUploadRandomId();
   const totalChunks = Math.ceil(file.size / ND_CHUNK_SIZE);
+  let bytesDoneBeforeThisChunk = 0;
   for (let idx = 0; idx < totalChunks; idx++) {
-    if (opts.onProgress) opts.onProgress(idx, totalChunks);
+    const chunkStart = idx * ND_CHUNK_SIZE;
+    const chunkBlob = file.slice(chunkStart, chunkStart + ND_CHUNK_SIZE);
     const fd = new FormData();
     fd.append("upload_id", uploadId);
     fd.append("chunk_index", String(idx));
-    fd.append("file", file.slice(idx * ND_CHUNK_SIZE, (idx + 1) * ND_CHUNK_SIZE));
-    const res = await fetch(opts.chunkUrl, { method: "POST", body: fd });
-    await ndChunkUploadJsonOrThrow(res);
+    fd.append("file", chunkBlob);
+    await ndXhrUpload(opts.chunkUrl, fd, (loaded) => {
+      report("upload", Math.round(((bytesDoneBeforeThisChunk + loaded) / file.size) * 100));
+    });
+    bytesDoneBeforeThisChunk += chunkBlob.size;
   }
 
-  if (opts.onProgress) opts.onProgress(totalChunks, totalChunks);
+  report("processing");
   const fd = new FormData();
   fd.append("upload_id", uploadId);
   fd.append("filename", file.name);
   fd.append("total_chunks", String(totalChunks));
   for (const k in extraFields) fd.append(k, extraFields[k]);
-  const res = await fetch(opts.completeUrl, { method: "POST", body: fd });
-  return ndChunkUploadJsonOrThrow(res);
+  return ndXhrUpload(opts.completeUrl, fd);
 }

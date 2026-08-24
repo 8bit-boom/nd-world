@@ -24,9 +24,12 @@ function ndAiAttachments(pendingListEl, onChange) {
         + (att.error ? " ai-attach-chip--error" : "");
       const icon = ICONS[att.kind] || "📎";
       const transcribed = att.kind === "audio" && !att.uploading && !att.error && att.text ? " (transcribed)" : "";
+      const progressSuffix = att.uploading && att.progress
+        ? (att.progress.phase === "upload" ? ` ${att.progress.percent}%` : "… processing")
+        : "…";
       const label = document.createElement("span");
       label.textContent = att.uploading
-        ? `${icon} ${att.name}…`
+        ? `${icon} ${att.name}${progressSuffix}`
         : (att.error ? `⚠ ${att.name}: ${att.error}` : `${icon} ${att.name}${transcribed}`);
       chip.appendChild(label);
       const rm = document.createElement("button");
@@ -42,7 +45,7 @@ function ndAiAttachments(pendingListEl, onChange) {
 
   async function addFiles(files) {
     for (const file of Array.from(files)) {
-      const entry = { name: file.name, kind: "", uploading: true, error: "" };
+      const entry = { name: file.name, kind: "", uploading: true, error: "", progress: null };
       pending.push(entry);
       render();
       try {
@@ -50,6 +53,7 @@ function ndAiAttachments(pendingListEl, onChange) {
           directUrl: "/api/ai/attachments/upload",
           chunkUrl: "/api/ai/attachments/upload/chunk",
           completeUrl: "/api/ai/attachments/upload/complete",
+          onProgress: (e) => { entry.progress = e; render(); },
         });
         entry.kind = data.kind;
         entry.url = data.url;

@@ -1490,6 +1490,7 @@
       <button class="ig-btn" id="wt-mic-btn" onclick="wtToggleMic()"
               style="padding:.38rem 1rem;white-space:nowrap">🎤 Record</button>
     </div>
+    <div id="wt-progress"></div>
     <div id="wt-result" style="margin-top:.8rem;display:none">
       <div style="font-size:.72rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem">Transcript</div>
       <pre id="wt-result-text" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem .75rem;font-size:.85rem;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;margin:0"></pre>
@@ -1511,6 +1512,7 @@
 
 <script src="/static/js/file-dropzone.js"></script>
 <script src="/static/js/chunked-upload.js"></script>
+<script src="/static/js/progress-bar.js"></script>
 <script src="/static/js/ai-attachments.js"></script>
 <script>
 const WORLD_SYSTEM = {{ world_system | tojson }};
@@ -3893,6 +3895,7 @@ async function wtTranscribeFile(file) {
   const micBtn = document.getElementById('wt-mic-btn');
   const resultBox = document.getElementById('wt-result');
   const resultText = document.getElementById('wt-result-text');
+  const bar = ndProgressBar(document.getElementById('wt-progress'));
 
   btn.disabled = true;
   micBtn.disabled = true;
@@ -3900,11 +3903,13 @@ async function wtTranscribeFile(file) {
   btn.textContent = '⏳ Transcribing…';
   resultBox.style.display = 'block';
   resultText.textContent = '';
+  bar.setPercent(0, 'Uploading… 0%');
   try {
     const data = await ndChunkedUpload(file, {
       directUrl: '/api/ai/attachments/upload',
       chunkUrl: '/api/ai/attachments/upload/chunk',
       completeUrl: '/api/ai/attachments/upload/complete',
+      onProgress: (e) => ndProgressFromUpload(bar, e, 'Transcribing via Whisper…'),
     });
     if (data.kind !== 'audio') throw new Error(`Not recognized as audio (got kind=${data.kind})`);
     resultText.textContent = data.text
@@ -3913,6 +3918,7 @@ async function wtTranscribeFile(file) {
   } catch (e) {
     resultText.textContent = '✗ ' + e.message;
   } finally {
+    bar.clear();
     btn.disabled = false;
     micBtn.disabled = false;
     btn.textContent = origLabel;

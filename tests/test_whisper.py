@@ -162,6 +162,26 @@ async def test_transcribe_audio_network_error_returns_empty(tmp_path, monkeypatc
     assert await ai_module.transcribe_audio(f) == ""
 
 
+def test_whisper_timeout_defaults_generously():
+    """A hardcoded short timeout on the /inference call previously made a
+    long session recording silently come back as an empty transcript —
+    indistinguishable from "Whisper isn't configured" on the caller's
+    side — once actual transcription took longer than the timeout. Default
+    must be generous (not the old 120s), and env-overridable."""
+    assert ai_module.WHISPER_TIMEOUT_SECONDS >= 3600
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_uses_configured_timeout(tmp_path, monkeypatch):
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    monkeypatch.setattr(ai_module, "WHISPER_TIMEOUT_SECONDS", 42.0)
+    captured = _patch_httpx(monkeypatch, response=_FakeResponse(200, {"text": "ok"}))
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00")
+    await ai_module.transcribe_audio(f)
+    assert captured["client_kwargs"]["timeout"] == 42.0
+
+
 # ── debug_info() surfaces Whisper status alongside Ollama's ────────────────
 
 @pytest.mark.asyncio
