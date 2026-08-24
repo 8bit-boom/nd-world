@@ -679,6 +679,27 @@ class AudioJob(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ChatSession(Base):
+    """A saved AI Chat conversation (app/templates/ai_chat.html's History
+    sidebar) — one row per conversation, upserted on every completed
+    assistant turn (see the client's autoSave(), which POSTs the full
+    messages array with session_id=None the first time, then the returned
+    id on every save after). GM-only for now, same as the /ai page itself —
+    see app.routers.ai's chat-session routes. `surface` mirrors ChatBody's
+    own field (currently only "chat" is used; reserved for a future AI
+    surface — e.g. per-entity "talk to this NPC" — reusing the same table)."""
+    __tablename__ = "chat_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    surface = Column(String(32), default="chat")
+    title = Column(String(256), default="")
+    messages_json = Column(Text, default="[]")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Fact(Base):
     """A single, discrete piece of what-happened-in-play — unlike GameSession.summary
     (one free-text recap blob), each Fact is small enough to have its own

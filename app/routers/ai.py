@@ -15,7 +15,7 @@ from .. import ai as _ai
 from .. import audio_jobs as _audio_jobs
 from ..database import get_db
 from ..deps import get_world_ctx
-from ..models import AudioJob
+from ..models import AudioJob, ChatSession
 from ..uploads import (
     copy_upload_bounded, unique_upload_filename, reassemble_upload_chunks, save_upload_chunk,
 )
@@ -91,6 +91,15 @@ def _extract_document_text(path: _Path, ext: str) -> str:
         return path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def _require_gm(request: Request) -> None:
+    """The main /ai Chat page (unlike the embedded Ask AI panel gated by
+    _require_ask_ai_access below) is GM-only — see main.py's ai_chat_page —
+    so its saved-conversation history stays GM-only too."""
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
 
 
 def _require_ask_ai_access(request: Request, db, active_world) -> None:
@@ -258,6 +267,97 @@ def _build_ollama_messages(messages: List[ChatMessage]) -> list[dict]:
 async def ai_chat(body: ChatBody):
     msgs = _build_ollama_messages(body.messages)
     return {"result": await _ai.generate_chat(msgs, body.system, body.model)}
+
+
+# ── Saved chat conversations (ai_chat.html's History sidebar) ──────────────
+#
+# Upserted on every completed assistant turn — the client always sends the
+# full messages array (not a delta) and either creates a new row (session_id
+# omitted/null) or overwrites an existing one (session_id given). The title
+# is fixed at creation from the first user message and never recomputed on
+# later saves, so renaming mid-conversation isn't a concern here.
+
+class ChatSessionSaveBody(BaseModel):
+    session_id: Optional[int] = None
+    messages: List[ChatMessage]
+
+
+def _chat_session_title(messages: List[ChatMessage]) -> str:
+    for m in messages:
+        if m.role == "user" and m.content.strip():
+            return m.content.strip().split("\n")[0][:80]
+    return "New chat"
+
+
+@router.get("/sessions")
+def api_chat_sessions_list(request: Request, db=Depends(get_db), active_world: str = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    sessions = (
+        db.query(ChatSession)
+        .filter(ChatSession.world_id == world.id, ChatSession.surface == "chat")
+        .order_by(ChatSession.updated_at.desc())
+        .all()
+    )
+    return {"sessions": [{"id": s.id, "title": s.title} for s in sessions]}
+
+
+@router.post("/sessions")
+def api_chat_sessions_save(
+    body: ChatSessionSaveBody, request: Request, db=Depends(get_db), active_world: str = Cookie(None),
+):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    session = None
+    if body.session_id:
+        session = db.query(ChatSession).filter(
+            ChatSession.id == body.session_id, ChatSession.world_id == world.id,
+        ).first()
+    if not session:
+        user = getattr(request.state, "user", None)
+        session = ChatSession(
+            world_id=world.id, user_id=user.id if user else None,
+            surface="chat", title=_chat_session_title(body.messages),
+        )
+        db.add(session)
+    session.messages_json = _json.dumps([m.model_dump() for m in body.messages])
+    db.commit()
+    db.refresh(session)
+    return {"id": session.id}
+
+
+@router.get("/sessions/{session_id}")
+def api_chat_session_get(session_id: int, request: Request, db=Depends(get_db), active_world: str = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    session = db.query(ChatSession).filter(
+        ChatSession.id == session_id, ChatSession.world_id == world.id,
+    ).first()
+    if not session:
+        raise HTTPException(404)
+    return {"id": session.id, "messages": _json.loads(session.messages_json or "[]")}
+
+
+@router.delete("/sessions/{session_id}")
+def api_chat_session_delete(session_id: int, request: Request, db=Depends(get_db), active_world: str = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    session = db.query(ChatSession).filter(
+        ChatSession.id == session_id, ChatSession.world_id == world.id,
+    ).first()
+    if not session:
+        raise HTTPException(404)
+    db.delete(session)
+    db.commit()
+    return {"ok": True}
 
 
 async def _finish_attachment_upload(dest: _Path, ext: str, kind: str, original_filename: str) -> dict:

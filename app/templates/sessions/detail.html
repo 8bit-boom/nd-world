@@ -96,7 +96,6 @@
       <div class="form-group" style="margin-top:.75rem">
         <label>NPCs Featured</label>
         <input type="text" id="npc-search-input" placeholder="Search NPCs…" autocomplete="off"
-               oninput="npcPickerFilter(this.value)"
                style="width:100%;margin-bottom:.4rem;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px;box-sizing:border-box"/>
         <div id="npc-picker-tree" style="max-height:220px;overflow-y:auto;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.5rem"></div>
       </div>
@@ -183,6 +182,7 @@
 <script src="/static/js/chunked-upload.js"></script>
 <script src="/static/js/progress-bar.js"></script>
 <script src="/static/js/audio-jobs.js"></script>
+<script src="/static/js/entity-picker.js"></script>
 <script>
 // ── AI recap assist — unconditional (works on the New Session form too,
 // where gsession doesn't exist yet, unlike the prep/loot/XP panels below) ──
@@ -240,89 +240,16 @@ function aiSummarizeFromFacts() {
 // DOM client-side (no reload) so the rest of the recap form's unsaved
 // state (Summary, etc.) is never disturbed while picking NPCs.
 const NPC_CANDIDATES = {{ npc_candidates_json | tojson }};
-const NPC_SELECTED = new Set({{ (npcs | map(attribute='entity_id') | list) | tojson }});
+const NPC_SELECTED = {{ (npcs | map(attribute='entity_id') | list) | tojson }};
 
-function npcBuildTree(entities) {
-  const root = { children: {}, entities: [] };
-  for (const e of entities) {
-    if (!e.folder) { root.entities.push(e); continue; }
-    const parts = e.folder.split('/');
-    let node = root, cur = '';
-    for (const part of parts) {
-      cur = cur ? cur + '/' + part : part;
-      if (!node.children[part]) node.children[part] = { name: part, children: {}, entities: [] };
-      node = node.children[part];
-    }
-    node.entities.push(e);
-  }
-  return root;
-}
-
-function npcEntityRow(e) {
-  const label = document.createElement('label');
-  label.className = 'npc-row';
-  label.dataset.name = e.name.toLowerCase();
-  label.style.cssText = 'display:flex;align-items:center;gap:.5rem;font-size:.82rem;padding:.15rem 0';
-  const cb = document.createElement('input');
-  cb.type = 'checkbox';
-  cb.name = 'npc_entity_ids';
-  cb.value = e.id;
-  cb.style.width = 'auto';
-  cb.checked = NPC_SELECTED.has(e.id);
-  label.append(cb, document.createTextNode(' ' + e.name));
-  return label;
-}
-
-function npcRenderNode(node, container, depth) {
-  Object.keys(node.children).sort().forEach((key) => {
-    const child = node.children[key];
-    const details = document.createElement('details');
-    details.open = true;
-    details.className = 'npc-folder';
-    details.style.marginLeft = (depth * 12) + 'px';
-    const summary = document.createElement('summary');
-    summary.textContent = '📁 ' + child.name;
-    summary.style.cssText = 'cursor:pointer;font-size:.8rem;color:var(--text-dim);padding:.2rem 0';
-    const body = document.createElement('div');
-    details.append(summary, body);
-    npcRenderNode(child, body, depth + 1);
-    child.entities.sort((a, b) => a.name.localeCompare(b.name)).forEach((e) => body.appendChild(npcEntityRow(e)));
-    container.appendChild(details);
-  });
-  node.entities.sort((a, b) => a.name.localeCompare(b.name)).forEach((e) => container.appendChild(npcEntityRow(e)));
-}
-
-function npcRenderPicker() {
-  const container = document.getElementById('npc-picker-tree');
-  container.innerHTML = '';
-  if (!NPC_CANDIDATES.length) {
-    container.innerHTML = '<p style="color:var(--text-dim);font-size:.8rem;font-style:italic;margin:0">No NPC-eligible entities (character/creature) in this world yet.</p>';
-    return;
-  }
-  npcRenderNode(npcBuildTree(NPC_CANDIDATES), container, 0);
-}
-
-function npcPickerFilter(query) {
-  const q = query.trim().toLowerCase();
-  const rows = document.querySelectorAll('#npc-picker-tree .npc-row');
-  const folders = document.querySelectorAll('#npc-picker-tree .npc-folder');
-  if (!q) {
-    rows.forEach((r) => r.style.display = 'flex');
-    folders.forEach((f) => { f.style.display = ''; f.open = true; });
-    return;
-  }
-  folders.forEach((f) => f.style.display = 'none');
-  rows.forEach((row) => {
-    const match = row.dataset.name.includes(q);
-    row.style.display = match ? 'flex' : 'none';
-    if (match) {
-      let el = row.closest('.npc-folder');
-      while (el) { el.style.display = ''; el.open = true; el = el.parentElement.closest('.npc-folder'); }
-    }
-  });
-}
-
-npcRenderPicker();
+ndEntityPicker(
+  document.getElementById('npc-picker-tree'),
+  document.getElementById('npc-search-input'),
+  {
+    entities: NPC_CANDIDATES, mode: 'multi', selected: NPC_SELECTED, fieldName: 'npc_entity_ids',
+    emptyText: 'No NPC-eligible entities (character/creature) in this world yet.',
+  },
+);
 {% endif %}
 
 function aiApplyRecap(mode) {
