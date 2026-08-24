@@ -217,14 +217,19 @@
     <div class="ai-panel-body">
       <input type="file" id="ep-attach-input" multiple accept="image/*,audio/*,.txt,.md,.markdown,.pdf" style="display:none"
              onchange="epAttachments.addFiles(this.files); this.value='';"/>
+      <input type="file" id="ep-bgjob-input" accept="audio/*" style="display:none"
+             onchange="ndStartAttachmentBackgroundJob(epAttachments, this.files[0]); this.value='';"/>
       <div class="ep-messages" id="ep-messages"></div>
       <div class="ep-status-row"><span id="ep-stats"></span></div>
       <div class="ai-attach-list" id="ep-attach-list"></div>
+      <div id="ep-jobs-panel" class="nd-jobs-panel" style="display:none"></div>
       <div class="ep-bar">
         <button type="button" id="ep-attach-btn" title="Attach an image, audio clip, or document (audio needs a .wav file and an audio-capable model to be understood)"
                 onclick="document.getElementById('ep-attach-input').click()">📎</button>
         <button type="button" id="ep-mic-btn" title="Record a voice message — transcribed via Whisper and sent to the model as text"
                 onclick="ndToggleAttachMic('ep-mic-btn', epAttachments)">🎤</button>
+        <button type="button" id="ep-bgjob-btn" title="Process a voice memo as a background job — keeps running even if you close this tab"
+                onclick="document.getElementById('ep-bgjob-input').click()">🔒</button>
         <textarea id="ep-input" rows="1" placeholder="Ask about this entity… (Enter to send)" onkeydown="epKey(event)" oninput="epResize(this)"></textarea>
         <button id="ep-send" onclick="epSend()">Ask</button>
       </div>
@@ -289,8 +294,8 @@
 .ai-panel .ep-bar textarea:focus { outline:1px solid var(--neon); }
 .ai-panel .ep-bar button { background:var(--neon); color:#000; border:none; border-radius:5px; padding:.4rem .9rem; font-weight:700; cursor:pointer; font-size:.85rem; white-space:nowrap; }
 .ai-panel .ep-bar button:disabled { opacity:.45; cursor:not-allowed; }
-.ai-panel .ep-bar #ep-attach-btn, .ai-panel .ep-bar #ep-mic-btn { background:var(--bg3); color:var(--text-dim); border:1px solid var(--border); font-weight:400; padding:.4rem .6rem; }
-.ai-panel .ep-bar #ep-attach-btn:hover, .ai-panel .ep-bar #ep-mic-btn:hover { border-color:var(--neon); color:var(--neon); }
+.ai-panel .ep-bar #ep-attach-btn, .ai-panel .ep-bar #ep-mic-btn, .ai-panel .ep-bar #ep-bgjob-btn { background:var(--bg3); color:var(--text-dim); border:1px solid var(--border); font-weight:400; padding:.4rem .6rem; }
+.ai-panel .ep-bar #ep-attach-btn:hover, .ai-panel .ep-bar #ep-mic-btn:hover, .ai-panel .ep-bar #ep-bgjob-btn:hover { border-color:var(--neon); color:var(--neon); }
 .ai-panel .ai-attach-list { padding:0 0 .4rem; }
 .ai-panel.drag-over { outline:2px dashed var(--neon); outline-offset:-3px; }
 </style>
@@ -298,6 +303,7 @@
 <script src="/static/js/file-dropzone.js"></script>
 <script src="/static/js/chunked-upload.js"></script>
 <script src="/static/js/progress-bar.js"></script>
+<script src="/static/js/audio-jobs.js"></script>
 <script src="/static/js/ai-attachments.js"></script>
 <script>
 let _activeKind = 'all';
@@ -341,7 +347,7 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
 
   const EP_SYSTEM = "You are a world-building assistant. Answer questions about the entity provided. Be concise and in-world.";
   let epHistory = [];
-  window.epAttachments = ndAiAttachments(document.getElementById('ep-attach-list'), () => {
+  window.epAttachments = ndAiAttachments(document.getElementById('ep-attach-list'), document.getElementById('ep-jobs-panel'), () => {
     document.getElementById('ep-send').disabled = epAttachments.hasPending();
   });
 

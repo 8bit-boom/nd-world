@@ -798,6 +798,17 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
   100% { transform: translateX(333%); }
 }
 .nd-progress-label { font-size: .72rem; color: var(--text-dim); margin-top: .25rem; }
+
+/* Durable background audio-job panel — see static/js/audio-jobs.js. */
+.nd-jobs-panel { margin-top: .5rem; border: 1px solid var(--border); border-radius: 4px; padding: .5rem .65rem; background: var(--bg2); }
+.nd-jobs-title { font-size: .72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: .08em; margin-bottom: .35rem; }
+.nd-job-row { display: flex; align-items: center; gap: .5rem; font-size: .8rem; padding: .3rem 0; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.nd-job-row:first-of-type { border-top: none; }
+.nd-job-row--error .nd-job-label { color: #e07; }
+.nd-job-label { flex: 1; min-width: 140px; }
+.nd-job-error { font-size: .72rem; color: #e07; flex-basis: 100%; }
+.nd-job-use-btn { background: var(--bg3); border: 1px solid var(--neon); color: var(--neon); padding: .2rem .6rem; font-size: .75rem; border-radius: 3px; cursor: pointer; font-family: var(--font); }
+.nd-job-use-btn:hover { background: var(--neon); color: #000; }
 .rules-page { max-width: 860px; margin: 0 auto; padding: 1.5rem 1rem; }
 .rules-header { margin-bottom: 1.5rem; border-bottom: 1px solid var(--border); padding-bottom: .8rem; }
 .rules-body { line-height: 1.75; }

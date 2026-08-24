@@ -61,6 +61,7 @@ from .routers.nav_menus_admin import router as nav_menus_admin_router
 from . import gallery as _gallery_module
 from . import mcp_server
 from . import ai as _ai_module
+from . import audio_jobs as _audio_jobs
 from . import auth as _auth
 from .constants import KINDS, SUBTYPES, KIND_ICONS
 
@@ -143,6 +144,7 @@ def startup():
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     _seed_bundled_maps()
     _refresh_settings_overrides()
+    _audio_jobs.sweep_interrupted_jobs()
 
 
 
@@ -215,11 +217,18 @@ def _is_player_safe(method: str, path: str) -> bool:
         "/api/ai/attachments/upload",
         "/api/ai/attachments/upload/chunk",
         "/api/ai/attachments/upload/complete",
+        "/api/ai/attachments/audio-jobs",
+        "/api/ai/attachments/audio-jobs/chunk",
+        "/api/ai/attachments/audio-jobs/complete",
     ):
         # Same shape as /api/ai/stream above — a player attaching a file to
         # a chat message needs this reachable too (including a large one
-        # split into parts by ndChunkedUpload), and the handler applies the
-        # identical players_can_ask_ai gate before accepting anything.
+        # split into parts by ndChunkedUpload, or one processed as a durable
+        # background job instead of a blocking request), and the handler
+        # applies the identical players_can_ask_ai gate before accepting
+        # anything.
+        return True
+    if re.match(r"^/api/ai/attachments/audio-jobs/\d+$", path):
         return True
     if re.match(r"^/api/session-log/\d+/recap$", path):
         return True

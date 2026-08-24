@@ -1,7 +1,9 @@
 import json
 import os
 import tempfile
+import uuid
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -9,11 +11,12 @@ from sqlalchemy.orm import Session
 
 from .. import auth
 from .. import ai as _ai_module
+from .. import audio_jobs as _audio_jobs
 from ..database import get_db
 from ..deps import get_world_ctx, paginate
-from ..models import CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, World
+from ..models import AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, World
 from ..templating import templates
-from ..uploads import read_upload_bounded, reassemble_upload_chunks, save_upload_chunk
+from ..uploads import copy_upload_bounded, read_upload_bounded, reassemble_upload_chunks, save_upload_chunk
 
 router = APIRouter()
 
@@ -34,6 +37,15 @@ MAX_LIVE_CHUNK_BYTES = int(os.environ.get("MAX_LIVE_CHUNK_BYTES", str(25 * 1024 
 
 def _session_audio_chunks_root() -> Path:
     return Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads" / "session_audio" / "_chunks"
+
+
+def _session_audio_jobs_dir() -> Path:
+    """Where a background job's uploaded audio waits to be transcribed —
+    separate from _session_audio_chunks_root (that's just staging for
+    reassembly) since a job's file must outlive the request that uploaded
+    it: the background task in app/audio_jobs.py reads it after the
+    response has already been sent, and deletes it itself once done."""
+    return Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads" / "session_audio" / "_jobs"
 
 
 async def _transcribe_chunk(file: UploadFile, max_bytes: int = MAX_LIVE_CHUNK_BYTES) -> str:
@@ -331,6 +343,129 @@ async def api_summarize_from_audio_complete(
         )
     recap = await _ai_module.summarize_transcript(transcript)
     return {"transcript": transcript, "recap": recap}
+
+
+# ── Durable background transcription jobs — an opt-in alternative to the
+# blocking routes above for a recording long enough that waiting on one
+# HTTP request (up to WHISPER_TIMEOUT_SECONDS) isn't practical: the actual
+# work runs in the server process via app/audio_jobs.py, independent of any
+# one connection, so closing the tab that started it doesn't stop it. Same
+# upload/reassembly plumbing as the direct routes above, just handed off to
+# a background task instead of transcribed inline.
+
+def _current_user_id(request: Request) -> Optional[int]:
+    user = getattr(request.state, "user", None)
+    return user.id if user else None
+
+
+def _job_to_dict(job: AudioJob) -> dict:
+    return {
+        "id": job.id, "purpose": job.purpose, "filename": job.filename,
+        "status": job.status, "error": job.error,
+        "transcript": job.transcript, "recap": job.recap,
+        "game_session_id": job.game_session_id,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+    }
+
+
+@router.post("/api/sessions/ai/audio-jobs")
+async def api_audio_job_create(
+    request: Request, file: UploadFile = File(...), game_session_id: str = Form(""),
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Start a durable background transcribe+summarize job for a session
+    recording, instead of waiting on one blocking request. Returns the job
+    id immediately — poll GET .../audio-jobs/{id} or check the recent-jobs
+    list to see it progress and finish."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in _SESSION_AUDIO_EXTS:
+        raise HTTPException(400, f"Unsupported audio type {ext!r} — allowed: {', '.join(sorted(_SESSION_AUDIO_EXTS))}")
+    jobs_dir = _session_audio_jobs_dir()
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    dest = jobs_dir / f"{uuid.uuid4().hex}{ext}"
+    copy_upload_bounded(file, dest, max_bytes=MAX_SESSION_AUDIO_BYTES)
+    gs_id = int(game_session_id) if game_session_id.strip().isdigit() else None
+    job_id = _audio_jobs.create_job(
+        world_id=world.id, purpose="session_recap", filename=file.filename or "",
+        audio_path=dest, delete_after=True, game_session_id=gs_id,
+        created_by_user_id=_current_user_id(request),
+    )
+    return {"job_id": job_id}
+
+
+@router.post("/api/sessions/ai/audio-jobs/chunk")
+async def api_audio_job_chunk(
+    file: UploadFile = File(...), upload_id: str = Form(...), chunk_index: int = Form(...),
+):
+    """Same chunk-receiving route as .../summarize-from-audio/chunk (a
+    background job's upload can be just as large) — the only difference is
+    what .../audio-jobs/complete does with the reassembled file afterward."""
+    save_upload_chunk(_session_audio_chunks_root(), upload_id, chunk_index, file, max_bytes=MAX_SESSION_AUDIO_BYTES)
+    return {"ok": True}
+
+
+@router.post("/api/sessions/ai/audio-jobs/complete")
+async def api_audio_job_complete(
+    request: Request, upload_id: str = Form(...), filename: str = Form(...),
+    total_chunks: int = Form(...), game_session_id: str = Form(""),
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Reassemble the parts uploaded via .../audio-jobs/chunk and start a
+    background job — unlike .../summarize-from-audio/complete, this returns
+    the job id immediately rather than blocking on transcription."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    ext = Path(filename or "").suffix.lower()
+    if ext not in _SESSION_AUDIO_EXTS:
+        raise HTTPException(400, f"Unsupported audio type {ext!r} — allowed: {', '.join(sorted(_SESSION_AUDIO_EXTS))}")
+    jobs_dir = _session_audio_jobs_dir()
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    dest = jobs_dir / f"{uuid.uuid4().hex}{ext}"
+    reassemble_upload_chunks(_session_audio_chunks_root(), upload_id, total_chunks, dest, max_bytes=MAX_SESSION_AUDIO_BYTES)
+    gs_id = int(game_session_id) if game_session_id.strip().isdigit() else None
+    job_id = _audio_jobs.create_job(
+        world_id=world.id, purpose="session_recap", filename=filename,
+        audio_path=dest, delete_after=True, game_session_id=gs_id,
+        created_by_user_id=_current_user_id(request),
+    )
+    return {"job_id": job_id}
+
+
+@router.get("/api/sessions/ai/audio-jobs/{job_id}")
+def api_audio_job_status(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = db.query(AudioJob).filter(
+        AudioJob.id == job_id, AudioJob.world_id == world.id, AudioJob.purpose == "session_recap",
+    ).first()
+    if not job:
+        raise HTTPException(404)
+    return _job_to_dict(job)
+
+
+@router.get("/api/sessions/ai/audio-jobs")
+def api_audio_job_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Recent background transcription jobs for the active world — lets a
+    GM find a job again after closing the tab that started it (even from a
+    different browser), not just while it's still visible on the page that
+    kicked it off."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    jobs = (
+        db.query(AudioJob)
+        .filter(AudioJob.world_id == world.id, AudioJob.purpose == "session_recap")
+        .order_by(AudioJob.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    return [_job_to_dict(j) for j in jobs]
 
 
 # ── Live session recording: short chunks, transcribed and saved as they

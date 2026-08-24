@@ -631,6 +631,48 @@ class GameSession(Base):
     party = relationship("Party")
 
 
+class AudioJob(Base):
+    """A durable background job for transcribing (and, for
+    purpose="session_recap", also summarizing) an uploaded audio file — see
+    app/audio_jobs.py. Unlike the direct one-shot upload routes (still the
+    default — this is an opt-in "process in background" alternative), the
+    actual work runs as a background asyncio task in the server process,
+    independent of any one HTTP connection, so it survives the browser tab
+    that started it being closed; every state transition is persisted here
+    so a GM can navigate away and check back later (even from a different
+    browser) via the recent-jobs list. Does NOT survive the server process
+    itself restarting mid-job — see app/audio_jobs.py's startup sweep,
+    which marks any job still in progress at boot as failed rather than
+    leaving it stuck."""
+    __tablename__ = "audio_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    # "session_recap" (transcribe + summarize, feeds a GameSession's recap
+    # draft) or "attachment" (transcribe only — the Whisper Test tab and an
+    # AI Chat/Ask AI voice-memo attachment are mechanically identical on the
+    # backend; only what the client does with a finished job differs).
+    purpose = Column(String(32), nullable=False)
+    # Only set for purpose="session_recap" when started from an existing
+    # session's page — this whole flow is otherwise session-independent,
+    # same as the direct /api/sessions/ai/summarize-from-audio route.
+    game_session_id = Column(Integer, ForeignKey("game_sessions.id"), nullable=True, index=True)
+    filename = Column(String(256), default="")
+    # pending -> transcribing -> [summarizing ->] done, or -> error at any point.
+    status = Column(String(32), default="pending")
+    error = Column(Text, default="")
+    transcript = Column(Text, default="")
+    recap = Column(Text, default="")  # only populated for purpose="session_recap"
+    # Only populated for purpose="attachment" once done — where the
+    # uploaded audio ended up, so it can be attached to a chat message
+    # without re-uploading (same shape as /api/ai/attachments/upload's own
+    # "url" field).
+    attachment_url = Column(String(512), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Fact(Base):
     """A single, discrete piece of what-happened-in-play — unlike GameSession.summary
     (one free-text recap blob), each Fact is small enough to have its own

@@ -173,7 +173,7 @@
   overflow-y: auto;
 }
 #ai-input:focus { outline: 1px solid var(--neon); }
-#ai-attach-btn, #ai-mic-btn {
+#ai-attach-btn, #ai-mic-btn, #ai-bgjob-btn {
   background: var(--bg3);
   border: 1px solid var(--border);
   color: var(--text-dim);
@@ -183,7 +183,7 @@
   cursor: pointer;
   font-size: 1rem;
 }
-#ai-attach-btn:hover, #ai-mic-btn:hover { border-color: var(--neon); color: var(--neon); }
+#ai-attach-btn:hover, #ai-mic-btn:hover, #ai-bgjob-btn:hover { border-color: var(--neon); color: var(--neon); }
 .ai-main.drag-over { outline: 2px dashed var(--neon); outline-offset: -4px; }
 #ai-send {
   background: var(--neon);
@@ -780,6 +780,8 @@
   <div class="ai-main" id="ai-main" data-dropzone>
     <input type="file" id="ai-attach-input" multiple accept="image/*,audio/*,.txt,.md,.markdown,.pdf" style="display:none"
            onchange="chatAttachments.addFiles(this.files); this.value='';"/>
+    <input type="file" id="ai-bgjob-input" accept="audio/*" style="display:none"
+           onchange="ndStartAttachmentBackgroundJob(chatAttachments, this.files[0]); this.value='';"/>
     <div class="ai-messages" id="ai-messages">
       <div class="ai-msg ai-msg--assistant">
         <div class="ai-bubble">
@@ -793,6 +795,7 @@
 
     <div id="ai-bar"></div>
     <div class="ai-attach-list" id="ai-attach-list"></div>
+    <div id="ai-jobs-panel" class="nd-jobs-panel" style="display:none;margin:0 1.2rem"></div>
     <div style="padding:.25rem 1.2rem 0;font-size:.72rem;color:var(--text-dim);display:flex;justify-content:space-between;align-items:center">
       <span>Model: <span id="active-model-label" style="color:var(--neon)">—</span></span>
       <span id="gen-stats" style="color:var(--text-dim)"></span>
@@ -802,6 +805,8 @@
               onclick="document.getElementById('ai-attach-input').click()">📎</button>
       <button type="button" id="ai-mic-btn" title="Record a voice message — transcribed via Whisper and sent to the model as text"
               onclick="ndToggleAttachMic('ai-mic-btn', chatAttachments)">🎤</button>
+      <button type="button" id="ai-bgjob-btn" title="Process a voice memo as a background job — keeps running even if you close this tab"
+              onclick="document.getElementById('ai-bgjob-input').click()">🔒</button>
       <textarea id="ai-input" rows="2" placeholder="Ask anything… (Enter to send, Shift+Enter for new line)" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
       <button id="ai-send" onclick="sendMessage()">Send ↵</button>
     </div>
@@ -1489,8 +1494,12 @@
               style="border-color:var(--neon);color:var(--neon);padding:.38rem 1rem;white-space:nowrap">▶ Transcribe</button>
       <button class="ig-btn" id="wt-mic-btn" onclick="wtToggleMic()"
               style="padding:.38rem 1rem;white-space:nowrap">🎤 Record</button>
+      <button class="ig-btn" id="wt-bgjob-btn" onclick="wtStartBackgroundJob()"
+              title="Process the picked file as a background job — keeps running even if you close this tab"
+              style="padding:.38rem 1rem;white-space:nowrap">🔒 Process in Background</button>
     </div>
     <div id="wt-progress"></div>
+    <div id="wt-jobs-panel" class="nd-jobs-panel" style="display:none;margin-top:.6rem"></div>
     <div id="wt-result" style="margin-top:.8rem;display:none">
       <div style="font-size:.72rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem">Transcript</div>
       <pre id="wt-result-text" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem .75rem;font-size:.85rem;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;margin:0"></pre>
@@ -1513,12 +1522,13 @@
 <script src="/static/js/file-dropzone.js"></script>
 <script src="/static/js/chunked-upload.js"></script>
 <script src="/static/js/progress-bar.js"></script>
+<script src="/static/js/audio-jobs.js"></script>
 <script src="/static/js/ai-attachments.js"></script>
 <script>
 const WORLD_SYSTEM = {{ world_system | tojson }};
 let history = [];
 let activeModel = "";
-const chatAttachments = ndAiAttachments(document.getElementById('ai-attach-list'), () => {
+const chatAttachments = ndAiAttachments(document.getElementById('ai-attach-list'), document.getElementById('ai-jobs-panel'), () => {
   document.getElementById('ai-send').disabled = chatAttachments.hasPending();
 });
 let activeReader = null;
@@ -3947,6 +3957,35 @@ function wtToggleMic() {
     },
   );
   _wtMicRecorder.start().then(started => { if (started) micBtn.textContent = '⏹ Stop'; });
+}
+
+const wtJobs = ndAudioJobs(document.getElementById('wt-jobs-panel'), {
+  createUrl: '/api/ai/attachments/audio-jobs',
+  chunkUrl: '/api/ai/attachments/audio-jobs/chunk',
+  completeUrl: '/api/ai/attachments/audio-jobs/complete',
+  listUrl: '/api/ai/attachments/audio-jobs',
+  onUse: (job) => {
+    document.getElementById('wt-result').style.display = 'block';
+    document.getElementById('wt-result-text').textContent = job.transcript
+      || '(empty transcript — Whisper may be unreachable, still loading the model, or the clip has no detected speech; check Status above)';
+  },
+});
+
+async function wtStartBackgroundJob() {
+  const file = document.getElementById('wt-file').files[0];
+  if (!file) { alert('Pick an audio file first'); return; }
+  const btn = document.getElementById('wt-bgjob-btn');
+  btn.disabled = true;
+  const bar = ndProgressBar(document.getElementById('wt-progress'));
+  bar.setPercent(0, 'Uploading… 0%');
+  try {
+    await wtJobs.startJob(file, {}, (e) => ndProgressFromUpload(bar, e, 'Job started — processing in background…'));
+  } catch (e) {
+    alert('Failed to start background job: ' + e.message);
+  } finally {
+    bar.clear();
+    btn.disabled = false;
+  }
 }
 
 // ── Attach generated image to an entity ──────────────────────────────────────

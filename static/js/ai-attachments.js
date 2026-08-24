@@ -10,9 +10,30 @@
 // Neither this file nor the caller ever reads file bytes itself — upload
 // and text-extraction both happen server-side (app/routers/ai.py), this
 // only tracks upload state and renders chips.
-function ndAiAttachments(pendingListEl, onChange) {
+//
+// jobsPanelEl (optional): if given, also wires up a durable background-job
+// option (audio-jobs.js) for a voice memo long enough that waiting on one
+// blocking upload isn't practical — see startBackgroundJob below. A
+// finished job is folded into the same `pending` list as a normal
+// already-uploaded attachment, so it flows into the next message exactly
+// like one added via addFiles.
+function ndAiAttachments(pendingListEl, jobsPanelEl, onChange) {
   let pending = [];
   const ICONS = { image: "🖼", document: "📄", audio: "🎵" };
+
+  const jobs = jobsPanelEl ? ndAudioJobs(jobsPanelEl, {
+    createUrl: "/api/ai/attachments/audio-jobs",
+    chunkUrl: "/api/ai/attachments/audio-jobs/chunk",
+    completeUrl: "/api/ai/attachments/audio-jobs/complete",
+    listUrl: "/api/ai/attachments/audio-jobs",
+    onUse: (job) => {
+      pending.push({
+        name: job.filename, kind: "audio", uploading: false, error: "",
+        url: job.attachment_url, text: job.transcript,
+      });
+      render();
+    },
+  }) : null;
 
   function render() {
     pendingListEl.innerHTML = "";
@@ -67,8 +88,18 @@ function ndAiAttachments(pendingListEl, onChange) {
     }
   }
 
+  // Starts a durable background transcription job for `file` instead of
+  // uploading it inline — the job keeps running server-side even if this
+  // tab closes; a "Use this" button in jobsPanelEl folds the result into
+  // `pending` (via the onUse handler above) once it's done.
+  async function startBackgroundJob(file, onProgress) {
+    if (!jobs) throw new Error("Background jobs not configured for this attachment picker");
+    return jobs.startJob(file, {}, onProgress);
+  }
+
   return {
     addFiles,
+    startBackgroundJob,
     hasPending() { return pending.some((a) => a.uploading); },
     hasAny() { return pending.length > 0; },
     // Attachments ready to send — drops any still-uploading/errored ones —
@@ -82,6 +113,19 @@ function ndAiAttachments(pendingListEl, onChange) {
       return ready;
     },
   };
+}
+
+// Thin wrapper shared by every "Process in Background" button that targets
+// an ndAiAttachments instance — just surfaces a failure to start the job
+// (e.g. an unsupported extension) since there's no chip yet for an error
+// state to live in at this point.
+async function ndStartAttachmentBackgroundJob(attachmentsCtrl, file) {
+  if (!file) return;
+  try {
+    await attachmentsCtrl.startBackgroundJob(file);
+  } catch (err) {
+    alert("Failed to start background job: " + ((err && err.message) || "unknown error"));
+  }
 }
 
 // Renders an already-sent message's attachments (image thumbnail, or a

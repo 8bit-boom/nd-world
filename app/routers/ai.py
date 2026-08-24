@@ -12,8 +12,10 @@ from pydantic import BaseModel
 from typing import List, Optional
 from pathlib import Path as _Path
 from .. import ai as _ai
+from .. import audio_jobs as _audio_jobs
 from ..database import get_db
 from ..deps import get_world_ctx
+from ..models import AudioJob
 from ..uploads import (
     copy_upload_bounded, unique_upload_filename, reassemble_upload_chunks, save_upload_chunk,
 )
@@ -358,6 +360,148 @@ async def ai_attachment_upload_complete(
     max_bytes = _MAX_ATTACHMENT_AUDIO_BYTES if kind == "audio" else _MAX_ATTACHMENT_BYTES
     reassemble_upload_chunks(_attach_chunks_root(), upload_id, total_chunks, dest, max_bytes=max_bytes)
     return await _finish_attachment_upload(dest, ext, kind, filename)
+
+
+# ── Durable background transcription jobs — an opt-in alternative to the
+# blocking routes above for a recording long enough that waiting on one
+# request isn't practical (Whisper Test tab, or an AI Chat/Ask AI voice-memo
+# attachment — mechanically identical here, only what the client does with a
+# finished job differs). The actual work runs in the server process via
+# app/audio_jobs.py, independent of any one connection, so closing the tab
+# that started it doesn't stop it. Audio-only (unlike the upload routes
+# above, which also handle images/documents) since transcription is the
+# whole point of running this in the background.
+
+def _current_user_id(request: Request) -> Optional[int]:
+    user = getattr(request.state, "user", None)
+    return user.id if user else None
+
+
+def _job_to_dict(job: AudioJob) -> dict:
+    return {
+        "id": job.id, "purpose": job.purpose, "filename": job.filename,
+        "status": job.status, "error": job.error,
+        "transcript": job.transcript, "attachment_url": job.attachment_url,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+    }
+
+
+@router.post("/attachments/audio-jobs")
+async def ai_attachment_audio_job_create(
+    request: Request,
+    file: UploadFile = File(...),
+    db=Depends(get_db),
+    active_world: Optional[str] = Cookie(None),
+):
+    """Start a durable background transcription job instead of waiting on
+    one blocking request. Returns the job id immediately — poll GET
+    .../audio-jobs/{id} or check the recent-jobs list to see it finish."""
+    _require_ask_ai_access(request, db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    if not file or not file.filename:
+        raise HTTPException(400, "No file uploaded")
+    ext = _Path(file.filename).suffix.lower()
+    if ext not in _ATTACH_AUDIO_EXTS:
+        raise HTTPException(400, f"Unsupported audio type {ext!r} — allowed: {', '.join(sorted(_ATTACH_AUDIO_EXTS))}")
+    target_dir = _uploads_root() / _ATTACH_SUBDIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / unique_upload_filename(file.filename, ext)
+    copy_upload_bounded(file, dest, max_bytes=_MAX_ATTACHMENT_AUDIO_BYTES)
+    job_id = _audio_jobs.create_job(
+        world_id=world.id, purpose="attachment", filename=file.filename,
+        audio_path=dest, delete_after=False,
+        attachment_url=f"/uploads/{_ATTACH_SUBDIR}/{dest.name}",
+        created_by_user_id=_current_user_id(request),
+    )
+    return {"job_id": job_id}
+
+
+@router.post("/attachments/audio-jobs/chunk")
+async def ai_attachment_audio_job_chunk(
+    request: Request,
+    file: UploadFile = File(...),
+    upload_id: str = Form(...),
+    chunk_index: int = Form(...),
+    db=Depends(get_db),
+    active_world: Optional[str] = Cookie(None),
+):
+    """Same chunk-receiving route as .../upload/chunk, reused since a
+    background job's upload can be just as large."""
+    _require_ask_ai_access(request, db, active_world)
+    save_upload_chunk(_attach_chunks_root(), upload_id, chunk_index, file, max_bytes=_MAX_ATTACHMENT_AUDIO_BYTES)
+    return {"ok": True}
+
+
+@router.post("/attachments/audio-jobs/complete")
+async def ai_attachment_audio_job_complete(
+    request: Request,
+    upload_id: str = Form(...),
+    filename: str = Form(...),
+    total_chunks: int = Form(...),
+    db=Depends(get_db),
+    active_world: Optional[str] = Cookie(None),
+):
+    """Reassemble the parts uploaded via .../audio-jobs/chunk and start a
+    background job — unlike .../upload/complete, this returns the job id
+    immediately rather than blocking on transcription."""
+    _require_ask_ai_access(request, db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    if not filename:
+        raise HTTPException(400, "No filename given")
+    ext = _Path(filename).suffix.lower()
+    if ext not in _ATTACH_AUDIO_EXTS:
+        raise HTTPException(400, f"Unsupported audio type {ext!r} — allowed: {', '.join(sorted(_ATTACH_AUDIO_EXTS))}")
+    target_dir = _uploads_root() / _ATTACH_SUBDIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / unique_upload_filename(filename, ext)
+    reassemble_upload_chunks(_attach_chunks_root(), upload_id, total_chunks, dest, max_bytes=_MAX_ATTACHMENT_AUDIO_BYTES)
+    job_id = _audio_jobs.create_job(
+        world_id=world.id, purpose="attachment", filename=filename,
+        audio_path=dest, delete_after=False,
+        attachment_url=f"/uploads/{_ATTACH_SUBDIR}/{dest.name}",
+        created_by_user_id=_current_user_id(request),
+    )
+    return {"job_id": job_id}
+
+
+@router.get("/attachments/audio-jobs/{job_id}")
+def ai_attachment_audio_job_status(
+    job_id: int, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None),
+):
+    _require_ask_ai_access(request, db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = db.query(AudioJob).filter(
+        AudioJob.id == job_id, AudioJob.world_id == world.id, AudioJob.purpose == "attachment",
+    ).first()
+    if not job:
+        raise HTTPException(404)
+    return _job_to_dict(job)
+
+
+@router.get("/attachments/audio-jobs")
+def ai_attachment_audio_job_list(request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    """Recent background attachment-transcription jobs for the active
+    world — lets a GM (or an opted-in player) find a job again after
+    closing the tab that started it."""
+    _require_ask_ai_access(request, db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    jobs = (
+        db.query(AudioJob)
+        .filter(AudioJob.world_id == world.id, AudioJob.purpose == "attachment")
+        .order_by(AudioJob.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    return [_job_to_dict(j) for j in jobs]
 
 
 @router.post("/stream")

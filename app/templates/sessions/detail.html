@@ -59,10 +59,15 @@
             <input type="file" id="audio-file-input" accept=".mp3,.ogg,.oga,.wav,.m4a,.flac,.opus,.webm,.aac,audio/*" style="display:none">
           </label>
           <button type="button" id="mic-record-btn" class="ai-recap-btn" onclick="toggleMicRecording()">🎤 Record</button>
+          <label class="ai-recap-btn" style="display:inline-block;cursor:pointer" title="Process in the background instead — keeps running even if you close this tab">
+            🔒 Process in Background
+            <input type="file" id="audio-bgjob-input" accept=".mp3,.ogg,.oga,.wav,.m4a,.flac,.opus,.webm,.aac,audio/*" style="display:none">
+          </label>
           <span id="mic-record-status" style="font-size:.75rem;color:var(--text-dim)"></span>
-          <div style="font-size:.72rem;margin-top:.3rem">Transcribed via Whisper, then summarized into a recap draft below — the audio itself isn't kept (use the Audio Library separately to save a recording).</div>
+          <div style="font-size:.72rem;margin-top:.3rem">Transcribed via Whisper, then summarized into a recap draft below — the audio itself isn't kept (use the Audio Library separately to save a recording). "Process in Background" survives closing this tab; check the jobs list below to see it finish and load the result later.</div>
         </div>
         <div id="audio-recap-progress"></div>
+        <div id="audio-jobs-panel" class="nd-jobs-panel" style="display:none"></div>
 
         <div id="ai-recap-preview" style="display:none;margin-top:.6rem;background:var(--bg3);border:1px solid var(--neon);border-radius:4px;padding:.7rem">
           <div style="font-size:.78rem;color:var(--neon);margin-bottom:.4rem">AI draft — review before applying</div>
@@ -178,6 +183,7 @@
 
 <script src="/static/js/chunked-upload.js"></script>
 <script src="/static/js/progress-bar.js"></script>
+<script src="/static/js/audio-jobs.js"></script>
 <script>
 // ── AI recap assist — unconditional (works on the New Session form too,
 // where gsession doesn't exist yet, unlike the prep/loot/XP panels below) ──
@@ -276,6 +282,43 @@ async function aiSummarizeFromAudio(file) {
     micBtn.disabled = false;
   }
 }
+
+const sessionAudioJobs = ndAudioJobs(document.getElementById('audio-jobs-panel'), {
+  createUrl: '/api/sessions/ai/audio-jobs',
+  chunkUrl: '/api/sessions/ai/audio-jobs/chunk',
+  completeUrl: '/api/sessions/ai/audio-jobs/complete',
+  listUrl: '/api/sessions/ai/audio-jobs',
+  onUse: (job) => {
+    _aiRecapDraft = job.recap || '';
+    document.getElementById('ai-recap-preview-text').textContent = _aiRecapDraft || '(empty recap)';
+    document.getElementById('ai-recap-preview').style.display = 'block';
+    if (job.transcript) {
+      document.getElementById('ai-recap-transcript-text').textContent = job.transcript;
+      document.getElementById('ai-recap-transcript-wrap').style.display = 'block';
+    }
+  },
+});
+
+document.getElementById('audio-bgjob-input').addEventListener('change', async function () {
+  const file = this.files[0];
+  this.value = '';
+  if (!file) return;
+  const status = document.getElementById('ai-recap-status');
+  const bar = ndProgressBar(document.getElementById('audio-recap-progress'));
+  bar.setPercent(0, 'Uploading… 0%');
+  try {
+    await sessionAudioJobs.startJob(
+      file,
+      { game_session_id: '{{ gsession.id if gsession else "" }}' },
+      (e) => ndProgressFromUpload(bar, e, 'Job started — processing in background…'),
+    );
+    status.textContent = 'Background job started — see the jobs list below.';
+  } catch (e) {
+    status.textContent = 'Failed to start background job: ' + e.message;
+  } finally {
+    bar.clear();
+  }
+});
 
 document.getElementById('audio-file-input').addEventListener('change', function () {
   if (this.files[0]) aiSummarizeFromAudio(this.files[0]);
