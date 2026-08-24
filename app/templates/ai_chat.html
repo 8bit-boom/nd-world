@@ -1119,6 +1119,15 @@
     <!-- ── Prompts + Generate + Results ── -->
     <div class="ig-main">
 
+      <!-- Illustrate an Entity -->
+      <div class="ig-field">
+        <label class="ig-label">Illustrate an entity <small>(builds the prompt from its own write-up)</small></label>
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <span id="ig-entity-picked-label" style="flex:1;min-width:140px;color:var(--text-dim);font-size:.82rem">No entity selected</span>
+          <button class="ig-btn" type="button" onclick="igPickEntityForPortrait()">🎭 Pick entity…</button>
+        </div>
+      </div>
+
       <!-- Concept -->
       <div class="ig-field">
         <label class="ig-label">Concept / subject</label>
@@ -1556,6 +1565,7 @@
 <script src="/static/js/progress-bar.js"></script>
 <script src="/static/js/audio-jobs.js"></script>
 <script src="/static/js/ai-attachments.js"></script>
+<script src="/static/js/entity-picker.js"></script>
 <script>
 const WORLD_SYSTEM = {{ world_system | tojson }};
 const ENTITY_KINDS = {{ kinds | tojson }};
@@ -2826,6 +2836,17 @@ async function igGenerate() {
       actions.appendChild(i2iBtn);
       actions.appendChild(attachBtn);
       actions.appendChild(starBtn);
+      // Only when this generation came from "🎭 Pick entity…" above — bound
+      // to that entity at generation time, not whatever's picked now, so a
+      // later pick doesn't retarget an older result card's button.
+      if (_igPortraitEntityId) {
+        const portraitEntityId = _igPortraitEntityId;
+        const portraitEntityName = _igPortraitEntityName;
+        const portraitBtn = document.createElement('button');
+        portraitBtn.textContent = '🖼 Set as ' + portraitEntityName + '\'s portrait';
+        portraitBtn.onclick = () => igSetAsPortrait(url, portraitEntityId, portraitEntityName, portraitBtn);
+        actions.appendChild(portraitBtn);
+      }
       card.appendChild(img);
       card.appendChild(actions);
       grid.appendChild(card);
@@ -4291,35 +4312,138 @@ async function wtStartBackgroundJob() {
 
 // ── Attach generated image to an entity ──────────────────────────────────────
 
+// Shared entity-picker overlay — a small modal (search + folder tree via
+// static/js/entity-picker.js) over GET /api/entities/picker, used by both
+// "Attach…" below and "🎭 Pick entity…" above. Simpler than a prompt()-based
+// name search (the previous implementation here, which also called a
+// backend route — /api/entities/search — that never actually existed) and
+// consistent with the Session NPC picker's tree+search UX.
+function igOpenEntityPicker(onPick, title) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;display:flex;align-items:center;justify-content:center;padding:1rem';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;max-width:420px;width:100%;max-height:80vh;display:flex;flex-direction:column;gap:.5rem';
+
+  const heading = document.createElement('div');
+  heading.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:.5rem';
+  const headingLabel = document.createElement('span');
+  headingLabel.style.cssText = 'color:var(--neon);font-size:.9rem;font-weight:700';
+  headingLabel.textContent = title || 'Pick an entity';
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'ig-btn';
+  closeBtn.style.cssText = 'padding:.1rem .5rem;font-size:.8rem';
+  closeBtn.textContent = '✕';
+  closeBtn.onclick = () => overlay.remove();
+  heading.append(headingLabel, closeBtn);
+
+  const search = document.createElement('input');
+  search.type = 'text';
+  search.placeholder = 'Search entities…';
+  search.style.cssText = 'width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px;box-sizing:border-box';
+
+  const tree = document.createElement('div');
+  tree.style.cssText = 'overflow-y:auto;flex:1;min-height:120px;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.5rem';
+  tree.innerHTML = '<div style="color:var(--text-dim);font-size:.8rem">⏳ Loading…</div>';
+
+  box.append(heading, search, tree);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+
+  fetch('/api/entities/picker').then(r => r.json()).then((d) => {
+    ndEntityPicker(tree, search, {
+      entities: d.entities || [], mode: 'single',
+      emptyText: 'No entities in this world yet.',
+      onPick: (entity) => { overlay.remove(); onPick(entity); },
+    });
+  }).catch(() => {
+    tree.innerHTML = '<div style="color:#c44;font-size:.8rem">✗ Could not load entities</div>';
+  });
+}
+
 async function igAttachToEntity(url) {
   const imgUrl = url || (_igLastUrls[0] || '');
   if (!imgUrl) return;
-  const name = prompt('Search for entity by name:');
-  if (!name || !name.trim()) return;
-  try {
-    const r = await fetch(`/api/entities/search?q=${encodeURIComponent(name.trim())}&limit=8`);
-    const d = await r.json();
-    const entities = d.entities || [];
-    if (!entities.length) { alert('No matching entity found.'); return; }
-    let entity;
-    if (entities.length === 1) {
-      entity = entities[0];
-    } else {
-      const choices = entities.map((e, i) => `${i + 1}. ${e.name} (${e.kind})`).join('\n');
-      const pick = prompt(`Multiple matches:\n${choices}\n\nEnter number (1-${entities.length}):`);
-      const idx = parseInt(pick) - 1;
-      if (isNaN(idx) || idx < 0 || idx >= entities.length) { alert('Invalid choice.'); return; }
-      entity = entities[idx];
+  igOpenEntityPicker(async (entity) => {
+    try {
+      const r = await fetch(`/api/entity/${entity.id}/image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_url: imgUrl }),
+      });
+      if (!r.ok) throw new Error((await r.json()).detail || `HTTP ${r.status}`);
+      alert(`✓ Image attached to "${entity.name}"`);
+    } catch (e) {
+      alert('Could not attach image: ' + e.message);
     }
-    const patchR = await fetch(`/api/entity/${entity.id}/image`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_url: imgUrl }),
+  }, 'Attach image to entity');
+}
+
+// ── Illustrate an Entity ─────────────────────────────────────────────────────
+// Picks an entity, asks the chat model to turn its own write-up (summary,
+// body, custom fields — the structured "appearance" fields a template adds,
+// like eyes/hair/height, nobody currently feeds an image model) into a
+// prompt, then remembers which entity this generation is "for" so a result
+// card can offer a direct "Set as portrait" action afterward.
+let _igPortraitEntityId = null;
+let _igPortraitEntityName = '';
+
+function igPickEntityForPortrait() {
+  igOpenEntityPicker(async (entity) => {
+    const label = document.getElementById('ig-entity-picked-label');
+    label.textContent = '✨ Building prompt for ' + entity.name + '…';
+    try {
+      const preview = await fetch('/api/entity/' + entity.id + '/preview').then(r => r.json());
+      const fields = [];
+      if (preview.subtype) fields.push('Subtype: ' + preview.subtype);
+      if (preview.summary) fields.push('Summary: ' + preview.summary);
+      if (preview.custom_fields_json) {
+        try {
+          const cf = JSON.parse(preview.custom_fields_json);
+          for (const [k, v] of Object.entries(cf)) {
+            if (v !== null && v !== undefined && String(v).trim()) fields.push(k + ': ' + v);
+          }
+        } catch (e) { /* malformed custom_fields_json — skip, not fatal */ }
+      }
+      if (preview.body) fields.push('Description:\n' + preview.body);
+      const sourceText = `Name: ${preview.name}\nKind: ${preview.kind}\n` + fields.join('\n');
+
+      const system = 'You are an image prompt writer for a cyberpunk-fantasy TTRPG. Given a world entity\'s write-up, write ONE detailed image generation prompt depicting it — comma-separated tags and descriptive phrases, about 40-70 words. Output only the prompt, no explanation, no preamble, no quotes.';
+      const promptRes = await fetch('/api/ai/chat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', content: sourceText.slice(0, 6000) }], system, model: activeModel, surface: 'image' }),
+      });
+      if (!promptRes.ok) throw new Error(`Server error ${promptRes.status}`);
+      const promptData = await promptRes.json();
+      const imgPrompt = (promptData.result || '').trim();
+      if (!imgPrompt || imgPrompt.startsWith('[AI ')) throw new Error(imgPrompt || 'Could not write a prompt');
+
+      document.getElementById('ig-prompt').value = imgPrompt;
+      _igPortraitEntityId = entity.id;
+      _igPortraitEntityName = entity.name;
+      label.textContent = '🎭 Illustrating: ' + entity.name;
+    } catch (e) {
+      label.textContent = '✗ Failed: ' + (e.message || e);
+    }
+  }, 'Illustrate which entity?');
+}
+
+async function igSetAsPortrait(url, entityId, entityName, btn) {
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '⏳';
+  try {
+    const r = await fetch(`/api/entity/${entityId}/image`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_url: url }),
     });
-    if (patchR.ok) alert(`✓ Image attached to "${entity.name}"`);
-    else alert('Could not attach image.');
+    if (!r.ok) throw new Error((await r.json()).detail || `HTTP ${r.status}`);
+    btn.textContent = '✓ Set as portrait';
   } catch (e) {
-    alert('Error: ' + e.message);
+    alert('Could not set portrait: ' + e.message);
+    btn.textContent = orig;
+    btn.disabled = false;
   }
 }
 </script>

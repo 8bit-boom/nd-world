@@ -33,6 +33,23 @@ def test_preview_returns_entity_data_for_gm(client, seed):
     assert data["tags"] == ["rank1", "mage"]
 
 
+def test_preview_includes_raw_body_and_custom_fields_for_portrait_pipeline(client, seed):
+    """Image Studio's "Illustrate an Entity" prompt builder needs the raw
+    body (not body_html, which the hover popup itself uses) and
+    custom_fields_json — additive fields on the same response, not a
+    separate endpoint."""
+    import json as _json
+    login(client, seed.gm.email, GM_PASSWORD)
+    eid = _make_entity(
+        seed.world_a.id, body="# History\nBorn in the Neon District.",
+        custom_fields_json=_json.dumps({"Eyes": "Cybernetic red", "Height": "6'2\""}),
+    )
+    r = client.get(f"/api/entity/{eid}/preview")
+    data = r.json()
+    assert data["body"] == "# History\nBorn in the Neon District."
+    assert _json.loads(data["custom_fields_json"]) == {"Eyes": "Cybernetic red", "Height": "6'2\""}
+
+
 def test_preview_404s_for_nonexistent_entity(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     assert client.get("/api/entity/999999/preview").status_code == 404

@@ -3185,7 +3185,9 @@ def entity_preview(entity_id: int, request: Request, db: Session = Depends(get_d
     """Hover-preview popup content (see base.html's dragstart-adjacent
     mouseover handler) — same access rule as the full detail page via
     _entity_view_gate, just returning a small JSON summary instead of the
-    whole rendered page."""
+    whole rendered page. Also doubles as the source data for Image Studio's
+    "Illustrate an Entity" prompt builder (raw body + custom_fields_json,
+    not just the rendered/HTML summary the hover popup itself uses)."""
     entity = _entity_view_gate(db, request, entity_id)
     ent_world = db.get(World, entity.world_id) if entity.world_id else None
     return {
@@ -3198,7 +3200,63 @@ def entity_preview(entity_id: int, request: Request, db: Session = Depends(get_d
         "image_url": entity.image_url,
         "tags": [t.strip() for t in (entity.tags or "").split(",") if t.strip()],
         "body_html": render_md(entity.body) if entity.body else "",
+        "body": entity.body or "",
+        "custom_fields_json": entity.custom_fields_json or "{}",
     }
+
+
+@app.get("/api/entities/picker")
+def api_entities_picker(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Lightweight {id, name, kind, folder} listing for entity-picker UIs
+    (folder-tree + search — see static/js/entity-picker.js). GM-only,
+    matching every current caller's own access level (Image Studio's entity
+    picker and "set as portrait" attach flow); unlike the Session NPC
+    picker's narrower character/creature filter, this covers every kind
+    since an illustration is just as reasonable for a location or item."""
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
+    world = get_active_world(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    entities = (
+        db.query(Entity)
+        .filter(Entity.world_id == world.id)
+        .order_by(Entity.kind, Entity.folder, Entity.name)
+        .all()
+    )
+    return {"entities": [{"id": e.id, "name": e.name, "kind": e.kind, "folder": e.folder or ""} for e in entities]}
+
+
+class SetEntityImageBody(BaseModel):
+    image_url: str
+
+
+@app.post("/api/entity/{entity_id}/image")
+def api_entity_set_image(
+    entity_id: int, body: SetEntityImageBody, request: Request,
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Sets an entity's portrait directly from a URL — Image Studio's
+    "Set as portrait"/"Attach" actions on a generated image, without
+    round-tripping through the full entity edit form (which requires every
+    other field). GM-only, world-scoped like every other entity-mutating
+    route (see delete() above for the same ownership-check shape)."""
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
+    entity = db.get(Entity, entity_id)
+    if not entity:
+        raise HTTPException(404)
+    world = get_active_world(request, db, active_world)
+    if not world or entity.world_id != world.id:
+        raise HTTPException(404)
+    url = body.image_url.strip()
+    if not url:
+        raise HTTPException(400, "image_url is required")
+    entity.image_url = url
+    db.commit()
+    return {"ok": True}
 
 
 @app.get("/api/hover-preview/config")
