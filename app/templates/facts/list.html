@@ -138,7 +138,7 @@ document.getElementById('draft-add-btn').addEventListener('click', () => {
   renderDraft();
 });
 
-document.getElementById('parse-btn').addEventListener('click', async () => {
+async function parseDraftFromRecap() {
   const text = document.getElementById('recap-input').value.trim();
   if (!text) return;
   const btn = document.getElementById('parse-btn');
@@ -160,7 +160,30 @@ document.getElementById('parse-btn').addEventListener('click', async () => {
   } finally {
     btn.disabled = false;
   }
-});
+}
+
+document.getElementById('parse-btn').addEventListener('click', parseDraftFromRecap);
+
+// If we arrived here via a Background Jobs "📋 Extract facts" button, the
+// transcript (and which Session it belongs to, if known) is waiting in
+// sessionStorage — pre-fill and auto-run the same parse flow above instead
+// of making the GM copy-paste a possibly-hours-long transcript in by hand.
+(function applyFactsHandoff() {
+  const raw = sessionStorage.getItem('nd_facts_handoff');
+  if (!raw) return;
+  sessionStorage.removeItem('nd_facts_handoff');
+  try {
+    const handoff = JSON.parse(raw);
+    if (handoff.text) document.getElementById('recap-input').value = handoff.text;
+    if (handoff.game_session_id) {
+      const sel = document.getElementById('recap-session');
+      if ([...sel.options].some((o) => o.value === String(handoff.game_session_id))) {
+        sel.value = String(handoff.game_session_id);
+      }
+    }
+    if (handoff.text) parseDraftFromRecap();
+  } catch (e) { /* malformed handoff — just leave the form empty */ }
+})();
 
 document.getElementById('draft-save-btn').addEventListener('click', async () => {
   const clean = draftFacts.map(f => ({ content: (f.content || '').trim(), visible_to_players: !!f.visible_to_players })).filter(f => f.content);

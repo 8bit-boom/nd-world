@@ -151,6 +151,19 @@ function bgRenderJob(job) {
 
     retryWrap.append(sel, retryBtn);
     actions.appendChild(retryWrap);
+
+    const factsBtn = document.createElement('button');
+    factsBtn.type = 'button';
+    factsBtn.className = 'bg-job-btn';
+    factsBtn.textContent = '📋 Extract facts';
+    factsBtn.title = 'Turn this transcript into draft Facts on the Facts page';
+    factsBtn.onclick = () => {
+      sessionStorage.setItem('nd_facts_handoff', JSON.stringify({
+        text: job.transcript, game_session_id: job.game_session_id || '',
+      }));
+      window.location.href = '/facts';
+    };
+    actions.appendChild(factsBtn);
   }
   if (actions.children.length) card.appendChild(actions);
 
