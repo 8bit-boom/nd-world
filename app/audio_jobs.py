@@ -10,7 +10,7 @@ from typing import Optional
 
 from . import ai as _ai_module
 from .database import SessionLocal
-from .models import AudioJob
+from .models import AudioJob, World
 
 _log = logging.getLogger("nd.audio_jobs")
 
@@ -54,13 +54,22 @@ def create_job(
     finally:
         db.close()
 
-    task = asyncio.create_task(_run_job(job_id, audio_path, purpose, delete_after, model))
+    task = asyncio.create_task(_run_job(job_id, audio_path, purpose, delete_after, model, world_id))
     _running_tasks[job_id] = task
     task.add_done_callback(lambda t: _running_tasks.pop(job_id, None))
     return job_id
 
 
-async def _run_job(job_id: int, audio_path: Path, purpose: str, delete_after: bool, model: str = "") -> None:
+def _glossary_for_world(world_id: int) -> str:
+    db = SessionLocal()
+    try:
+        w = db.get(World, world_id)
+        return (w.whisper_glossary or "").strip() if w else ""
+    finally:
+        db.close()
+
+
+async def _run_job(job_id: int, audio_path: Path, purpose: str, delete_after: bool, model: str = "", world_id: Optional[int] = None) -> None:
     def _set(**fields):
         db = SessionLocal()
         try:
@@ -75,12 +84,16 @@ async def _run_job(job_id: int, audio_path: Path, purpose: str, delete_after: bo
 
     try:
         _set(status="transcribing")
-        transcript = await _ai_module.transcribe_audio(audio_path)
+        glossary = _glossary_for_world(world_id) if world_id else ""
+        try:
+            transcript = await _ai_module.transcribe_audio(audio_path, glossary=glossary)
+        except _ai_module.WhisperError as exc:
+            _set(status="error", error=str(exc))
+            return
         if not transcript:
             _set(status="error", error=(
-                "Could not transcribe this audio — check that Whisper is configured and "
-                "reachable (see the AI page's \U0001f399 Whisper tab) and that the clip "
-                "actually has speech in it."
+                "Whisper transcribed this clip successfully but found no speech in it "
+                "— check the recording actually captured audio."
             ))
             return
         _set(transcript=transcript)

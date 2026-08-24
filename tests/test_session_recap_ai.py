@@ -116,7 +116,7 @@ def _upload_audio(client, filename="audio.wav", data=b"fake-audio-bytes", conten
 def test_summarize_from_audio_transcribes_and_summarizes(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_transcribe(path):
+    async def fake_transcribe(path, glossary=""):
         captured["path_exists_during_call"] = path.is_file()
         return "the party met elena at the bazaar"
     async def fake_summarize(transcript, model=""):
@@ -139,7 +139,7 @@ def test_summarize_from_audio_is_session_independent(client, seed, monkeypatch):
     """Works with no session_id in the path at all — usable on the New
     Session form before anything has been saved, like expand-notes/
     condense-recap above."""
-    async def fake_transcribe(path):
+    async def fake_transcribe(path, glossary=""):
         return "some transcript"
     async def fake_summarize(transcript, model=""):
         return "A recap."
@@ -154,7 +154,7 @@ def test_summarize_from_audio_is_session_independent(client, seed, monkeypatch):
 def test_summarize_from_audio_does_not_persist_the_file(client, seed, monkeypatch, tmp_path):
     seen_paths = []
 
-    async def fake_transcribe(path):
+    async def fake_transcribe(path, glossary=""):
         seen_paths.append(path)
         return "transcript"
     async def fake_summarize(t, model=""):
@@ -176,13 +176,27 @@ def test_summarize_from_audio_rejects_unsupported_extension(client, seed):
 
 
 def test_summarize_from_audio_empty_transcript_rejected(client, seed, monkeypatch):
-    async def fake_transcribe(path):
+    async def fake_transcribe(path, glossary=""):
         return ""
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
 
     _login_gm_in(client, seed, seed.world_a)
     r = _upload_audio(client)
     assert r.status_code == 400
+
+
+def test_summarize_from_audio_real_failure_surfaces_specific_detail(client, seed, monkeypatch):
+    """A real Whisper failure (backend unreachable, timed out, etc — not a
+    silent clip) must surface its actual reason, not the generic message
+    used for a genuinely empty transcript."""
+    async def failing_transcribe(path, glossary=""):
+        raise ai_module.WhisperError("Could not reach Whisper: ConnectError: refused")
+    monkeypatch.setattr(ai_module, "transcribe_audio", failing_transcribe)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = _upload_audio(client)
+    assert r.status_code == 400
+    assert "refused" in r.json()["detail"]
 
 
 def test_summarize_from_audio_oversized_file_rejected(client, seed, monkeypatch):
@@ -257,7 +271,7 @@ def test_chunk_complete_rejects_when_parts_missing(client, seed):
 
 
 def test_chunked_upload_reassembles_and_transcribes(client, seed, monkeypatch):
-    async def fake_transcribe(path):
+    async def fake_transcribe(path, glossary=""):
         assert path.read_bytes() == _PART_A + _PART_B
         return "reassembled session transcript"
     async def fake_summarize(transcript, model=""):
@@ -285,7 +299,7 @@ def test_chunked_upload_reassembles_and_transcribes(client, seed, monkeypatch):
 
 
 def test_chunked_upload_empty_transcript_rejected(client, seed, monkeypatch):
-    async def fake_transcribe(path):
+    async def fake_transcribe(path, glossary=""):
         return ""
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
 
@@ -323,7 +337,7 @@ def _append_chunk(client, session_id, filename="chunk1.webm", data=b"chunk-bytes
 def test_live_transcript_append_accumulates_across_chunks(client, seed, monkeypatch):
     session_id = _make_session(seed.world_a)
     texts = iter(["The party entered the tavern.", "They met a stranger."])
-    async def fake_transcribe(path):
+    async def fake_transcribe(path, glossary=""):
         return next(texts)
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
 
@@ -346,7 +360,7 @@ def test_live_transcript_append_accumulates_across_chunks(client, seed, monkeypa
 
 def test_live_transcript_append_silent_chunk_appends_nothing(client, seed, monkeypatch):
     session_id = _make_session(seed.world_a)
-    async def fake_transcribe(path):
+    async def fake_transcribe(path, glossary=""):
         return ""
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
 
@@ -354,6 +368,22 @@ def test_live_transcript_append_silent_chunk_appends_nothing(client, seed, monke
     r = _append_chunk(client, session_id)
     assert r.status_code == 200
     assert r.json() == {"chunk_text": "", "transcript": ""}
+
+
+def test_live_transcript_append_real_failure_is_not_swallowed_as_silence(client, seed, monkeypatch):
+    """Before this fix, transcribe_audio returning "" for BOTH a silent
+    clip and an actual backend failure meant a broken Whisper during a live
+    session just silently appended nothing, forever, with no indication
+    anything was wrong. A real failure must now surface as an error."""
+    session_id = _make_session(seed.world_a)
+    async def failing_transcribe(path, glossary=""):
+        raise ai_module.WhisperError("Could not reach Whisper: ConnectError: refused")
+    monkeypatch.setattr(ai_module, "transcribe_audio", failing_transcribe)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = _append_chunk(client, session_id)
+    assert r.status_code == 400
+    assert "refused" in r.json()["detail"]
 
 
 def test_live_transcript_append_requires_existing_session(client, seed):

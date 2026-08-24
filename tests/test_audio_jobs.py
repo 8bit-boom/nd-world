@@ -49,7 +49,7 @@ def _poll_until_terminal(client, url, timeout=5.0):
 
 @pytest.fixture(autouse=True)
 def _fake_ai(monkeypatch):
-    async def fake_transcribe(path):
+    async def fake_transcribe(path, glossary=""):
         assert path.is_file(), f"audio should still exist while transcribing: {path}"
         return "the party met elena at the bazaar"
 
@@ -118,7 +118,7 @@ async def test_create_job_attachment_purpose_has_no_recap_and_keeps_file(client,
 
 @pytest.mark.asyncio
 async def test_job_ends_in_error_on_empty_transcript(client, seed, tmp_path, monkeypatch):
-    async def empty_transcribe(path):
+    async def empty_transcribe(path, glossary=""):
         return ""
     monkeypatch.setattr(ai_module, "transcribe_audio", empty_transcribe)
 
@@ -135,7 +135,7 @@ async def test_job_ends_in_error_on_empty_transcript(client, seed, tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_job_ends_in_error_on_exception(client, seed, tmp_path, monkeypatch):
-    async def raising_transcribe(path):
+    async def raising_transcribe(path, glossary=""):
         raise RuntimeError("boom")
     monkeypatch.setattr(ai_module, "transcribe_audio", raising_transcribe)
 
@@ -391,7 +391,7 @@ def _hanging_transcribe(monkeypatch):
     request lands."""
     release = asyncio.Event()
 
-    async def hang(path):
+    async def hang(path, glossary=""):
         await release.wait()
         return "unused"
 
@@ -642,7 +642,7 @@ async def test_resummarize_job_rejects_attachment_purpose(client, seed, tmp_path
 
 @pytest.mark.asyncio
 async def test_resummarize_job_rejects_missing_transcript(client, seed, tmp_path, monkeypatch):
-    async def empty_transcribe(path):
+    async def empty_transcribe(path, glossary=""):
         return ""
 
     monkeypatch.setattr(ai_module, "transcribe_audio", empty_transcribe)

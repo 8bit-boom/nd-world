@@ -49,7 +49,7 @@ def _session_audio_jobs_dir() -> Path:
     return Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads" / "session_audio" / "_jobs"
 
 
-async def _transcribe_chunk(file: UploadFile, max_bytes: int = MAX_LIVE_CHUNK_BYTES) -> str:
+async def _transcribe_chunk(file: UploadFile, max_bytes: int = MAX_LIVE_CHUNK_BYTES, glossary: str = "") -> str:
     """Save an uploaded audio file to a temp path just long enough to run it
     through Whisper, then delete it — shared by the one-shot
     summarize-from-audio route and the live-transcript chunk-append route
@@ -62,9 +62,13 @@ async def _transcribe_chunk(file: UploadFile, max_bytes: int = MAX_LIVE_CHUNK_BY
         tmp.write(raw)
         tmp_path = Path(tmp.name)
     try:
-        return await _ai_module.transcribe_audio(tmp_path)
+        return await _ai_module.transcribe_audio(tmp_path, glossary=glossary)
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+def _glossary_for_world(world) -> str:
+    return (world.whisper_glossary or "").strip() if world else ""
 
 
 @router.get("/sessions", response_class=HTMLResponse)
@@ -348,7 +352,10 @@ async def api_condense_recap(request: Request):
 
 
 @router.post("/api/sessions/ai/summarize-from-audio")
-async def api_summarize_from_audio(file: UploadFile = File(...)):
+async def api_summarize_from_audio(
+    request: Request, file: UploadFile = File(...),
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
     """Transcribe an uploaded (file-picked, dropped, or mic-recorded) session
     recording via Whisper, then summarize the transcript into a narrative
     recap — same one-shot "AI draft, GM reviews/applies" flow as the notes/
@@ -360,12 +367,16 @@ async def api_summarize_from_audio(file: UploadFile = File(...)):
     The audio itself only ever sits in a temp file for the duration of the
     transcription call and is never saved permanently; a GM who wants to
     keep the recording should upload it to the Audio Library separately."""
-    transcript = await _transcribe_chunk(file, max_bytes=MAX_SESSION_AUDIO_BYTES)
+    world, _ = get_world_ctx(request, db, active_world)
+    try:
+        transcript = await _transcribe_chunk(file, max_bytes=MAX_SESSION_AUDIO_BYTES, glossary=_glossary_for_world(world))
+    except _ai_module.WhisperError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if not transcript:
         raise HTTPException(
             400,
-            "Could not transcribe this audio — check that Whisper is configured and reachable "
-            "(see the AI page's 🎙 Whisper tab) and that the clip actually has speech in it.",
+            "Whisper transcribed this clip successfully but found no speech in it — "
+            "check the recording actually captured audio.",
         )
     recap = await _ai_module.summarize_transcript(transcript)
     return {"transcript": transcript, "recap": recap}
@@ -388,13 +399,16 @@ async def api_summarize_from_audio_chunk(
 
 @router.post("/api/sessions/ai/summarize-from-audio/complete")
 async def api_summarize_from_audio_complete(
+    request: Request,
     upload_id: str = Form(...), filename: str = Form(...), total_chunks: int = Form(...),
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Reassemble the parts uploaded via .../chunk and finish exactly like
     the one-shot /api/sessions/ai/summarize-from-audio — same response
     shape, just fed from disk instead of the request body directly. Like
     that route, the reassembled audio only ever sits in a temp file for the
     duration of transcription and is never saved permanently."""
+    world, _ = get_world_ctx(request, db, active_world)
     ext = Path(filename or "").suffix.lower()
     if ext not in _SESSION_AUDIO_EXTS:
         raise HTTPException(400, f"Unsupported audio type {ext!r} — allowed: {', '.join(sorted(_SESSION_AUDIO_EXTS))}")
@@ -402,14 +416,17 @@ async def api_summarize_from_audio_complete(
         tmp_path = Path(tmp.name)
     try:
         reassemble_upload_chunks(_session_audio_chunks_root(), upload_id, total_chunks, tmp_path, max_bytes=MAX_SESSION_AUDIO_BYTES)
-        transcript = await _ai_module.transcribe_audio(tmp_path)
+        try:
+            transcript = await _ai_module.transcribe_audio(tmp_path, glossary=_glossary_for_world(world))
+        except _ai_module.WhisperError as exc:
+            raise HTTPException(400, str(exc)) from exc
     finally:
         tmp_path.unlink(missing_ok=True)
     if not transcript:
         raise HTTPException(
             400,
-            "Could not transcribe this audio — check that Whisper is configured and reachable "
-            "(see the AI page's 🎙 Whisper tab) and that the clip actually has speech in it.",
+            "Whisper transcribed this clip successfully but found no speech in it — "
+            "check the recording actually captured audio.",
         )
     recap = await _ai_module.summarize_transcript(transcript)
     return {"transcript": transcript, "recap": recap}
@@ -554,7 +571,11 @@ async def api_live_transcript_append(session_id: int, file: UploadFile = File(..
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
-    chunk_text = (await _transcribe_chunk(file)).strip()
+    world = db.get(World, gs.world_id)
+    try:
+        chunk_text = (await _transcribe_chunk(file, glossary=_glossary_for_world(world))).strip()
+    except _ai_module.WhisperError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if chunk_text:
         gs.live_transcript = (gs.live_transcript or "") + (" " if gs.live_transcript else "") + chunk_text
         db.commit()

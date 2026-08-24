@@ -456,8 +456,8 @@ async function liveProcessQueue() {
         const fd = new FormData();
         fd.append('file', file, file.name);
         const res = await fetch(`/api/sessions/${SESSION_ID}/live-transcript/append`, { method: 'POST', body: fd });
-        if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
         liveSetTranscriptDisplay(data.transcript);
         uploaded = true;
       } catch (e) {

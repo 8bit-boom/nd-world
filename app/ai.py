@@ -789,30 +789,57 @@ async def whisper_status() -> dict:
         return {"ok": False, "reason": str(e), "url": url}
 
 
-async def transcribe_audio(path: Path) -> str:
+class WhisperError(Exception):
+    """Raised by transcribe_audio when the request to Whisper itself failed
+    (not configured, unreachable, timed out, or returned a non-200/
+    unreadable response) — distinct from a successful transcription that
+    just happens to be empty (a genuinely silent clip), which is NOT an
+    error and returns "" normally. Callers that need real detail for the
+    GM (audio jobs, session recap routes) catch this and surface str(exc);
+    callers where a failed transcription should just quietly leave an
+    attachment without transcript text (_finish_attachment_upload) catch
+    and swallow it instead."""
+
+
+async def transcribe_audio(path: Path, glossary: str = "") -> str:
     """POST an audio file to whisper.cpp's /inference endpoint and return the
-    transcript, or "" if Whisper isn't configured or the request fails for
-    any reason (network, model still loading, unreadable audio, ...) — a
-    failed transcription should never block the rest of the attachment
-    upload, just mean this one attachment stays without transcript text."""
+    transcript ("" for a successfully-transcribed silent clip). Raises
+    WhisperError — with the actual reason, not a generic message — if the
+    request to Whisper itself failed.
+
+    `glossary` (a world's whisper_glossary — campaign NPC/place names and
+    invented terms) is passed through as whisper.cpp's "prompt" field, which
+    biases decoding toward those spellings/vocabulary without being
+    transcribed itself (this is whisper_full's initial_prompt, not a chat
+    prompt) — blank by default, so most callers are unaffected."""
     url = effective_whisper_url()
     if not url:
-        return ""
+        raise WhisperError("Whisper isn't configured (no Whisper URL set) — see the AI page's 🎙 Whisper tab.")
+    data = {"response_format": "json"}
+    if glossary.strip():
+        data["prompt"] = glossary.strip()
     try:
         async with _httpx.AsyncClient(timeout=WHISPER_TIMEOUT_SECONDS) as c:
             with path.open("rb") as f:
                 r = await c.post(
                     f"{url}/inference",
                     files={"file": (path.name, f, "application/octet-stream")},
-                    data={"response_format": "json"},
+                    data=data,
                 )
-            if r.status_code != 200:
-                _log.warning("whisper transcription failed: HTTP %s: %s", r.status_code, r.text[:300])
-                return ""
-            return (r.json().get("text") or "").strip()
+    except TimeoutError as exc:
+        _log.warning("whisper transcription timed out: %s", exc)
+        raise WhisperError(f"Whisper timed out after {WHISPER_TIMEOUT_SECONDS}s — the clip may be too long, or the server is overloaded.") from exc
     except Exception as exc:
-        _log.warning("whisper transcription unavailable: %s: %s", type(exc).__name__, exc)
-        return ""
+        _log.warning("whisper transcription unreachable: %s: %s", type(exc).__name__, exc)
+        raise WhisperError(f"Could not reach Whisper: {type(exc).__name__}: {exc}") from exc
+    if r.status_code != 200:
+        _log.warning("whisper transcription failed: HTTP %s: %s", r.status_code, r.text[:300])
+        raise WhisperError(f"Whisper returned HTTP {r.status_code}: {r.text[:200]}")
+    try:
+        return (r.json().get("text") or "").strip()
+    except Exception as exc:
+        _log.warning("whisper returned an unreadable response: %s", exc)
+        raise WhisperError(f"Whisper returned an unreadable response: {exc}") from exc
 
 
 # ── Whisper model download ──────────────────────────────────────────────────

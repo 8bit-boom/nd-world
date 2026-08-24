@@ -131,7 +131,8 @@ async def test_whisper_status_unreachable(monkeypatch):
 async def test_transcribe_audio_not_configured(tmp_path):
     f = tmp_path / "clip.wav"
     f.write_bytes(b"RIFF....WAVEfmt ")
-    assert await ai_module.transcribe_audio(f) == ""
+    with pytest.raises(ai_module.WhisperError):
+        await ai_module.transcribe_audio(f)
 
 
 @pytest.mark.asyncio
@@ -145,18 +146,32 @@ async def test_transcribe_audio_success(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_transcribe_audio_http_error_returns_empty(tmp_path, monkeypatch):
+async def test_transcribe_audio_http_error_raises_with_detail(tmp_path, monkeypatch):
     ai_module.set_whisper_override("http://127.0.0.1:8090")
     _patch_httpx(monkeypatch, response=_FakeResponse(500, text="internal error"))
     f = tmp_path / "clip.mp3"
     f.write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00")
-    assert await ai_module.transcribe_audio(f) == ""
+    with pytest.raises(ai_module.WhisperError, match="500"):
+        await ai_module.transcribe_audio(f)
 
 
 @pytest.mark.asyncio
-async def test_transcribe_audio_network_error_returns_empty(tmp_path, monkeypatch):
+async def test_transcribe_audio_network_error_raises_with_detail(tmp_path, monkeypatch):
     ai_module.set_whisper_override("http://127.0.0.1:8090")
     _patch_httpx(monkeypatch, exc=TimeoutError("timed out"))
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00")
+    with pytest.raises(ai_module.WhisperError, match="timed out"):
+        await ai_module.transcribe_audio(f)
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_silent_clip_is_not_an_error(tmp_path, monkeypatch):
+    """A successful transcription of a genuinely silent clip returns "" —
+    distinct from a WhisperError, which is only for the request itself
+    failing (network, non-200, unreadable response)."""
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    _patch_httpx(monkeypatch, response=_FakeResponse(200, {"text": ""}))
     f = tmp_path / "clip.mp3"
     f.write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00")
     assert await ai_module.transcribe_audio(f) == ""

@@ -47,6 +47,12 @@ class World(Base):
     # dedicated GM "/ai" World Chat page/tools stay GM-only regardless of
     # this toggle; it only governs the focused per-entity chat panel.
     players_can_ask_ai = Column(Boolean, default=False)
+    # Campaign vocabulary (NPC names, places, invented terms) fed to Whisper
+    # as an initial-prompt hint on every session-recording transcription, so
+    # e.g. "Elyndra" doesn't come back as "Elandra" or "a lender". Per-world,
+    # not instance-wide (unlike ai_models.json's GM-personal-toolkit
+    # settings) since it's campaign content. NULL/"" = no hint sent.
+    whisper_glossary = Column(Text, nullable=True)
     # Per-world rules text (Markdown) shown on the /rules page. NULL = fall back
     # to the bundled Neon & Dragons core_rules.md, for worlds actually running
     # N&D and any world created before this field existed.

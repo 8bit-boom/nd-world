@@ -354,6 +354,67 @@ def _migrate():
         note_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(entity_notes)")).fetchall()]
         if note_cols and "content_is_html" not in note_cols:
             conn.execute(text("ALTER TABLE entity_notes ADD COLUMN content_is_html BOOLEAN DEFAULT 0"))
+
+        # FTS5 full-text index over Entity(name, summary, body, tags), backing
+        # app.main._find_relevant_entities (RAG retrieval for AI Chat) — an
+        # upgrade from plain per-word ILIKE, which never matched `body` at
+        # all. "External content" table (content='entities') so the indexed
+        # text isn't duplicated on disk; triggers keep it in sync on every
+        # future insert/update/delete, and the SELECT right after creation
+        # backfills every entity that existed before this migration ran.
+        # Deliberately NOT allowed to fail the whole migration (see
+        # init_db's "startup dies either way" contract just above this
+        # function) — some SQLite builds may lack FTS5, and RAG search
+        # falling back to the old ILIKE matcher (see _find_relevant_entities)
+        # is far preferable to the entire app refusing to start over it.
+        try:
+            fts_exists = conn.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='entity_fts'"
+            )).fetchone()
+            if not fts_exists:
+                conn.execute(text(
+                    "CREATE VIRTUAL TABLE entity_fts USING fts5("
+                    "name, summary, body, tags, content='entities', content_rowid='id')"
+                ))
+            # SQLite auto-drops a table's triggers when the table itself is
+            # dropped (e.g. the test suite's Base.metadata.drop_all/
+            # create_all between tests, or any future migration that
+            # recreates `entities`) — entity_fts itself survives that since
+            # it isn't part of Base.metadata, so checking "does entity_fts
+            # exist" alone isn't enough to know the triggers are still
+            # attached to the CURRENT `entities` table. Check for a trigger
+            # directly; if it's missing, (re)create all three AND rebuild
+            # the index from scratch via FTS5's special 'rebuild' command —
+            # entity_fts may otherwise be silently stale (still indexing
+            # rows from a since-dropped `entities` table) with nothing to
+            # keep it in sync going forward.
+            triggers_exist = conn.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='trigger' AND name='entity_fts_ai'"
+            )).fetchone()
+            if not triggers_exist:
+                conn.execute(text(
+                    "CREATE TRIGGER entity_fts_ai AFTER INSERT ON entities BEGIN "
+                    "INSERT INTO entity_fts(rowid, name, summary, body, tags) "
+                    "VALUES (new.id, new.name, new.summary, new.body, new.tags); END"
+                ))
+                conn.execute(text(
+                    "CREATE TRIGGER entity_fts_ad AFTER DELETE ON entities BEGIN "
+                    "INSERT INTO entity_fts(entity_fts, rowid, name, summary, body, tags) "
+                    "VALUES ('delete', old.id, old.name, old.summary, old.body, old.tags); END"
+                ))
+                conn.execute(text(
+                    "CREATE TRIGGER entity_fts_au AFTER UPDATE ON entities BEGIN "
+                    "INSERT INTO entity_fts(entity_fts, rowid, name, summary, body, tags) "
+                    "VALUES ('delete', old.id, old.name, old.summary, old.body, old.tags); "
+                    "INSERT INTO entity_fts(rowid, name, summary, body, tags) "
+                    "VALUES (new.id, new.name, new.summary, new.body, new.tags); END"
+                ))
+                conn.execute(text("INSERT INTO entity_fts(entity_fts) VALUES ('rebuild')"))
+        except Exception:
+            _log.warning(
+                "Could not create/repair entity_fts (FTS5 unavailable in this SQLite build?) "
+                "— AI Chat's RAG search falls back to plain LIKE matching.", exc_info=True,
+            )
         # One-time repair of damage done by the earliest lore-import runs. Gated by
         # _once because none of it is safe to repeat: the DELETE is destructive, and
         # the kind='item' → 'feat' reclassification silently overrides a GM who

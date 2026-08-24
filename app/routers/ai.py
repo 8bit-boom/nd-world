@@ -527,10 +527,14 @@ async def _finish_attachment_upload(dest: _Path, ext: str, kind: str, original_f
     elif kind == "audio":
         # Whisper transcodes via ffmpeg server-side, so this works for any
         # of _ATTACH_AUDIO_EXTS, not just .wav — see app.ai.transcribe_audio.
-        # "" (Whisper not configured, or the request failed) just means this
-        # attachment falls back to _build_ollama_messages' non-transcript
-        # handling instead of blocking the upload.
-        text = await _ai.transcribe_audio(dest)
+        # A WhisperError (not configured, or the request failed) just means
+        # this attachment falls back to _build_ollama_messages' non-transcript
+        # handling instead of blocking the upload — the real reason is still
+        # logged server-side by transcribe_audio itself.
+        try:
+            text = await _ai.transcribe_audio(dest)
+        except _ai.WhisperError:
+            text = ""
     else:
         text = ""
     return {
@@ -984,6 +988,30 @@ async def ai_pull(body: PullBody):
 @router.get("/whisper/model-status")
 async def api_whisper_model_status():
     return _ai.whisper_model_status()
+
+
+@router.get("/whisper/glossary")
+def api_whisper_glossary_get(request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    return {"glossary": world.whisper_glossary or ""}
+
+
+class WhisperGlossaryBody(BaseModel):
+    glossary: str = ""
+
+
+@router.post("/whisper/glossary")
+def api_whisper_glossary_save(body: WhisperGlossaryBody, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    world.whisper_glossary = body.glossary.strip()
+    db.commit()
+    return {"ok": True, "glossary": world.whisper_glossary}
 
 
 class WhisperPullBody(BaseModel):
