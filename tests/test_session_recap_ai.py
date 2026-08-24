@@ -198,6 +198,118 @@ def test_summarize_from_audio_requires_gm(client, seed):
     assert r.status_code == 403
 
 
+# ── Chunked upload path (audio over ndChunkedUpload's threshold) ────────────
+# Same reassembly pattern as tests/test_audio_chunked_upload.py — drives the
+# two routes directly rather than through the client-side splitting logic.
+
+_PART_A = b"ID3\x03\x00\x00\x00\x00\x00\x00" + b"\xaa" * 5000
+_PART_B = b"\xbb" * 5000
+
+
+def _chunk_file(data):
+    import io
+    return {"file": ("part", io.BytesIO(data), "application/octet-stream")}
+
+
+def _upload_two_chunks(client, upload_id):
+    r0 = client.post("/api/sessions/ai/summarize-from-audio/chunk", data={"upload_id": upload_id, "chunk_index": "0"},
+                      files=_chunk_file(_PART_A))
+    r1 = client.post("/api/sessions/ai/summarize-from-audio/chunk", data={"upload_id": upload_id, "chunk_index": "1"},
+                      files=_chunk_file(_PART_B))
+    return r0, r1
+
+
+def test_chunk_upload_requires_gm(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post("/api/sessions/ai/summarize-from-audio/chunk", data={"upload_id": "a" * 32, "chunk_index": "0"},
+                     files=_chunk_file(_PART_A))
+    assert r.status_code == 403
+
+
+def test_chunk_complete_requires_gm(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post("/api/sessions/ai/summarize-from-audio/complete", data={
+        "upload_id": "c" * 32, "filename": "x.wav", "total_chunks": "1",
+    })
+    assert r.status_code == 403
+
+
+def test_chunk_complete_rejects_unsupported_extension(client, seed):
+    _login_gm_in(client, seed, seed.world_a)
+    upload_id = "d" * 32
+    client.post("/api/sessions/ai/summarize-from-audio/chunk", data={"upload_id": upload_id, "chunk_index": "0"},
+                 files=_chunk_file(_PART_A))
+    r = client.post("/api/sessions/ai/summarize-from-audio/complete", data={
+        "upload_id": upload_id, "filename": "evil.exe", "total_chunks": "1",
+    })
+    assert r.status_code == 400
+
+
+def test_chunk_complete_rejects_when_parts_missing(client, seed):
+    _login_gm_in(client, seed, seed.world_a)
+    upload_id = "e" * 32
+    client.post("/api/sessions/ai/summarize-from-audio/chunk", data={"upload_id": upload_id, "chunk_index": "0"},
+                 files=_chunk_file(_PART_A))
+    r = client.post("/api/sessions/ai/summarize-from-audio/complete", data={
+        "upload_id": upload_id, "filename": "x.wav", "total_chunks": "2",
+    })
+    assert r.status_code == 400
+
+
+def test_chunked_upload_reassembles_and_transcribes(client, seed, monkeypatch):
+    async def fake_transcribe(path):
+        assert path.read_bytes() == _PART_A + _PART_B
+        return "reassembled session transcript"
+    async def fake_summarize(transcript, model=""):
+        assert transcript == "reassembled session transcript"
+        return "A recap from the reassembled recording."
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    upload_id = "f" * 32
+    r0, r1 = _upload_two_chunks(client, upload_id)
+    assert r0.status_code == 200
+    assert r1.status_code == 200
+
+    r = client.post("/api/sessions/ai/summarize-from-audio/complete", data={
+        "upload_id": upload_id, "filename": "big-session.wav", "total_chunks": "2",
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["transcript"] == "reassembled session transcript"
+    assert body["recap"] == "A recap from the reassembled recording."
+
+    from app.routers.sessions import _session_audio_chunks_root
+    assert not (_session_audio_chunks_root() / upload_id).exists()
+
+
+def test_chunked_upload_empty_transcript_rejected(client, seed, monkeypatch):
+    async def fake_transcribe(path):
+        return ""
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    _login_gm_in(client, seed, seed.world_a)
+    upload_id = "1" * 32
+    _upload_two_chunks(client, upload_id)
+    r = client.post("/api/sessions/ai/summarize-from-audio/complete", data={
+        "upload_id": upload_id, "filename": "silent.wav", "total_chunks": "2",
+    })
+    assert r.status_code == 400
+
+
+def test_chunked_upload_rejects_when_reassembled_total_exceeds_limit(client, seed, monkeypatch):
+    monkeypatch.setattr("app.routers.sessions.MAX_SESSION_AUDIO_BYTES", len(_PART_A))
+
+    _login_gm_in(client, seed, seed.world_a)
+    upload_id = "2" * 32
+    _upload_two_chunks(client, upload_id)
+    r = client.post("/api/sessions/ai/summarize-from-audio/complete", data={
+        "upload_id": upload_id, "filename": "toobig.wav", "total_chunks": "2",
+    })
+    assert r.status_code == 413
+
+
 # ── Live session recording: chunk-append, clear, summarize ─────────────────
 
 def _append_chunk(client, session_id, filename="chunk1.webm", data=b"chunk-bytes", content_type="audio/webm"):

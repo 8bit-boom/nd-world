@@ -175,6 +175,7 @@
   {% endif %}
 </div>
 
+<script src="/static/js/chunked-upload.js"></script>
 <script>
 // ── AI recap assist — unconditional (works on the New Session form too,
 // where gsession doesn't exist yet, unlike the prep/loot/XP panels below) ──
@@ -250,14 +251,12 @@ async function aiSummarizeFromAudio(file) {
   const micBtn = document.getElementById('mic-record-btn');
   micBtn.disabled = true;
   try {
-    const fd = new FormData();
-    fd.append('file', file, file.name);
-    const res = await fetch('/api/sessions/ai/summarize-from-audio', { method: 'POST', body: fd });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || `HTTP ${res.status}`);
-    }
-    const data = await res.json();
+    const data = await ndChunkedUpload(file, {
+      directUrl: '/api/sessions/ai/summarize-from-audio',
+      chunkUrl: '/api/sessions/ai/summarize-from-audio/chunk',
+      completeUrl: '/api/sessions/ai/summarize-from-audio/complete',
+      onProgress: (idx, total) => { if (idx < total) status.textContent = `Uploading part ${idx + 1}/${total}…`; else status.textContent = 'Transcribing & summarizing…'; },
+    });
     _aiRecapDraft = data.recap || '';
     document.getElementById('ai-recap-preview-text').textContent = _aiRecapDraft || '(empty recap)';
     document.getElementById('ai-recap-preview').style.display = 'block';

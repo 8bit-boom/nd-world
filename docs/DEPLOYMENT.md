@@ -136,11 +136,15 @@ nd-world — it's not something `.env` or nd-world's own settings can raise.
 nd-world's own per-upload caps sit *below* whatever Cloudflare allows
 through (see `MAX_UPLOAD_BYTES`, `MAX_AUDIO_UPLOAD_BYTES`, and
 `MAX_AI_ATTACHMENT_BYTES` in `.env.example`), so raise the relevant one if
-you need bigger files end to end. The Audio Library (`/audio`) is the one
-exception: any file over 100 MB is automatically split into smaller parts
-in the browser before upload and reassembled on the server, so a long
-session recording or ambiance track gets through Cloudflare's fixed cap
-regardless of plan — nothing to configure for this one.
+you need bigger files end to end. Every audio upload path is the exception:
+the Audio Library (`/audio`), a voice-memo attachment on the AI Chat compose
+bar / an entity's Ask AI panel / the Whisper Test tab, and a Session's audio
+recap upload/mic recording all automatically split a file over 100 MB into
+smaller parts in the browser before upload and reassemble it on the server,
+so a long session recording or ambiance track gets through Cloudflare's
+fixed cap regardless of plan — nothing to configure for these. A large
+non-audio upload (a map image, a portrait) has no such split and is still
+subject to Cloudflare's raw cap.
 
 ### Option 2: Port forwarding + reverse proxy (more advanced)
 

@@ -6,7 +6,7 @@ import logging
 import os as _os
 import ollama as _ollama
 import urllib.request as _urllib
-from fastapi import APIRouter, Cookie, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse as _SR
 from pydantic import BaseModel
 from typing import List, Optional
@@ -14,7 +14,9 @@ from pathlib import Path as _Path
 from .. import ai as _ai
 from ..database import get_db
 from ..deps import get_world_ctx
-from ..uploads import copy_upload_bounded, unique_upload_filename
+from ..uploads import (
+    copy_upload_bounded, unique_upload_filename, reassemble_upload_chunks, save_upload_chunk,
+)
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 _log = logging.getLogger("nd.ai.router")
@@ -30,6 +32,11 @@ _ATTACH_SUBDIR = "ai_attachments"
 # Env-overridable like MAX_UPLOAD_BYTES/MAX_AUDIO_UPLOAD_BYTES — a dropped
 # document or portrait-sized image should comfortably fit under 25 MB.
 _MAX_ATTACHMENT_BYTES = int(_os.environ.get("MAX_AI_ATTACHMENT_BYTES", str(25 * 1024 * 1024)))
+# A dropped/recorded voice memo can run much longer than a document or
+# image attachment — same default ceiling as the Audio Library/session
+# recap uploads, reusing that env var rather than introducing a second one
+# for what's really the same kind of upload.
+_MAX_ATTACHMENT_AUDIO_BYTES = int(_os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 # How much of a document's extracted text gets folded into the prompt — long
 # enough for a handout or a few rulebook pages, bounded so one attachment
 # can't blow the model's context window on its own.
@@ -48,6 +55,10 @@ def _attachment_kind(ext: str) -> Optional[str]:
 
 def _uploads_root() -> _Path:
     return _Path(_os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+
+
+def _attach_chunks_root() -> _Path:
+    return _uploads_root() / _ATTACH_SUBDIR / "_chunks"
 
 
 def _attachment_disk_path(url: str) -> Optional[_Path]:
@@ -247,33 +258,10 @@ async def ai_chat(body: ChatBody):
     return {"result": await _ai.generate_chat(msgs, body.system, body.model)}
 
 
-@router.post("/attachments/upload")
-async def ai_attachment_upload(
-    request: Request,
-    file: UploadFile = File(...),
-    db=Depends(get_db),
-    active_world: Optional[str] = Cookie(None),
-):
-    """Upload a file to attach to the next chat message on /ai or an
-    entity's Ask AI panel. Returns immediately with the extracted/transcribed
-    text for a document or audio file so the client never has to re-upload/
-    re-parse it; an image is just stored and referenced by URL, read back
-    from disk (see _build_ollama_messages) only once the message is
-    actually sent."""
-    _require_ask_ai_access(request, db, active_world)
-    if not file or not file.filename:
-        raise HTTPException(400, "No file uploaded")
-    ext = _Path(file.filename).suffix.lower()
-    kind = _attachment_kind(ext)
-    if not kind:
-        allowed = sorted(_ATTACH_IMAGE_EXTS | _ATTACH_DOC_EXTS | _ATTACH_AUDIO_EXTS)
-        raise HTTPException(400, f"Unsupported file type {ext!r} — allowed: {', '.join(allowed)}")
-
-    target_dir = _uploads_root() / _ATTACH_SUBDIR
-    target_dir.mkdir(parents=True, exist_ok=True)
-    dest = target_dir / unique_upload_filename(file.filename, ext)
-    copy_upload_bounded(file, dest, max_bytes=_MAX_ATTACHMENT_BYTES)
-
+async def _finish_attachment_upload(dest: _Path, ext: str, kind: str, original_filename: str) -> dict:
+    """Shared tail of both /attachments/upload and .../upload/complete: given
+    a saved file, extract/transcribe as appropriate and build the response
+    the client's attachment picker expects."""
     if kind == "document":
         text = _extract_document_text(dest, ext)
     elif kind == "audio":
@@ -288,9 +276,88 @@ async def ai_attachment_upload(
     return {
         "kind": kind,
         "url": f"/uploads/{_ATTACH_SUBDIR}/{dest.name}",
-        "name": file.filename,
+        "name": original_filename,
         "text": text,
     }
+
+
+@router.post("/attachments/upload")
+async def ai_attachment_upload(
+    request: Request,
+    file: UploadFile = File(...),
+    db=Depends(get_db),
+    active_world: Optional[str] = Cookie(None),
+):
+    """Upload a file to attach to the next chat message on /ai or an
+    entity's Ask AI panel. Returns immediately with the extracted/transcribed
+    text for a document or audio file so the client never has to re-upload/
+    re-parse it; an image is just stored and referenced by URL, read back
+    from disk (see _build_ollama_messages) only once the message is
+    actually sent. A file over ndChunkedUpload's threshold (static/js/
+    chunked-upload.js) arrives via .../upload/chunk + .../upload/complete
+    below instead of this route."""
+    _require_ask_ai_access(request, db, active_world)
+    if not file or not file.filename:
+        raise HTTPException(400, "No file uploaded")
+    ext = _Path(file.filename).suffix.lower()
+    kind = _attachment_kind(ext)
+    if not kind:
+        allowed = sorted(_ATTACH_IMAGE_EXTS | _ATTACH_DOC_EXTS | _ATTACH_AUDIO_EXTS)
+        raise HTTPException(400, f"Unsupported file type {ext!r} — allowed: {', '.join(allowed)}")
+
+    target_dir = _uploads_root() / _ATTACH_SUBDIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / unique_upload_filename(file.filename, ext)
+    max_bytes = _MAX_ATTACHMENT_AUDIO_BYTES if kind == "audio" else _MAX_ATTACHMENT_BYTES
+    copy_upload_bounded(file, dest, max_bytes=max_bytes)
+    return await _finish_attachment_upload(dest, ext, kind, file.filename)
+
+
+@router.post("/attachments/upload/chunk")
+async def ai_attachment_upload_chunk(
+    request: Request,
+    file: UploadFile = File(...),
+    upload_id: str = Form(...),
+    chunk_index: int = Form(...),
+    db=Depends(get_db),
+    active_world: Optional[str] = Cookie(None),
+):
+    """Receive one part of a large attachment (currently only a voice memo
+    realistically needs this — Cloudflare's free tier caps a request body at
+    100MB with no way to raise it, see docs/DEPLOYMENT.md). See .../complete
+    for reassembly; mirrors app/routers/audio.py's chunked-upload pair."""
+    _require_ask_ai_access(request, db, active_world)
+    save_upload_chunk(_attach_chunks_root(), upload_id, chunk_index, file, max_bytes=_MAX_ATTACHMENT_AUDIO_BYTES)
+    return {"ok": True}
+
+
+@router.post("/attachments/upload/complete")
+async def ai_attachment_upload_complete(
+    request: Request,
+    upload_id: str = Form(...),
+    filename: str = Form(...),
+    total_chunks: int = Form(...),
+    db=Depends(get_db),
+    active_world: Optional[str] = Cookie(None),
+):
+    """Reassemble the parts uploaded via .../upload/chunk and finish exactly
+    like the one-shot /attachments/upload — same response shape, just fed
+    from disk instead of the request body directly."""
+    _require_ask_ai_access(request, db, active_world)
+    if not filename:
+        raise HTTPException(400, "No filename given")
+    ext = _Path(filename).suffix.lower()
+    kind = _attachment_kind(ext)
+    if not kind:
+        allowed = sorted(_ATTACH_IMAGE_EXTS | _ATTACH_DOC_EXTS | _ATTACH_AUDIO_EXTS)
+        raise HTTPException(400, f"Unsupported file type {ext!r} — allowed: {', '.join(allowed)}")
+
+    target_dir = _uploads_root() / _ATTACH_SUBDIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / unique_upload_filename(filename, ext)
+    max_bytes = _MAX_ATTACHMENT_AUDIO_BYTES if kind == "audio" else _MAX_ATTACHMENT_BYTES
+    reassemble_upload_chunks(_attach_chunks_root(), upload_id, total_chunks, dest, max_bytes=max_bytes)
+    return await _finish_attachment_upload(dest, ext, kind, filename)
 
 
 @router.post("/stream")

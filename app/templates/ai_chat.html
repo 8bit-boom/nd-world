@@ -1510,6 +1510,7 @@
 </div>
 
 <script src="/static/js/file-dropzone.js"></script>
+<script src="/static/js/chunked-upload.js"></script>
 <script src="/static/js/ai-attachments.js"></script>
 <script>
 const WORLD_SYSTEM = {{ world_system | tojson }};
@@ -3900,11 +3901,11 @@ async function wtTranscribeFile(file) {
   resultBox.style.display = 'block';
   resultText.textContent = '';
   try {
-    const fd = new FormData();
-    fd.append('file', file, file.name);
-    const res = await fetch('/api/ai/attachments/upload', { method: 'POST', body: fd });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+    const data = await ndChunkedUpload(file, {
+      directUrl: '/api/ai/attachments/upload',
+      chunkUrl: '/api/ai/attachments/upload/chunk',
+      completeUrl: '/api/ai/attachments/upload/complete',
+    });
     if (data.kind !== 'audio') throw new Error(`Not recognized as audio (got kind=${data.kind})`);
     resultText.textContent = data.text
       ? data.text

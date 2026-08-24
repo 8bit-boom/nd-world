@@ -211,10 +211,15 @@ def _is_player_safe(method: str, path: str) -> bool:
         # stays off this allowlist entirely, so this only opens the shared
         # streaming endpoint, not that page's GM-only quick-prompt toolkit.
         return True
-    if path == "/api/ai/attachments/upload":
+    if path in (
+        "/api/ai/attachments/upload",
+        "/api/ai/attachments/upload/chunk",
+        "/api/ai/attachments/upload/complete",
+    ):
         # Same shape as /api/ai/stream above — a player attaching a file to
-        # a chat message needs this reachable too, and the handler applies
-        # the identical players_can_ask_ai gate before accepting anything.
+        # a chat message needs this reachable too (including a large one
+        # split into parts by ndChunkedUpload), and the handler applies the
+        # identical players_can_ask_ai gate before accepting anything.
         return True
     if re.match(r"^/api/session-log/\d+/recap$", path):
         return True

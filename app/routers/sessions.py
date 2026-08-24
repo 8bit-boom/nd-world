@@ -3,7 +3,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, Cookie, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -13,7 +13,7 @@ from ..database import get_db
 from ..deps import get_world_ctx, paginate
 from ..models import CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, World
 from ..templating import templates
-from ..uploads import read_upload_bounded
+from ..uploads import read_upload_bounded, reassemble_upload_chunks, save_upload_chunk
 
 router = APIRouter()
 
@@ -30,6 +30,10 @@ MAX_SESSION_AUDIO_BYTES = int(os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(200 *
 # enough that a slightly-longer-than-expected chunk (a slow browser tab, a
 # missed stop/restart) doesn't 413 and silently drop that segment.
 MAX_LIVE_CHUNK_BYTES = int(os.environ.get("MAX_LIVE_CHUNK_BYTES", str(25 * 1024 * 1024)))
+
+
+def _session_audio_chunks_root() -> Path:
+    return Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads" / "session_audio" / "_chunks"
 
 
 async def _transcribe_chunk(file: UploadFile, max_bytes: int = MAX_LIVE_CHUNK_BYTES) -> str:
@@ -275,6 +279,50 @@ async def api_summarize_from_audio(file: UploadFile = File(...)):
     transcription call and is never saved permanently; a GM who wants to
     keep the recording should upload it to the Audio Library separately."""
     transcript = await _transcribe_chunk(file, max_bytes=MAX_SESSION_AUDIO_BYTES)
+    if not transcript:
+        raise HTTPException(
+            400,
+            "Could not transcribe this audio — check that Whisper is configured and reachable "
+            "(see the AI page's 🎙 Whisper tab) and that the clip actually has speech in it.",
+        )
+    recap = await _ai_module.summarize_transcript(transcript)
+    return {"transcript": transcript, "recap": recap}
+
+
+@router.post("/api/sessions/ai/summarize-from-audio/chunk")
+async def api_summarize_from_audio_chunk(
+    file: UploadFile = File(...), upload_id: str = Form(...), chunk_index: int = Form(...),
+):
+    """Receive one part of a large session recording — a whole-session
+    upload can easily clear Cloudflare's fixed 100MB request-body cap (see
+    docs/DEPLOYMENT.md), so ndChunkedUpload (static/js/chunked-upload.js)
+    splits it client-side and sends each part here; .../complete reassembles
+    and transcribes once every part has arrived. Mirrors app/routers/
+    audio.py's chunked-upload pair; GM-only like the rest of this route's
+    session-independent AI helpers (no _is_player_safe entry)."""
+    save_upload_chunk(_session_audio_chunks_root(), upload_id, chunk_index, file, max_bytes=MAX_SESSION_AUDIO_BYTES)
+    return {"ok": True}
+
+
+@router.post("/api/sessions/ai/summarize-from-audio/complete")
+async def api_summarize_from_audio_complete(
+    upload_id: str = Form(...), filename: str = Form(...), total_chunks: int = Form(...),
+):
+    """Reassemble the parts uploaded via .../chunk and finish exactly like
+    the one-shot /api/sessions/ai/summarize-from-audio — same response
+    shape, just fed from disk instead of the request body directly. Like
+    that route, the reassembled audio only ever sits in a temp file for the
+    duration of transcription and is never saved permanently."""
+    ext = Path(filename or "").suffix.lower()
+    if ext not in _SESSION_AUDIO_EXTS:
+        raise HTTPException(400, f"Unsupported audio type {ext!r} — allowed: {', '.join(sorted(_SESSION_AUDIO_EXTS))}")
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        reassemble_upload_chunks(_session_audio_chunks_root(), upload_id, total_chunks, tmp_path, max_bytes=MAX_SESSION_AUDIO_BYTES)
+        transcript = await _ai_module.transcribe_audio(tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
     if not transcript:
         raise HTTPException(
             400,

@@ -2,12 +2,14 @@
 // Shared "attach a file to an AI chat message" helper for any page that
 // talks to POST /api/ai/stream — currently ai_chat.html's World Chat and
 // entities/detail.html's per-entity Ask AI panel. Handles uploading a
-// picked/dropped file to POST /api/ai/attachments/upload, tracking the
-// pending (not-yet-sent) attachment list, rendering removable chips for it,
-// and handing back a plain array to fold into the next chat message's
-// `attachments` field. Neither this file nor the caller ever reads file
-// bytes itself — upload and text-extraction both happen server-side
-// (app/routers/ai.py), this only tracks upload state and renders chips.
+// picked/dropped file via ndChunkedUpload (chunked-upload.js) to
+// /api/ai/attachments/upload (and its /chunk + /complete pair for anything
+// over ndChunkedUpload's threshold), tracking the pending (not-yet-sent)
+// attachment list, rendering removable chips for it, and handing back a
+// plain array to fold into the next chat message's `attachments` field.
+// Neither this file nor the caller ever reads file bytes itself — upload
+// and text-extraction both happen server-side (app/routers/ai.py), this
+// only tracks upload state and renders chips.
 function ndAiAttachments(pendingListEl, onChange) {
   let pending = [];
   const ICONS = { image: "🖼", document: "📄", audio: "🎵" };
@@ -44,11 +46,11 @@ function ndAiAttachments(pendingListEl, onChange) {
       pending.push(entry);
       render();
       try {
-        const fd = new FormData();
-        fd.append("file", file);
-        const res = await fetch("/api/ai/attachments/upload", { method: "POST", body: fd });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+        const data = await ndChunkedUpload(file, {
+          directUrl: "/api/ai/attachments/upload",
+          chunkUrl: "/api/ai/attachments/upload/chunk",
+          completeUrl: "/api/ai/attachments/upload/complete",
+        });
         entry.kind = data.kind;
         entry.url = data.url;
         entry.text = data.text || "";
