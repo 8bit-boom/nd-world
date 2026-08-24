@@ -337,6 +337,73 @@ async def parse_facts_from_recap(raw_text: str, model: str = "") -> list[dict]:
         raise ValueError("Could not parse facts from that recap — try rephrasing it.") from exc
 
 
+_ENTITY_FROM_TEXT_SYSTEM = (
+    "You turn a passage of text from a tabletop RPG GM's AI chat conversation into a "
+    "single structured world-building entity — whichever kind the text is actually "
+    "describing (a character/NPC, location, organization, creature, event, item, feat, "
+    "race, or profession). Extract only what's stated or clearly implied by the text; "
+    "do not invent unrelated details. \"body\" should be the entity's full write-up in "
+    "Markdown (history, description, stats — whatever's relevant); \"summary\" is a "
+    "single-sentence one-liner. Respond with JSON only."
+)
+
+
+def _entity_from_text_schema(kinds: list[str]) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": list(kinds)},
+            "subtype": {"type": "string"},
+            "name": {"type": "string"},
+            "summary": {"type": "string"},
+            "body": {"type": "string"},
+            "tags": {"type": "string"},
+            "folder": {"type": "string"},
+            "visible_to_players": {"type": "boolean"},
+        },
+        "required": ["kind", "name"],
+    }
+
+
+async def parse_entity_from_text(raw_text: str, kinds: list[str], model: str = "") -> dict:
+    """Turn a passage of text (typically an AI Chat reply) into a draft world
+    entity — same JSON-schema-constrained pattern as parse_facts_from_recap.
+    Raises ValueError on any failure so the caller can surface a clear error;
+    does not write anything to the database itself (see main.py's
+    /api/import/execute, which already knows how to write this exact shape)."""
+    m = model or effective_ollama_model()
+    try:
+        resp = await _client().chat(
+            model=m,
+            messages=[
+                {"role": "system", "content": _ENTITY_FROM_TEXT_SYSTEM},
+                {"role": "user", "content": raw_text},
+            ],
+            format=_entity_from_text_schema(kinds),
+            **_chat_kwargs(),
+        )
+    except _ollama.ResponseError as exc:
+        raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
+    except Exception as exc:
+        raise ValueError(f"AI unavailable: {type(exc).__name__}: {exc}") from exc
+    try:
+        parsed = _json.loads(resp.message.content or "")
+        if not isinstance(parsed, dict) or parsed.get("kind") not in kinds or not str(parsed.get("name") or "").strip():
+            raise ValueError
+        return {
+            "kind": parsed["kind"],
+            "subtype": str(parsed.get("subtype") or "").strip(),
+            "name": str(parsed["name"]).strip(),
+            "summary": str(parsed.get("summary") or "").strip(),
+            "body": str(parsed.get("body") or "").strip(),
+            "tags": str(parsed.get("tags") or "").strip(),
+            "folder": str(parsed.get("folder") or "").strip(),
+            "visible_to_players": bool(parsed.get("visible_to_players", True)),
+        }
+    except Exception as exc:
+        raise ValueError("Could not turn that reply into an entity — try rephrasing or picking a shorter passage.") from exc
+
+
 _EXPAND_NOTES_SYSTEM = (
     "You are a scribe for a tabletop RPG campaign. The GM will give you rough, terse session "
     "notes (e.g. \"went to the tavern, met Elyra, found a clock, fought goblins\"). Expand them "

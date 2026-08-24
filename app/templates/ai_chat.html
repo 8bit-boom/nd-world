@@ -247,6 +247,21 @@
   border: 1px solid var(--border); display: block;
 }
 
+.entity-draft {
+  margin-top: .6rem; background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 6px; padding: .7rem .8rem; display: flex; flex-direction: column; gap: .45rem;
+}
+.entity-draft-row { display: flex; gap: .5rem; }
+.entity-draft-row > * { flex: 1; min-width: 0; }
+.entity-draft input, .entity-draft select, .entity-draft textarea {
+  width: 100%; background: var(--bg2); border: 1px solid var(--border); color: var(--text);
+  padding: .35rem .5rem; font-family: var(--font); font-size: .82rem; border-radius: 3px; box-sizing: border-box;
+}
+.entity-draft textarea { resize: vertical; }
+.entity-draft label.entity-draft-check { display: flex; align-items: center; gap: .4rem; font-size: .8rem; color: var(--text-dim); }
+.entity-draft label.entity-draft-check input { width: auto; }
+.entity-draft-actions { display: flex; gap: .5rem; align-items: center; }
+
 /* Animated typing dots */
 @keyframes nd-blink {
   0%, 80%, 100% { opacity: .2; transform: translateY(0); }
@@ -1532,6 +1547,8 @@
 <script src="/static/js/ai-attachments.js"></script>
 <script>
 const WORLD_SYSTEM = {{ world_system | tojson }};
+const ENTITY_KINDS = {{ kinds | tojson }};
+const ENTITY_KIND_ICONS = {{ kind_icons | tojson }};
 let history = [];
 let activeModel = "";
 const chatAttachments = ndAiAttachments(document.getElementById('ai-attach-list'), document.getElementById('ai-jobs-panel'), () => {
@@ -2037,6 +2054,144 @@ function addIllustrateBtn(bubble, wrap, text) {
   wrap.appendChild(btn);
 }
 
+function addSaveEntityBtn(bubble, wrap, text) {
+  const btn = document.createElement('button');
+  btn.className = 'save-note-btn';
+  btn.style.marginLeft = '.6rem';
+  btn.textContent = '📥 Save as entity';
+  btn.onclick = () => draftEntityFromMessage(text, bubble, btn);
+  wrap.appendChild(btn);
+}
+
+// Drafts a world entity from an assistant reply (via app.ai.parse_entity_from_text,
+// the same schema-constrained-Ollama pattern the Facts page uses for recaps),
+// shows an editable review card in the message bubble, and only writes the
+// entity once the GM confirms — via the existing /api/import/execute route
+// (same one the Import page's paste-JSON flow uses), not a new write path.
+async function draftEntityFromMessage(text, bubble, btn) {
+  btn.disabled = true;
+  const origLabel = btn.textContent;
+  btn.textContent = '✨ Drafting…';
+  try {
+    const res = await fetch('/api/ai/entity-from-text', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text.slice(0, 8000) }),
+    });
+    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+    const draft = await res.json();
+    bubble.appendChild(renderEntityDraft(draft));
+  } catch (e) {
+    alert('Save as entity failed: ' + (e.message || e));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origLabel;
+  }
+}
+
+function renderEntityDraft(draft) {
+  const card = document.createElement('div');
+  card.className = 'entity-draft';
+
+  const kindSel = document.createElement('select');
+  ENTITY_KINDS.forEach((k) => {
+    const opt = document.createElement('option');
+    opt.value = k;
+    opt.textContent = (ENTITY_KIND_ICONS[k] || '') + ' ' + k.charAt(0).toUpperCase() + k.slice(1);
+    if (k === draft.kind) opt.selected = true;
+    kindSel.appendChild(opt);
+  });
+
+  const nameInput = document.createElement('input');
+  nameInput.placeholder = 'Name';
+  nameInput.value = draft.name || '';
+
+  const subtypeInput = document.createElement('input');
+  subtypeInput.placeholder = 'Subtype (optional)';
+  subtypeInput.value = draft.subtype || '';
+
+  const folderInput = document.createElement('input');
+  folderInput.placeholder = 'Folder (optional, "A/B" to nest)';
+  folderInput.value = draft.folder || '';
+
+  const row1 = document.createElement('div');
+  row1.className = 'entity-draft-row';
+  row1.append(kindSel, nameInput);
+  const row2 = document.createElement('div');
+  row2.className = 'entity-draft-row';
+  row2.append(subtypeInput, folderInput);
+
+  const tagsInput = document.createElement('input');
+  tagsInput.placeholder = 'Tags (comma-separated)';
+  tagsInput.value = draft.tags || '';
+
+  const summaryInput = document.createElement('input');
+  summaryInput.placeholder = 'One-line summary';
+  summaryInput.value = draft.summary || '';
+
+  const bodyTa = document.createElement('textarea');
+  bodyTa.rows = 6;
+  bodyTa.placeholder = 'Full write-up (Markdown)';
+  bodyTa.value = draft.body || '';
+
+  const visLabel = document.createElement('label');
+  visLabel.className = 'entity-draft-check';
+  const visCb = document.createElement('input');
+  visCb.type = 'checkbox';
+  visCb.checked = draft.visible_to_players !== false;
+  visLabel.append(visCb, document.createTextNode('Visible to players'));
+
+  const actions = document.createElement('div');
+  actions.className = 'entity-draft-actions';
+  const createBtn = document.createElement('button');
+  createBtn.type = 'button';
+  createBtn.className = 'save-note-btn';
+  createBtn.textContent = '✓ Create Entity';
+  const discardBtn = document.createElement('button');
+  discardBtn.type = 'button';
+  discardBtn.className = 'save-note-btn';
+  discardBtn.textContent = '✕ Discard';
+  discardBtn.onclick = () => card.remove();
+  const status = document.createElement('span');
+  status.style.cssText = 'font-size:.78rem;color:var(--text-dim)';
+
+  createBtn.onclick = async () => {
+    const name = nameInput.value.trim();
+    if (!name) { alert('Name is required.'); return; }
+    createBtn.disabled = true;
+    status.textContent = 'Creating…';
+    const entityJson = {
+      kind: kindSel.value,
+      name,
+      subtype: subtypeInput.value.trim() || undefined,
+      folder: folderInput.value.trim() || undefined,
+      tags: tagsInput.value.trim() || undefined,
+      summary: summaryInput.value.trim() || undefined,
+      body: bodyTa.value.trim() || undefined,
+      visible_to_players: visCb.checked,
+    };
+    try {
+      const res = await fetch('/api/import/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ json_text: JSON.stringify(entityJson), kind: 'entity_single' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      status.innerHTML = `✓ Created — <a href="${data.redirect}" target="_blank">view entity</a>`;
+      createBtn.remove();
+      discardBtn.textContent = 'Close';
+    } catch (e) {
+      status.textContent = 'Failed: ' + (e.message || e);
+      createBtn.disabled = false;
+    }
+  };
+
+  actions.append(createBtn, discardBtn, status);
+  card.append(row1, row2, tagsInput, summaryInput, bodyTa, visLabel, actions);
+  return card;
+}
+
 // Turns an assistant reply into an image: asks the chat model to condense it
 // into an image-generation prompt (same idea as "Build from World Lore" in
 // the Image Studio tab, just sourced from a chat message instead of a
@@ -2273,6 +2428,7 @@ async function sendMessage() {
       history.push({ role: 'assistant', content: fullText });
       addSaveBtn(thinking.parentElement, fullText);
       addIllustrateBtn(thinking, thinking.parentElement, fullText);
+      addSaveEntityBtn(thinking, thinking.parentElement, fullText);
       autoSave();
     }
   } catch (e) {

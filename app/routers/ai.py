@@ -13,6 +13,7 @@ from typing import List, Optional
 from pathlib import Path as _Path
 from .. import ai as _ai
 from .. import audio_jobs as _audio_jobs
+from ..constants import KINDS
 from ..database import get_db
 from ..deps import get_world_ctx
 from ..models import AudioJob, ChatSession
@@ -267,6 +268,32 @@ def _build_ollama_messages(messages: List[ChatMessage]) -> list[dict]:
 async def ai_chat(body: ChatBody):
     msgs = _build_ollama_messages(body.messages)
     return {"result": await _ai.generate_chat(msgs, body.system, body.model)}
+
+
+class EntityFromTextBody(BaseModel):
+    text: str
+
+
+@router.post("/entity-from-text")
+async def api_entity_from_text(
+    body: EntityFromTextBody, request: Request, db=Depends(get_db), active_world: str = Cookie(None),
+):
+    """Draft a world entity from a passage of text (an AI Chat reply) —
+    returns the draft without writing anything; the client reviews/edits it,
+    then POSTs the confirmed shape to /api/import/execute (kind=entity_single)
+    to actually create it. GM-only, matching the /ai page itself."""
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(400, "No text provided")
+    try:
+        draft = await _ai.parse_entity_from_text(text, KINDS)
+    except ValueError as exc:
+        raise HTTPException(502, str(exc))
+    return draft
 
 
 # ── Saved chat conversations (ai_chat.html's History sidebar) ──────────────
