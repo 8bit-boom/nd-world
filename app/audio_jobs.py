@@ -86,12 +86,33 @@ async def _run_job(job_id: int, audio_path: Path, purpose: str, delete_after: bo
             _set(status="done", recap=recap)
         else:
             _set(status="done")
+    except asyncio.CancelledError:
+        # cancel_job() below calls Task.cancel() — record it as a distinct
+        # outcome (not "error") before letting the cancellation actually
+        # propagate, so the row doesn't sit at whatever status it was in
+        # forever (a GM cancelling from the Background Jobs tab is the only
+        # way this fires; a process restart goes through
+        # sweep_interrupted_jobs instead, since there's no task to cancel).
+        _set(status="cancelled", error="Cancelled by GM.")
+        raise
     except Exception as exc:
         _log.exception("audio job %s failed", job_id)
         _set(status="error", error=f"{type(exc).__name__}: {exc}")
     finally:
         if delete_after:
             audio_path.unlink(missing_ok=True)
+
+
+def cancel_job(job_id: int) -> bool:
+    """Cancel an in-flight job's background task. Returns False if the job
+    isn't currently running (already finished, or never started in this
+    process — e.g. the id is stale/unknown), in which case the caller
+    should treat it as a no-op rather than an error."""
+    task = _running_tasks.get(job_id)
+    if not task or task.done():
+        return False
+    task.cancel()
+    return True
 
 
 def sweep_interrupted_jobs() -> None:

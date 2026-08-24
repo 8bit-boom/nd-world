@@ -47,6 +47,7 @@ STATIC_CATALOG = [
     {"id": "calendar", "label": "Calendar", "icon": "🗓", "href": "/calendar", "gm_only": True},
     {"id": "images", "label": "Images", "icon": "🖼", "href": "/images", "gm_only": True},
     {"id": "import", "label": "Import", "icon": "📥", "href": "/import", "gm_only": True},
+    {"id": "background_jobs", "label": "Background Jobs", "icon": "⏳", "href": "/background-jobs", "exact": True, "gm_only": True},
     {"id": "export", "label": "Export & Backup", "icon": "📦", "href": "/export", "exact": True, "gm_only": True},
     {"id": "dreamlands", "label": "Dreamlands", "icon": "🌙", "href": "/dreamlands",
      "exact": True, "condition": "dreamlands_enabled", "gm_only": True},
@@ -82,7 +83,7 @@ for _item in STATIC_CATALOG:
 DEFAULT_NAV_MENUS = [
     {"id": "menu_tools", "label": "Tools", "icon": "🎯",
      "item_ids": ["boards", "tables", "combat", "parties", "quests", "sessions",
-                  "facts", "calendar", "images", "import", "export",
+                  "facts", "calendar", "images", "import", "export", "background_jobs",
                   "dreamlands", "king-in-yellow"]},
     {"id": "menu_ai_tools", "label": "AI Tools", "icon": "🤖",
      "item_ids": ["ai", "imagestudio", "editor"]},

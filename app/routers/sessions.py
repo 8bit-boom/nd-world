@@ -7,6 +7,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from .. import auth
@@ -123,13 +124,27 @@ def session_detail(session_id: int, request: Request, db: Session = Depends(get_
     npcs = json.loads(gs.npcs_json or "[]")
     entity_map = {e.id: e for e in db.query(Entity).filter(Entity.id.in_([n["entity_id"] for n in npcs])).all()} if npcs else {}
     npc_names = [entity_map[n["entity_id"]].name for n in npcs if entity_map.get(n["entity_id"])]
-    all_entities = db.query(Entity).filter(Entity.world_id == gs.world_id).order_by(Entity.name).all()
+    # NPC picker candidates: character/creature entities only (mirrors
+    # parties.py's companion picker), excluding anything explicitly tagged
+    # subtype="PC" — a player's own mechanical sheet lives in
+    # PlayerCharacter, not Entity, so a character Entity is either an NPC or
+    # (rarely) a lore write-up of a PC for flavor, which "PC" marks. subtype
+    # is a suggestion, not enforced (see deps.effective_subtypes), so this
+    # is a best-effort filter, not a hard guarantee.
+    npc_candidates = (
+        db.query(Entity)
+        .filter(Entity.world_id == gs.world_id, Entity.kind.in_(("character", "creature")))
+        .filter(or_(Entity.subtype != "PC", Entity.subtype.is_(None)))
+        .order_by(Entity.folder, Entity.name)
+        .all()
+    )
     party_pc_ids = json.loads(gs.party.member_pc_ids_json or "[]") if gs.party else []
     party_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(party_pc_ids)).all() if party_pc_ids else []
     return templates.TemplateResponse("sessions/detail.html", {
         "request": request, "world": world, "worlds": worlds, "gsession": gs,
         "parties": parties, "next_num": gs.session_num, "linked_combats": linked_combats,
-        "npc_names": npc_names, "all_entities": all_entities, "party_pcs": party_pcs,
+        "npc_names": npc_names, "party_pcs": party_pcs,
+        "npc_candidates_json": [{"id": e.id, "name": e.name, "folder": e.folder or ""} for e in npc_candidates],
         "prep": json.loads(gs.prep_json or "[]"), "loot": json.loads(gs.loot_json or "[]"),
         "npcs": npcs,
     })

@@ -377,3 +377,160 @@ def test_attachment_job_list_excludes_session_recap_purpose_jobs(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     listed = client.get("/api/ai/attachments/audio-jobs").json()
     assert all(j["filename"] != "recap.mp3" for j in listed)
+
+
+# ── Unified Background Jobs page + routes: app/routers/audio_jobs.py ───────
+# Spans both purposes (unlike the purpose-scoped list routes above) and adds
+# cancel — the one thing the smaller inline panels don't offer.
+
+@pytest.fixture
+def _hanging_transcribe(monkeypatch):
+    """A transcribe_audio that never resolves on its own — only cancellation
+    can end it — so a test can reliably catch a job mid-"transcribing"
+    instead of racing a fast mock that might finish before the cancel
+    request lands."""
+    release = asyncio.Event()
+
+    async def hang(path):
+        await release.wait()
+        return "unused"
+
+    monkeypatch.setattr(ai_module, "transcribe_audio", hang)
+    return release
+
+
+def _wait_for_status(client, url, status, timeout=5.0):
+    deadline = time.time() + timeout
+    data = None
+    while time.time() < deadline:
+        r = client.get(url)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        if data["status"] == status:
+            return data
+        time.sleep(0.02)
+    raise AssertionError(f"never reached status={status!r}, last seen: {data}")
+
+
+def test_background_jobs_page_renders_for_gm(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/background-jobs")
+    assert r.status_code == 200
+    assert "Background Jobs" in r.text
+
+
+def test_background_jobs_page_requires_gm(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/background-jobs")
+    assert r.status_code == 403
+
+
+def test_unified_list_spans_both_purposes(client, seed):
+    db = SessionLocal()
+    try:
+        db.add_all([
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done", filename="recap.mp3"),
+            AudioJob(world_id=seed.world_a.id, purpose="attachment", status="done", filename="voice.mp3"),
+        ])
+        db.commit()
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/api/audio-jobs")
+    assert r.status_code == 200
+    names = {j["filename"] for j in r.json()["jobs"]}
+    assert {"recap.mp3", "voice.mp3"} <= names
+
+
+def test_unified_status_requires_gm(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done", filename="x.mp3")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 403
+
+
+def test_unified_list_cross_world_isolation(client, seed):
+    db = SessionLocal()
+    try:
+        db.add(AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done", filename="a-only.mp3"))
+        db.commit()
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_b.slug)
+    r = client.get("/api/audio-jobs")
+    assert r.status_code == 200
+    assert all(j["filename"] != "a-only.mp3" for j in r.json()["jobs"])
+
+
+def test_cancel_stops_an_in_progress_job(client, seed, _hanging_transcribe):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.post("/api/sessions/ai/audio-jobs",
+                     files={"file": ("clip.mp3", io.BytesIO(b"fake"), "audio/mpeg")})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+
+    _wait_for_status(client, f"/api/audio-jobs/{job_id}", "transcribing")
+
+    r = client.post(f"/api/audio-jobs/{job_id}/cancel")
+    assert r.status_code == 200, r.text
+
+    data = None
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        r = client.get(f"/api/audio-jobs/{job_id}")
+        data = r.json()
+        if data["status"] != "transcribing":
+            break
+        time.sleep(0.02)
+    assert data["status"] == "cancelled", data
+    assert "cancel" in data["error"].lower()
+
+
+def test_cancel_rejects_a_job_thats_not_running(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done", filename="x.mp3")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/api/audio-jobs/{job_id}/cancel")
+    assert r.status_code == 400
+
+
+def test_cancel_requires_gm(client, seed, _hanging_transcribe):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/audio-jobs",
+                     files={"file": ("clip.mp3", io.BytesIO(b"fake"), "audio/mpeg")})
+    job_id = r.json()["job_id"]
+    _wait_for_status(client, f"/api/audio-jobs/{job_id}", "transcribing")
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/api/audio-jobs/{job_id}/cancel")
+    assert r.status_code == 403
+
+    # Clean up: the hanging task would otherwise linger past this test.
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post(f"/api/audio-jobs/{job_id}/cancel")

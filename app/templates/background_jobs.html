@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+{% block title %}Background Jobs — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="list-header">
+  <h1>⏳ Background Jobs</h1>
+</div>
+<p style="color:var(--text-dim);font-size:.85rem;margin:-.5rem 0 1rem">
+  Every durable audio-transcription job started from a "🔒 Process in Background" button (Session recap, Whisper Test, AI Chat/Ask AI attachments) — these keep running here even if the tab that started them is closed. A job still shows here after you close this page too; reopen it any time to check on things or cancel one.
+</p>
+
+<div id="bg-jobs-list"></div>
+<p id="bg-jobs-empty" style="color:var(--text-dim);text-align:center;padding:2rem;display:none">No background jobs yet.</p>
+
+<style>
+.bg-job-card { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:1rem; margin-bottom:.75rem; }
+.bg-job-card--error { border-color:#a33; }
+.bg-job-card--cancelled { opacity:.7; }
+.bg-job-head { display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; margin-bottom:.5rem; }
+.bg-job-filename { font-weight:bold; font-size:.9rem; flex:1; min-width:160px; word-break:break-word; }
+.bg-job-purpose { font-size:.7rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; background:var(--bg3); border:1px solid var(--border); border-radius:3px; padding:.15rem .5rem; }
+.bg-job-status-label { font-size:.8rem; }
+.bg-job-status-label--error { color:#e07; }
+.bg-job-status-label--cancelled { color:var(--text-dim); }
+.bg-job-status-label--done { color:var(--neon); }
+.bg-job-time { font-size:.72rem; color:var(--text-dim); }
+.bg-job-actions { display:flex; gap:.5rem; margin-top:.5rem; }
+.bg-job-btn { background:var(--bg3); border:1px solid var(--border); color:var(--text-dim); padding:.3rem .7rem; font-size:.78rem; border-radius:3px; cursor:pointer; font-family:var(--font); }
+.bg-job-btn:hover { border-color:var(--neon); color:var(--neon); }
+.bg-job-btn--cancel:hover { border-color:#e07; color:#e07; }
+.bg-job-error-text { font-size:.78rem; color:#e07; margin-top:.4rem; }
+.bg-job-result { display:none; margin-top:.6rem; background:var(--bg3); border:1px solid var(--border); border-radius:4px; padding:.6rem .75rem; font-size:.82rem; white-space:pre-wrap; word-break:break-word; max-height:260px; overflow-y:auto; }
+.bg-job-result-label { font-size:.7rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; margin-top:.6rem; margin-bottom:.2rem; }
+</style>
+
+<script src="/static/js/progress-bar.js"></script>
+<script>
+const BG_LIST_URL = '/api/audio-jobs';
+const IN_PROGRESS = new Set(['pending', 'transcribing', 'summarizing']);
+const STATUS_LABEL = {
+  pending: 'Queued…', transcribing: 'Transcribing…', summarizing: 'Summarizing…',
+  done: '✓ Done', error: '✗ Failed', cancelled: '○ Cancelled',
+};
+let _bgPollTimer = null;
+const _bgExpanded = new Set();
+const _bgBars = {};
+
+function bgFmtTime(iso) {
+  if (!iso) return '';
+  try { return new Date(iso + 'Z').toLocaleString(); } catch (e) { return iso; }
+}
+
+function bgRenderJob(job) {
+  const card = document.createElement('div');
+  card.className = 'bg-job-card' + (job.status === 'error' ? ' bg-job-card--error' : '')
+    + (job.status === 'cancelled' ? ' bg-job-card--cancelled' : '');
+
+  const head = document.createElement('div');
+  head.className = 'bg-job-head';
+  const name = document.createElement('span');
+  name.className = 'bg-job-filename';
+  name.textContent = job.filename || 'audio';
+  const purpose = document.createElement('span');
+  purpose.className = 'bg-job-purpose';
+  purpose.textContent = job.purpose_label;
+  const status = document.createElement('span');
+  status.className = 'bg-job-status-label bg-job-status-label--' + job.status;
+  status.textContent = STATUS_LABEL[job.status] || job.status;
+  head.append(name, purpose, status);
+  card.appendChild(head);
+
+  const time = document.createElement('div');
+  time.className = 'bg-job-time';
+  time.textContent = 'Started ' + bgFmtTime(job.created_at);
+  card.appendChild(time);
+
+  const barWrap = document.createElement('div');
+  card.appendChild(barWrap);
+  const bar = ndProgressBar(barWrap);
+  _bgBars[job.id] = bar;
+  if (IN_PROGRESS.has(job.status)) {
+    bar.setIndeterminate(STATUS_LABEL[job.status] || job.status);
+  } else if (job.status === 'done') {
+    bar.setPercent(100, '✓ Done');
+  } else if (job.status === 'cancelled') {
+    bar.setPercent(100, '○ Cancelled');
+  } else {
+    bar.setPercent(100, '✗ Failed');
+  }
+
+  if (job.status === 'error' && job.error) {
+    const err = document.createElement('div');
+    err.className = 'bg-job-error-text';
+    err.textContent = job.error;
+    card.appendChild(err);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'bg-job-actions';
+  if (IN_PROGRESS.has(job.status)) {
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'bg-job-btn bg-job-btn--cancel';
+    cancelBtn.textContent = '✕ Cancel';
+    cancelBtn.onclick = () => bgCancelJob(job.id, cancelBtn);
+    actions.appendChild(cancelBtn);
+  }
+  if (job.status === 'done' && (job.transcript || job.recap)) {
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'bg-job-btn';
+    toggleBtn.textContent = _bgExpanded.has(job.id) ? 'Hide result' : 'View result';
+    toggleBtn.onclick = () => {
+      if (_bgExpanded.has(job.id)) _bgExpanded.delete(job.id); else _bgExpanded.add(job.id);
+      bgRefresh();
+    };
+    actions.appendChild(toggleBtn);
+  }
+  if (actions.children.length) card.appendChild(actions);
+
+  if (_bgExpanded.has(job.id) && job.status === 'done') {
+    if (job.recap) {
+      const recapLabel = document.createElement('div');
+      recapLabel.className = 'bg-job-result-label';
+      recapLabel.textContent = 'Recap';
+      card.appendChild(recapLabel);
+      const recapBox = document.createElement('div');
+      recapBox.className = 'bg-job-result';
+      recapBox.style.display = 'block';
+      recapBox.textContent = job.recap;
+      card.appendChild(recapBox);
+    }
+    if (job.transcript) {
+      const tLabel = document.createElement('div');
+      tLabel.className = 'bg-job-result-label';
+      tLabel.textContent = 'Transcript';
+      card.appendChild(tLabel);
+      const tBox = document.createElement('div');
+      tBox.className = 'bg-job-result';
+      tBox.style.display = 'block';
+      tBox.textContent = job.transcript;
+      card.appendChild(tBox);
+    }
+  }
+
+  return card;
+}
+
+async function bgCancelJob(jobId, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Cancelling…';
+  try {
+    const res = await fetch(`/api/audio-jobs/${jobId}/cancel`, { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `HTTP ${res.status}`);
+    }
+  } catch (e) {
+    alert('Failed to cancel: ' + e.message);
+  }
+  bgRefresh();
+}
+
+async function bgRefresh() {
+  let jobs = [];
+  try {
+    const res = await fetch(BG_LIST_URL);
+    if (res.ok) jobs = (await res.json()).jobs;
+  } catch (e) { /* transient — next poll retries */ }
+
+  const list = document.getElementById('bg-jobs-list');
+  list.innerHTML = '';
+  document.getElementById('bg-jobs-empty').style.display = jobs.length ? 'none' : 'block';
+  jobs.forEach((job) => list.appendChild(bgRenderJob(job)));
+
+  if (_bgPollTimer) { clearTimeout(_bgPollTimer); _bgPollTimer = null; }
+  if (jobs.some((j) => IN_PROGRESS.has(j.status))) {
+    _bgPollTimer = setTimeout(bgRefresh, 3000);
+  }
+}
+
+bgRefresh();
+</script>
+{% endblock %}
