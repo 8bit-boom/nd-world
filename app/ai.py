@@ -253,6 +253,47 @@ async def resolve_model(requested: str) -> tuple[str, str | None]:
     return target, None
 
 
+_BENCHMARK_PROMPT = "Write a two-sentence description of a rainy city street at night."
+
+
+async def benchmark_model(model: str) -> dict:
+    """Run a short fixed prompt against `model` (non-streamed) and report
+    Ollama's own generation timing/token-count metadata (real server-side
+    throughput) instead of the chat UI's existing client-side "tokens seen
+    over wall-clock SSE time" estimate, which bakes in network/rendering
+    overhead. Raises ValueError on any failure, same pattern as
+    generate_session_prep/parse_facts_from_recap."""
+    m = model or effective_ollama_model()
+    try:
+        resp = await _client().chat(
+            model=m,
+            messages=[{"role": "user", "content": _BENCHMARK_PROMPT}],
+            **_chat_kwargs(),
+        )
+    except _ollama.ResponseError as exc:
+        raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
+    except Exception as exc:
+        raise ValueError(f"AI unavailable: {type(exc).__name__}: {exc}") from exc
+
+    eval_count = getattr(resp, "eval_count", 0) or 0
+    eval_duration = getattr(resp, "eval_duration", 0) or 0
+    prompt_eval_count = getattr(resp, "prompt_eval_count", 0) or 0
+    prompt_eval_duration = getattr(resp, "prompt_eval_duration", 0) or 0
+    load_duration = getattr(resp, "load_duration", 0) or 0
+    total_duration = getattr(resp, "total_duration", 0) or 0
+    tps = (eval_count / (eval_duration / 1e9)) if eval_duration else 0.0
+    prompt_tps = (prompt_eval_count / (prompt_eval_duration / 1e9)) if prompt_eval_duration else 0.0
+    return {
+        "model": m,
+        "tokens_per_sec": round(tps, 1),
+        "prompt_tokens_per_sec": round(prompt_tps, 1),
+        "eval_count": eval_count,
+        "eval_duration_ms": round(eval_duration / 1e6, 1),
+        "prompt_eval_count": prompt_eval_count,
+        "prompt_eval_duration_ms": round(prompt_eval_duration / 1e6, 1),
+        "load_duration_ms": round(load_duration / 1e6, 1),
+        "total_duration_ms": round(total_duration / 1e6, 1),
+    }
 
 
 async def resident_models() -> list[dict]:

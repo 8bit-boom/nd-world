@@ -4371,16 +4371,64 @@ function mpRender(models, available) {
     delBtn.onclick = () => mpDeleteModel(m.id, m.loaded, card);
     actions.appendChild(delBtn);
 
+    const benchKey = 'mp-bench-' + btoa(m.id).replace(/[^a-z0-9]/gi,'');
+    if (m.loaded) {
+      const benchBtn = document.createElement('button');
+      benchBtn.className = 'ig-btn';
+      benchBtn.id = benchKey;
+      benchBtn.textContent = '⚡ Benchmark';
+      benchBtn.title = 'Run a short fixed prompt and measure tokens/sec';
+      benchBtn.onclick = () => mpBenchmark(m.id, benchKey);
+      actions.appendChild(benchBtn);
+    }
+
     // Progress bar (hidden until pulling)
     const progWrap = document.createElement('div');
     progWrap.id = 'mp-prog-' + btoa(m.id).replace(/[^a-z0-9]/gi,'');
     progWrap.style.cssText = 'display:none';
     progWrap.innerHTML = '<div style="font-size:.72rem;color:var(--neon);margin-bottom:.2rem" class="mp-prog-label">Pulling…</div><div style="height:4px;background:var(--bg3);border-radius:2px;overflow:hidden"><div class="mp-prog-bar" style="height:100%;width:0%;background:var(--neon);border-radius:2px;transition:width .2s"></div></div>';
 
+    const benchResult = document.createElement('div');
+    benchResult.id = benchKey + '-result';
+    benchResult.style.cssText = 'font-size:.72rem;color:var(--text-dim);display:none';
+
     card.appendChild(topRow);
     card.appendChild(actions);
     card.appendChild(progWrap);
+    card.appendChild(benchResult);
     list.appendChild(card);
+  }
+}
+
+async function mpBenchmark(modelId, benchKey) {
+  const btn = document.getElementById(benchKey);
+  const resultEl = document.getElementById(benchKey + '-result');
+  if (!btn || !resultEl) return;
+  btn.disabled = true;
+  const origLabel = btn.textContent;
+  btn.textContent = '⏳ Running…';
+  resultEl.style.display = 'block';
+  resultEl.style.color = 'var(--text-dim)';
+  resultEl.textContent = 'Benchmarking…';
+  try {
+    const r = await fetch('/api/ai/benchmark', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: modelId }),
+    });
+    if (!r.ok) {
+      let detail = '';
+      try { detail = (await r.json()).detail || ''; } catch (e) {}
+      throw new Error(detail || `HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    resultEl.style.color = 'var(--neon)';
+    resultEl.textContent = `⚡ ${d.tokens_per_sec} tok/s generation (${d.eval_count} tokens in ${(d.eval_duration_ms / 1000).toFixed(1)}s) · ${d.prompt_tokens_per_sec} tok/s prompt · ${(d.load_duration_ms / 1000).toFixed(2)}s load`;
+  } catch (e) {
+    resultEl.style.color = '#c44';
+    resultEl.textContent = '✗ Benchmark failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origLabel;
   }
 }
 

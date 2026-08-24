@@ -901,6 +901,19 @@ async def ai_delete_preset(label: str):
     return {"ok": True, "presets": _ai.list_presets()}
 
 
+class BenchmarkBody(BaseModel):
+    model: str = ""
+
+
+@router.post("/benchmark")
+async def ai_benchmark(body: BenchmarkBody, request: Request):
+    _require_gm(request)
+    try:
+        return await _ai.benchmark_model(body.model)
+    except ValueError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
 @router.get("/debug")
 async def ai_debug():
     return await _ai.debug_info()
