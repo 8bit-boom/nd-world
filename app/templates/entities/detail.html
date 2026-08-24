@@ -215,6 +215,10 @@
   <details class="ai-panel" id="ep-panel" data-dropzone>
     <summary>🤖 Ask AI about {{ entity.name }}</summary>
     <div class="ai-panel-body">
+      <div class="ep-mode-row" style="display:flex;gap:.4rem;margin-bottom:.5rem">
+        <button type="button" id="ep-mode-ask" class="ep-mode-btn ep-mode-active" onclick="epSetMode('ask')">💬 Ask about {{ entity.name }}</button>
+        <button type="button" id="ep-mode-roleplay" class="ep-mode-btn" onclick="epSetMode('roleplay')" title="Chat AS this entity, in character">🎭 Talk as {{ entity.name }}</button>
+      </div>
       <input type="file" id="ep-attach-input" multiple accept="image/*,audio/*,.txt,.md,.markdown,.pdf" style="display:none"
              onchange="epAttachments.addFiles(this.files); this.value='';"/>
       <input type="file" id="ep-bgjob-input" accept="audio/*" style="display:none"
@@ -297,6 +301,9 @@
 .ai-panel .ep-bar #ep-attach-btn, .ai-panel .ep-bar #ep-mic-btn, .ai-panel .ep-bar #ep-bgjob-btn { background:var(--bg3); color:var(--text-dim); border:1px solid var(--border); font-weight:400; padding:.4rem .6rem; }
 .ai-panel .ep-bar #ep-attach-btn:hover, .ai-panel .ep-bar #ep-mic-btn:hover, .ai-panel .ep-bar #ep-bgjob-btn:hover { border-color:var(--neon); color:var(--neon); }
 .ai-panel .ai-attach-list { padding:0 0 .4rem; }
+.ep-mode-btn { background:var(--bg3); color:var(--text-dim); border:1px solid var(--border); border-radius:5px; padding:.35rem .7rem; font-size:.78rem; cursor:pointer; }
+.ep-mode-btn:hover { border-color:var(--neon); color:var(--text); }
+.ep-mode-btn.ep-mode-active { background:var(--neon); color:#000; border-color:var(--neon); font-weight:600; }
 .ai-panel.drag-over { outline:2px dashed var(--neon); outline-offset:-3px; }
 </style>
 
@@ -338,6 +345,7 @@ function _mdToHtml(text) {
 function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 (function(){
+  const ENTITY_NAME = {{ entity.name | tojson }};
   const ENTITY_CTX = {{ (
     entity.kind|capitalize + ': ' + entity.name
     + ('\nSubtype: ' + entity.subtype if entity.subtype else '')
@@ -345,8 +353,26 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
     + ('\n\n' + (entity.body or '')[:3000] if entity.body else '')
   ) | tojson }};
 
-  const EP_SYSTEM = "You are a world-building assistant. Answer questions about the entity provided. Be concise and in-world.";
+  const EP_SYSTEM_ASK = "You are a world-building assistant. Answer questions about the entity provided. Be concise and in-world.";
+  const EP_SYSTEM_ROLEPLAY = (
+    "You are roleplaying AS the entity described below, speaking entirely in first person and in "
+    + "character — never as a narrator or assistant, never breaking character to explain yourself. "
+    + "Infer this character's voice, personality, and manner of speech from the context given. If "
+    + "asked about something the character wouldn't plausibly know, respond the way the character "
+    + "actually would (deflect, guess, get confused, or admit ignorance in-character) rather than "
+    + "stepping outside the role to say you don't have that information."
+  );
+  let epMode = 'ask';
   let epHistory = [];
+
+  window.epSetMode = function(mode) {
+    epMode = mode;
+    document.getElementById('ep-mode-ask').classList.toggle('ep-mode-active', mode === 'ask');
+    document.getElementById('ep-mode-roleplay').classList.toggle('ep-mode-active', mode === 'roleplay');
+    document.getElementById('ep-input').placeholder = mode === 'roleplay'
+      ? 'Say something to ' + ENTITY_NAME + '… (Enter to send)'
+      : 'Ask about this entity… (Enter to send)';
+  };
   window.epAttachments = ndAiAttachments(document.getElementById('ep-attach-list'), document.getElementById('ep-jobs-panel'), () => {
     document.getElementById('ep-send').disabled = epAttachments.hasPending();
   });
@@ -369,13 +395,13 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
     try {
       const messages = [
         { role: 'user', content: 'Entity context:\n\n' + ENTITY_CTX },
-        { role: 'assistant', content: 'Understood.' },
+        { role: 'assistant', content: epMode === 'roleplay' ? 'Understood — I will speak as this character.' : 'Understood.' },
         ...epHistory
       ];
       const res = await fetch('/api/ai/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages, system: EP_SYSTEM, surface: 'ask_ai' })
+        body: JSON.stringify({ messages, system: epMode === 'roleplay' ? EP_SYSTEM_ROLEPLAY : EP_SYSTEM_ASK, surface: 'ask_ai' })
       });
       if (!res.ok) throw new Error('Server error ' + res.status);
       bubble.parentElement.classList.remove('ai-thinking');
