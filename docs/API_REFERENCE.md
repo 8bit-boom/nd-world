@@ -2,7 +2,7 @@
 
 Every HTTP route exposed by nd-world (`app/main.py` + `app/routers/*.py`), grouped by
 feature area, plus the MCP server's tools (`app/mcp_server.py`). Generated from a full
-audit of the route table — **296 HTTP routes** and **8 MCP tools** as of this writing.
+audit of the route table — **366 HTTP routes** and **8 MCP tools** as of this writing.
 
 This is a reference for developers and AI agents working on the codebase, not
 end-user documentation — see the [README](../README.md) for how to use the app
@@ -156,7 +156,10 @@ worlds they've been invited into (`WorldMembership`).
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/kind/{kind}` | Player | Paginated/searchable list of entities of one kind, filtered to what the caller may see. |
+| GET | `/kind/{kind}/download.zip` | Player* | Downloads every visible entity of a kind as one `.md` file per entity, zipped. GM always; a player only once the world's `players_can_download_entities` toggle is on. |
+| GET | `/kind/{kind}/download-selected.zip` | Player* | Same, but only the checkbox-selected entities (bulk-action bar), via `?id=` query params. |
 | GET | `/entity/{entity_id}` | Player | Entity detail page: body, notes, links to other entities, image gallery. |
+| GET | `/entity/{entity_id}/download.md` | Player* | Downloads the entity (body + visible notes) as a `.md` file. GM always; a player only once `players_can_download_entities` is on — independent of whether the entity itself is visible to them (`_entity_view_gate` still 404s a hidden/inaccessible entity first). |
 | GET | `/api/entity/{entity_id}/preview` | Player | Hover-preview popup content (name/summary/image) for the base-template's link-hover feature. |
 | GET | `/api/hover-preview/config` | Player | Instance-wide hover-preview timing/size settings (Settings > Options). |
 | GET | `/new` | GM | New-entity form (kind chosen via query param). |
@@ -279,10 +282,18 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/sessions/{session_id}/prep/toggle` | GM | Toggles a prep checklist item. |
 | POST | `/api/sessions/{session_id}/prep/add` | GM | Adds a prep checklist item. |
 | POST | `/api/sessions/{session_id}/prep/{idx}/delete` | GM | Removes a prep checklist item. |
+| POST | `/api/sessions/{session_id}/prep/generate` | GM | AI: drafts a prep checklist from the prior session's recap/facts, the world's open quests, and the assigned party — returned for review, not written until confirmed items are POSTed to `prep/add`. |
 | POST | `/api/sessions/{session_id}/xp` | GM | Records XP awarded this session. |
 | POST | `/api/sessions/{session_id}/loot/transfer` | GM | Transfers loot from the session log to a party/character. |
 | POST | `/api/sessions/ai/expand-notes` | GM | AI: expands terse GM notes (from the Summary textarea) into a written narrative recap via the local Ollama model. |
 | POST | `/api/sessions/ai/condense-recap` | GM | AI: condenses/tightens an existing recap. |
+| POST | `/api/sessions/ai/summarize-from-audio` | GM | AI: transcribes an uploaded/mic-recorded session audio clip via Whisper (biased by the world's name glossary) and summarizes it into a recap — session-independent, usable on the New Session form. |
+| POST | `/api/sessions/ai/summarize-from-audio/chunk`, `/api/sessions/ai/summarize-from-audio/complete` | GM | Chunked variant of the above for a recording over the direct-upload size threshold. |
+| POST | `/api/sessions/ai/audio-jobs`, `/api/sessions/ai/audio-jobs/chunk`, `/api/sessions/ai/audio-jobs/complete` | GM | Transcribe (and, for `session_recap`, summarize) a session recording as a durable background job instead of blocking the upload request. |
+| GET | `/api/sessions/ai/audio-jobs/{job_id}`, `/api/sessions/ai/audio-jobs` | GM | Poll one session audio job, or list them. |
+| POST | `/api/sessions/{session_id}/live-transcript/append` | GM | Transcribes one ~1-minute chunk of a live session recording via Whisper and appends it to the session's running live transcript. |
+| POST | `/api/sessions/{session_id}/live-transcript/clear` | GM | Clears the accumulated live transcript. |
+| POST | `/api/sessions/{session_id}/ai/summarize-live-transcript` | GM | AI: summarizes the accumulated live transcript into a recap. |
 | POST | `/api/sessions/{session_id}/ai/summarize-from-facts` | GM | AI: weaves this session's logged `Fact` rows (all of them, secret or not) into a narrative recap. |
 | GET | `/session-log` | Player | Player-facing list of sessions (title/date/number only — never the GM's raw summary). |
 | GET | `/session-log/{session_id}` | Player | Player-facing session page; fetches its AI recap client-side. 404s if the session's world isn't one the caller belongs to. |
@@ -452,6 +463,7 @@ worlds they've been invited into (`WorldMembership`).
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/rules` | Player | Rendered rules page with an auto-generated table of contents. |
+| GET | `/rules/download.md` | Player* | Downloads the rules as a `.md` file. GM always; a player only once the world's `players_can_download_rules` toggle is on (`world_edit.html`) — 403 otherwise. |
 | GET | `/worlds/{world_id}/rules/edit` | GM | Rules edit form (raw Markdown). |
 | POST | `/worlds/{world_id}/rules/edit` | GM | Saves rules Markdown. |
 | POST | `/worlds/{world_id}/rules/import` | GM | Imports rules from a JSON file shaped `{"rules_md": "...markdown..."}`. |
@@ -489,26 +501,49 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/ai` | GM | AI chat page (Chat / Image Gen / Models tabs). |
+| GET | `/ai` | GM | AI chat page (Chat / Image Gen / Models / Whisper / Starred tabs). |
 | GET | `/api/ai/world-context` | GM | Keyword-search RAG context (relevant entities) for the current chat, unfiltered by player visibility. |
-| POST | `/api/ai/world-context-smart` | GM | Same, with an LLM-assisted relevance pass instead of plain keyword search. |
+| POST | `/api/ai/world-context-smart` | GM | Same, backed by an FTS5 full-text index over entity name/summary/body/tags (falls back to plain `LIKE` if FTS5 is unavailable) — also returns `entities` (what was actually retrieved, for the RAG transparency panel/pinning). |
 | POST | `/api/ai/save-note` | GM | Saves an AI chat response as a note on an entity. |
 | POST | `/api/ai/generate/entity-smart` | GM | Generates a full draft entity (name/summary/body) from a prompt, with world context. |
+| POST | `/api/ai/entity-from-text` | GM | Turns a pasted/dictated passage into a draft entity. |
 | POST | `/api/ai/chat` | GM | Non-streaming chat completion. |
-| POST | `/api/ai/stream` | GM | Streaming chat completion (SSE). |
+| POST | `/api/ai/stream` | GM* | Streaming chat completion (SSE) — GM always; a player may if the active world's `players_can_ask_ai` is on. Accepts a per-request `options` (temperature/top_p/etc, clamped) and a `surface` for per-surface default-model fallback; the SSE stream leads with a `note` event if the requested model had to be fuzzy-matched to an available one. |
 | GET | `/api/ai/models` | GM | Lists available/known Ollama models with loaded/builtin flags. |
+| GET | `/api/ai/resident` | GM | Models actually resident in memory (VRAM/RAM), for the Models tab's residency cockpit. |
+| POST | `/api/ai/unload` | GM | Unloads a model from memory. |
+| GET | `/api/ai/defaults` | GM | Per-surface (`chat`/`ask_ai`/`image`) default model ids. |
+| POST | `/api/ai/defaults` | GM | Sets a surface's default model. |
+| GET | `/api/ai/presets` | GM | Lists chat presets (saved `{label, model, system_extra, options}` bundles). |
+| POST | `/api/ai/presets` | GM | Saves/updates a chat preset (upsert by label). |
+| DELETE | `/api/ai/presets/{label}` | GM | Deletes a chat preset. |
+| GET | `/api/ai/prompt-presets` | GM | Lists the prompt library for a scope (`chat` Quick Prompts or `image` Image Studio presets) — lazy-seeds the 8 default Quick Prompts on a world's first fetch. |
+| POST | `/api/ai/prompt-presets` | GM | Adds a prompt library entry. |
+| DELETE | `/api/ai/prompt-presets/{preset_id}` | GM | Deletes a prompt library entry. |
+| POST | `/api/ai/benchmark` | GM | Runs a short fixed prompt against a model and reports Ollama's own tok/s throughput (generation + prompt-eval) and load time. |
 | GET | `/api/ai/debug` | GM | Raw Ollama connection debug info. |
 | POST | `/api/ai/models/add` | GM | Adds a model to the picker (built-in unhide, or a custom model id). |
 | POST | `/api/ai/models/remove` | GM | Hides a built-in model or removes a custom one; can also delete it from Ollama. |
 | POST | `/api/ai/models/reset` | GM | Restores all built-in models (clears the hidden list). |
 | POST | `/api/ai/pull` | GM | Streams progress while pulling a model into Ollama (SSE). |
+| GET/POST/DELETE | `/api/ai/sessions`, `/api/ai/sessions/{id}` | GM | AI Chat History — list, save, load, and delete a persisted chat conversation (`ChatSession`). |
+| POST | `/api/ai/attachments/upload` | GM* | Attaches an image/audio/document to a chat message — audio is transcribed via Whisper and documents text-extracted inline. |
+| POST | `/api/ai/attachments/upload/chunk`, `/api/ai/attachments/upload/complete` | GM* | Chunked variant of the above for an attachment over the direct-upload size threshold. |
+| POST | `/api/ai/attachments/audio-jobs`, `/api/ai/attachments/audio-jobs/chunk`, `/api/ai/attachments/audio-jobs/complete` | GM* | Transcribe a chat voice attachment as a durable background job instead of blocking the upload request. |
+| GET | `/api/ai/attachments/audio-jobs/{job_id}`, `/api/ai/attachments/audio-jobs` | GM* | Poll one attachment transcription job, or list them. |
+| GET | `/api/ai/whisper/model-status` | GM | Whether the Whisper model is downloaded, and which known models exist. |
+| POST | `/api/ai/whisper/pull` | GM | Streams progress while downloading a Whisper model (SSE). |
+| GET | `/api/ai/whisper/glossary` | GM | The active world's Whisper name glossary (campaign vocabulary hinted to every session-recording transcription). |
+| POST | `/api/ai/whisper/glossary` | GM | Saves the world's Whisper glossary. |
 | POST | `/api/ai/generate/entity` | GM | Generates an expanded description for a named entity. |
 | POST | `/api/ai/generate/npc` | GM | Generates an NPC backstory/personality. |
 | POST | `/api/ai/generate/location` | GM | Generates a location description. |
 | POST | `/api/ai/generate/quest` | GM | Generates a quest hook. |
 | POST | `/api/ai/status` | GM | Ollama connectivity/model status. |
-| GET | `/api/ai/test-chat` | GM | Single-turn non-streaming smoke test — surfaces the exact Ollama error for a given model id. |
+| GET | `/api/ai/test-chat` | GM | Single-turn non-streaming smoke test — surfaces the exact Ollama error for a given model id, plus a `note` if it had to be fuzzy-matched. |
 | GET | `/api/ai/ping` | GM | SSE smoke test that streams 5 dummy tokens without touching Ollama, to isolate transport issues from model issues. |
+
+\* GM always; a player may if the active world's `players_can_ask_ai` is on (same axis `/api/ai/stream` uses) — these routes back the per-entity "Ask AI" / "Talk as this NPC" panel, not the GM-only `/ai` World Chat page.
 
 ## AI — Image Generation
 

@@ -64,9 +64,14 @@ player account will get 403s from all of the above.
 - This is a small, single-tenant, self-hosted app — don't introduce rate
   limiting, multi-tenancy, or other enterprise-scale abstractions that
   weren't asked for.
-- There is currently no automated test suite in this repo (only
-  `.github/workflows/docker-publish.yml`, which builds/pushes the Docker
-  image) — don't assume `pytest` or similar exists to run.
+- There IS an automated test suite: `tests/*.py`, run with
+  `python3 -m pytest -q` (dependencies in `requirements-dev.txt`, including
+  `pytest-asyncio` for the `async def test_...` cases). It's large — well
+  over 1000 tests — so a full run takes a while; scope to the relevant
+  `tests/test_*.py` file(s) while iterating and run the full suite before
+  considering a change done. Never run more than one `pytest` invocation at
+  once against the same DB_PATH. `.github/workflows/docker-publish.yml`
+  only builds/pushes the Docker image — it does not run this suite.
 
 ## License — code vs. content are different
 
