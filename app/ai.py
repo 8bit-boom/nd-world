@@ -229,22 +229,30 @@ async def _list_loaded() -> list[str]:
         return []
 
 
-async def resolve_model(requested: str) -> str:
+async def resolve_model(requested: str) -> tuple[str, str | None]:
+    """Resolve a possibly-short model id (e.g. "llama3") against what's
+    actually available (e.g. "llama3:latest"). Returns (model, note) —
+    `note` is a short human-readable string set only when the resolved
+    model differs from what was requested, so callers can surface the
+    substitution instead of it happening invisibly. When nothing available
+    even loosely matches, the request is returned UNCHANGED rather than
+    falling back to an arbitrary unrelated model — the caller's own Ollama
+    call then fails with a clear "model not found" error instead of
+    silently answering from the wrong model."""
     target = requested or effective_ollama_model()
     available = await _list_loaded()
-    if not available:
-        return target
-    if target in available:
-        _log.info("resolve_model exact: %s", target)
-        return target
+    if not available or target in available:
+        return target, None
     tl = target.lower()
     for a in available:
         al = a.lower()
         if tl == al or tl in al or al in tl:
             _log.info("resolve_model %r → %r", target, a)
-            return a
-    _log.warning("resolve_model no match for %r, using %r", target, available[0])
-    return available[0]
+            return a, f"Using {a} (closest match to requested “{target}”)"
+    _log.warning("resolve_model no match for %r among %d available", target, len(available))
+    return target, None
+
+
 
 
 async def resident_models() -> list[dict]:

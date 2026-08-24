@@ -776,13 +776,15 @@ async def ai_stream(
     options = _clamp_options(body.options)
     _log.info("stream requested model=%r surface=%r msgs=%d", requested, body.surface, len(body.messages))
 
-    async def _chat():
-        model = await _ai.resolve_model(requested)
+    async def _chat(model: str):
         async for token in _ai.stream_chat(msgs, body.system, model, options):
             yield token
 
     async def _gen():
-        async for token in _with_heartbeat(_chat()):
+        model, note = await _ai.resolve_model(requested)
+        if note:
+            yield f"data: {_json.dumps({'note': note})}\n\n"
+        async for token in _with_heartbeat(_chat(model)):
             if token is None:
                 yield ": keep-alive\n\n"
             else:
@@ -1522,13 +1524,13 @@ async def api_imagegen_generate(body: ImagegenBody):
 @router.get("/test-chat")
 async def ai_test_chat(model: str = ""):
     """Non-streaming single-turn test. Shows exact Ollama error for a given model ID."""
-    resolved = await _ai.resolve_model(model)
+    resolved, note = await _ai.resolve_model(model)
     result = await _ai.generate_chat(
         [{"role": "user", "content": "Say only the word OK."}],
         system="",
         model=resolved,
     )
-    return {"requested": model, "resolved": resolved, "result": result}
+    return {"requested": model, "resolved": resolved, "note": note, "result": result}
 
 
 @router.get("/ping")

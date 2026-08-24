@@ -34,7 +34,7 @@ def _set_world(world_id, **kw):
 
 
 async def _fake_resolve_model(requested):
-    return requested or "fake-model"
+    return requested or "fake-model", None
 
 
 async def _fake_stream_chat(messages, system="", model="", options=None):
@@ -126,7 +126,7 @@ def test_ai_stream_falls_back_to_surface_default_when_model_blank(client, seed, 
 
     async def _capturing_resolve_model(requested):
         captured["requested"] = requested
-        return "resolved-model"
+        return "resolved-model", None
     monkeypatch.setattr(ai_module, "resolve_model", _capturing_resolve_model)
     monkeypatch.setattr(ai_module, "stream_chat", _fake_stream_chat)
 

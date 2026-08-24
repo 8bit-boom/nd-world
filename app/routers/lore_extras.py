@@ -277,7 +277,7 @@ async def kiy_generate(req: _KiyGenerateReq = _KiyGenerateReq()):
     )
 
     async def _gen():
-        model = await _ai_module.resolve_model(req.model or "")
+        model, _note = await _ai_module.resolve_model(req.model or "")
         async for token in _ai_module.stream_chat(
             [{"role": "user", "content": "Write the play. Begin with ACT I."}], system=system, model=model,
         ):
@@ -298,7 +298,7 @@ async def kiy_build_model():
     if not plays:
         raise HTTPException(400, "No training plays saved yet")
 
-    base_model = await _ai_module.resolve_model("")
+    base_model, _note = await _ai_module.resolve_model("")
     system = (
         "You are the anonymous author of THE KING IN YELLOW — a forbidden two-act play "
         "set in the mythical city of CARCOSA. Write unique, atmospheric plays every time. "

@@ -285,7 +285,7 @@ def test_image_attachment_path_traversal_is_ignored(tmp_path, monkeypatch):
 # ── /api/ai/stream end to end with an attachment ────────────────────────────
 
 async def _fake_resolve_model(requested):
-    return requested or "fake-model"
+    return requested or "fake-model", None
 
 
 async def _fake_stream_chat(messages, system="", model="", options=None):
