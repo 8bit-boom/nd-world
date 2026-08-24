@@ -466,17 +466,97 @@ _SUMMARIZE_TRANSCRIPT_SYSTEM = (
     "that aren't in the transcript. Respond with the recap text only, no preamble or commentary."
 )
 
+_SUMMARIZE_TRANSCRIPT_CHUNK_SYSTEM = (
+    "You are a scribe for a tabletop RPG campaign. Below is ONE PART of a longer raw Whisper "
+    "transcript of an actual-play session recording — expect filler words, misheard names, no "
+    "punctuation structure, and this excerpt starting and ending mid-scene. Extract what "
+    "happened in this part as a terse, factual list of events (who did what, what was learned, "
+    "what changed) — not polished prose yet, since this will be combined with summaries of the "
+    "other parts afterward. Skip out-of-character chatter, rules discussion, and filler. Don't "
+    "invent details that aren't in the text. Respond with the extracted events only, no preamble."
+)
+
+_SUMMARIZE_TRANSCRIPT_REDUCE_SYSTEM = (
+    "You are a scribe for a tabletop RPG campaign. Below are chronological, terse event "
+    "summaries of consecutive parts of one session — turn them into a single, short, readable "
+    "narrative recap in flowing prose (a few paragraphs, past tense, third person), preserving "
+    "every concrete event/name/detail from the parts. Don't invent anything not implied by the "
+    "parts. Respond with the recap text only, no preamble or commentary."
+)
+
+# A transcript longer than fits comfortably in one context window (a
+# multi-hour session can easily be tens of thousands of tokens) is silently
+# truncated by Ollama otherwise — the recap would quietly cover only part
+# of the session with no signal anything was lost. We can't know the
+# model's actual usable context at runtime (the GM may not have set
+# ollama_num_ctx at all, in which case Ollama/the model's own Modelfile
+# default applies — commonly as low as 2048-4096 tokens on a locally-run
+# quantized model), so these deliberately err toward smaller chunks: the
+# failure mode of chunking unnecessarily is a few extra AI calls, the
+# failure mode of not chunking is losing most of a session's transcript.
+_CHARS_PER_TOKEN_ESTIMATE = 4
+_DEFAULT_ASSUMED_CTX_TOKENS = 4096
+_CHUNK_RESERVED_TOKENS = 1200  # system prompt + response budget + margin
+
+
+def _transcript_chunk_char_budget() -> int:
+    ctx_tokens = effective_ollama_options().get("num_ctx") or _DEFAULT_ASSUMED_CTX_TOKENS
+    input_tokens = max(500, ctx_tokens - _CHUNK_RESERVED_TOKENS)
+    return input_tokens * _CHARS_PER_TOKEN_ESTIMATE
+
+
+def _split_transcript_into_chunks(transcript: str, chunk_chars: int) -> list[str]:
+    """Split on a paragraph or sentence boundary near the end of each window
+    where one exists, so a chunk doesn't get cut mid-sentence — falls back
+    to a hard cut at chunk_chars if no such boundary is found late enough
+    in the window to still make meaningful progress."""
+    if len(transcript) <= chunk_chars:
+        return [transcript]
+    chunks = []
+    pos = 0
+    n = len(transcript)
+    min_break = chunk_chars // 2
+    while pos < n:
+        end = min(pos + chunk_chars, n)
+        if end < n:
+            window = transcript[pos:end]
+            break_at = window.rfind("\n\n")
+            if break_at < min_break:
+                for sep in (". ", "! ", "? "):
+                    idx = window.rfind(sep)
+                    if idx > break_at:
+                        break_at = idx + len(sep) - 1
+            if break_at >= min_break:
+                end = pos + break_at + 1
+        chunk = transcript[pos:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        pos = end
+    return chunks
+
 
 async def summarize_transcript(transcript: str, model: str = "") -> str:
     """Turn a raw Whisper transcript (see transcribe_audio) of a session
-    recording into a narrative recap — same one-off generate_chat wrapper
-    shape as summarize_session_from_facts/expand_recap_notes, just with a
-    system prompt tuned for messy ASR output instead of clean GM notes or a
-    discrete fact list."""
+    recording into a narrative recap. Transcripts that fit in one context
+    window go through a single generate_chat call, same as before; longer
+    ones are map-reduced — summarized in chunks, then the chunk summaries
+    combined into one final recap — see _transcript_chunk_char_budget."""
     transcript = (transcript or "").strip()
     if not transcript:
         return ""
-    return await generate_chat([{"role": "user", "content": transcript}], system=_SUMMARIZE_TRANSCRIPT_SYSTEM, model=model)
+    chunks = _split_transcript_into_chunks(transcript, _transcript_chunk_char_budget())
+    if len(chunks) <= 1:
+        return await generate_chat([{"role": "user", "content": transcript}], system=_SUMMARIZE_TRANSCRIPT_SYSTEM, model=model)
+
+    _log.info("summarize_transcript: chunking into %d part(s) (%d chars total)", len(chunks), len(transcript))
+    part_summaries = []
+    for i, chunk in enumerate(chunks):
+        part = await generate_chat([{"role": "user", "content": chunk}], system=_SUMMARIZE_TRANSCRIPT_CHUNK_SYSTEM, model=model)
+        if part.startswith("[AI "):
+            return part  # propagate the failure rather than weaving an error string into the recap
+        part_summaries.append(f"Part {i + 1}:\n{part}")
+    combined = "\n\n".join(part_summaries)
+    return await generate_chat([{"role": "user", "content": combined}], system=_SUMMARIZE_TRANSCRIPT_REDUCE_SYSTEM, model=model)
 
 
 async def status() -> dict:
