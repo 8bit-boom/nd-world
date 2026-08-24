@@ -793,6 +793,20 @@ def _migrate():
             ("created_by_user_id", "users", "id"),
             ("game_session_id", "game_sessions", "id"),
         ], indexes=["world_id", "game_session_id"])
+        _heal_table(conn, "image_jobs", [
+            ("world_id",            "INTEGER", False),
+            ("created_by_user_id",  "INTEGER", True),
+            ("prompt",              "TEXT DEFAULT ''", True),
+            ("params_json",         "TEXT DEFAULT '{}'", True),
+            ("status",              "VARCHAR(32) DEFAULT 'pending'", True),
+            ("error",               "TEXT DEFAULT ''", True),
+            ("result_urls_json",    "TEXT DEFAULT '[]'", True),
+            ("created_at",          "DATETIME", True),
+            ("updated_at",          "DATETIME", True),
+        ], foreign_keys=[
+            ("world_id", "worlds", "id"),
+            ("created_by_user_id", "users", "id"),
+        ], indexes=["world_id"])
         _heal_table(conn, "chat_sessions", [
             ("world_id",       "INTEGER", False),
             ("user_id",        "INTEGER", True),

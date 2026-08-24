@@ -1312,7 +1312,7 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
             wf["1"]["inputs"]["ckpt_name"] = model
             wf["2"]["inputs"]["text"] = prompt
             wf["3"]["inputs"]["text"] = negative
-            wf["4"]["inputs"].update({"width": width, "height": height})
+            wf["4"]["inputs"].update({"width": width, "height": height, "batch_size": max(1, min(batch_size, 8))})
             wf["5"]["inputs"].update({
                 "steps": steps, "cfg": cfg,
                 "seed": seed if seed >= 0 else random.randint(0, 2**32),

@@ -13,10 +13,11 @@ from typing import List, Optional
 from pathlib import Path as _Path
 from .. import ai as _ai
 from .. import audio_jobs as _audio_jobs
+from .. import image_jobs as _image_jobs
 from ..constants import KINDS
 from ..database import get_db
 from ..deps import get_world_ctx
-from ..models import AudioJob, ChatSession, PromptPreset
+from ..models import AudioJob, ChatSession, ImageJob, PromptPreset
 from ..uploads import (
     copy_upload_bounded, unique_upload_filename, reassemble_upload_chunks, save_upload_chunk,
 )
@@ -1506,47 +1507,135 @@ class ImagegenBody(BaseModel):
     ipadapter_model: str = ""
 
 
+def _imagegen_params(body: ImagegenBody, uploads_dir: _Path) -> dict:
+    """Every app.ai.imagegen_generate kwarg, built from an ImagegenBody —
+    shared by the direct (blocking) route and the background-job route
+    below so the two can never drift apart. A blank model (e.g. the
+    Illustrate button, which sends no model at all) falls back to the GM's
+    configured default for the "image" surface — same as /stream does for
+    chat — instead of reaching imagegen_generate with an empty model string."""
+    model = body.model or _ai.get_defaults().get("image", "")
+    return dict(
+        prompt=body.prompt, negative=body.negative, model=model,
+        width=body.width, height=body.height, steps=body.steps,
+        cfg=body.cfg, seed=body.seed, uploads_dir=uploads_dir,
+        sampler=body.sampler, scheduler=body.scheduler,
+        batch_size=body.batch_size, loras=body.loras,
+        lora_weights=body.lora_weights, vae=body.vae,
+        clip_skip=body.clip_skip, init_image=body.init_image,
+        init_strength=body.init_strength,
+        upscale_model=body.upscale_model, upscale_factor=body.upscale_factor,
+        controlnet_image=body.controlnet_image,
+        controlnet_strength=body.controlnet_strength,
+        controlnet_preprocessor=body.controlnet_preprocessor,
+        controlnet_model=body.controlnet_model,
+        hiresfix=body.hiresfix, hireswidth=body.hireswidth,
+        hiresheight=body.hiresheight,
+        hiresdenoisestrength=body.hiresdenoisestrength,
+        hiressteps=body.hiressteps,
+        refiner_model=body.refiner_model, refiner_control=body.refiner_control,
+        seamless_x=body.seamless_x, seamless_y=body.seamless_y,
+        variation_seed=body.variation_seed,
+        variation_strength=body.variation_strength,
+        freeu_enabled=body.freeu_enabled,
+        freeu_b1=body.freeu_b1, freeu_b2=body.freeu_b2,
+        freeu_s1=body.freeu_s1, freeu_s2=body.freeu_s2,
+        dynthresh_enabled=body.dynthresh_enabled,
+        dynthresh_mimic_scale=body.dynthresh_mimic_scale,
+        dynthresh_percentile=body.dynthresh_percentile,
+        cfg_rescale=body.cfg_rescale,
+        ipadapter_image=body.ipadapter_image,
+        ipadapter_strength=body.ipadapter_strength,
+        ipadapter_model=body.ipadapter_model,
+    )
+
+
+def _imagegen_uploads_dir() -> _Path:
+    return _Path(_os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+
+
 @router.post("/imagegen/generate")
 async def api_imagegen_generate(body: ImagegenBody):
-    _uploads = _Path(_os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+    params = _imagegen_params(body, _imagegen_uploads_dir())
     try:
-        urls = await _ai.imagegen_generate(
-            prompt=body.prompt, negative=body.negative, model=body.model,
-            width=body.width, height=body.height, steps=body.steps,
-            cfg=body.cfg, seed=body.seed, uploads_dir=_uploads,
-            sampler=body.sampler, scheduler=body.scheduler,
-            batch_size=body.batch_size, loras=body.loras,
-            lora_weights=body.lora_weights, vae=body.vae,
-            clip_skip=body.clip_skip, init_image=body.init_image,
-            init_strength=body.init_strength,
-            upscale_model=body.upscale_model, upscale_factor=body.upscale_factor,
-            controlnet_image=body.controlnet_image,
-            controlnet_strength=body.controlnet_strength,
-            controlnet_preprocessor=body.controlnet_preprocessor,
-            controlnet_model=body.controlnet_model,
-            hiresfix=body.hiresfix, hireswidth=body.hireswidth,
-            hiresheight=body.hiresheight,
-            hiresdenoisestrength=body.hiresdenoisestrength,
-            hiressteps=body.hiressteps,
-            refiner_model=body.refiner_model, refiner_control=body.refiner_control,
-            seamless_x=body.seamless_x, seamless_y=body.seamless_y,
-            variation_seed=body.variation_seed,
-            variation_strength=body.variation_strength,
-            freeu_enabled=body.freeu_enabled,
-            freeu_b1=body.freeu_b1, freeu_b2=body.freeu_b2,
-            freeu_s1=body.freeu_s1, freeu_s2=body.freeu_s2,
-            dynthresh_enabled=body.dynthresh_enabled,
-            dynthresh_mimic_scale=body.dynthresh_mimic_scale,
-            dynthresh_percentile=body.dynthresh_percentile,
-            cfg_rescale=body.cfg_rescale,
-            ipadapter_image=body.ipadapter_image,
-            ipadapter_strength=body.ipadapter_strength,
-            ipadapter_model=body.ipadapter_model,
-        )
+        urls = await _ai.imagegen_generate(**params)
         return {"url": urls[0] if urls else "", "urls": urls}
     except Exception as exc:
         _log.error("imagegen_generate failed: %s", exc)
-        return {"url": "", "urls": [], "error": str(exc)}
+        raise HTTPException(502, str(exc)) from exc
+
+
+# ── Background image generation jobs ────────────────────────────────────────
+# An opt-in "process in background" alternative to the direct route above,
+# for a generation slow enough (large batch, hires-fix, a big upscale) that
+# waiting on one HTTP request isn't practical — mirrors the audio-jobs
+# pattern (app/image_jobs.py / app/audio_jobs.py) so a GM can navigate away
+# or close the tab without losing the job.
+
+def _image_job_to_dict(job: ImageJob) -> dict:
+    return {
+        "id": job.id, "prompt": job.prompt, "status": job.status, "error": job.error,
+        "urls": _json.loads(job.result_urls_json or "[]"),
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+    }
+
+
+@router.post("/imagegen/jobs")
+async def api_imagegen_job_create(body: ImagegenBody, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    # Must be async (not a plain `def`, which FastAPI runs in a threadpool
+    # with no running event loop in that thread) — image_jobs.create_job
+    # calls asyncio.create_task(), which requires one. Same reasoning as
+    # audio_jobs.py's create routes in routers/sessions.py/ai.py.
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    params = _imagegen_params(body, _imagegen_uploads_dir())
+    params["uploads_dir"] = str(params["uploads_dir"])  # JSON-serializable for params_json
+    user = getattr(request.state, "user", None)
+    job_id = _image_jobs.create_job(
+        world_id=world.id, prompt=body.prompt, params=params,
+        created_by_user_id=user.id if user else None,
+    )
+    return {"job_id": job_id}
+
+
+@router.get("/imagegen/jobs/{job_id}")
+def api_imagegen_job_status(job_id: int, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = db.query(ImageJob).filter(ImageJob.id == job_id, ImageJob.world_id == world.id).first()
+    if not job:
+        raise HTTPException(404)
+    return _image_job_to_dict(job)
+
+
+@router.get("/imagegen/jobs")
+def api_imagegen_job_list(request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    jobs = (
+        db.query(ImageJob).filter(ImageJob.world_id == world.id)
+        .order_by(ImageJob.created_at.desc()).limit(20).all()
+    )
+    return [_image_job_to_dict(j) for j in jobs]
+
+
+@router.post("/imagegen/jobs/{job_id}/cancel")
+def api_imagegen_job_cancel(job_id: int, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = db.query(ImageJob).filter(ImageJob.id == job_id, ImageJob.world_id == world.id).first()
+    if not job:
+        raise HTTPException(404)
+    if job.status not in _image_jobs.IN_PROGRESS_STATUSES:
+        raise HTTPException(400, "Job is not in progress")
+    if not _image_jobs.cancel_job(job_id):
+        raise HTTPException(400, "Job isn't currently running (it may have just finished)")
+    return {"ok": True}
 
 
 @router.get("/test-chat")

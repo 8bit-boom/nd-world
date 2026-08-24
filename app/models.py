@@ -685,6 +685,35 @@ class AudioJob(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ImageJob(Base):
+    """A durable background job for image generation — see app/image_jobs.py.
+    Same rationale as AudioJob: an opt-in "process in background" alternative
+    to Image Studio's default direct/blocking generate button, for a
+    generation slow enough (large batch, hires-fix, a big upscale) that
+    waiting on one HTTP request isn't practical. The actual work runs as a
+    background asyncio task in the server process, independent of any one
+    HTTP connection, so it survives the browser tab that started it being
+    closed. Does NOT survive the server process itself restarting mid-job —
+    see image_jobs.py's startup sweep, which marks any job still in
+    progress at boot as failed rather than leaving it stuck."""
+    __tablename__ = "image_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    prompt = Column(Text, default="")
+    # The full ImagegenBody params (app/routers/ai.py) as submitted, so
+    # _run_job can call app.ai.imagegen_generate identically to the direct
+    # route — one JSON blob rather than duplicating every field as a column.
+    params_json = Column(Text, default="{}")
+    # pending -> generating -> done, or -> error/cancelled at any point.
+    status = Column(String(32), default="pending")
+    error = Column(Text, default="")
+    result_urls_json = Column(Text, default="[]")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ChatSession(Base):
     """A saved AI Chat conversation (app/templates/ai_chat.html's History
     sidebar) — one row per conversation, upserted on every completed

@@ -905,6 +905,18 @@
     <!-- ── Settings column ── -->
     <div class="ig-settings">
 
+      <!-- Shown only when the configured backend is ComfyUI — its workflow
+           only wires prompt/negative/size/steps/cfg/seed/sampler/scheduler/
+           batch/upscale-model. Every other panel below (LoRA, VAE, CLIP
+           skip, img2img, ControlNet, hires-fix, refiner, FreeU, DynThresh,
+           IP-Adapter) still renders and accepts input on ComfyUI, but those
+           values are silently dropped rather than sent — this note exists
+           so a ComfyUI GM finds out before submitting, not after wondering
+           why a setting had no effect. -->
+      <div id="ig-comfyui-note" style="display:none;font-size:.72rem;color:#e8a33d;background:rgba(232,163,61,.1);border:1px solid rgba(232,163,61,.35);border-radius:4px;padding:.4rem .55rem;margin-bottom:.5rem;line-height:1.4">
+        ⚠ ComfyUI backend: only Model, Size, Steps, CFG, Seed, Sampler, Scheduler, Batch, and Upscale are sent. LoRA, VAE, CLIP skip, img2img, ControlNet, hires-fix, Refiner, FreeU, DynThresh, and IP-Adapter settings below are not supported on ComfyUI yet and will be ignored.
+      </div>
+
       <!-- Model -->
       <div>
         <label class="ig-label">Model</label>
@@ -1374,8 +1386,11 @@
       <!-- Generate row -->
       <div class="ig-generate-row">
         <button class="ig-generate-btn" id="ig-generate-btn" onclick="igGenerate()">🎨 Generate</button>
+        <button class="ig-btn" id="ig-bgjob-btn" onclick="igStartBackgroundJob()"
+                title="Generate in the background — keeps running even if you close this tab (useful for a large batch, hires-fix, or a big upscale)">🔒 Generate in Background</button>
         <span id="ig-status" style="display:none;font-size:.82rem;color:var(--neon)">⏳ Generating…</span>
       </div>
+      <div id="ig-jobs-panel" class="nd-jobs-panel" style="display:none;margin-top:.5rem"></div>
 
       <!-- Progress bar -->
       <div id="ig-progress-wrap" style="display:none">
@@ -2379,7 +2394,11 @@ async function illustrateMessage(text, bubble, btn) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt: imgPrompt }),
     });
-    if (!genRes.ok) throw new Error(`Server error ${genRes.status}`);
+    if (!genRes.ok) {
+      let detail = '';
+      try { detail = (await genRes.json()).detail || ''; } catch (e) { /* non-JSON error body */ }
+      throw new Error(detail || `Server error ${genRes.status}`);
+    }
     const genData = await genRes.json();
     if (genData.error) throw new Error(genData.error);
     const url = genData.url || (genData.urls && genData.urls[0]) || '';
@@ -2852,6 +2871,7 @@ let _igLastUrls = [];
 let _igStarred = new Set();
 let _igHiresFix = false;
 let _igProgressTimer = null;
+let _igIsComfyUI = false; // imagegen/progress always reports 0/0 on ComfyUI — see igGenerate
 let _igLoras = [{name: '', weight: '0.8'}];
 let _igLoraList = [];
 let _igIPAImageB64 = '';
@@ -2924,6 +2944,9 @@ function igClearCN() {
       dot.style.background = '#888';
       dot.title = 'Image gen unavailable' + (st.reason ? ': ' + st.reason : '');
     }
+    _igIsComfyUI = st.type === 'comfyui';
+    const note = document.getElementById('ig-comfyui-note');
+    if (note) note.style.display = _igIsComfyUI ? 'block' : 'none';
     const mr = await fetch('/api/ai/imagegen/models').then(r => r.json());
     const sel = document.getElementById('ig-model');
     if (mr.models && mr.models.length) {
@@ -2944,6 +2967,7 @@ function igClearCN() {
     igLoadHistory();
     igLoadSourcesPanel();
     igLoadStarred();
+    igLoadJobs();
     // Init auto-resize on prompt textareas
     const promptEl = document.getElementById('ig-prompt');
     const negEl = document.getElementById('ig-negative');
@@ -3010,36 +3034,12 @@ async function igBuildPrompt() {
 
 // ── Generate image ────────────────────────────────────────────────────────────
 
-async function igGenerate() {
-  const prompt = document.getElementById('ig-prompt').value.trim();
-  if (!prompt) { alert('Enter a prompt first — or use "Build from World Lore".'); return; }
-
-  const btn    = document.getElementById('ig-generate-btn');
-  const status = document.getElementById('ig-status');
-  const err    = document.getElementById('ig-error');
-  const results = document.getElementById('ig-results');
-  const grid   = document.getElementById('ig-results-grid');
-
-  btn.disabled = true;
-  status.style.display = 'inline';
-  err.style.display = 'none';
-  results.style.display = 'none';
-  grid.innerHTML = '';
-
-  const progressWrap = document.getElementById('ig-progress-wrap');
-  if (progressWrap) {
-    progressWrap.style.display = 'block';
-    const pb = document.getElementById('ig-progress-bar');
-    if (pb) pb.style.width = '0%';
-    document.getElementById('ig-progress-text').textContent = '';
-    const thumb = document.getElementById('ig-preview-thumb');
-    if (thumb) { thumb.style.display = 'none'; thumb.src = ''; }
-  }
-  _igProgressTimer = setInterval(igPollProgress, 1200);
-
-  try {
+// Every field on the ImagegenBody form — shared by the direct (blocking)
+// generate button and "Generate in Background" so the two request bodies
+// can never drift apart.
+function _igBuildBody(prompt) {
     const activeLoras = _igLoras.filter(l => (l.name || '').trim());
-    const body = {
+    return {
       prompt,
       negative:    document.getElementById('ig-negative').value,
       model:       document.getElementById('ig-model').value,
@@ -3087,13 +3087,100 @@ async function igGenerate() {
       ipadapter_strength: parseFloat(document.getElementById('ig-ipa-strength')?.value || 0.6),
       ipadapter_model: (document.getElementById('ig-ipa-model')?.value || '').trim(),
     };
+}
 
+// Renders one result card per url into `grid` — shared by the direct
+// generate flow and a finished background job, so both look identical.
+function _igRenderResultCards(urls, body, grid) {
+  urls.forEach((url, i) => {
+    const card = document.createElement('div');
+    card.className = 'ig-result-card';
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = `Generated image ${i + 1}`;
+    const actions = document.createElement('div');
+    actions.className = 'ig-result-card-actions';
+    const dlLink = document.createElement('a');
+    dlLink.href = url;
+    dlLink.download = `nd-image-${i + 1}.png`;
+    dlLink.textContent = '⬇ Save';
+    const attachBtn = document.createElement('button');
+    attachBtn.textContent = '📎 Attach…';
+    attachBtn.onclick = () => igAttachToEntity(url);
+    const starBtn = document.createElement('button');
+    starBtn.className = 'star-btn';
+    starBtn.title = 'Star this image';
+    starBtn.textContent = '☆';
+    starBtn.onclick = () => igToggleStar(url, body, starBtn);
+    const i2iBtn = document.createElement('button');
+    i2iBtn.textContent = '→ Img2Img';
+    i2iBtn.title = 'Use as img2img source';
+    i2iBtn.onclick = () => igSendToImg2Img(url);
+    actions.appendChild(dlLink);
+    actions.appendChild(i2iBtn);
+    actions.appendChild(attachBtn);
+    actions.appendChild(starBtn);
+    // Only when this generation came from "🎭 Pick entity…" above — bound
+    // to that entity at generation time, not whatever's picked now, so a
+    // later pick doesn't retarget an older result card's button.
+    if (_igPortraitEntityId) {
+      const portraitEntityId = _igPortraitEntityId;
+      const portraitEntityName = _igPortraitEntityName;
+      const portraitBtn = document.createElement('button');
+      portraitBtn.textContent = '🖼 Set as ' + portraitEntityName + '\'s portrait';
+      portraitBtn.onclick = () => igSetAsPortrait(url, portraitEntityId, portraitEntityName, portraitBtn);
+      actions.appendChild(portraitBtn);
+    }
+    card.appendChild(img);
+    card.appendChild(actions);
+    grid.appendChild(card);
+  });
+}
+
+async function igGenerate() {
+  const prompt = document.getElementById('ig-prompt').value.trim();
+  if (!prompt) { alert('Enter a prompt first — or use "Build from World Lore".'); return; }
+
+  const btn    = document.getElementById('ig-generate-btn');
+  const status = document.getElementById('ig-status');
+  const err    = document.getElementById('ig-error');
+  const results = document.getElementById('ig-results');
+  const grid   = document.getElementById('ig-results-grid');
+
+  btn.disabled = true;
+  status.style.display = 'inline';
+  err.style.display = 'none';
+  results.style.display = 'none';
+  grid.innerHTML = '';
+
+  const progressWrap = document.getElementById('ig-progress-wrap');
+  const track = document.getElementById('ig-progress-bar-track');
+  if (progressWrap) {
+    progressWrap.style.display = 'block';
+    const pb = document.getElementById('ig-progress-bar');
+    if (pb) pb.style.width = '0%';
+    const thumb = document.getElementById('ig-preview-thumb');
+    if (thumb) { thumb.style.display = 'none'; thumb.src = ''; }
+    // ComfyUI's /imagegen/progress always reports 0/0 (unlike SwarmUI) — a
+    // bar frozen at 0% reads as broken, so show an indeterminate "working"
+    // state instead of a real percentage nothing will ever move.
+    if (track) track.style.display = _igIsComfyUI ? 'none' : 'block';
+    document.getElementById('ig-progress-text').textContent = _igIsComfyUI ? 'Generating… (ComfyUI reports no progress)' : '';
+  }
+  if (!_igIsComfyUI) _igProgressTimer = setInterval(igPollProgress, 1200);
+
+  try {
+    const body = _igBuildBody(prompt);
     const r = await fetch('/api/ai/imagegen/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (!r.ok) throw new Error(`Server error ${r.status}: ${await r.text()}`);
+    if (!r.ok) {
+      let detail = '';
+      try { detail = (await r.json()).detail || ''; } catch (e) { /* non-JSON error body */ }
+      throw new Error(detail || `Server error ${r.status}`);
+    }
     const data = await r.json();
     if (data.error) throw new Error(data.error);
 
@@ -3101,50 +3188,7 @@ async function igGenerate() {
     if (!urls.length) throw new Error('No images returned');
     _igLastUrls = urls;
     igSaveToHistory(urls, body);
-
-    urls.forEach((url, i) => {
-      const card = document.createElement('div');
-      card.className = 'ig-result-card';
-      const img = document.createElement('img');
-      img.src = url;
-      img.alt = `Generated image ${i + 1}`;
-      const actions = document.createElement('div');
-      actions.className = 'ig-result-card-actions';
-      const dlLink = document.createElement('a');
-      dlLink.href = url;
-      dlLink.download = `nd-image-${i + 1}.png`;
-      dlLink.textContent = '⬇ Save';
-      const attachBtn = document.createElement('button');
-      attachBtn.textContent = '📎 Attach…';
-      attachBtn.onclick = () => igAttachToEntity(url);
-      const starBtn = document.createElement('button');
-      starBtn.className = 'star-btn';
-      starBtn.title = 'Star this image';
-      starBtn.textContent = '☆';
-      starBtn.onclick = () => igToggleStar(url, body, starBtn);
-      const i2iBtn = document.createElement('button');
-      i2iBtn.textContent = '→ Img2Img';
-      i2iBtn.title = 'Use as img2img source';
-      i2iBtn.onclick = () => igSendToImg2Img(url);
-      actions.appendChild(dlLink);
-      actions.appendChild(i2iBtn);
-      actions.appendChild(attachBtn);
-      actions.appendChild(starBtn);
-      // Only when this generation came from "🎭 Pick entity…" above — bound
-      // to that entity at generation time, not whatever's picked now, so a
-      // later pick doesn't retarget an older result card's button.
-      if (_igPortraitEntityId) {
-        const portraitEntityId = _igPortraitEntityId;
-        const portraitEntityName = _igPortraitEntityName;
-        const portraitBtn = document.createElement('button');
-        portraitBtn.textContent = '🖼 Set as ' + portraitEntityName + '\'s portrait';
-        portraitBtn.onclick = () => igSetAsPortrait(url, portraitEntityId, portraitEntityName, portraitBtn);
-        actions.appendChild(portraitBtn);
-      }
-      card.appendChild(img);
-      card.appendChild(actions);
-      grid.appendChild(card);
-    });
+    _igRenderResultCards(urls, body, grid);
     results.style.display = 'block';
   } catch (e) {
     const msg = e.message || String(e);
@@ -3159,6 +3203,108 @@ async function igGenerate() {
     btn.disabled = false;
     status.style.display = 'none';
   }
+}
+
+// ── Background image generation jobs ────────────────────────────────────────
+
+let _igJobs = [];
+let _igJobsPollTimer = null;
+const _IG_JOB_IN_PROGRESS = new Set(['pending', 'generating']);
+const _IG_JOB_STATUS_LABEL = { pending: 'Queued…', generating: 'Generating…', done: '✓ Done', error: '✗ Failed', cancelled: 'Cancelled' };
+
+async function igStartBackgroundJob() {
+  const prompt = document.getElementById('ig-prompt').value.trim();
+  if (!prompt) { alert('Enter a prompt first — or use "Build from World Lore".'); return; }
+  const btn = document.getElementById('ig-bgjob-btn');
+  btn.disabled = true;
+  try {
+    const body = _igBuildBody(prompt);
+    const r = await fetch('/api/ai/imagegen/jobs', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      let detail = '';
+      try { detail = (await r.json()).detail || ''; } catch (e) {}
+      throw new Error(detail || `Server error ${r.status}`);
+    }
+    await igLoadJobs();
+  } catch (e) {
+    alert('Could not start background job: ' + (e.message || e));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function igLoadJobs() {
+  const panel = document.getElementById('ig-jobs-panel');
+  if (!panel) return;
+  try {
+    const jobs = await fetch('/api/ai/imagegen/jobs').then(r => r.json());
+    _igJobs = jobs || [];
+  } catch (e) { return; }
+  _igRenderJobs();
+  if (_igJobsPollTimer !== null) { clearTimeout(_igJobsPollTimer); _igJobsPollTimer = null; }
+  if (_igJobs.some(j => _IG_JOB_IN_PROGRESS.has(j.status))) {
+    _igJobsPollTimer = setTimeout(igLoadJobs, 3000);
+  }
+}
+
+function _igRenderJobs() {
+  const panel = document.getElementById('ig-jobs-panel');
+  if (!panel) return;
+  panel.innerHTML = '';
+  if (!_igJobs.length) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  const title = document.createElement('div');
+  title.className = 'nd-jobs-title';
+  title.textContent = 'Background jobs';
+  panel.appendChild(title);
+  _igJobs.forEach((job) => {
+    const row = document.createElement('div');
+    row.className = 'nd-job-row' + (job.status === 'error' ? ' nd-job-row--error' : '');
+    const label = document.createElement('span');
+    label.className = 'nd-job-label';
+    const shortPrompt = (job.prompt || '').slice(0, 60) + ((job.prompt || '').length > 60 ? '…' : '');
+    label.textContent = `${shortPrompt || 'image'} — ${_IG_JOB_STATUS_LABEL[job.status] || job.status}`;
+    row.appendChild(label);
+    if (job.status === 'error' && job.error) {
+      const err = document.createElement('span');
+      err.className = 'nd-job-error';
+      err.textContent = job.error;
+      row.appendChild(err);
+    }
+    if (job.status === 'done' && job.urls && job.urls.length) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'nd-job-use-btn';
+      btn.textContent = 'Show results';
+      btn.onclick = () => {
+        const results = document.getElementById('ig-results');
+        const grid = document.getElementById('ig-results-grid');
+        _igLastUrls = job.urls;
+        _igRenderResultCards(job.urls, { prompt: job.prompt }, grid);
+        results.style.display = 'block';
+      };
+      row.appendChild(btn);
+    }
+    if (_IG_JOB_IN_PROGRESS.has(job.status)) {
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'nd-job-use-btn';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.onclick = async () => {
+        cancelBtn.disabled = true;
+        try {
+          await fetch('/api/ai/imagegen/jobs/' + job.id + '/cancel', { method: 'POST' });
+        } finally {
+          await igLoadJobs();
+        }
+      };
+      row.appendChild(cancelBtn);
+    }
+    panel.appendChild(row);
+  });
 }
 
 // ── Samplers / Schedulers dynamic loading ─────────────────────────────────────
