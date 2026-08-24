@@ -690,6 +690,30 @@ async def ai_models():
     }
 
 
+@router.get("/resident")
+async def ai_resident_models():
+    """What's actually resident in VRAM right now (app.ai.resident_models,
+    via Ollama's /api/ps) — distinct from /models' "loaded" field, which
+    means "downloaded to disk," not "in memory." Backs the Models tab's
+    "Resident in VRAM" section."""
+    return {"models": await _ai.resident_models()}
+
+
+class UnloadModelBody(BaseModel):
+    model_id: str
+
+
+@router.post("/unload")
+async def ai_unload_model(body: UnloadModelBody):
+    model_id = body.model_id.strip()
+    if not model_id:
+        raise HTTPException(400, "model_id is required")
+    ok = await _ai.unload_model(model_id)
+    if not ok:
+        raise HTTPException(502, f"Could not unload {model_id} — is Ollama reachable?")
+    return {"ok": True}
+
+
 @router.get("/defaults")
 async def ai_get_defaults():
     return _ai.get_defaults()

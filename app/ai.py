@@ -218,6 +218,52 @@ async def resolve_model(requested: str) -> str:
     return available[0]
 
 
+async def resident_models() -> list[dict]:
+    """What's actually occupying memory right now — distinct from _list_loaded
+    (client.list()/`/api/tags`, which is every model downloaded to disk,
+    regardless of whether it's in memory). Backs the Models tab's "Resident
+    in VRAM" section, since a 16GB card can't hold an LLM and a diffusion
+    model at once and a GM needs to see what's actually using it.
+
+    A model doesn't have to fit in VRAM entirely — Ollama offloads whatever
+    doesn't fit to system RAM (running slower, but still working), so
+    size_ram_bytes (size minus size_vram) is how much of THIS model is
+    sitting in system RAM rather than on the GPU. unload_model() below frees
+    both at once — Ollama has no notion of evicting only the RAM-resident
+    part of a model that's split across both."""
+    try:
+        resp = await _client().ps()
+    except Exception:
+        return []
+    result = []
+    for m in resp.models:
+        size = int(m.size) if m.size is not None else None
+        size_vram = int(m.size_vram) if m.size_vram is not None else None
+        result.append({
+            "model": m.model,
+            "size_bytes": size,
+            "size_vram_bytes": size_vram,
+            "size_ram_bytes": max(0, size - size_vram) if size is not None and size_vram is not None else None,
+            "expires_at": m.expires_at.isoformat() if m.expires_at else None,
+        })
+    return result
+
+
+async def unload_model(model_id: str) -> bool:
+    """Evict a model from VRAM immediately — Ollama's documented idiom for
+    this is a generate call with an empty prompt and keep_alive=0 (rather
+    than waiting out its normal keep-alive timer). Returns False (not an
+    exception) on failure so the caller can show a plain error instead of a
+    500 — this is a manual "free up my GPU" action, not something that
+    should ever look like a crash."""
+    try:
+        await _client().generate(model=model_id, keep_alive=0)
+        return True
+    except Exception as exc:
+        _log.warning("unload_model(%r) failed: %s", model_id, exc)
+        return False
+
+
 # ── Chat functions ────────────────────────────────────────────────────────────
 
 _SYSTEM = (

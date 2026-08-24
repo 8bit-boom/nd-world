@@ -1406,6 +1406,17 @@
     <div id="mp-defaults-status" style="font-size:.7rem;color:var(--text-dim);margin-top:.4rem;min-height:1em"></div>
   </div>
 
+  <!-- Resident in memory (VRAM/RAM) -->
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-bottom:1.2rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.55rem">
+      <span style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em">🧠 Resident in Memory</span>
+      <button class="ig-btn" onclick="mpLoadResident()" style="font-size:.7rem;padding:.15rem .5rem">↺</button>
+    </div>
+    <div id="mp-resident-list" style="display:flex;flex-direction:column;gap:.4rem">
+      <div style="color:var(--text-dim);font-size:.8rem">⏳ Loading…</div>
+    </div>
+  </div>
+
   <!-- Model list -->
   <div id="mp-model-list" style="display:flex;flex-direction:column;gap:.55rem;margin-bottom:1.2rem">
     <div style="color:var(--text-dim);font-size:.82rem">⏳ Loading…</div>
@@ -1692,7 +1703,7 @@ async function loadDebug() {
       d.error ? 'Error: ' + d.error : null,
       'Default: ' + d.default_model,
       '',
-      'Loaded (' + (d.loaded_models || []).length + '):',
+      'Downloaded (' + (d.loaded_models || []).length + '):',
       ...(d.loaded_models || []).map(m => '  · ' + m),
       '',
       'Whisper (audio transcription): ' + (w.url ? w.url : '(not configured)'),
@@ -3691,6 +3702,73 @@ async function mpLoad() {
     txt.style.color = '#c44';
     list.innerHTML = '<div style="color:#c44;font-size:.82rem">✗ Could not load models</div>';
   }
+  mpLoadResident();
+}
+
+function _humanBytes(n) {
+  if (n === null || n === undefined) return '?';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0, v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+async function mpLoadResident() {
+  const wrap = document.getElementById('mp-resident-list');
+  try {
+    const d = await fetch('/api/ai/resident').then(r => r.json());
+    const models = d.models || [];
+    wrap.innerHTML = '';
+    if (!models.length) {
+      wrap.innerHTML = '<div style="color:var(--text-dim);font-size:.8rem;font-style:italic">Nothing resident — no model is currently loaded into memory.</div>';
+      return;
+    }
+    models.forEach((m) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:.6rem;font-size:.8rem;flex-wrap:wrap';
+      const label = document.createElement('span');
+      label.style.cssText = 'flex:1;min-width:120px;overflow-wrap:anywhere';
+      label.textContent = m.model;
+      const size = document.createElement('span');
+      size.style.cssText = 'color:var(--text-dim);white-space:nowrap';
+      let sizeText = _humanBytes(m.size_vram_bytes) + ' VRAM';
+      // A model doesn't have to fit in VRAM entirely — Ollama offloads
+      // whatever doesn't fit to system RAM (slower, but still working).
+      // Only worth a mention once it's a meaningful amount, not rounding noise.
+      if (m.size_ram_bytes && m.size_ram_bytes > 1024 * 1024) {
+        sizeText += ' + ' + _humanBytes(m.size_ram_bytes) + ' RAM';
+      }
+      size.textContent = sizeText;
+      size.title = m.expires_at ? ('Unloads automatically at ' + new Date(m.expires_at).toLocaleTimeString()) : '';
+      const unloadBtn = document.createElement('button');
+      unloadBtn.className = 'ig-btn';
+      unloadBtn.style.cssText = 'font-size:.72rem;padding:.15rem .5rem';
+      unloadBtn.textContent = '⏏ Unload';
+      unloadBtn.title = 'Free this model\'s VRAM and RAM — Ollama evicts it entirely, not just the part on the GPU';
+      unloadBtn.onclick = () => mpUnloadModel(m.model, unloadBtn);
+      row.append(label, size, unloadBtn);
+      wrap.appendChild(row);
+    });
+  } catch(e) {
+    wrap.innerHTML = '<div style="color:#c44;font-size:.8rem">✗ Could not check VRAM residency</div>';
+  }
+}
+
+async function mpUnloadModel(modelId, btn) {
+  btn.disabled = true;
+  btn.textContent = '⏳';
+  try {
+    const r = await fetch('/api/ai/unload', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_id: modelId }),
+    });
+    if (!r.ok) throw new Error((await r.json()).detail || `HTTP ${r.status}`);
+    mpLoadResident();
+  } catch(e) {
+    alert('Unload failed: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '⏏ Unload';
+  }
 }
 
 async function mpLoadDefaults(defaults) {
@@ -3754,7 +3832,7 @@ function mpRender(models, available) {
     const sdot = document.createElement('span');
     sdot.id = 'mp-dot-' + btoa(m.id).replace(/[^a-z0-9]/gi,'');
     sdot.style.cssText = 'width:9px;height:9px;border-radius:50%;flex-shrink:0;margin-top:.35rem;background:' + (m.loaded ? '#4f4' : '#444');
-    sdot.title = m.loaded ? 'Loaded in Ollama' : 'Not downloaded';
+    sdot.title = m.loaded ? 'Downloaded (see 🧠 Resident in Memory above for what\'s actually loaded)' : 'Not downloaded';
 
     const info = document.createElement('div');
     info.style.cssText = 'flex:1;min-width:0';
