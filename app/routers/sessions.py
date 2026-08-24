@@ -24,7 +24,7 @@ _SESSION_AUDIO_EXTS = {".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus",
 # A session recording can run long — same default ceiling as the Audio
 # Library's own MAX_AUDIO_UPLOAD_BYTES, reusing that env var rather than
 # introducing a second one for what's really the same kind of upload.
-MAX_SESSION_AUDIO_BYTES = int(os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(200 * 1024 * 1024)))
+MAX_SESSION_AUDIO_BYTES = int(os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(1024 * 1024 * 1024)))
 # One live-recording chunk (see the "Live session recording" section below)
 # is only ever a minute or so of audio — this just needs to be generous
 # enough that a slightly-longer-than-expected chunk (a slow browser tab, a

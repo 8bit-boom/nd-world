@@ -36,7 +36,7 @@ _MAX_ATTACHMENT_BYTES = int(_os.environ.get("MAX_AI_ATTACHMENT_BYTES", str(25 * 
 # image attachment — same default ceiling as the Audio Library/session
 # recap uploads, reusing that env var rather than introducing a second one
 # for what's really the same kind of upload.
-_MAX_ATTACHMENT_AUDIO_BYTES = int(_os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(200 * 1024 * 1024)))
+_MAX_ATTACHMENT_AUDIO_BYTES = int(_os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(1024 * 1024 * 1024)))
 # How much of a document's extracted text gets folded into the prompt — long
 # enough for a handout or a few rulebook pages, bounded so one attachment
 # can't blow the model's context window on its own.
