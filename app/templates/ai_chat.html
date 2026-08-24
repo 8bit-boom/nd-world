@@ -241,6 +241,12 @@
 .save-note-btn:hover { color: var(--neon); }
 .save-note-btn:disabled { opacity: .6; cursor: default; }
 
+.illustrate-result { margin-top: .5rem; }
+.illustrate-result img {
+  max-width: 100%; max-height: 360px; border-radius: 6px;
+  border: 1px solid var(--border); display: block;
+}
+
 /* Animated typing dots */
 @keyframes nd-blink {
   0%, 80%, 100% { opacity: .2; transform: translateY(0); }
@@ -2022,6 +2028,66 @@ function addSaveBtn(wrap, text) {
   wrap.appendChild(btn);
 }
 
+function addIllustrateBtn(bubble, wrap, text) {
+  const btn = document.createElement('button');
+  btn.className = 'save-note-btn';
+  btn.style.marginLeft = '.6rem';
+  btn.textContent = '🎨 Illustrate';
+  btn.onclick = () => illustrateMessage(text, bubble, btn);
+  wrap.appendChild(btn);
+}
+
+// Turns an assistant reply into an image: asks the chat model to condense it
+// into an image-generation prompt (same idea as "Build from World Lore" in
+// the Image Studio tab, just sourced from a chat message instead of a
+// concept + lore lookup), then sends that prompt straight to the configured
+// imagegen backend (SwarmUI or ComfyUI — see IMAGEGEN_TYPE) with default
+// settings. The result is appended into the message bubble, same spot
+// attachment chips render.
+async function illustrateMessage(text, bubble, btn) {
+  btn.disabled = true;
+  const origLabel = btn.textContent;
+  btn.textContent = '✨ Writing prompt…';
+  try {
+    const system = 'You are an image prompt writer for a cyberpunk-fantasy TTRPG. Given a passage of text, write ONE detailed image generation prompt depicting its central scene or subject — comma-separated tags and descriptive phrases, about 40-70 words. Output only the prompt, no explanation, no preamble, no quotes.';
+    const promptRes = await fetch('/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: text.slice(0, 4000) }], system, model: activeModel, surface: 'chat' }),
+    });
+    if (!promptRes.ok) throw new Error(`Server error ${promptRes.status}`);
+    const promptData = await promptRes.json();
+    const imgPrompt = (promptData.result || '').trim();
+    if (!imgPrompt || imgPrompt.startsWith('[AI ')) throw new Error(imgPrompt || 'Could not write an image prompt');
+
+    btn.textContent = '🎨 Generating…';
+    const genRes = await fetch('/api/ai/imagegen/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: imgPrompt }),
+    });
+    if (!genRes.ok) throw new Error(`Server error ${genRes.status}`);
+    const genData = await genRes.json();
+    if (genData.error) throw new Error(genData.error);
+    const url = genData.url || (genData.urls && genData.urls[0]) || '';
+    if (!url) throw new Error('No image returned — is an image generation backend configured and running?');
+
+    const card = document.createElement('div');
+    card.className = 'illustrate-result';
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = imgPrompt;
+    img.title = imgPrompt;
+    card.appendChild(img);
+    bubble.appendChild(card);
+  } catch (e) {
+    alert('Illustrate failed: ' + (e.message || e));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origLabel;
+  }
+}
+
 async function saveNote(text, btn) {
   const title = prompt('Note title:', 'AI note ' + new Date().toLocaleDateString());
   if (!title) return;
@@ -2206,6 +2272,7 @@ async function sendMessage() {
     if (fullText) {
       history.push({ role: 'assistant', content: fullText });
       addSaveBtn(thinking.parentElement, fullText);
+      addIllustrateBtn(thinking, thinking.parentElement, fullText);
       autoSave();
     }
   } catch (e) {
