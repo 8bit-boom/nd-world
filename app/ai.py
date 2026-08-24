@@ -450,6 +450,56 @@ async def parse_entity_from_text(raw_text: str, kinds: list[str], model: str = "
         raise ValueError("Could not turn that reply into an entity — try rephrasing or picking a shorter passage.") from exc
 
 
+_SESSION_PREP_SYSTEM = (
+    "You are a scribe helping a tabletop RPG GM prepare for their next session. Given a summary "
+    "of what happened recently (facts and/or a recap), any open quests, and the party's makeup, "
+    "produce a short prep checklist: likely player moves, possible complications, ideas for an "
+    "opening scene, and reminders about important NPCs. Each item must be a single, concrete, "
+    "actionable checklist entry a GM can glance at before the table starts — not a full paragraph. "
+    "Don't invent plot points that aren't implied by the given context. Respond with JSON only."
+)
+
+_SESSION_PREP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tasks": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["tasks"],
+}
+
+
+async def generate_session_prep(context_text: str, model: str = "") -> list[str]:
+    """Draft a session-prep checklist from a text summary of world state
+    (recent facts/recap, open quests, the party) — same JSON-schema-
+    constrained pattern as parse_facts_from_recap. Raises ValueError on any
+    failure; does not write anything to the database itself (the caller
+    appends confirmed items via the existing prep/add route, one at a
+    time — no new write path needed)."""
+    m = model or effective_ollama_model()
+    try:
+        resp = await _client().chat(
+            model=m,
+            messages=[
+                {"role": "system", "content": _SESSION_PREP_SYSTEM},
+                {"role": "user", "content": context_text},
+            ],
+            format=_SESSION_PREP_SCHEMA,
+            **_chat_kwargs(),
+        )
+    except _ollama.ResponseError as exc:
+        raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
+    except Exception as exc:
+        raise ValueError(f"AI unavailable: {type(exc).__name__}: {exc}") from exc
+    try:
+        parsed = _json.loads(resp.message.content or "")
+        tasks = parsed["tasks"]
+        if not isinstance(tasks, list):
+            raise ValueError
+        return [str(t).strip() for t in tasks if str(t).strip()]
+    except Exception as exc:
+        raise ValueError("Could not generate a prep checklist — try again.") from exc
+
+
 _EXPAND_NOTES_SYSTEM = (
     "You are a scribe for a tabletop RPG campaign. The GM will give you rough, terse session "
     "notes (e.g. \"went to the tavern, met Elyra, found a clock, fought goblins\"). Expand them "

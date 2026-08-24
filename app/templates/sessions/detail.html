@@ -140,6 +140,12 @@
       <input id="prep-input" placeholder="New prep task…" style="flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
       <button type="button" id="prep-add-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem .9rem;font-size:.82rem;border-radius:3px;cursor:pointer">+ Add</button>
     </div>
+    <div style="margin-top:.6rem;padding-top:.6rem;border-top:1px solid var(--border)">
+      <button type="button" id="prep-generate-btn" onclick="generatePrep()"
+              style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.35rem .8rem;font-size:.8rem;border-radius:3px;cursor:pointer">✨ Generate from world state</button>
+      <span id="prep-generate-status" style="font-size:.78rem;color:var(--text-dim);margin-left:.5rem"></span>
+      <div id="prep-draft-list" style="display:none;flex-direction:column;gap:.25rem;margin-top:.5rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem .7rem"></div>
+    </div>
   </div>
 
   <!-- Loot -->
@@ -578,6 +584,62 @@ document.getElementById('prep-add-btn').addEventListener('click', async () => {
   input.value = '';
   renderPrep();
 });
+
+async function generatePrep() {
+  const btn = document.getElementById('prep-generate-btn');
+  const status = document.getElementById('prep-generate-status');
+  const draftWrap = document.getElementById('prep-draft-list');
+  btn.disabled = true;
+  status.textContent = 'Thinking…';
+  draftWrap.style.display = 'none';
+  draftWrap.innerHTML = '';
+  try {
+    const res = await fetch('/api/sessions/' + SESSION_ID + '/prep/generate', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    const tasks = data.tasks || [];
+    if (!tasks.length) {
+      status.textContent = 'No suggestions — try adding some quests, facts, or a party first.';
+      return;
+    }
+    status.textContent = `${tasks.length} suggestion(s) — review below.`;
+    draftWrap.style.display = 'flex';
+    tasks.forEach((task, i) => {
+      const row = document.createElement('label');
+      row.style.cssText = 'display:flex;align-items:center;gap:.5rem;font-size:.83rem;padding:.15rem 0';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.id = 'prep-draft-' + i;
+      cb.style.width = 'auto';
+      row.append(cb, document.createTextNode(task));
+      draftWrap.appendChild(row);
+    });
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.textContent = '+ Add checked';
+    addBtn.style.cssText = 'margin-top:.4rem;background:var(--bg2);border:1px solid var(--neon);color:var(--neon);padding:.3rem .7rem;font-size:.78rem;border-radius:3px;cursor:pointer';
+    addBtn.onclick = async () => {
+      addBtn.disabled = true;
+      const checked = tasks.filter((_, i) => document.getElementById('prep-draft-' + i).checked);
+      for (const task of checked) {
+        const res = await fetch('/api/sessions/' + SESSION_ID + '/prep/add', {
+          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ task }),
+        });
+        prep = (await res.json()).prep;
+      }
+      renderPrep();
+      draftWrap.style.display = 'none';
+      draftWrap.innerHTML = '';
+      status.textContent = checked.length ? `Added ${checked.length}.` : '';
+    };
+    draftWrap.appendChild(addBtn);
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
 
 function renderLoot() {
   const list = document.getElementById('loot-list');

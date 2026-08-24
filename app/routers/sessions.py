@@ -15,7 +15,7 @@ from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
 from ..database import get_db
 from ..deps import get_world_ctx, paginate
-from ..models import AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, World
+from ..models import AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, Quest, World
 from ..templating import templates
 from ..uploads import copy_upload_bounded, read_upload_bounded, reassemble_upload_chunks, save_upload_chunk
 
@@ -221,6 +221,61 @@ def prep_delete(session_id: int, idx: int, db: Session = Depends(get_db)):
     gs.prep_json = json.dumps(prep)
     db.commit()
     return {"prep": prep}
+
+
+def _session_prep_context(db: Session, gs: GameSession) -> str:
+    """What the AI prep generator has to work with: the previous session's
+    recap + facts, this world's open quests, and the assigned party's
+    makeup. Deliberately just the most recent prior session (by
+    session_num), not every fact ever logged — a prep sheet is about what's
+    fresh, not the whole campaign history."""
+    parts = []
+    prior = (
+        db.query(GameSession)
+        .filter(GameSession.world_id == gs.world_id, GameSession.session_num < gs.session_num)
+        .order_by(GameSession.session_num.desc())
+        .first()
+    )
+    if prior:
+        if prior.summary:
+            parts.append(f"Recap of the last session (#{prior.session_num} {prior.title}):\n{prior.summary}")
+        facts = db.query(Fact).filter(Fact.game_session_id == prior.id).order_by(Fact.created_at).all()
+        if facts:
+            parts.append("Facts from the last session:\n" + "\n".join(f"- {f.content}" for f in facts))
+
+    quests = db.query(Quest).filter(Quest.world_id == gs.world_id, Quest.status == "active").order_by(Quest.title).all()
+    if quests:
+        lines = [f"- {q.title}" + (f": {q.summary}" if q.summary else "") for q in quests]
+        parts.append("Open quests:\n" + "\n".join(lines))
+
+    if gs.party_id:
+        party = db.get(Party, gs.party_id)
+        pc_ids = json.loads(party.member_pc_ids_json or "[]") if party else []
+        pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all() if pc_ids else []
+        if pcs:
+            parts.append("Party: " + ", ".join(pc.name for pc in pcs))
+
+    return "\n\n".join(parts)
+
+
+@router.post("/api/sessions/{session_id}/prep/generate")
+async def prep_generate(session_id: int, db: Session = Depends(get_db)):
+    """Drafts a prep checklist from world state (see _session_prep_context)
+    via the local model — returns the draft without writing anything. The
+    client reviews/unchecks items, then adds confirmed ones through the
+    existing prep/add route above, one at a time, rather than a new bulk
+    write path."""
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    if not gs:
+        raise HTTPException(404)
+    context = _session_prep_context(db, gs)
+    if not context.strip():
+        raise HTTPException(400, "Nothing to generate from yet — add a recap/facts to a prior session, an open quest, or a party first.")
+    try:
+        tasks = await _ai_module.generate_session_prep(context)
+    except ValueError as exc:
+        raise HTTPException(502, str(exc))
+    return {"tasks": tasks}
 
 
 @router.post("/api/sessions/{session_id}/xp")
