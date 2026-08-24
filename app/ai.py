@@ -84,12 +84,16 @@ def effective_ollama_keep_alive() -> str:
     return _ollama_keep_alive_override
 
 
-def _chat_kwargs() -> dict:
+def _chat_kwargs(extra_options: dict = None) -> dict:
     """Extra kwargs (options=, keep_alive=) to splat into every .chat() call
     below — built fresh each call so a runtime settings change (no server
-    restart needed) takes effect on the very next request."""
+    restart needed) takes effect on the very next request. `extra_options`
+    (a per-request override — see a chat preset's options, app/routers/ai.py)
+    is layered OVER the instance-wide AppSettings defaults, not replacing
+    them: an unset key still falls back to whatever Settings > System
+    configured, so a preset only has to specify what it wants to differ."""
     kwargs = {}
-    opts = effective_ollama_options()
+    opts = {**effective_ollama_options(), **(extra_options or {})}
     if opts:
         kwargs["options"] = opts
     keep_alive = effective_ollama_keep_alive()
@@ -178,6 +182,31 @@ def set_default(surface: str, model_id: str) -> None:
     data = _load_data()
     defaults = data.setdefault("defaults", {})
     defaults[surface] = model_id
+    _save_data(data)
+
+
+# Chat presets — a GM-defined {model, system_extra, options} bundle a
+# conversation can switch to on the fly (e.g. "Lorekeeper": low temperature,
+# factual; "NPC improv": high temperature, playful) without a trip to
+# Settings > System, which is instance-wide. Instance-wide storage like
+# everything else in this file (ai_models.json), not per-world — a GM's
+# presets are a personal toolkit, not campaign content.
+def list_presets() -> list[dict]:
+    return _load_data().get("presets", [])
+
+
+def save_preset(preset: dict) -> None:
+    data = _load_data()
+    presets = data.setdefault("presets", [])
+    label = preset.get("label", "")
+    presets[:] = [p for p in presets if p.get("label") != label]
+    presets.append(preset)
+    _save_data(data)
+
+
+def delete_preset(label: str) -> None:
+    data = _load_data()
+    data["presets"] = [p for p in data.get("presets", []) if p.get("label") != label]
     _save_data(data)
 
 
@@ -273,7 +302,7 @@ _SYSTEM = (
 )
 
 
-async def generate_chat(messages: list[dict], system: str = "", model: str = "") -> str:
+async def generate_chat(messages: list[dict], system: str = "", model: str = "", options: dict = None) -> str:
     m = model or effective_ollama_model()
     _log.info("generate_chat model=%s msgs=%d", m, len(messages))
     full = []
@@ -281,7 +310,7 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "")
         full.append({"role": "system", "content": system})
     full.extend(messages)
     try:
-        resp = await _client().chat(model=m, messages=full, **_chat_kwargs())
+        resp = await _client().chat(model=m, messages=full, **_chat_kwargs(options))
         content = resp.message.content
         return content if content else "[empty response]"
     except _ollama.ResponseError as exc:
@@ -292,13 +321,13 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "")
         return f"[AI unavailable: {type(exc).__name__}: {exc}]"
 
 
-async def stream_chat(messages: list[dict], system: str = "", model: str = "") -> AsyncGenerator[str, None]:
+async def stream_chat(messages: list[dict], system: str = "", model: str = "", options: dict = None) -> AsyncGenerator[str, None]:
     m = model or effective_ollama_model()
     _log.info("stream_chat model=%s msgs=%d", m, len(messages))
     full = [{"role": "system", "content": system}] if system else []
     full.extend(messages)
     try:
-        async for chunk in await _client().chat(model=m, messages=full, stream=True, **_chat_kwargs()):
+        async for chunk in await _client().chat(model=m, messages=full, stream=True, **_chat_kwargs(options)):
             token = chunk.message.content
             if token:
                 yield token

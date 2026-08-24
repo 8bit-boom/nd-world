@@ -170,6 +170,43 @@ class ChatBody(BaseModel):
     # when `model` is blank — lets "Chat" and "Ask AI" run different models
     # without the caller having to know the configured default itself.
     surface: str = "chat"
+    # Per-conversation Ollama generation tuning (a chat preset — see
+    # /presets below), layered over the instance-wide Settings > System
+    # defaults. Always passed through _clamp_options() before reaching
+    # app.ai — never trust a client-supplied options dict directly.
+    options: dict = {}
+
+
+# Same fields/ranges Settings > System validates (app/main.py's
+# settings_system_save) — a chat preset can only ever narrow to values a GM
+# could already configure instance-wide, never send an arbitrary Ollama
+# option straight through from the client.
+_OPTION_ALLOWLIST = {
+    "temperature": (float, 0.0, 2.0), "top_p": (float, 0.0, 1.0), "top_k": (int, 0, None),
+    "repeat_penalty": (float, 0.0, 5.0), "num_predict": (int, -2, None), "num_ctx": (int, 1, None),
+    "seed": (int, None, None), "mirostat": (int, 0, 2), "mirostat_tau": (float, 0.0, 100.0),
+    "mirostat_eta": (float, 0.0, 10.0), "num_gpu": (int, 0, None),
+}
+
+
+def _clamp_options(raw: dict) -> dict:
+    out = {}
+    if not isinstance(raw, dict):
+        return out
+    for key, val in raw.items():
+        if key not in _OPTION_ALLOWLIST or val is None:
+            continue
+        kind, lo, hi = _OPTION_ALLOWLIST[key]
+        try:
+            v = kind(val)
+        except (TypeError, ValueError):
+            continue
+        if lo is not None and v < lo:
+            continue
+        if hi is not None and v > hi:
+            continue
+        out[key] = v
+    return out
 
 
 def _build_ollama_messages(messages: List[ChatMessage]) -> list[dict]:
@@ -267,7 +304,7 @@ def _build_ollama_messages(messages: List[ChatMessage]) -> list[dict]:
 @router.post("/chat")
 async def ai_chat(body: ChatBody):
     msgs = _build_ollama_messages(body.messages)
-    return {"result": await _ai.generate_chat(msgs, body.system, body.model)}
+    return {"result": await _ai.generate_chat(msgs, body.system, body.model, _clamp_options(body.options))}
 
 
 class EntityFromTextBody(BaseModel):
@@ -736,11 +773,12 @@ async def ai_stream(
 
     msgs = _build_ollama_messages(body.messages)
     requested = body.model or _ai.get_defaults().get(body.surface, "")
+    options = _clamp_options(body.options)
     _log.info("stream requested model=%r surface=%r msgs=%d", requested, body.surface, len(body.messages))
 
     async def _chat():
         model = await _ai.resolve_model(requested)
-        async for token in _ai.stream_chat(msgs, body.system, model):
+        async for token in _ai.stream_chat(msgs, body.system, model, options):
             yield token
 
     async def _gen():
@@ -824,6 +862,36 @@ async def ai_set_default(body: SetDefaultBody):
         raise HTTPException(400, f"unknown surface {body.surface!r}")
     _ai.set_default(body.surface, body.model_id.strip())
     return {"ok": True, "defaults": _ai.get_defaults()}
+
+
+class PresetBody(BaseModel):
+    label: str
+    model: str = ""
+    system_extra: str = ""
+    options: dict = {}
+
+
+@router.get("/presets")
+async def ai_list_presets():
+    return {"presets": _ai.list_presets()}
+
+
+@router.post("/presets")
+async def ai_save_preset(body: PresetBody):
+    label = body.label.strip()
+    if not label:
+        raise HTTPException(400, "label is required")
+    _ai.save_preset({
+        "label": label, "model": body.model.strip(), "system_extra": body.system_extra.strip(),
+        "options": _clamp_options(body.options),
+    })
+    return {"ok": True, "presets": _ai.list_presets()}
+
+
+@router.delete("/presets/{label}")
+async def ai_delete_preset(label: str):
+    _ai.delete_preset(label)
+    return {"ok": True, "presets": _ai.list_presets()}
 
 
 @router.get("/debug")

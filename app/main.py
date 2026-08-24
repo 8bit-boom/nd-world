@@ -2252,7 +2252,7 @@ def ai_world_context_smart(
 ):
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
-        return {"context": "", "count": 0, "notes": 0}
+        return {"context": "", "count": 0, "notes": 0, "entities": []}
     entities = _find_relevant_entities(db, world.id, body.query, limit=body.limit)
     notes = [e for e in entities if e.kind == "note"]
     non_notes = [e for e in entities if e.kind != "note"]
@@ -2273,6 +2273,11 @@ def ai_world_context_smart(
         "context": _format_context_from_entities(combined),
         "count": len(non_notes),
         "notes": len(notes),
+        # What actually got retrieved, for the RAG transparency panel (see
+        # ai_chat.html's ctx-panel/renderCtxPanel) — lets a GM see what's
+        # actually feeding a given answer, and pin any of it into every
+        # future message of the conversation.
+        "entities": [{"id": e.id, "name": e.name, "kind": e.kind} for e in combined],
     }
 
 

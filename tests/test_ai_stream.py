@@ -37,7 +37,7 @@ async def _fake_resolve_model(requested):
     return requested or "fake-model"
 
 
-async def _fake_stream_chat(messages, system="", model=""):
+async def _fake_stream_chat(messages, system="", model="", options=None):
     for tok in ["Hello", " world"]:
         yield tok
 
