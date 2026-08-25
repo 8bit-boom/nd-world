@@ -71,6 +71,10 @@ def _glossary_for_world(world) -> str:
     return (world.whisper_glossary or "").strip() if world else ""
 
 
+def _recap_instructions_for_world(world) -> str:
+    return (world.recap_instructions or "").strip() if world else ""
+
+
 @router.get("/sessions", response_class=HTMLResponse)
 def sessions_list(request: Request, page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
@@ -378,7 +382,7 @@ async def api_summarize_from_audio(
             "Whisper transcribed this clip successfully but found no speech in it — "
             "check the recording actually captured audio.",
         )
-    recap = await _ai_module.summarize_transcript(transcript)
+    recap = await _ai_module.summarize_transcript(transcript, extra_instructions=_recap_instructions_for_world(world))
     return {"transcript": transcript, "recap": recap}
 
 
@@ -428,7 +432,7 @@ async def api_summarize_from_audio_complete(
             "Whisper transcribed this clip successfully but found no speech in it — "
             "check the recording actually captured audio.",
         )
-    recap = await _ai_module.summarize_transcript(transcript)
+    recap = await _ai_module.summarize_transcript(transcript, extra_instructions=_recap_instructions_for_world(world))
     return {"transcript": transcript, "recap": recap}
 
 

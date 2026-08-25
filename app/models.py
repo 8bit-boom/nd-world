@@ -53,6 +53,13 @@ class World(Base):
     # not instance-wide (unlike ai_models.json's GM-personal-toolkit
     # settings) since it's campaign content. NULL/"" = no hint sent.
     whisper_glossary = Column(Text, nullable=True)
+    # Free-text steering for the recap-writing step specifically (not
+    # transcription — Whisper itself has no notion of "instructions", only
+    # the glossary hint above) — e.g. "Write summaries in Spanish" or "Use a
+    # dry, sarcastic tone." Applied to every session-recording recap
+    # (background job, one-shot upload, and re-summarize), same per-world
+    # scope as whisper_glossary. NULL/"" = no extra instructions.
+    recap_instructions = Column(Text, nullable=True)
     # Per-world rules text (Markdown) shown on the /rules page. NULL = fall back
     # to the bundled Neon & Dragons core_rules.md, for worlds actually running
     # N&D and any world created before this field existed.
@@ -710,6 +717,38 @@ class ImageJob(Base):
     status = Column(String(32), default="pending")
     error = Column(Text, default="")
     result_urls_json = Column(Text, default="[]")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ChatJob(Base):
+    """A durable background job for a single non-streaming chat completion —
+    see app/chat_jobs.py. Same rationale as AudioJob/ImageJob: an opt-in
+    "process in background" alternative to the main AI Chat page's default
+    live-streamed reply, for a generation slow enough (a big local model, a
+    long context) that keeping the tab open and connected isn't practical.
+    The actual work runs as a background asyncio task in the server process,
+    independent of any one HTTP connection, so it survives the browser tab
+    that started it being closed. Does NOT survive the server process itself
+    restarting mid-job — see chat_jobs.py's startup sweep, which marks any
+    job still in progress at boot as failed rather than leaving it stuck."""
+    __tablename__ = "chat_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    # A short label for the jobs list — the last user message's text,
+    # truncated. The full exchange (with any injected lore context/
+    # attachments) is in messages_json.
+    prompt = Column(Text, default="")
+    messages_json = Column(Text, default="[]")
+    system = Column(Text, default="")
+    model = Column(String(128), nullable=True)
+    options_json = Column(Text, default="{}")
+    # pending -> generating -> done, or -> error/cancelled at any point.
+    status = Column(String(32), default="pending")
+    error = Column(Text, default="")
+    result = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

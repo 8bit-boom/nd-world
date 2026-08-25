@@ -575,6 +575,8 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN players_can_ask_ai BOOLEAN DEFAULT 0"))
             if "whisper_glossary" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN whisper_glossary TEXT"))
+            if "recap_instructions" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN recap_instructions TEXT"))
             if "rules_md" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN rules_md TEXT"))
             if "home_welcome_md" not in w_cols:
@@ -803,6 +805,23 @@ def _migrate():
             ("status",              "VARCHAR(32) DEFAULT 'pending'", True),
             ("error",               "TEXT DEFAULT ''", True),
             ("result_urls_json",    "TEXT DEFAULT '[]'", True),
+            ("created_at",          "DATETIME", True),
+            ("updated_at",          "DATETIME", True),
+        ], foreign_keys=[
+            ("world_id", "worlds", "id"),
+            ("created_by_user_id", "users", "id"),
+        ], indexes=["world_id"])
+        _heal_table(conn, "chat_jobs", [
+            ("world_id",            "INTEGER", False),
+            ("created_by_user_id",  "INTEGER", True),
+            ("prompt",              "TEXT DEFAULT ''", True),
+            ("messages_json",       "TEXT DEFAULT '[]'", True),
+            ("system",              "TEXT DEFAULT ''", True),
+            ("model",               "VARCHAR(128)", True),
+            ("options_json",        "TEXT DEFAULT '{}'", True),
+            ("status",              "VARCHAR(32) DEFAULT 'pending'", True),
+            ("error",               "TEXT DEFAULT ''", True),
+            ("result",              "TEXT DEFAULT ''", True),
             ("created_at",          "DATETIME", True),
             ("updated_at",          "DATETIME", True),
         ], foreign_keys=[

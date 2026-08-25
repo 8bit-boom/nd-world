@@ -853,6 +853,7 @@
     <div id="ai-bar"></div>
     <div class="ai-attach-list" id="ai-attach-list"></div>
     <div id="ai-jobs-panel" class="nd-jobs-panel" style="display:none;margin:0 1.2rem"></div>
+    <div id="chat-jobs-panel" class="nd-jobs-panel" style="display:none;margin:0 1.2rem"></div>
     <div style="padding:.25rem 1.2rem 0;font-size:.72rem;color:var(--text-dim);display:flex;justify-content:space-between;align-items:center">
       <span>Model: <span id="active-model-label" style="color:var(--neon)">—</span></span>
       <span id="gen-stats" style="color:var(--text-dim)"></span>
@@ -865,6 +866,8 @@
       <button type="button" id="ai-bgjob-btn" title="Process a voice memo as a background job — keeps running even if you close this tab"
               onclick="document.getElementById('ai-bgjob-input').click()">🔒</button>
       <textarea id="ai-input" rows="2" placeholder="Ask anything… (Enter to send, Shift+Enter for new line)" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+      <button type="button" id="ai-send-bg" title="Send this message as a background job instead — keeps running even if you close this tab; the reply lands in Background jobs below, not the conversation, until you click Use this"
+              onclick="sendMessageAsBackgroundJob()">🔒</button>
       <button id="ai-send" onclick="sendMessage()">Send ↵</button>
     </div>
 
@@ -1607,6 +1610,18 @@
     <div style="display:flex;align-items:center;gap:.6rem;margin-top:.5rem">
       <button class="ig-btn" id="wg-save-btn" onclick="wgSaveGlossary()" style="border-color:var(--neon);color:var(--neon)">💾 Save</button>
       <span id="wg-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+    </div>
+  </div>
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-top:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Recap instructions</div>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
+      Extra steering for the AI-written recap itself (not transcription) — e.g. "Write summaries in Spanish", "Use a dry, sarcastic tone", "Focus only on combat". Applied to every session-recording recap (background jobs, one-shot upload, and re-summarize).
+    </div>
+    <textarea id="ri-textarea" rows="2" placeholder="e.g. Write the summary in French."
+              style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .6rem;font-family:inherit;font-size:.82rem;border-radius:4px;box-sizing:border-box;resize:vertical"></textarea>
+    <div style="display:flex;align-items:center;gap:.6rem;margin-top:.5rem">
+      <button class="ig-btn" id="ri-save-btn" onclick="riSaveInstructions()" style="border-color:var(--neon);color:var(--neon)">💾 Save</button>
+      <span id="ri-status" style="font-size:.78rem;color:var(--text-dim)"></span>
     </div>
   </div>
 </div><!-- /whisper-panel -->
@@ -2563,6 +2578,53 @@ function _getNotesLimit() {
   return parseInt(el?.value) || 0;
 }
 
+// Shared by the live (streamed) send and the "process in background" chat-job
+// send — builds the RAG-context-injected message array + system prompt
+// exactly the same way for both, including the same context-panel/status-pill
+// side effects, so a backgrounded question gets identical lore grounding to
+// a live one. `extraUserMsg`, if given, is appended after `history` (for the
+// background-job path, which doesn't push to `history` until "Use this" is
+// clicked); omit it for the live path, where the new turn is already in
+// `history` by the time this is called.
+async function buildChatMessagesWithContext(extraUserMsg) {
+  const queryText = extraUserMsg ? extraUserMsg.content : (history.length ? history[history.length - 1].content : '');
+  let ctx = '';
+  try {
+    const cr = await fetch('/api/ai/world-context-smart', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: queryText, limit: _getCtxLimit(), notes_limit: _getNotesLimit() })
+    });
+    const cd = await cr.json();
+    ctx = cd.context || '';
+    _lastRetrievedEntities = cd.entities || [];
+    if (document.getElementById('ctx-panel').style.display !== 'none') renderCtxPanel();
+    if (ctx) {
+      const noteLabel = cd.notes ? ` + ${cd.notes} note${cd.notes > 1 ? 's' : ''}` : '';
+      _setCtxStatus('#4f4', `✓ ${cd.count} entities${noteLabel}`);
+    } else {
+      _setCtxStatus('var(--text-dim)', '○ No matching lore');
+    }
+  } catch(_) {
+    _setCtxStatus('#f55', '✗ Lore unavailable');
+  }
+
+  // Pinned entities/notes are always included in full, regardless of
+  // whether they matched this message's RAG query.
+  const pinnedCtx = await _pinnedEntitiesContext();
+  if (pinnedCtx) ctx = ctx ? (pinnedCtx + '\n\n' + ctx) : pinnedCtx;
+
+  const base = extraUserMsg ? [...history, extraUserMsg] : [...history];
+  const messagesWithCtx = ctx ? [
+    { role: 'user', content: 'Relevant world lore:\n\n' + ctx },
+    { role: 'assistant', content: 'Got it.' },
+    ...base
+  ] : base;
+
+  const presetSystem = _chatPresetSystemExtra ? WORLD_SYSTEM + '\n\n' + _chatPresetSystemExtra : WORLD_SYSTEM;
+  return { messages: messagesWithCtx, system: presetSystem };
+}
+
 async function sendMessage() {
   const input = document.getElementById('ai-input');
   const btn = document.getElementById('ai-send');
@@ -2584,40 +2646,8 @@ async function sendMessage() {
   const thinking = addMessage('assistant', '<span class="thinking-dots"><span></span><span></span><span></span></span>', true);
 
   try {
-    // Smart per-message context fetch
-    let ctx = '';
-    try {
-      const cr = await fetch('/api/ai/world-context-smart', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: text, limit: _getCtxLimit(), notes_limit: _getNotesLimit() })
-      });
-      const cd = await cr.json();
-      ctx = cd.context || '';
-      _lastRetrievedEntities = cd.entities || [];
-      if (document.getElementById('ctx-panel').style.display !== 'none') renderCtxPanel();
-      if (ctx) {
-        const noteLabel = cd.notes ? ` + ${cd.notes} note${cd.notes > 1 ? 's' : ''}` : '';
-        _setCtxStatus('#4f4', `✓ ${cd.count} entities${noteLabel}`);
-      } else {
-        _setCtxStatus('var(--text-dim)', '○ No matching lore');
-      }
-    } catch(_) {
-      _setCtxStatus('#f55', '✗ Lore unavailable');
-    }
+    const { messages: messagesWithCtx, system: presetSystem } = await buildChatMessagesWithContext();
 
-    // Pinned entities/notes are always included in full, regardless of
-    // whether they matched this message's RAG query.
-    const pinnedCtx = await _pinnedEntitiesContext();
-    if (pinnedCtx) ctx = ctx ? (pinnedCtx + '\n\n' + ctx) : pinnedCtx;
-
-    const messagesWithCtx = ctx ? [
-      { role: 'user', content: 'Relevant world lore:\n\n' + ctx },
-      { role: 'assistant', content: 'Got it.' },
-      ...history
-    ] : [...history];
-
-    const presetSystem = _chatPresetSystemExtra ? WORLD_SYSTEM + '\n\n' + _chatPresetSystemExtra : WORLD_SYSTEM;
     const res = await fetch('/api/ai/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2716,6 +2746,141 @@ async function sendMessage() {
     input.focus();
   }
 }
+
+// ── Background chat jobs ────────────────────────────────────────────────────
+// An opt-in "process in background" alternative to the live-streamed send
+// above — for a generation slow enough (a big local model, a long context)
+// that keeping the tab open and connected isn't practical. Unlike a live
+// send, nothing is added to the visible conversation/history until the GM
+// clicks "Use this" on a finished job, mirroring the audio-attachment and
+// image-generation background job panels' own "nothing happens until you
+// explicitly use the result" convention.
+
+let _cjJobs = [];
+let _cjPollTimer = null;
+const _CJ_JOB_IN_PROGRESS = new Set(['pending', 'generating']);
+const _CJ_JOB_STATUS_LABEL = { pending: 'Queued…', generating: 'Generating…', done: '✓ Done', error: '✗ Failed', cancelled: 'Cancelled' };
+
+async function sendMessageAsBackgroundJob() {
+  const input = document.getElementById('ai-input');
+  const btn = document.getElementById('ai-send-bg');
+  const text = input.value.trim();
+  const attachments = chatAttachments.take();
+  if (!text && !attachments.length) return;
+  input.value = '';
+  autoResize(input);
+  btn.disabled = true;
+  try {
+    const { messages, system } = await buildChatMessagesWithContext({ role: 'user', content: text, attachments });
+    const res = await fetch('/api/ai/chat/jobs', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages, system, model: activeModel, surface: 'chat', options: _chatPresetOptions,
+      }),
+    });
+    if (!res.ok) throw await ndApiErrorFrom(res);
+    await cjLoadJobs();
+  } catch (e) {
+    alert('Could not start background job: ' + (e.message || e));
+    input.value = text; autoResize(input);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function cjLoadJobs() {
+  const panel = document.getElementById('chat-jobs-panel');
+  if (!panel) return;
+  try {
+    _cjJobs = await fetch('/api/ai/chat/jobs').then(r => r.json());
+  } catch (e) { return; }
+  _cjRenderJobs();
+  if (_cjPollTimer !== null) { clearTimeout(_cjPollTimer); _cjPollTimer = null; }
+  if (_cjJobs.some(j => _CJ_JOB_IN_PROGRESS.has(j.status))) {
+    _cjPollTimer = setTimeout(cjLoadJobs, 3000);
+  }
+}
+
+function _cjRenderJobs() {
+  const panel = document.getElementById('chat-jobs-panel');
+  if (!panel) return;
+  panel.innerHTML = '';
+  if (!_cjJobs.length) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  const title = document.createElement('div');
+  title.className = 'nd-jobs-title';
+  title.textContent = 'Background jobs';
+  panel.appendChild(title);
+  _cjJobs.forEach((job) => {
+    const row = document.createElement('div');
+    row.className = 'nd-job-row' + (job.status === 'error' ? ' nd-job-row--error' : '');
+    const label = document.createElement('span');
+    label.className = 'nd-job-label';
+    const shortPrompt = (job.prompt || '').slice(0, 60) + ((job.prompt || '').length > 60 ? '…' : '');
+    label.textContent = `${shortPrompt || 'message'} — ${_CJ_JOB_STATUS_LABEL[job.status] || job.status}`;
+    row.appendChild(label);
+    if (job.status === 'error' && job.error) {
+      const err = document.createElement('span');
+      err.className = 'nd-job-error';
+      err.textContent = job.error;
+      row.appendChild(err);
+    }
+    if (job.status === 'done' && job.result) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'nd-job-use-btn';
+      btn.textContent = 'Use this';
+      btn.onclick = () => {
+        addMessage('user', job.prompt, false);
+        history.push({ role: 'user', content: job.prompt });
+        const bubble = addMessage('assistant', job.result, false);
+        history.push({ role: 'assistant', content: job.result });
+        addSaveBtn(bubble.parentElement, job.result);
+        addIllustrateBtn(bubble, bubble.parentElement, job.result);
+        addSaveEntityBtn(bubble, bubble.parentElement, job.result);
+        autoSave();
+      };
+      row.appendChild(btn);
+    }
+    if (_CJ_JOB_IN_PROGRESS.has(job.status)) {
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'nd-job-use-btn';
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.onclick = async () => {
+        cancelBtn.disabled = true;
+        try {
+          await fetch('/api/ai/chat/jobs/' + job.id + '/cancel', { method: 'POST' });
+        } finally {
+          await cjLoadJobs();
+        }
+      };
+      row.appendChild(cancelBtn);
+    } else {
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'nd-job-use-btn';
+      delBtn.textContent = '🗑';
+      delBtn.title = 'Delete this job';
+      delBtn.onclick = async () => {
+        delBtn.disabled = true;
+        try {
+          const res = await fetch('/api/ai/chat/jobs/' + job.id, { method: 'DELETE' });
+          if (!res.ok) throw await ndApiErrorFrom(res);
+        } catch (e) {
+          alert('Could not delete job: ' + e.message);
+          delBtn.disabled = false;
+          return;
+        }
+        await cjLoadJobs();
+      };
+      row.appendChild(delBtn);
+    }
+    panel.appendChild(row);
+  });
+}
+
+cjLoadJobs();
 
 function quickPrompt(text) {
   const input = document.getElementById('ai-input');
@@ -2857,7 +3022,7 @@ function switchTab(tab) {
   });
 
   if (tab === 'models')  { mpLoad(); wpLoadStatus(); }
-  if (tab === 'whisper') { wtLoadStatus(); wgLoadGlossary(); }
+  if (tab === 'whisper') { wtLoadStatus(); wgLoadGlossary(); riLoadInstructions(); }
   if (tab === 'starred') igLoadStarred();
 }
 
@@ -3302,6 +3467,28 @@ function _igRenderJobs() {
         }
       };
       row.appendChild(cancelBtn);
+    } else {
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'nd-job-use-btn';
+      delBtn.textContent = '🗑';
+      delBtn.title = 'Delete this job';
+      delBtn.onclick = async () => {
+        delBtn.disabled = true;
+        try {
+          const res = await fetch('/api/ai/imagegen/jobs/' + job.id, { method: 'DELETE' });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.detail || `HTTP ${res.status}`);
+          }
+        } catch (e) {
+          alert('Could not delete job: ' + e.message);
+          delBtn.disabled = false;
+          return;
+        }
+        await igLoadJobs();
+      };
+      row.appendChild(delBtn);
     }
     panel.appendChild(row);
   });
@@ -4776,6 +4963,36 @@ async function wgSaveGlossary() {
     const r = await fetch('/api/ai/whisper/glossary', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ glossary: ta.value }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    status.textContent = '✓ Saved';
+    setTimeout(() => { if (status.textContent === '✓ Saved') status.textContent = ''; }, 2000);
+  } catch (e) {
+    status.textContent = '✗ Could not save: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function riLoadInstructions() {
+  const ta = document.getElementById('ri-textarea');
+  if (!ta) return;
+  try {
+    const d = await fetch('/api/ai/recap-instructions').then(r => r.json());
+    ta.value = d.instructions || '';
+  } catch (e) { /* leave blank — save will still work */ }
+}
+
+async function riSaveInstructions() {
+  const btn = document.getElementById('ri-save-btn');
+  const status = document.getElementById('ri-status');
+  const ta = document.getElementById('ri-textarea');
+  btn.disabled = true;
+  status.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/ai/recap-instructions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instructions: ta.value }),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     status.textContent = '✓ Saved';

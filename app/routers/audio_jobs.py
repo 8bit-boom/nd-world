@@ -95,6 +95,20 @@ def api_audio_job_cancel(job_id: int, request: Request, db: Session = Depends(ge
     return {"ok": True}
 
 
+@router.delete("/api/audio-jobs/{job_id}")
+def api_audio_job_delete(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = db.query(AudioJob).filter(AudioJob.id == job_id, AudioJob.world_id == world.id).first()
+    if not job:
+        raise HTTPException(404)
+    if not _audio_jobs.delete_job(job_id):
+        raise HTTPException(400, "Job is still in progress — cancel it first")
+    return {"ok": True}
+
+
 @router.post("/api/audio-jobs/{job_id}/resummarize")
 async def api_audio_job_resummarize(
     job_id: int, request: Request, model: str = Form(""),

@@ -69,6 +69,15 @@ def _glossary_for_world(world_id: int) -> str:
         db.close()
 
 
+def _recap_instructions_for_world(world_id: int) -> str:
+    db = SessionLocal()
+    try:
+        w = db.get(World, world_id)
+        return (w.recap_instructions or "").strip() if w else ""
+    finally:
+        db.close()
+
+
 async def _run_job(job_id: int, audio_path: Path, purpose: str, delete_after: bool, model: str = "", world_id: Optional[int] = None) -> None:
     def _set(**fields):
         db = SessionLocal()
@@ -100,7 +109,8 @@ async def _run_job(job_id: int, audio_path: Path, purpose: str, delete_after: bo
 
         if purpose == "session_recap":
             _set(status="summarizing")
-            recap = await _ai_module.summarize_transcript(transcript, model=model)
+            instructions = _recap_instructions_for_world(world_id) if world_id else ""
+            recap = await _ai_module.summarize_transcript(transcript, model=model, extra_instructions=instructions)
             _set(status="done", recap=recap)
         else:
             _set(status="done")
@@ -133,6 +143,22 @@ def cancel_job(job_id: int) -> bool:
     return True
 
 
+def delete_job(job_id: int) -> bool:
+    """Permanently remove a finished job's row. Returns False (a no-op, not
+    an error) if the job is still in progress — cancel it first — or the id
+    is unknown, so the caller can 400/404 accordingly."""
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        if not job or job.status in IN_PROGRESS_STATUSES:
+            return False
+        db.delete(job)
+        db.commit()
+        return True
+    finally:
+        db.close()
+
+
 async def resummarize_job(job_id: int, model: str = "") -> AudioJob:
     """Re-run just the summarization step against a job's already-saved
     transcript, optionally with a different model — for when the first
@@ -154,10 +180,11 @@ async def resummarize_job(job_id: int, model: str = "") -> AudioJob:
             raise ValueError("This job has no transcript yet to summarize.")
         transcript = job.transcript
         chosen_model = model or job.model or ""
+        instructions = _recap_instructions_for_world(job.world_id) if job.world_id else ""
     finally:
         db.close()
 
-    recap = await _ai_module.summarize_transcript(transcript, model=chosen_model)
+    recap = await _ai_module.summarize_transcript(transcript, model=chosen_model, extra_instructions=instructions)
 
     db = SessionLocal()
     try:

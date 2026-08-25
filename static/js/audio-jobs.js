@@ -20,10 +20,11 @@ function ndAudioJobs(panelEl, opts) {
   let pollTimer = null;
 
   const STATUS_LABEL = {
-    pending: "Queued…", transcribing: "Transcribing…",
-    summarizing: "Summarizing…", done: "✓ Done", error: "✗ Failed",
+    pending: "Queued…", transcribing: "Transcribing…", summarizing: "Summarizing…",
+    done: "✓ Done", error: "✗ Failed", cancelled: "○ Cancelled",
   };
   const IN_PROGRESS = new Set(["pending", "transcribing", "summarizing"]);
+  const FINISHED = new Set(["done", "error", "cancelled"]);
 
   function render() {
     panelEl.innerHTML = "";
@@ -54,6 +55,15 @@ function ndAudioJobs(panelEl, opts) {
         btn.onclick = () => opts.onUse(job);
         row.appendChild(btn);
       }
+      if (FINISHED.has(job.status)) {
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "nd-job-use-btn";
+        delBtn.textContent = "🗑";
+        delBtn.title = "Delete this job";
+        delBtn.onclick = () => deleteJob(job.id, delBtn);
+        row.appendChild(delBtn);
+      }
       panelEl.appendChild(row);
     });
   }
@@ -75,6 +85,25 @@ function ndAudioJobs(panelEl, opts) {
     if (jobs.some((j) => IN_PROGRESS.has(j.status))) {
       pollTimer = setTimeout(refreshList, pollMs);
     }
+  }
+
+  // Every AudioJob (whichever purpose-scoped panel started it) shares the
+  // same unified status/cancel/delete routes (app/routers/audio_jobs.py) —
+  // no opts.deleteUrl needed, this is the one path regardless of listUrl.
+  async function deleteJob(jobId, btn) {
+    btn.disabled = true;
+    try {
+      const res = await fetch(`/api/audio-jobs/${jobId}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      alert("Could not delete job: " + e.message);
+      btn.disabled = false;
+      return;
+    }
+    await refreshList();
   }
 
   // Uploads `file` (chunked automatically if it's large — see

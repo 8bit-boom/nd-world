@@ -63,6 +63,7 @@ from . import gallery as _gallery_module
 from . import mcp_server
 from . import ai as _ai_module
 from . import audio_jobs as _audio_jobs
+from . import chat_jobs as _chat_jobs
 from . import image_jobs as _image_jobs
 from . import auth as _auth
 from .constants import KINDS, SUBTYPES, KIND_ICONS
@@ -165,6 +166,7 @@ def startup():
     _refresh_settings_overrides()
     _audio_jobs.sweep_interrupted_jobs()
     _image_jobs.sweep_interrupted_jobs()
+    _chat_jobs.sweep_interrupted_jobs()
 
 
 

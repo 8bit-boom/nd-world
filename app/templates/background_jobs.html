@@ -112,6 +112,13 @@ function bgRenderJob(job) {
     cancelBtn.textContent = '✕ Cancel';
     cancelBtn.onclick = () => bgCancelJob(job.id, cancelBtn);
     actions.appendChild(cancelBtn);
+  } else {
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'bg-job-btn bg-job-btn--cancel';
+    deleteBtn.textContent = '🗑 Delete';
+    deleteBtn.onclick = () => bgDeleteJob(job.id, deleteBtn);
+    actions.appendChild(deleteBtn);
   }
   if (job.status === 'done' && (job.transcript || job.recap)) {
     const toggleBtn = document.createElement('button');
@@ -206,6 +213,24 @@ async function bgCancelJob(jobId, btn) {
     }
   } catch (e) {
     alert('Failed to cancel: ' + e.message);
+  }
+  bgRefresh();
+}
+
+async function bgDeleteJob(jobId, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Deleting…';
+  try {
+    const res = await fetch(`/api/audio-jobs/${jobId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `HTTP ${res.status}`);
+    }
+  } catch (e) {
+    alert('Failed to delete: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '🗑 Delete';
+    return;
   }
   bgRefresh();
 }

@@ -744,7 +744,20 @@ def _split_transcript_into_chunks(transcript: str, chunk_chars: int) -> list[str
     return chunks
 
 
-async def summarize_transcript(transcript: str, model: str = "") -> str:
+def _with_instructions(system: str, extra_instructions: str) -> str:
+    """Append a GM's free-text steering (World.recap_instructions — e.g.
+    "write the summary in Spanish", "focus only on combat") onto a base
+    system prompt. Applied only to the calls that produce the final,
+    human-facing recap text — not the per-chunk extraction step below, which
+    deliberately produces a terse scratch list rather than polished prose;
+    the reduce step still gets a chance to apply language/tone/focus when it
+    turns those extracted events into the final recap."""
+    if not extra_instructions:
+        return system
+    return f"{system}\n\nAdditional instructions from the GM (follow these too): {extra_instructions}"
+
+
+async def summarize_transcript(transcript: str, model: str = "", extra_instructions: str = "") -> str:
     """Turn a raw Whisper transcript (see transcribe_audio) of a session
     recording into a narrative recap. Transcripts that fit in one context
     window go through a single generate_chat call, same as before; longer
@@ -755,7 +768,8 @@ async def summarize_transcript(transcript: str, model: str = "") -> str:
         return ""
     chunks = _split_transcript_into_chunks(transcript, _transcript_chunk_char_budget())
     if len(chunks) <= 1:
-        return await generate_chat([{"role": "user", "content": transcript}], system=_SUMMARIZE_TRANSCRIPT_SYSTEM, model=model)
+        system = _with_instructions(_SUMMARIZE_TRANSCRIPT_SYSTEM, extra_instructions)
+        return await generate_chat([{"role": "user", "content": transcript}], system=system, model=model)
 
     _log.info("summarize_transcript: chunking into %d part(s) (%d chars total)", len(chunks), len(transcript))
     part_summaries = []
@@ -765,7 +779,8 @@ async def summarize_transcript(transcript: str, model: str = "") -> str:
             return part  # propagate the failure rather than weaving an error string into the recap
         part_summaries.append(f"Part {i + 1}:\n{part}")
     combined = "\n\n".join(part_summaries)
-    return await generate_chat([{"role": "user", "content": combined}], system=_SUMMARIZE_TRANSCRIPT_REDUCE_SYSTEM, model=model)
+    system = _with_instructions(_SUMMARIZE_TRANSCRIPT_REDUCE_SYSTEM, extra_instructions)
+    return await generate_chat([{"role": "user", "content": combined}], system=system, model=model)
 
 
 async def status() -> dict:

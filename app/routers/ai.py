@@ -13,11 +13,12 @@ from typing import List, Optional
 from pathlib import Path as _Path
 from .. import ai as _ai
 from .. import audio_jobs as _audio_jobs
+from .. import chat_jobs as _chat_jobs
 from .. import image_jobs as _image_jobs
 from ..constants import KINDS
 from ..database import get_db
 from ..deps import get_world_ctx
-from ..models import AudioJob, ChatSession, ImageJob, PromptPreset
+from ..models import AudioJob, ChatJob, ChatSession, ImageJob, PromptPreset
 from ..uploads import (
     copy_upload_bounded, unique_upload_filename, reassemble_upload_chunks, save_upload_chunk,
 )
@@ -1028,6 +1029,30 @@ def api_whisper_glossary_save(body: WhisperGlossaryBody, request: Request, db=De
     return {"ok": True, "glossary": world.whisper_glossary}
 
 
+@router.get("/recap-instructions")
+def api_recap_instructions_get(request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    return {"instructions": world.recap_instructions or ""}
+
+
+class RecapInstructionsBody(BaseModel):
+    instructions: str = ""
+
+
+@router.post("/recap-instructions")
+def api_recap_instructions_save(body: RecapInstructionsBody, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    world.recap_instructions = body.instructions.strip()
+    db.commit()
+    return {"ok": True, "instructions": world.recap_instructions}
+
+
 class WhisperPullBody(BaseModel):
     url: str = ""
     # One of app.ai.WHISPER_KNOWN_MODELS' filenames — downloads that known
@@ -1686,6 +1711,109 @@ def api_imagegen_job_cancel(job_id: int, request: Request, db=Depends(get_db), a
         raise HTTPException(400, "Job is not in progress")
     if not _image_jobs.cancel_job(job_id):
         raise HTTPException(400, "Job isn't currently running (it may have just finished)")
+    return {"ok": True}
+
+
+@router.delete("/imagegen/jobs/{job_id}")
+def api_imagegen_job_delete(job_id: int, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = db.query(ImageJob).filter(ImageJob.id == job_id, ImageJob.world_id == world.id).first()
+    if not job:
+        raise HTTPException(404)
+    if not _image_jobs.delete_job(job_id):
+        raise HTTPException(400, "Job is still in progress — cancel it first")
+    return {"ok": True}
+
+
+# ── Background chat jobs ────────────────────────────────────────────────────
+# An opt-in "process in background" alternative to the main AI Chat page's
+# default live-streamed reply (POST /stream above) — mirrors the audio/image
+# jobs pattern (app/chat_jobs.py) so a GM can navigate away or close the tab
+# without losing a slow generation. GM-only, matching the main /ai page
+# itself (see _require_gm's docstring) — unlike /stream, which players can
+# also reach via the embedded per-entity Ask AI panel.
+
+def _chat_job_to_dict(job: ChatJob) -> dict:
+    return {
+        "id": job.id, "prompt": job.prompt, "status": job.status, "error": job.error,
+        "result": job.result, "model": job.model or "",
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+    }
+
+
+@router.post("/chat/jobs")
+async def api_chat_job_create(body: ChatBody, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    # Must be async (not a plain `def`) — chat_jobs.create_job calls
+    # asyncio.create_task(), which needs a running event loop. Same
+    # reasoning as the imagegen job-create route above.
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    msgs = _build_ollama_messages(body.messages)
+    user = getattr(request.state, "user", None)
+    job_id = _chat_jobs.create_job(
+        world_id=world.id, messages=msgs, system=body.system, model=body.model,
+        options=_clamp_options(body.options), created_by_user_id=user.id if user else None,
+    )
+    return {"job_id": job_id}
+
+
+@router.get("/chat/jobs/{job_id}")
+def api_chat_job_status(job_id: int, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = db.query(ChatJob).filter(ChatJob.id == job_id, ChatJob.world_id == world.id).first()
+    if not job:
+        raise HTTPException(404)
+    return _chat_job_to_dict(job)
+
+
+@router.get("/chat/jobs")
+def api_chat_job_list(request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    jobs = (
+        db.query(ChatJob).filter(ChatJob.world_id == world.id)
+        .order_by(ChatJob.created_at.desc()).limit(20).all()
+    )
+    return [_chat_job_to_dict(j) for j in jobs]
+
+
+@router.post("/chat/jobs/{job_id}/cancel")
+def api_chat_job_cancel(job_id: int, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = db.query(ChatJob).filter(ChatJob.id == job_id, ChatJob.world_id == world.id).first()
+    if not job:
+        raise HTTPException(404)
+    if job.status not in _chat_jobs.IN_PROGRESS_STATUSES:
+        raise HTTPException(400, "Job is not in progress")
+    if not _chat_jobs.cancel_job(job_id):
+        raise HTTPException(400, "Job isn't currently running (it may have just finished)")
+    return {"ok": True}
+
+
+@router.delete("/chat/jobs/{job_id}")
+def api_chat_job_delete(job_id: int, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = db.query(ChatJob).filter(ChatJob.id == job_id, ChatJob.world_id == world.id).first()
+    if not job:
+        raise HTTPException(404)
+    if not _chat_jobs.delete_job(job_id):
+        raise HTTPException(400, "Job is still in progress — cancel it first")
     return {"ok": True}
 
 

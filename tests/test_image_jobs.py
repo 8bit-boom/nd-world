@@ -106,6 +106,48 @@ def test_cancel_returns_false_for_unknown_job():
     assert image_jobs.cancel_job(999999) is False
 
 
+def test_delete_removes_a_finished_job(client, seed):
+    db = SessionLocal()
+    try:
+        job = ImageJob(world_id=seed.world_a.id, prompt="x", status="done", result_urls_json="[]")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    assert image_jobs.delete_job(job_id) is True
+    db = SessionLocal()
+    try:
+        assert db.get(ImageJob, job_id) is None
+    finally:
+        db.close()
+
+
+def test_delete_refuses_an_in_progress_job(client, seed):
+    db = SessionLocal()
+    try:
+        job = ImageJob(world_id=seed.world_a.id, prompt="x", status="generating")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    assert image_jobs.delete_job(job_id) is False
+    db = SessionLocal()
+    try:
+        assert db.get(ImageJob, job_id) is not None
+    finally:
+        db.close()
+
+
+def test_delete_returns_false_for_unknown_job():
+    assert image_jobs.delete_job(999999) is False
+
+
 def test_sweep_interrupted_jobs_marks_in_progress_as_error(client, seed):
     db = SessionLocal()
     try:
@@ -193,6 +235,53 @@ def test_job_cancel(client, seed, monkeypatch):
 
     r = client.post(f"/api/ai/imagegen/jobs/{job_id}/cancel")
     assert r.status_code == 200
+
+
+def test_job_delete(client, seed, monkeypatch):
+    async def fake_generate(**kwargs):
+        return ["/uploads/ai-images/x.png"]
+    monkeypatch.setattr(ai_module, "imagegen_generate", fake_generate)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    job_id = client.post("/api/ai/imagegen/jobs", json=_body()).json()["job_id"]
+    _poll_until_terminal(client, f"/api/ai/imagegen/jobs/{job_id}")
+
+    r = client.delete(f"/api/ai/imagegen/jobs/{job_id}")
+    assert r.status_code == 200, r.text
+    r2 = client.get(f"/api/ai/imagegen/jobs/{job_id}")
+    assert r2.status_code == 404
+
+
+def test_job_delete_rejects_in_progress_job(client, seed, monkeypatch):
+    async def hang(**kwargs):
+        await asyncio.sleep(30)
+        return []
+    monkeypatch.setattr(ai_module, "imagegen_generate", hang)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    job_id = client.post("/api/ai/imagegen/jobs", json=_body()).json()["job_id"]
+
+    r = client.delete(f"/api/ai/imagegen/jobs/{job_id}")
+    assert r.status_code == 400
+
+    client.post(f"/api/ai/imagegen/jobs/{job_id}/cancel")
+
+
+def test_job_delete_404s_across_worlds(client, seed, monkeypatch):
+    async def fake_generate(**kwargs):
+        return []
+    monkeypatch.setattr(ai_module, "imagegen_generate", fake_generate)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    job_id = client.post("/api/ai/imagegen/jobs", json=_body()).json()["job_id"]
+    _poll_until_terminal(client, f"/api/ai/imagegen/jobs/{job_id}")
+
+    client.cookies.set("active_world", seed.world_b.slug)
+    r = client.delete(f"/api/ai/imagegen/jobs/{job_id}")
+    assert r.status_code == 404
 
 
 def test_job_create_blank_model_falls_back_to_configured_default(client, seed, monkeypatch):

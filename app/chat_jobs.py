@@ -1,20 +1,18 @@
-"""Durable background jobs for image generation — see ImageJob in
-app/models.py for the full rationale. Mirrors app/audio_jobs.py's shape
-(create_job/_run_job/cancel_job/sweep_interrupted_jobs) deliberately, so
-the two stay recognizable as the same pattern even though they're
-independent modules (an image generation's params don't fit AudioJob's
-purpose/transcript/recap shape at all).
+"""Durable background jobs for a single non-streaming chat completion — see
+ChatJob in app/models.py for the full rationale. Mirrors app/image_jobs.py's
+shape (create_job/_run_job/cancel_job/delete_job/sweep_interrupted_jobs)
+deliberately, so all three background-job engines (audio/image/chat) stay
+recognizable as the same pattern.
 """
 import asyncio
 import json
 import logging
-from pathlib import Path
 
 from . import ai as _ai_module
 from .database import SessionLocal
-from .models import ImageJob
+from .models import ChatJob
 
-_log = logging.getLogger("nd.image_jobs")
+_log = logging.getLogger("nd.chat_jobs")
 
 # Must hold a strong reference to every in-flight task — see audio_jobs.py's
 # identical comment; the same GC risk applies here.
@@ -22,16 +20,36 @@ _running_tasks: dict[int, asyncio.Task] = {}
 
 IN_PROGRESS_STATUSES = ("pending", "generating")
 
+# generate_chat() never raises — a failure comes back as a "[AI error: ...]"/
+# "[AI unavailable: ...]"/"[empty response ...]" string instead (see its own
+# docstring), the same convention summarize_transcript's map-reduce step
+# already checks for. A background job with no exception to catch would
+# otherwise show "✓ Done" with an error message as its "result" — check for
+# that sentinel so the job list can be honest about what actually happened.
+def _looks_like_failure(result: str) -> bool:
+    return result.startswith("[AI ") or result.startswith("[empty response")
 
-def create_job(world_id: int, prompt: str, params: dict, created_by_user_id=None) -> int:
+
+def create_job(
+    world_id: int, messages: list[dict], system: str, model: str, options: dict,
+    created_by_user_id=None,
+) -> int:
     """Create the job row and start its background task immediately —
     returns the job id right away, before generation has even started, so
     the caller's HTTP response can return instantly regardless of how long
-    the actual generation takes."""
+    the actual generation takes. `messages` is expected to already include
+    any injected lore/RAG context, same as what the direct /api/ai/stream
+    route receives — this module has no context-building logic of its own."""
+    prompt = ""
+    for m in reversed(messages):
+        if m.get("role") == "user" and m.get("content"):
+            prompt = m["content"]
+            break
     db = SessionLocal()
     try:
-        job = ImageJob(
-            world_id=world_id, prompt=prompt, params_json=json.dumps(params),
+        job = ChatJob(
+            world_id=world_id, prompt=prompt[:500], messages_json=json.dumps(messages),
+            system=system or "", model=model or None, options_json=json.dumps(options or {}),
             created_by_user_id=created_by_user_id, status="pending",
         )
         db.add(job)
@@ -41,17 +59,17 @@ def create_job(world_id: int, prompt: str, params: dict, created_by_user_id=None
     finally:
         db.close()
 
-    task = asyncio.create_task(_run_job(job_id, params))
+    task = asyncio.create_task(_run_job(job_id, messages, system, model, options))
     _running_tasks[job_id] = task
     task.add_done_callback(lambda t: _running_tasks.pop(job_id, None))
     return job_id
 
 
-async def _run_job(job_id: int, params: dict) -> None:
+async def _run_job(job_id: int, messages: list[dict], system: str, model: str, options: dict) -> None:
     def _set(**fields):
         db = SessionLocal()
         try:
-            job = db.get(ImageJob, job_id)
+            job = db.get(ChatJob, job_id)
             if not job:
                 return
             for k, v in fields.items():
@@ -62,9 +80,11 @@ async def _run_job(job_id: int, params: dict) -> None:
 
     try:
         _set(status="generating")
-        call_params = {**params, "uploads_dir": Path(params["uploads_dir"])}
-        urls = await _ai_module.imagegen_generate(**call_params)
-        _set(status="done", result_urls_json=json.dumps(urls))
+        result = await _ai_module.generate_chat(messages, system, model, options)
+        if _looks_like_failure(result):
+            _set(status="error", error=result)
+        else:
+            _set(status="done", result=result)
     except asyncio.CancelledError:
         # Same rationale as audio_jobs.py's identical handler: record the
         # cancellation as a distinct outcome before letting it propagate, so
@@ -72,8 +92,8 @@ async def _run_job(job_id: int, params: dict) -> None:
         _set(status="cancelled", error="Cancelled by GM.")
         raise
     except Exception as exc:
-        _log.exception("image job %s failed", job_id)
-        _set(status="error", error=str(exc))
+        _log.exception("chat job %s failed", job_id)
+        _set(status="error", error=f"{type(exc).__name__}: {exc}")
 
 
 def cancel_job(job_id: int) -> bool:
@@ -94,7 +114,7 @@ def delete_job(job_id: int) -> bool:
     is unknown, so the caller can 400/404 accordingly."""
     db = SessionLocal()
     try:
-        job = db.get(ImageJob, job_id)
+        job = db.get(ChatJob, job_id)
         if not job or job.status in IN_PROGRESS_STATUSES:
             return False
         db.delete(job)
@@ -107,11 +127,11 @@ def delete_job(job_id: int) -> bool:
 def sweep_interrupted_jobs() -> None:
     """Called once at startup: any job still mid-flight when the process
     last stopped has no background task to resume it — mark it failed with
-    a clear reason instead of leaving it stuck showing "generating"
-    forever. Same rationale as audio_jobs.py's identical sweep."""
+    a clear reason instead of leaving it stuck showing "generating" forever.
+    Same rationale as audio_jobs.py/image_jobs.py's identical sweep."""
     db = SessionLocal()
     try:
-        stuck = db.query(ImageJob).filter(ImageJob.status.in_(IN_PROGRESS_STATUSES)).all()
+        stuck = db.query(ChatJob).filter(ChatJob.status.in_(IN_PROGRESS_STATUSES)).all()
         for job in stuck:
             job.status = "error"
             job.error = "Interrupted by a server restart — please try again."

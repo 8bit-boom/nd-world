@@ -53,7 +53,7 @@ def _fake_ai(monkeypatch):
         assert path.is_file(), f"audio should still exist while transcribing: {path}"
         return "the party met elena at the bazaar"
 
-    async def fake_summarize(transcript, model=""):
+    async def fake_summarize(transcript, model="", extra_instructions=""):
         return "The party met Elena at the bazaar."
 
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
@@ -547,7 +547,7 @@ def test_cancel_requires_gm(client, seed, _hanging_transcribe):
 async def test_create_job_stores_and_uses_chosen_model(client, seed, tmp_path, monkeypatch):
     captured = {}
 
-    async def fake_summarize_capture(transcript, model=""):
+    async def fake_summarize_capture(transcript, model="", extra_instructions=""):
         captured["model"] = model
         return "recap text"
 
@@ -591,7 +591,7 @@ async def test_resummarize_job_uses_saved_transcript_and_new_model(client, seed,
 
     captured = {}
 
-    async def fake_summarize_capture(transcript, model=""):
+    async def fake_summarize_capture(transcript, model="", extra_instructions=""):
         captured["transcript"] = transcript
         captured["model"] = model
         return "A different, better recap."
@@ -618,7 +618,7 @@ async def test_resummarize_job_falls_back_to_the_jobs_own_model_when_blank(clien
 
     captured = {}
 
-    async def fake_summarize_capture(transcript, model=""):
+    async def fake_summarize_capture(transcript, model="", extra_instructions=""):
         captured["model"] = model
         return "recap"
 
@@ -701,7 +701,7 @@ def test_resummarize_route_gm_only(client, seed):
 
 
 def test_resummarize_route_round_trip(client, seed, monkeypatch):
-    async def fake_summarize_capture(transcript, model=""):
+    async def fake_summarize_capture(transcript, model="", extra_instructions=""):
         return f"Recap via {model or 'default'}: {transcript}"
 
     monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize_capture)
@@ -743,6 +743,115 @@ def test_resummarize_route_rejects_job_with_no_transcript_yet(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.post(f"/api/audio-jobs/{job_id}/resummarize", data={"model": ""})
     assert r.status_code == 400
+
+
+def test_delete_removes_a_finished_job(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done", filename="x.mp3")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    assert audio_jobs.delete_job(job_id) is True
+    db = SessionLocal()
+    try:
+        assert db.get(AudioJob, job_id) is None
+    finally:
+        db.close()
+
+
+def test_delete_refuses_an_in_progress_job(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="transcribing", filename="x.mp3")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    assert audio_jobs.delete_job(job_id) is False
+    db = SessionLocal()
+    try:
+        assert db.get(AudioJob, job_id) is not None
+    finally:
+        db.close()
+
+
+def test_delete_returns_false_for_unknown_job():
+    assert audio_jobs.delete_job(999999) is False
+
+
+def test_delete_route_round_trip(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done", filename="x.mp3")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.delete(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200, r.text
+    r2 = client.get(f"/api/audio-jobs/{job_id}")
+    assert r2.status_code == 404
+
+
+def test_delete_route_rejects_in_progress_job(client, seed, _hanging_transcribe):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/audio-jobs",
+                     files={"file": ("clip.mp3", io.BytesIO(b"fake"), "audio/mpeg")})
+    job_id = r.json()["job_id"]
+    _wait_for_status(client, f"/api/audio-jobs/{job_id}", "transcribing")
+
+    r = client.delete(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 400
+
+    client.post(f"/api/audio-jobs/{job_id}/cancel")
+
+
+def test_delete_route_requires_gm(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done", filename="x.mp3")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.delete(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 403
+
+
+def test_delete_route_cross_world_isolation(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_b.id, purpose="session_recap", status="done", filename="x.mp3")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.delete(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 404
 
 
 def test_resummarize_route_cross_world_isolation(client, seed):
