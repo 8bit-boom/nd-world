@@ -533,6 +533,7 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/api/ai/attachments/audio-jobs/{job_id}`, `/api/ai/attachments/audio-jobs` | GM* | Poll one attachment transcription job, or list them. |
 | GET | `/api/ai/whisper/model-status` | GM | Whether the Whisper model is downloaded, and which known models exist. |
 | POST | `/api/ai/whisper/pull` | GM | Streams progress while downloading a Whisper model (SSE). |
+| POST | `/api/ai/whisper/activate` | GM | Switches the active Whisper model: writes a marker file the "whisper" Compose service reads on its next (re)start, and — if `hot_swap` (default true) and the file passes a basic format sanity check — also asks the running server to switch immediately via its own `/load` endpoint, no restart needed. Falls back to `restart_required: true` if the hot-swap can't happen. |
 | GET | `/api/ai/whisper/glossary` | GM | The active world's Whisper name glossary (campaign vocabulary hinted to every session-recording transcription). |
 | POST | `/api/ai/whisper/glossary` | GM | Saves the world's Whisper glossary. |
 | POST | `/api/ai/generate/entity` | GM | Generates an expanded description for a named entity. |

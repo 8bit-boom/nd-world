@@ -168,16 +168,29 @@ services:
     # via the ffmpeg already bundled in this image, so nd-world doesn't need
     # to send WAV specifically. --host must be 0.0.0.0, not the image
     # example's default 127.0.0.1, so nd-world's own container can reach it
-    # over the Compose network. entrypoint is overridden (rather than using
-    # the image's own ENTRYPOINT ["bash","-c"] via `command:`) because a
-    # plain scalar `command:` string gets word-split into separate argv
-    # entries by Compose — combined with `bash -c`, which only treats its
-    # very first argument as the script to run, every flag after
-    # "whisper-server" would silently become an unused $1/$2/... instead of
-    # actually reaching the binary.
-    entrypoint: ["whisper-server"]
-    command: ["--host", "0.0.0.0", "--port", "8080", "--convert",
-               "-m", "/models/${WHISPER_MODEL_FILE:-ggml-large-v3-turbo.bin}"]
+    # over the Compose network.
+    #
+    # entrypoint/command together run this as `sh -c "<script>"` so a shell
+    # can pick which model to load: prefer the active-model.txt marker file
+    # nd-world writes into this same volume (see app.ai.
+    # set_active_whisper_model — the GM clicks "★ Make active" on the AI
+    # page's Whisper tab), falling back to WHISPER_MODEL_FILE for a fresh
+    # deployment where no marker has been written yet. `exec` at the front
+    # so whisper-server (not the shell) is PID 1 and gets signals directly —
+    # otherwise restarting would wait out the shell's term-signal grace
+    # period instead of killing whisper-server right away. The whole script
+    # is ONE `command:` list item, not a bare scalar string, specifically to
+    # avoid Compose word-splitting it into separate argv entries — combined
+    # with a plain `sh -c` entrypoint, which only treats its very first
+    # argument as the script to run, a word-split command would silently
+    # turn every flag after "exec whisper-server" into an unused $1/$2/...
+    # instead of actually reaching the binary. (See docker-compose.yml's
+    # identical comment/docs/DEPLOYMENT.md for the full explanation.)
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        exec whisper-server --host 0.0.0.0 --port 8080 --convert
+        -m "/models/$(cat /models/active-model.txt 2>/dev/null || echo '${WHISPER_MODEL_FILE:-ggml-large-v3-turbo.bin}')"
     labels:
       net.ix-portals.whisper.scheme: "http"
       net.ix-portals.whisper.port: "8080"

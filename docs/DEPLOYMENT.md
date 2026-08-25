@@ -275,9 +275,12 @@ audio-native one. This is opt-in, like the Android/Editor add-ons above.
 ```bash
 docker compose up -d
 ```
-This starts a whisper.cpp server on port `8090` (with no model loaded yet —
-that's expected) and gives nd-world's own `world` container access to the
-same model-storage volume, so the next step can write to it.
+This starts a whisper.cpp server on port `8090` and gives nd-world's own
+`world` container access to the same model-storage volume. With no model
+downloaded yet, the container will actually crash-loop (whisper.cpp exits
+if the `-m` path it's given doesn't resolve) until the next step gives it
+one — check `docker compose logs whisper` if that's confusing at this
+stage, it clears up as soon as a model exists.
 
 **2. Download a model** — log in as the GM, open the **AI** page's
 **🤖 Models** tab, and click **⬇ Download Whisper Model** in the
@@ -285,22 +288,51 @@ same model-storage volume, so the next step can write to it.
 `whisper-large-v3-turbo` (a good default — trades a little of `large-v3`'s
 accuracy for several times the transcription speed, light enough to run
 acceptably on CPU) straight into the shared volume, with a live progress
-bar. Prefer a different model? Paste its direct download URL into the same
-panel instead, or skip the in-app download entirely and place a file
-yourself into `<AI_MODELS_DIR>/whisper/` (default `./ai-models/whisper/`),
-setting `WHISPER_MODEL_FILE` in `.env` to its exact filename.
+bar. Download as many different models as you like this way — they coexist
+as separate files.
 
-**3. Restart the whisper service** to load what you just downloaded:
+**3. Make it active** — click **★ Make active** next to the model you just
+downloaded. This does two things: writes an `active-model.txt` marker into
+the shared volume (so the "whisper" service knows what to load on its next
+start/restart, permanently, regardless of anything below), and — if
+Whisper is currently reachable — also asks the running server to hot-swap
+to it immediately via its own `/load` endpoint, so **no restart is needed**
+in the common case. If the hot-swap can't happen (Whisper isn't reachable
+right now, or the file doesn't look like a valid model), the button tells
+you a restart is still required:
 ```bash
 docker compose restart whisper
 ```
-nd-world only writes the model file — it deliberately doesn't try to
-hot-swap the running server's model itself, since whisper.cpp's own
-`/load` endpoint kills the whole server process if a reload ever fails,
-and a one-time restart is a small price for not risking that. `docker
-compose logs -f whisper` should show it load the model and start listening
-within a few seconds to a minute or so, depending on model size and CPU
-speed.
+`docker compose logs -f whisper` should show it load the model and start
+listening within a few seconds to a minute or so, depending on model size
+and CPU speed.
+
+Prefer a model not in the curated list, or already have a file? Paste its
+direct download URL into the same panel, or place a file yourself into
+`<AI_MODELS_DIR>/whisper/` (default `./ai-models/whisper/`) — then use
+**★ Make active** the same way once it's there. `WHISPER_MODEL_FILE` in
+`.env` is now only the *fallback* for a fresh deployment before anything's
+been made active, or for a "whisper" service still running an older,
+pre-`active-model.txt`-aware entrypoint (a one-time `git pull` +
+`docker compose up -d whisper` picks up the new one).
+
+**Is `/load` actually safe to call automatically?** Mostly, with one sharp
+edge worth knowing about. whisper.cpp's server validates the file exists
+*before* touching the currently-loaded model, so a missing/bad path just
+400s harmlessly — the old model keeps serving. The scarier case is a file
+that exists but fails to *parse*: that still calls `exit(1)` (killing the
+whole server process), same as always. Two things make this a non-issue in
+practice: the "whisper" service runs with `restart: unless-stopped`, so a
+crash there is a few seconds of downtime and a clean restart, not a stuck
+server — and nd-world checks a downloaded file's format before ever
+offering it for a hot-swap, refusing the ones most likely to trip that
+crash (most plausibly reached via the free-text custom-URL field, since
+every named download always comes from the correct official host). One
+residual gap: a *rejected* load (the 400 case) leaves the server's own
+`/health` endpoint permanently reporting "loading model" — transcription
+itself keeps working on the previous model, but nd-world will show Whisper
+as "unavailable" until the container is restarted by hand. The Whisper tab
+tells you when this has happened.
 
 **That's it** — nd-world's `world` service already points at
 `http://whisper:8080` internally (see `WHISPER_URL` in `docker-compose.yml`)

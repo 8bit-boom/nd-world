@@ -23,11 +23,12 @@ class _FakeResponse:
 
 
 class _FakeAsyncClient:
-    def __init__(self, response=None, exc=None, stream_response=None, stream_exc=None):
+    def __init__(self, response=None, exc=None, stream_response=None, stream_exc=None, captured=None):
         self._response = response
         self._exc = exc
         self._stream_response = stream_response
         self._stream_exc = stream_exc
+        self._captured = captured
 
     async def __aenter__(self):
         return self
@@ -41,6 +42,9 @@ class _FakeAsyncClient:
         return self._response
 
     async def post(self, url, **kw):
+        if self._captured is not None:
+            self._captured["post_url"] = url
+            self._captured["post_kwargs"] = kw
         if self._exc:
             raise self._exc
         return self._response
@@ -85,7 +89,8 @@ def _patch_httpx(monkeypatch, response=None, exc=None, stream_response=None, str
         def AsyncClient(**kw):
             captured["client_kwargs"] = kw
             return _FakeAsyncClient(response=response, exc=exc,
-                                     stream_response=stream_response, stream_exc=stream_exc)
+                                     stream_response=stream_response, stream_exc=stream_exc,
+                                     captured=captured)
     monkeypatch.setattr(ai_module, "_httpx", _Module)
     return captured
 
@@ -502,3 +507,259 @@ def test_whisper_pull_route_passes_through_custom_url(client, seed, tmp_path, mo
     r = client.post("/api/ai/whisper/pull", json={"url": "https://example.com/custom.gguf"})
     assert r.status_code == 200
     assert requested["url"] == "https://example.com/custom.gguf"
+
+
+# ── active_whisper_model() / set_active_whisper_model() ────────────────────
+# The marker file (WHISPER_MODELS_DIR/active-model.txt) a GM's "★ Make
+# active" click writes — read by both nd-world (active_whisper_model, so
+# in-app status/downloads follow the GM's choice) and the "whisper" Compose
+# service's own entrypoint (so it survives a container restart) — see
+# docker-compose.yml.
+
+def test_active_whisper_model_defaults_to_env_when_no_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path)
+    monkeypatch.setattr(ai_module, "WHISPER_MODEL_FILENAME", "ggml-base.bin")
+    assert ai_module.active_whisper_model() == "ggml-base.bin"
+
+
+def test_active_whisper_model_reads_marker_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path)
+    monkeypatch.setattr(ai_module, "WHISPER_MODEL_FILENAME", "ggml-base.bin")
+    (tmp_path / "active-model.txt").write_text("ggml-tiny.bin")
+    assert ai_module.active_whisper_model() == "ggml-tiny.bin"
+
+
+def test_active_whisper_model_ignores_marker_with_unknown_filename(tmp_path, monkeypatch):
+    """A marker naming something outside WHISPER_KNOWN_MODELS (corrupted,
+    hand-edited, or a path-traversal attempt) is never trusted — falls back
+    to the env default instead of resolving to an arbitrary path."""
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path)
+    monkeypatch.setattr(ai_module, "WHISPER_MODEL_FILENAME", "ggml-base.bin")
+    (tmp_path / "active-model.txt").write_text("../../etc/passwd")
+    assert ai_module.active_whisper_model() == "ggml-base.bin"
+
+
+def test_active_whisper_model_ignores_blank_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path)
+    monkeypatch.setattr(ai_module, "WHISPER_MODEL_FILENAME", "ggml-base.bin")
+    (tmp_path / "active-model.txt").write_text("   \n")
+    assert ai_module.active_whisper_model() == "ggml-base.bin"
+
+
+def test_active_whisper_model_never_raises_when_dir_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path / "does-not-exist")
+    monkeypatch.setattr(ai_module, "WHISPER_MODEL_FILENAME", "ggml-base.bin")
+    assert ai_module.active_whisper_model() == "ggml-base.bin"
+
+
+def test_set_active_whisper_model_writes_marker_atomically(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path)
+    (tmp_path / "ggml-tiny.bin").write_bytes(b"x")
+    ai_module.set_active_whisper_model("ggml-tiny.bin")
+    assert (tmp_path / "active-model.txt").read_text() == "ggml-tiny.bin"
+    assert not (tmp_path / "active-model.txt.part").exists()
+    assert ai_module.active_whisper_model() == "ggml-tiny.bin"
+
+
+def test_set_active_whisper_model_rejects_unknown_filename(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path)
+    with pytest.raises(ValueError, match="Unknown model filename"):
+        ai_module.set_active_whisper_model("../../etc/passwd")
+
+
+def test_set_active_whisper_model_rejects_model_not_downloaded(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path)
+    with pytest.raises(ValueError, match="hasn't been downloaded"):
+        ai_module.set_active_whisper_model("ggml-tiny.bin")
+
+
+def test_whisper_model_status_active_source_is_env_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path)
+    monkeypatch.setattr(ai_module, "WHISPER_MODEL_FILENAME", "ggml-base.bin")
+    assert ai_module.whisper_model_status()["active_source"] == "env"
+
+
+def test_whisper_model_status_active_source_is_marker_once_set(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path)
+    monkeypatch.setattr(ai_module, "WHISPER_MODEL_FILENAME", "ggml-base.bin")
+    (tmp_path / "ggml-tiny.bin").write_bytes(b"x")
+    ai_module.set_active_whisper_model("ggml-tiny.bin")
+    status = ai_module.whisper_model_status()
+    assert status["active_source"] == "marker"
+    assert status["filename"] == "ggml-tiny.bin"
+    by_name = {m["filename"]: m for m in status["models"]}
+    assert by_name["ggml-tiny.bin"]["active"] is True
+    assert by_name["ggml-base.bin"]["active"] is False
+
+
+# ── _looks_like_ggml() ───────────────────────────────────────────────────────
+# Guards load_whisper_model against the one failure mode this app has
+# already hit in production: a GGUF-format file (a different, incompatible
+# format) reaching whisper.cpp's /load, whose exit(1)-on-bad-file crashes
+# the whole server.
+
+def test_looks_like_ggml_accepts_large_non_gguf_file(tmp_path):
+    f = tmp_path / "model.bin"
+    f.write_bytes(b"\x00" * 2_000_000)
+    assert ai_module._looks_like_ggml(f) is True
+
+
+def test_looks_like_ggml_rejects_gguf_magic(tmp_path):
+    f = tmp_path / "model.bin"
+    f.write_bytes(b"GGUF" + b"\x00" * 2_000_000)
+    assert ai_module._looks_like_ggml(f) is False
+
+
+def test_looks_like_ggml_rejects_too_small_a_file(tmp_path):
+    """Every real model in WHISPER_KNOWN_MODELS is at least 75 MiB — a tiny
+    file is almost certainly an error page or truncated download, not a
+    real model, even if it happens not to start with "GGUF"."""
+    f = tmp_path / "model.bin"
+    f.write_bytes(b"not a real model")
+    assert ai_module._looks_like_ggml(f) is False
+
+
+def test_looks_like_ggml_false_for_missing_file(tmp_path):
+    assert ai_module._looks_like_ggml(tmp_path / "nope.bin") is False
+
+
+# ── load_whisper_model() ─────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_load_whisper_model_posts_container_side_path(monkeypatch):
+    """The path sent to /load must be resolved on whisper.cpp's OWN side
+    (WHISPER_SERVER_MODELS_DIR), not nd-world's WHISPER_MODELS_DIR — the
+    two only coincide by default; an externally-hosted whisper instance
+    needs them to differ."""
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    monkeypatch.setattr(ai_module, "WHISPER_SERVER_MODELS_DIR", "/models")
+    captured = _patch_httpx(monkeypatch, response=_FakeResponse(200, {}))
+    result = await ai_module.load_whisper_model("ggml-tiny.bin")
+    assert result["ok"] is True
+    assert captured["post_kwargs"]["files"]["model"] == (None, "/models/ggml-tiny.bin")
+
+
+@pytest.mark.asyncio
+async def test_load_whisper_model_not_configured_returns_not_ok():
+    result = await ai_module.load_whisper_model("ggml-tiny.bin")
+    assert result["ok"] is False
+    assert "isn't configured" in result["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_load_whisper_model_http_400_reports_health_stuck(monkeypatch):
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    _patch_httpx(monkeypatch, response=_FakeResponse(400, text="model init failed"))
+    result = await ai_module.load_whisper_model("ggml-tiny.bin")
+    assert result["ok"] is False
+    assert "restart" in result["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_load_whisper_model_unreachable_returns_not_ok(monkeypatch):
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    _patch_httpx(monkeypatch, exc=ConnectionError("refused"))
+    result = await ai_module.load_whisper_model("ggml-tiny.bin")
+    assert result["ok"] is False
+    assert "refused" in result["detail"]
+
+
+# ── POST /api/ai/whisper/activate ───────────────────────────────────────────
+
+def test_whisper_activate_route_requires_gm(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post("/api/ai/whisper/activate", json={"filename": "ggml-tiny.bin"})
+    assert r.status_code == 403
+
+
+def test_whisper_activate_route_rejects_unknown_filename(client, seed, tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path)
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/whisper/activate", json={"filename": "../../etc/passwd"})
+    assert r.status_code == 400
+
+
+def test_whisper_activate_route_rejects_model_not_downloaded(client, seed, tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path)
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/whisper/activate", json={"filename": "ggml-tiny.bin"})
+    assert r.status_code == 400
+    assert "hasn't been downloaded" in r.json()["detail"]
+
+
+def test_whisper_activate_route_writes_marker_and_hot_swaps(client, seed, tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path)
+    (tmp_path / "ggml-tiny.bin").write_bytes(b"\x00" * 2_000_000)  # passes _looks_like_ggml's size floor
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    _patch_httpx(monkeypatch, response=_FakeResponse(200, {}))
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/whisper/activate", json={"filename": "ggml-tiny.bin"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["hot_swapped"] is True
+    assert body["restart_required"] is False
+    assert ai_module.active_whisper_model() == "ggml-tiny.bin"
+
+
+def test_whisper_activate_route_writes_marker_when_whisper_unreachable(client, seed, tmp_path, monkeypatch):
+    """Whisper being unreachable must not lose the GM's choice — the marker
+    write happens first and always, so the model still takes effect on the
+    next restart even though the immediate hot-swap couldn't happen."""
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path)
+    (tmp_path / "ggml-tiny.bin").write_bytes(b"\x00" * 2_000_000)
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    _patch_httpx(monkeypatch, exc=ConnectionError("refused"))
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/whisper/activate", json={"filename": "ggml-tiny.bin"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["hot_swapped"] is False
+    assert body["restart_required"] is True
+    assert ai_module.active_whisper_model() == "ggml-tiny.bin"
+
+
+def test_whisper_activate_route_hot_swap_false_skips_load(client, seed, tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path)
+    (tmp_path / "ggml-tiny.bin").write_bytes(b"\x00" * 2_000_000)
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    called = {"load": False}
+
+    async def _fake_load(filename):
+        called["load"] = True
+        return {"ok": True, "detail": "should not be called"}
+    monkeypatch.setattr(ai_module, "load_whisper_model", _fake_load)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/whisper/activate", json={"filename": "ggml-tiny.bin", "hot_swap": False})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["hot_swapped"] is False
+    assert body["restart_required"] is True
+    assert called["load"] is False
+    assert ai_module.active_whisper_model() == "ggml-tiny.bin"
+
+
+def test_whisper_activate_route_refuses_hot_swap_for_bad_format_but_still_saves(client, seed, tmp_path, monkeypatch):
+    """A file that fails the format sanity check is never sent to /load
+    (that's the whole point of the check — loading it would crash the
+    whisper server) but the GM's choice is still saved for next restart."""
+    monkeypatch.setattr(ai_module, "WHISPER_MODELS_DIR", tmp_path)
+    (tmp_path / "ggml-tiny.bin").write_bytes(b"GGUF" + b"\x00" * 2_000_000)
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    called = {"load": False}
+
+    async def _fake_load(filename):
+        called["load"] = True
+        return {"ok": True, "detail": "should not be called"}
+    monkeypatch.setattr(ai_module, "load_whisper_model", _fake_load)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/whisper/activate", json={"filename": "ggml-tiny.bin"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["hot_swapped"] is False
+    assert body["restart_required"] is True
+    assert called["load"] is False
+    assert ai_module.active_whisper_model() == "ggml-tiny.bin"

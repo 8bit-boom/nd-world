@@ -1538,9 +1538,9 @@
       Transcribes an audio file attached to an AI Chat/Ask AI message into text — see
       <strong>docs/DEPLOYMENT.md</strong> to enable the "whisper" service first. Downloading a model
       below just writes it into the shared volume (the "whisper" service doesn't need to be running
-      yet) — download as many as you like, they won't overwrite each other. To make a different one
-      <strong>active</strong>, set <code>WHISPER_MODEL_FILE</code> to its filename in your compose
-      config and restart the "whisper" service; nd-world has no way to do that part for you.
+      yet) — download as many as you like, they won't overwrite each other. Click <strong>★ Make
+      active</strong> on a downloaded model to switch to it — usually instant (no restart), or
+      you'll be told when one's still needed (e.g. Whisper isn't reachable right now).
     </div>
     <div id="wp-status" style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">⏳ Checking…</div>
     <div id="wp-model-list" style="display:flex;flex-direction:column;gap:.35rem;margin-bottom:.6rem"></div>
@@ -4614,10 +4614,15 @@ function wpRenderModelList(models) {
   list.innerHTML = (models || []).map(m => {
     const status = m.active ? '🟢 active' : (m.downloaded ? '✓ downloaded' : '○ not downloaded');
     const btnLabel = m.downloaded ? '↺ Re-download' : '⬇ Download';
+    const activateBtn = (m.downloaded && !m.active)
+      ? `<button class="ig-btn wp-model-act-btn" data-filename="${m.filename}" onclick="wpActivate(this.dataset.filename)"
+                 style="padding:.25rem .6rem;font-size:.72rem;white-space:nowrap;border-color:var(--neon);color:var(--neon)">★ Make active</button>`
+      : '';
     return `<div style="display:flex;align-items:center;justify-content:space-between;gap:.6rem;padding:.35rem .55rem;background:var(--bg3);border-radius:4px;font-size:.8rem">
       <div><strong>${m.label}</strong><span style="color:var(--text-dim);margin-left:.5rem">${m.size}</span></div>
       <div style="display:flex;align-items:center;gap:.6rem">
         <span style="color:var(--text-dim);white-space:nowrap;font-size:.75rem">${status}</span>
+        ${activateBtn}
         <button class="ig-btn wp-model-dl-btn" data-filename="${m.filename}" onclick="wpDownload(this.dataset.filename)"
                 style="padding:.25rem .6rem;font-size:.72rem;white-space:nowrap">${btnLabel}</button>
       </div>
@@ -4631,12 +4636,43 @@ async function wpLoadStatus() {
   try {
     const r = await fetch('/api/ai/whisper/model-status');
     const d = await r.json();
+    const sourceHint = d.active_source === 'env' ? ' — no model explicitly activated yet, this is just the fallback' : '';
     el.textContent = d.downloaded
-      ? `Active: ${d.filename} (${(d.bytes / 1e9).toFixed(2)} GB)`
-      : `Active model file not downloaded yet: ${d.filename}`;
+      ? `Active: ${d.filename} (${(d.bytes / 1e9).toFixed(2)} GB)${sourceHint}`
+      : `Active model file not downloaded yet: ${d.filename}${sourceHint}`;
     wpRenderModelList(d.models);
   } catch (e) {
     el.textContent = '✗ Could not check status';
+  }
+}
+
+let _wpActivating = false;
+async function wpActivate(filename) {
+  if (_wpActivating) return;
+  _wpActivating = true;
+  document.querySelectorAll('.wp-model-act-btn, .wp-model-dl-btn').forEach(b => b.disabled = true);
+  const lbl = document.getElementById('wp-progress-label');
+  const prog = document.getElementById('wp-progress');
+  if (prog) prog.style.display = 'block';
+  if (lbl) lbl.textContent = `Activating ${filename}…`;
+  try {
+    const r = await fetch('/api/ai/whisper/activate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename, hot_swap: true }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    if (lbl) {
+      lbl.textContent = d.hot_swapped
+        ? `✓ ${d.detail}`
+        : `⚠ ${d.detail}`;
+    }
+  } catch (e) {
+    if (lbl) lbl.textContent = '✗ Could not activate: ' + e.message;
+  } finally {
+    document.querySelectorAll('.wp-model-act-btn, .wp-model-dl-btn').forEach(b => b.disabled = false);
+    _wpActivating = false;
+    wpLoadStatus();
   }
 }
 
@@ -4680,7 +4716,7 @@ async function wpDownload(filename) {
             lbl.textContent = `Downloading… ${pct}% (${(obj.completed / 1e9).toFixed(2)} / ${(obj.total / 1e9).toFixed(2)} GB)`;
           } else if (obj.status === 'done') {
             bar.style.width = '100%';
-            lbl.textContent = `✓ Downloaded ${obj.filename} — set WHISPER_MODEL_FILE to it and restart the "whisper" service to make it active`;
+            lbl.textContent = `✓ Downloaded ${obj.filename} — click ★ Make active below to switch to it`;
           }
         } catch (pe) {
           if (pe.message && !pe.message.includes('JSON')) throw pe;

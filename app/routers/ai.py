@@ -1053,6 +1053,44 @@ async def api_whisper_pull(body: WhisperPullBody):
     )
 
 
+class WhisperActivateBody(BaseModel):
+    filename: str
+    # True: also try a live /load on the running whisper.cpp server, so the
+    # switch takes effect immediately. False: just write the marker file —
+    # takes effect on the whisper Compose service's next restart. Either
+    # way the marker write happens first and always, so a hot-swap attempt
+    # failing (backend unreachable, or the load itself rejected) doesn't
+    # lose the GM's choice — it just means a restart is still needed.
+    hot_swap: bool = True
+
+
+@router.post("/whisper/activate")
+async def api_whisper_activate(body: WhisperActivateBody):
+    try:
+        _ai.set_active_whisper_model(body.filename)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    if not body.hot_swap:
+        return {"ok": True, "filename": body.filename, "hot_swapped": False, "restart_required": True,
+                "detail": "Saved. Restart the whisper service to load it."}
+
+    path = _ai.WHISPER_MODELS_DIR / body.filename
+    if not _ai._looks_like_ggml(path):
+        return {"ok": True, "filename": body.filename, "hot_swapped": False, "restart_required": True,
+                "detail": (
+                    "Saved, but this file doesn't look like a valid whisper.cpp model, so it wasn't "
+                    "sent to Whisper directly — loading a bad file crashes the whisper server. "
+                    "Re-download it, then restart the whisper service once it's active."
+                )}
+
+    result = await _ai.load_whisper_model(body.filename)
+    return {
+        "ok": True, "filename": body.filename, "hot_swapped": result["ok"],
+        "restart_required": not result["ok"], "detail": result["detail"],
+    }
+
+
 class EntityBody(BaseModel):
     name: str
     type: str

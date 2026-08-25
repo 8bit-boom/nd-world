@@ -893,9 +893,10 @@ async def transcribe_audio(path: Path, glossary: str = "") -> str:
 # itself (which has no download-a-model API of its own, unlike Ollama).
 
 WHISPER_MODELS_DIR = Path(os.getenv("WHISPER_MODELS_DIR", "/data/whisper-models"))
-# Must match the "-m /models/<this>" filename the "whisper" Compose service
-# loads by default (its WHISPER_MODEL_FILE env var) — downloading under any
-# other name would still need a manual step to line the two up.
+# The "whisper" Compose service's fallback default — see active_whisper_model()
+# below, which prefers a GM-set marker file over this once one exists. Still
+# what a deployment on the OLD (pre-marker-aware) entrypoint actually loads,
+# since that entrypoint only ever reads this env var.
 WHISPER_MODEL_FILENAME = os.getenv("WHISPER_MODEL_FILE", "ggml-large-v3-turbo.bin")
 # ggerganov/whisper.cpp's own official model repo — confirmed against a real
 # deployment to be the format that actually loads. An earlier version of
@@ -936,6 +937,124 @@ WHISPER_KNOWN_MODELS = [
 ]
 _WHISPER_KNOWN_FILENAMES = {m["filename"] for m in WHISPER_KNOWN_MODELS}
 
+# Filename prefix as the whisper.cpp CONTAINER sees WHISPER_MODELS_DIR — the
+# two only match by coincidence (both happening to be /data/whisper-models
+# on a from-scratch docker-compose deployment); an externally-hosted whisper
+# instance, or one with a differently-mounted volume, needs this set
+# separately. Only used to build the path sent to /load (a server-side
+# path) — never for anything nd-world reads/writes on its own side.
+WHISPER_SERVER_MODELS_DIR = os.getenv("WHISPER_SERVER_MODELS_DIR", "/models")
+
+# The "whisper" Compose service's entrypoint reads this file (if present) to
+# decide which downloaded model to load at container start/restart — see
+# docker-compose.yml. Written by set_active_whisper_model(), read by
+# active_whisper_model(); an un-migrated deployment (old entrypoint, no
+# marker support) just never sees this file, so WHISPER_MODEL_FILENAME
+# keeps working as the sole source of truth exactly like it did before this
+# existed — switching to the marker-aware entrypoint is the one manual,
+# one-time step nd-world genuinely can't do for a GM (see docs/DEPLOYMENT.md).
+_WHISPER_ACTIVE_MARKER = "active-model.txt"
+
+
+def active_whisper_model() -> str:
+    """The model filename nd-world currently considers "active" — the
+    marker file if one exists and names a real known model, else
+    WHISPER_MODEL_FILENAME (the env-var default, and what an un-migrated
+    "whisper" Compose service is still actually loading). Never raises —
+    a missing, unreadable, or garbage marker just falls back."""
+    try:
+        raw = (WHISPER_MODELS_DIR / _WHISPER_ACTIVE_MARKER).read_text(encoding="utf-8").strip()
+    except OSError:
+        return WHISPER_MODEL_FILENAME
+    if raw and raw in _WHISPER_KNOWN_FILENAMES:
+        return raw
+    return WHISPER_MODEL_FILENAME
+
+
+def set_active_whisper_model(filename: str) -> None:
+    """Record `filename` as the active model — persists across a "whisper"
+    Compose service restart (its entrypoint reads this same file) even if
+    load_whisper_model() below isn't called or fails. Raises ValueError on
+    an unknown or not-yet-downloaded filename."""
+    if filename not in _WHISPER_KNOWN_FILENAMES:
+        raise ValueError(f"Unknown model filename: {filename!r}")
+    if not (WHISPER_MODELS_DIR / filename).is_file():
+        raise ValueError(f"{filename} hasn't been downloaded yet.")
+    WHISPER_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    marker = WHISPER_MODELS_DIR / _WHISPER_ACTIVE_MARKER
+    tmp = marker.with_name(marker.name + ".part")
+    tmp.write_text(filename, encoding="utf-8")
+    tmp.replace(marker)
+
+
+def _looks_like_ggml(path: Path) -> bool:
+    """Best-effort sanity check before calling load_whisper_model — NOT a
+    full format validator (that's whisper.cpp's own job when it actually
+    parses the file), just a guard against the one failure mode this app
+    has already hit in production: a GGUF-format file (a different,
+    incompatible model format whose files start with the literal bytes
+    "GGUF") landing in WHISPER_MODELS_DIR — most plausibly via the
+    free-text custom-URL download field, since every filename-based
+    download here only ever fetches from the correct official host. A
+    file this rejects is never sent to /load, since a load with a file
+    that fails to parse leaves the whisper.cpp server's /health endpoint
+    permanently reporting "loading model" until the container is
+    restarted (see load_whisper_model)."""
+    try:
+        if path.stat().st_size < 1_000_000:  # every real model here is >= 75 MiB
+            return False
+        with path.open("rb") as f:
+            head = f.read(4)
+        return head != b"GGUF"
+    except OSError:
+        return False
+
+
+async def load_whisper_model(filename: str) -> dict:
+    """Ask the running whisper.cpp server to hot-swap to `filename` via its
+    /load endpoint, without waiting for a container restart. Returns
+    {"ok": bool, "detail": str} — never raises.
+
+    Two things make this safe enough to call automatically (see
+    docs/DEPLOYMENT.md for the full reasoning): /load validates the file
+    exists before doing anything destructive, and the "whisper" Compose
+    service runs with restart: unless-stopped, so even the exit(1)-on-
+    unparseable-file case self-heals in a restart cycle rather than
+    requiring a manual one. What does NOT self-heal on its own: a 400
+    response (missing/invalid file) leaves the server's own /health
+    endpoint stuck reporting "loading model" — never ready — until the
+    container is restarted by hand, even though /inference keeps working
+    fine on whatever was loaded before. That's why _looks_like_ggml is
+    checked by the caller before this is ever invoked — not because
+    /load itself is unsafe to call on a real model file.
+
+    The path sent to whisper.cpp must be resolved on ITS side, not
+    nd-world's — WHISPER_SERVER_MODELS_DIR, not WHISPER_MODELS_DIR — and
+    must arrive as a multipart field (whisper.cpp's req.has_file("model")
+    check only recognizes multipart parts; a urlencoded body is silently
+    treated as "no file given" and 400s)."""
+    url = effective_whisper_url()
+    if not url:
+        return {"ok": False, "detail": "Whisper isn't configured (no Whisper URL set)."}
+    server_path = f"{WHISPER_SERVER_MODELS_DIR.rstrip('/')}/{filename}"
+    try:
+        async with _httpx.AsyncClient(timeout=300) as c:
+            r = await c.post(f"{url}/load", files={"model": (None, server_path)})
+    except Exception as exc:
+        _log.warning("whisper /load unreachable: %s: %s", type(exc).__name__, exc)
+        return {"ok": False, "detail": f"Could not reach Whisper: {type(exc).__name__}: {exc}"}
+    if r.status_code != 200:
+        _log.warning("whisper /load failed: HTTP %s: %s", r.status_code, r.text[:300])
+        return {
+            "ok": False,
+            "detail": (
+                f"Whisper rejected the load (HTTP {r.status_code}) — its /health endpoint may now be "
+                f"stuck reporting \"loading model\" until the whisper Compose service is restarted, "
+                f"even though transcription itself should still work on the previously loaded model."
+            ),
+        }
+    return {"ok": True, "detail": f"Switched to {filename}."}
+
 
 def whisper_model_status() -> dict:
     """Whether a model file nd-world can see is already sitting in the
@@ -945,14 +1064,18 @@ def whisper_model_status() -> dict:
     it. Doesn't mean the *running* server has loaded it yet — that only
     happens on container start/restart (see download_whisper_model).
 
-    "downloaded"/"filename"/"bytes" describe the *active* model — the one
-    the "whisper" Compose service is actually configured to load (i.e.
-    WHISPER_MODEL_FILENAME, its own WHISPER_MODEL_FILE env var mirrored
-    here) — kept as top-level keys for whatever already reads this shape.
-    "models" is the fuller picture: every known model's own download state
-    and whether it's the currently-active one, so a GM can download several
-    without any of them clobbering another."""
-    active = WHISPER_MODELS_DIR / WHISPER_MODEL_FILENAME
+    "downloaded"/"filename"/"bytes" describe the *active* model — see
+    active_whisper_model() (the marker file if set, else
+    WHISPER_MODEL_FILENAME) — kept as top-level keys for whatever already
+    reads this shape. "models" is the fuller picture: every known model's
+    own download state and whether it's the currently-active one, so a GM
+    can download several without any of them clobbering another.
+    "active_source" is "marker" once a GM has explicitly activated
+    something via POST /whisper/activate, or "env" while still on
+    whatever WHISPER_MODEL_FILE happens to default to — lets the UI
+    explain why nothing looks "chosen" yet on a fresh deployment."""
+    active_filename = active_whisper_model()
+    active = WHISPER_MODELS_DIR / active_filename
     models = []
     for m in WHISPER_KNOWN_MODELS:
         p = WHISPER_MODELS_DIR / m["filename"]
@@ -961,12 +1084,13 @@ def whisper_model_status() -> dict:
             **m,
             "downloaded": downloaded,
             "bytes": p.stat().st_size if downloaded else 0,
-            "active": m["filename"] == WHISPER_MODEL_FILENAME,
+            "active": m["filename"] == active_filename,
         })
     return {
         "downloaded": active.is_file(),
-        "filename": WHISPER_MODEL_FILENAME,
+        "filename": active_filename,
         "bytes": active.stat().st_size if active.is_file() else 0,
+        "active_source": "marker" if (WHISPER_MODELS_DIR / _WHISPER_ACTIVE_MARKER).is_file() else "env",
         "models": models,
     }
 
@@ -986,7 +1110,11 @@ async def download_whisper_model(url: str = "", filename: str = "") -> AsyncGene
     of its own, so it can coexist with whatever's currently active. `url`
     is ignored in that case. With no `filename`, behavior is unchanged from
     before this parameter existed: `url` (or DEFAULT_WHISPER_MODEL_URL if
-    blank) downloads to WHISPER_MODEL_FILENAME, the currently-active slot.
+    blank) downloads to active_whisper_model(), the currently-active slot
+    — note this is a free-text URL, so unlike the filename path above
+    there's no guarantee it's even the right file format; see
+    _looks_like_ggml, checked before a downloaded file is ever offered a
+    hot-swap via POST /whisper/activate.
 
     Written to a "<filename>.part" file and only renamed into place once
     fully downloaded, so an interrupted/failed download can never leave a
@@ -994,13 +1122,11 @@ async def download_whisper_model(url: str = "", filename: str = "") -> AsyncGene
     matters more here than most partial-download cases: whisper.cpp's own
     /load endpoint calls exit(1) (killing the whole server process) if the
     model file it's given fails to parse, rather than returning an error.
-    This app deliberately never calls that endpoint itself for exactly that
-    reason (see docs/DEPLOYMENT.md) — a downloaded model only takes effect
-    on the *next* container start/restart of the "whisper" service, and
-    only if WHISPER_MODEL_FILE is (re)pointed at it — nd-world has no way
-    to change a sibling container's env vars or restart it itself, so
-    switching which downloaded model is active is still a manual step the
-    GM does once, same as installing any other model."""
+    See load_whisper_model()/set_active_whisper_model() for how a GM
+    switches which downloaded model is active — a hot-swap via /load where
+    possible, falling back to "persists for next restart" (the marker file
+    the "whisper" Compose service's entrypoint reads) either way, so this
+    is no longer the fully manual step it once was."""
     if filename:
         if filename not in _WHISPER_KNOWN_FILENAMES:
             yield {"error": f"Unknown model filename: {filename!r}"}
@@ -1009,7 +1135,7 @@ async def download_whisper_model(url: str = "", filename: str = "") -> AsyncGene
         target_filename = filename
     else:
         fetch_url = (url or "").strip() or DEFAULT_WHISPER_MODEL_URL
-        target_filename = WHISPER_MODEL_FILENAME
+        target_filename = active_whisper_model()
     WHISPER_MODELS_DIR.mkdir(parents=True, exist_ok=True)
     dest = WHISPER_MODELS_DIR / target_filename
     tmp = dest.with_name(dest.name + ".part")
