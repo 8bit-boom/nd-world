@@ -2251,7 +2251,7 @@ async function draftEntityFromMessage(text, bubble, btn) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: text.slice(0, 8000) }),
     });
-    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+    if (!res.ok) throw await ndApiErrorFrom(res);
     const draft = await res.json();
     bubble.appendChild(renderEntityDraft(draft));
   } catch (e) {
@@ -2349,8 +2349,8 @@ function renderEntityDraft(draft) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ json_text: JSON.stringify(entityJson), kind: 'entity_single' }),
       });
+      if (!res.ok) throw await ndApiErrorFrom(res);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
       status.innerHTML = `✓ Created — <a href="${data.redirect}" target="_blank">view entity</a>`;
       createBtn.remove();
       discardBtn.textContent = 'Close';

@@ -150,7 +150,7 @@ async function parseDraftFromRecap() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
     });
-    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+    if (!res.ok) throw await ndApiErrorFrom(res);
     const data = await res.json();
     draftFacts = data.facts || [];
     status.textContent = draftFacts.length ? `${draftFacts.length} fact(s) drafted — review below.` : 'No facts found — try rephrasing.';
@@ -198,7 +198,7 @@ document.getElementById('draft-save-btn').addEventListener('click', async () => 
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ facts: clean, game_session_id: sessionId || null }),
     });
-    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+    if (!res.ok) throw await ndApiErrorFrom(res);
     window.location.reload();
   } catch (e) {
     status.textContent = 'Failed: ' + e.message;

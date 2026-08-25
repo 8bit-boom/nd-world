@@ -204,9 +204,7 @@ function audioUploadLabel(file) {
 }
 
 async function audioUploadErrorFrom(res) {
-  let detail = res.status;
-  try { detail = (await res.json()).detail || detail; } catch (_) { /* non-JSON error body */ }
-  return new Error(detail);
+  return ndApiErrorFrom(res);
 }
 
 function audioUploadRandomId() {

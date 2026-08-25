@@ -396,7 +396,7 @@ function switchSettingsTab(t) {
           allowed_player_ids: allowedIds,
         }),
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) throw await ndApiErrorFrom(res);
       window.location.href = '/settings?tab=visibility';
     } catch (e) {
       statusEl.textContent = 'Failed: ' + e.message;

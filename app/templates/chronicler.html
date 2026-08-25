@@ -80,7 +80,7 @@ window.chronSend = async function () {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question }),
     });
-    if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+    if (!res.ok) throw await ndApiErrorFrom(res);
     const data = await res.json();
     bubble.parentElement.classList.remove('chron-thinking');
     bubble.innerHTML = _chronMdToHtml(data.answer || '(no answer)');

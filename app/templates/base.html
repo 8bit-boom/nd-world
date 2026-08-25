@@ -175,6 +175,21 @@
 })();
 </script>
 <script>
+// A failed fetch()'s body isn't always ours: a proxy in front of nd-world
+// (Cloudflare, nginx, etc.) can answer a 502/504 with its own full HTML
+// error page instead of anything nd-world sent. Reading that as `res.text()`
+// and showing it verbatim dumps a wall of raw markup into the UI. Try our
+// own {"detail": "..."} shape first; anything else collapses to a short,
+// safe "HTTP <code>" rather than whatever the body actually contained.
+async function ndApiErrorFrom(res) {
+  let detail = `HTTP ${res.status}`;
+  try {
+    const data = await res.json();
+    if (data && typeof data.detail === "string" && data.detail) detail = data.detail;
+  } catch (_) { /* non-JSON error body — keep the plain HTTP <code> */ }
+  return new Error(detail);
+}
+
 // Shared by world_edit.html and worlds.html's accent-colour pickers — keeps
 // the native <input type=color> swatch and a typed hex-code field in sync
 // both ways, since the color input alone doesn't let you type/paste a code.
