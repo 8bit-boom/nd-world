@@ -1184,6 +1184,50 @@ async def api_imagegen_status():
     return await _ai.imagegen_status()
 
 
+class SwarmuiModelDownloadBody(BaseModel):
+    url: str
+    # Free text, not an enum — see app.ai.SWARMUI_MODEL_FOLDER_SUGGESTIONS'
+    # own docstring for why nd-world doesn't try to enforce SwarmUI's exact
+    # folder naming. Blank = the shared models root.
+    subfolder: str = ""
+    # Blank = taken from the URL's own path (download_swarmui_model).
+    filename: str = ""
+
+
+@router.post("/imagegen/models/download")
+async def api_imagegen_model_download(body: SwarmuiModelDownloadBody):
+    """Streams a checkpoint/VAE/text-encoder/etc. straight into SwarmUI's
+    own Models folder (see SWARMUI_MODELS_DIR's docstring in app/ai.py for
+    the shared-volume mechanics) — same SSE progress shape as /whisper/pull."""
+    _log.info("swarmui model download url=%r subfolder=%r filename=%r", body.url, body.subfolder, body.filename or "(from url)")
+
+    async def _gen():
+        async for progress in _ai.download_swarmui_model(body.url, body.subfolder, body.filename):
+            yield f"data: {_json.dumps(progress)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return _SR(
+        _gen(),
+        media_type="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/imagegen/models/downloaded")
+def api_imagegen_models_downloaded():
+    return {
+        "models": _ai.list_downloaded_swarmui_models(),
+        "folder_suggestions": _ai.SWARMUI_MODEL_FOLDER_SUGGESTIONS,
+    }
+
+
+@router.delete("/imagegen/models/downloaded")
+def api_imagegen_model_delete(subfolder: str = "", filename: str = ""):
+    if not filename or not _ai.delete_downloaded_swarmui_model(subfolder, filename):
+        raise HTTPException(404, "File not found")
+    return {"ok": True}
+
+
 @router.get("/imagegen/models")
 async def api_imagegen_models():
     return {"models": await _ai.imagegen_models()}

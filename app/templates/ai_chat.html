@@ -926,6 +926,34 @@
         <select id="ig-model" class="ig-select"><option value="">— loading —</option></select>
       </div>
 
+      <!-- Download models -->
+      <details class="ig-collapsible">
+        <summary>⬇ Download Models</summary>
+        <div class="ig-section-body">
+          <div style="font-size:.72rem;color:var(--text-dim);margin-bottom:.5rem;line-height:1.4">
+            Pulls a checkpoint/VAE/text-encoder/etc. straight into SwarmUI's own Models folder — only works when nd-world and SwarmUI share the model volume (the bundled "swarmui" Compose service does by default; an externally-run SwarmUI/ComfyUI won't). Paste a direct download link (HuggingFace, CivitAI, ...).
+          </div>
+          <input type="text" id="dlm-url" class="ig-select" style="width:100%;box-sizing:border-box;margin-bottom:.4rem"
+                 placeholder="https://huggingface.co/.../model.safetensors">
+          <div style="display:flex;gap:.4rem;margin-bottom:.5rem">
+            <input type="text" id="dlm-subfolder" list="dlm-subfolder-suggestions" class="ig-select" style="flex:1"
+                   placeholder="Subfolder (blank = root)">
+            <input type="text" id="dlm-filename" class="ig-select" style="flex:1"
+                   placeholder="Filename (blank = from URL)">
+          </div>
+          <datalist id="dlm-subfolder-suggestions"></datalist>
+          <button class="ig-btn" id="dlm-download-btn" onclick="dlmStartDownload()" style="border-color:var(--neon);color:var(--neon)">⬇ Download</button>
+          <div id="dlm-progress" style="display:none;margin-top:.5rem">
+            <div style="background:var(--bg3);border-radius:3px;height:6px;overflow:hidden">
+              <div id="dlm-progress-bar" style="height:100%;width:0%;background:var(--neon);border-radius:3px;transition:width .2s"></div>
+            </div>
+          </div>
+          <div id="dlm-status" style="font-size:.78rem;color:var(--text-dim);margin-top:.35rem"></div>
+          <div style="font-size:.72rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin:.9rem 0 .4rem">Already downloaded</div>
+          <div id="dlm-list" style="font-size:.78rem;color:var(--text-dim)">Loading…</div>
+        </div>
+      </details>
+
       <!-- Size presets -->
       <div>
         <label class="ig-label">Size</label>
@@ -3026,6 +3054,7 @@ function switchTab(tab) {
   if (tab === 'models')  { mpLoad(); wpLoadStatus(); }
   if (tab === 'whisper') { wtLoadStatus(); wgLoadGlossary(); riLoadInstructions(); }
   if (tab === 'starred') igLoadStarred();
+  if (tab === 'image')   dlmLoadDownloaded();
 }
 
 // ── Image gen state ───────────────────────────────────────────────────────────
@@ -3516,6 +3545,124 @@ function _igRenderJobs(progress) {
     }
     panel.appendChild(row);
   });
+}
+
+// ── SwarmUI model downloads ─────────────────────────────────────────────────
+
+let _dlmDownloading = false;
+
+async function dlmLoadDownloaded() {
+  const list = document.getElementById('dlm-list');
+  const suggestions = document.getElementById('dlm-subfolder-suggestions');
+  if (!list) return;
+  try {
+    const d = await fetch('/api/ai/imagegen/models/downloaded').then(r => r.json());
+    if (suggestions && suggestions.children.length === 0) {
+      suggestions.innerHTML = (d.folder_suggestions || [])
+        .filter(s => s)
+        .map(s => `<option value="${s}">`).join('');
+    }
+    const models = d.models || [];
+    if (!models.length) {
+      list.textContent = 'Nothing downloaded yet.';
+      return;
+    }
+    list.innerHTML = '';
+    models.forEach((m) => {
+      const row = document.createElement('div');
+      row.className = 'nd-job-row';
+      const label = document.createElement('span');
+      label.className = 'nd-job-label';
+      const path = m.subfolder ? `${m.subfolder}/${m.filename}` : m.filename;
+      label.textContent = `${path} (${(m.bytes / 1e9).toFixed(2)} GB)`;
+      row.appendChild(label);
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'nd-job-use-btn';
+      delBtn.textContent = '🗑';
+      delBtn.title = 'Delete this file';
+      delBtn.onclick = async () => {
+        delBtn.disabled = true;
+        try {
+          const params = new URLSearchParams({ subfolder: m.subfolder || '', filename: m.filename });
+          const res = await fetch('/api/ai/imagegen/models/downloaded?' + params, { method: 'DELETE' });
+          if (!res.ok) throw await ndApiErrorFrom(res);
+        } catch (e) {
+          alert('Could not delete: ' + e.message);
+          delBtn.disabled = false;
+          return;
+        }
+        await dlmLoadDownloaded();
+      };
+      row.appendChild(delBtn);
+      list.appendChild(row);
+    });
+  } catch (e) {
+    list.textContent = 'Could not load — is nd-world reachable?';
+  }
+}
+
+async function dlmStartDownload() {
+  if (_dlmDownloading) return;
+  const urlInput = document.getElementById('dlm-url');
+  const url = urlInput.value.trim();
+  if (!url) { alert('Paste a download URL first.'); return; }
+  _dlmDownloading = true;
+  const btn = document.getElementById('dlm-download-btn');
+  const progWrap = document.getElementById('dlm-progress');
+  const bar = document.getElementById('dlm-progress-bar');
+  const status = document.getElementById('dlm-status');
+  btn.disabled = true;
+  progWrap.style.display = 'block';
+  bar.style.width = '0%';
+  status.textContent = 'Starting download…';
+  try {
+    const res = await fetch('/api/ai/imagegen/models/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url,
+        subfolder: document.getElementById('dlm-subfolder').value.trim(),
+        filename: document.getElementById('dlm-filename').value.trim(),
+      }),
+    });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n'); buf = parts.pop();
+      for (const p of parts) {
+        if (!p.startsWith('data: ')) continue;
+        const raw = p.slice(6);
+        if (raw === '[DONE]') break;
+        try {
+          const obj = JSON.parse(raw);
+          if (obj.error) throw new Error(obj.error);
+          if (obj.total && obj.completed) {
+            const pct = obj.total ? Math.round(obj.completed / obj.total * 100) : 0;
+            bar.style.width = pct + '%';
+            status.textContent = `Downloading… ${pct}% (${(obj.completed / 1e9).toFixed(2)} / ${(obj.total / 1e9).toFixed(2)} GB)`;
+          } else if (obj.status === 'done') {
+            bar.style.width = '100%';
+            status.textContent = `✓ Downloaded ${obj.subfolder ? obj.subfolder + '/' : ''}${obj.filename}`;
+            urlInput.value = '';
+            document.getElementById('dlm-filename').value = '';
+          }
+        } catch (pe) {
+          if (pe.message && !pe.message.includes('JSON')) throw pe;
+        }
+      }
+    }
+  } catch (e) {
+    status.textContent = '✗ Failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    _dlmDownloading = false;
+    await dlmLoadDownloaded();
+  }
 }
 
 // ── Samplers / Schedulers dynamic loading ─────────────────────────────────────

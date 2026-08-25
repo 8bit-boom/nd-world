@@ -2,6 +2,7 @@ import os
 import json as _json
 import logging
 from pathlib import Path
+from urllib.parse import urlparse
 from collections.abc import AsyncGenerator
 import ollama as _ollama
 import httpx as _httpx
@@ -1398,6 +1399,130 @@ async def imagegen_progress() -> dict:
             }
     except Exception:
         return {"step": 0, "total": 0, "preview": ""}
+
+
+# ── SwarmUI model downloads ─────────────────────────────────────────────────
+# Lets a GM pull a checkpoint/VAE/text-encoder/etc. straight into SwarmUI's
+# own Models folder through nd-world's UI, same idea as download_whisper_model
+# above — only reachable at all because docker-compose.yml/truenas-compose.yml
+# mount the SAME host directory into both nd-world (here, at
+# SWARMUI_MODELS_DIR) and the "swarmui" Compose service (at /SwarmUI/Models):
+# nd-world writes a file, SwarmUI already sees it at the same relative path,
+# no API call to SwarmUI itself involved. On an install where that shared
+# mount doesn't exist (an externally-run SwarmUI/ComfyUI not managed by this
+# repo's own Compose files), SWARMUI_MODELS_DIR just won't be a real,
+# writable directory — downloads here fail the same way a bad path always
+# would, rather than silently doing nothing.
+
+SWARMUI_MODELS_DIR = Path(os.getenv("SWARMUI_MODELS_DIR", "/data/swarmui-models"))
+
+# Subfolder names this app already asks SwarmUI's own API for elsewhere
+# (imagegen_models/_loras/_upscalers/_ipadapter_models/_refiners above use
+# these exact path= values against SwarmUI's ListModels endpoint) — real,
+# code-verified values, not guesses. VAE/clip/ControlNet/Embedding are
+# SwarmUI's own documented convention but aren't independently re-verified
+# against a live instance here. Offered as suggestions only (a <datalist>,
+# not an enum) — a GM running a SwarmUI version with different folder names
+# isn't blocked by nd-world guessing wrong, since they can just type whatever
+# their own installation actually uses.
+SWARMUI_MODEL_FOLDER_SUGGESTIONS = [
+    "", "LoRA", "VAE", "clip", "ControlNet", "Upscale", "IPAdapter", "Refiner", "Embedding",
+]
+
+
+def _swarmui_model_path(subfolder: str, filename: str) -> Path:
+    """SWARMUI_MODELS_DIR / subfolder / filename, rejecting anything that
+    could escape SWARMUI_MODELS_DIR (.., an absolute subfolder) — this
+    becomes a filesystem write path built from GM-supplied free text, so
+    path traversal has to be rejected outright rather than merely
+    discouraged. Raises ValueError on anything unsafe."""
+    rel = Path(subfolder or "", filename)
+    if rel.is_absolute() or ".." in rel.parts:
+        raise ValueError("Invalid subfolder/filename")
+    return SWARMUI_MODELS_DIR / rel
+
+
+def list_downloaded_swarmui_models() -> list[dict]:
+    """Every file nd-world can see under SWARMUI_MODELS_DIR, for the
+    "already downloaded" panel — reads the shared volume directly rather
+    than asking SwarmUI itself (that's imagegen_models() et al, which needs
+    SwarmUI actually reachable), so this still works even while SwarmUI is
+    down or still starting up."""
+    if not SWARMUI_MODELS_DIR.is_dir():
+        return []
+    out = []
+    for p in SWARMUI_MODELS_DIR.rglob("*"):
+        if p.is_file() and not p.name.endswith(".part"):
+            rel = p.relative_to(SWARMUI_MODELS_DIR)
+            subfolder = str(rel.parent) if rel.parent != Path(".") else ""
+            out.append({"subfolder": subfolder, "filename": rel.name, "bytes": p.stat().st_size})
+    return out
+
+
+async def download_swarmui_model(url: str, subfolder: str = "", filename: str = "") -> AsyncGenerator[dict, None]:
+    """Stream a model file into SWARMUI_MODELS_DIR, yielding {"total":,
+    "completed":} progress dicts as bytes arrive and a final {"status":
+    "done", ...} or {"error": "..."} — same shape download_whisper_model
+    above uses, so the client-side JS can reuse identical parsing.
+
+    Unlike Whisper's curated known-model list, there's no one canonical
+    trusted host for Stable-Diffusion-family checkpoints/VAEs/text-encoders
+    — this is a free-text URL by design (HuggingFace, CivitAI, wherever the
+    GM sources it from), same trust model download_whisper_model's own
+    free-text custom-URL fallback already has.
+
+    Written to a "<filename>.part" file and only renamed into place once
+    fully downloaded, so an interrupted/failed download can never leave a
+    corrupt file behind for SwarmUI to trip over."""
+    url = (url or "").strip()
+    if not url:
+        yield {"error": "No URL given"}
+        return
+    if not filename:
+        filename = Path(urlparse(url).path).name
+    if not filename or "/" in filename or "\\" in filename:
+        yield {"error": "Could not determine a safe filename from that URL — provide one explicitly"}
+        return
+    try:
+        dest = _swarmui_model_path(subfolder, filename)
+    except ValueError:
+        yield {"error": "Invalid subfolder/filename"}
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".part")
+    try:
+        async with _httpx.AsyncClient(follow_redirects=True, timeout=60) as c:
+            async with c.stream("GET", url) as resp:
+                if resp.status_code >= 400:
+                    yield {"error": f"HTTP {resp.status_code} fetching model file"}
+                    return
+                total = int(resp.headers.get("content-length") or 0)
+                completed = 0
+                with tmp.open("wb") as f:
+                    async for chunk in resp.aiter_bytes(1024 * 1024):
+                        f.write(chunk)
+                        completed += len(chunk)
+                        yield {"total": total, "completed": completed}
+        tmp.replace(dest)
+        yield {"status": "done", "subfolder": subfolder, "filename": filename, "bytes": dest.stat().st_size}
+    except Exception as exc:
+        tmp.unlink(missing_ok=True)
+        _log.warning("swarmui model download failed: %s: %s", type(exc).__name__, exc)
+        yield {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def delete_downloaded_swarmui_model(subfolder: str, filename: str) -> bool:
+    """Remove a previously-downloaded file — lets a GM free disk space
+    without SSHing into wherever the shared volume actually lives. Returns
+    False (not an error) if it doesn't exist, or the path is unsafe."""
+    try:
+        path = _swarmui_model_path(subfolder, filename)
+    except ValueError:
+        return False
+    if not path.is_file():
+        return False
+    path.unlink()
+    return True
 
 
 async def imagegen_generate(prompt: str, negative: str, model: str,

@@ -9,6 +9,7 @@ services:
       - /mnt/DeadPool/apps/nd-world:/data
       - /mnt/DeadPool/apps/swarmui/data/Autocompletions:/data/swarmui-ac  # shared with swarmui for native tag autocompletions
       - /mnt/DeadPool/apps/whisper:/data/whisper-models  # shared with whisper — lets nd-world download a model file into the same place the "whisper" service loads from
+      - /mnt/DeadPool/apps/swarmui/models:/data/swarmui-models  # shared with swarmui's own /SwarmUI/Models mount below — lets nd-world download a checkpoint/VAE/text-encoder into the same place SwarmUI loads from
     environment:
       DB_PATH: /data/world.db
       # AI chat / image generation are optional (see the "ollama"/"swarmui" Compose
@@ -19,6 +20,7 @@ services:
       # Set to http://<truenas-ip>:7801 to enable the Image Studio iframe inside nd-world
       SWARMUI_EXTERNAL_URL: ""
       SWARMUI_AC_DIR: /data/swarmui-ac  # shared bind mount → SwarmUI Data/Autocompletions
+      SWARMUI_MODELS_DIR: /data/swarmui-models  # shared bind mount → SwarmUI's own /SwarmUI/Models, for in-app checkpoint/VAE/text-encoder downloads
       # Set to http://<truenas-ip>:6080 to enable the embedded Android app
       # iframe at /androidapp (see the "android" profile below).
       ANDROID_EMULATOR_URL: ""

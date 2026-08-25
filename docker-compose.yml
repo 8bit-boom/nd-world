@@ -12,6 +12,7 @@ services:
       - nd-world-data:/data
       - swarmui-ac:/data/swarmui-ac   # shared with swarmui for native tag autocompletions
       - ${AI_MODELS_DIR:-./ai-models}/whisper:/data/whisper-models   # shared with whisper — lets nd-world download a model file into the same place the "whisper" service loads from
+      - ${AI_MODELS_DIR:-./ai-models}/swarmui:/data/swarmui-models   # shared with swarmui's own Models mount below — same pattern as whisper-models above, lets nd-world download a checkpoint/VAE/text-encoder straight into SwarmUI's model folders
     environment:
       DB_PATH: /data/world.db
       # AI chat / image generation are optional (see the "ollama"/"swarmui" Compose
@@ -21,6 +22,7 @@ services:
       IMAGEGEN_URL: http://swarmui:7801
       SWARMUI_EXTERNAL_URL: ""   # set to http://<your-host>:7801 to enable the Image Studio iframe
       SWARMUI_AC_DIR: /data/swarmui-ac  # shared volume → SwarmUI Data/Autocompletions
+      SWARMUI_MODELS_DIR: /data/swarmui-models  # shared volume → SwarmUI's own /SwarmUI/Models mount below, for in-app checkpoint/VAE/text-encoder downloads
       # Set to http://<your-host>:6080 to enable the embedded Android app
       # iframe at /androidapp (see the "android" profile below).
       ANDROID_EMULATOR_URL: ""
