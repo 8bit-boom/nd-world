@@ -85,14 +85,24 @@ def effective_ollama_keep_alive() -> str:
 
 
 def _chat_kwargs(extra_options: dict = None) -> dict:
-    """Extra kwargs (options=, keep_alive=) to splat into every .chat() call
-    below — built fresh each call so a runtime settings change (no server
-    restart needed) takes effect on the very next request. `extra_options`
-    (a per-request override — see a chat preset's options, app/routers/ai.py)
-    is layered OVER the instance-wide AppSettings defaults, not replacing
-    them: an unset key still falls back to whatever Settings > System
-    configured, so a preset only has to specify what it wants to differ."""
-    kwargs = {}
+    """Extra kwargs (options=, keep_alive=, think=) to splat into every
+    .chat() call below — built fresh each call so a runtime settings change
+    (no server restart needed) takes effect on the very next request.
+    `extra_options` (a per-request override — see a chat preset's options,
+    app/routers/ai.py) is layered OVER the instance-wide AppSettings
+    defaults, not replacing them: an unset key still falls back to whatever
+    Settings > System configured, so a preset only has to specify what it
+    wants to differ.
+
+    think=False is unconditional: every caller of generate_chat/stream_chat/
+    parse_facts_from_recap/parse_entity_from_text/benchmark_model wants a
+    single direct answer, never a "thinking"/reasoning model's hidden
+    chain-of-thought. Without it, a thinking-capable model can spend its
+    whole output budget on reasoning tokens and return an empty `content`
+    with `thinking` full of text instead — see generate_chat's empty-content
+    handling below for what happens if that still slips through (a model
+    that doesn't honor think=False, or a genuinely empty answer)."""
+    kwargs = {"think": False}
     opts = {**effective_ollama_options(), **(extra_options or {})}
     if opts:
         kwargs["options"] = opts
@@ -361,7 +371,32 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
     try:
         resp = await _client().chat(model=m, messages=full, **_chat_kwargs(options))
         content = resp.message.content
-        return content if content else "[empty response]"
+        if content:
+            return content
+        # A successful call with genuinely empty content — not a request/connection
+        # error, so it doesn't hit the except branches below. _chat_kwargs() already
+        # sends think=False so a "thinking"/reasoning model shouldn't produce hidden
+        # reasoning at all, but not every model honors that — if one still burns its
+        # whole output budget on reasoning tokens before writing visible text, that
+        # shows up here as empty `content` with `thinking` full of text (and usually
+        # done_reason=="length"). Surface whichever of those Ollama gave us rather
+        # than a bare "[empty response]" with no way to act on it.
+        thinking = getattr(resp.message, "thinking", None)
+        done_reason = getattr(resp, "done_reason", None)
+        eval_count = getattr(resp, "eval_count", None)
+        _log.warning(
+            "generate_chat model=%s returned empty content (done_reason=%r, eval_count=%r, had_thinking=%r)",
+            m, done_reason, eval_count, bool(thinking),
+        )
+        if thinking:
+            return (
+                f"[empty response from {m} — it produced {len(thinking)} character(s) of hidden "
+                "\"thinking\" output but no final answer (usually means it ran out of output "
+                "budget mid-reasoning). Try a shorter prompt, a higher response-length limit, "
+                "or a non-reasoning model.]"
+            )
+        detail = f"done_reason={done_reason}" if done_reason else "no done_reason reported"
+        return f"[empty response from {m} ({detail}) — try a different model, or check the Ollama server logs]"
     except _ollama.ResponseError as exc:
         _log.error("generate_chat Ollama error: %s %s", exc.status_code, exc.error)
         return f"[AI error: Ollama {exc.status_code}: {exc.error}]"

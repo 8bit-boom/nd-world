@@ -81,6 +81,7 @@ async def test_generate_chat_omits_kwargs_when_unset(monkeypatch):
     assert result == "hi"
     assert "options" not in calls[0]
     assert "keep_alive" not in calls[0]
+    assert calls[0]["think"] is False
 
 
 @pytest.mark.asyncio
@@ -92,6 +93,58 @@ async def test_generate_chat_passes_options_and_keep_alive(monkeypatch):
     assert result == "hi"
     assert calls[0]["options"] == {"temperature": 0.2, "top_k": 40}
     assert calls[0]["keep_alive"] == "5m"
+
+
+class _FakeRespFull:
+    """Same shape as _FakeResp but also carries done_reason/eval_count and
+    message.thinking, like a real ollama.ChatResponse — needed to exercise
+    generate_chat's empty-content diagnostic message (see app.ai.generate_chat)."""
+
+    def __init__(self, content, done_reason=None, eval_count=None, thinking=None):
+        self.message = types.SimpleNamespace(content=content, thinking=thinking)
+        self.done_reason = done_reason
+        self.eval_count = eval_count
+
+
+class _FakeFixedRespClient:
+    def __init__(self, resp):
+        self._resp = resp
+
+    async def chat(self, **kwargs):
+        return self._resp
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_empty_content_reports_done_reason(monkeypatch):
+    resp = _FakeRespFull("", done_reason="length", eval_count=512)
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeFixedRespClient(resp))
+    result = await ai_module.generate_chat([{"role": "user", "content": "hi"}])
+    assert "empty response" in result
+    assert "done_reason=length" in result
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_empty_content_without_done_reason(monkeypatch):
+    resp = _FakeRespFull("", done_reason=None, eval_count=None)
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeFixedRespClient(resp))
+    result = await ai_module.generate_chat([{"role": "user", "content": "hi"}])
+    assert "empty response" in result
+    assert "no done_reason reported" in result
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_empty_content_with_thinking_reports_it_instead(monkeypatch):
+    """A model that doesn't honor think=False can still burn its whole output
+    budget on hidden reasoning — content ends up empty, but message.thinking
+    (only present on a real ollama>=0.5 client) has text. That case should be
+    reported specifically rather than falling through to the generic
+    done_reason message."""
+    resp = _FakeRespFull("", done_reason="length", eval_count=512, thinking="pondering deeply...")
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeFixedRespClient(resp))
+    result = await ai_module.generate_chat([{"role": "user", "content": "hi"}])
+    assert "empty response" in result
+    assert "hidden" in result and "thinking" in result
+    assert "done_reason=length" not in result
 
 
 @pytest.mark.asyncio
