@@ -790,6 +790,8 @@ def _migrate():
             ("recap",               "TEXT DEFAULT ''", True),
             ("attachment_url",      "VARCHAR(512) DEFAULT ''", True),
             ("model",               "VARCHAR(128)", True),
+            ("chunk_current",       "INTEGER", True),
+            ("chunk_total",         "INTEGER", True),
             ("created_at",          "DATETIME", True),
             ("updated_at",          "DATETIME", True),
         ], foreign_keys=[

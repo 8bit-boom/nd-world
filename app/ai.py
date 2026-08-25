@@ -757,12 +757,21 @@ def _with_instructions(system: str, extra_instructions: str) -> str:
     return f"{system}\n\nAdditional instructions from the GM (follow these too): {extra_instructions}"
 
 
-async def summarize_transcript(transcript: str, model: str = "", extra_instructions: str = "") -> str:
+async def summarize_transcript(transcript: str, model: str = "", extra_instructions: str = "", on_progress=None) -> str:
     """Turn a raw Whisper transcript (see transcribe_audio) of a session
     recording into a narrative recap. Transcripts that fit in one context
     window go through a single generate_chat call, same as before; longer
     ones are map-reduced — summarized in chunks, then the chunk summaries
-    combined into one final recap — see _transcript_chunk_char_budget."""
+    combined into one final recap — see _transcript_chunk_char_budget.
+
+    Whisper's own transcription is never chunked (transcribe_audio sends the
+    whole file in one call, with no progress signal at all) — this chunking
+    is purely a map-reduce over the resulting TEXT so a long transcript
+    doesn't blow the model's context window. `on_progress(current, total)`,
+    if given, is called before each chunk's extraction call (current is
+    1-based — "currently on part 2 of 5") so a caller (audio_jobs.py) can
+    persist real progress instead of a bare "summarizing" placeholder.
+    Never called at all for a short, unchunked transcript."""
     transcript = (transcript or "").strip()
     if not transcript:
         return ""
@@ -774,6 +783,8 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
     _log.info("summarize_transcript: chunking into %d part(s) (%d chars total)", len(chunks), len(transcript))
     part_summaries = []
     for i, chunk in enumerate(chunks):
+        if on_progress:
+            on_progress(i + 1, len(chunks))
         part = await generate_chat([{"role": "user", "content": chunk}], system=_SUMMARIZE_TRANSCRIPT_CHUNK_SYSTEM, model=model)
         if part.startswith("[AI "):
             return part  # propagate the failure rather than weaving an error string into the recap

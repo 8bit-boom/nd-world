@@ -26,6 +26,16 @@ function ndAudioJobs(panelEl, opts) {
   const IN_PROGRESS = new Set(["pending", "transcribing", "summarizing"]);
   const FINISHED = new Set(["done", "error", "cancelled"]);
 
+  function statusLabel(job) {
+    if (!IN_PROGRESS.has(job.status)) return STATUS_LABEL[job.status] || job.status;
+    // The one phase with a real, measurable percentage (map-reduce chunk
+    // count) — Whisper's own transcription has no progress signal at all.
+    const base = job.status === "summarizing" && job.chunk_total
+      ? `Summarizing… part ${job.chunk_current}/${job.chunk_total}`
+      : (STATUS_LABEL[job.status] || job.status);
+    return ndElapsedLabel(base, job.created_at);
+  }
+
   function render() {
     panelEl.innerHTML = "";
     if (!jobs.length) { panelEl.style.display = "none"; return; }
@@ -39,7 +49,7 @@ function ndAudioJobs(panelEl, opts) {
       row.className = "nd-job-row" + (job.status === "error" ? " nd-job-row--error" : "");
       const label = document.createElement("span");
       label.className = "nd-job-label";
-      label.textContent = `${job.filename || "audio"} — ${STATUS_LABEL[job.status] || job.status}`;
+      label.textContent = `${job.filename || "audio"} — ${statusLabel(job)}`;
       row.appendChild(label);
       if (job.status === "error" && job.error) {
         const err = document.createElement("span");

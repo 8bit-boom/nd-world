@@ -113,6 +113,40 @@ async def test_long_transcript_maps_then_reduces(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_on_progress_called_once_per_chunk_before_each_extraction_call(monkeypatch):
+    """on_progress(current, total) is the one real, measurable progress
+    signal in this whole pipeline (Whisper's own transcription has none at
+    all — see transcribe_audio) — audio_jobs.py persists it to the job row
+    so a GM sees real "part N of M" progress instead of a bare
+    "summarizing" placeholder."""
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
+
+    async def fake_generate_chat(messages, system="", model=""):
+        return "[part]" if system == ai_module._SUMMARIZE_TRANSCRIPT_CHUNK_SYSTEM else "Final recap."
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+
+    progress_calls = []
+    long_transcript = ("The party explored the ruins. " * 30).strip()
+    await ai_module.summarize_transcript(long_transcript, on_progress=lambda c, t: progress_calls.append((c, t)))
+
+    assert len(progress_calls) > 1
+    total = progress_calls[0][1]
+    assert all(t == total for _, t in progress_calls)
+    assert [c for c, _ in progress_calls] == list(range(1, total + 1))
+
+
+@pytest.mark.asyncio
+async def test_on_progress_not_called_for_a_short_unchunked_transcript(monkeypatch):
+    async def fake_generate_chat(messages, system="", model=""):
+        return "A short recap."
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+
+    progress_calls = []
+    await ai_module.summarize_transcript("We went to the tavern.", on_progress=lambda c, t: progress_calls.append((c, t)))
+    assert progress_calls == []
+
+
+@pytest.mark.asyncio
 async def test_long_transcript_propagates_a_map_step_failure(monkeypatch):
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
     call_count = {"n": 0}

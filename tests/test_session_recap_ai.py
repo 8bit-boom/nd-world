@@ -119,7 +119,7 @@ def test_summarize_from_audio_transcribes_and_summarizes(client, seed, monkeypat
     async def fake_transcribe(path, glossary=""):
         captured["path_exists_during_call"] = path.is_file()
         return "the party met elena at the bazaar"
-    async def fake_summarize(transcript, model="", extra_instructions=""):
+    async def fake_summarize(transcript, model="", extra_instructions="", **kwargs):
         captured["transcript"] = transcript
         return "The party met Elena at the bazaar."
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
@@ -141,7 +141,7 @@ def test_summarize_from_audio_is_session_independent(client, seed, monkeypatch):
     condense-recap above."""
     async def fake_transcribe(path, glossary=""):
         return "some transcript"
-    async def fake_summarize(transcript, model="", extra_instructions=""):
+    async def fake_summarize(transcript, model="", extra_instructions="", **kwargs):
         return "A recap."
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
     monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
@@ -157,7 +157,7 @@ def test_summarize_from_audio_does_not_persist_the_file(client, seed, monkeypatc
     async def fake_transcribe(path, glossary=""):
         seen_paths.append(path)
         return "transcript"
-    async def fake_summarize(t, model="", extra_instructions=""):
+    async def fake_summarize(t, model="", extra_instructions="", **kwargs):
         return "recap"
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
     monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
@@ -274,7 +274,7 @@ def test_chunked_upload_reassembles_and_transcribes(client, seed, monkeypatch):
     async def fake_transcribe(path, glossary=""):
         assert path.read_bytes() == _PART_A + _PART_B
         return "reassembled session transcript"
-    async def fake_summarize(transcript, model="", extra_instructions=""):
+    async def fake_summarize(transcript, model="", extra_instructions="", **kwargs):
         assert transcript == "reassembled session transcript"
         return "A recap from the reassembled recording."
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
@@ -429,7 +429,7 @@ def test_summarize_live_transcript(client, seed, monkeypatch):
     finally:
         db.close()
 
-    async def fake_summarize(transcript, model="", extra_instructions=""):
+    async def fake_summarize(transcript, model="", extra_instructions="", **kwargs):
         assert transcript == "raw messy asr text about the tavern"
         return "The party visited the tavern."
     monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)

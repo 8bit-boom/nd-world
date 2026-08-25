@@ -58,6 +58,17 @@ function bgFmtTime(iso) {
   try { return new Date(iso + 'Z').toLocaleString(); } catch (e) { return iso; }
 }
 
+function bgElapsedLabel(job) {
+  // Whisper's own transcription has no progress signal at all (a single
+  // blocking call — see app.ai.transcribe_audio) — only the summarization
+  // step's map-reduce chunking is real, trackable progress, and only for a
+  // transcript long enough to need it (chunk_total set).
+  const base = job.status === 'summarizing' && job.chunk_total
+    ? `Summarizing… part ${job.chunk_current}/${job.chunk_total}`
+    : (STATUS_LABEL[job.status] || job.status);
+  return ndElapsedLabel(base, job.created_at);
+}
+
 function bgRenderJob(job) {
   const card = document.createElement('div');
   card.className = 'bg-job-card' + (job.status === 'error' ? ' bg-job-card--error' : '')
@@ -86,8 +97,15 @@ function bgRenderJob(job) {
   card.appendChild(barWrap);
   const bar = ndProgressBar(barWrap);
   _bgBars[job.id] = bar;
-  if (IN_PROGRESS.has(job.status)) {
-    bar.setIndeterminate(STATUS_LABEL[job.status] || job.status);
+  if (job.status === 'summarizing' && job.chunk_total) {
+    // The one phase with a real, measurable percentage (map-reduce chunk
+    // count) — everything else in IN_PROGRESS (transcribing, a short
+    // unchunked summarize) has no progress signal at all, so it stays
+    // indeterminate below.
+    const pct = Math.round(job.chunk_current / job.chunk_total * 100);
+    bar.setPercent(pct, ndElapsedLabel(`Summarizing… part ${job.chunk_current}/${job.chunk_total}`, job.created_at));
+  } else if (IN_PROGRESS.has(job.status)) {
+    bar.setIndeterminate(bgElapsedLabel(job));
   } else if (job.status === 'done') {
     bar.setPercent(100, '✓ Done');
   } else if (job.status === 'cancelled') {

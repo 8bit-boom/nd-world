@@ -110,8 +110,11 @@ async def _run_job(job_id: int, audio_path: Path, purpose: str, delete_after: bo
         if purpose == "session_recap":
             _set(status="summarizing")
             instructions = _recap_instructions_for_world(world_id) if world_id else ""
-            recap = await _ai_module.summarize_transcript(transcript, model=model, extra_instructions=instructions)
-            _set(status="done", recap=recap)
+            recap = await _ai_module.summarize_transcript(
+                transcript, model=model, extra_instructions=instructions,
+                on_progress=lambda current, total: _set(chunk_current=current, chunk_total=total),
+            )
+            _set(status="done", recap=recap, chunk_current=None, chunk_total=None)
         else:
             _set(status="done")
     except asyncio.CancelledError:

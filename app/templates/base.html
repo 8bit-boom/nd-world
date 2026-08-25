@@ -190,6 +190,23 @@ async function ndApiErrorFrom(res) {
   return new Error(detail);
 }
 
+// Shared by every background-job panel (Background Jobs page, the audio-jobs
+// widget, AI Chat's chat/image job panels): several job backends (Whisper's
+// /inference, Ollama's non-streaming chat()) are a single blocking call with
+// no interim progress signal, so there's no real percentage to show for a
+// job in flight. Elapsed time IS real, though, and lets a GM judge "still
+// working" from "probably stuck" — call this again on each poll tick (every
+// panel already re-renders every few seconds while anything's in progress)
+// rather than running a separate timer, so it updates live for free.
+function ndElapsedLabel(baseLabel, createdAtIso) {
+  if (!createdAtIso) return baseLabel;
+  let elapsedSec;
+  try { elapsedSec = Math.max(0, Math.round((Date.now() - new Date(createdAtIso + "Z").getTime()) / 1000)); }
+  catch (e) { return baseLabel; }
+  const m = Math.floor(elapsedSec / 60), s = elapsedSec % 60;
+  return `${baseLabel} (${m > 0 ? m + "m " + s + "s" : s + "s"} elapsed)`;
+}
+
 // Shared by world_edit.html and worlds.html's accent-colour pickers — keeps
 // the native <input type=color> swatch and a typed hex-code field in sync
 // both ways, since the color input alone doesn't let you type/paste a code.

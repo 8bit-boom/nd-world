@@ -2817,7 +2817,9 @@ function _cjRenderJobs() {
     const label = document.createElement('span');
     label.className = 'nd-job-label';
     const shortPrompt = (job.prompt || '').slice(0, 60) + ((job.prompt || '').length > 60 ? '…' : '');
-    label.textContent = `${shortPrompt || 'message'} — ${_CJ_JOB_STATUS_LABEL[job.status] || job.status}`;
+    const cjBase = _CJ_JOB_STATUS_LABEL[job.status] || job.status;
+    const cjLabel = _CJ_JOB_IN_PROGRESS.has(job.status) ? ndElapsedLabel(cjBase, job.created_at) : cjBase;
+    label.textContent = `${shortPrompt || 'message'} — ${cjLabel}`;
     row.appendChild(label);
     if (job.status === 'error' && job.error) {
       const err = document.createElement('span');
@@ -3408,14 +3410,30 @@ async function igLoadJobs() {
     const jobs = await fetch('/api/ai/imagegen/jobs').then(r => r.json());
     _igJobs = jobs || [];
   } catch (e) { return; }
-  _igRenderJobs();
+
+  // /imagegen/progress is a single global "what's SwarmUI doing right now"
+  // status, not scoped to a job id — but since generation only ever runs
+  // one at a time against the backend GPU in practice, it's a real,
+  // measurable percentage for whichever job is actively "generating".
+  // Always 0/0 on ComfyUI (see _igIsComfyUI's other use above), so skip the
+  // fetch there and fall back to elapsed time like everything else with no
+  // progress signal of its own.
+  let progress = null;
+  if (!_igIsComfyUI && _igJobs.some(j => j.status === 'generating')) {
+    try {
+      const d = await fetch('/api/ai/imagegen/progress').then(r => r.json());
+      if (d.total > 0) progress = d;
+    } catch (e) { /* fall back to elapsed time below */ }
+  }
+  _igRenderJobs(progress);
+
   if (_igJobsPollTimer !== null) { clearTimeout(_igJobsPollTimer); _igJobsPollTimer = null; }
   if (_igJobs.some(j => _IG_JOB_IN_PROGRESS.has(j.status))) {
     _igJobsPollTimer = setTimeout(igLoadJobs, 3000);
   }
 }
 
-function _igRenderJobs() {
+function _igRenderJobs(progress) {
   const panel = document.getElementById('ig-jobs-panel');
   if (!panel) return;
   panel.innerHTML = '';
@@ -3431,7 +3449,13 @@ function _igRenderJobs() {
     const label = document.createElement('span');
     label.className = 'nd-job-label';
     const shortPrompt = (job.prompt || '').slice(0, 60) + ((job.prompt || '').length > 60 ? '…' : '');
-    label.textContent = `${shortPrompt || 'image'} — ${_IG_JOB_STATUS_LABEL[job.status] || job.status}`;
+    let igStatusText = _IG_JOB_STATUS_LABEL[job.status] || job.status;
+    if (job.status === 'generating') {
+      igStatusText = progress
+        ? `Generating… step ${progress.step}/${progress.total} (${Math.round(progress.step / progress.total * 100)}%)`
+        : ndElapsedLabel(igStatusText, job.created_at);
+    }
+    label.textContent = `${shortPrompt || 'image'} — ${igStatusText}`;
     row.appendChild(label);
     if (job.status === 'error' && job.error) {
       const err = document.createElement('span');

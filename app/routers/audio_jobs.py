@@ -37,6 +37,7 @@ def _job_to_dict(job: AudioJob) -> dict:
         "filename": job.filename, "status": job.status, "error": job.error,
         "transcript": job.transcript, "recap": job.recap, "model": job.model or "",
         "attachment_url": job.attachment_url, "game_session_id": job.game_session_id,
+        "chunk_current": job.chunk_current, "chunk_total": job.chunk_total,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
     }

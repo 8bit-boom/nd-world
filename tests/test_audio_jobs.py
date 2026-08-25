@@ -22,6 +22,11 @@ from app.models import AudioJob, World
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
+# Captured before the autouse _fake_ai fixture below ever runs, so tests that
+# need the REAL map-reduce chunking logic (not _fake_ai's flat fake) can
+# restore it for just that one test.
+_REAL_SUMMARIZE_TRANSCRIPT = ai_module.summarize_transcript
+
 
 def _set_world(world_id, **kw):
     db = SessionLocal()
@@ -53,7 +58,7 @@ def _fake_ai(monkeypatch):
         assert path.is_file(), f"audio should still exist while transcribing: {path}"
         return "the party met elena at the bazaar"
 
-    async def fake_summarize(transcript, model="", extra_instructions=""):
+    async def fake_summarize(transcript, model="", extra_instructions="", **kwargs):
         return "The party met Elena at the bazaar."
 
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
@@ -149,6 +154,101 @@ async def test_job_ends_in_error_on_exception(client, seed, tmp_path, monkeypatc
     assert job.status == "error"
     assert "boom" in job.error
     assert not audio.exists()  # still cleaned up even on failure
+
+
+# ── Chunk progress (map-reduce summarization) — see test_transcript_chunking
+# .py for the underlying app.ai.summarize_transcript(on_progress=...) unit
+# tests; these confirm audio_jobs.py actually persists it to the DB row.
+
+@pytest.mark.asyncio
+async def test_chunk_progress_visible_mid_summarize_and_cleared_when_done(client, seed, tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
+
+    hang_on_second_chunk = asyncio.Event()
+    release_second_chunk = asyncio.Event()
+    call_count = {"n": 0}
+
+    async def fake_transcribe(path, glossary=""):
+        return ("The party explored the ruins. " * 30).strip()
+
+    async def fake_generate_chat(messages, system="", model="", options=None):
+        if system == ai_module._SUMMARIZE_TRANSCRIPT_CHUNK_SYSTEM:
+            call_count["n"] += 1
+            if call_count["n"] == 2:
+                hang_on_second_chunk.set()
+                await release_second_chunk.wait()
+            return "[part]"
+        return "Final recap."
+
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    # Override the file's autouse _fake_ai fixture, which replaces
+    # summarize_transcript wholesale — this test needs the REAL map-reduce
+    # chunking logic (driving fake_generate_chat above) to actually run.
+    monkeypatch.setattr(ai_module, "summarize_transcript", _REAL_SUMMARIZE_TRANSCRIPT)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+
+    await asyncio.wait_for(hang_on_second_chunk.wait(), timeout=5)
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.status == "summarizing"
+        assert job.chunk_current == 2
+        assert job.chunk_total is not None and job.chunk_total > 1
+    finally:
+        db.close()
+
+    release_second_chunk.set()
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.chunk_current is None
+    assert job.chunk_total is None
+
+
+def test_unified_job_status_route_exposes_chunk_progress(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="summarizing",
+                        filename="x.mp3", chunk_current=2, chunk_total=5)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    assert r.json()["chunk_current"] == 2
+    assert r.json()["chunk_total"] == 5
+
+
+def test_session_job_status_route_exposes_chunk_progress(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="summarizing",
+                        filename="x.mp3", chunk_current=1, chunk_total=3)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/sessions/ai/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    assert r.json()["chunk_current"] == 1
+    assert r.json()["chunk_total"] == 3
 
 
 def test_sweep_interrupted_jobs_marks_in_progress_as_error(client, seed):
@@ -547,7 +647,7 @@ def test_cancel_requires_gm(client, seed, _hanging_transcribe):
 async def test_create_job_stores_and_uses_chosen_model(client, seed, tmp_path, monkeypatch):
     captured = {}
 
-    async def fake_summarize_capture(transcript, model="", extra_instructions=""):
+    async def fake_summarize_capture(transcript, model="", extra_instructions="", **kwargs):
         captured["model"] = model
         return "recap text"
 
@@ -591,7 +691,7 @@ async def test_resummarize_job_uses_saved_transcript_and_new_model(client, seed,
 
     captured = {}
 
-    async def fake_summarize_capture(transcript, model="", extra_instructions=""):
+    async def fake_summarize_capture(transcript, model="", extra_instructions="", **kwargs):
         captured["transcript"] = transcript
         captured["model"] = model
         return "A different, better recap."
@@ -618,7 +718,7 @@ async def test_resummarize_job_falls_back_to_the_jobs_own_model_when_blank(clien
 
     captured = {}
 
-    async def fake_summarize_capture(transcript, model="", extra_instructions=""):
+    async def fake_summarize_capture(transcript, model="", extra_instructions="", **kwargs):
         captured["model"] = model
         return "recap"
 
@@ -701,7 +801,7 @@ def test_resummarize_route_gm_only(client, seed):
 
 
 def test_resummarize_route_round_trip(client, seed, monkeypatch):
-    async def fake_summarize_capture(transcript, model="", extra_instructions=""):
+    async def fake_summarize_capture(transcript, model="", extra_instructions="", **kwargs):
         return f"Recap via {model or 'default'}: {transcript}"
 
     monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize_capture)

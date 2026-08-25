@@ -688,6 +688,14 @@ class AudioJob(Base):
     # session's audio upload panel, and updated whenever a GM re-summarizes
     # with a different model — see POST /api/audio-jobs/{id}/resummarize.
     model = Column(String(128), nullable=True)
+    # Real map-reduce progress during status="summarizing" — only set for a
+    # transcript long enough to need chunking (see
+    # app.ai.summarize_transcript's on_progress callback); NULL the rest of
+    # the time, including once the job finishes. Whisper's own transcription
+    # (status="transcribing") has no equivalent — it's a single blocking
+    # call with no progress signal at all, chunked or otherwise.
+    chunk_current = Column(Integer, nullable=True)
+    chunk_total = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

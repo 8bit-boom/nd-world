@@ -146,7 +146,7 @@ async def test_background_job_uses_worlds_recap_instructions(client, seed, tmp_p
     async def fake_transcribe(path, glossary=""):
         return "the party fought goblins"
 
-    async def fake_summarize(transcript, model="", extra_instructions=""):
+    async def fake_summarize(transcript, model="", extra_instructions="", **kwargs):
         captured["extra_instructions"] = extra_instructions
         return "un recap"
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
@@ -183,7 +183,7 @@ async def test_resummarize_job_uses_worlds_recap_instructions(client, seed, tmp_
 
     captured = {}
 
-    async def fake_summarize(transcript, model="", extra_instructions=""):
+    async def fake_summarize(transcript, model="", extra_instructions="", **kwargs):
         captured["extra_instructions"] = extra_instructions
         return "un recap"
     monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
