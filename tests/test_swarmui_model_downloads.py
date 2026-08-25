@@ -41,10 +41,30 @@ class _FakeStreamResponse:
             yield chunk
 
 
+class _FakePostResponse:
+    def __init__(self, data):
+        self._data = data
+
+    def json(self):
+        return self._data
+
+
+# Default fake replies for the three swarmui_refresh_after_local_change()
+# calls, used whenever a test doesn't care about the refresh outcome but the
+# code path still reaches it (type=="swarmui").
+_DEFAULT_POST_MAP = {
+    "/API/GetNewSession": {"session_id": "sess1"},
+    "/API/ListServerSettings": {"settings": {"paths.sdmodelfolder": {"value": "Models/Stable-Diffusion"}}},
+    "/API/ChangeServerSettings": {"success": True},
+}
+
+
 class _FakeAsyncClient:
-    def __init__(self, stream_response=None, stream_exc=None):
+    def __init__(self, stream_response=None, stream_exc=None, post_map=None, post_calls=None):
         self._stream_response = stream_response
         self._stream_exc = stream_exc
+        self._post_map = post_map if post_map is not None else _DEFAULT_POST_MAP
+        self._post_calls = post_calls
 
     async def __aenter__(self):
         return self
@@ -57,12 +77,21 @@ class _FakeAsyncClient:
             raise self._stream_exc
         return _FakeStreamCtx(self._stream_response)
 
+    async def post(self, url, json=None, **kw):
+        if self._post_calls is not None:
+            self._post_calls.append((url, json))
+        for suffix, data in self._post_map.items():
+            if url.endswith(suffix):
+                return _FakePostResponse(data)
+        return _FakePostResponse({})
 
-def _patch_httpx(monkeypatch, stream_response=None, stream_exc=None):
+
+def _patch_httpx(monkeypatch, stream_response=None, stream_exc=None, post_map=None, post_calls=None):
     class _Module:
         @staticmethod
         def AsyncClient(**kw):
-            return _FakeAsyncClient(stream_response=stream_response, stream_exc=stream_exc)
+            return _FakeAsyncClient(stream_response=stream_response, stream_exc=stream_exc,
+                                     post_map=post_map, post_calls=post_calls)
     monkeypatch.setattr(ai_module, "_httpx", _Module)
 
 
@@ -84,7 +113,8 @@ async def test_download_success_writes_file_and_yields_progress(tmp_path, monkey
 
     progress = [e for e in events if "completed" in e]
     assert [e["completed"] for e in progress] == [10, 20, 25]
-    assert events[-1] == {"status": "done", "subfolder": "", "filename": "model.safetensors", "bytes": 25}
+    assert events[-1] == {"status": "done", "subfolder": "", "filename": "model.safetensors", "bytes": 25,
+                           "model_list_refreshed": False}
     dest = tmp_path / "model.safetensors"
     assert dest.is_file()
     assert dest.read_bytes() == b"a" * 10 + b"b" * 10 + b"c" * 5
@@ -122,7 +152,8 @@ async def test_download_writes_into_given_subfolder(tmp_path, monkeypatch):
     events = await _collect(ai_module.download_swarmui_model(
         "https://example.com/vae.safetensors", subfolder="VAE",
     ))
-    assert events[-1] == {"status": "done", "subfolder": "VAE", "filename": "vae.safetensors", "bytes": 9}
+    assert events[-1] == {"status": "done", "subfolder": "VAE", "filename": "vae.safetensors", "bytes": 9,
+                           "model_list_refreshed": False}
     assert (tmp_path / "VAE" / "vae.safetensors").read_bytes() == b"vae bytes"
 
 
@@ -159,6 +190,100 @@ async def test_download_http_error(tmp_path, monkeypatch):
     events = await _collect(ai_module.download_swarmui_model("https://example.com/model.safetensors"))
     assert events == [{"error": "HTTP 404 fetching model file"}]
     assert not (tmp_path / "model.safetensors").exists()
+
+
+# ── SwarmUI model-list refresh after a direct disk write ────────────────────
+# SwarmUI caches its model list in memory and only rebuilds it at startup, or
+# as a side effect of /API/ChangeServerSettings touching a paths.* key — see
+# _swarmui_refresh_models's docstring in app/ai.py. A file nd-world writes
+# straight into the shared volume (bypassing SwarmUI's own download API)
+# would otherwise never show up in /API/ListModels until SwarmUI restarts;
+# these tests cover the best-effort auto-refresh that closes that gap.
+
+@pytest.mark.asyncio
+async def test_download_triggers_refresh_when_backend_is_swarmui(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "SWARMUI_MODELS_DIR", tmp_path)
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    post_calls = []
+    _patch_httpx(monkeypatch, stream_response=_FakeStreamResponse(200, headers={}, chunks=[b"x"]),
+                 post_calls=post_calls)
+
+    events = await _collect(ai_module.download_swarmui_model("https://example.com/model.safetensors"))
+
+    assert events[-1]["model_list_refreshed"] is True
+    change_calls = [c for c in post_calls if c[0].endswith("/API/ChangeServerSettings")]
+    assert len(change_calls) == 1
+    assert change_calls[0][1]["rawData"]["settings"]["paths.sdmodelfolder"] == "Models/Stable-Diffusion"
+
+
+@pytest.mark.asyncio
+async def test_download_skips_refresh_when_backend_is_not_swarmui(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "SWARMUI_MODELS_DIR", tmp_path)
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "comfyui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-comfy")
+    post_calls = []
+    _patch_httpx(monkeypatch, stream_response=_FakeStreamResponse(200, headers={}, chunks=[b"x"]),
+                 post_calls=post_calls)
+
+    events = await _collect(ai_module.download_swarmui_model("https://example.com/model.safetensors"))
+
+    assert events[-1]["model_list_refreshed"] is False
+    assert post_calls == []
+
+
+@pytest.mark.asyncio
+async def test_download_refresh_failure_is_swallowed_and_download_still_succeeds(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "SWARMUI_MODELS_DIR", tmp_path)
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    # No "settings" key in the ListServerSettings reply — as if the session
+    # lacks edit_server_settings permission — should be caught, not raised.
+    _patch_httpx(monkeypatch, stream_response=_FakeStreamResponse(200, headers={}, chunks=[b"x"]),
+                 post_map={"/API/GetNewSession": {"session_id": "sess1"},
+                           "/API/ListServerSettings": {"error": "no permission"}})
+
+    events = await _collect(ai_module.download_swarmui_model("https://example.com/model.safetensors"))
+
+    assert events[-1]["status"] == "done"
+    assert events[-1]["model_list_refreshed"] is False
+    assert (tmp_path / "model.safetensors").is_file()
+
+
+@pytest.mark.asyncio
+async def test_swarmui_refresh_after_local_change_resends_unchanged_path_setting(monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    post_calls = []
+    _patch_httpx(monkeypatch, post_calls=post_calls)
+
+    assert await ai_module.swarmui_refresh_after_local_change() is True
+    change_calls = [c for c in post_calls if c[0].endswith("/API/ChangeServerSettings")]
+    assert change_calls[0][1]["rawData"]["settings"]["paths.sdmodelfolder"] == "Models/Stable-Diffusion"
+
+
+@pytest.mark.asyncio
+async def test_swarmui_refresh_after_local_change_false_when_not_configured(monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "")
+    post_calls = []
+    _patch_httpx(monkeypatch, post_calls=post_calls)
+
+    assert await ai_module.swarmui_refresh_after_local_change() is False
+    assert post_calls == []
+
+
+@pytest.mark.asyncio
+async def test_swarmui_refresh_after_local_change_false_when_change_settings_rejected(monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    _patch_httpx(monkeypatch, post_map={
+        "/API/GetNewSession": {"session_id": "sess1"},
+        "/API/ListServerSettings": {"settings": {"paths.sdmodelfolder": {"value": "Models/Stable-Diffusion"}}},
+        "/API/ChangeServerSettings": {"error": "not authorized"},
+    })
+
+    assert await ai_module.swarmui_refresh_after_local_change() is False
 
 
 @pytest.mark.asyncio
@@ -285,6 +410,29 @@ def test_delete_route_round_trip(client, seed, tmp_path, monkeypatch):
     r = client.delete("/api/ai/imagegen/models/downloaded", params={"subfolder": "VAE", "filename": "x.safetensors"})
     assert r.status_code == 200
     assert not (tmp_path / "VAE" / "x.safetensors").exists()
+
+
+def test_delete_route_reports_refresh_true_when_swarmui_configured(client, seed, tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "SWARMUI_MODELS_DIR", tmp_path)
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    _patch_httpx(monkeypatch)
+    (tmp_path / "x.safetensors").write_bytes(b"x")
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.delete("/api/ai/imagegen/models/downloaded", params={"filename": "x.safetensors"})
+    assert r.status_code == 200
+    assert r.json()["model_list_refreshed"] is True
+
+
+def test_delete_route_reports_refresh_false_when_not_swarmui(client, seed, tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "SWARMUI_MODELS_DIR", tmp_path)
+    (tmp_path / "x.safetensors").write_bytes(b"x")
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.delete("/api/ai/imagegen/models/downloaded", params={"filename": "x.safetensors"})
+    assert r.status_code == 200
+    assert r.json()["model_list_refreshed"] is False
 
 
 def test_delete_route_404s_for_unknown_file(client, seed, tmp_path, monkeypatch):

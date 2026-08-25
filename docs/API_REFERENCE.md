@@ -559,9 +559,9 @@ worlds they've been invited into (`WorldMembership`).
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/api/ai/imagegen/status` | GM | Backend (SwarmUI/ComfyUI) connectivity status. |
-| POST | `/api/ai/imagegen/models/download` | GM | Streams a checkpoint/VAE/text-encoder/etc. from a direct URL into SwarmUI's own Models folder (SSE progress) — only works when nd-world and SwarmUI share the model volume (the bundled "swarmui" Compose service does by default). |
+| POST | `/api/ai/imagegen/models/download` | GM | Streams a checkpoint/VAE/text-encoder/etc. from a direct URL into SwarmUI's own Models folder (SSE progress) — only works when nd-world and SwarmUI share the model volume (the bundled "swarmui" Compose service does by default). The final `"status": "done"` event includes `model_list_refreshed` (bool) — whether nd-world was able to make SwarmUI rescan its Models folder so the file shows up in `/api/ai/imagegen/models` etc. immediately; if `false`, SwarmUI needs a restart to notice it. |
 | GET | `/api/ai/imagegen/models/downloaded` | GM | Lists files nd-world can see under the shared SwarmUI models directory, plus suggested subfolder names. |
-| DELETE | `/api/ai/imagegen/models/downloaded` | GM | Deletes a previously-downloaded file (`?subfolder=&filename=`). |
+| DELETE | `/api/ai/imagegen/models/downloaded` | GM | Deletes a previously-downloaded file (`?subfolder=&filename=`). Response includes `model_list_refreshed` (bool), same meaning as the download route. |
 | GET | `/api/ai/imagegen/models` | GM | Available checkpoint models. |
 | GET | `/api/ai/imagegen/loras` | GM | Available LoRAs. |
 | GET | `/api/ai/imagegen/samplers-schedulers` | GM | Available samplers/schedulers. |

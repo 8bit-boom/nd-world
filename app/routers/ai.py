@@ -1222,10 +1222,11 @@ def api_imagegen_models_downloaded():
 
 
 @router.delete("/imagegen/models/downloaded")
-def api_imagegen_model_delete(subfolder: str = "", filename: str = ""):
+async def api_imagegen_model_delete(subfolder: str = "", filename: str = ""):
     if not filename or not _ai.delete_downloaded_swarmui_model(subfolder, filename):
         raise HTTPException(404, "File not found")
-    return {"ok": True}
+    refreshed = await _ai.swarmui_refresh_after_local_change()
+    return {"ok": True, "model_list_refreshed": refreshed}
 
 
 @router.get("/imagegen/models")

@@ -872,6 +872,51 @@ async def _swarmui_session(u: str, c: _httpx.AsyncClient) -> str:
         return "ndworld"
 
 
+async def _swarmui_refresh_models(u: str, c: _httpx.AsyncClient, session_id: str) -> bool:
+    """Best-effort: make SwarmUI rescan its Models folder so a file we just
+    wrote straight into the shared volume (see SWARMUI_MODELS_DIR below)
+    actually shows up in /API/ListModels. SwarmUI has no dedicated "rescan
+    now" route — it only rebuilds its in-memory model list at startup, or
+    as a side effect of /API/ChangeServerSettings when the request touches
+    a paths.* key. So this reads back the current SD model folder setting
+    and immediately re-saves it unchanged, purely to trigger that refresh.
+
+    Requires the calling session to hold SwarmUI's `edit_server_settings`
+    permission — true by default for the single bundled-SwarmUI instance
+    this app's docker-compose spins up, but not guaranteed on an externally
+    managed one. Returns False (never raises) if anything about this trick
+    doesn't pan out; the caller falls back to telling the GM to restart
+    SwarmUI, so a False here never leaves a downloaded file silently
+    unusable."""
+    try:
+        r = await c.post(f"{u}/API/ListServerSettings", json={"session_id": session_id})
+        value = r.json()["settings"]["paths.sdmodelfolder"]["value"]
+        r2 = await c.post(f"{u}/API/ChangeServerSettings", json={
+            "session_id": session_id,
+            "rawData": {"settings": {"paths.sdmodelfolder": value}},
+        })
+        return "error" not in r2.json()
+    except Exception:
+        return False
+
+
+async def swarmui_refresh_after_local_change() -> bool:
+    """Public best-effort wrapper around _swarmui_refresh_models, for any
+    caller that just changed a file under SWARMUI_MODELS_DIR directly on
+    disk (a download or a delete) and wants SwarmUI's own model list to
+    notice. Never raises; returns False if not configured for SwarmUI, or
+    if the refresh trick itself didn't work."""
+    t, u = _get_type(), _get_url()
+    if t != "swarmui" or not u:
+        return False
+    try:
+        async with _httpx.AsyncClient(timeout=10) as c:
+            sid = await _swarmui_session(u, c)
+            return await _swarmui_refresh_models(u, c, sid)
+    except Exception:
+        return False
+
+
 # ── Audio transcription (whisper.cpp server) ────────────────────────────────
 # See app/routers/ai.py's /attachments/upload — an uploaded audio attachment
 # is transcribed here (regardless of its original format; the server itself
@@ -1504,7 +1549,9 @@ async def download_swarmui_model(url: str, subfolder: str = "", filename: str = 
                         completed += len(chunk)
                         yield {"total": total, "completed": completed}
         tmp.replace(dest)
-        yield {"status": "done", "subfolder": subfolder, "filename": filename, "bytes": dest.stat().st_size}
+        refreshed = await swarmui_refresh_after_local_change()
+        yield {"status": "done", "subfolder": subfolder, "filename": filename,
+               "bytes": dest.stat().st_size, "model_list_refreshed": refreshed}
     except Exception as exc:
         tmp.unlink(missing_ok=True)
         _log.warning("swarmui model download failed: %s: %s", type(exc).__name__, exc)

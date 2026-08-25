@@ -3143,16 +3143,7 @@ function igClearCN() {
     _igIsComfyUI = st.type === 'comfyui';
     const note = document.getElementById('ig-comfyui-note');
     if (note) note.style.display = _igIsComfyUI ? 'block' : 'none';
-    const mr = await fetch('/api/ai/imagegen/models').then(r => r.json());
-    const sel = document.getElementById('ig-model');
-    if (mr.models && mr.models.length) {
-      sel.innerHTML = mr.models.map(m => `<option value="${m}">${m}</option>`).join('');
-      const dr = await fetch('/api/ai/defaults').then(r => r.json()).catch(() => null);
-      const imageDefault = dr && dr.image;
-      if (imageDefault && mr.models.includes(imageDefault)) sel.value = imageDefault;
-    } else {
-      sel.innerHTML = '<option value="">— no models found —</option>';
-    }
+    await igReloadModels();
     igRenderLoras();
     igRenderPresets();
     igLoadSamplersSchedulers();
@@ -3551,6 +3542,30 @@ function _igRenderJobs(progress) {
 
 let _dlmDownloading = false;
 
+async function igReloadModels() {
+  const sel = document.getElementById('ig-model');
+  if (!sel) return;
+  const prev = sel.value;
+  try {
+    const mr = await fetch('/api/ai/imagegen/models').then(r => r.json());
+    if (mr.models && mr.models.length) {
+      sel.innerHTML = mr.models.map(m => `<option value="${m}">${m}</option>`).join('');
+      if (prev && mr.models.includes(prev)) {
+        sel.value = prev;
+      } else {
+        const dr = await fetch('/api/ai/defaults').then(r => r.json()).catch(() => null);
+        const imageDefault = dr && dr.image;
+        if (imageDefault && mr.models.includes(imageDefault)) sel.value = imageDefault;
+      }
+    } else {
+      sel.innerHTML = '<option value="">— no models found —</option>';
+    }
+  } catch (e) {
+    // Leave whatever was already in the dropdown — this is a refresh, not
+    // the initial load, so a transient fetch failure shouldn't blank it.
+  }
+}
+
 async function dlmLoadDownloaded() {
   const list = document.getElementById('dlm-list');
   const suggestions = document.getElementById('dlm-subfolder-suggestions');
@@ -3583,16 +3598,28 @@ async function dlmLoadDownloaded() {
       delBtn.title = 'Delete this file';
       delBtn.onclick = async () => {
         delBtn.disabled = true;
+        let refreshed = false;
         try {
           const params = new URLSearchParams({ subfolder: m.subfolder || '', filename: m.filename });
           const res = await fetch('/api/ai/imagegen/models/downloaded?' + params, { method: 'DELETE' });
           if (!res.ok) throw await ndApiErrorFrom(res);
+          const data = await res.json().catch(() => ({}));
+          refreshed = !!data.model_list_refreshed;
         } catch (e) {
           alert('Could not delete: ' + e.message);
           delBtn.disabled = false;
           return;
         }
         await dlmLoadDownloaded();
+        igReloadModels();
+        igLoadLoras();
+        igLoadUpscalers();
+        igLoadRefiners();
+        igLoadIPAModels();
+        if (!refreshed) {
+          const status = document.getElementById('dlm-status');
+          if (status) status.textContent = 'Deleted — restart SwarmUI if it still shows up in the pickers below';
+        }
       };
       row.appendChild(delBtn);
       list.appendChild(row);
@@ -3647,9 +3674,17 @@ async function dlmStartDownload() {
             status.textContent = `Downloading… ${pct}% (${(obj.completed / 1e9).toFixed(2)} / ${(obj.total / 1e9).toFixed(2)} GB)`;
           } else if (obj.status === 'done') {
             bar.style.width = '100%';
-            status.textContent = `✓ Downloaded ${obj.subfolder ? obj.subfolder + '/' : ''}${obj.filename}`;
+            const savedAs = `${obj.subfolder ? obj.subfolder + '/' : ''}${obj.filename}`;
+            status.textContent = obj.model_list_refreshed
+              ? `✓ Downloaded ${savedAs} — now available in the pickers below`
+              : `✓ Downloaded ${savedAs} — restart SwarmUI if it doesn't show up in the pickers below`;
             urlInput.value = '';
             document.getElementById('dlm-filename').value = '';
+            igReloadModels();
+            igLoadLoras();
+            igLoadUpscalers();
+            igLoadRefiners();
+            igLoadIPAModels();
           }
         } catch (pe) {
           if (pe.message && !pe.message.includes('JSON')) throw pe;
