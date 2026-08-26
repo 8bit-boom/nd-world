@@ -59,12 +59,13 @@ function bgFmtTime(iso) {
 }
 
 function bgElapsedLabel(job) {
-  // Whisper's own transcription has no progress signal at all (a single
-  // blocking call — see app.ai.transcribe_audio) — only the summarization
-  // step's map-reduce chunking is real, trackable progress, and only for a
-  // transcript long enough to need it (chunk_total set).
-  const base = job.status === 'summarizing' && job.chunk_total
-    ? `Summarizing… part ${job.chunk_current}/${job.chunk_total}`
+  // Both phases can report real chunk progress now: transcribing a long
+  // recording splits the audio itself (app.ai._split_audio_into_chunks)
+  // and summarizing a long transcript splits the text (map-reduce) — a
+  // short clip/transcript skips chunking for either, so chunk_total stays
+  // unset and this just falls back to a plain status label.
+  const base = job.chunk_total && (job.status === 'summarizing' || job.status === 'transcribing')
+    ? `${job.status === 'summarizing' ? 'Summarizing' : 'Transcribing'}… part ${job.chunk_current}/${job.chunk_total}`
     : (STATUS_LABEL[job.status] || job.status);
   return ndElapsedLabel(base, job.created_at);
 }
@@ -97,21 +98,25 @@ function bgRenderJob(job) {
   card.appendChild(barWrap);
   const bar = ndProgressBar(barWrap);
   _bgBars[job.id] = bar;
-  if (job.status === 'summarizing' && job.chunk_total) {
-    // The one phase with a real, measurable percentage (map-reduce chunk
-    // count) — everything else in IN_PROGRESS (transcribing, a short
-    // unchunked summarize) has no progress signal at all, so it stays
-    // indeterminate below.
+  if (job.chunk_total && (job.status === 'summarizing' || job.status === 'transcribing')) {
+    // Both phases can have a real, measurable percentage now — audio
+    // chunking (app.ai._split_audio_into_chunks) gives transcribing one
+    // too, same as map-reduce already did for summarizing. A short
+    // clip/transcript skips chunking for either and stays indeterminate
+    // below (chunk_total unset).
     const pct = Math.round(job.chunk_current / job.chunk_total * 100);
-    bar.setPercent(pct, ndElapsedLabel(`Summarizing… part ${job.chunk_current}/${job.chunk_total}`, job.created_at));
+    const label = job.status === 'summarizing' ? 'Summarizing' : 'Transcribing';
+    bar.setPercent(pct, ndElapsedLabel(`${label}… part ${job.chunk_current}/${job.chunk_total}`, job.created_at));
   } else if (IN_PROGRESS.has(job.status)) {
     bar.setIndeterminate(bgElapsedLabel(job));
   } else if (job.status === 'done') {
-    bar.setPercent(100, '✓ Done');
+    const dur = ndDurationLabel(job.run_started_at || job.created_at, job.finished_at);
+    bar.setPercent(100, dur ? `✓ Done (took ${dur})` : '✓ Done');
   } else if (job.status === 'cancelled') {
     bar.setPercent(100, '○ Cancelled');
   } else {
-    bar.setPercent(100, '✗ Failed');
+    const dur = ndDurationLabel(job.run_started_at || job.created_at, job.finished_at);
+    bar.setPercent(100, dur ? `✗ Failed (took ${dur})` : '✗ Failed');
   }
 
   if (job.status === 'error' && job.error) {
@@ -168,13 +173,20 @@ function bgRenderJob(job) {
       sel.appendChild(opt);
     });
 
+    const instructionsInput = document.createElement('input');
+    instructionsInput.type = 'text';
+    instructionsInput.placeholder = 'Extra instructions (optional)…';
+    instructionsInput.title = 'One-off notes for this summary, e.g. "focus on combat" — added to (not replacing) the world\'s standing recap instructions';
+    instructionsInput.value = job.extra_instructions || '';
+    instructionsInput.style.cssText = 'font-size:.75rem;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:.2rem .4rem;width:180px';
+
     const retryBtn = document.createElement('button');
     retryBtn.type = 'button';
     retryBtn.className = 'bg-job-btn';
     retryBtn.textContent = '🔁 Retry summary';
-    retryBtn.onclick = () => bgResummarize(job.id, sel.value, retryBtn);
+    retryBtn.onclick = () => bgResummarize(job.id, sel.value, instructionsInput.value, retryBtn);
 
-    retryWrap.append(sel, retryBtn);
+    retryWrap.append(sel, instructionsInput, retryBtn);
     actions.appendChild(retryWrap);
 
     const factsBtn = document.createElement('button');
@@ -253,7 +265,7 @@ async function bgDeleteJob(jobId, btn) {
   bgRefresh();
 }
 
-async function bgResummarize(jobId, model, btn) {
+async function bgResummarize(jobId, model, extraInstructions, btn) {
   // Only starts the job here — it now runs as a background task (a long
   // transcript's map-reduce summarize can take several minutes, too long
   // for this request/response to sit open through a reverse proxy without
@@ -265,7 +277,7 @@ async function bgResummarize(jobId, model, btn) {
     const res = await fetch(`/api/audio-jobs/${jobId}/resummarize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'model=' + encodeURIComponent(model || ''),
+      body: 'model=' + encodeURIComponent(model || '') + '&extra_instructions=' + encodeURIComponent(extraInstructions || ''),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));

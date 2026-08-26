@@ -713,6 +713,15 @@ class AudioJob(Base):
     # session's audio upload panel, and updated whenever a GM re-summarizes
     # with a different model — see POST /api/audio-jobs/{id}/resummarize.
     model = Column(String(128), nullable=True)
+    # One-off notes for this specific run's summarization — set at job
+    # creation from the upload panel's optional instructions field, and
+    # updatable whenever a GM re-summarizes with different notes (POST
+    # /api/audio-jobs/{id}/resummarize, same idea as `model` above). Combined
+    # with the world's own persistent recap_instructions (World.
+    # recap_instructions, always applied) rather than replacing it — see
+    # _combined_recap_instructions in app/audio_jobs.py. purpose=
+    # "session_recap" only; ignored for "attachment", which never summarizes.
+    extra_instructions = Column(Text, nullable=True)
     # Real map-reduce progress during status="summarizing" — only set for a
     # transcript long enough to need chunking (see
     # app.ai.summarize_transcript's on_progress callback); NULL the rest of
@@ -721,6 +730,17 @@ class AudioJob(Base):
     # call with no progress signal at all, chunked or otherwise.
     chunk_current = Column(Integer, nullable=True)
     chunk_total = Column(Integer, nullable=True)
+    # Distinct from created_at (which never changes once the row exists,
+    # and is used everywhere as "when was this job started"): run_started_at
+    # marks the start of the CURRENT run specifically, reset every time
+    # start_resummarize_job kicks off a new attempt — so a job resummarized
+    # days after its first run doesn't report a multi-day "duration" that's
+    # mostly idle time between runs. finished_at is set once that run reaches
+    # a terminal status (done/error/cancelled). Both NULL until the job's
+    # first run actually starts (they're set at the top of _run_job, not at
+    # create_job's row-insert, so a still-"pending" job has neither yet).
+    run_started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

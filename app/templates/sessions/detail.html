@@ -67,6 +67,11 @@
             <option value="">(default model)</option>
           </select>
           <span id="mic-record-status" style="font-size:.75rem;color:var(--text-dim)"></span>
+          <div style="margin-top:.4rem">
+            <input type="text" id="audio-recap-instructions" placeholder="Extra instructions for this summary (optional)…"
+                   title="One-off notes for this summary, e.g. &quot;focus on combat tactics&quot; — added to (not replacing) the world's standing recap instructions"
+                   style="width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.78rem;border-radius:3px"/>
+          </div>
           <div style="font-size:.72rem;margin-top:.3rem">Transcribed via Whisper, then summarized into a recap draft below — the audio itself isn't kept (use the Audio Library separately to save a recording). "Process in Background" survives closing this tab; check the jobs list below to see it finish and load the result later.</div>
         </div>
         <div id="audio-recap-progress"></div>
@@ -289,6 +294,7 @@ async function aiSummarizeFromAudio(file) {
       directUrl: '/api/sessions/ai/summarize-from-audio',
       chunkUrl: '/api/sessions/ai/summarize-from-audio/chunk',
       completeUrl: '/api/sessions/ai/summarize-from-audio/complete',
+      extraFields: { extra_instructions: document.getElementById('audio-recap-instructions').value },
       onProgress: (e) => ndProgressFromUpload(bar, e, 'Transcribing & summarizing — can take a while for a long recording…'),
     });
     _aiRecapDraft = data.recap || '';
@@ -345,11 +351,12 @@ document.getElementById('audio-bgjob-input').addEventListener('change', async fu
   const status = document.getElementById('ai-recap-status');
   const bar = ndProgressBar(document.getElementById('audio-recap-progress'));
   const model = document.getElementById('audio-bgjob-model').value;
+  const instructions = document.getElementById('audio-recap-instructions').value;
   bar.setPercent(0, 'Uploading… 0%');
   try {
     await sessionAudioJobs.startJob(
       file,
-      { game_session_id: '{{ gsession.id if gsession else "" }}', model: model },
+      { game_session_id: '{{ gsession.id if gsession else "" }}', model: model, extra_instructions: instructions },
       (e) => ndProgressFromUpload(bar, e, 'Job started — processing in background…'),
     );
     status.textContent = 'Background job started — see the jobs list below.';

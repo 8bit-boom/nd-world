@@ -27,11 +27,16 @@ function ndAudioJobs(panelEl, opts) {
   const FINISHED = new Set(["done", "error", "cancelled"]);
 
   function statusLabel(job) {
-    if (!IN_PROGRESS.has(job.status)) return STATUS_LABEL[job.status] || job.status;
-    // The one phase with a real, measurable percentage (map-reduce chunk
-    // count) — Whisper's own transcription has no progress signal at all.
-    const base = job.status === "summarizing" && job.chunk_total
-      ? `Summarizing… part ${job.chunk_current}/${job.chunk_total}`
+    if (!IN_PROGRESS.has(job.status)) {
+      const base = STATUS_LABEL[job.status] || job.status;
+      const dur = ndDurationLabel(job.run_started_at || job.created_at, job.finished_at);
+      return dur ? `${base} (took ${dur})` : base;
+    }
+    // Both phases can report real chunk progress now — audio chunking
+    // gives transcribing one too, same as map-reduce already did for
+    // summarizing. A short clip/transcript skips chunking for either.
+    const base = job.chunk_total && (job.status === "summarizing" || job.status === "transcribing")
+      ? `${job.status === "summarizing" ? "Summarizing" : "Transcribing"}… part ${job.chunk_current}/${job.chunk_total}`
       : (STATUS_LABEL[job.status] || job.status);
     return ndElapsedLabel(base, job.created_at);
   }

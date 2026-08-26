@@ -79,6 +79,17 @@ def _recap_instructions_for_world(world) -> str:
     return (world.recap_instructions or "").strip() if world else ""
 
 
+def _combine_recap_instructions(world_instructions: str, job_instructions: str) -> str:
+    """The world's own persistent recap_instructions always applies;
+    job_instructions is a one-off note for this specific summarize call
+    only — neither replaces the other. Same combining rule as
+    app.audio_jobs._combined_recap_instructions, kept as its own small copy
+    here rather than shared, matching this codebase's per-module
+    convention for small helpers like this."""
+    parts = [p for p in (world_instructions.strip(), job_instructions.strip()) if p]
+    return "\n\n".join(parts)
+
+
 @router.get("/sessions", response_class=HTMLResponse)
 def sessions_list(request: Request, page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
@@ -361,7 +372,7 @@ async def api_condense_recap(request: Request):
 
 @router.post("/api/sessions/ai/summarize-from-audio")
 async def api_summarize_from_audio(
-    request: Request, file: UploadFile = File(...),
+    request: Request, file: UploadFile = File(...), extra_instructions: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Transcribe an uploaded (file-picked, dropped, or mic-recorded) session
@@ -386,7 +397,8 @@ async def api_summarize_from_audio(
             "Whisper transcribed this clip successfully but found no speech in it — "
             "check the recording actually captured audio.",
         )
-    recap = await _ai_module.summarize_transcript(transcript, extra_instructions=_recap_instructions_for_world(world))
+    instructions = _combine_recap_instructions(_recap_instructions_for_world(world), extra_instructions)
+    recap = await _ai_module.summarize_transcript(transcript, extra_instructions=instructions)
     return {"transcript": transcript, "recap": recap}
 
 
@@ -409,6 +421,7 @@ async def api_summarize_from_audio_chunk(
 async def api_summarize_from_audio_complete(
     request: Request,
     upload_id: str = Form(...), filename: str = Form(...), total_chunks: int = Form(...),
+    extra_instructions: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Reassemble the parts uploaded via .../chunk and finish exactly like
@@ -436,7 +449,8 @@ async def api_summarize_from_audio_complete(
             "Whisper transcribed this clip successfully but found no speech in it — "
             "check the recording actually captured audio.",
         )
-    recap = await _ai_module.summarize_transcript(transcript, extra_instructions=_recap_instructions_for_world(world))
+    instructions = _combine_recap_instructions(_recap_instructions_for_world(world), extra_instructions)
+    recap = await _ai_module.summarize_transcript(transcript, extra_instructions=instructions)
     return {"transcript": transcript, "recap": recap}
 
 
@@ -458,8 +472,11 @@ def _job_to_dict(job: AudioJob) -> dict:
         "id": job.id, "purpose": job.purpose, "filename": job.filename,
         "status": job.status, "error": job.error,
         "transcript": job.transcript, "recap": job.recap, "model": job.model or "",
+        "extra_instructions": job.extra_instructions or "",
         "game_session_id": job.game_session_id,
         "chunk_current": job.chunk_current, "chunk_total": job.chunk_total,
+        "run_started_at": job.run_started_at.isoformat() if job.run_started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
     }
@@ -468,7 +485,7 @@ def _job_to_dict(job: AudioJob) -> dict:
 @router.post("/api/sessions/ai/audio-jobs")
 async def api_audio_job_create(
     request: Request, file: UploadFile = File(...), game_session_id: str = Form(""),
-    model: str = Form(""),
+    model: str = Form(""), extra_instructions: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Start a durable background transcribe+summarize job for a session
@@ -490,6 +507,7 @@ async def api_audio_job_create(
         world_id=world.id, purpose="session_recap", filename=file.filename or "",
         audio_path=dest, delete_after=True, game_session_id=gs_id,
         created_by_user_id=_current_user_id(request), model=model.strip(),
+        extra_instructions=extra_instructions.strip(),
     )
     return {"job_id": job_id}
 
@@ -509,7 +527,7 @@ async def api_audio_job_chunk(
 async def api_audio_job_complete(
     request: Request, upload_id: str = Form(...), filename: str = Form(...),
     total_chunks: int = Form(...), game_session_id: str = Form(""),
-    model: str = Form(""),
+    model: str = Form(""), extra_instructions: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Reassemble the parts uploaded via .../audio-jobs/chunk and start a
@@ -530,6 +548,7 @@ async def api_audio_job_complete(
         world_id=world.id, purpose="session_recap", filename=filename,
         audio_path=dest, delete_after=True, game_session_id=gs_id,
         created_by_user_id=_current_user_id(request), model=model.strip(),
+        extra_instructions=extra_instructions.strip(),
     )
     return {"job_id": job_id}
 

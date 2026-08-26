@@ -224,6 +224,21 @@ function ndElapsedLabel(baseLabel, createdAtIso) {
   return `${baseLabel} (${m > 0 ? m + "m " + s + "s" : s + "s"} elapsed)`;
 }
 
+// Companion to ndElapsedLabel above, for a job that has already finished: a
+// fixed duration between two recorded timestamps (AudioJob.run_started_at/
+// created_at and .finished_at) rather than a live count up to Date.now().
+// Returns "" (not a placeholder string) if either timestamp is missing —
+// e.g. a job finished before this existed, or one interrupted before it
+// ever started running — so callers can just skip appending it.
+function ndDurationLabel(startIso, endIso) {
+  if (!startIso || !endIso) return "";
+  let sec;
+  try { sec = Math.max(0, Math.round((new Date(endIso + "Z").getTime() - new Date(startIso + "Z").getTime()) / 1000)); }
+  catch (e) { return ""; }
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
 // Shared by world_edit.html and worlds.html's accent-colour pickers — keeps
 // the native <input type=color> swatch and a typed hex-code field in sync
 // both ways, since the color input alone doesn't let you type/paste a code.

@@ -259,6 +259,261 @@ async def test_transcribe_audio_uses_configured_timeout(tmp_path, monkeypatch):
     assert captured["client_kwargs"]["timeout"] == 42.0
 
 
+# ── _collapse_repeated_transcript_lines() ───────────────────────────────────
+
+def test_collapse_leaves_short_runs_untouched():
+    text = "Да.\nНет.\nДа.\nДа.\nОкей."
+    assert ai_module._collapse_repeated_transcript_lines(text) == text
+
+
+def test_collapse_removes_long_repeated_runs():
+    text = "\n".join(["Танос."] * 25 + ["Дальше по сюжету."])
+    assert ai_module._collapse_repeated_transcript_lines(text) == "Танос.\nДальше по сюжету."
+
+
+def test_collapse_respects_custom_threshold():
+    text = "\n".join(["A"] * 3)
+    assert ai_module._collapse_repeated_transcript_lines(text, min_repeat=3) == "A"
+    assert ai_module._collapse_repeated_transcript_lines(text, min_repeat=4) == "A\nA\nA"
+
+
+def test_collapse_handles_multiple_separate_runs():
+    text = "\n".join(["X"] * 5 + ["mid line"] + ["Y"] * 6)
+    assert ai_module._collapse_repeated_transcript_lines(text) == "X\nmid line\nY"
+
+
+def test_collapse_empty_string_is_a_noop():
+    assert ai_module._collapse_repeated_transcript_lines("") == ""
+
+
+def test_collapse_no_repeats_returns_input_unchanged():
+    text = "line one\nline two\nline three"
+    assert ai_module._collapse_repeated_transcript_lines(text) == text
+
+
+# ── _probe_audio_duration() / _split_audio_into_chunks() ───────────────────
+# Both shell out to ffprobe/ffmpeg via asyncio.create_subprocess_exec —
+# mocked at that boundary (not the ai module's own attributes, since both
+# do a function-local `import asyncio`) so these tests are deterministic
+# regardless of whether the runner actually has either binary installed.
+
+@pytest.mark.asyncio
+async def test_probe_audio_duration_parses_successful_output(tmp_path, monkeypatch):
+    import asyncio as _asyncio_mod
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self):
+            return b"185.42\n", b""
+
+    async def _fake_exec(*a, **kw):
+        return _FakeProc()
+
+    monkeypatch.setattr(_asyncio_mod, "create_subprocess_exec", _fake_exec)
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"x")
+    assert await ai_module._probe_audio_duration(f) == 185.42
+
+
+@pytest.mark.asyncio
+async def test_probe_audio_duration_none_on_nonzero_returncode(tmp_path, monkeypatch):
+    import asyncio as _asyncio_mod
+
+    class _FakeProc:
+        returncode = 1
+        async def communicate(self):
+            return b"", b"ffprobe: no such file"
+
+    async def _fake_exec(*a, **kw):
+        return _FakeProc()
+
+    monkeypatch.setattr(_asyncio_mod, "create_subprocess_exec", _fake_exec)
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"x")
+    assert await ai_module._probe_audio_duration(f) is None
+
+
+@pytest.mark.asyncio
+async def test_probe_audio_duration_none_when_ffprobe_missing(tmp_path, monkeypatch):
+    import asyncio as _asyncio_mod
+
+    async def _raise(*a, **kw):
+        raise FileNotFoundError("ffprobe")
+
+    monkeypatch.setattr(_asyncio_mod, "create_subprocess_exec", _raise)
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"x")
+    assert await ai_module._probe_audio_duration(f) is None
+
+
+@pytest.mark.asyncio
+async def test_split_audio_into_chunks_success_path(tmp_path, monkeypatch):
+    import asyncio as _asyncio_mod
+    from pathlib import Path as _Path
+
+    class _FakeProc:
+        def __init__(self, args):
+            self._args = args
+
+        returncode = 0
+
+        async def communicate(self):
+            # Last arg is the ffmpeg output pattern: <tmpdir>/chunk_%04d<ext>
+            pattern = _Path(self._args[-1])
+            outdir, suffix = pattern.parent, pattern.suffix
+            (outdir / f"chunk_0000{suffix}").write_bytes(b"a")
+            (outdir / f"chunk_0001{suffix}").write_bytes(b"b")
+            return b"", b""
+
+    async def _fake_exec(*a, **kw):
+        return _FakeProc(a)
+
+    monkeypatch.setattr(_asyncio_mod, "create_subprocess_exec", _fake_exec)
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"x")
+    chunks, tmpdir = await ai_module._split_audio_into_chunks(f, 600)
+    try:
+        assert len(chunks) == 2
+        assert tmpdir is not None
+        assert all(c.parent == tmpdir for c in chunks)
+    finally:
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_split_audio_into_chunks_falls_back_on_ffmpeg_error(tmp_path, monkeypatch):
+    import asyncio as _asyncio_mod
+
+    class _FakeProc:
+        returncode = 1
+        async def communicate(self):
+            return b"", b"ffmpeg: some error"
+
+    async def _fake_exec(*a, **kw):
+        return _FakeProc()
+
+    monkeypatch.setattr(_asyncio_mod, "create_subprocess_exec", _fake_exec)
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"x")
+    chunks, tmpdir = await ai_module._split_audio_into_chunks(f, 600)
+    assert chunks == [f]
+    assert tmpdir is None
+
+
+@pytest.mark.asyncio
+async def test_split_audio_into_chunks_falls_back_when_ffmpeg_missing(tmp_path, monkeypatch):
+    import asyncio as _asyncio_mod
+
+    async def _raise(*a, **kw):
+        raise FileNotFoundError("ffmpeg")
+
+    monkeypatch.setattr(_asyncio_mod, "create_subprocess_exec", _raise)
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"x")
+    chunks, tmpdir = await ai_module._split_audio_into_chunks(f, 600)
+    assert chunks == [f]
+    assert tmpdir is None
+
+
+# ── transcribe_audio()'s chunking orchestration ─────────────────────────────
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_skips_chunking_for_short_clip(tmp_path, monkeypatch):
+    calls = []
+
+    async def fake_probe(path):
+        return 60.0  # well under the chunking threshold
+
+    async def fake_transcribe_one(path, glossary, language):
+        calls.append(path)
+        return "short clip text"
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", fake_transcribe_one)
+
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"x")
+    assert await ai_module.transcribe_audio(f) == "short clip text"
+    assert calls == [f]
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_chunks_long_clip_and_reports_progress(tmp_path, monkeypatch):
+    chunk_paths = [tmp_path / "c1.mp3", tmp_path / "c2.mp3", tmp_path / "c3.mp3"]
+    for p in chunk_paths:
+        p.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 3600.0  # well over the chunking threshold
+
+    async def fake_split(path, chunk_seconds):
+        return chunk_paths, None  # None: nothing for the caller to clean up in this test
+
+    async def fake_transcribe_one(path, glossary, language):
+        return f"part {chunk_paths.index(path)}"
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", fake_transcribe_one)
+
+    progress_calls = []
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"x")
+    result = await ai_module.transcribe_audio(f, on_progress=lambda c, t: progress_calls.append((c, t)))
+    assert result == "part 0\npart 1\npart 2"
+    assert progress_calls == [(1, 3), (2, 3), (3, 3)]
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_falls_back_when_split_returns_single_file(tmp_path, monkeypatch):
+    async def fake_probe(path):
+        return 3600.0
+
+    async def fake_split(path, chunk_seconds):
+        return [path], None  # ffmpeg unavailable/failed — see _split_audio_into_chunks
+
+    async def fake_transcribe_one(path, glossary, language):
+        return "whole file text"
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", fake_transcribe_one)
+
+    progress_calls = []
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"x")
+    result = await ai_module.transcribe_audio(f, on_progress=lambda c, t: progress_calls.append((c, t)))
+    assert result == "whole file text"
+    assert progress_calls == []  # no chunking actually happened, so no progress signal
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_chunking_applies_repeat_collapsing(tmp_path, monkeypatch):
+    chunk_paths = [tmp_path / "c1.mp3", tmp_path / "c2.mp3"]
+    for p in chunk_paths:
+        p.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 3600.0
+
+    async def fake_split(path, chunk_seconds):
+        return chunk_paths, None
+
+    async def fake_transcribe_one(path, glossary, language):
+        if chunk_paths.index(path) == 0:
+            return "loop\nloop\nloop\nloop"
+        return "normal text"
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", fake_transcribe_one)
+
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"x")
+    assert await ai_module.transcribe_audio(f) == "loop\nnormal text"
+
+
 # ── debug_info() surfaces Whisper status alongside Ollama's ────────────────
 
 @pytest.mark.asyncio

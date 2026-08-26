@@ -686,12 +686,16 @@ _SUMMARIZE_TRANSCRIPT_CHUNK_SYSTEM = (
     "invent details that aren't in the text. Respond with the extracted events only, no preamble."
 )
 
-_SUMMARIZE_TRANSCRIPT_REDUCE_SYSTEM = (
-    "You are a scribe for a tabletop RPG campaign. Below are chronological, terse event "
-    "summaries of consecutive parts of one session — turn them into a single, short, readable "
-    "narrative recap in flowing prose (a few paragraphs, past tense, third person), preserving "
-    "every concrete event/name/detail from the parts. Don't invent anything not implied by the "
-    "parts. Respond with the recap text only, no preamble or commentary."
+_SUMMARIZE_TRANSCRIPT_REFINE_SYSTEM = (
+    "You are a scribe for a tabletop RPG campaign, writing a session recap incrementally as "
+    "you go through a transcript in chronological order. You'll be given the RECAP SO FAR "
+    "(empty if this is the first part) and NEW EVENTS extracted from the next part of the "
+    "transcript. Rewrite the recap into a complete, updated narrative in flowing prose (a few "
+    "paragraphs, past tense, third person) that naturally weaves in the new events — not the "
+    "new events appended on, but the whole recap re-told as one continuous narrative. Preserve "
+    "every concrete event, name, and detail from BOTH the existing recap and the new events; "
+    "don't drop anything already in the recap so far, and don't invent anything not implied by "
+    "either. Respond with the complete updated recap text only, no preamble or commentary."
 )
 
 # A transcript longer than fits comfortably in one context window (a
@@ -751,28 +755,50 @@ def _with_instructions(system: str, extra_instructions: str) -> str:
     system prompt. Applied only to the calls that produce the final,
     human-facing recap text — not the per-chunk extraction step below, which
     deliberately produces a terse scratch list rather than polished prose;
-    the reduce step still gets a chance to apply language/tone/focus when it
-    turns those extracted events into the final recap."""
+    each refine step still gets a chance to apply language/tone/focus every
+    time it turns the next chunk's extracted events into an updated recap."""
     if not extra_instructions:
         return system
     return f"{system}\n\nAdditional instructions from the GM (follow these too): {extra_instructions}"
+
+
+async def _refine_recap(running_recap: str, new_events: str, model: str, extra_instructions: str) -> str:
+    system = _with_instructions(_SUMMARIZE_TRANSCRIPT_REFINE_SYSTEM, extra_instructions)
+    user_content = (
+        f"RECAP SO FAR:\n{running_recap or '(none yet — this is the first part)'}\n\n"
+        f"NEW EVENTS:\n{new_events}"
+    )
+    return await generate_chat([{"role": "user", "content": user_content}], system=system, model=model)
 
 
 async def summarize_transcript(transcript: str, model: str = "", extra_instructions: str = "", on_progress=None) -> str:
     """Turn a raw Whisper transcript (see transcribe_audio) of a session
     recording into a narrative recap. Transcripts that fit in one context
     window go through a single generate_chat call, same as before; longer
-    ones are map-reduced — summarized in chunks, then the chunk summaries
-    combined into one final recap — see _transcript_chunk_char_budget.
+    ones are chunked and processed with a map-then-refine chain — see
+    _transcript_chunk_char_budget.
+
+    Each chunk is first mapped to a terse extracted-events list (same as
+    before), then folded into a running recap one chunk at a time via
+    _refine_recap, rather than collecting every chunk's extracted events
+    and combining them all in a single final call. The single-call combine
+    step used to have to fit ALL the chunk summaries in one context window —
+    for a long enough transcript (and therefore enough chunks), that blob
+    could itself overflow the same context budget chunking exists to avoid,
+    silently dropping content from the recap exactly like the un-chunked
+    case chunking was built to fix. Refining one chunk at a time keeps every
+    single call bounded to one chunk's worth of new material plus the
+    current running recap, which stays roughly recap-sized rather than
+    growing with the number of chunks.
 
     Whisper's own transcription is never chunked (transcribe_audio sends the
     whole file in one call, with no progress signal at all) — this chunking
-    is purely a map-reduce over the resulting TEXT so a long transcript
-    doesn't blow the model's context window. `on_progress(current, total)`,
-    if given, is called before each chunk's extraction call (current is
-    1-based — "currently on part 2 of 5") so a caller (audio_jobs.py) can
-    persist real progress instead of a bare "summarizing" placeholder.
-    Never called at all for a short, unchunked transcript."""
+    is purely over the resulting TEXT so a long transcript doesn't blow the
+    model's context window. `on_progress(current, total)`, if given, is
+    called before each chunk's extraction call (current is 1-based —
+    "currently on part 2 of 5") so a caller (audio_jobs.py) can persist real
+    progress instead of a bare "summarizing" placeholder. Never called at
+    all for a short, unchunked transcript."""
     transcript = (transcript or "").strip()
     if not transcript:
         return ""
@@ -782,17 +808,17 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
         return await generate_chat([{"role": "user", "content": transcript}], system=system, model=model)
 
     _log.info("summarize_transcript: chunking into %d part(s) (%d chars total)", len(chunks), len(transcript))
-    part_summaries = []
+    running_recap = ""
     for i, chunk in enumerate(chunks):
         if on_progress:
             on_progress(i + 1, len(chunks))
         part = await generate_chat([{"role": "user", "content": chunk}], system=_SUMMARIZE_TRANSCRIPT_CHUNK_SYSTEM, model=model)
         if part.startswith("[AI "):
             return part  # propagate the failure rather than weaving an error string into the recap
-        part_summaries.append(f"Part {i + 1}:\n{part}")
-    combined = "\n\n".join(part_summaries)
-    system = _with_instructions(_SUMMARIZE_TRANSCRIPT_REDUCE_SYSTEM, extra_instructions)
-    return await generate_chat([{"role": "user", "content": combined}], system=system, model=model)
+        running_recap = await _refine_recap(running_recap, part, model, extra_instructions)
+        if running_recap.startswith("[AI "):
+            return running_recap
+    return running_recap
 
 
 async def status() -> dict:
@@ -949,42 +975,116 @@ class WhisperError(Exception):
     and swallow it instead."""
 
 
-async def transcribe_audio(path: Path, glossary: str = "", language: str = "") -> str:
-    """POST an audio file to whisper.cpp's /inference endpoint and return the
-    transcript ("" for a successfully-transcribed silent clip). Raises
-    WhisperError — with the actual reason, not a generic message — if the
-    request to Whisper itself failed.
+def _collapse_repeated_transcript_lines(text: str, min_repeat: int = 4) -> str:
+    """whisper.cpp emits one newline-separated line per decoded segment
+    (see output_str() in examples/server/server.cpp — `result << text <<
+    "\\n"` per segment), so a degenerate repetition loop (see
+    transcribe_audio's docstring) shows up as the exact same line repeated
+    many times in a row. beam_size/entropy_thold already cut this down a
+    lot, but short runs (roughly 4-25 repeats observed in practice) still
+    slip through — a real conversation essentially never produces the
+    exact same segment text 4+ times back to back, so collapsing any such
+    run down to one copy is a safe, purely mechanical cleanup that needs
+    no model call and can't accidentally remove genuine short exchanges
+    (a person actually saying "Yes." a few times across a session doesn't
+    do it consecutively in the same breath)."""
+    lines = text.split("\n")
+    out = []
+    i, n = 0, len(lines)
+    while i < n:
+        j = i
+        while j < n and lines[j] == lines[i]:
+            j += 1
+        run_len = j - i
+        if run_len >= min_repeat:
+            out.append(lines[i])
+            _log.info("collapsed a %d-line repeated transcript run: %r", run_len, lines[i][:80])
+        else:
+            out.extend(lines[i:j])
+        i = j
+    return "\n".join(out)
 
-    `glossary` (a world's whisper_glossary — campaign NPC/place names and
-    invented terms) is passed through as whisper.cpp's "prompt" field, which
-    biases decoding toward those spellings/vocabulary without being
-    transcribed itself (this is whisper_full's initial_prompt, not a chat
-    prompt) — blank by default, so most callers are unaffected.
 
-    `language` (an ISO-639-1 code like "ru", or "auto"/"" for auto-detect) is
-    always sent as whisper.cpp's "language" field, even when blank — omitting
-    it entirely is NOT the same as auto-detect: whisper.cpp's server hardcodes
-    `language = "en"` as its own default (see examples/server/server.cpp) and
-    only overrides it when the client explicitly sends this field. Without
-    this, every clip gets silently forced through English decoding regardless
-    of what's actually being spoken — the likely cause of a non-English
-    session producing a garbled, looping transcript rather than a WhisperError
-    (Whisper "succeeds" throughout, it's just decoding the wrong language).
+# How long a clip has to be before it's worth paying ffmpeg's split
+# overhead — see _split_audio_into_chunks's docstring for why chunking
+# exists at all. 15 min: long enough that a typical short chat-attachment
+# voice memo or a live-transcript chunk never takes this path (no wasted
+# ffprobe/ffmpeg round trip for the common case), short enough that a
+# multi-hour session recording still gets split into a meaningful number
+# of pieces.
+WHISPER_CHUNK_SECONDS = float(os.getenv("WHISPER_CHUNK_SECONDS", str(10 * 60)))
+_WHISPER_CHUNK_MIN_DURATION = 15 * 60
 
-    Also always sends "beam_size"/"entropy_thold" overrides to reduce a
-    different, language-independent failure mode: whisper.cpp's default
-    greedy decoding (beam_size unset) can fall into a degenerate loop
-    repeating the same phrase for the rest of a long recording — and once
-    inside that loop the model becomes MORE confident in repeating itself,
-    so whisper.cpp's own low-confidence fallback (retrying at a higher
-    temperature when entropy/logprob dip below a threshold) frequently
-    never fires, since a confident repetition doesn't look "low quality"
-    by those two signals (whisper.cpp doesn't check compression-ratio /
-    repetitiveness directly the way openai/whisper's reference decoder
-    does — confirmed by reading examples/server/server.cpp). beam_size=5
-    (beam search instead of greedy) and a slightly raised entropy_thold
-    are the two settings the whisper.cpp community consistently cites for
-    this — see ggml-org/whisper.cpp discussion #2286 and issue #1507."""
+
+async def _probe_audio_duration(path: Path) -> float | None:
+    """ffprobe's own duration read, in seconds. None (not raised) if
+    ffprobe isn't installed or the file couldn't be probed — the caller
+    treats that identically to "short clip, don't bother chunking" rather
+    than failing transcription over a diagnostic step that was always
+    optional. (A pre-image-rebuild deployment without ffmpeg keeps
+    working exactly like before this feature existed.)"""
+    import asyncio
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return None
+        return float(out.decode().strip())
+    except Exception:
+        return None
+
+
+async def _split_audio_into_chunks(path: Path, chunk_seconds: float) -> tuple[list[Path], Path | None]:
+    """Split a long recording into ~chunk_seconds pieces via ffmpeg's
+    segment muxer (stream copy, no re-encode — fast and lossless) so a
+    whisper.cpp repetition loop (see transcribe_audio's docstring) can
+    only ever ruin one chunk's worth of audio instead of consuming the
+    rest of a multi-hour file, and so a caller can report real per-chunk
+    progress instead of one opaque multi-hour call.
+
+    Returns (chunk_paths, tmpdir_to_clean_up_or_None). On any failure —
+    ffmpeg missing, a crash, an unreadable output — returns ([path], None):
+    the ORIGINAL path, unchanged, with no tmpdir (so the caller must never
+    try to clean up a directory it didn't create; see the None sentinel).
+    Falling back to whole-file transcription is far better than failing
+    the job over a splitting step that was always meant to be a bonus."""
+    import asyncio
+    import shutil
+    import tempfile
+    tmpdir = Path(tempfile.mkdtemp(prefix="nd-whisper-chunks-"))
+    pattern = tmpdir / f"chunk_%04d{path.suffix}"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", str(path), "-f", "segment",
+            "-segment_time", str(int(chunk_seconds)), "-reset_timestamps", "1",
+            "-c", "copy", str(pattern),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            _log.warning("ffmpeg audio split failed (rc=%s): %s", proc.returncode, stderr.decode(errors="replace")[:500])
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return [path], None
+        chunks = sorted(tmpdir.glob(f"chunk_*{path.suffix}"))
+        if not chunks:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return [path], None
+        return chunks, tmpdir
+    except Exception as exc:
+        # Includes FileNotFoundError (ffmpeg not installed).
+        _log.warning("ffmpeg audio split errored: %s: %s", type(exc).__name__, exc)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return [path], None
+
+
+async def _transcribe_one_file(path: Path, glossary: str, language: str) -> str:
+    """The actual whisper.cpp /inference call for a single audio file —
+    see transcribe_audio's docstring for the parameters this sends and
+    why. Kept separate from transcribe_audio so the chunking orchestrator
+    below can call it once per chunk without duplicating any of this."""
     url = effective_whisper_url()
     if not url:
         raise WhisperError("Whisper isn't configured (no Whisper URL set) — see the AI page's 🎙 Whisper tab.")
@@ -1018,6 +1118,77 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "") -
     except Exception as exc:
         _log.warning("whisper returned an unreadable response: %s", exc)
         raise WhisperError(f"Whisper returned an unreadable response: {exc}") from exc
+
+
+async def transcribe_audio(path: Path, glossary: str = "", language: str = "", on_progress=None) -> str:
+    """Transcribe an audio file via whisper.cpp's /inference endpoint,
+    transparently splitting a long recording into chunks first (see
+    _split_audio_into_chunks) and collapsing any residual repetition-loop
+    runs (see _collapse_repeated_transcript_lines) before returning.
+    Returns "" for a successfully-transcribed silent clip. Raises
+    WhisperError — with the actual reason, not a generic message — if a
+    request to Whisper itself failed (a chunk's failure fails the whole
+    call; there's no partial-success return today).
+
+    `glossary` (a world's whisper_glossary — campaign NPC/place names and
+    invented terms) is passed through as whisper.cpp's "prompt" field, which
+    biases decoding toward those spellings/vocabulary without being
+    transcribed itself (this is whisper_full's initial_prompt, not a chat
+    prompt) — blank by default, so most callers are unaffected.
+
+    `language` (an ISO-639-1 code like "ru", or "auto"/"" for auto-detect) is
+    always sent as whisper.cpp's "language" field, even when blank — omitting
+    it entirely is NOT the same as auto-detect: whisper.cpp's server hardcodes
+    `language = "en"` as its own default (see examples/server/server.cpp) and
+    only overrides it when the client explicitly sends this field. Without
+    this, every clip gets silently forced through English decoding regardless
+    of what's actually being spoken — the likely cause of a non-English
+    session producing a garbled, looping transcript rather than a WhisperError
+    (Whisper "succeeds" throughout, it's just decoding the wrong language).
+
+    Also always sends "beam_size"/"entropy_thold" overrides (see
+    _transcribe_one_file) to reduce a different, language-independent
+    failure mode: whisper.cpp's default greedy decoding can fall into a
+    degenerate loop repeating the same phrase — and once inside that loop
+    the model becomes MORE confident in repeating itself, so whisper.cpp's
+    own low-confidence fallback rarely fires to escape it (it doesn't check
+    compression-ratio/repetitiveness the way openai/whisper's reference
+    decoder does — confirmed by reading examples/server/server.cpp).
+    beam_size=5 and a slightly raised entropy_thold are the two settings
+    the whisper.cpp community consistently cites for this — see
+    ggml-org/whisper.cpp discussion #2286 and issue #1507. Splitting the
+    audio itself (this function) and collapsing repeated lines afterward
+    are this app's own additional mitigations on top of those, since even
+    with both settings tuned a short repetition run can still slip through
+    on a long enough recording.
+
+    `on_progress(current, total)`, if given, is called before each
+    chunk's /inference call (current is 1-based) — same shape
+    summarize_transcript's own on_progress already uses, so a caller
+    (audio_jobs.py) can persist real progress with the same DB fields for
+    either phase. Never called at all for a clip short enough to skip
+    chunking."""
+    duration = await _probe_audio_duration(path)
+    if not duration or duration <= _WHISPER_CHUNK_MIN_DURATION:
+        text = await _transcribe_one_file(path, glossary, language)
+        return _collapse_repeated_transcript_lines(text)
+
+    chunks, tmpdir = await _split_audio_into_chunks(path, WHISPER_CHUNK_SECONDS)
+    if len(chunks) == 1:
+        text = await _transcribe_one_file(chunks[0], glossary, language)
+        return _collapse_repeated_transcript_lines(text)
+
+    try:
+        parts = []
+        for i, chunk_path in enumerate(chunks):
+            if on_progress:
+                on_progress(i + 1, len(chunks))
+            parts.append(await _transcribe_one_file(chunk_path, glossary, language))
+        return _collapse_repeated_transcript_lines("\n".join(p for p in parts if p))
+    finally:
+        if tmpdir:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # ── Whisper model download ──────────────────────────────────────────────────

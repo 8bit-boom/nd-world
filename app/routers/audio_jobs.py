@@ -36,8 +36,11 @@ def _job_to_dict(job: AudioJob) -> dict:
         "purpose_label": PURPOSE_LABELS.get(job.purpose, job.purpose),
         "filename": job.filename, "status": job.status, "error": job.error,
         "transcript": job.transcript, "recap": job.recap, "model": job.model or "",
+        "extra_instructions": job.extra_instructions or "",
         "attachment_url": job.attachment_url, "game_session_id": job.game_session_id,
         "chunk_current": job.chunk_current, "chunk_total": job.chunk_total,
+        "run_started_at": job.run_started_at.isoformat() if job.run_started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
     }
@@ -112,17 +115,19 @@ def api_audio_job_delete(job_id: int, request: Request, db: Session = Depends(ge
 
 @router.post("/api/audio-jobs/{job_id}/resummarize")
 async def api_audio_job_resummarize(
-    job_id: int, request: Request, model: str = Form(""),
+    job_id: int, request: Request, model: str = Form(""), extra_instructions: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Kick off re-running the summarization step against a job's already-
     saved transcript — no re-upload or re-transcription needed. Lets a GM
     fix a job that summarized with the wrong (or an unavailable) model, or
-    just try a different one, straight from the Background Jobs page.
-    Returns as soon as the job is marked "summarizing" — the actual work
-    runs as a background task (see start_resummarize_job's docstring for
-    why: running a long transcript's summarization inline here used to be
-    a routine way to trip the reverse proxy's own timeout). The caller
+    just try a different one, or add/change one-off instructions for this
+    pass (blank keeps whatever the job was last summarized with — see
+    start_resummarize_job's docstring), straight from the Background Jobs
+    page. Returns as soon as the job is marked "summarizing" — the actual
+    work runs as a background task (see start_resummarize_job's docstring
+    for why: running a long transcript's summarization inline here used to
+    be a routine way to trip the reverse proxy's own timeout). The caller
     polls the regular job list/status routes for the result, same as any
     other in-flight job on this page."""
     _require_gm(request)
@@ -133,7 +138,7 @@ async def api_audio_job_resummarize(
     if not job:
         raise HTTPException(404)
     try:
-        job = _audio_jobs.start_resummarize_job(job_id, model=model.strip())
+        job = _audio_jobs.start_resummarize_job(job_id, model=model.strip(), extra_instructions=extra_instructions)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return _job_to_dict(job)

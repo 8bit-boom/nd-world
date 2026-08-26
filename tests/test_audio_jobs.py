@@ -12,6 +12,7 @@ so the task actually gets a chance to progress between polls.
 import asyncio
 import io
 import time
+from datetime import datetime
 
 import pytest
 
@@ -1078,6 +1079,144 @@ def test_delete_route_cross_world_isolation(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.delete(f"/api/audio-jobs/{job_id}")
     assert r.status_code == 404
+
+
+# ── run_started_at / finished_at (Background Jobs' "took Xm Ys" display) ───
+#
+# run_started_at marks the start of the CURRENT run (reset on every
+# resummarize, unlike created_at which never changes) so a job resummarized
+# days after its first run doesn't report a multi-day "duration" for what
+# was mostly idle time between runs. finished_at is set once that run
+# reaches a terminal status.
+
+@pytest.mark.asyncio
+async def test_run_timing_set_on_successful_completion(client, seed, tmp_path):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    before = datetime.utcnow()
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    job = await _await_terminal(job_id)
+    after = datetime.utcnow()
+    assert job.run_started_at is not None
+    assert job.finished_at is not None
+    assert before <= job.run_started_at <= job.finished_at <= after
+
+
+@pytest.mark.asyncio
+async def test_run_timing_set_on_error_paths(client, seed, tmp_path, monkeypatch):
+    async def raising_transcribe(path, glossary="", **kwargs):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(ai_module, "transcribe_audio", raising_transcribe)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "error"
+    assert job.run_started_at is not None
+    assert job.finished_at is not None
+    assert job.finished_at >= job.run_started_at
+
+
+@pytest.mark.asyncio
+async def test_resummarize_resets_run_started_at_and_keeps_created_at(client, seed, tmp_path):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    first = await _await_terminal(job_id)
+    original_created_at = first.created_at
+    first_run_started_at = first.run_started_at
+    first_finished_at = first.finished_at
+
+    audio_jobs.start_resummarize_job(job_id)
+    second = await _await_terminal(job_id)
+    assert second.created_at == original_created_at  # original creation time never changes
+    assert second.run_started_at is not None
+    assert second.run_started_at >= first_finished_at  # a fresh run, not the original start
+    assert second.finished_at is not None
+    assert second.finished_at >= second.run_started_at
+
+
+def test_sweep_interrupted_jobs_sets_finished_at(client, seed):
+    db = SessionLocal()
+    try:
+        stuck = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="transcribing", filename="x.mp3")
+        db.add(stuck)
+        db.commit()
+        db.refresh(stuck)
+        stuck_id = stuck.id
+    finally:
+        db.close()
+
+    audio_jobs.sweep_interrupted_jobs()
+
+    db = SessionLocal()
+    try:
+        s = db.get(AudioJob, stuck_id)
+        assert s.status == "error"
+        assert s.finished_at is not None
+    finally:
+        db.close()
+
+
+def test_unified_status_route_exposes_timing_and_instructions_fields(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=seed.world_a.id, purpose="session_recap", status="done", filename="x.mp3",
+            extra_instructions="Focus on combat",
+            run_started_at=datetime.utcnow(), finished_at=datetime.utcnow(),
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["extra_instructions"] == "Focus on combat"
+    assert data["run_started_at"] is not None
+    assert data["finished_at"] is not None
+
+
+# ── Per-job extra_instructions on create_job ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_create_job_stores_extra_instructions(client, seed, tmp_path):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True, extra_instructions="Focus on combat",
+    )
+    job = await _await_terminal(job_id)
+    assert job.extra_instructions == "Focus on combat"
+
+
+@pytest.mark.asyncio
+async def test_create_job_blank_extra_instructions_stored_as_none(client, seed, tmp_path):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    job = await _await_terminal(job_id)
+    assert job.extra_instructions is None
 
 
 def test_resummarize_route_cross_world_isolation(client, seed):
