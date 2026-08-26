@@ -180,19 +180,63 @@ footer {
   border-radius: 8px;
 }
 .hero h1 {
+  /* --font-display (World.theme_json's own font, distinct from the
+     app-wide --font-heading used for every OTHER heading) lets a world's
+     hero title use a fancier/more decorative face than its regular
+     headings without that face showing up everywhere. */
+  font-family: var(--font-display, var(--font-heading, var(--font)));
   font-size: clamp(2.5rem, 8vw, 5rem);
   letter-spacing: .15em;
   line-height: 1;
   color: var(--neon);
-  text-shadow: 0 0 30px var(--neon), 0 0 60px var(--neon);
+  /* --hero-glow defaults to --neon (the accent) when a theme doesn't set
+     it explicitly — same color the un-themed app already glows this text
+     with, so this is a no-op for every world without a theme. */
+  text-shadow: 0 0 30px var(--hero-glow, var(--neon)), 0 0 60px var(--hero-glow, var(--neon));
 }
 .hero h1 span { color: var(--neon2); text-shadow: 0 0 30px var(--neon2); display: block; }
 .hero h1.hero-custom {
   font-size: clamp(1.8rem, 6vw, 3.2rem);
-  letter-spacing: .08em;
+  /* --hero-letter-spacing lets a decorative --font-display pull its own
+     glyphs close enough to visually touch (e.g. two round "O"s linking
+     into one shape) — the default here matches this app's un-themed
+     look, unchanged unless a theme sets a tighter/negative value. */
+  letter-spacing: var(--hero-letter-spacing, .08em);
   word-break: break-word;
 }
 .hero-sub { color: var(--text-dim); margin-top: .8rem; font-size: .9rem; letter-spacing: .1em; }
+
+/* A small radial-gradient sphere above the hero title — opt-in via
+   World.theme_json's hero_graphic ("moon" | "circle" | "none", default
+   "none" so this renders for no world unless a GM's theme asks for it).
+   Both variants derive their look from --hero-glow (falling back to
+   --neon) via color-mix(), so the same two rules work for any accent
+   color rather than being hand-tuned to one theme's gold. */
+.hero-graphic {
+  width: 92px;
+  height: 92px;
+  margin: 0 auto 1rem;
+  border-radius: 50%;
+}
+.hero-graphic--moon {
+  background: radial-gradient(
+    circle at 35% 32%,
+    color-mix(in srgb, var(--hero-glow, var(--neon)) 25%, white) 0%,
+    var(--hero-glow, var(--neon)) 45%,
+    color-mix(in srgb, var(--hero-glow, var(--neon)) 55%, black) 100%
+  );
+  box-shadow:
+    0 0 55px 10px color-mix(in srgb, var(--hero-glow, var(--neon)) 30%, transparent),
+    inset -15px -12px 25px rgba(0, 0, 0, .5);
+}
+.hero-graphic--circle {
+  background: radial-gradient(
+    circle at 50% 50%,
+    color-mix(in srgb, var(--hero-glow, var(--neon)) 40%, white) 0%,
+    var(--hero-glow, var(--neon)) 100%
+  );
+  box-shadow: 0 0 40px 8px color-mix(in srgb, var(--hero-glow, var(--neon)) 45%, transparent);
+}
 
 /* ── Dashboard ── */
 .dashboard {

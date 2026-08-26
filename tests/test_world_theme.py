@@ -83,6 +83,54 @@ def test_sanitize_theme_empty_input_returns_empty():
     assert _sanitize_theme({"unknown_key": "whatever"}) == {}
 
 
+# ── Hero-only fields: font_display, hero_letter_spacing, hero_glow_color,
+# hero_graphic — see World.theme_json's docstring for what each does. ──────
+
+def test_sanitize_theme_accepts_font_display():
+    cleaned = _sanitize_theme({"font_display": "'Cinzel Decorative', 'Cinzel', serif"})
+    assert cleaned == {"font_display": "'Cinzel Decorative', 'Cinzel', serif"}
+
+
+def test_sanitize_theme_drops_font_display_with_disallowed_characters():
+    cleaned = _sanitize_theme({"font_display": "serif; } body { background: url(javascript:alert(1))"})
+    assert cleaned == {}
+
+
+def test_sanitize_theme_accepts_valid_hero_letter_spacing_values():
+    for value in ("-0.02em", "0.08em", "2px", "-3px", "1.5rem", "normal"):
+        assert _sanitize_theme({"hero_letter_spacing": value}) == {"hero_letter_spacing": value}
+
+
+def test_sanitize_theme_rejects_invalid_hero_letter_spacing_values():
+    # Not one of the whitelisted units, or an outright injection attempt.
+    for value in ("2vh", "10%", "red; } body { display:none", "calc(1em + 2px)", ""):
+        assert _sanitize_theme({"hero_letter_spacing": value}) == {}
+
+
+def test_sanitize_theme_accepts_hero_glow_color():
+    cleaned = _sanitize_theme({"hero_glow_color": "#c9a25c"})
+    assert cleaned == {"hero_glow_color": "#c9a25c"}
+
+
+def test_sanitize_theme_rejects_invalid_hero_glow_color():
+    cleaned = _sanitize_theme({"hero_glow_color": "not-a-color"})
+    assert cleaned == {}
+
+
+def test_sanitize_theme_accepts_valid_hero_graphic_choices():
+    for value in ("moon", "circle", "none"):
+        assert _sanitize_theme({"hero_graphic": value}) == {"hero_graphic": value}
+
+
+def test_sanitize_theme_accepts_hero_graphic_case_insensitively():
+    assert _sanitize_theme({"hero_graphic": "MOON"}) == {"hero_graphic": "moon"}
+
+
+def test_sanitize_theme_rejects_unrecognized_hero_graphic_value():
+    cleaned = _sanitize_theme({"hero_graphic": "supernova"})
+    assert cleaned == {}
+
+
 # ── POST /worlds/{id}/theme/import ──────────────────────────────────────────
 
 _VALID_THEME = {
@@ -250,3 +298,171 @@ def test_theme_visible_to_players_reading_the_world(client, seed):
     r = client.get("/")
     assert r.status_code == 200
     assert "--bg: #0b0a10 !important" in r.text
+
+
+def test_page_renders_hero_only_css_overrides_when_set(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    _upload_theme(client, seed.world_a.id, {
+        "font_display": "'Cinzel Decorative', serif",
+        "hero_letter_spacing": "-0.02em",
+        "hero_glow_color": "#c9a25c",
+    })
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "--font-display: 'Cinzel Decorative', serif !important" in r.text
+    assert "--hero-letter-spacing: -0.02em !important" in r.text
+    assert "--hero-glow: #c9a25c !important" in r.text
+
+
+def test_page_omits_hero_only_css_overrides_when_unset(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "--font-display:" not in r.text
+    assert "--hero-glow:" not in r.text
+    assert "--hero-letter-spacing:" not in r.text
+
+
+# ── hero_graphic renders (or doesn't) via _hero.html ────────────────────────
+
+def test_home_page_renders_hero_graphic_div_when_theme_sets_one(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    _upload_theme(client, seed.world_a.id, {"hero_graphic": "moon"})
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert 'class="hero-graphic hero-graphic--moon"' in r.text
+
+
+def test_home_page_omits_hero_graphic_div_by_default(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "hero-graphic" not in r.text
+
+
+def test_home_page_omits_hero_graphic_div_when_theme_says_none(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    _upload_theme(client, seed.world_a.id, {"hero_graphic": "none"})
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "hero-graphic" not in r.text
+
+
+# ── World.hero_style — where the hero banner shows up ───────────────────────
+
+def test_hero_style_defaults_to_home(client, seed):
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        assert (w.hero_style or "home") == "home"
+    finally:
+        db.close()
+
+
+def test_home_page_shows_hero_by_default(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert 'class="hero"' in r.text
+
+
+def test_world_edit_saves_hero_style(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(
+        f"/worlds/{seed.world_a.id}/edit",
+        data={"name": seed.world_a.name, "hero_style": "everywhere"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        assert w.hero_style == "everywhere"
+    finally:
+        db.close()
+
+
+def test_world_edit_rejects_unrecognized_hero_style(client, seed):
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.hero_style = "home"
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(
+        f"/worlds/{seed.world_a.id}/edit",
+        data={"name": seed.world_a.name, "hero_style": "supernova"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        assert w.hero_style == "home"  # unchanged rather than storing garbage
+    finally:
+        db.close()
+
+
+def test_hero_style_off_hides_hero_on_home_page(client, seed):
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.hero_style = "off"
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert 'class="hero"' not in r.text
+
+
+def test_hero_style_everywhere_shows_hero_on_a_non_home_page(client, seed):
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.hero_style = "everywhere"
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/rules")
+    assert r.status_code == 200
+    assert 'class="hero"' in r.text
+
+
+def test_hero_style_everywhere_does_not_double_render_hero_on_home_page(client, seed):
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.hero_style = "everywhere"
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert r.status_code == 200
+    assert r.text.count('class="hero"') == 1
+
+
+def test_hero_style_home_does_not_render_hero_on_a_non_home_page(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/rules")
+    assert r.status_code == 200
+    assert 'class="hero"' not in r.text

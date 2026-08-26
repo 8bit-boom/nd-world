@@ -1,0 +1,11 @@
+<section class="hero"{% if world and world.home_background_url %} style="background-image:linear-gradient(rgba(5,5,10,.55),rgba(5,5,10,.55)),url('{{ world.home_background_url }}')"{% endif %}>
+  {% if world_theme.hero_graphic and world_theme.hero_graphic != 'none' %}
+  <div class="hero-graphic hero-graphic--{{ world_theme.hero_graphic }}"></div>
+  {% endif %}
+  {% if world and world.home_title %}
+  <h1 class="hero-custom">{{ world.home_title }}</h1>
+  {% else %}
+  <h1>WORLD<br><span>DATABASE</span></h1>
+  {% endif %}
+  <p class="hero-sub">{{ (world.home_subtitle if world and world.home_subtitle else 'Neon & Dragons worldbuilding codex') }}</p>
+</section>

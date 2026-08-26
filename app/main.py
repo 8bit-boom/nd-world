@@ -553,8 +553,8 @@ def _sanitize_accent(value: str, fallback: str = "#00f0ff") -> str:
 # block or a <link href>, same exposure _sanitize_accent above already
 # guards against for the single accent field, so every key gets its own
 # strict whitelist rather than trusting an uploaded file's shape.
-_THEME_COLOR_FIELDS = ("accent", "bg", "bg2", "bg3", "border", "neon2", "neon3", "yellow", "text", "text_dim")
-_THEME_FONT_FIELDS = ("font", "font_heading")
+_THEME_COLOR_FIELDS = ("accent", "bg", "bg2", "bg3", "border", "neon2", "neon3", "yellow", "text", "text_dim", "hero_glow_color")
+_THEME_FONT_FIELDS = ("font", "font_heading", "font_display")
 # Deliberately excludes " < > { } ; and backslash — font/font_heading are
 # rendered with the |safe filter in base.html (Jinja's normal HTML-entity
 # escaping would otherwise mangle the apostrophes a quoted font name needs,
@@ -571,6 +571,13 @@ _THEME_FONT_RE = re.compile(r"^[A-Za-z0-9 ,'\-]{1,120}$")
 # likely to actually be a real Google Fonts stylesheet request.
 _GOOGLE_FONTS_URL_RE = re.compile(r"^https://fonts\.googleapis\.com/css2\?[A-Za-z0-9:;,._=&+%/@\-]+$")
 _THEME_NAME_MAX = 120
+# A CSS letter-spacing value for the hero title only — e.g. "-0.03em" (tight/
+# negative, needed for a decorative font's glyphs to visually touch, like two
+# linked "O"s) or "2px". Digits/sign/dot/unit only, or the literal "normal" —
+# same rendered-raw-into-<style> exposure as the font fields above, so no
+# free-form value gets through unchecked.
+_HERO_LETTER_SPACING_RE = re.compile(r"^-?\d*\.?\d+(em|rem|px)$|^normal$")
+_HERO_GRAPHIC_CHOICES = ("moon", "circle", "none")
 
 
 def _sanitize_theme(data: dict) -> dict:
@@ -594,6 +601,12 @@ def _sanitize_theme(data: dict) -> dict:
     gf = str(data.get("google_fonts_url", "") or "").strip()
     if _GOOGLE_FONTS_URL_RE.match(gf):
         out["google_fonts_url"] = gf
+    ls = str(data.get("hero_letter_spacing", "") or "").strip()
+    if ls and _HERO_LETTER_SPACING_RE.match(ls):
+        out["hero_letter_spacing"] = ls
+    graphic = str(data.get("hero_graphic", "") or "").strip().lower()
+    if graphic in _HERO_GRAPHIC_CHOICES:
+        out["hero_graphic"] = graphic
     name = str(data.get("name", "") or "").strip()
     if name:
         out["name"] = name[:_THEME_NAME_MAX]
@@ -725,6 +738,7 @@ def world_edit_post(
     players_can_download_rules: Optional[str] = Form(None),
     players_can_download_entities: Optional[str] = Form(None),
     players_can_ask_ai: Optional[str] = Form(None),
+    hero_style: str = Form("home"),
     db: Session = Depends(get_db),
 ):
     w = db.get(World, world_id)
@@ -737,6 +751,8 @@ def world_edit_post(
     w.players_can_download_rules = bool(players_can_download_rules)
     w.players_can_download_entities = bool(players_can_download_entities)
     w.players_can_ask_ai = bool(players_can_ask_ai)
+    if hero_style in ("off", "home", "everywhere"):
+        w.hero_style = hero_style
     db.commit()
     return RedirectResponse("/worlds", status_code=303)
 

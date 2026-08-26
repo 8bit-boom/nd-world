@@ -44,7 +44,32 @@ class World(Base):
     # existing single-color field) intentionally isn't duplicated in here
     # — a theme file's own "accent" key, if present, is applied straight
     # to World.accent on import instead of being stored twice.
+    #
+    # Also carries a few hero-banner-only overrides, independent of the
+    # regular font/color fields above: font_display (a fancier font for
+    # just the big hero title, distinct from font_heading which applies to
+    # every other heading app-wide), hero_letter_spacing (a CSS
+    # letter-spacing value — deliberately exposed since a decorative
+    # display font's glyphs touching/overlapping, like linked "O"s, usually
+    # needs tight or negative spacing to happen at all), hero_glow_color
+    # (defaults to accent when unset), and hero_graphic ("moon" | "circle"
+    # | "none", default "none" — a small radial-gradient sphere rendered
+    # above the hero title; see static/style.css's .hero-graphic rules,
+    # which derive their look from --hero-glow via color-mix() so they
+    # adapt to any accent color rather than being hardcoded to one theme).
+    # Where the hero itself appears at all is NOT part of this JSON — see
+    # World.hero_style below, a plain per-world setting a GM toggles
+    # directly rather than re-uploading a theme file for.
     theme_json = Column(Text, nullable=True)
+    # Where the hero banner (big title + optional graphic — see index.html/
+    # _hero.html) shows up: "off" (nowhere, just the plain topbar — the
+    # pre-hero-toggle look), "home" (only on the world's home page — the
+    # default, and the ONLY behavior that existed before this column, so
+    # this default preserves every existing world's current appearance
+    # unchanged), or "everywhere" (base.html renders it above the topbar on
+    # every page; index.html then skips its own copy to avoid a double
+    # hero on the home page specifically — see both templates).
+    hero_style = Column(String(16), default="home")
     # Whether player members can see each other's Player Characters (read-only) or only their own.
     players_see_party = Column(Boolean, default=True)
     # Whether players may use the "Download as .md" button on the Rules page.

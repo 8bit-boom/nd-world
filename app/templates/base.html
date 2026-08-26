@@ -13,7 +13,7 @@
       } catch(e) {}
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=19"/>
+  <link rel="stylesheet" href="/static/style.css?v=20"/>
   {% if world %}
   {% if world_theme.google_fonts_url %}<link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="stylesheet" href="{{ world_theme.google_fonts_url }}">{% endif %}
@@ -30,10 +30,16 @@
     {% if world_theme.text_dim %}--text-dim: {{ world_theme.text_dim }} !important;{% endif %}
     {% if world_theme.font %}--font: {{ world_theme.font|safe }} !important;{% endif %}
     {% if world_theme.font_heading %}--font-heading: {{ world_theme.font_heading|safe }} !important;{% endif %}
+    {% if world_theme.font_display %}--font-display: {{ world_theme.font_display|safe }} !important;{% endif %}
+    {% if world_theme.hero_glow_color %}--hero-glow: {{ world_theme.hero_glow_color }} !important;{% endif %}
+    {% if world_theme.hero_letter_spacing %}--hero-letter-spacing: {{ world_theme.hero_letter_spacing }} !important;{% endif %}
   }</style>
   {% endif %}
 </head>
 <body>
+{% if world and world.hero_style == 'everywhere' %}
+{% include "_hero.html" %}
+{% endif %}
 <nav class="topbar">
   <a class="logo" href="{{ '/'|wq }}">N&amp;D <span>WORLD</span></a>
 

@@ -312,6 +312,48 @@ def test_heals_pre_home_customization_worlds_schema(tmp_path, monkeypatch):
     engine.dispose()
 
 
+def test_heals_pre_hero_style_worlds_schema(tmp_path, monkeypatch):
+    """A worlds table predating hero_style (the GM's off/home/everywhere
+    toggle for where the hero banner shows up) must heal onto the same
+    default the column itself declares ('home') — the one behavior that
+    already existed for every world before this toggle was added — not
+    NULL, which base.html/index.html's `or 'home'` fallbacks handle too,
+    but the column default is the first line of defense."""
+    db_path = tmp_path / "pre_hero_style.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE worlds (id INTEGER PRIMARY KEY, name VARCHAR(256) NOT NULL, "
+            "slug VARCHAR(64) UNIQUE NOT NULL, description VARCHAR(512), accent VARCHAR(16), "
+            "players_see_party BOOLEAN, rules_md TEXT, home_welcome_md TEXT, "
+            "home_sections_json TEXT, custom_kinds_json TEXT, created_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO worlds (id, name, slug, home_sections_json, custom_kinds_json) "
+            "VALUES (1, 'Pre-existing World', 'pre-existing-world', '[]', '[]')"
+        ))
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        world_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(worlds)")).fetchall()}
+    assert "hero_style" in world_cols
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, 1)
+        assert w.hero_style == "home"
+    finally:
+        db.close()
+
+    engine.dispose()
+
+
 def test_heals_pre_spotlight_worlds_schema(tmp_path, monkeypatch):
     """A worlds table predating spotlight_image_url/spotlight_label/
     spotlight_version (added for the "send an album image to players as a

@@ -44,6 +44,15 @@
              style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_ask_ai %}checked{% endif %}>
       <label for="players-ask-ai" style="margin:0">Players can use the "Ask AI" panel on entity pages</label>
     </div>
+    <div class="form-group">
+      <label>Hero banner</label>
+      <select name="hero_style" style="width:auto;min-width:220px">
+        <option value="home" {% if (edit_world.hero_style or 'home') == 'home' %}selected{% endif %}>Home page only (default)</option>
+        <option value="everywhere" {% if edit_world.hero_style == 'everywhere' %}selected{% endif %}>Every page</option>
+        <option value="off" {% if edit_world.hero_style == 'off' %}selected{% endif %}>Off (plain header everywhere)</option>
+      </select>
+      <p style="color:var(--text-dim);font-size:.78rem;margin-top:.3rem">Where the big title banner shows up — and, if your Visual Theme below sets one, its glowing graphic.</p>
+    </div>
     <div class="form-actions">
       <button type="submit" class="btn-primary">Save changes</button>
       <a href="/worlds" class="btn-cancel">Cancel</a>
@@ -58,7 +67,11 @@
   <div class="cf-section" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem">
     <p style="color:var(--text-dim);font-size:.85rem;margin-bottom:.75rem">
       Import a JSON theme file to reskin this world's palette and fonts (colors, headings) —
-      applies everywhere in the app, on top of the accent colour above.
+      applies everywhere in the app, on top of the accent colour above. A theme can also set
+      a fancier <code>font_display</code> just for the hero title, a tight/negative
+      <code>hero_letter_spacing</code> (lets a decorative font's glyphs touch, e.g. two linked
+      "O"s), a <code>hero_glow_color</code>, and a <code>hero_graphic</code> ("moon", "circle",
+      or "none") — see <code>docs/world-theme-gothic-moonlight.json</code> for an example.
       {% if edit_theme %}Current theme: <strong style="color:var(--text)">{{ edit_theme.name or 'Untitled' }}</strong>.{% else %}No theme imported yet — the app uses its default look.{% endif %}
     </p>
     <form method="post" action="/worlds/{{ edit_world.id }}/theme/import" enctype="multipart/form-data"

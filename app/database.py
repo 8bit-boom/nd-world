@@ -575,6 +575,8 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN players_can_ask_ai BOOLEAN DEFAULT 0"))
             if "theme_json" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN theme_json TEXT"))
+            if "hero_style" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN hero_style VARCHAR(16) DEFAULT 'home'"))
             if "whisper_glossary" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN whisper_glossary TEXT"))
             if "whisper_language" not in w_cols:
