@@ -949,7 +949,7 @@ class WhisperError(Exception):
     and swallow it instead."""
 
 
-async def transcribe_audio(path: Path, glossary: str = "") -> str:
+async def transcribe_audio(path: Path, glossary: str = "", language: str = "") -> str:
     """POST an audio file to whisper.cpp's /inference endpoint and return the
     transcript ("" for a successfully-transcribed silent clip). Raises
     WhisperError — with the actual reason, not a generic message — if the
@@ -959,11 +959,21 @@ async def transcribe_audio(path: Path, glossary: str = "") -> str:
     invented terms) is passed through as whisper.cpp's "prompt" field, which
     biases decoding toward those spellings/vocabulary without being
     transcribed itself (this is whisper_full's initial_prompt, not a chat
-    prompt) — blank by default, so most callers are unaffected."""
+    prompt) — blank by default, so most callers are unaffected.
+
+    `language` (an ISO-639-1 code like "ru", or "auto"/"" for auto-detect) is
+    always sent as whisper.cpp's "language" field, even when blank — omitting
+    it entirely is NOT the same as auto-detect: whisper.cpp's server hardcodes
+    `language = "en"` as its own default (see examples/server/server.cpp) and
+    only overrides it when the client explicitly sends this field. Without
+    this, every clip gets silently forced through English decoding regardless
+    of what's actually being spoken — the likely cause of a non-English
+    session producing a garbled, looping transcript rather than a WhisperError
+    (Whisper "succeeds" throughout, it's just decoding the wrong language)."""
     url = effective_whisper_url()
     if not url:
         raise WhisperError("Whisper isn't configured (no Whisper URL set) — see the AI page's 🎙 Whisper tab.")
-    data = {"response_format": "json"}
+    data = {"response_format": "json", "language": language.strip() or "auto"}
     if glossary.strip():
         data["prompt"] = glossary.strip()
     try:

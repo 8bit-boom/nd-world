@@ -53,6 +53,16 @@ class World(Base):
     # not instance-wide (unlike ai_models.json's GM-personal-toolkit
     # settings) since it's campaign content. NULL/"" = no hint sent.
     whisper_glossary = Column(Text, nullable=True)
+    # ISO-639-1 code (e.g. "ru", "es") a GM can pin so Whisper decodes every
+    # session-recording transcription (background job, one-shot upload, and
+    # live recording) as that language instead of auto-detecting per clip —
+    # faster and more accurate for a table that's consistently non-English.
+    # NULL/"" = auto-detect (transcribe_audio's own default when this isn't
+    # set is "auto", never Whisper's server-side "en" fallback — see its
+    # docstring in app/ai.py). Same per-world scope as whisper_glossary;
+    # one-off chat attachments don't use this, matching that field's own
+    # established scope.
+    whisper_language = Column(String(16), nullable=True)
     # Free-text steering for the recap-writing step specifically (not
     # transcription — Whisper itself has no notion of "instructions", only
     # the glossary hint above) — e.g. "Write summaries in Spanish" or "Use a

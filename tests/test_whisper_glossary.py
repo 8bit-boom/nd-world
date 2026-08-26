@@ -149,7 +149,7 @@ async def test_background_job_uses_worlds_glossary(client, seed, tmp_path, monke
 
     captured = {}
 
-    async def fake_transcribe(path, glossary=""):
+    async def fake_transcribe(path, glossary="", **kwargs):
         captured["glossary"] = glossary
         return "the party met elyndra"
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)

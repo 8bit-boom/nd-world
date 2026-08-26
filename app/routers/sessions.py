@@ -49,7 +49,7 @@ def _session_audio_jobs_dir() -> Path:
     return Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads" / "session_audio" / "_jobs"
 
 
-async def _transcribe_chunk(file: UploadFile, max_bytes: int = MAX_LIVE_CHUNK_BYTES, glossary: str = "") -> str:
+async def _transcribe_chunk(file: UploadFile, max_bytes: int = MAX_LIVE_CHUNK_BYTES, glossary: str = "", language: str = "") -> str:
     """Save an uploaded audio file to a temp path just long enough to run it
     through Whisper, then delete it — shared by the one-shot
     summarize-from-audio route and the live-transcript chunk-append route
@@ -62,13 +62,17 @@ async def _transcribe_chunk(file: UploadFile, max_bytes: int = MAX_LIVE_CHUNK_BY
         tmp.write(raw)
         tmp_path = Path(tmp.name)
     try:
-        return await _ai_module.transcribe_audio(tmp_path, glossary=glossary)
+        return await _ai_module.transcribe_audio(tmp_path, glossary=glossary, language=language)
     finally:
         tmp_path.unlink(missing_ok=True)
 
 
 def _glossary_for_world(world) -> str:
     return (world.whisper_glossary or "").strip() if world else ""
+
+
+def _language_for_world(world) -> str:
+    return (world.whisper_language or "").strip() if world else ""
 
 
 def _recap_instructions_for_world(world) -> str:
@@ -373,7 +377,7 @@ async def api_summarize_from_audio(
     keep the recording should upload it to the Audio Library separately."""
     world, _ = get_world_ctx(request, db, active_world)
     try:
-        transcript = await _transcribe_chunk(file, max_bytes=MAX_SESSION_AUDIO_BYTES, glossary=_glossary_for_world(world))
+        transcript = await _transcribe_chunk(file, max_bytes=MAX_SESSION_AUDIO_BYTES, glossary=_glossary_for_world(world), language=_language_for_world(world))
     except _ai_module.WhisperError as exc:
         raise HTTPException(400, str(exc)) from exc
     if not transcript:
@@ -421,7 +425,7 @@ async def api_summarize_from_audio_complete(
     try:
         reassemble_upload_chunks(_session_audio_chunks_root(), upload_id, total_chunks, tmp_path, max_bytes=MAX_SESSION_AUDIO_BYTES)
         try:
-            transcript = await _ai_module.transcribe_audio(tmp_path, glossary=_glossary_for_world(world))
+            transcript = await _ai_module.transcribe_audio(tmp_path, glossary=_glossary_for_world(world), language=_language_for_world(world))
         except _ai_module.WhisperError as exc:
             raise HTTPException(400, str(exc)) from exc
     finally:
@@ -578,7 +582,7 @@ async def api_live_transcript_append(session_id: int, file: UploadFile = File(..
         raise HTTPException(404)
     world = db.get(World, gs.world_id)
     try:
-        chunk_text = (await _transcribe_chunk(file, glossary=_glossary_for_world(world))).strip()
+        chunk_text = (await _transcribe_chunk(file, glossary=_glossary_for_world(world), language=_language_for_world(world))).strip()
     except _ai_module.WhisperError as exc:
         raise HTTPException(400, str(exc)) from exc
     if chunk_text:

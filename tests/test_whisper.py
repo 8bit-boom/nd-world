@@ -151,6 +151,43 @@ async def test_transcribe_audio_success(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_transcribe_audio_defaults_language_to_auto_not_omitted(tmp_path, monkeypatch):
+    """whisper.cpp's own server hardcodes language="en" as its default and
+    only overrides it when the client sends this field explicitly — so
+    omitting it entirely silently forces English decoding on every clip,
+    garbling (and often triggering repeating-phrase loops in) non-English
+    audio. transcribe_audio must always send an explicit "language" field,
+    defaulting to "auto" rather than leaving whisper.cpp's own "en" default
+    in effect."""
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    captured = _patch_httpx(monkeypatch, response=_FakeResponse(200, {"text": "ok"}))
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00")
+    await ai_module.transcribe_audio(f)
+    assert captured["post_kwargs"]["data"]["language"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_sends_pinned_language(tmp_path, monkeypatch):
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    captured = _patch_httpx(monkeypatch, response=_FakeResponse(200, {"text": "ok"}))
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00")
+    await ai_module.transcribe_audio(f, language="ru")
+    assert captured["post_kwargs"]["data"]["language"] == "ru"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_blank_language_still_defaults_to_auto(tmp_path, monkeypatch):
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    captured = _patch_httpx(monkeypatch, response=_FakeResponse(200, {"text": "ok"}))
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00")
+    await ai_module.transcribe_audio(f, language="")
+    assert captured["post_kwargs"]["data"]["language"] == "auto"
+
+
+@pytest.mark.asyncio
 async def test_transcribe_audio_http_error_raises_with_detail(tmp_path, monkeypatch):
     ai_module.set_whisper_override("http://127.0.0.1:8090")
     _patch_httpx(monkeypatch, response=_FakeResponse(500, text="internal error"))

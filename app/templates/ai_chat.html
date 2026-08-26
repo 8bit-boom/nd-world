@@ -1629,6 +1629,47 @@
     </div>
   </div>
   <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-top:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Spoken language</div>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
+      Pin the language spoken at the table for every session-recording transcription (background jobs, one-shot upload, and live recording). Auto-detect works for most single-language sessions, but pinning is faster and avoids the garbled, repeating-phrase transcripts Whisper can produce when it misjudges the language. One-off chat attachments don't use this.
+    </div>
+    <select id="wl-select" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .6rem;font-family:inherit;font-size:.82rem;border-radius:4px;box-sizing:border-box">
+      <option value="">Auto-detect</option>
+      <option value="en">English</option>
+      <option value="ru">Russian</option>
+      <option value="es">Spanish</option>
+      <option value="fr">French</option>
+      <option value="de">German</option>
+      <option value="it">Italian</option>
+      <option value="pt">Portuguese</option>
+      <option value="pl">Polish</option>
+      <option value="uk">Ukrainian</option>
+      <option value="zh">Chinese</option>
+      <option value="ja">Japanese</option>
+      <option value="ko">Korean</option>
+      <option value="nl">Dutch</option>
+      <option value="sv">Swedish</option>
+      <option value="tr">Turkish</option>
+      <option value="ar">Arabic</option>
+      <option value="hi">Hindi</option>
+      <option value="fi">Finnish</option>
+      <option value="no">Norwegian</option>
+      <option value="da">Danish</option>
+      <option value="cs">Czech</option>
+      <option value="el">Greek</option>
+      <option value="he">Hebrew</option>
+      <option value="th">Thai</option>
+      <option value="vi">Vietnamese</option>
+      <option value="id">Indonesian</option>
+      <option value="ro">Romanian</option>
+      <option value="hu">Hungarian</option>
+    </select>
+    <div style="display:flex;align-items:center;gap:.6rem;margin-top:.5rem">
+      <button class="ig-btn" id="wl-save-btn" onclick="wlSaveLanguage()" style="border-color:var(--neon);color:var(--neon)">💾 Save</button>
+      <span id="wl-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+    </div>
+  </div>
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-top:1rem">
     <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Name glossary</div>
     <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
       Campaign NPC names, places, and invented terms — hinted to Whisper on every session-recording transcription (background jobs, one-shot upload, and live recording) so it doesn't autocorrect them to real words. One-off chat attachments don't use this. Comma or newline separated.
@@ -3052,7 +3093,7 @@ function switchTab(tab) {
   });
 
   if (tab === 'models')  { mpLoad(); wpLoadStatus(); }
-  if (tab === 'whisper') { wtLoadStatus(); wgLoadGlossary(); riLoadInstructions(); }
+  if (tab === 'whisper') { wtLoadStatus(); wlLoadLanguage(); wgLoadGlossary(); riLoadInstructions(); }
   if (tab === 'starred') igLoadStarred();
   if (tab === 'image')   dlmLoadDownloaded();
 }
@@ -5147,6 +5188,36 @@ async function wtLoadStatus() {
     el.textContent = lines.join('\n');
   } catch (e) {
     el.textContent = '✗ Could not check status: ' + e.message;
+  }
+}
+
+async function wlLoadLanguage() {
+  const sel = document.getElementById('wl-select');
+  if (!sel) return;
+  try {
+    const d = await fetch('/api/ai/whisper/language').then(r => r.json());
+    sel.value = d.language || '';
+  } catch (e) { /* leave at Auto-detect — save will still work */ }
+}
+
+async function wlSaveLanguage() {
+  const btn = document.getElementById('wl-save-btn');
+  const status = document.getElementById('wl-status');
+  const sel = document.getElementById('wl-select');
+  btn.disabled = true;
+  status.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/ai/whisper/language', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ language: sel.value }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    status.textContent = '✓ Saved';
+    setTimeout(() => { if (status.textContent === '✓ Saved') status.textContent = ''; }, 2000);
+  } catch (e) {
+    status.textContent = '✗ Could not save: ' + e.message;
+  } finally {
+    btn.disabled = false;
   }
 }
 

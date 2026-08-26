@@ -1029,6 +1029,30 @@ def api_whisper_glossary_save(body: WhisperGlossaryBody, request: Request, db=De
     return {"ok": True, "glossary": world.whisper_glossary}
 
 
+@router.get("/whisper/language")
+def api_whisper_language_get(request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    return {"language": world.whisper_language or ""}
+
+
+class WhisperLanguageBody(BaseModel):
+    language: str = ""
+
+
+@router.post("/whisper/language")
+def api_whisper_language_save(body: WhisperLanguageBody, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    world.whisper_language = body.language.strip()
+    db.commit()
+    return {"ok": True, "language": world.whisper_language}
+
+
 @router.get("/recap-instructions")
 def api_recap_instructions_get(request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
     _require_gm(request)

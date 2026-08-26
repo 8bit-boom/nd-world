@@ -536,6 +536,8 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/ai/whisper/activate` | GM | Switches the active Whisper model: writes a marker file the "whisper" Compose service reads on its next (re)start, and — if `hot_swap` (default true) and the file passes a basic format sanity check — also asks the running server to switch immediately via its own `/load` endpoint, no restart needed. Falls back to `restart_required: true` if the hot-swap can't happen. |
 | GET | `/api/ai/whisper/glossary` | GM | The active world's Whisper name glossary (campaign vocabulary hinted to every session-recording transcription). |
 | POST | `/api/ai/whisper/glossary` | GM | Saves the world's Whisper glossary. |
+| GET | `/api/ai/whisper/language` | GM | The active world's pinned Whisper spoken-language code (e.g. `"ru"`), or `""` for auto-detect — applied to every session-recording transcription. |
+| POST | `/api/ai/whisper/language` | GM | Saves the world's pinned Whisper language. |
 | GET | `/api/ai/recap-instructions` | GM | The active world's extra steering for the recap-writing step (e.g. "write in Spanish") — applied to every session-recording recap, not transcription itself. |
 | POST | `/api/ai/recap-instructions` | GM | Saves the world's recap instructions. |
 | POST/GET | `/api/ai/chat/jobs` | GM | Runs a chat completion as a durable background job instead of live-streaming — same request shape as `/api/ai/stream` minus streaming; POST creates, GET lists recent jobs for the active world. |
