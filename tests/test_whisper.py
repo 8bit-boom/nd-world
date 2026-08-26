@@ -188,6 +188,26 @@ async def test_transcribe_audio_blank_language_still_defaults_to_auto(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_transcribe_audio_sends_anti_repetition_decode_params(tmp_path, monkeypatch):
+    """Language-independent failure mode: whisper.cpp's default greedy
+    decoding can fall into a degenerate loop repeating the same phrase for
+    the rest of a long recording, and its confidence-based fallback rarely
+    escapes it since a confident repetition doesn't look "low quality" by
+    entropy/logprob alone. beam_size (switches to beam search) and a
+    slightly raised entropy_thold are the community-documented mitigations
+    (ggml-org/whisper.cpp discussion #2286, issue #1507) — must be sent on
+    every request, not just when a GM opts in."""
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    captured = _patch_httpx(monkeypatch, response=_FakeResponse(200, {"text": "ok"}))
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00")
+    await ai_module.transcribe_audio(f)
+    data = captured["post_kwargs"]["data"]
+    assert data["beam_size"] == "5"
+    assert data["entropy_thold"] == "2.6"
+
+
+@pytest.mark.asyncio
 async def test_transcribe_audio_http_error_raises_with_detail(tmp_path, monkeypatch):
     ai_module.set_whisper_override("http://127.0.0.1:8090")
     _patch_httpx(monkeypatch, response=_FakeResponse(500, text="internal error"))

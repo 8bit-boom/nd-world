@@ -969,11 +969,31 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "") -
     this, every clip gets silently forced through English decoding regardless
     of what's actually being spoken — the likely cause of a non-English
     session producing a garbled, looping transcript rather than a WhisperError
-    (Whisper "succeeds" throughout, it's just decoding the wrong language)."""
+    (Whisper "succeeds" throughout, it's just decoding the wrong language).
+
+    Also always sends "beam_size"/"entropy_thold" overrides to reduce a
+    different, language-independent failure mode: whisper.cpp's default
+    greedy decoding (beam_size unset) can fall into a degenerate loop
+    repeating the same phrase for the rest of a long recording — and once
+    inside that loop the model becomes MORE confident in repeating itself,
+    so whisper.cpp's own low-confidence fallback (retrying at a higher
+    temperature when entropy/logprob dip below a threshold) frequently
+    never fires, since a confident repetition doesn't look "low quality"
+    by those two signals (whisper.cpp doesn't check compression-ratio /
+    repetitiveness directly the way openai/whisper's reference decoder
+    does — confirmed by reading examples/server/server.cpp). beam_size=5
+    (beam search instead of greedy) and a slightly raised entropy_thold
+    are the two settings the whisper.cpp community consistently cites for
+    this — see ggml-org/whisper.cpp discussion #2286 and issue #1507."""
     url = effective_whisper_url()
     if not url:
         raise WhisperError("Whisper isn't configured (no Whisper URL set) — see the AI page's 🎙 Whisper tab.")
-    data = {"response_format": "json", "language": language.strip() or "auto"}
+    data = {
+        "response_format": "json",
+        "language": language.strip() or "auto",
+        "beam_size": "5",
+        "entropy_thold": "2.6",
+    }
     if glossary.strip():
         data["prompt"] = glossary.strip()
     try:
