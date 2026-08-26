@@ -54,7 +54,7 @@ def _poll_until_terminal(client, url, timeout=5.0):
 
 @pytest.fixture(autouse=True)
 def _fake_ai(monkeypatch):
-    async def fake_transcribe(path, glossary=""):
+    async def fake_transcribe(path, glossary="", **kwargs):
         assert path.is_file(), f"audio should still exist while transcribing: {path}"
         return "the party met elena at the bazaar"
 
@@ -106,6 +106,28 @@ async def test_create_job_runs_to_completion_session_recap(client, seed, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_create_job_marks_error_when_summarize_returns_failure_sentinel(client, seed, tmp_path, monkeypatch):
+    # summarize_transcript never raises on an Ollama-side failure — it
+    # returns a "[AI ...]" sentinel string instead. Without checking for
+    # that, a failed summarize would land as status="done" with the error
+    # text sitting in the recap field, same gap as resummarize_job had.
+    async def failing_summarize(transcript, model="", extra_instructions="", **kwargs):
+        return "[AI error: Ollama unreachable]"
+
+    monkeypatch.setattr(ai_module, "summarize_transcript", failing_summarize)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "error"
+    assert job.error == "[AI error: Ollama unreachable]"
+
+
+@pytest.mark.asyncio
 async def test_create_job_attachment_purpose_has_no_recap_and_keeps_file(client, seed, tmp_path):
     audio = tmp_path / "clip.mp3"
     audio.write_bytes(b"fake audio bytes")
@@ -123,7 +145,7 @@ async def test_create_job_attachment_purpose_has_no_recap_and_keeps_file(client,
 
 @pytest.mark.asyncio
 async def test_job_ends_in_error_on_empty_transcript(client, seed, tmp_path, monkeypatch):
-    async def empty_transcribe(path, glossary=""):
+    async def empty_transcribe(path, glossary="", **kwargs):
         return ""
     monkeypatch.setattr(ai_module, "transcribe_audio", empty_transcribe)
 
@@ -140,7 +162,7 @@ async def test_job_ends_in_error_on_empty_transcript(client, seed, tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_job_ends_in_error_on_exception(client, seed, tmp_path, monkeypatch):
-    async def raising_transcribe(path, glossary=""):
+    async def raising_transcribe(path, glossary="", **kwargs):
         raise RuntimeError("boom")
     monkeypatch.setattr(ai_module, "transcribe_audio", raising_transcribe)
 
@@ -168,7 +190,7 @@ async def test_chunk_progress_visible_mid_summarize_and_cleared_when_done(client
     release_second_chunk = asyncio.Event()
     call_count = {"n": 0}
 
-    async def fake_transcribe(path, glossary=""):
+    async def fake_transcribe(path, glossary="", **kwargs):
         return ("The party explored the ruins. " * 30).strip()
 
     async def fake_generate_chat(messages, system="", model="", options=None):
@@ -491,7 +513,7 @@ def _hanging_transcribe(monkeypatch):
     request lands."""
     release = asyncio.Event()
 
-    async def hang(path, glossary=""):
+    async def hang(path, glossary="", **kwargs):
         await release.wait()
         return "unused"
 
@@ -698,7 +720,9 @@ async def test_resummarize_job_uses_saved_transcript_and_new_model(client, seed,
 
     monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize_capture)
 
-    updated = await audio_jobs.resummarize_job(job_id, model="llama3.1")
+    started = audio_jobs.start_resummarize_job(job_id, model="llama3.1")
+    assert started.status == "summarizing"
+    updated = await _await_terminal(job_id)
     assert updated.status == "done"
     assert updated.recap == "A different, better recap."
     assert updated.model == "llama3.1"
@@ -723,7 +747,8 @@ async def test_resummarize_job_falls_back_to_the_jobs_own_model_when_blank(clien
         return "recap"
 
     monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize_capture)
-    await audio_jobs.resummarize_job(job_id, model="")
+    audio_jobs.start_resummarize_job(job_id, model="")
+    await _await_terminal(job_id)
     assert captured["model"] == "gemma4:26b"
 
 
@@ -737,12 +762,12 @@ async def test_resummarize_job_rejects_attachment_purpose(client, seed, tmp_path
     )
     await _await_terminal(job_id)
     with pytest.raises(ValueError):
-        await audio_jobs.resummarize_job(job_id)
+        audio_jobs.start_resummarize_job(job_id)
 
 
 @pytest.mark.asyncio
 async def test_resummarize_job_rejects_missing_transcript(client, seed, tmp_path, monkeypatch):
-    async def empty_transcribe(path, glossary=""):
+    async def empty_transcribe(path, glossary="", **kwargs):
         return ""
 
     monkeypatch.setattr(ai_module, "transcribe_audio", empty_transcribe)
@@ -755,13 +780,39 @@ async def test_resummarize_job_rejects_missing_transcript(client, seed, tmp_path
     job = await _await_terminal(job_id)
     assert job.status == "error"
     with pytest.raises(ValueError):
-        await audio_jobs.resummarize_job(job_id)
+        audio_jobs.start_resummarize_job(job_id)
 
 
 @pytest.mark.asyncio
 async def test_resummarize_job_rejects_unknown_job(client, seed):
     with pytest.raises(ValueError):
-        await audio_jobs.resummarize_job(999999)
+        audio_jobs.start_resummarize_job(999999)
+
+
+@pytest.mark.asyncio
+async def test_resummarize_job_marks_error_when_summarize_returns_failure_sentinel(client, seed, tmp_path, monkeypatch):
+    # summarize_transcript never raises on an Ollama-side failure — it
+    # returns a "[AI ...]" sentinel string instead. Without checking for
+    # that, a failed re-summarize would land as status="done" with the
+    # error text sitting in the recap field.
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done"
+
+    async def failing_summarize(transcript, model="", extra_instructions="", **kwargs):
+        return "[AI error: Ollama 404: model 'gemma4:26b' not found]"
+
+    monkeypatch.setattr(ai_module, "summarize_transcript", failing_summarize)
+
+    audio_jobs.start_resummarize_job(job_id, model="gemma4:26b")
+    updated = await _await_terminal(job_id)
+    assert updated.status == "error"
+    assert updated.error == "[AI error: Ollama 404: model 'gemma4:26b' not found]"
 
 
 def test_session_job_create_accepts_a_model_field(client, seed):
@@ -821,11 +872,86 @@ def test_resummarize_route_round_trip(client, seed, monkeypatch):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.post(f"/api/audio-jobs/{job_id}/resummarize", data={"model": "llama3.1"})
     assert r.status_code == 200, r.text
-    data = r.json()
+    # The route only starts the job now — see start_resummarize_job's
+    # docstring for why running the whole (possibly multi-minute)
+    # map-reduce summarize inline used to risk tripping a reverse proxy's
+    # own timeout. The caller polls for the actual result.
+    assert r.json()["status"] == "summarizing"
+
+    data = _poll_until_terminal(client, f"/api/audio-jobs/{job_id}")
     assert data["status"] == "done"
     assert data["recap"] == "Recap via llama3.1: hello there"
     assert data["model"] == "llama3.1"
     assert data["error"] == ""
+
+
+def test_resummarize_route_does_not_block_on_a_slow_summarize(client, seed, monkeypatch):
+    """Direct regression test for the reported bug: retrying a summary used
+    to await the whole (possibly multi-minute) map-reduce summarize inline
+    inside this one request, which a reverse proxy's own timeout could trip
+    long before Ollama finished (surfaced to the GM as a raw "HTTP 524").
+    A slow-but-bounded fake here proves the HTTP response comes back well
+    before summarize_transcript finishes, not just eventually."""
+    release = asyncio.Event()
+
+    async def slow_summarize(transcript, model="", extra_instructions="", **kwargs):
+        await release.wait()
+        return "recap"
+
+    monkeypatch.setattr(ai_module, "summarize_transcript", slow_summarize)
+
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done",
+                        filename="x.mp3", transcript="hello there")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    try:
+        r = client.post(f"/api/audio-jobs/{job_id}/resummarize", data={"model": ""})
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "summarizing"
+    finally:
+        release.set()  # let the background task finish so nothing lingers past this test
+    _poll_until_terminal(client, f"/api/audio-jobs/{job_id}")
+
+
+def test_resummarize_route_rejects_a_job_already_in_progress(client, seed, monkeypatch):
+    release = asyncio.Event()
+
+    async def slow_summarize(transcript, model="", extra_instructions="", **kwargs):
+        await release.wait()
+        return "recap"
+
+    monkeypatch.setattr(ai_module, "summarize_transcript", slow_summarize)
+
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done",
+                        filename="x.mp3", transcript="hello there")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    try:
+        r1 = client.post(f"/api/audio-jobs/{job_id}/resummarize", data={"model": ""})
+        assert r1.status_code == 200, r1.text
+        r2 = client.post(f"/api/audio-jobs/{job_id}/resummarize", data={"model": ""})
+        assert r2.status_code == 400
+    finally:
+        release.set()
+    _poll_until_terminal(client, f"/api/audio-jobs/{job_id}")
 
 
 def test_resummarize_route_rejects_job_with_no_transcript_yet(client, seed):

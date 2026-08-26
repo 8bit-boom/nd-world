@@ -115,10 +115,16 @@ async def api_audio_job_resummarize(
     job_id: int, request: Request, model: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
-    """Re-run the summarization step against a job's already-saved
-    transcript — no re-upload or re-transcription needed. Lets a GM fix a
-    job that summarized with the wrong (or an unavailable) model, or just
-    try a different one, straight from the Background Jobs page."""
+    """Kick off re-running the summarization step against a job's already-
+    saved transcript — no re-upload or re-transcription needed. Lets a GM
+    fix a job that summarized with the wrong (or an unavailable) model, or
+    just try a different one, straight from the Background Jobs page.
+    Returns as soon as the job is marked "summarizing" — the actual work
+    runs as a background task (see start_resummarize_job's docstring for
+    why: running a long transcript's summarization inline here used to be
+    a routine way to trip the reverse proxy's own timeout). The caller
+    polls the regular job list/status routes for the result, same as any
+    other in-flight job on this page."""
     _require_gm(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
@@ -127,7 +133,7 @@ async def api_audio_job_resummarize(
     if not job:
         raise HTTPException(404)
     try:
-        job = await _audio_jobs.resummarize_job(job_id, model=model.strip())
+        job = _audio_jobs.start_resummarize_job(job_id, model=model.strip())
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return _job_to_dict(job)

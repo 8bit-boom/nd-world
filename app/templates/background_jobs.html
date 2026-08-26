@@ -254,9 +254,13 @@ async function bgDeleteJob(jobId, btn) {
 }
 
 async function bgResummarize(jobId, model, btn) {
+  // Only starts the job here — it now runs as a background task (a long
+  // transcript's map-reduce summarize can take several minutes, too long
+  // for this request/response to sit open through a reverse proxy without
+  // risking its own timeout), so this just kicks it off and hands over to
+  // the regular poll loop, same as bgCancelJob/bgDeleteJob above.
   btn.disabled = true;
-  const origText = btn.textContent;
-  btn.textContent = 'Summarizing…';
+  btn.textContent = 'Starting…';
   try {
     const res = await fetch(`/api/audio-jobs/${jobId}/resummarize`, {
       method: 'POST',
@@ -270,7 +274,7 @@ async function bgResummarize(jobId, model, btn) {
   } catch (e) {
     alert('Failed to re-summarize: ' + e.message);
     btn.disabled = false;
-    btn.textContent = origText;
+    btn.textContent = '🔁 Retry summary';
   }
   bgRefresh();
 }

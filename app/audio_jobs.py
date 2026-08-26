@@ -23,6 +23,17 @@ _running_tasks: dict[int, asyncio.Task] = {}
 IN_PROGRESS_STATUSES = ("pending", "transcribing", "summarizing")
 
 
+def _looks_like_failure(result: str) -> bool:
+    """summarize_transcript() never raises on an Ollama-side failure — it
+    returns a "[AI ...]"/"[empty response ...]" sentinel string instead
+    (see generate_chat's own docstring in app/ai.py). Same check as
+    chat_jobs.py's identical helper, kept as its own small copy here rather
+    than shared, matching this codebase's per-module convention — without
+    it a failed summarize would get marked "done" with the error text
+    sitting in the recap field."""
+    return result.startswith("[AI ") or result.startswith("[empty response")
+
+
 def create_job(
     world_id: int, purpose: str, filename: str, audio_path: Path,
     delete_after: bool = True, game_session_id: Optional[int] = None,
@@ -69,6 +80,15 @@ def _glossary_for_world(world_id: int) -> str:
         db.close()
 
 
+def _whisper_language_for_world(world_id: int) -> str:
+    db = SessionLocal()
+    try:
+        w = db.get(World, world_id)
+        return (w.whisper_language or "").strip() if w else ""
+    finally:
+        db.close()
+
+
 def _recap_instructions_for_world(world_id: int) -> str:
     db = SessionLocal()
     try:
@@ -94,8 +114,9 @@ async def _run_job(job_id: int, audio_path: Path, purpose: str, delete_after: bo
     try:
         _set(status="transcribing")
         glossary = _glossary_for_world(world_id) if world_id else ""
+        language = _whisper_language_for_world(world_id) if world_id else ""
         try:
-            transcript = await _ai_module.transcribe_audio(audio_path, glossary=glossary)
+            transcript = await _ai_module.transcribe_audio(audio_path, glossary=glossary, language=language)
         except _ai_module.WhisperError as exc:
             _set(status="error", error=str(exc))
             return
@@ -114,7 +135,10 @@ async def _run_job(job_id: int, audio_path: Path, purpose: str, delete_after: bo
                 transcript, model=model, extra_instructions=instructions,
                 on_progress=lambda current, total: _set(chunk_current=current, chunk_total=total),
             )
-            _set(status="done", recap=recap, chunk_current=None, chunk_total=None)
+            if _looks_like_failure(recap):
+                _set(status="error", error=recap, chunk_current=None, chunk_total=None)
+            else:
+                _set(status="done", recap=recap, chunk_current=None, chunk_total=None)
         else:
             _set(status="done")
     except asyncio.CancelledError:
@@ -162,16 +186,21 @@ def delete_job(job_id: int) -> bool:
         db.close()
 
 
-async def resummarize_job(job_id: int, model: str = "") -> AudioJob:
-    """Re-run just the summarization step against a job's already-saved
-    transcript, optionally with a different model — for when the first
-    summary failed (wrong/unpulled model, Ollama unreachable) or a GM just
-    wants a second pass, without re-uploading or re-transcribing the audio.
-    Runs inline (awaited directly by the caller, same as every other manual
-    summarize route in app/routers/sessions.py) rather than as a tracked
-    background task, since summarizing an already-transcribed text is fast
-    compared to transcription itself. Raises ValueError with a caller-
-    displayable message on any invalid state."""
+def start_resummarize_job(job_id: int, model: str = "") -> AudioJob:
+    """Kick off re-running just the summarization step against a job's
+    already-saved transcript, optionally with a different model — for when
+    the first summary failed (wrong/unpulled model, Ollama unreachable) or
+    a GM just wants a second pass, without re-uploading or re-transcribing
+    the audio. Returns immediately once the job is marked "summarizing";
+    the actual work runs as a tracked background task, same engine as
+    create_job/_run_job — a long transcript's map-reduce chunking (see
+    summarize_transcript) can take several minutes, and running that
+    inline inside the request/response cycle used to make it a routine way
+    to trip a reverse proxy's own timeout (a raw 524 from Cloudflare, not
+    even an error nd-world itself produced) long before Ollama finished.
+    Raises ValueError with a caller-displayable message on any invalid
+    state — checked synchronously up front so a bad request still fails
+    fast rather than only surfacing after the caller starts polling."""
     db = SessionLocal()
     try:
         job = db.get(AudioJob, job_id)
@@ -181,29 +210,65 @@ async def resummarize_job(job_id: int, model: str = "") -> AudioJob:
             raise ValueError("Only session-recap jobs can be re-summarized.")
         if not job.transcript:
             raise ValueError("This job has no transcript yet to summarize.")
-        transcript = job.transcript
+        if job.status in IN_PROGRESS_STATUSES:
+            raise ValueError("This job is already in progress.")
+        world_id = job.world_id
         chosen_model = model or job.model or ""
-        instructions = _recap_instructions_for_world(job.world_id) if job.world_id else ""
+        job.status = "summarizing"
+        job.error = ""
+        job.chunk_current = None
+        job.chunk_total = None
+        db.commit()
+        db.refresh(job)
+        job_snapshot = job
     finally:
         db.close()
 
-    recap = await _ai_module.summarize_transcript(transcript, model=chosen_model, extra_instructions=instructions)
+    task = asyncio.create_task(_run_resummarize_job(job_id, chosen_model, world_id))
+    _running_tasks[job_id] = task
+    task.add_done_callback(lambda t: _running_tasks.pop(job_id, None))
+    return job_snapshot
+
+
+async def _run_resummarize_job(job_id: int, model: str, world_id: Optional[int]) -> None:
+    def _set(**fields):
+        db = SessionLocal()
+        try:
+            job = db.get(AudioJob, job_id)
+            if not job:
+                return
+            for k, v in fields.items():
+                setattr(job, k, v)
+            db.commit()
+        finally:
+            db.close()
 
     db = SessionLocal()
     try:
         job = db.get(AudioJob, job_id)
-        if not job:
-            raise ValueError("Job not found.")
-        job.status = "done"
-        job.recap = recap
-        job.error = ""
-        if chosen_model:
-            job.model = chosen_model
-        db.commit()
-        db.refresh(job)
-        return job
+        transcript = job.transcript if job else ""
     finally:
         db.close()
+
+    try:
+        instructions = _recap_instructions_for_world(world_id) if world_id else ""
+        recap = await _ai_module.summarize_transcript(
+            transcript, model=model, extra_instructions=instructions,
+            on_progress=lambda current, total: _set(chunk_current=current, chunk_total=total),
+        )
+        fields = {"chunk_current": None, "chunk_total": None}
+        if model:
+            fields["model"] = model
+        if _looks_like_failure(recap):
+            _set(status="error", error=recap, **fields)
+        else:
+            _set(status="done", recap=recap, error="", **fields)
+    except asyncio.CancelledError:
+        _set(status="cancelled", error="Cancelled by GM.")
+        raise
+    except Exception as exc:
+        _log.exception("audio job %s resummarize failed", job_id)
+        _set(status="error", error=f"{type(exc).__name__}: {exc}")
 
 
 def sweep_interrupted_jobs() -> None:
