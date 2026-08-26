@@ -545,6 +545,60 @@ def _sanitize_accent(value: str, fallback: str = "#00f0ff") -> str:
     value = (value or "").strip()
     return value if _ACCENT_HEX_RE.match(value) else fallback
 
+
+# ── World visual themes (World.theme_json) ──────────────────────────────────
+# A GM-importable JSON preset overriding static/style.css's existing CSS
+# custom properties (see World.theme_json's own docstring in app/models.py)
+# — every value here ends up interpolated directly into base.html's <style>
+# block or a <link href>, same exposure _sanitize_accent above already
+# guards against for the single accent field, so every key gets its own
+# strict whitelist rather than trusting an uploaded file's shape.
+_THEME_COLOR_FIELDS = ("accent", "bg", "bg2", "bg3", "border", "neon2", "neon3", "yellow", "text", "text_dim")
+_THEME_FONT_FIELDS = ("font", "font_heading")
+# Deliberately excludes " < > { } ; and backslash — font/font_heading are
+# rendered with the |safe filter in base.html (Jinja's normal HTML-entity
+# escaping would otherwise mangle the apostrophes a quoted font name needs,
+# e.g. 'EB Garamond' -> &#39;EB Garamond&#39;, which isn't valid CSS), so
+# this pattern is the ONLY thing standing between an uploaded theme file and
+# breaking out of the <style> block or closing it early — same rationale as
+# _ACCENT_HEX_RE, just for a field that needs a wider character set than a
+# hex color.
+_THEME_FONT_RE = re.compile(r"^[A-Za-z0-9 ,'\-]{1,120}$")
+# Restricted to the actual css2 endpoint with a safe querystring charset —
+# rendered into an <a href> so normal Jinja attribute-escaping (unlike the
+# font fields above) already blocks a quote/angle-bracket breakout even
+# without this, but a URL this narrowly shaped is also just much more
+# likely to actually be a real Google Fonts stylesheet request.
+_GOOGLE_FONTS_URL_RE = re.compile(r"^https://fonts\.googleapis\.com/css2\?[A-Za-z0-9:;,._=&+%/@\-]+$")
+_THEME_NAME_MAX = 120
+
+
+def _sanitize_theme(data: dict) -> dict:
+    """Whitelist a GM-uploaded theme JSON object down to only the fields
+    and value shapes it's safe to store/render. Unknown keys are dropped
+    silently (lets a theme file carry extra human-readable metadata
+    without erroring); a color/font field that fails its own pattern is
+    also just dropped rather than failing the whole import, so one typo
+    doesn't nuke an otherwise-good theme — the corresponding CSS variable
+    simply keeps its existing default. Returns {} if nothing in `data`
+    was actually a recognized, valid field."""
+    out = {}
+    for key in _THEME_COLOR_FIELDS:
+        v = str(data.get(key, "") or "").strip()
+        if v and _ACCENT_HEX_RE.match(v):
+            out[key] = v
+    for key in _THEME_FONT_FIELDS:
+        v = str(data.get(key, "") or "").strip()
+        if v and _THEME_FONT_RE.match(v):
+            out[key] = v
+    gf = str(data.get("google_fonts_url", "") or "").strip()
+    if _GOOGLE_FONTS_URL_RE.match(gf):
+        out["google_fonts_url"] = gf
+    name = str(data.get("name", "") or "").strip()
+    if name:
+        out["name"] = name[:_THEME_NAME_MAX]
+    return out
+
 @app.get("/worlds", response_class=HTMLResponse)
 def worlds_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     worlds = _visible_worlds(request, db)
@@ -685,6 +739,43 @@ def world_edit_post(
     w.players_can_ask_ai = bool(players_can_ask_ai)
     db.commit()
     return RedirectResponse("/worlds", status_code=303)
+
+
+@app.post("/worlds/{world_id}/theme/import")
+async def world_theme_import(world_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Import a visual theme from a JSON file (see World.theme_json's
+    docstring for the recognized shape) — same "upload a JSON file, get
+    redirected back" pattern as /worlds/{id}/rules/import. A theme's own
+    "accent" key, if present, is applied straight to World.accent (the
+    existing single-color field, already used everywhere accent shows up)
+    rather than being duplicated inside theme_json."""
+    w = db.get(World, world_id)
+    if not w:
+        raise HTTPException(404)
+    try:
+        payload = json.loads((await file.read()).decode("utf-8"))
+    except Exception:
+        raise HTTPException(400, "Not valid JSON")
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "JSON must be an object")
+    cleaned = _sanitize_theme(payload)
+    if not cleaned:
+        raise HTTPException(400, "No recognized theme fields found — see the Visual Theme section for the expected shape")
+    if "accent" in cleaned:
+        w.accent = cleaned.pop("accent")
+    w.theme_json = json.dumps(cleaned)
+    db.commit()
+    return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
+
+
+@app.post("/worlds/{world_id}/theme/clear")
+def world_theme_clear(world_id: int, db: Session = Depends(get_db)):
+    w = db.get(World, world_id)
+    if not w:
+        raise HTTPException(404)
+    w.theme_json = None
+    db.commit()
+    return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
 
 
 # ── Invites & Members ──────────────────────────────────────────────────────────

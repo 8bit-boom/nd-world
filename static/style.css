@@ -78,6 +78,14 @@ body {
   flex-direction: column;
 }
 
+/* No h1-h6 rule anywhere in this file sets font-family — they've always
+   just inherited body's --font. A world's imported theme (see
+   base.html/World.theme_json) can set a distinct --font-heading (e.g. a
+   display serif) without touching every existing heading rule below;
+   --font-heading is undefined by default, so this falls back to --font
+   (unchanged look) whenever a world hasn't set one. */
+h1, h2, h3, h4, h5, h6 { font-family: var(--font-heading, var(--font)); }
+
 a { color: var(--neon); text-decoration: none; }
 a:hover { text-decoration: underline; }
 

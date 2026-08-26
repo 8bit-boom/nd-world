@@ -23,6 +23,8 @@ CASES = [
     ("POST", "/api/ai/chat", False),
     ("GET", "/admin/backup.zip", False),
     ("POST", "/worlds/1/delete", False),
+    ("POST", "/worlds/1/theme/import", False),
+    ("POST", "/worlds/1/theme/clear", False),
     ("GET", "/worlds", False),
     ("GET", "/settings", False),
     ("POST", "/settings/system", False),

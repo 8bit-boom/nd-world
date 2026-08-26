@@ -30,6 +30,21 @@ class World(Base):
     slug = Column(String(64), unique=True, nullable=False)
     description = Column(String(512), nullable=True)
     accent = Column(String(16), default="#00f0ff")
+    # A GM-importable visual palette/font preset — JSON object with any of
+    # bg/bg2/bg3/border/neon2/neon3/yellow/text/text_dim (hex colors),
+    # font/font_heading (CSS font-family strings), google_fonts_url, and
+    # name — see _sanitize_theme() in app/main.py for the whitelist that
+    # validates a file before it's stored here, and base.html for how each
+    # field maps onto static/style.css's existing CSS custom properties
+    # (the same ones the accent/dark-dim-light theme system above already
+    # uses everywhere, so setting this reskins the whole app for this
+    # world with no per-template changes). NULL/"" = no override; every
+    # field is independently optional, so a theme can override just the
+    # palette, just the fonts, or both. `accent` alone (this world's
+    # existing single-color field) intentionally isn't duplicated in here
+    # — a theme file's own "accent" key, if present, is applied straight
+    # to World.accent on import instead of being stored twice.
+    theme_json = Column(Text, nullable=True)
     # Whether player members can see each other's Player Characters (read-only) or only their own.
     players_see_party = Column(Boolean, default=True)
     # Whether players may use the "Download as .md" button on the Rules page.

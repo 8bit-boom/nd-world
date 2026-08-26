@@ -13,8 +13,25 @@
       } catch(e) {}
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=18"/>
-  {% if world %}<style>:root { --neon: {{ world.accent }} !important; }</style>{% endif %}
+  <link rel="stylesheet" href="/static/style.css?v=19"/>
+  {% if world %}
+  {% if world_theme.google_fonts_url %}<link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="{{ world_theme.google_fonts_url }}">{% endif %}
+  <style>:root {
+    --neon: {{ world.accent }} !important;
+    {% if world_theme.bg %}--bg: {{ world_theme.bg }} !important;{% endif %}
+    {% if world_theme.bg2 %}--bg2: {{ world_theme.bg2 }} !important;{% endif %}
+    {% if world_theme.bg3 %}--bg3: {{ world_theme.bg3 }} !important;{% endif %}
+    {% if world_theme.border %}--border: {{ world_theme.border }} !important;{% endif %}
+    {% if world_theme.neon2 %}--neon2: {{ world_theme.neon2 }} !important;{% endif %}
+    {% if world_theme.neon3 %}--neon3: {{ world_theme.neon3 }} !important;{% endif %}
+    {% if world_theme.yellow %}--yellow: {{ world_theme.yellow }} !important;{% endif %}
+    {% if world_theme.text %}--text: {{ world_theme.text }} !important;{% endif %}
+    {% if world_theme.text_dim %}--text-dim: {{ world_theme.text_dim }} !important;{% endif %}
+    {% if world_theme.font %}--font: {{ world_theme.font|safe }} !important;{% endif %}
+    {% if world_theme.font_heading %}--font-heading: {{ world_theme.font_heading|safe }} !important;{% endif %}
+  }</style>
+  {% endif %}
 </head>
 <body>
 <nav class="topbar">

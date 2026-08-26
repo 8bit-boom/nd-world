@@ -55,9 +55,27 @@ def _kinds_context_processor(request: Request) -> dict:
             "dreamlands_enabled": bool(settings.dreamlands_enabled),
             "king_in_yellow_enabled": bool(settings.king_in_yellow_enabled),
             "nav_menus": nav_menus, "nav_ungrouped_items": nav_ungrouped_items,
+            "world_theme": _parse_world_theme(world),
         }
     finally:
         db.close()
+
+
+def _parse_world_theme(world) -> dict:
+    """world.theme_json, pre-parsed once per request so base.html can just
+    read world_theme.bg/.font/etc. without a template-side JSON filter.
+    Already-validated by _sanitize_theme() at import time (see app/main.py)
+    — this just guards against a JSON parse failure on a row written by
+    something other than that import path (a raw DB edit, a future
+    migration) rather than re-validating every field again per render."""
+    raw = getattr(world, "theme_json", None) if world else None
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 
 BASE_DIR = Path(__file__).parent.parent

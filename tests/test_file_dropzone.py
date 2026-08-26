@@ -99,6 +99,7 @@ def test_dropzone_rollout_across_every_touched_route(client, seed):
         f"/characters/{standard_pc_id}/edit",              # characters/form.html
         f"/worlds/{seed.world_a.id}/home/edit",            # home_edit.html
         f"/worlds/{seed.world_a.id}/rules/edit",           # rules_edit.html
+        f"/worlds/{seed.world_a.id}/edit",                 # world_edit.html (visual theme import)
         "/export",                                         # export_hub.html
         "/tables",                                         # tables/list.html
         "/import",                                         # import.html

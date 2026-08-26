@@ -53,6 +53,30 @@
     </div>
   </form>
 
+  {% set edit_theme = edit_world.theme_json|fromjson if edit_world.theme_json else {} %}
+  <h2 style="margin-top:2rem">🎨 Visual Theme</h2>
+  <div class="cf-section" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem">
+    <p style="color:var(--text-dim);font-size:.85rem;margin-bottom:.75rem">
+      Import a JSON theme file to reskin this world's palette and fonts (colors, headings) —
+      applies everywhere in the app, on top of the accent colour above.
+      {% if edit_theme %}Current theme: <strong style="color:var(--text)">{{ edit_theme.name or 'Untitled' }}</strong>.{% else %}No theme imported yet — the app uses its default look.{% endif %}
+    </p>
+    <form method="post" action="/worlds/{{ edit_world.id }}/theme/import" enctype="multipart/form-data"
+          style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;padding:.75rem 1rem;background:var(--bg3);border:1px solid var(--border);border-radius:6px">
+      <label style="font-size:.82rem;color:var(--text-dim)">Import from JSON</label>
+      <div class="form-dropzone" data-dropzone style="padding:.3rem .6rem;display:inline-block">
+        <input type="file" name="file" accept="application/json,.json" required/>
+      </div>
+      <button type="submit" class="btn-cancel">Upload &amp; Apply</button>
+      {% if edit_theme %}
+      <span style="flex:1"></span>
+      <a href="#" onclick="document.getElementById('theme-clear-form').submit();return false;"
+         style="color:var(--neon2);font-size:.82rem">Clear theme</a>
+      {% endif %}
+    </form>
+    <form id="theme-clear-form" method="post" action="/worlds/{{ edit_world.id }}/theme/clear" style="display:none"></form>
+  </div>
+
   <h2 style="margin-top:2rem">👥 Players</h2>
   <div class="cf-section" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem">
     <div class="cf-section-title" style="font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.75rem">Members</div>
@@ -150,4 +174,5 @@ function copyInviteLink(el) {
   });
 }
 </script>
+<script src="/static/js/file-dropzone.js"></script>
 {% endblock %}

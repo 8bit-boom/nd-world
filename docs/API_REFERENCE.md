@@ -114,8 +114,10 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/worlds/new` | GM | Creates a new `World`. |
 | POST | `/worlds/{world_id}/delete` | GM | Deletes a world and every row/file it owns (entities, characters, maps, schematics, uploads, etc.) — irreversible. |
 | GET | `/worlds/switch/{slug}` | Player | Sets the `active_world` cookie to this world and redirects to `?next=` (or `/`) — the world-switcher dropdown's target. |
-| GET | `/worlds/{world_id}/edit` | GM | World settings form: name, accent color, party-visibility toggle, invites, members list. |
+| GET | `/worlds/{world_id}/edit` | GM | World settings form: name, accent color, visual theme, party-visibility toggle, invites, members list. |
 | POST | `/worlds/{world_id}/edit` | GM | Saves world settings. |
+| POST | `/worlds/{world_id}/theme/import` | GM | Imports a visual theme (palette/font overrides) from a JSON file — see `docs/world-theme-gothic-moonlight.json` for an example and `World.theme_json` in `app/models.py` for the recognized shape. Unrecognized/invalid fields are dropped rather than failing the whole import; a `"accent"` key in the file is applied to `World.accent` instead of being stored in the theme itself. |
+| POST | `/worlds/{world_id}/theme/clear` | GM | Removes the imported theme, reverting to the app's default look (still keeps the plain accent color). |
 | POST | `/worlds/{world_id}/invites/new` | GM | Creates a new `InviteCode` (optionally time- or use-limited). |
 | POST | `/worlds/{world_id}/invites/{invite_id}/revoke` | GM | Revokes an unused invite link. |
 | POST | `/worlds/{world_id}/members/{user_id}/remove` | GM | Removes a player's `WorldMembership` from this world. |
