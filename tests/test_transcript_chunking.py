@@ -108,6 +108,38 @@ def test_chunk_budget_has_a_floor_for_a_tiny_configured_num_ctx(monkeypatch):
     assert budget == 500 * ai_module._CHARS_PER_TOKEN_ESTIMATE
 
 
+def test_chunk_budget_shrinks_for_a_long_system_prompt(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_ctx": 8192})
+    without_system = ai_module._transcript_chunk_char_budget()
+    long_system = "x" * 4000  # a GM's recap_instructions is unbounded free text
+    with_system = ai_module._transcript_chunk_char_budget("", long_system)
+    assert with_system < without_system
+
+
+# ── _chars_per_token_estimate ───────────────────────────────────────────────
+
+def test_chars_per_token_defaults_for_english_text():
+    assert ai_module._chars_per_token_estimate("just some plain English words here") == ai_module._CHARS_PER_TOKEN_ESTIMATE
+
+
+def test_chars_per_token_defaults_for_empty_text():
+    assert ai_module._chars_per_token_estimate("") == ai_module._CHARS_PER_TOKEN_ESTIMATE
+
+
+def test_chars_per_token_is_tighter_for_non_ascii_script():
+    cyrillic = "Партия вошла в подземелье и обнаружила древний алтарь. " * 20
+    assert ai_module._chars_per_token_estimate(cyrillic) == 2
+
+
+def test_chunk_budget_uses_a_tighter_estimate_for_non_english_transcript(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_ctx": 8192})
+    english = "just some plain English words here"
+    cyrillic = "Партия вошла в подземелье и обнаружила древний алтарь. " * 20
+    english_budget = ai_module._transcript_chunk_char_budget(english)
+    cyrillic_budget = ai_module._transcript_chunk_char_budget(cyrillic)
+    assert cyrillic_budget < english_budget
+
+
 # ── summarize_transcript's chunked, append-only orchestration ──────────────
 
 @pytest.mark.asyncio
@@ -127,7 +159,7 @@ async def test_short_transcript_uses_a_single_call(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_long_transcript_summarizes_each_part_and_joins_them(monkeypatch):
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
     calls = []
 
     async def fake_generate_chat(messages, system="", model=""):
@@ -152,7 +184,7 @@ async def test_long_transcript_summarizes_each_part_and_joins_them(monkeypatch):
 async def test_part_summaries_receive_only_their_own_chunk_never_the_whole_transcript(monkeypatch):
     """The whole point of chunking: no single call ever sees more than one
     chunk's worth of raw transcript text, regardless of session length."""
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
     seen_lengths = []
 
     async def fake_generate_chat(messages, system="", model=""):
@@ -173,7 +205,7 @@ async def test_recap_instructions_applied_to_every_part_call(monkeypatch):
     — tone/language/focus) has to reach every part call directly, since
     each part's summary is final as written — there's no later call where
     it could be applied instead."""
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
     systems_seen = []
 
     async def fake_generate_chat(messages, system="", model=""):
@@ -195,7 +227,7 @@ async def test_on_progress_called_once_per_part_before_each_call(monkeypatch):
     all — see transcribe_audio) — audio_jobs.py persists it to the job row
     so a GM sees real "part N of M" progress instead of a bare
     "summarizing" placeholder."""
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
 
     async def fake_generate_chat(messages, system="", model=""):
         return "part summary"
@@ -233,7 +265,7 @@ async def test_long_transcript_propagates_a_part_summary_failure(monkeypatch):
         return "part summary"
 
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
     long_transcript = ("The party explored the ruins. " * 30).strip()
     result = await ai_module.summarize_transcript(long_transcript)
 
@@ -261,7 +293,7 @@ async def test_long_transcript_propagates_an_empty_response_part_failure(monkeyp
         return "part summary"
 
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
     long_transcript = ("The party explored the ruins. " * 30).strip()
     result = await ai_module.summarize_transcript(long_transcript)
 
@@ -284,7 +316,7 @@ async def test_long_transcript_aborts_on_a_whitespace_only_part(monkeypatch):
         return "part summary"
 
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
     long_transcript = ("The party explored the ruins. " * 30).strip()
     result = await ai_module.summarize_transcript(long_transcript)
 

@@ -127,7 +127,7 @@ async def test_summarize_transcript_chunked_path_applies_instructions_to_every_p
         systems_seen.append(system)
         return "part summary"
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 20)
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 20)
 
     long_transcript = "word " * 30  # forces >1 chunk at a 20-char budget
     await ai_module.summarize_transcript(long_transcript, extra_instructions="write in French")

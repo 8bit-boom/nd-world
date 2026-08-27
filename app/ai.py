@@ -715,10 +715,35 @@ _DEFAULT_ASSUMED_CTX_TOKENS = 4096
 _CHUNK_RESERVED_TOKENS = 1200  # system prompt + response budget + margin
 
 
-def _transcript_chunk_char_budget() -> int:
+def _chars_per_token_estimate(text: str) -> int:
+    """English averages ~4 chars/token, which is what _CHARS_PER_TOKEN_ESTIMATE
+    assumes — but scripts without ASCII word-spacing (Cyrillic, CJK, etc.)
+    tokenize much denser, commonly ~1.5-2.5 chars/token. Sampling the start
+    of the text for non-ASCII content keeps the char budget from silently
+    overshooting the model's real context window on exactly the non-English
+    sessions this app is built to support."""
+    sample = text[:4000]
+    if not sample:
+        return _CHARS_PER_TOKEN_ESTIMATE
+    non_ascii = sum(1 for c in sample if ord(c) > 127)
+    if non_ascii / len(sample) > 0.3:
+        return 2
+    return _CHARS_PER_TOKEN_ESTIMATE
+
+
+def _transcript_chunk_char_budget(transcript: str = "", system: str = "") -> int:
+    """`transcript` (a sample of it) drives the chars-per-token estimate;
+    `system` is the system prompt that will accompany each chunk — the GM's
+    World.recap_instructions is free text with no length limit, so a long
+    standing instruction could itself eat meaningfully into the context
+    window that _CHUNK_RESERVED_TOKENS budgets for. Both are optional and
+    default to the same fixed English/no-system-prompt assumption this
+    function used before they were accounted for."""
     ctx_tokens = effective_ollama_options().get("num_ctx") or _DEFAULT_ASSUMED_CTX_TOKENS
-    input_tokens = max(500, ctx_tokens - _CHUNK_RESERVED_TOKENS)
-    return input_tokens * _CHARS_PER_TOKEN_ESTIMATE
+    chars_per_token = _chars_per_token_estimate(transcript)
+    system_tokens = (len(system) // _CHARS_PER_TOKEN_ESTIMATE) if system else 0
+    input_tokens = max(500, ctx_tokens - _CHUNK_RESERVED_TOKENS - system_tokens)
+    return input_tokens * chars_per_token
 
 
 def _split_transcript_into_chunks(transcript: str, chunk_chars: int) -> list[str]:
@@ -811,13 +836,17 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
     transcript = (transcript or "").strip()
     if not transcript:
         return ""
-    chunks = _split_transcript_into_chunks(transcript, _transcript_chunk_char_budget())
+    # Budgeted against the PART system prompt (used once chunking is
+    # decided) since that's the one whose length actually matters here —
+    # extra_instructions is free text the GM controls and can be long.
+    part_system = _with_instructions(_SUMMARIZE_TRANSCRIPT_PART_SYSTEM, extra_instructions)
+    chunks = _split_transcript_into_chunks(transcript, _transcript_chunk_char_budget(transcript, part_system))
     if len(chunks) <= 1:
         system = _with_instructions(_SUMMARIZE_TRANSCRIPT_SYSTEM, extra_instructions)
         return await generate_chat([{"role": "user", "content": transcript}], system=system, model=model)
 
     _log.info("summarize_transcript: chunking into %d part(s) (%d chars total)", len(chunks), len(transcript))
-    system = _with_instructions(_SUMMARIZE_TRANSCRIPT_PART_SYSTEM, extra_instructions)
+    system = part_system
     part_summaries = []
     for i, chunk in enumerate(chunks):
         if on_progress:

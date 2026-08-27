@@ -231,7 +231,7 @@ async def test_job_ends_in_error_on_exception(client, seed, tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_chunk_progress_visible_mid_summarize_and_cleared_when_done(client, seed, tmp_path, monkeypatch):
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
 
     hang_on_second_chunk = asyncio.Event()
     release_second_chunk = asyncio.Event()
