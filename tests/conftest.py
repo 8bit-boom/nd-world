@@ -29,8 +29,35 @@ from app.database import SessionLocal, engine
 from app.main import app
 from app.models import Base, User, World, WorldMembership
 
+# Production PBKDF2 (600_000 iterations, app/auth.py) costs ~0.4s per
+# hash/verify call on typical hardware. The `seed` fixture below calls
+# hash_password 3x per test and login() calls verify_password once — at
+# ~970/840 call sites respectively across this suite, that's the large
+# majority of its wall-clock time (measured: a 9.7x full-suite speedup,
+# zero test failures, from this one change). Both functions read
+# _PBKDF2_ITERATIONS at call time, not at import time, so overriding the
+# module attribute here covers every hash/verify call the whole app makes
+# during tests — login, invite redemption, password change, 2FA re-auth —
+# without touching application code. No test in this suite asserts on
+# hash format, salt, or timing, and hash/verify stay symmetric at any
+# iteration count, so this only affects speed, never correctness. The
+# assert guards the one thing that actually matters: that the PRODUCTION
+# default hasn't silently drifted out from under this override.
+assert auth._PBKDF2_ITERATIONS == 600_000, (
+    "auth._PBKDF2_ITERATIONS changed — update the security assumption this test override documents"
+)
+auth._PBKDF2_ITERATIONS = 1000
+
 GM_PASSWORD = "gm-password-123"
 PLAYER_PASSWORD = "player-password-123"
+# Hashed once at collection time rather than per-test-per-user (971 tests x
+# up to 3 calls each) — see the _PBKDF2_ITERATIONS override above for why
+# each individual call is already cheap; this removes the remaining
+# redundant work of re-hashing the exact same two constants thousands of
+# times over. Both test users of the same role sharing one hash string is
+# fine: nothing in this suite asserts hashes are unique per user.
+_GM_PASSWORD_HASH = auth.hash_password(GM_PASSWORD)
+_PLAYER_PASSWORD_HASH = auth.hash_password(PLAYER_PASSWORD)
 
 
 @pytest.fixture()
@@ -68,7 +95,7 @@ def seed(client):
     Player B of World B only."""
     db = SessionLocal()
     try:
-        gm = User(email="gm@test.local", password_hash=auth.hash_password(GM_PASSWORD),
+        gm = User(email="gm@test.local", password_hash=_GM_PASSWORD_HASH,
                   display_name="GM", is_gm=True)
         world_a = World(name="World A", slug="world-a")
         world_b = World(name="World B", slug="world-b")
@@ -77,9 +104,9 @@ def seed(client):
         db.refresh(world_a)
         db.refresh(world_b)
 
-        player_a = User(email="player-a@test.local", password_hash=auth.hash_password(PLAYER_PASSWORD),
+        player_a = User(email="player-a@test.local", password_hash=_PLAYER_PASSWORD_HASH,
                          display_name="Player A", is_gm=False)
-        player_b = User(email="player-b@test.local", password_hash=auth.hash_password(PLAYER_PASSWORD),
+        player_b = User(email="player-b@test.local", password_hash=_PLAYER_PASSWORD_HASH,
                          display_name="Player B", is_gm=False)
         db.add_all([player_a, player_b])
         db.commit()
