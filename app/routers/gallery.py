@@ -113,6 +113,40 @@ def _descendant_albums(db: Session, root_id: int) -> list:
     return result
 
 
+def _move_target_options(db: Session, world_id: int, album: ImageAlbum) -> list:
+    """Every other album in this world the given album could be moved
+    into, as {"id", "path"} dicts with a full breadcrumb-style path label
+    for the "Move to album" picker — excludes the album itself and any of
+    its own descendants (moving an album into its own subtree would
+    create a cycle). Built from one query over the whole per-world album
+    tree (bounded by _MAX_ALBUMS_PER_WORLD) rather than one query per
+    candidate."""
+    all_albums = db.query(ImageAlbum).filter(ImageAlbum.world_id == world_id).order_by(ImageAlbum.name).all()
+    by_id = {a.id: a for a in all_albums}
+
+    excluded = {album.id}
+    frontier = {album.id}
+    while frontier:
+        children = {a.id for a in all_albums if a.parent_id in frontier}
+        children -= excluded
+        if not children:
+            break
+        excluded |= children
+        frontier = children
+
+    def path_for(a: ImageAlbum) -> str:
+        names = []
+        current = a
+        seen = set()
+        while current and current.id not in seen:
+            seen.add(current.id)
+            names.append(current.name)
+            current = by_id.get(current.parent_id) if current.parent_id else None
+        return " / ".join(reversed(names))
+
+    return [{"id": a.id, "path": path_for(a)} for a in all_albums if a.id not in excluded]
+
+
 @router.get("/images", response_class=HTMLResponse)
 def images_gallery(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
@@ -313,6 +347,7 @@ def album_detail(album_id: int, request: Request, db: Session = Depends(get_db),
         "album": album, "image_urls": urls, "image_names": image_names,
         "breadcrumb": _breadcrumb(db, album),
         "child_albums": child_albums, "child_album_urls": child_album_urls,
+        "move_targets": _move_target_options(db, world.id, album),
     })
 
 
@@ -327,6 +362,34 @@ async def album_rename(album_id: int, request: Request, db: Session = Depends(ge
     if name:
         album.name = name
         db.commit()
+    return RedirectResponse(f"/images/albums/{album_id}", status_code=303)
+
+
+@router.post("/images/albums/{album_id}/move")
+async def album_move(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Move an EXISTING album under a new parent (or to top-level, if
+    parent_id is blank) — the counterpart to /images/albums/new's
+    parent_id, which only lets a NEW album be created as a child. Moving
+    an album into itself or one of its own descendants is rejected: that
+    would disconnect the moved subtree's parent_id chain from the world's
+    root and make it permanently unreachable from /images."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    album = _album_or_404(db, world.id, album_id)
+    form = await request.form()
+    parent_id_raw = str(form.get("parent_id", "")).strip()
+    if not parent_id_raw:
+        album.parent_id = None
+    else:
+        if not parent_id_raw.isdigit():
+            raise HTTPException(400, "Invalid parent album")
+        new_parent = _album_or_404(db, world.id, int(parent_id_raw))
+        descendant_ids = {d.id for d in _descendant_albums(db, album.id)}
+        if new_parent.id == album.id or new_parent.id in descendant_ids:
+            raise HTTPException(400, "Can't move an album into itself or one of its own sub-albums.")
+        album.parent_id = new_parent.id
+    db.commit()
     return RedirectResponse(f"/images/albums/{album_id}", status_code=303)
 
 

@@ -465,6 +465,134 @@ def test_deleting_sub_album_leaves_parent_intact(client, seed):
         db.close()
 
 
+def test_move_album_reparents_it(client, seed):
+    a_id = _make_album(seed.world_a.id, "A")
+    b_id = _make_album(seed.world_a.id, "B")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/images/albums/{b_id}/move", data={"parent_id": str(a_id)}, follow_redirects=False)
+    assert r.status_code == 303
+
+    db = SessionLocal()
+    try:
+        assert db.get(ImageAlbum, b_id).parent_id == a_id
+    finally:
+        db.close()
+
+    r = client.get(f"/images/albums/{a_id}")
+    assert "B" in r.text
+
+
+def test_move_album_to_top_level_clears_parent(client, seed):
+    parent_id = _make_album(seed.world_a.id, "Parent")
+    child_id = _make_album(seed.world_a.id, "Child", parent_id=parent_id)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/images/albums/{child_id}/move", data={"parent_id": ""}, follow_redirects=False)
+    assert r.status_code == 303
+
+    db = SessionLocal()
+    try:
+        assert db.get(ImageAlbum, child_id).parent_id is None
+    finally:
+        db.close()
+
+
+def test_move_album_into_own_descendant_is_rejected(client, seed):
+    parent_id = _make_album(seed.world_a.id, "Parent")
+    child_id = _make_album(seed.world_a.id, "Child", parent_id=parent_id)
+    grandchild_id = _make_album(seed.world_a.id, "Grandchild", parent_id=child_id)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/images/albums/{parent_id}/move", data={"parent_id": str(grandchild_id)})
+    assert r.status_code == 400
+
+    db = SessionLocal()
+    try:
+        assert db.get(ImageAlbum, parent_id).parent_id is None
+    finally:
+        db.close()
+
+
+def test_move_album_into_itself_is_rejected(client, seed):
+    album_id = _make_album(seed.world_a.id, "Solo")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/images/albums/{album_id}/move", data={"parent_id": str(album_id)})
+    assert r.status_code == 400
+
+
+def test_move_album_subtree_travels_with_it(client, seed):
+    """Moving a parent moves its whole existing sub-tree — child.parent_id
+    itself never changes, only the moved album's own parent_id does."""
+    old_root_id = _make_album(seed.world_a.id, "Old Root")
+    moved_id = _make_album(seed.world_a.id, "Moved", parent_id=old_root_id)
+    grandchild_id = _make_album(seed.world_a.id, "Grandchild", parent_id=moved_id)
+    new_root_id = _make_album(seed.world_a.id, "New Root")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/images/albums/{moved_id}/move", data={"parent_id": str(new_root_id)}, follow_redirects=False)
+    assert r.status_code == 303
+
+    db = SessionLocal()
+    try:
+        assert db.get(ImageAlbum, moved_id).parent_id == new_root_id
+        assert db.get(ImageAlbum, grandchild_id).parent_id == moved_id
+    finally:
+        db.close()
+
+
+def test_move_album_rejects_target_in_another_world(client, seed):
+    album_id = _make_album(seed.world_a.id, "Mine")
+    other_world_album_id = _make_album(seed.world_b.id, "Foreign")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/images/albums/{album_id}/move", data={"parent_id": str(other_world_album_id)})
+    assert r.status_code == 404
+
+
+def test_move_album_itself_in_another_world_404s(client, seed):
+    foreign_album_id = _make_album(seed.world_b.id, "Foreign")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/images/albums/{foreign_album_id}/move", data={"parent_id": ""})
+    assert r.status_code == 404
+
+
+def test_move_album_rejects_unknown_parent(client, seed):
+    album_id = _make_album(seed.world_a.id, "Mine")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/images/albums/{album_id}/move", data={"parent_id": "999999"})
+    assert r.status_code == 404
+
+
+def test_move_picker_excludes_self_and_descendants(client, seed):
+    parent_id = _make_album(seed.world_a.id, "Parent")
+    child_id = _make_album(seed.world_a.id, "Child", parent_id=parent_id)
+    other_id = _make_album(seed.world_a.id, "Unrelated")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/images/albums/{parent_id}")
+    # The move picker for Parent must offer "Unrelated" but not itself
+    # (Parent) or its own descendant (Child) — checked as an <option ...>
+    # tag specifically, since the page also has an unrelated hidden
+    # parent_id=<self> input on the "Create Sub-Album" form that would
+    # otherwise collide with a plain 'value="<id>"' substring check.
+    assert f'<option value="{other_id}"' in r.text
+    assert f'<option value="{parent_id}"' not in r.text
+    assert f'<option value="{child_id}"' not in r.text
+
+
+def test_move_album_is_gm_only(client, seed):
+    album_id = _make_album(seed.world_a.id, "Mine")
+    other_id = _make_album(seed.world_a.id, "Other")
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/images/albums/{album_id}/move", data={"parent_id": str(other_id)})
+    assert r.status_code == 403
+
+
 def test_all_world_image_urls_includes_images_in_nested_sub_albums(client, seed):
     parent_id = _make_album(seed.world_a.id, "Parent")
     _make_album(seed.world_a.id, "Child", urls=["/uploads/nested-only.png"], parent_id=parent_id)
