@@ -6,9 +6,9 @@ environment at start, written to a shared-volume env file for the ollama
 container's entrypoint to source, since there is no runtime API to change
 them. See app/ollama_tuning.py's module docstring for the full design.
 
-Route-level tests (POST /settings/system's server-env handling) live with
-the rest of that route's tests once it's wired up, not here — this file is
-scoped to the pure module functions.
+Route-level tests (POST /settings/system's server-env handling) live in
+tests/test_ollama_options.py, alongside the rest of that route's tests —
+this file is scoped to the pure module functions.
 """
 import os
 

@@ -64,6 +64,7 @@ from . import gallery as _gallery_module
 from . import mcp_server
 from . import ai as _ai_module
 from . import audio_jobs as _audio_jobs
+from . import ollama_tuning as _tuning
 from . import chat_jobs as _chat_jobs
 from . import image_jobs as _image_jobs
 from . import auth as _auth
@@ -148,16 +149,57 @@ def _refresh_settings_overrides(db: Session = None):
                 "num_predict": settings.ollama_num_predict,
                 "num_ctx": settings.ollama_num_ctx,
                 "seed": settings.ollama_seed,
-                "mirostat": settings.ollama_mirostat,
-                "mirostat_tau": settings.ollama_mirostat_tau,
-                "mirostat_eta": settings.ollama_mirostat_eta,
+                # mirostat/mirostat_tau/mirostat_eta deliberately NOT sent —
+                # verified against Ollama's current api/types.go, its
+                # Options struct has no such fields any more; an unknown
+                # option key just logs "invalid option provided" server-side
+                # and is otherwise ignored, so sending them is harmless but
+                # pure log noise on every single request. The columns and
+                # the _OPTION_ALLOWLIST entries in routers/ai.py stay, for
+                # back-compat with an older Ollama server and so a GM's
+                # already-saved values are never silently discarded — see
+                # AppSettings.ollama_mirostat's docstring.
                 "num_gpu": settings.ollama_num_gpu,
+                "min_p": settings.ollama_min_p,
+                "typical_p": settings.ollama_typical_p,
+                "repeat_last_n": settings.ollama_repeat_last_n,
+                "presence_penalty": settings.ollama_presence_penalty,
+                "frequency_penalty": settings.ollama_frequency_penalty,
+                "num_keep": settings.ollama_num_keep,
+                "num_batch": settings.ollama_num_batch,
+                "num_thread": settings.ollama_num_thread,
+                "main_gpu": settings.ollama_main_gpu,
             }.items() if v is not None
         }
+        if settings.ollama_use_mmap in ("0", "1"):
+            gen_options["use_mmap"] = settings.ollama_use_mmap == "1"
         _ai_module.set_ollama_generation_overrides(gen_options, settings.ollama_keep_alive or "")
     finally:
         if owns:
             db.close()
+
+
+def _sync_ollama_server_env() -> None:
+    """Re-emit ollama.env from the DB on every boot — idempotent (the file
+    is deterministic key order, see ollama_tuning.render_env_file, so this
+    never spuriously flips server_env_status()'s "pending restart" banner
+    on) and covers the case where OLLAMA_CONFIG_DIR's volume was recreated,
+    or a GM saved server-tuning values before adding the one-time
+    docker-compose.yml bind mount. Best-effort — see write_server_env's own
+    docstring for when this can raise (an unwritable/missing config dir),
+    which just means nothing has changed since last boot."""
+    db = SessionLocal()
+    try:
+        settings = get_app_settings(db)
+        values = json.loads(settings.ollama_server_env_json or "{}")
+    except Exception:
+        return
+    finally:
+        db.close()
+    try:
+        _tuning.write_server_env(values)
+    except OSError:
+        pass
 
 
 @app.on_event("startup")
@@ -166,6 +208,7 @@ def startup():
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     _seed_bundled_maps()
     _refresh_settings_overrides()
+    _sync_ollama_server_env()
     _audio_jobs.sweep_interrupted_jobs()
     _audio_jobs.sweep_orphaned_job_audio()
     _image_jobs.sweep_interrupted_jobs()
@@ -2564,6 +2607,12 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         ).all()
         for eid, uid in rows:
             allowed_by_entity.setdefault(eid, set()).add(uid)
+    try:
+        ollama_server_env = json.loads(settings.ollama_server_env_json or "{}")
+    except (TypeError, ValueError):
+        # A hand-corrupted row must not 500 the settings page — treat it
+        # the same as "nothing saved yet."
+        ollama_server_env = {}
     return {
         "request": request, "world": world, "worlds": worlds,
         "settings": settings,
@@ -2581,6 +2630,10 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "nav_catalog": _nav_menus_module.build_catalog(world),
         "initial_nav_menus": _nav_menus_module.load_nav_menus(world) if world else [],
         "nav_max_menus": _nav_menus_module.MAX_NAV_MENUS,
+        "ollama_server_env": ollama_server_env,
+        "ollama_server_status": _tuning.server_env_status(ollama_server_env),
+        "ollama_server_spec": _tuning.SERVER_ENV_SPEC,
+        "ollama_form_prefix": _tuning.FORM_PREFIX,
     }
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -2652,6 +2705,33 @@ def settings_system_save(
     ollama_mirostat_eta: str = Form(""),
     ollama_keep_alive: str = Form(""),
     ollama_num_gpu: str = Form(""),
+    ollama_min_p: str = Form(""),
+    ollama_typical_p: str = Form(""),
+    ollama_repeat_last_n: str = Form(""),
+    ollama_presence_penalty: str = Form(""),
+    ollama_frequency_penalty: str = Form(""),
+    ollama_num_keep: str = Form(""),
+    ollama_num_batch: str = Form(""),
+    ollama_num_thread: str = Form(""),
+    ollama_main_gpu: str = Form(""),
+    ollama_use_mmap: str = Form(""),
+    ollama_vram_override_mb: str = Form(""),
+    ollama_srv_flash_attention: str = Form(""),
+    ollama_srv_kv_cache_type: str = Form(""),
+    ollama_srv_num_parallel: str = Form(""),
+    ollama_srv_max_loaded_models: str = Form(""),
+    ollama_srv_max_queue: str = Form(""),
+    ollama_srv_keep_alive: str = Form(""),
+    ollama_srv_context_length: str = Form(""),
+    ollama_srv_load_timeout: str = Form(""),
+    ollama_srv_gpu_overhead: str = Form(""),
+    ollama_srv_sched_spread: str = Form(""),
+    ollama_srv_debug: str = Form(""),
+    ollama_srv_igpu_enable: str = Form(""),
+    ollama_srv_vulkan: str = Form(""),
+    ollama_srv_hsa_override_gfx: str = Form(""),
+    ollama_srv_rocr_visible: str = Form(""),
+    ollama_srv_cuda_visible: str = Form(""),
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
@@ -2693,6 +2773,16 @@ def settings_system_save(
         ("ollama_mirostat_tau", "Mirostat tau", ollama_mirostat_tau, float, 0.0, 100.0),
         ("ollama_mirostat_eta", "Mirostat eta", ollama_mirostat_eta, float, 0.0, 10.0),
         ("ollama_num_gpu", "GPU layers", ollama_num_gpu, int, 0, None),
+        ("ollama_min_p", "Min P", ollama_min_p, float, 0.0, 1.0),
+        ("ollama_typical_p", "Typical P", ollama_typical_p, float, 0.0, 1.0),
+        ("ollama_repeat_last_n", "Repeat look-back", ollama_repeat_last_n, int, -1, 131072),
+        ("ollama_presence_penalty", "Presence penalty", ollama_presence_penalty, float, -2.0, 2.0),
+        ("ollama_frequency_penalty", "Frequency penalty", ollama_frequency_penalty, float, -2.0, 2.0),
+        ("ollama_num_keep", "Tokens kept on context shift", ollama_num_keep, int, 0, 131072),
+        ("ollama_num_batch", "Batch size", ollama_num_batch, int, 1, 4096),
+        ("ollama_num_thread", "CPU threads", ollama_num_thread, int, 0, 256),
+        ("ollama_main_gpu", "Primary GPU index", ollama_main_gpu, int, 0, 15),
+        ("ollama_vram_override_mb", "VRAM override (MB)", ollama_vram_override_mb, int, 0, 1048576),
     ):
         val, err = _parse_optional_number(label, raw, kind, lo, hi)
         if err:
@@ -2702,6 +2792,31 @@ def settings_system_save(
                 status_code=400,
             )
         parsed[field] = val
+
+    ollama_use_mmap = ollama_use_mmap.strip()
+    if ollama_use_mmap not in ("0", "1"):
+        ollama_use_mmap = ""
+
+    # Server-level ("Bucket A") Ollama tuning — genuinely process-level
+    # settings Ollama only reads at start, written to a shared-volume env
+    # file for the ollama container's entrypoint to source; see
+    # app/ollama_tuning.py's module docstring for the full design.
+    # `local_vars` is captured OUTSIDE the comprehension below on purpose —
+    # a comprehension has its own scope in Python 3, so locals() called
+    # inside one would only see its own loop variables, not this
+    # function's actual ollama_srv_* parameters.
+    local_vars = locals()
+    raw_srv = {
+        env_key: local_vars[f"{_tuning.FORM_PREFIX}{suffix}"]
+        for env_key, suffix, _kind, _spec, _help in _tuning.SERVER_ENV_SPEC
+    }
+    srv_values, srv_errors = _tuning.sanitize_server_env(raw_srv)
+    if srv_errors:
+        return templates.TemplateResponse(
+            "settings.html",
+            _settings_context(request, db, active_world, "system", system_error=srv_errors[0]),
+            status_code=400,
+        )
 
     settings = get_app_settings(db)
     settings.ollama_model = ollama_model
@@ -2715,8 +2830,25 @@ def settings_system_save(
     for field, val in parsed.items():
         setattr(settings, field, val)
     settings.ollama_keep_alive = ollama_keep_alive
+    settings.ollama_use_mmap = ollama_use_mmap
+    settings.ollama_server_env_json = json.dumps(srv_values)
     db.commit()
     _refresh_settings_overrides(db)
+    try:
+        _tuning.write_server_env(srv_values)
+    except OSError as exc:
+        # The DB save already succeeded — surface this as a page-level
+        # warning, not a 500 and not a rollback: an unwritable/missing
+        # OLLAMA_CONFIG_DIR just means this deployment hasn't added the
+        # one-time bind mount yet (see docs/DEPLOYMENT.md), not an
+        # application bug, and the saved values are still there the next
+        # time the mount exists and the page is saved again.
+        return templates.TemplateResponse(
+            "settings.html",
+            _settings_context(request, db, active_world, "system",
+                               system_error=f"Saved, but couldn't write {_tuning.OLLAMA_CONFIG_DIR / _tuning.ENV_FILENAME}: {exc}"),
+            status_code=200,
+        )
     return RedirectResponse("/settings?tab=system", status_code=303)
 
 @app.get("/boards", response_class=HTMLResponse)

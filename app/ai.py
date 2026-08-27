@@ -240,6 +240,30 @@ async def _list_loaded() -> list[str]:
         return []
 
 
+async def installed_models_detail() -> list[dict]:
+    """Same client.list() call as _list_loaded() above, but keeping the
+    size and parameter-count details Ollama's own /api/tags already sends
+    — backs the "Detected hardware" recommendation panel (Settings >
+    System), which needs a real weight size and parameter count per model
+    to size a recommendation and would otherwise need a second round trip
+    (or an /api/show call per model) to get them. Returns [] on any
+    failure, same as _list_loaded()."""
+    try:
+        resp = await _client().list()
+    except Exception:
+        return []
+    out = []
+    for m in resp.models:
+        details = getattr(m, "details", None)
+        out.append({
+            "model": m.model,
+            "size_bytes": int(m.size) if m.size is not None else None,
+            "parameter_size": getattr(details, "parameter_size", "") or "",
+            "quantization_level": getattr(details, "quantization_level", "") or "",
+        })
+    return out
+
+
 async def resolve_model(requested: str) -> tuple[str, str | None]:
     """Resolve a possibly-short model id (e.g. "llama3") against what's
     actually available (e.g. "llama3:latest"). Returns (model, note) —

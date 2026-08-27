@@ -15,8 +15,9 @@ from .. import ai as _ai
 from .. import audio_jobs as _audio_jobs
 from .. import chat_jobs as _chat_jobs
 from .. import image_jobs as _image_jobs
+from .. import ollama_tuning as _tuning
 from ..constants import KINDS
-from ..database import get_db
+from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx
 from ..models import AudioJob, ChatJob, ChatSession, ImageJob, PromptPreset
 from ..uploads import (
@@ -182,12 +183,18 @@ class ChatBody(BaseModel):
 # Same fields/ranges Settings > System validates (app/main.py's
 # settings_system_save) — a chat preset can only ever narrow to values a GM
 # could already configure instance-wide, never send an arbitrary Ollama
-# option straight through from the client.
+# option straight through from the client. mirostat/mirostat_tau/mirostat_eta
+# are kept despite being dead on current Ollama (see AppSettings.ollama_mirostat's
+# docstring) so an existing preset that set one doesn't suddenly 400.
 _OPTION_ALLOWLIST = {
     "temperature": (float, 0.0, 2.0), "top_p": (float, 0.0, 1.0), "top_k": (int, 0, None),
     "repeat_penalty": (float, 0.0, 5.0), "num_predict": (int, -2, None), "num_ctx": (int, 1, None),
     "seed": (int, None, None), "mirostat": (int, 0, 2), "mirostat_tau": (float, 0.0, 100.0),
     "mirostat_eta": (float, 0.0, 10.0), "num_gpu": (int, 0, None),
+    "min_p": (float, 0.0, 1.0), "typical_p": (float, 0.0, 1.0), "repeat_last_n": (int, -1, 131072),
+    "presence_penalty": (float, -2.0, 2.0), "frequency_penalty": (float, -2.0, 2.0),
+    "num_keep": (int, 0, 131072), "num_batch": (int, 1, 4096), "num_thread": (int, 0, 256),
+    "main_gpu": (int, 0, 15), "use_mmap": (bool, None, None),
 }
 
 
@@ -844,6 +851,31 @@ async def ai_resident_models():
     means "downloaded to disk," not "in memory." Backs the Models tab's
     "Resident in VRAM" section."""
     return {"models": await _ai.resident_models()}
+
+
+@router.get("/hardware")
+async def ai_hardware(request: Request, db=Depends(get_db)):
+    """Detected host CPU/RAM/GPU plus a suggested settings bundle per
+    installed model — backs the "Detected hardware" panel on Settings >
+    System. GM-only (this path isn't in main._is_player_safe, but the
+    explicit check here matches every other route in this router). Never
+    502s: unreachable Ollama or an undetectable GPU come back as empty
+    lists / null with an explanatory note in `hardware.notes`, since this
+    panel is advisory and must not error the whole settings page."""
+    _require_gm(request)
+    settings = get_app_settings(db)
+    hardware = await _tuning.detect_hardware(settings.ollama_vram_override_mb)
+    models = await _ai.installed_models_detail()
+    return {
+        "hardware": hardware,
+        "models": [
+            {**m, "recommendation": _tuning.recommend_settings(
+                model=m["model"], hardware=hardware,
+                parameter_size=m["parameter_size"], size_bytes=m["size_bytes"],
+            )}
+            for m in models
+        ],
+    }
 
 
 class UnloadModelBody(BaseModel):
