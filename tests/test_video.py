@@ -7,6 +7,7 @@ enforced both by the middleware (no POST /video/* entry there) and by an
 explicit check in each handler.
 """
 import io
+from pathlib import Path
 
 import pytest
 
@@ -314,6 +315,312 @@ async def test_generate_poster_falls_back_gracefully_when_ffmpeg_missing(tmp_pat
     result = await video_module._generate_poster(video_path, tmp_path)
     assert result is None
     assert not (tmp_path / "clip123.jpg").exists()
+
+
+# ── Space-saving AV1 conversion (ffmpeg, best-effort, opt-in per world) ─────
+
+def test_video_settings_save_updates_world(client, seed):
+    from app.models import World
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/video/settings", data={
+        "video_convert_enabled": "1", "video_convert_max_height": "720", "video_convert_bitrate_kbps": "1500",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        world = db.get(World, seed.world_a.id)
+        assert world.video_convert_enabled is True
+        assert world.video_convert_max_height == 720
+        assert world.video_convert_bitrate_kbps == 1500
+    finally:
+        db.close()
+
+
+def test_video_settings_save_clears_optional_fields_when_blank(client, seed):
+    from app.models import World
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.video_convert_enabled = True
+        w.video_convert_max_height = 1080
+        w.video_convert_bitrate_kbps = 3000
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/video/settings", data={})  # nothing checked/filled in
+    db = SessionLocal()
+    try:
+        world = db.get(World, seed.world_a.id)
+        assert world.video_convert_enabled is False
+        assert world.video_convert_max_height is None
+        assert world.video_convert_bitrate_kbps is None
+    finally:
+        db.close()
+
+
+def test_video_settings_save_forbidden_for_player(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/video/settings", data={"video_convert_enabled": "1"})
+    assert r.status_code == 403
+
+
+def test_video_settings_panel_shown_on_index_not_inside_an_album(client, seed):
+    aid = _add_album(seed.world_a.id, name="Cutscenes")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/video")
+    assert "Space-Saving Conversion" in r.text
+    r = client.get(f"/video/albums/{aid}")
+    assert "Space-Saving Conversion" not in r.text
+
+
+def test_video_upload_uses_converted_file_when_world_opts_in(client, seed, monkeypatch):
+    import app.routers.video as video_module
+    from app.models import World
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.video_convert_enabled = True
+        w.video_convert_max_height = 720
+        w.video_convert_bitrate_kbps = 1500
+        db.commit()
+    finally:
+        db.close()
+
+    captured = {}
+
+    async def fake_convert(src, dest_dir, max_height, bitrate_kbps):
+        captured["max_height"] = max_height
+        captured["bitrate_kbps"] = bitrate_kbps
+        out = dest_dir / f"{src.stem}-av1.webm"
+        out.write_bytes(b"fake av1 output")
+        return out
+    monkeypatch.setattr(video_module, "_convert_video", fake_convert)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/video/upload", files=_mp4_file())
+
+    assert captured == {"max_height": 720, "bitrate_kbps": 1500}
+    db = SessionLocal()
+    try:
+        clip = db.query(VideoClip).filter(VideoClip.world_id == seed.world_a.id).first()
+        assert clip.file_url.endswith("-av1.webm")
+    finally:
+        db.close()
+
+
+def test_video_upload_deletes_original_after_successful_conversion(client, seed, tmp_path, monkeypatch):
+    import app.routers.video as video_module
+    from app.models import World
+    monkeypatch.setattr(video_module, "_UPLOADS_DIR", tmp_path)
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.video_convert_enabled = True
+        db.commit()
+    finally:
+        db.close()
+
+    seen_src = {}
+
+    async def fake_convert(src, dest_dir, max_height, bitrate_kbps):
+        seen_src["path"] = src
+        assert src.is_file()  # original still exists at conversion time
+        out = dest_dir / f"{src.stem}-av1.webm"
+        out.write_bytes(b"fake av1 output")
+        return out
+    monkeypatch.setattr(video_module, "_convert_video", fake_convert)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/video/upload", files=_mp4_file())
+
+    assert not seen_src["path"].exists()  # original deleted once conversion succeeded
+
+
+def test_video_upload_keeps_original_when_conversion_disabled(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/video/upload", files=_mp4_file())
+    db = SessionLocal()
+    try:
+        clip = db.query(VideoClip).filter(VideoClip.world_id == seed.world_a.id).first()
+        assert not clip.file_url.endswith("-av1.webm")
+        assert clip.file_url.endswith(".mp4")
+    finally:
+        db.close()
+
+
+def test_video_upload_keeps_original_when_conversion_fails(client, seed, tmp_path, monkeypatch):
+    import app.routers.video as video_module
+    from app.models import World
+    monkeypatch.setattr(video_module, "_UPLOADS_DIR", tmp_path)
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.video_convert_enabled = True
+        db.commit()
+    finally:
+        db.close()
+
+    async def fake_convert(src, dest_dir, max_height, bitrate_kbps):
+        return None  # graceful failure — see _convert_video's contract
+    monkeypatch.setattr(video_module, "_convert_video", fake_convert)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/video/upload", files=_mp4_file(), follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        clip = db.query(VideoClip).filter(VideoClip.world_id == seed.world_a.id).first()
+        assert clip.file_url.endswith(".mp4")
+        stored = tmp_path / clip.file_url[len("/uploads/"):]
+        assert stored.is_file()
+    finally:
+        db.close()
+
+
+def test_chunked_upload_also_applies_conversion(client, seed, tmp_path, monkeypatch):
+    import app.routers.video as video_module
+    from app.models import World
+    monkeypatch.setattr(video_module, "_UPLOADS_DIR", tmp_path)
+    monkeypatch.setattr(video_module, "_CHUNKS_ROOT", tmp_path / "video" / "_chunks")
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.video_convert_enabled = True
+        db.commit()
+    finally:
+        db.close()
+
+    async def fake_convert(src, dest_dir, max_height, bitrate_kbps):
+        out = dest_dir / f"{src.stem}-av1.webm"
+        out.write_bytes(b"fake av1 output")
+        return out
+    monkeypatch.setattr(video_module, "_convert_video", fake_convert)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    upload_id = "6" * 32
+    import io
+    r0 = client.post("/video/upload/chunk", data={"upload_id": upload_id, "chunk_index": "0"},
+                      files={"file": ("part", io.BytesIO(b"x" * 100), "application/octet-stream")})
+    assert r0.status_code == 200
+    r = client.post("/video/upload/complete", data={
+        "upload_id": upload_id, "filename": "clip.mp4", "total_chunks": "1",
+    })
+    assert r.status_code == 200
+    db = SessionLocal()
+    try:
+        clip = db.query(VideoClip).filter(VideoClip.world_id == seed.world_a.id).first()
+        assert clip.file_url.endswith("-av1.webm")
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_convert_video_falls_back_gracefully_when_ffmpeg_missing(tmp_path, monkeypatch):
+    import asyncio as _asyncio_mod
+    import app.routers.video as video_module
+
+    async def _raise(*a, **kw):
+        raise FileNotFoundError("ffmpeg")
+
+    monkeypatch.setattr(_asyncio_mod, "create_subprocess_exec", _raise)
+    src = tmp_path / "clip123.mp4"
+    src.write_bytes(b"fake video")
+    result = await video_module._convert_video(src, tmp_path, None, None)
+    assert result is None
+    assert not (tmp_path / "clip123-av1.webm").exists()
+    assert src.is_file()  # untouched — the caller decides whether to delete it, and only on success
+
+
+@pytest.mark.asyncio
+async def test_convert_video_uses_default_bitrate_when_world_unset(tmp_path, monkeypatch):
+    import app.routers.video as video_module
+
+    captured_cmd = {}
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        captured_cmd["args"] = args
+        # Simulate ffmpeg actually writing the output file.
+        out_path = Path(args[-1])
+        out_path.write_bytes(b"fake av1 output")
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+    src = tmp_path / "clip123.mp4"
+    src.write_bytes(b"fake video")
+    result = await video_module._convert_video(src, tmp_path, None, None)
+    assert result == tmp_path / "clip123-av1.webm"
+    assert f"{video_module._DEFAULT_VIDEO_BITRATE_KBPS}k" in captured_cmd["args"]
+    assert "-vf" not in captured_cmd["args"]  # no resolution limit configured
+
+
+@pytest.mark.asyncio
+async def test_convert_video_applies_resolution_limit_and_custom_bitrate(tmp_path, monkeypatch):
+    import app.routers.video as video_module
+
+    captured_cmd = {}
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        captured_cmd["args"] = args
+        out_path = Path(args[-1])
+        out_path.write_bytes(b"fake av1 output")
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+    src = tmp_path / "clip123.mp4"
+    src.write_bytes(b"fake video")
+    result = await video_module._convert_video(src, tmp_path, 720, 800)
+    assert result == tmp_path / "clip123-av1.webm"
+    assert "800k" in captured_cmd["args"]
+    vf_index = captured_cmd["args"].index("-vf")
+    assert "720" in captured_cmd["args"][vf_index + 1]
+
+
+@pytest.mark.asyncio
+async def test_convert_video_returns_none_on_nonzero_exit(tmp_path, monkeypatch):
+    import app.routers.video as video_module
+
+    class _FakeProc:
+        returncode = 1
+
+        async def communicate(self):
+            return b"", b"unknown encoder 'libsvtav1'"
+
+    async def fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+    src = tmp_path / "clip123.mp4"
+    src.write_bytes(b"fake video")
+    result = await video_module._convert_video(src, tmp_path, None, None)
+    assert result is None
+    assert not (tmp_path / "clip123-av1.webm").exists()
 
 
 # ── Albums and sub-albums ───────────────────────────────────────────────────

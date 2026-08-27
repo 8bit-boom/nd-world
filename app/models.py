@@ -110,6 +110,22 @@ class World(Base):
     # (background job, one-shot upload, and re-summarize), same per-world
     # scope as whisper_glossary. NULL/"" = no extra instructions.
     recap_instructions = Column(Text, nullable=True)
+    # Video Library space-saving: when enabled, every future upload to
+    # /video is re-encoded to AV1 (see app/routers/video.py's
+    # _convert_video) before being stored — off by default, since AV1
+    # encoding is CPU-heavy and not every deployment even has ffmpeg.
+    # Gracefully keeps the ORIGINAL file un-converted if the encode fails
+    # for any reason (no ffmpeg, no AV1 encoder in this ffmpeg build, a
+    # crash) — same graceful-degradation contract as poster generation;
+    # never blocks the upload itself.
+    video_convert_enabled = Column(Boolean, default=False)
+    # Downscale cap in pixels (video height) applied during conversion —
+    # NULL/0 means re-encode at the source resolution, no resizing.
+    video_convert_max_height = Column(Integer, nullable=True)
+    # Target average video bitrate in kbps for the AV1 encode. NULL uses
+    # _DEFAULT_VIDEO_BITRATE_KBPS (app/routers/video.py) rather than
+    # ffmpeg's own AV1 encoder default, which is surprisingly high.
+    video_convert_bitrate_kbps = Column(Integer, nullable=True)
     # Per-world rules text (Markdown) shown on the /rules page. NULL = fall back
     # to the bundled Neon & Dragons core_rules.md, for worlds actually running
     # N&D and any world created before this field existed.

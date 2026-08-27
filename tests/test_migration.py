@@ -396,6 +396,48 @@ def test_heals_pre_spotlight_worlds_schema(tmp_path, monkeypatch):
     engine.dispose()
 
 
+def test_heals_pre_video_conversion_worlds_schema(tmp_path, monkeypatch):
+    """A worlds table predating video_convert_enabled/video_convert_max_height/
+    video_convert_bitrate_kbps (added for the Video Library's space-saving
+    AV1 conversion option) must heal onto NULL/0 defaults, not break
+    loading an existing world."""
+    db_path = tmp_path / "pre_video_conversion.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE worlds (id INTEGER PRIMARY KEY, name VARCHAR(256) NOT NULL, "
+            "slug VARCHAR(64) UNIQUE NOT NULL, description VARCHAR(512), accent VARCHAR(16), "
+            "players_see_party BOOLEAN, rules_md TEXT, home_welcome_md TEXT, "
+            "home_sections_json TEXT, custom_kinds_json TEXT, created_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO worlds (id, name, slug, home_sections_json, custom_kinds_json) "
+            "VALUES (1, 'Pre-existing World', 'pre-existing-world', '[]', '[]')"
+        ))
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        world_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(worlds)")).fetchall()}
+    assert {"video_convert_enabled", "video_convert_max_height", "video_convert_bitrate_kbps"} <= world_cols
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, 1)
+        assert w.video_convert_enabled in (None, False)
+        assert w.video_convert_max_height is None
+        assert w.video_convert_bitrate_kbps is None
+    finally:
+        db.close()
+
+    engine.dispose()
+
+
 def test_heals_pre_nested_albums_schema(tmp_path, monkeypatch):
     """An image_albums table predating parent_id (added so an album can
     nest inside another as a folder) must heal onto a NULL (top-level)

@@ -462,16 +462,17 @@ worlds they've been invited into (`WorldMembership`).
 
 ## Video Library
 
-`app/routers/video.py` — the video counterpart to the Audio Library above (a recorded cutscene, a handout clip, an NPC video message), same album-tree/visibility/chunked-upload shape (`VideoAlbum`/`VideoClip` in `app/models.py`). The one real difference: `VideoClip.poster_url` is a best-effort ffmpeg-generated thumbnail frame (nullable — a missing poster just means the `<video>` element falls back to its own native preview frame, never a failed upload). Upload size defaults to 2 GB (`MAX_VIDEO_UPLOAD_BYTES`, separate from audio's own limit).
+`app/routers/video.py` — the video counterpart to the Audio Library above (a recorded cutscene, a handout clip, an NPC video message), same album-tree/visibility/chunked-upload shape (`VideoAlbum`/`VideoClip` in `app/models.py`). Two real differences from Audio: `VideoClip.poster_url` is a best-effort ffmpeg-generated thumbnail frame (nullable — a missing poster just means the `<video>` element falls back to its own native preview frame, never a failed upload), and an opt-in per-world AV1 conversion pass on upload for space savings (`World.video_convert_enabled`/`video_convert_max_height`/`video_convert_bitrate_kbps`) — same graceful-degradation contract as the poster: an unavailable AV1 encoder just keeps the original file, never a failed upload. Upload size defaults to 2 GB (`MAX_VIDEO_UPLOAD_BYTES`, separate from audio's own limit).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/video` | Player | Top-level clip/album list for the active world. |
+| GET | `/video` | Player | Top-level clip/album list for the active world; the space-saving conversion settings panel appears here (GM only) but not inside an album. |
 | GET | `/video/albums/{album_id}` | Player | One album's clips and sub-albums, with a breadcrumb. |
+| POST | `/video/settings` | GM | Saves the world's AV1 conversion preferences (on/off, max height, target bitrate) — applies to future uploads only. |
 | POST | `/video/albums/new` | GM | Creates an album (optionally as a child, via `parent_id`). |
 | POST | `/video/albums/{album_id}/rename` | GM | Renames an album. |
 | POST | `/video/albums/{album_id}/delete` | GM | Deletes an album, cascading to its sub-albums and their clips (and files). |
-| POST | `/video/upload` | GM | Uploads one video clip (single request, up to `MAX_VIDEO_UPLOAD_BYTES`); generates a poster frame best-effort. |
+| POST | `/video/upload` | GM | Uploads one video clip (single request, up to `MAX_VIDEO_UPLOAD_BYTES`); converts to AV1 if the world has opted in, then generates a poster frame best-effort. |
 | POST | `/video/upload/chunk`, `/video/upload/complete` | GM | Client-split large-upload pair, same as the Audio Library's. |
 | POST | `/video/{clip_id}/edit` | GM | Updates a clip's name/description/visibility/album. |
 | POST | `/video/{clip_id}/delete` | GM | Deletes a clip and its file (and poster, if one was generated). |

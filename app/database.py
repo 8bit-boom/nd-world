@@ -613,6 +613,12 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN spotlight_label VARCHAR(256)"))
             if "spotlight_version" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN spotlight_version INTEGER DEFAULT 0"))
+            if "video_convert_enabled" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN video_convert_enabled BOOLEAN DEFAULT 0"))
+            if "video_convert_max_height" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN video_convert_max_height INTEGER"))
+            if "video_convert_bitrate_kbps" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN video_convert_bitrate_kbps INTEGER"))
         # audio_clips table — add album_id if missing (added after the
         # table's initial ship in a prior release; existing clips get
         # NULL = top-level/unfiled, same as any newly-uploaded clip that

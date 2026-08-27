@@ -2,12 +2,15 @@
 recorded cutscene, a handout clip, an NPC video message) — see
 VideoClip/VideoAlbum in app/models.py. Mirrors app/routers/audio.py's
 Audio Library almost exactly (same album-tree/visibility/chunked-upload
-shape); the one real difference is poster_url, a best-effort ffmpeg
-thumbnail frame. Player-safe like /audio: a player sees a read-only view
-of whatever clips the GM has left visible_to_players=True. Upload/edit/
-delete/album-management stay GM-only, enforced in each handler rather
-than via _is_player_safe, since that allowlist can't express "GET is
-fine, POST isn't" for a single path."""
+shape); the two real differences are poster_url (a best-effort ffmpeg
+thumbnail frame) and optional space-saving AV1 conversion on upload (see
+_convert_video, World.video_convert_enabled). Player-safe like /audio: a
+player sees a read-only view of whatever clips the GM has left
+visible_to_players=True. Upload/edit/delete/album-management/settings
+stay GM-only, enforced in each handler rather than via _is_player_safe,
+since that allowlist can't express "GET is fine, POST isn't" for a
+single path."""
+import logging
 import os
 from pathlib import Path
 from typing import Optional
@@ -49,6 +52,14 @@ _MAX_VIDEO_BYTES = int(os.environ.get("MAX_VIDEO_UPLOAD_BYTES", str(2 * 1024 * 1
 # fixed per-request body cap, e.g. Cloudflare's free-tier 100MB, independent
 # of _MAX_VIDEO_BYTES itself).
 _CHUNKS_ROOT = _UPLOADS_DIR / "video" / "_chunks"
+
+_log = logging.getLogger(__name__)
+
+# Fallback average video bitrate (kbps) for the AV1 conversion when a world
+# hasn't set World.video_convert_bitrate_kbps — chosen over letting ffmpeg's
+# own libsvtav1 default apply, which is tuned for archival quality rather
+# than the "make it smaller" goal this feature exists for.
+_DEFAULT_VIDEO_BITRATE_KBPS = 2000
 
 
 def _is_gm(request: Request) -> bool:
@@ -145,6 +156,67 @@ def _clip_counts(db: Session, request: Request, album_ids: list) -> dict:
     return result
 
 
+async def _convert_video(src: Path, dest_dir: Path, max_height: Optional[int], bitrate_kbps: Optional[int]) -> Optional[Path]:
+    """Best-effort AV1 re-encode of `src` for space savings, written into
+    dest_dir as a new "<stem>-av1.webm" file. Returns the new file's Path
+    on success — the caller deletes `src` and stores the new file's URL
+    instead — or None on any failure (ffmpeg missing, this ffmpeg build
+    wasn't compiled with libsvtav1, a crash, a truncated/empty result), in
+    which case the caller keeps `src` completely untouched and the clip
+    is stored uncompressed exactly as before this feature existed. Never
+    raises — same graceful-degradation contract as _generate_poster/
+    app.ai's ffmpeg-optional audio chunking: a conversion is always a
+    bonus, never a required step, so a slow/missing/older ffmpeg must
+    never turn into a failed upload.
+
+    max_height (World.video_convert_max_height), if set, downscales the
+    clip so its height never exceeds it — a no-op (via ffmpeg's own
+    min(ih,H) clamp) for a clip already shorter than that. bitrate_kbps
+    (World.video_convert_bitrate_kbps) sets the target average video
+    bitrate; falls back to _DEFAULT_VIDEO_BITRATE_KBPS when unset."""
+    import asyncio
+    out_path = dest_dir / f"{src.stem}-av1.webm"
+    bitrate = bitrate_kbps if bitrate_kbps and bitrate_kbps > 0 else _DEFAULT_VIDEO_BITRATE_KBPS
+    cmd = ["ffmpeg", "-y", "-i", str(src), "-c:v", "libsvtav1", "-b:v", f"{int(bitrate)}k"]
+    if max_height and max_height > 0:
+        # The comma inside min(...) has to be escaped for ffmpeg's own
+        # filtergraph parser (which otherwise reads it as a filter
+        # separator) — this is NOT shell quoting, argv is passed directly
+        # via create_subprocess_exec with no shell involved.
+        cmd += ["-vf", f"scale=-2:min(ih\\,{int(max_height)})"]
+    cmd += ["-c:a", "libopus", "-b:a", "128k", str(out_path)]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0 or not out_path.is_file() or out_path.stat().st_size == 0:
+            _log.warning("video AV1 conversion failed (rc=%s): %s", proc.returncode, stderr.decode(errors="replace")[:500])
+            out_path.unlink(missing_ok=True)
+            return None
+        return out_path
+    except Exception as exc:
+        _log.warning("video AV1 conversion errored: %s: %s", type(exc).__name__, exc)
+        out_path.unlink(missing_ok=True)
+        return None
+
+
+async def _finish_stored_file(dest: Path, target_dir, world) -> Path:
+    """Shared tail of both upload routes, run once the raw file is already
+    saved at `dest`: converts it to AV1 first (if the world has opted in —
+    see _convert_video), THEN generates the poster from whichever file
+    ends up being kept, so a poster is never generated from a file that's
+    about to be deleted. Returns the final Path to store as the clip's
+    file_url; `dest` itself may already be gone if conversion succeeded."""
+    final_path = dest
+    if world and world.video_convert_enabled:
+        converted = await _convert_video(dest, target_dir, world.video_convert_max_height, world.video_convert_bitrate_kbps)
+        if converted:
+            dest.unlink(missing_ok=True)
+            final_path = converted
+    return final_path
+
+
 async def _generate_poster(video_path: Path, dest_dir: Path) -> Optional[str]:
     """Best-effort ffmpeg thumbnail from ~1s into the clip, written next to
     the video as "<stem>.jpg". Returns its /uploads/... URL, or None if
@@ -214,6 +286,27 @@ def video_album_detail(album_id: int, request: Request, db: Session = Depends(ge
         "clip_counts": _clip_counts(db, request, album_ids),
         "max_video_mb": _MAX_VIDEO_BYTES // (1024 * 1024),
     })
+
+
+@router.post("/video/settings")
+async def video_settings_save(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Saves the world's space-saving AV1 conversion preferences (codec
+    is fixed — see _convert_video's docstring for why no picker for it —
+    only whether conversion runs at all, the resolution cap, and the
+    target bitrate are configurable). Applies to every upload from this
+    point on; existing clips are never retroactively converted."""
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    form = await request.form()
+    world.video_convert_enabled = bool(form.get("video_convert_enabled"))
+    max_height_raw = str(form.get("video_convert_max_height", "")).strip()
+    world.video_convert_max_height = int(max_height_raw) if max_height_raw.isdigit() and int(max_height_raw) > 0 else None
+    bitrate_raw = str(form.get("video_convert_bitrate_kbps", "")).strip()
+    world.video_convert_bitrate_kbps = int(bitrate_raw) if bitrate_raw.isdigit() and int(bitrate_raw) > 0 else None
+    db.commit()
+    return RedirectResponse("/video", status_code=303)
 
 
 @router.post("/video/albums/new")
@@ -305,12 +398,13 @@ async def video_upload(
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / unique_upload_filename(file.filename, ext)
     copy_upload_bounded(file, dest, max_bytes=_MAX_VIDEO_BYTES)
-    poster_url = await _generate_poster(dest, target_dir)
+    final_path = await _finish_stored_file(dest, target_dir, world)
+    poster_url = await _generate_poster(final_path, target_dir)
 
     clip_name = name.strip()[:_MAX_NAME] or Path(file.filename).stem[:_MAX_NAME] or "Untitled clip"
     clip = VideoClip(
         world_id=world.id, name=clip_name, description=description.strip()[:_MAX_DESCRIPTION],
-        file_url=f"/uploads/video/{dest.name}", poster_url=poster_url,
+        file_url=f"/uploads/video/{final_path.name}", poster_url=poster_url,
         visible_to_players=bool(visible_to_players), album_id=target_album_id,
     )
     db.add(clip)
@@ -368,12 +462,13 @@ async def video_upload_complete(
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / unique_upload_filename(filename, ext)
     reassemble_upload_chunks(_CHUNKS_ROOT, upload_id, total_chunks, dest, max_bytes=_MAX_VIDEO_BYTES)
-    poster_url = await _generate_poster(dest, target_dir)
+    final_path = await _finish_stored_file(dest, target_dir, world)
+    poster_url = await _generate_poster(final_path, target_dir)
 
     clip_name = name.strip()[:_MAX_NAME] or Path(filename).stem[:_MAX_NAME] or "Untitled clip"
     clip = VideoClip(
         world_id=world.id, name=clip_name, description=description.strip()[:_MAX_DESCRIPTION],
-        file_url=f"/uploads/video/{dest.name}", poster_url=poster_url,
+        file_url=f"/uploads/video/{final_path.name}", poster_url=poster_url,
         visible_to_players=bool(visible_to_players), album_id=target_album_id,
     )
     db.add(clip)

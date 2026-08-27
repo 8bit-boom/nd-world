@@ -39,6 +39,36 @@
     {% else %}Anything your GM has shared with the party.{% endif %}
   </p>
 
+  {% if can_edit and not album %}
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.5rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">💾 Space-Saving Conversion</h2>
+    <p style="color:var(--text-dim);font-size:.8rem;margin:0 0 .8rem">
+      When on, every future upload is re-encoded to AV1 (a modern, much smaller video codec) before being stored — this only applies to new uploads, existing clips are untouched. Re-encoding is slow and needs ffmpeg built with AV1 support; if that's unavailable the upload just keeps the original file, nothing fails.
+    </p>
+    <form method="post" action="{{ '/video/settings'|wq }}" style="display:flex;flex-direction:column;gap:.7rem">
+      <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:var(--text-dim)">
+        <input type="checkbox" name="video_convert_enabled" value="1" {% if world.video_convert_enabled %}checked{% endif %} style="width:auto"/>
+        Convert new uploads to AV1
+      </label>
+      <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end">
+        <div>
+          <label style="display:block;font-size:.75rem;color:var(--text-dim);margin-bottom:.25rem">Max resolution (height, px)</label>
+          <input type="number" name="video_convert_max_height" min="1" placeholder="no limit"
+                 value="{{ world.video_convert_max_height or '' }}"
+                 style="width:140px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
+        </div>
+        <div>
+          <label style="display:block;font-size:.75rem;color:var(--text-dim);margin-bottom:.25rem">Target bitrate (kbps)</label>
+          <input type="number" name="video_convert_bitrate_kbps" min="1" placeholder="2000"
+                 value="{{ world.video_convert_bitrate_kbps or '' }}"
+                 style="width:140px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
+        </div>
+        <button type="submit" class="btn-save">Save</button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+
   {% if can_edit %}
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.5rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">📁 {{ 'New Sub-album' if album else 'New Album' }}</h2>
