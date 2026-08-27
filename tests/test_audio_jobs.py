@@ -11,8 +11,11 @@ so the task actually gets a chance to progress between polls.
 """
 import asyncio
 import io
+import os
+import shutil
 import time
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -340,6 +343,68 @@ def test_sweep_interrupted_jobs_marks_in_progress_as_error(client, seed):
         assert d.error == ""
     finally:
         db.close()
+
+
+def _session_audio_jobs_dir_for_test():
+    return Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads" / "session_audio" / "_jobs"
+
+
+def test_sweep_orphaned_job_audio_removes_old_files(tmp_path):
+    """A file left behind because a crash/restart skipped _run_job's own
+    cleanup finally (sweep_interrupted_jobs only fixes the DB row, not the
+    file) must eventually be removed, or an orphan like this leaks disk
+    forever."""
+    jobs_dir = _session_audio_jobs_dir_for_test()
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    old_file = jobs_dir / "orphaned-old.mp3"
+    old_file.write_bytes(b"x")
+    old_cutoff_time = time.time() - audio_jobs._SESSION_AUDIO_JOBS_CUTOFF_SECONDS - 3600
+    os.utime(old_file, (old_cutoff_time, old_cutoff_time))
+
+    audio_jobs.sweep_orphaned_job_audio()
+
+    assert not old_file.exists()
+
+
+def test_sweep_orphaned_job_audio_keeps_recent_files(tmp_path):
+    """A file that's recent enough to plausibly belong to a job still
+    genuinely in flight (this sweep runs at startup, before any new job
+    could have been created) must survive — sweep_interrupted_jobs already
+    errored out anything that was actually running at shutdown, but the
+    cutoff is deliberately generous rather than exact."""
+    jobs_dir = _session_audio_jobs_dir_for_test()
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    recent_file = jobs_dir / "recent.mp3"
+    recent_file.write_bytes(b"x")
+
+    audio_jobs.sweep_orphaned_job_audio()
+
+    assert recent_file.exists()
+    recent_file.unlink()
+
+
+def test_sweep_orphaned_job_audio_is_a_noop_when_dir_missing(tmp_path):
+    jobs_dir = _session_audio_jobs_dir_for_test()
+    shutil.rmtree(jobs_dir, ignore_errors=True)
+    audio_jobs.sweep_orphaned_job_audio()  # must not raise
+
+
+def test_sweep_orphaned_job_audio_leaves_ai_attachments_alone(tmp_path):
+    """Attachment jobs run with delete_after=False — the file IS the
+    attachment, not working storage — so this sweep must only ever touch
+    uploads/session_audio/_jobs/, never uploads/ai_attachments/."""
+    jobs_dir = _session_audio_jobs_dir_for_test()
+    attachments_dir = jobs_dir.parent.parent / "ai_attachments"
+    attachments_dir.mkdir(parents=True, exist_ok=True)
+    old_attachment = attachments_dir / "old-attachment.mp3"
+    old_attachment.write_bytes(b"x")
+    old_cutoff_time = time.time() - audio_jobs._SESSION_AUDIO_JOBS_CUTOFF_SECONDS - 3600
+    os.utime(old_attachment, (old_cutoff_time, old_cutoff_time))
+
+    audio_jobs.sweep_orphaned_job_audio()
+
+    assert old_attachment.exists()
+    old_attachment.unlink()
 
 
 # ── Sessions routes: /api/sessions/ai/audio-jobs* ───────────────────────────

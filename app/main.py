@@ -165,6 +165,7 @@ def startup():
     _seed_bundled_maps()
     _refresh_settings_overrides()
     _audio_jobs.sweep_interrupted_jobs()
+    _audio_jobs.sweep_orphaned_job_audio()
     _image_jobs.sweep_interrupted_jobs()
     _chat_jobs.sweep_interrupted_jobs()
 

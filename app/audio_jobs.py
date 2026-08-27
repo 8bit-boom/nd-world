@@ -5,6 +5,8 @@ both routers start/poll the identical job engine.
 """
 import asyncio
 import logging
+import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -380,3 +382,34 @@ def sweep_interrupted_jobs() -> None:
             db.commit()
     finally:
         db.close()
+
+
+# Same path routers/sessions.py's own _session_audio_jobs_dir() computes —
+# kept as its own small copy here per this codebase's per-module
+# convention, rather than importing across the router boundary for one path.
+_SESSION_AUDIO_JOBS_CUTOFF_SECONDS = 24 * 60 * 60
+
+
+def sweep_orphaned_job_audio() -> None:
+    """Called once at startup, right after sweep_interrupted_jobs: a
+    session-recap job's uploaded audio (up to MAX_AUDIO_UPLOAD_BYTES, 1 GB
+    default) is only ever deleted by _run_job's own `finally` clause —
+    a crash, deploy, or Watchtower update mid-job skips that entirely, and
+    sweep_interrupted_jobs only fixes up the DB row, not the file it left
+    behind. Deletes any file under uploads/session_audio/_jobs/ older than
+    the cutoff — safely longer than any real in-flight job, since
+    sweep_interrupted_jobs (called first, same startup hook) has already
+    errored out anything that was actually still running at shutdown.
+    Deliberately does NOT touch uploads/ai_attachments/: those jobs run
+    with delete_after=False because the file IS the attachment, not
+    working storage to clean up."""
+    jobs_dir = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads" / "session_audio" / "_jobs"
+    if not jobs_dir.is_dir():
+        return
+    cutoff = time.time() - _SESSION_AUDIO_JOBS_CUTOFF_SECONDS
+    for child in jobs_dir.iterdir():
+        try:
+            if child.is_file() and child.stat().st_mtime < cutoff:
+                child.unlink()
+        except OSError:
+            pass
