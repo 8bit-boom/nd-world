@@ -195,18 +195,16 @@ async def test_chunk_progress_visible_mid_summarize_and_cleared_when_done(client
         return ("The party explored the ruins. " * 30).strip()
 
     async def fake_generate_chat(messages, system="", model="", options=None):
-        if system == ai_module._SUMMARIZE_TRANSCRIPT_CHUNK_SYSTEM:
-            call_count["n"] += 1
-            if call_count["n"] == 2:
-                hang_on_second_chunk.set()
-                await release_second_chunk.wait()
-            return "[part]"
-        return "Final recap."
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            hang_on_second_chunk.set()
+            await release_second_chunk.wait()
+        return "[part]"
 
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
     # Override the file's autouse _fake_ai fixture, which replaces
-    # summarize_transcript wholesale — this test needs the REAL map-reduce
+    # summarize_transcript wholesale — this test needs the REAL per-part
     # chunking logic (driving fake_generate_chat above) to actually run.
     monkeypatch.setattr(ai_module, "summarize_transcript", _REAL_SUMMARIZE_TRANSCRIPT)
 

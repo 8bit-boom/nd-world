@@ -115,28 +115,25 @@ async def test_summarize_transcript_single_call_applies_instructions(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_summarize_transcript_refine_steps_apply_instructions_not_chunk_step(monkeypatch):
-    """Chunked path: the per-chunk extraction system prompt should NOT carry
-    the instructions (it's a terse scratch list, not the final recap) —
-    only the refine steps that build/update the actual recap should, and
-    on EVERY refine call (not just a final one), since each refine call now
-    produces a complete recap draft in its own right rather than only the
-    very last call doing so."""
+async def test_summarize_transcript_chunked_path_applies_instructions_to_every_part(monkeypatch):
+    """Chunked path: with no separate combine call (see
+    test_transcript_chunking.py for why — a single combine call and an
+    iterative refine chain were both tried and reverted), a GM's
+    instructions have to reach every per-part call directly, since each
+    part's own summary is final as written."""
     systems_seen = []
 
     async def fake_generate_chat(messages, system="", model="", options=None):
         systems_seen.append(system)
-        return "part or draft"
+        return "part summary"
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 20)
 
     long_transcript = "word " * 30  # forces >1 chunk at a 20-char budget
     await ai_module.summarize_transcript(long_transcript, extra_instructions="write in French")
 
-    chunk_systems = [s for s in systems_seen if "write in French" not in s]
-    refine_systems = [s for s in systems_seen if "write in French" in s]
-    assert len(chunk_systems) >= 2
-    assert len(refine_systems) == len(chunk_systems)  # one refine call per chunk
+    assert len(systems_seen) >= 2
+    assert all("write in French" in s for s in systems_seen)
 
 
 # ── audio_jobs threads the world's recap_instructions through ──────────────

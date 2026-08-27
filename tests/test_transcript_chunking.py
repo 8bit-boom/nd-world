@@ -1,15 +1,30 @@
 """Tests for app.ai's transcript chunking (_split_transcript_into_chunks,
-_transcript_chunk_char_budget) and summarize_transcript's map-then-refine
-path — added because a raw Whisper transcript of a multi-hour session can
-easily run to tens of thousands of tokens, and the previous single-
-generate_chat-call implementation silently let Ollama truncate anything
-that didn't fit, so the recap quietly covered only part of the session
-with no signal anything was lost. A transcript that fits in one context
-window still goes through exactly one generate_chat call, unchanged from
-before. The chunked path used to reduce every chunk's extracted events in
-one final combine call, which could itself overflow context once there
-were enough chunks — see test_long_transcript_maps_then_refines_incrementally
-for why it's now an incremental refine (one call per chunk) instead.
+_transcript_chunk_char_budget) and summarize_transcript's chunked path —
+added because a raw Whisper transcript of a multi-hour session can easily
+run to tens of thousands of tokens, and the previous single-generate_chat-
+call implementation silently let Ollama truncate anything that didn't fit,
+so the recap quietly covered only part of the session with no signal
+anything was lost. A transcript that fits in one context window still goes
+through exactly one generate_chat call, unchanged from before.
+
+A long transcript is summarized part-by-part, and the final recap is just
+those part-summaries joined together in order — there is NO further LLM
+call over the combined result. Two designs were tried here and rejected:
+
+- A single "combine every part summary into one final recap" call: that
+  combined blob has to fit in one context window too, and for a long
+  enough session (enough chunks) it could overflow the same budget
+  chunking exists to avoid in the first place.
+- An iterative "refine the recap so far with this next part's events"
+  chain, one call per chunk: real models (especially smaller/local ones)
+  drift toward whatever was rewritten most recently across repeated
+  rewrite passes — a GM reported a recap that covered only the tail of a
+  session, everything before the last couple of parts silently dropped.
+
+Appending each part's own independent summary sidesteps both: no call
+ever has to see more than one chunk's raw transcript text, and nothing is
+ever re-summarized (so nothing already-written can be dropped by a later
+pass).
 """
 import pytest
 
@@ -74,7 +89,7 @@ def test_chunk_budget_has_a_floor_for_a_tiny_configured_num_ctx(monkeypatch):
     assert budget == 500 * ai_module._CHARS_PER_TOKEN_ESTIMATE
 
 
-# ── summarize_transcript map-reduce orchestration ───────────────────────────
+# ── summarize_transcript's chunked, append-only orchestration ──────────────
 
 @pytest.mark.asyncio
 async def test_short_transcript_uses_a_single_call(monkeypatch):
@@ -92,53 +107,70 @@ async def test_short_transcript_uses_a_single_call(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_long_transcript_maps_then_refines_incrementally(monkeypatch):
-    """Replaces a single "combine every chunk summary in one call" reduce
-    step (which could itself overflow the same context budget chunking
-    exists to avoid, once there are enough chunks) with an incremental
-    refine: each chunk's extracted events are folded into a running recap
-    one call at a time, so no single call ever has to ingest more than one
-    chunk's worth of new material plus the recap-so-far — see
-    summarize_transcript's docstring."""
+async def test_long_transcript_summarizes_each_part_and_joins_them(monkeypatch):
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
     calls = []
-    refine_n = {"n": 0}
 
     async def fake_generate_chat(messages, system="", model=""):
-        content = messages[0]["content"]
-        calls.append({"content": content, "system": system})
-        if system == ai_module._SUMMARIZE_TRANSCRIPT_CHUNK_SYSTEM:
-            return f"[events from: {content[:10]}]"
-        refine_n["n"] += 1
-        return f"Recap draft {refine_n['n']}"
+        calls.append({"content": messages[0]["content"], "system": system})
+        return f"Summary of part {len(calls)}."
 
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
     long_transcript = ("The party explored the ruins. " * 30).strip()
     result = await ai_module.summarize_transcript(long_transcript)
 
-    map_calls = [c for c in calls if c["system"] == ai_module._SUMMARIZE_TRANSCRIPT_CHUNK_SYSTEM]
-    refine_calls = [c for c in calls if c["system"] == ai_module._SUMMARIZE_TRANSCRIPT_REFINE_SYSTEM]
-    assert len(map_calls) > 1
-    # One refine call per chunk (not one big combine call at the end) is
-    # exactly what keeps every call's input bounded.
-    assert len(refine_calls) == len(map_calls)
-    assert result == f"Recap draft {len(refine_calls)}"  # the LAST refine call's output
-    # Calls interleave map/refine per chunk, in order — not every map first
-    # followed by a single combine call.
-    assert [c["system"] for c in calls] == [
-        ai_module._SUMMARIZE_TRANSCRIPT_CHUNK_SYSTEM if i % 2 == 0 else ai_module._SUMMARIZE_TRANSCRIPT_REFINE_SYSTEM
-        for i in range(len(calls))
-    ]
-    # The first refine call has no prior recap to build on; each later one
-    # is fed the PREVIOUS refine call's own output — a fixed-size "recap so
-    # far" — never a concatenation of every part processed up to that point.
-    assert "none yet" in refine_calls[0]["content"].lower()
-    for i in range(1, len(refine_calls)):
-        assert f"Recap draft {i}" in refine_calls[i]["content"]
+    # One call per chunk, every one using the SAME per-part system prompt —
+    # there's no separate "combine" call at all.
+    assert len(calls) > 1
+    assert all(c["system"] == ai_module._SUMMARIZE_TRANSCRIPT_PART_SYSTEM for c in calls)
+    # The final result is exactly the part-summaries joined in order — no
+    # further LLM call ever sees the combined result.
+    expected = "\n\n".join(f"Summary of part {i}." for i in range(1, len(calls) + 1))
+    assert result == expected
 
 
 @pytest.mark.asyncio
-async def test_on_progress_called_once_per_chunk_before_each_extraction_call(monkeypatch):
+async def test_part_summaries_receive_only_their_own_chunk_never_the_whole_transcript(monkeypatch):
+    """The whole point of chunking: no single call ever sees more than one
+    chunk's worth of raw transcript text, regardless of session length."""
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
+    seen_lengths = []
+
+    async def fake_generate_chat(messages, system="", model=""):
+        seen_lengths.append(len(messages[0]["content"]))
+        return "part summary"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    long_transcript = ("The party explored the ruins. " * 60).strip()
+    await ai_module.summarize_transcript(long_transcript)
+
+    assert len(seen_lengths) > 1
+    assert all(length <= 50 for length in seen_lengths)
+
+
+@pytest.mark.asyncio
+async def test_recap_instructions_applied_to_every_part_call(monkeypatch):
+    """With no final combine call, a GM's steering (World.recap_instructions
+    — tone/language/focus) has to reach every part call directly, since
+    each part's summary is final as written — there's no later call where
+    it could be applied instead."""
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
+    systems_seen = []
+
+    async def fake_generate_chat(messages, system="", model=""):
+        systems_seen.append(system)
+        return "part summary"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    long_transcript = ("The party explored the ruins. " * 30).strip()
+    await ai_module.summarize_transcript(long_transcript, extra_instructions="write in French")
+
+    assert len(systems_seen) > 1
+    assert all("write in French" in s for s in systems_seen)
+
+
+@pytest.mark.asyncio
+async def test_on_progress_called_once_per_part_before_each_call(monkeypatch):
     """on_progress(current, total) is the one real, measurable progress
     signal in this whole pipeline (Whisper's own transcription has none at
     all — see transcribe_audio) — audio_jobs.py persists it to the job row
@@ -147,7 +179,7 @@ async def test_on_progress_called_once_per_chunk_before_each_extraction_call(mon
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
 
     async def fake_generate_chat(messages, system="", model=""):
-        return "[part]" if system == ai_module._SUMMARIZE_TRANSCRIPT_CHUNK_SYSTEM else "Final recap."
+        return "part summary"
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
 
     progress_calls = []
@@ -172,35 +204,14 @@ async def test_on_progress_not_called_for_a_short_unchunked_transcript(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_long_transcript_propagates_a_map_step_failure(monkeypatch):
-    call_count = {"n": 0}
-
-    async def fake_generate_chat(messages, system="", model=""):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return "[AI unavailable: ConnectionError: Failed to connect to Ollama.]"
-        return "[events]"
-
-    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
-    long_transcript = ("The party explored the ruins. " * 30).strip()
-    result = await ai_module.summarize_transcript(long_transcript)
-
-    assert result.startswith("[AI unavailable")
-    # Stops at the failing chunk's extraction call rather than continuing on
-    # to refine a recap out of an error string as if it were content.
-    assert call_count["n"] == 1
-
-
-@pytest.mark.asyncio
-async def test_long_transcript_propagates_a_refine_step_failure(monkeypatch):
+async def test_long_transcript_propagates_a_part_summary_failure(monkeypatch):
     call_count = {"n": 0}
 
     async def fake_generate_chat(messages, system="", model=""):
         call_count["n"] += 1
         if call_count["n"] == 2:
             return "[AI unavailable: ConnectionError: Failed to connect to Ollama.]"
-        return "[events]"
+        return "part summary"
 
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
@@ -208,7 +219,6 @@ async def test_long_transcript_propagates_a_refine_step_failure(monkeypatch):
     result = await ai_module.summarize_transcript(long_transcript)
 
     assert result.startswith("[AI unavailable")
-    # The first chunk's extraction (call 1) succeeded; its refine call
-    # (call 2) is what fails here — stops immediately rather than feeding
-    # the error string back in as "the recap so far" for the next chunk.
+    # Stops at the failing part rather than continuing on to join an error
+    # string into the recap as if it were content.
     assert call_count["n"] == 2

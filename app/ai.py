@@ -676,26 +676,16 @@ _SUMMARIZE_TRANSCRIPT_SYSTEM = (
     "that aren't in the transcript. Respond with the recap text only, no preamble or commentary."
 )
 
-_SUMMARIZE_TRANSCRIPT_CHUNK_SYSTEM = (
+_SUMMARIZE_TRANSCRIPT_PART_SYSTEM = (
     "You are a scribe for a tabletop RPG campaign. Below is ONE PART of a longer raw Whisper "
     "transcript of an actual-play session recording — expect filler words, misheard names, no "
-    "punctuation structure, and this excerpt starting and ending mid-scene. Extract what "
-    "happened in this part as a terse, factual list of events (who did what, what was learned, "
-    "what changed) — not polished prose yet, since this will be combined with summaries of the "
-    "other parts afterward. Skip out-of-character chatter, rules discussion, and filler. Don't "
-    "invent details that aren't in the text. Respond with the extracted events only, no preamble."
-)
-
-_SUMMARIZE_TRANSCRIPT_REFINE_SYSTEM = (
-    "You are a scribe for a tabletop RPG campaign, writing a session recap incrementally as "
-    "you go through a transcript in chronological order. You'll be given the RECAP SO FAR "
-    "(empty if this is the first part) and NEW EVENTS extracted from the next part of the "
-    "transcript. Rewrite the recap into a complete, updated narrative in flowing prose (a few "
-    "paragraphs, past tense, third person) that naturally weaves in the new events — not the "
-    "new events appended on, but the whole recap re-told as one continuous narrative. Preserve "
-    "every concrete event, name, and detail from BOTH the existing recap and the new events; "
-    "don't drop anything already in the recap so far, and don't invent anything not implied by "
-    "either. Respond with the complete updated recap text only, no preamble or commentary."
+    "punctuation structure, and this excerpt starting and ending mid-scene. Turn just this part "
+    "into a short, readable narrative summary in flowing prose (past tense, third person) — it "
+    "will be appended directly after the summaries of the earlier parts (in order) to form the "
+    "full session recap, so don't add your own preamble, conclusion, or reference to \"the rest "
+    "of the summary\" — just narrate what happened in this part. Skip out-of-character chatter, "
+    "rules discussion, and filler. Don't invent details that aren't in the text. Respond with "
+    "this part's summary only, no preamble or commentary."
 )
 
 # A transcript longer than fits comfortably in one context window (a
@@ -752,53 +742,50 @@ def _split_transcript_into_chunks(transcript: str, chunk_chars: int) -> list[str
 def _with_instructions(system: str, extra_instructions: str) -> str:
     """Append a GM's free-text steering (World.recap_instructions — e.g.
     "write the summary in Spanish", "focus only on combat") onto a base
-    system prompt. Applied only to the calls that produce the final,
-    human-facing recap text — not the per-chunk extraction step below, which
-    deliberately produces a terse scratch list rather than polished prose;
-    each refine step still gets a chance to apply language/tone/focus every
-    time it turns the next chunk's extracted events into an updated recap."""
+    system prompt."""
     if not extra_instructions:
         return system
     return f"{system}\n\nAdditional instructions from the GM (follow these too): {extra_instructions}"
 
 
-async def _refine_recap(running_recap: str, new_events: str, model: str, extra_instructions: str) -> str:
-    system = _with_instructions(_SUMMARIZE_TRANSCRIPT_REFINE_SYSTEM, extra_instructions)
-    user_content = (
-        f"RECAP SO FAR:\n{running_recap or '(none yet — this is the first part)'}\n\n"
-        f"NEW EVENTS:\n{new_events}"
-    )
-    return await generate_chat([{"role": "user", "content": user_content}], system=system, model=model)
-
-
 async def summarize_transcript(transcript: str, model: str = "", extra_instructions: str = "", on_progress=None) -> str:
     """Turn a raw Whisper transcript (see transcribe_audio) of a session
     recording into a narrative recap. Transcripts that fit in one context
-    window go through a single generate_chat call, same as before; longer
-    ones are chunked and processed with a map-then-refine chain — see
-    _transcript_chunk_char_budget.
+    window go through a single generate_chat call, same as before.
 
-    Each chunk is first mapped to a terse extracted-events list (same as
-    before), then folded into a running recap one chunk at a time via
-    _refine_recap, rather than collecting every chunk's extracted events
-    and combining them all in a single final call. The single-call combine
-    step used to have to fit ALL the chunk summaries in one context window —
-    for a long enough transcript (and therefore enough chunks), that blob
-    could itself overflow the same context budget chunking exists to avoid,
-    silently dropping content from the recap exactly like the un-chunked
-    case chunking was built to fix. Refining one chunk at a time keeps every
-    single call bounded to one chunk's worth of new material plus the
-    current running recap, which stays roughly recap-sized rather than
-    growing with the number of chunks.
+    A longer transcript is split into chunks (see
+    _transcript_chunk_char_budget) and each chunk is summarized into its
+    own readable prose paragraph(s) independently; the final recap is just
+    those part-summaries joined together IN ORDER, with no further LLM
+    call over the combined result. Two designs were tried and rejected
+    before landing here:
+
+    - A single "combine every part summary into one final recap" call:
+      that combined blob has to fit in one context window too, and for a
+      long enough session (enough chunks) it could overflow the same
+      budget chunking exists to avoid in the first place.
+    - An iterative "refine the recap so far with this next part's events"
+      chain, one call per chunk: real models (especially smaller/local
+      ones) drift toward whatever was rewritten most recently across
+      repeated rewrite passes — a GM reported a recap that covered only
+      the tail of a session, everything before the last couple of parts
+      silently dropped.
+
+    Neither problem can happen here: nothing ever asks a model to look at
+    the whole recap at once. The tradeoff is a recap built from N
+    independently-written paragraphs rather than one seamlessly blended
+    narrative — transitions between parts can read a little abruptly, but
+    nothing from any part is ever at risk of being silently dropped or
+    truncated, at any transcript length.
 
     Whisper's own transcription is never chunked (transcribe_audio sends the
     whole file in one call, with no progress signal at all) — this chunking
     is purely over the resulting TEXT so a long transcript doesn't blow the
     model's context window. `on_progress(current, total)`, if given, is
-    called before each chunk's extraction call (current is 1-based —
-    "currently on part 2 of 5") so a caller (audio_jobs.py) can persist real
-    progress instead of a bare "summarizing" placeholder. Never called at
-    all for a short, unchunked transcript."""
+    called before each part's summarize call (current is 1-based —
+    "currently on part 2 of 5") so a caller (audio_jobs.py) can persist
+    real progress instead of a bare "summarizing" placeholder. Never
+    called at all for a short, unchunked transcript."""
     transcript = (transcript or "").strip()
     if not transcript:
         return ""
@@ -808,17 +795,16 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
         return await generate_chat([{"role": "user", "content": transcript}], system=system, model=model)
 
     _log.info("summarize_transcript: chunking into %d part(s) (%d chars total)", len(chunks), len(transcript))
-    running_recap = ""
+    system = _with_instructions(_SUMMARIZE_TRANSCRIPT_PART_SYSTEM, extra_instructions)
+    part_summaries = []
     for i, chunk in enumerate(chunks):
         if on_progress:
             on_progress(i + 1, len(chunks))
-        part = await generate_chat([{"role": "user", "content": chunk}], system=_SUMMARIZE_TRANSCRIPT_CHUNK_SYSTEM, model=model)
+        part = await generate_chat([{"role": "user", "content": chunk}], system=system, model=model)
         if part.startswith("[AI "):
             return part  # propagate the failure rather than weaving an error string into the recap
-        running_recap = await _refine_recap(running_recap, part, model, extra_instructions)
-        if running_recap.startswith("[AI "):
-            return running_recap
-    return running_recap
+        part_summaries.append(part.strip())
+    return "\n\n".join(part_summaries)
 
 
 async def status() -> dict:
