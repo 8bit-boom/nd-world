@@ -1161,6 +1161,16 @@ async def _transcribe_one_file(path: Path, glossary: str, language: str) -> str:
     }
     if glossary.strip():
         data["prompt"] = glossary.strip()
+        # Without this, whisper.cpp only loads `prompt` into its rolling
+        # 30-second decode context (prompt_past1), which gets overwritten
+        # by decoded tokens after the very first window — so the glossary
+        # only actually biased the first ~30s of a recording. This flag
+        # (verified against whisper.cpp's source, src/whisper.cpp: the
+        # carry_initial_prompt branch keeps it in the static prompt_past0,
+        # prepended to every window instead) makes it apply for the whole
+        # file. Older whisper.cpp servers that don't recognize this field
+        # simply ignore it — no compatibility risk.
+        data["carry_initial_prompt"] = "true"
     try:
         async with _httpx.AsyncClient(timeout=WHISPER_TIMEOUT_SECONDS) as c:
             with path.open("rb") as f:
@@ -1205,7 +1215,11 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "", o
     invented terms) is passed through as whisper.cpp's "prompt" field, which
     biases decoding toward those spellings/vocabulary without being
     transcribed itself (this is whisper_full's initial_prompt, not a chat
-    prompt) — blank by default, so most callers are unaffected.
+    prompt) — blank by default, so most callers are unaffected. Sent
+    alongside carry_initial_prompt=true so the bias applies for the whole
+    recording, not just its first ~30s window (see _transcribe_one_file);
+    a non-empty glossary is re-sent identically for every audio chunk, so
+    it stays in effect across chunk boundaries too.
 
     `language` (an ISO-639-1 code like "ru", or "auto"/"" for auto-detect) is
     always sent as whisper.cpp's "language" field, even when blank — omitting

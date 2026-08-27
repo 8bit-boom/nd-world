@@ -214,6 +214,35 @@ async def test_transcribe_audio_sends_anti_repetition_decode_params(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_transcribe_audio_glossary_carries_across_the_whole_recording(tmp_path, monkeypatch):
+    """Without carry_initial_prompt=true, whisper.cpp only loads "prompt"
+    into its rolling 30-second decode context — overwritten by decoded
+    tokens after the first window, so a glossary only actually biased the
+    first ~30s of a recording. Both fields must be sent together whenever
+    a glossary is set."""
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    captured = _patch_httpx(monkeypatch, response=_FakeResponse(200, {"text": "ok"}))
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00")
+    await ai_module.transcribe_audio(f, glossary="Aldric, Vaelthorne, the Sundered Coast")
+    data = captured["post_kwargs"]["data"]
+    assert data["prompt"] == "Aldric, Vaelthorne, the Sundered Coast"
+    assert data["carry_initial_prompt"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_no_glossary_omits_carry_initial_prompt(tmp_path, monkeypatch):
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    captured = _patch_httpx(monkeypatch, response=_FakeResponse(200, {"text": "ok"}))
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00")
+    await ai_module.transcribe_audio(f)
+    data = captured["post_kwargs"]["data"]
+    assert "prompt" not in data
+    assert "carry_initial_prompt" not in data
+
+
+@pytest.mark.asyncio
 async def test_transcribe_audio_http_error_raises_with_detail(tmp_path, monkeypatch):
     ai_module.set_whisper_override("http://127.0.0.1:8090")
     _patch_httpx(monkeypatch, response=_FakeResponse(500, text="internal error"))
@@ -486,6 +515,39 @@ async def test_transcribe_audio_chunks_long_clip_and_reports_progress(tmp_path, 
     result = await ai_module.transcribe_audio(f, on_progress=lambda c, t: progress_calls.append((c, t)))
     assert result == "part 0\npart 1\npart 2"
     assert progress_calls == [(1, 3), (2, 3), (3, 3)]
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_glossary_is_resent_identically_to_every_chunk(tmp_path, monkeypatch):
+    """carry_initial_prompt fixes the bias only lasting ~30s WITHIN one
+    /inference call — this covers the separate question of whether the
+    glossary itself survives being split into multiple chunked calls: each
+    chunk is its own /inference request, so the same glossary text must be
+    passed to _transcribe_one_file for every chunk, not just the first."""
+    chunk_paths = [tmp_path / "c1.mp3", tmp_path / "c2.mp3", tmp_path / "c3.mp3"]
+    for p in chunk_paths:
+        p.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 3600.0
+
+    async def fake_split(path, chunk_seconds):
+        return chunk_paths, None
+
+    received_glossaries = []
+
+    async def fake_transcribe_one(path, glossary, language):
+        received_glossaries.append(glossary)
+        return f"part {chunk_paths.index(path)}"
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", fake_transcribe_one)
+
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"x")
+    await ai_module.transcribe_audio(f, glossary="Aldric, Vaelthorne")
+    assert received_glossaries == ["Aldric, Vaelthorne"] * 3
 
 
 @pytest.mark.asyncio
