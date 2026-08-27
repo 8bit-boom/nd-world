@@ -821,6 +821,14 @@ def _migrate():
             ("finished_at",         "DATETIME", True),
             ("created_at",          "DATETIME", True),
             ("updated_at",          "DATETIME", True),
+            # Job-survival columns (see app/job_shutdown.py) — let a resume
+            # after a server restart find the working audio again and
+            # continue from the last completed chunk instead of starting
+            # the whole job over.
+            ("audio_path",          "VARCHAR(1024) DEFAULT ''", True),
+            ("delete_after",        "BOOLEAN DEFAULT 1", True),
+            ("checkpoint_json",     "TEXT DEFAULT ''", True),
+            ("resumed_count",       "INTEGER DEFAULT 0", True),
         ], foreign_keys=[
             ("world_id", "worlds", "id"),
             ("created_by_user_id", "users", "id"),
@@ -836,6 +844,9 @@ def _migrate():
             ("result_urls_json",    "TEXT DEFAULT '[]'", True),
             ("created_at",          "DATETIME", True),
             ("updated_at",          "DATETIME", True),
+            # See app/job_shutdown.py — caps how many times a boot can
+            # auto-restart this job after an interrupted server restart.
+            ("resumed_count",       "INTEGER DEFAULT 0", True),
         ], foreign_keys=[
             ("world_id", "worlds", "id"),
             ("created_by_user_id", "users", "id"),
@@ -853,6 +864,9 @@ def _migrate():
             ("result",              "TEXT DEFAULT ''", True),
             ("created_at",          "DATETIME", True),
             ("updated_at",          "DATETIME", True),
+            # See app/job_shutdown.py — caps how many times a boot can
+            # auto-restart this job after an interrupted server restart.
+            ("resumed_count",       "INTEGER DEFAULT 0", True),
         ], foreign_keys=[
             ("world_id", "worlds", "id"),
             ("created_by_user_id", "users", "id"),

@@ -538,6 +538,133 @@ def test_heals_pre_nested_albums_schema(tmp_path, monkeypatch):
     engine.dispose()
 
 
+def test_heals_pre_job_resume_audio_jobs_schema(tmp_path, monkeypatch):
+    """An audio_jobs table predating audio_path/delete_after/checkpoint_json/
+    resumed_count (added so a transcription/summarization job can resume
+    from its last checkpoint after a server restart instead of losing the
+    work — see app/job_shutdown.py) must heal onto usable defaults, and a
+    pre-existing row's own data (its transcript in particular) must survive
+    the heal untouched."""
+    from app.models import AudioJob
+
+    db_path = tmp_path / "pre_job_resume_audio.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE worlds (id INTEGER PRIMARY KEY, name VARCHAR(256) NOT NULL, "
+            "slug VARCHAR(64) UNIQUE NOT NULL, description VARCHAR(512), accent VARCHAR(16), "
+            "players_see_party BOOLEAN, rules_md TEXT, home_welcome_md TEXT, "
+            "home_sections_json TEXT, custom_kinds_json TEXT, created_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO worlds (id, name, slug, home_sections_json, custom_kinds_json) "
+            "VALUES (1, 'World', 'world', '[]', '[]')"
+        ))
+        conn.execute(text(
+            "CREATE TABLE audio_jobs (id INTEGER PRIMARY KEY, world_id INTEGER NOT NULL, "
+            "created_by_user_id INTEGER, purpose VARCHAR(32) NOT NULL, game_session_id INTEGER, "
+            "filename VARCHAR(256), status VARCHAR(32), error TEXT, transcript TEXT, recap TEXT, "
+            "attachment_url VARCHAR(512), model VARCHAR(128), extra_instructions TEXT, "
+            "chunk_current INTEGER, chunk_total INTEGER, run_started_at DATETIME, "
+            "finished_at DATETIME, created_at DATETIME, updated_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO audio_jobs (id, world_id, purpose, status, transcript) "
+            "VALUES (1, 1, 'session_recap', 'done', 'the party explored the ruins')"
+        ))
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        cols = {r[1] for r in conn.execute(text("PRAGMA table_info(audio_jobs)")).fetchall()}
+    assert {"audio_path", "delete_after", "checkpoint_json", "resumed_count"} <= cols
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, 1)
+        assert job.transcript == "the party explored the ruins"  # untouched by the heal
+        assert job.audio_path == ""
+        assert job.delete_after is True
+        assert job.checkpoint_json == ""
+        assert job.resumed_count == 0
+    finally:
+        db.close()
+
+    engine.dispose()
+
+
+def test_heals_pre_job_resume_image_and_chat_jobs_schema(tmp_path, monkeypatch):
+    """image_jobs/chat_jobs tables predating resumed_count (see
+    app/job_shutdown.py — caps how many times a job auto-restarts itself
+    after being interrupted by a server restart) must heal onto 0, not
+    crash resume_interrupted_jobs on the first boot after upgrade."""
+    from app.models import ChatJob, ImageJob
+
+    db_path = tmp_path / "pre_job_resume_image_chat.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE worlds (id INTEGER PRIMARY KEY, name VARCHAR(256) NOT NULL, "
+            "slug VARCHAR(64) UNIQUE NOT NULL, description VARCHAR(512), accent VARCHAR(16), "
+            "players_see_party BOOLEAN, rules_md TEXT, home_welcome_md TEXT, "
+            "home_sections_json TEXT, custom_kinds_json TEXT, created_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO worlds (id, name, slug, home_sections_json, custom_kinds_json) "
+            "VALUES (1, 'World', 'world', '[]', '[]')"
+        ))
+        conn.execute(text(
+            "CREATE TABLE image_jobs (id INTEGER PRIMARY KEY, world_id INTEGER NOT NULL, "
+            "created_by_user_id INTEGER, prompt TEXT, params_json TEXT, status VARCHAR(32), "
+            "error TEXT, result_urls_json TEXT, created_at DATETIME, updated_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO image_jobs (id, world_id, prompt, status, result_urls_json) "
+            "VALUES (1, 1, 'a neon skyline', 'done', '[\"/uploads/ai-images/x.png\"]')"
+        ))
+        conn.execute(text(
+            "CREATE TABLE chat_jobs (id INTEGER PRIMARY KEY, world_id INTEGER NOT NULL, "
+            "created_by_user_id INTEGER, prompt TEXT, messages_json TEXT, system TEXT, "
+            "model VARCHAR(128), options_json TEXT, status VARCHAR(32), error TEXT, result TEXT, "
+            "created_at DATETIME, updated_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO chat_jobs (id, world_id, prompt, status, result) "
+            "VALUES (1, 1, 'summarize the lore', 'done', 'a short answer')"
+        ))
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        image_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(image_jobs)")).fetchall()}
+        chat_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(chat_jobs)")).fetchall()}
+    assert "resumed_count" in image_cols
+    assert "resumed_count" in chat_cols
+
+    db = SessionLocal()
+    try:
+        image_job = db.get(ImageJob, 1)
+        assert image_job.resumed_count == 0
+        assert image_job.result_urls_json == '["/uploads/ai-images/x.png"]'  # untouched by the heal
+        chat_job = db.get(ChatJob, 1)
+        assert chat_job.resumed_count == 0
+        assert chat_job.result == "a short answer"
+    finally:
+        db.close()
+
+    engine.dispose()
+
+
 def test_heals_pre_two_step_auth_schema(tmp_path, monkeypatch):
     """A users table predating totp_secret/totp_enabled/totp_backup_codes_json
     (added for optional two-step authentication, see app/totp.py) must heal

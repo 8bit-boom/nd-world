@@ -756,10 +756,11 @@ class AudioJob(Base):
     independent of any one HTTP connection, so it survives the browser tab
     that started it being closed; every state transition is persisted here
     so a GM can navigate away and check back later (even from a different
-    browser) via the recent-jobs list. Does NOT survive the server process
-    itself restarting mid-job — see app/audio_jobs.py's startup sweep,
-    which marks any job still in progress at boot as failed rather than
-    leaving it stuck."""
+    browser) via the recent-jobs list. Survives the server process itself
+    restarting mid-job: audio_path/checkpoint_json let a routine restart
+    resume from the last completed chunk instead of losing the work — see
+    app/job_shutdown.py for the shutdown-side mechanism and
+    app/audio_jobs.py's resume_interrupted_jobs for the boot-side one."""
     __tablename__ = "audio_jobs"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -800,6 +801,26 @@ class AudioJob(Base):
     # _combined_recap_instructions in app/audio_jobs.py. purpose=
     # "session_recap" only; ignored for "attachment", which never summarizes.
     extra_instructions = Column(Text, nullable=True)
+    # Absolute path of the working audio file, persisted so a resume after a
+    # server restart can find it again — _run_job used to only ever see this
+    # as a function argument, which a fresh process obviously doesn't have.
+    audio_path = Column(String(1024), default="")
+    # Whether _run_job owns this file and should delete it when done (True
+    # for purpose="session_recap" — working storage, not the artifact) or it
+    # IS the artifact the caller keeps (False for purpose="attachment").
+    delete_after = Column(Boolean, default=True)
+    # Set by app.ai.transcribe_audio's/summarize_transcript's on_checkpoint
+    # callback after each chunk — see their docstrings for the exact shape.
+    # Cleared once the job reaches a terminal status or moves to the next
+    # phase (transcribe -> summarize). Lets a resume skip chunks already
+    # done instead of redoing the whole job from scratch.
+    checkpoint_json = Column(Text, default="")
+    # How many times this job has auto-resumed itself after being
+    # interrupted by a server restart — capped at job_shutdown.
+    # MAX_AUTO_RESUMES to avoid an infinite crash-loop-and-retry if the
+    # interruption is actually caused by something that crashes the process
+    # itself (e.g. a pathological input), not a routine deploy.
+    resumed_count = Column(Integer, default=0)
     # Real chunk progress during status="summarizing" OR "transcribing" —
     # only set when the transcript/audio is long enough to need chunking
     # (see app.ai.summarize_transcript's and transcribe_audio's on_progress
@@ -830,9 +851,11 @@ class ImageJob(Base):
     waiting on one HTTP request isn't practical. The actual work runs as a
     background asyncio task in the server process, independent of any one
     HTTP connection, so it survives the browser tab that started it being
-    closed. Does NOT survive the server process itself restarting mid-job —
-    see image_jobs.py's startup sweep, which marks any job still in
-    progress at boot as failed rather than leaving it stuck."""
+    closed. A server restart mid-job restarts the generation from scratch
+    on the next boot (up to job_shutdown.MAX_AUTO_RESUMES times, tracked by
+    resumed_count below) rather than truly resuming it — image generation is
+    one opaque remote call to SwarmUI/ComfyUI with no intermediate state to
+    checkpoint, unlike AudioJob's per-chunk transcription/summarization."""
     __tablename__ = "image_jobs"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -847,6 +870,10 @@ class ImageJob(Base):
     status = Column(String(32), default="pending")
     error = Column(Text, default="")
     result_urls_json = Column(Text, default="[]")
+    # How many times this job has auto-restarted itself after being
+    # interrupted by a server restart — see ImageJob's own docstring and
+    # job_shutdown.MAX_AUTO_RESUMES.
+    resumed_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -859,9 +886,12 @@ class ChatJob(Base):
     long context) that keeping the tab open and connected isn't practical.
     The actual work runs as a background asyncio task in the server process,
     independent of any one HTTP connection, so it survives the browser tab
-    that started it being closed. Does NOT survive the server process itself
-    restarting mid-job — see chat_jobs.py's startup sweep, which marks any
-    job still in progress at boot as failed rather than leaving it stuck."""
+    that started it being closed. A server restart mid-job restarts the
+    completion from scratch on the next boot (up to job_shutdown.
+    MAX_AUTO_RESUMES times, tracked by resumed_count below) rather than
+    truly resuming it — this is one opaque non-streaming generate_chat call
+    with no intermediate state to checkpoint, unlike AudioJob's per-chunk
+    transcription/summarization."""
     __tablename__ = "chat_jobs"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -879,6 +909,10 @@ class ChatJob(Base):
     status = Column(String(32), default="pending")
     error = Column(Text, default="")
     result = Column(Text, default="")
+    # How many times this job has auto-restarted itself after being
+    # interrupted by a server restart — see ChatJob's own docstring and
+    # job_shutdown.MAX_AUTO_RESUMES.
+    resumed_count = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
