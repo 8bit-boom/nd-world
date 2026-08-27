@@ -199,11 +199,14 @@
       </div>
       <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Ollama generation tuning</h2>
       <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
-        Per-request options sent with every AI chat call (recaps, Ask AI, fact
-        extraction) — not the same as the server-level settings (KV cache type,
-        flash attention, GPU visibility) that live in the Ollama container's own
-        environment variables and need a container restart; see docker-compose.yml.
-        Leave any field blank to use Ollama's/the model's own default.
+        Two different things live on this page. <strong>Generation tuning</strong> below is
+        sent with every AI request (recaps, Ask AI, fact extraction) — it applies
+        immediately, no restart. <strong>Server tuning</strong> further down configures the
+        Ollama <em>process</em> itself (flash attention, KV cache type, parallelism);
+        Ollama only reads those at start-up and has no runtime API for them, so saving
+        that section writes them to a file the "ollama" container reads on its next
+        restart, and tells you when a restart is due. Leave any field blank here to fall
+        back to Ollama's/the model's own default.
       </p>
       <div class="form-group">
         <label for="ollama-temperature">Temperature (0–2)</label>
@@ -234,18 +237,6 @@
         <input id="ollama-seed" type="number" step="1" name="ollama_seed" value="{{ settings.ollama_seed if settings.ollama_seed is not none else '' }}" placeholder="random">
       </div>
       <div class="form-group">
-        <label for="ollama-mirostat">Mirostat mode (0 off, 1, or 2)</label>
-        <input id="ollama-mirostat" type="number" step="1" min="0" max="2" name="ollama_mirostat" value="{{ settings.ollama_mirostat if settings.ollama_mirostat is not none else '' }}" placeholder="0 (off)">
-      </div>
-      <div class="form-group">
-        <label for="ollama-mirostat-tau">Mirostat tau</label>
-        <input id="ollama-mirostat-tau" type="number" step="0.1" min="0" max="100" name="ollama_mirostat_tau" value="{{ settings.ollama_mirostat_tau if settings.ollama_mirostat_tau is not none else '' }}" placeholder="model default">
-      </div>
-      <div class="form-group">
-        <label for="ollama-mirostat-eta">Mirostat eta</label>
-        <input id="ollama-mirostat-eta" type="number" step="0.01" min="0" max="10" name="ollama_mirostat_eta" value="{{ settings.ollama_mirostat_eta if settings.ollama_mirostat_eta is not none else '' }}" placeholder="model default">
-      </div>
-      <div class="form-group">
         <label for="ollama-num-gpu">GPU layers (num_gpu, higher = more offloaded to VRAM)</label>
         <input id="ollama-num-gpu" type="number" step="1" min="0" name="ollama_num_gpu" value="{{ settings.ollama_num_gpu if settings.ollama_num_gpu is not none else '' }}" placeholder="model default">
       </div>
@@ -253,6 +244,147 @@
         <label for="ollama-keep-alive">Keep-alive (how long to keep the model loaded, e.g. 5m, 1h, -1, 0)</label>
         <input id="ollama-keep-alive" name="ollama_keep_alive" value="{{ settings.ollama_keep_alive or '' }}" placeholder="5m (Ollama default)">
       </div>
+
+      <details style="margin:.8rem 0">
+        <summary style="cursor:pointer;font-size:.82rem;color:var(--text-dim)">Advanced sampling &amp; runtime</summary>
+        <div style="margin-top:.8rem">
+          <p style="font-size:.78rem;color:var(--text-dim);margin-bottom:.8rem">
+            num_ctx/num_gpu above and num_batch/num_thread/main_gpu/use_mmap below all take
+            effect on the model's next load (a few seconds), not mid-generation. Everything
+            else here applies to the very next request.
+          </p>
+          <div class="form-group">
+            <label for="ollama-min-p">Min P (0–1)</label>
+            <input id="ollama-min-p" type="number" step="0.01" min="0" max="1" name="ollama_min_p" value="{{ settings.ollama_min_p if settings.ollama_min_p is not none else '' }}" placeholder="model default">
+          </div>
+          <div class="form-group">
+            <label for="ollama-typical-p">Typical P (0–1)</label>
+            <input id="ollama-typical-p" type="number" step="0.01" min="0" max="1" name="ollama_typical_p" value="{{ settings.ollama_typical_p if settings.ollama_typical_p is not none else '' }}" placeholder="model default">
+          </div>
+          <div class="form-group">
+            <label for="ollama-repeat-last-n">Repeat look-back (repeat_last_n, -1 = whole context)</label>
+            <input id="ollama-repeat-last-n" type="number" step="1" min="-1" name="ollama_repeat_last_n" value="{{ settings.ollama_repeat_last_n if settings.ollama_repeat_last_n is not none else '' }}" placeholder="model default">
+          </div>
+          <div class="form-group">
+            <label for="ollama-presence-penalty">Presence penalty</label>
+            <input id="ollama-presence-penalty" type="number" step="0.01" min="-2" max="2" name="ollama_presence_penalty" value="{{ settings.ollama_presence_penalty if settings.ollama_presence_penalty is not none else '' }}" placeholder="model default">
+          </div>
+          <div class="form-group">
+            <label for="ollama-frequency-penalty">Frequency penalty</label>
+            <input id="ollama-frequency-penalty" type="number" step="0.01" min="-2" max="2" name="ollama_frequency_penalty" value="{{ settings.ollama_frequency_penalty if settings.ollama_frequency_penalty is not none else '' }}" placeholder="model default">
+          </div>
+          <div class="form-group">
+            <label for="ollama-num-keep">Tokens kept on context shift (num_keep)</label>
+            <input id="ollama-num-keep" type="number" step="1" min="0" name="ollama_num_keep" value="{{ settings.ollama_num_keep if settings.ollama_num_keep is not none else '' }}" placeholder="model default">
+          </div>
+          <div class="form-group">
+            <label for="ollama-num-batch">Batch size (num_batch)</label>
+            <input id="ollama-num-batch" type="number" step="1" min="1" name="ollama_num_batch" value="{{ settings.ollama_num_batch if settings.ollama_num_batch is not none else '' }}" placeholder="model default">
+          </div>
+          <div class="form-group">
+            <label for="ollama-num-thread">CPU threads (num_thread, 0 = auto)</label>
+            <input id="ollama-num-thread" type="number" step="1" min="0" name="ollama_num_thread" value="{{ settings.ollama_num_thread if settings.ollama_num_thread is not none else '' }}" placeholder="auto">
+          </div>
+          <div class="form-group">
+            <label for="ollama-main-gpu">Primary GPU index (main_gpu, multi-GPU only)</label>
+            <input id="ollama-main-gpu" type="number" step="1" min="0" name="ollama_main_gpu" value="{{ settings.ollama_main_gpu if settings.ollama_main_gpu is not none else '' }}" placeholder="0">
+          </div>
+          <div class="form-group">
+            <label for="ollama-use-mmap">Memory-map model file (use_mmap)</label>
+            <select id="ollama-use-mmap" name="ollama_use_mmap">
+              <option value="" {% if not settings.ollama_use_mmap %}selected{% endif %}>— default —</option>
+              <option value="1" {% if settings.ollama_use_mmap == '1' %}selected{% endif %}>On</option>
+              <option value="0" {% if settings.ollama_use_mmap == '0' %}selected{% endif %}>Off</option>
+            </select>
+          </div>
+        </div>
+      </details>
+
+      <details style="margin:.8rem 0">
+        <summary style="cursor:pointer;font-size:.82rem;color:var(--text-dim)">Deprecated (ignored by current Ollama)</summary>
+        <div style="margin-top:.8rem">
+          <p style="font-size:.78rem;color:var(--text-dim);margin-bottom:.8rem">
+            Current Ollama's Options struct has no mirostat fields at all — sending these logs
+            "invalid option provided" server-side and is otherwise ignored. Kept only for an
+            older Ollama server, and so a value you'd already saved here isn't silently
+            discarded.
+          </p>
+          <div class="form-group">
+            <label for="ollama-mirostat">Mirostat mode (0 off, 1, or 2)</label>
+            <input id="ollama-mirostat" type="number" step="1" min="0" max="2" name="ollama_mirostat" value="{{ settings.ollama_mirostat if settings.ollama_mirostat is not none else '' }}" placeholder="0 (off)">
+          </div>
+          <div class="form-group">
+            <label for="ollama-mirostat-tau">Mirostat tau</label>
+            <input id="ollama-mirostat-tau" type="number" step="0.1" min="0" max="100" name="ollama_mirostat_tau" value="{{ settings.ollama_mirostat_tau if settings.ollama_mirostat_tau is not none else '' }}" placeholder="model default">
+          </div>
+          <div class="form-group">
+            <label for="ollama-mirostat-eta">Mirostat eta</label>
+            <input id="ollama-mirostat-eta" type="number" step="0.01" min="0" max="10" name="ollama_mirostat_eta" value="{{ settings.ollama_mirostat_eta if settings.ollama_mirostat_eta is not none else '' }}" placeholder="model default">
+          </div>
+        </div>
+      </details>
+
+      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">💾 Detected hardware</h2>
+      <div id="hw-panel" style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-bottom:1rem">
+        <div id="hw-summary" style="font-size:.82rem;color:var(--text-dim)">⏳ Detecting…</div>
+        <div id="hw-notes" style="font-size:.76rem;color:var(--text-dim);font-style:italic;margin-top:.3rem"></div>
+        <div class="form-group" style="margin-top:.7rem">
+          <label for="ollama-vram-override-mb">VRAM override (MB) — only if the card above wasn't detected</label>
+          <input id="ollama-vram-override-mb" type="number" step="1" min="0" name="ollama_vram_override_mb" value="{{ settings.ollama_vram_override_mb if settings.ollama_vram_override_mb is not none else '' }}" placeholder="e.g. 24576 for a 24 GB card" style="max-width:220px">
+        </div>
+        <div class="form-group" style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-top:.6rem">
+          <label for="hw-model" style="margin:0">Recommend settings for</label>
+          <select id="hw-model" style="max-width:280px"><option value="">— no models detected —</option></select>
+        </div>
+        <div id="hw-rec" style="margin-top:.6rem"></div>
+        <button type="button" id="hw-apply" class="btn-secondary" style="display:none;margin-top:.6rem">Apply recommended to the fields below</button>
+      </div>
+
+      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">🖥 Ollama server tuning (needs a restart)</h2>
+      <div id="ollama-srv-status" style="border:1px solid var(--border);border-radius:6px;padding:.7rem 1rem;font-size:.8rem;margin-bottom:1rem
+        {%- if not ollama_server_status.writable %};background:rgba(255,180,60,.1);border-color:#e0a030
+        {%- elif not ollama_server_status.wired %};background:rgba(255,180,60,.1);border-color:#e0a030
+        {%- elif ollama_server_status.pending %};background:rgba(0,255,200,.08);border-color:var(--neon)
+        {%- else %};color:var(--text-dim){% endif %}">
+        {% if not ollama_server_status.writable %}
+        ⚠ nd-world can't write to <code>{{ ollama_server_status.env_path }}</code>. Check the volume/permissions for <code>OLLAMA_CONFIG_DIR</code> — see docs/DEPLOYMENT.md.
+        {% elif not ollama_server_status.wired %}
+        ⚠ These will save, but this deployment's "ollama" service isn't reading them yet — it needs a one-time <code>docker-compose.yml</code> change (the shared <code>ollama-config</code> volume + entrypoint). See docs/DEPLOYMENT.md.
+        {% elif ollama_server_status.pending %}
+        ⚡ Ollama is still running with the previous server settings. Run this on the host, then <a href="/settings?tab=system">↺ reload this page</a>:
+        <div style="display:flex;align-items:center;gap:.5rem;margin-top:.5rem">
+          <code id="ollama-restart-cmd" style="background:var(--bg3);padding:.3rem .6rem;border-radius:3px;flex:1">{{ ollama_server_status.restart_command }}</code>
+          <button type="button" class="btn-secondary" onclick="ndCopyRestartCmd()">Copy</button>
+        </div>
+        <div style="font-size:.72rem;color:var(--text-dim);margin-top:.3rem">TrueNAS: <code>{{ ollama_server_status.restart_command_truenas }}</code></div>
+        {% else %}
+        ✓ Ollama is running with these settings.
+        {% endif %}
+      </div>
+      <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
+        The Ollama <em>process's</em> own environment — Ollama only reads these at start-up
+        and has no runtime API to change them. Saving writes them to a file the "ollama"
+        service sources at its next restart; a value saved here wins over the file's own
+        <code>.env</code>/compose defaults once applied, and leaving a field blank falls back
+        to whatever's already there.
+      </p>
+      {% for env_key, suffix, kind, spec, help_text in ollama_server_spec %}
+      <div class="form-group">
+        <label for="ollama-srv-{{ suffix|replace('_','-') }}">{{ env_key }}</label>
+        {% if kind == 'choice' %}
+        <select id="ollama-srv-{{ suffix|replace('_','-') }}" name="{{ ollama_form_prefix }}{{ suffix }}">
+          <option value="" {% if not ollama_server_env.get(env_key) %}selected{% endif %}>— default —</option>
+          {% for opt in spec %}
+          <option value="{{ opt }}" {% if ollama_server_env.get(env_key) == opt %}selected{% endif %}>{{ opt }}</option>
+          {% endfor %}
+        </select>
+        {% else %}
+        <input id="ollama-srv-{{ suffix|replace('_','-') }}" name="{{ ollama_form_prefix }}{{ suffix }}" value="{{ ollama_server_env.get(env_key, '') }}" placeholder="default">
+        {% endif %}
+        <small style="color:var(--text-dim)">{{ help_text }}</small>
+      </div>
+      {% endfor %}
+
       <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Optional extras</h2>
       <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
         Off by default to keep the nav bar focused — turn on whichever bundled lore extras
@@ -333,7 +465,146 @@ function switchSettingsTab(t) {
   document.getElementById('tab-' + t).classList.add('active');
   document.querySelectorAll('[id^="pane-"]').forEach(p => p.style.display = 'none');
   document.getElementById('pane-' + t).style.display = '';
+  if (t === 'system' && window.ndLoadHardwarePanel) window.ndLoadHardwarePanel();
 }
+
+// ── Server tuning: copy restart command ─────────────────────────────────────
+function ndFallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch (e) { /* best effort */ }
+  document.body.removeChild(ta);
+}
+function ndCopyRestartCmd() {
+  const el = document.getElementById('ollama-restart-cmd');
+  if (!el) return;
+  const text = el.textContent;
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).catch(() => ndFallbackCopy(text));
+  } else {
+    ndFallbackCopy(text);
+  }
+}
+
+// ── Detected hardware panel ──────────────────────────────────────────────────
+(function () {
+  const panel = document.getElementById('hw-panel');
+  if (!panel) return;
+  const summaryEl = document.getElementById('hw-summary');
+  const notesEl = document.getElementById('hw-notes');
+  const modelSelect = document.getElementById('hw-model');
+  const recEl = document.getElementById('hw-rec');
+  const applyBtn = document.getElementById('hw-apply');
+
+  const OLLAMA_SRV_SUFFIX = {
+    {% for env_key, suffix, kind, spec, help_text in ollama_server_spec %}
+    "{{ env_key }}": "{{ suffix }}",
+    {% endfor %}
+  };
+  const SRV_FORM_PREFIX = {{ ollama_form_prefix | tojson }};
+  const PREFERRED_MODEL = {{ (settings.ollama_model or env_ollama_model or '') | tojson }};
+
+  let loaded = false;
+  let currentModels = [];
+
+  function fmtMb(mb) {
+    if (mb == null) return '?';
+    return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb + ' MB';
+  }
+
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+  function renderSummary(hw) {
+    const gpuText = hw.gpus && hw.gpus.length
+      ? hw.gpus.map(g => `${esc(g.name || g.vendor)} (${fmtMb(g.vram_mb)})`).join(', ')
+      : (hw.vram_total_mb ? `~${fmtMb(hw.vram_total_mb)} VRAM (${esc(hw.vram_source)})` : 'no GPU detected');
+    summaryEl.innerHTML =
+      `🧠 ${esc(hw.cpu_model || 'Unknown CPU')} — ${hw.cpu_cores || '?'} cores` +
+      (hw.cpu_affinity ? ` (${hw.cpu_affinity} usable)` : '') + `<br>` +
+      `💾 RAM: ${fmtMb(hw.ram_total_mb)} total, ${fmtMb(hw.ram_available_mb)} available<br>` +
+      `🎮 GPU: ${gpuText}`;
+    notesEl.innerHTML = (hw.notes || []).map(n => `⚠ ${esc(n)}`).join('<br>');
+  }
+
+  function populateModelSelect(models) {
+    currentModels = models;
+    if (!models.length) {
+      modelSelect.innerHTML = '<option value="">— no models detected —</option>';
+      return;
+    }
+    modelSelect.innerHTML = models.map(m =>
+      `<option value="${esc(m.model)}">${esc(m.model)}${m.parameter_size ? ' (' + esc(m.parameter_size) + ')' : ''}</option>`
+    ).join('');
+    if (models.some(m => m.model === PREFERRED_MODEL)) modelSelect.value = PREFERRED_MODEL;
+  }
+
+  function renderRecommendation() {
+    const model = modelSelect.value;
+    const entry = currentModels.find(m => m.model === model);
+    if (!entry || !entry.recommendation) { recEl.innerHTML = ''; applyBtn.style.display = 'none'; return; }
+    const rec = entry.recommendation;
+    const chips = (obj, label) => {
+      const keys = Object.keys(obj || {});
+      if (!keys.length) return '';
+      return `<div style="margin-top:.3rem"><strong style="font-size:.76rem;color:var(--text-dim)">${label}:</strong> ` +
+        keys.map(k => `<code style="background:var(--bg3);padding:.15rem .4rem;border-radius:3px;margin-right:.3rem;font-size:.76rem">${esc(k)}=${esc(obj[k])}</code>`).join('') +
+        `</div>`;
+    };
+    recEl.innerHTML =
+      `<div style="font-size:.8rem">Fit: <strong>${esc(rec.fit)}</strong>` +
+      (rec.params_b ? ` — ~${rec.params_b}B params` : '') +
+      (rec.weights_mb ? `, ${fmtMb(rec.weights_mb)} on disk` : '') + `</div>` +
+      chips(rec.per_request, 'Per-request') +
+      chips(rec.server, 'Server (needs restart)') +
+      (rec.notes && rec.notes.length ? `<div style="font-size:.76rem;color:var(--text-dim);font-style:italic;margin-top:.3rem">${rec.notes.map(esc).join('<br>')}</div>` : '');
+    const hasAny = Object.keys(rec.per_request || {}).length || Object.keys(rec.server || {}).length;
+    applyBtn.style.display = hasAny ? '' : 'none';
+    applyBtn.textContent = 'Apply recommended to the fields below';
+    applyBtn.dataset.rec = JSON.stringify(rec);
+  }
+
+  applyBtn.addEventListener('click', () => {
+    const rec = JSON.parse(applyBtn.dataset.rec || '{}');
+    for (const [key, val] of Object.entries(rec.per_request || {})) {
+      const field = document.querySelector(`[name="ollama_${key}"]`);
+      if (field) {
+        field.value = val;
+        const details = field.closest('details');
+        if (details) details.open = true;
+      }
+    }
+    for (const [envKey, val] of Object.entries(rec.server || {})) {
+      const suffix = OLLAMA_SRV_SUFFIX[envKey];
+      if (!suffix) continue;
+      const field = document.querySelector(`[name="${SRV_FORM_PREFIX}${suffix}"]`);
+      if (field) field.value = val;
+    }
+    applyBtn.textContent = '✓ Applied — review below, then Save';
+  });
+
+  modelSelect.addEventListener('change', renderRecommendation);
+
+  window.ndLoadHardwarePanel = function () {
+    if (loaded) return;
+    loaded = true;
+    fetch('/api/ai/hardware').then(res => {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    }).then(data => {
+      renderSummary(data.hardware || {});
+      populateModelSelect(data.models || []);
+      renderRecommendation();
+    }).catch(err => {
+      summaryEl.textContent = '⚠ Couldn\'t load hardware info: ' + err.message;
+    });
+  };
+
+  if ({{ 'true' if active_tab == 'system' else 'false' }}) window.ndLoadHardwarePanel();
+})();
 
 // ── Bulk visibility ─────────────────────────────────────────────────────────
 (function () {
