@@ -38,7 +38,7 @@ function ndAudioJobs(panelEl, opts) {
     const base = job.chunk_total && (job.status === "summarizing" || job.status === "transcribing")
       ? `${job.status === "summarizing" ? "Summarizing" : "Transcribing"}… part ${job.chunk_current}/${job.chunk_total}`
       : (STATUS_LABEL[job.status] || job.status);
-    return ndElapsedLabel(base, job.created_at);
+    return ndElapsedLabel(base, job.run_started_at || job.created_at);
   }
 
   function render() {

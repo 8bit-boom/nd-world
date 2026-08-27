@@ -656,13 +656,16 @@ _SUMMARIZE_FACTS_SYSTEM = (
 )
 
 
-async def summarize_session_from_facts(facts: list[str], model: str = "") -> str:
+async def summarize_session_from_facts(facts: list[str], model: str = "", extra_instructions: str = "") -> str:
     """Weave a list of discrete session facts (see the Facts feature, which
-    logs these per-session) into a readable narrative recap."""
+    logs these per-session) into a readable narrative recap. `extra_instructions`
+    is a GM's steering (e.g. World.recap_instructions — "write in Spanish"),
+    same as summarize_transcript's own parameter of the same name."""
     if not facts:
         return ""
     bullet_list = "\n".join(f"- {f}" for f in facts)
-    return await generate_chat([{"role": "user", "content": bullet_list}], system=_SUMMARIZE_FACTS_SYSTEM, model=model)
+    system = _with_instructions(_SUMMARIZE_FACTS_SYSTEM, extra_instructions)
+    return await generate_chat([{"role": "user", "content": bullet_list}], system=system, model=model)
 
 
 _CONDENSE_RECAP_SYSTEM = (
@@ -825,10 +828,11 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
     nothing from any part is ever at risk of being silently dropped or
     truncated, at any transcript length.
 
-    Whisper's own transcription is never chunked (transcribe_audio sends the
-    whole file in one call, with no progress signal at all) — this chunking
-    is purely over the resulting TEXT so a long transcript doesn't blow the
-    model's context window. `on_progress(current, total)`, if given, is
+    This is chunking purely over the resulting TEXT so a long transcript
+    doesn't blow the model's context window — a separate concern from
+    transcribe_audio's own audio-level chunking (see
+    _split_audio_into_chunks), which splits the recording itself before any
+    of this ever runs. `on_progress(current, total)`, if given, is
     called before each part's summarize call (current is 1-based —
     "currently on part 2 of 5") so a caller (audio_jobs.py) can persist
     real progress instead of a bare "summarizing" placeholder. Never
@@ -1153,6 +1157,12 @@ async def _transcribe_one_file(path: Path, glossary: str, language: str) -> str:
     url = effective_whisper_url()
     if not url:
         raise WhisperError("Whisper isn't configured (no Whisper URL set) — see the AI page's 🎙 Whisper tab.")
+    if not path.is_file():
+        # Without this check, path.open() below raises FileNotFoundError,
+        # which the generic "Could not reach Whisper" handler catches and
+        # reports as a network/server problem — misleading for what's
+        # actually a local file that's missing or already cleaned up.
+        raise WhisperError(f"Audio file not found: {path.name}")
     data = {
         "response_format": "json",
         "language": language.strip() or "auto",

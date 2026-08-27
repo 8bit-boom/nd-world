@@ -94,7 +94,7 @@ def test_complete_rejects_when_parts_missing(client, seed):
 def test_chunked_upload_reassembles_audio_and_transcribes(client, seed, monkeypatch):
     from app import ai as ai_module
 
-    async def fake_transcribe(path):
+    async def fake_transcribe(path, glossary="", language=""):
         assert path.read_bytes() == _PART_A + _PART_B
         return "reassembled transcript"
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
@@ -158,7 +158,7 @@ def test_chunked_upload_rejects_when_reassembled_document_exceeds_limit(client, 
 def test_chunked_upload_player_allowed_once_gm_enables_ask_ai(client, seed, monkeypatch):
     from app import ai as ai_module
 
-    async def fake_transcribe(path):
+    async def fake_transcribe(path, glossary="", language=""):
         return "ok"
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
 

@@ -157,6 +157,19 @@ async def test_transcribe_audio_success(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_transcribe_audio_missing_file_reports_a_local_file_error(tmp_path, monkeypatch):
+    """A missing/already-cleaned-up audio file must not surface as a
+    "Could not reach Whisper" network error — that's what the generic
+    except-Exception handler around the HTTP call used to catch it as,
+    since path.open() there raises FileNotFoundError."""
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    _patch_httpx(monkeypatch, response=_FakeResponse(200, {"text": "ok"}))
+    missing = tmp_path / "does-not-exist.mp3"
+    with pytest.raises(ai_module.WhisperError, match="not found"):
+        await ai_module.transcribe_audio(missing)
+
+
+@pytest.mark.asyncio
 async def test_transcribe_audio_defaults_language_to_auto_not_omitted(tmp_path, monkeypatch):
     """whisper.cpp's own server hardcodes language="en" as its default and
     only overrides it when the client sends this field explicitly — so

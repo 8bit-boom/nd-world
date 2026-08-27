@@ -520,7 +520,7 @@ def api_prompt_presets_delete(preset_id: int, request: Request, db=Depends(get_d
     return {"ok": True}
 
 
-async def _finish_attachment_upload(dest: _Path, ext: str, kind: str, original_filename: str) -> dict:
+async def _finish_attachment_upload(dest: _Path, ext: str, kind: str, original_filename: str, world=None) -> dict:
     """Shared tail of both /attachments/upload and .../upload/complete: given
     a saved file, extract/transcribe as appropriate and build the response
     the client's attachment picker expects."""
@@ -532,9 +532,14 @@ async def _finish_attachment_upload(dest: _Path, ext: str, kind: str, original_f
         # A WhisperError (not configured, or the request failed) just means
         # this attachment falls back to _build_ollama_messages' non-transcript
         # handling instead of blocking the upload — the real reason is still
-        # logged server-side by transcribe_audio itself.
+        # logged server-side by transcribe_audio itself. glossary/language
+        # come from the world the same way the background-job version of
+        # this same attachment flow (audio_jobs.py's _run_job) already
+        # applies them — this direct/blocking path was missing both.
+        glossary = (world.whisper_glossary or "").strip() if world else ""
+        language = (world.whisper_language or "").strip() if world else ""
         try:
-            text = await _ai.transcribe_audio(dest)
+            text = await _ai.transcribe_audio(dest, glossary=glossary, language=language)
         except _ai.WhisperError:
             text = ""
     else:
@@ -576,7 +581,8 @@ async def ai_attachment_upload(
     dest = target_dir / unique_upload_filename(file.filename, ext)
     max_bytes = _MAX_ATTACHMENT_AUDIO_BYTES if kind == "audio" else _MAX_ATTACHMENT_BYTES
     copy_upload_bounded(file, dest, max_bytes=max_bytes)
-    return await _finish_attachment_upload(dest, ext, kind, file.filename)
+    world, _ = get_world_ctx(request, db, active_world)
+    return await _finish_attachment_upload(dest, ext, kind, file.filename, world=world)
 
 
 @router.post("/attachments/upload/chunk")
@@ -623,7 +629,8 @@ async def ai_attachment_upload_complete(
     dest = target_dir / unique_upload_filename(filename, ext)
     max_bytes = _MAX_ATTACHMENT_AUDIO_BYTES if kind == "audio" else _MAX_ATTACHMENT_BYTES
     reassemble_upload_chunks(_attach_chunks_root(), upload_id, total_chunks, dest, max_bytes=max_bytes)
-    return await _finish_attachment_upload(dest, ext, kind, filename)
+    world, _ = get_world_ctx(request, db, active_world)
+    return await _finish_attachment_upload(dest, ext, kind, filename, world=world)
 
 
 # ── Durable background transcription jobs — an opt-in alternative to the

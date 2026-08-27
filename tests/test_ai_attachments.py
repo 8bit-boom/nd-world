@@ -90,7 +90,7 @@ def test_attachment_upload_audio_kind(client, seed):
 
 
 def test_attachment_upload_audio_is_transcribed_when_whisper_available(client, seed, monkeypatch):
-    async def _fake_transcribe(path):
+    async def _fake_transcribe(path, glossary="", language=""):
         return "the secret door is behind the waterfall"
     monkeypatch.setattr(ai_router._ai, "transcribe_audio", _fake_transcribe)
 
@@ -99,6 +99,29 @@ def test_attachment_upload_audio_is_transcribed_when_whisper_available(client, s
     r = _upload_file(client, "clip.mp3", _MP3_BYTES, "audio/mpeg")
     assert r.status_code == 200
     assert r.json()["text"] == "the secret door is behind the waterfall"
+
+
+def test_attachment_upload_audio_applies_the_worlds_glossary_and_language(client, seed, monkeypatch):
+    """The direct/blocking attachment-upload path used to call
+    transcribe_audio with no glossary/language at all — unlike every other
+    transcription call site including the background-job version of this
+    same attachment flow — so the same voice memo would transcribe
+    correctly as a background job but get force-decoded as English (or
+    without campaign-name biasing) when uploaded directly."""
+    _set_world(seed.world_a.id, whisper_glossary="Aldric, Vaelthorne", whisper_language="ru")
+    received = {}
+
+    async def _fake_transcribe(path, glossary="", language=""):
+        received["glossary"] = glossary
+        received["language"] = language
+        return "ok"
+    monkeypatch.setattr(ai_router._ai, "transcribe_audio", _fake_transcribe)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = _upload_file(client, "clip.mp3", _MP3_BYTES, "audio/mpeg")
+    assert r.status_code == 200
+    assert received == {"glossary": "Aldric, Vaelthorne", "language": "ru"}
 
 
 

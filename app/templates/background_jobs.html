@@ -67,7 +67,7 @@ function bgElapsedLabel(job) {
   const base = job.chunk_total && (job.status === 'summarizing' || job.status === 'transcribing')
     ? `${job.status === 'summarizing' ? 'Summarizing' : 'Transcribing'}… part ${job.chunk_current}/${job.chunk_total}`
     : (STATUS_LABEL[job.status] || job.status);
-  return ndElapsedLabel(base, job.created_at);
+  return ndElapsedLabel(base, job.run_started_at || job.created_at);
 }
 
 function bgRenderJob(job) {
@@ -106,7 +106,7 @@ function bgRenderJob(job) {
     // below (chunk_total unset).
     const pct = Math.round(job.chunk_current / job.chunk_total * 100);
     const label = job.status === 'summarizing' ? 'Summarizing' : 'Transcribing';
-    bar.setPercent(pct, ndElapsedLabel(`${label}… part ${job.chunk_current}/${job.chunk_total}`, job.created_at));
+    bar.setPercent(pct, ndElapsedLabel(`${label}… part ${job.chunk_current}/${job.chunk_total}`, job.run_started_at || job.created_at));
   } else if (IN_PROGRESS.has(job.status)) {
     bar.setIndeterminate(bgElapsedLabel(job));
   } else if (job.status === 'done') {

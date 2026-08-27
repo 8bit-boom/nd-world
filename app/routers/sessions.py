@@ -17,7 +17,7 @@ from ..database import get_db
 from ..deps import get_world_ctx, paginate
 from ..models import AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, Quest, World
 from ..templating import templates
-from ..uploads import copy_upload_bounded, read_upload_bounded, reassemble_upload_chunks, save_upload_chunk
+from ..uploads import copy_upload_bounded, reassemble_upload_chunks, save_upload_chunk
 
 router = APIRouter()
 
@@ -57,10 +57,14 @@ async def _transcribe_chunk(file: UploadFile, max_bytes: int = MAX_LIVE_CHUNK_BY
     ext = Path(file.filename or "").suffix.lower()
     if ext not in _SESSION_AUDIO_EXTS:
         raise HTTPException(400, f"Unsupported audio type {ext!r} — allowed: {', '.join(sorted(_SESSION_AUDIO_EXTS))}")
-    raw = read_upload_bounded(file, max_bytes=max_bytes)
     with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-        tmp.write(raw)
         tmp_path = Path(tmp.name)
+    # Streamed straight to disk rather than read_upload_bounded (which
+    # buffers the whole file in memory) — this route can see a full session
+    # recording (MAX_SESSION_AUDIO_BYTES), and buffering one of those in RAM
+    # per concurrent request risked exhausting memory well before hitting
+    # any per-file size limit.
+    copy_upload_bounded(file, tmp_path, max_bytes=max_bytes)
     try:
         return await _ai_module.transcribe_audio(tmp_path, glossary=glossary, language=language)
     finally:
@@ -630,7 +634,11 @@ async def api_summarize_live_transcript(session_id: int, db: Session = Depends(g
         raise HTTPException(404)
     if not (gs.live_transcript or "").strip():
         raise HTTPException(400, "No live transcript recorded for this session yet.")
-    recap = await _ai_module.summarize_transcript(gs.live_transcript)
+    # world_id comes from the session itself, not the active_world cookie —
+    # this route has no cookie param, and the session's own world is always
+    # the right one regardless of which world tab is currently active.
+    world = db.get(World, gs.world_id)
+    recap = await _ai_module.summarize_transcript(gs.live_transcript, extra_instructions=_recap_instructions_for_world(world))
     return {"transcript": gs.live_transcript, "recap": recap}
 
 
@@ -642,7 +650,8 @@ async def api_summarize_from_facts(session_id: int, db: Session = Depends(get_db
     facts = db.query(Fact).filter(Fact.game_session_id == session_id).order_by(Fact.created_at).all()
     if not facts:
         raise HTTPException(400, "No facts logged for this session yet — log some on the Facts page first.")
-    recap = await _ai_module.summarize_session_from_facts([f.content for f in facts])
+    world = db.get(World, gs.world_id)
+    recap = await _ai_module.summarize_session_from_facts([f.content for f in facts], extra_instructions=_recap_instructions_for_world(world))
     return {"recap": recap}
 
 
@@ -683,8 +692,9 @@ def session_log_detail(session_id: int, request: Request, db: Session = Depends(
 @router.post("/api/session-log/{session_id}/recap")
 async def api_session_log_recap(session_id: int, request: Request, db: Session = Depends(get_db)):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    world = db.get(World, gs.world_id) if gs else None
     user = getattr(request.state, "user", None)
-    if not gs or not auth.user_can_access_world(db, user, db.get(World, gs.world_id)):
+    if not gs or not auth.user_can_access_world(db, user, world):
         raise HTTPException(404)
     q = db.query(Fact).filter(Fact.game_session_id == session_id)
     if not (user and user.is_gm):
@@ -692,5 +702,5 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     facts = q.order_by(Fact.created_at).all()
     if not facts:
         return {"recap": "", "empty": True}
-    recap = await _ai_module.summarize_session_from_facts([f.content for f in facts])
+    recap = await _ai_module.summarize_session_from_facts([f.content for f in facts], extra_instructions=_recap_instructions_for_world(world))
     return {"recap": recap}

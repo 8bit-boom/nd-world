@@ -747,12 +747,11 @@ class AudioJob(Base):
     # _combined_recap_instructions in app/audio_jobs.py. purpose=
     # "session_recap" only; ignored for "attachment", which never summarizes.
     extra_instructions = Column(Text, nullable=True)
-    # Real map-reduce progress during status="summarizing" — only set for a
-    # transcript long enough to need chunking (see
-    # app.ai.summarize_transcript's on_progress callback); NULL the rest of
-    # the time, including once the job finishes. Whisper's own transcription
-    # (status="transcribing") has no equivalent — it's a single blocking
-    # call with no progress signal at all, chunked or otherwise.
+    # Real chunk progress during status="summarizing" OR "transcribing" —
+    # only set when the transcript/audio is long enough to need chunking
+    # (see app.ai.summarize_transcript's and transcribe_audio's on_progress
+    # callbacks respectively); NULL the rest of the time, including once
+    # the job finishes.
     chunk_current = Column(Integer, nullable=True)
     chunk_total = Column(Integer, nullable=True)
     # Distinct from created_at (which never changes once the row exists,

@@ -75,7 +75,7 @@ def test_summarize_from_facts_gm(client, seed, monkeypatch):
 
     captured = {}
 
-    async def fake_summarize(facts, model=""):
+    async def fake_summarize(facts, model="", extra_instructions=""):
         captured["facts"] = facts
         return "Woven recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
@@ -480,7 +480,7 @@ def test_player_recap_excludes_gm_only_facts_and_raw_summary(client, seed, monke
 
     captured = {}
 
-    async def fake_summarize(facts, model=""):
+    async def fake_summarize(facts, model="", extra_instructions=""):
         captured["facts"] = facts
         return "A narrated recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
@@ -499,7 +499,7 @@ def test_gm_recap_includes_gm_only_facts(client, seed, monkeypatch):
 
     captured = {}
 
-    async def fake_summarize(facts, model=""):
+    async def fake_summarize(facts, model="", extra_instructions=""):
         captured["facts"] = facts
         return "Full recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)

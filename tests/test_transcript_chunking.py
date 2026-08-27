@@ -222,11 +222,12 @@ async def test_recap_instructions_applied_to_every_part_call(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_progress_called_once_per_part_before_each_call(monkeypatch):
-    """on_progress(current, total) is the one real, measurable progress
-    signal in this whole pipeline (Whisper's own transcription has none at
-    all — see transcribe_audio) — audio_jobs.py persists it to the job row
-    so a GM sees real "part N of M" progress instead of a bare
-    "summarizing" placeholder."""
+    """on_progress(current, total) is summarize_transcript's own real,
+    measurable progress signal for the TEXT-chunking phase — separate from
+    transcribe_audio's own on_progress for audio-chunking (see
+    _split_audio_into_chunks). audio_jobs.py persists this one to the job
+    row so a GM sees real "part N of M" progress during status=
+    "summarizing" instead of a bare placeholder."""
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
 
     async def fake_generate_chat(messages, system="", model=""):

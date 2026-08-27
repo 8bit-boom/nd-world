@@ -442,3 +442,67 @@ def test_direct_summarize_from_audio_combines_world_and_request_instructions(cli
     assert r.status_code == 200, r.text
     assert "Write in French" in captured["extra_instructions"]
     assert "Focus on combat" in captured["extra_instructions"]
+
+
+def test_summarize_live_transcript_applies_world_recap_instructions(client, seed, monkeypatch):
+    """summarize-live-transcript used to call summarize_transcript with no
+    extra_instructions at all — a GM whose standing instruction is e.g.
+    "write in Russian" got an English recap from this flow for no
+    discoverable reason, unlike every other summarize route."""
+    from app.models import GameSession as _GameSession
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.recap_instructions = "Write in French"
+        db.commit()
+        gs = _GameSession(world_id=seed.world_a.id, session_num=1, title="S1", live_transcript="the party fought goblins")
+        db.add(gs)
+        db.commit()
+        session_id = gs.id
+    finally:
+        db.close()
+
+    captured = {}
+
+    async def fake_summarize(transcript, extra_instructions="", **kwargs):
+        captured["extra_instructions"] = extra_instructions
+        return "un recap"
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/api/sessions/{session_id}/ai/summarize-live-transcript")
+    assert r.status_code == 200, r.text
+    assert "Write in French" in captured["extra_instructions"]
+
+
+def test_summarize_from_facts_applies_world_recap_instructions(client, seed, monkeypatch):
+    from app.models import Fact as _Fact, GameSession as _GameSession
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.recap_instructions = "Write in French"
+        db.commit()
+        gs = _GameSession(world_id=seed.world_a.id, session_num=1, title="S1")
+        db.add(gs)
+        db.commit()
+        db.add(_Fact(world_id=seed.world_a.id, game_session_id=gs.id, content="The party arrived.", visible_to_players=True))
+        db.commit()
+        session_id = gs.id
+    finally:
+        db.close()
+
+    captured = {}
+
+    async def fake_summarize(facts, extra_instructions="", **kwargs):
+        captured["extra_instructions"] = extra_instructions
+        return "un recap"
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/api/sessions/{session_id}/ai/summarize-from-facts")
+    assert r.status_code == 200, r.text
+    assert "Write in French" in captured["extra_instructions"]
