@@ -1020,8 +1020,13 @@ def _collapse_repeated_transcript_lines(text: str, min_repeat: int = 4) -> str:
 # ffprobe/ffmpeg round trip for the common case), short enough that a
 # multi-hour session recording still gets split into a meaningful number
 # of pieces.
-WHISPER_CHUNK_SECONDS = float(os.getenv("WHISPER_CHUNK_SECONDS", str(10 * 60)))
-_WHISPER_CHUNK_MIN_DURATION = 15 * 60
+WHISPER_CHUNK_SECONDS = max(60.0, float(os.getenv("WHISPER_CHUNK_SECONDS", str(10 * 60))))
+# Always comfortably above WHISPER_CHUNK_SECONDS itself, so a clip just
+# over the threshold still splits into at least two real chunks instead of
+# producing a single-segment "split" that's really just the original file
+# with extra ffmpeg overhead (transcribe_audio handles that case safely
+# either way, but there's no reason to configure it into existence).
+_WHISPER_CHUNK_MIN_DURATION = max(15 * 60, WHISPER_CHUNK_SECONDS * 1.5)
 
 
 async def _probe_audio_duration(path: Path) -> float | None:
@@ -1112,7 +1117,13 @@ async def _transcribe_one_file(path: Path, glossary: str, language: str) -> str:
                     files={"file": (path.name, f, "application/octet-stream")},
                     data=data,
                 )
-    except TimeoutError as exc:
+    except (_httpx.TimeoutException, TimeoutError) as exc:
+        # httpx's own timeout exceptions (ReadTimeout/ConnectTimeout/...)
+        # derive from httpx.TimeoutException, NOT the builtin TimeoutError —
+        # catching only TimeoutError here meant a real Whisper timeout fell
+        # through to the generic "Could not reach Whisper" branch below
+        # (with an often-empty message, since httpx timeouts commonly
+        # stringify to "") instead of naming the actual timeout.
         _log.warning("whisper transcription timed out: %s", exc)
         raise WhisperError(f"Whisper timed out after {WHISPER_TIMEOUT_SECONDS}s — the clip may be too long, or the server is overloaded.") from exc
     except Exception as exc:
@@ -1182,11 +1193,17 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "", o
         return _collapse_repeated_transcript_lines(text)
 
     chunks, tmpdir = await _split_audio_into_chunks(path, WHISPER_CHUNK_SECONDS)
-    if len(chunks) == 1:
-        text = await _transcribe_one_file(chunks[0], glossary, language)
-        return _collapse_repeated_transcript_lines(text)
-
     try:
+        if len(chunks) == 1:
+            # Still reachable with a real tmpdir (e.g. WHISPER_CHUNK_SECONDS
+            # configured above _WHISPER_CHUNK_MIN_DURATION can produce a
+            # single-segment split) — this branch must stay inside the same
+            # try/finally as the multi-chunk loop below, not return before
+            # it, or the tmpdir (a full stream-copy of the recording) is
+            # never cleaned up.
+            text = await _transcribe_one_file(chunks[0], glossary, language)
+            return _collapse_repeated_transcript_lines(text)
+
         parts = []
         for i, chunk_path in enumerate(chunks):
             if on_progress:

@@ -5,6 +5,7 @@ chat attachment into text at upload time. The actual whisper.cpp server is
 mocked out here; these only exercise this app's own request/response
 handling and its "never let a failure block the upload" fallback behavior.
 """
+import httpx as _real_httpx
 import pytest
 
 from app import ai as ai_module
@@ -85,6 +86,11 @@ def _patch_httpx(monkeypatch, response=None, exc=None, stream_response=None, str
     captured = {}
 
     class _Module:
+        # ai.py's except clause references _httpx.TimeoutException — this
+        # stub replaces the whole `_httpx` name ai.py uses, so it needs the
+        # real exception class available too, not just AsyncClient.
+        TimeoutException = _real_httpx.TimeoutException
+
         @staticmethod
         def AsyncClient(**kw):
             captured["client_kwargs"] = kw
@@ -221,6 +227,23 @@ async def test_transcribe_audio_http_error_raises_with_detail(tmp_path, monkeypa
 async def test_transcribe_audio_network_error_raises_with_detail(tmp_path, monkeypatch):
     ai_module.set_whisper_override("http://127.0.0.1:8090")
     _patch_httpx(monkeypatch, exc=TimeoutError("timed out"))
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00")
+    with pytest.raises(ai_module.WhisperError, match="timed out"):
+        await ai_module.transcribe_audio(f)
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_httpx_timeout_reports_as_a_timeout_not_unreachable(tmp_path, monkeypatch):
+    """httpx's own timeout exceptions (ReadTimeout/ConnectTimeout/...)
+    derive from httpx.TimeoutException, NOT the builtin TimeoutError — a
+    real Whisper timeout (the actual thing that fires in production, since
+    httpx raises its own exception type, not the builtin one) used to fall
+    through to the generic "Could not reach Whisper" branch instead of
+    naming the timeout, with an often-empty message since httpx timeouts
+    commonly stringify to ""."""
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    _patch_httpx(monkeypatch, exc=_real_httpx.ReadTimeout(""))
     f = tmp_path / "clip.mp3"
     f.write_bytes(b"ID3\x03\x00\x00\x00\x00\x00\x00")
     with pytest.raises(ai_module.WhisperError, match="timed out"):
@@ -486,6 +509,77 @@ async def test_transcribe_audio_falls_back_when_split_returns_single_file(tmp_pa
     result = await ai_module.transcribe_audio(f, on_progress=lambda c, t: progress_calls.append((c, t)))
     assert result == "whole file text"
     assert progress_calls == []  # no chunking actually happened, so no progress signal
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_removes_tmpdir_for_a_single_segment_split(tmp_path, monkeypatch):
+    """Regression test: _split_audio_into_chunks can return a single chunk
+    WITH a real tmpdir (e.g. a clip just over the chunking threshold
+    producing exactly one segment) — the tmpdir cleanup used to sit outside
+    this branch's early return, leaking a full stream-copy of the
+    recording on every such case."""
+    real_tmpdir = tmp_path / "split_tmp"
+    real_tmpdir.mkdir()
+    chunk_path = real_tmpdir / "chunk_0000.mp3"
+    chunk_path.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 3600.0
+
+    async def fake_split(path, chunk_seconds):
+        return [chunk_path], real_tmpdir
+
+    async def fake_transcribe_one(path, glossary, language):
+        return "whole file text"
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", fake_transcribe_one)
+
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"x")
+    result = await ai_module.transcribe_audio(f)
+    assert result == "whole file text"
+    assert not real_tmpdir.exists()
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_removes_tmpdir_even_when_transcription_fails(tmp_path, monkeypatch):
+    real_tmpdir = tmp_path / "split_tmp"
+    real_tmpdir.mkdir()
+    chunk_path = real_tmpdir / "chunk_0000.mp3"
+    chunk_path.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 3600.0
+
+    async def fake_split(path, chunk_seconds):
+        return [chunk_path], real_tmpdir
+
+    async def fake_transcribe_one(path, glossary, language):
+        raise ai_module.WhisperError("whisper unreachable")
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", fake_transcribe_one)
+
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"x")
+    with pytest.raises(ai_module.WhisperError):
+        await ai_module.transcribe_audio(f)
+    assert not real_tmpdir.exists()
+
+
+def test_whisper_chunk_seconds_has_a_sane_floor(monkeypatch):
+    """An accidental 0/negative WHISPER_CHUNK_SECONDS would otherwise ask
+    ffmpeg to produce an enormous number of tiny segments."""
+    assert ai_module.WHISPER_CHUNK_SECONDS >= 60.0
+
+
+def test_whisper_chunk_min_duration_always_exceeds_chunk_seconds():
+    """A clip just over the chunking threshold should always split into at
+    least two real chunks, never a single-segment no-op split."""
+    assert ai_module._WHISPER_CHUNK_MIN_DURATION > ai_module.WHISPER_CHUNK_SECONDS
 
 
 @pytest.mark.asyncio
