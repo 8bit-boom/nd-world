@@ -9,6 +9,7 @@ import httpx as _real_httpx
 import pytest
 
 from app import ai as ai_module
+from app.job_shutdown import JobInterrupted
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -1309,3 +1310,203 @@ def test_whisper_activate_route_refuses_hot_swap_for_bad_format_but_still_saves(
     assert body["restart_required"] is True
     assert called["load"] is False
     assert ai_module.active_whisper_model() == "ggml-tiny.bin"
+
+
+# ── transcribe_audio: checkpoint/resume (see app/job_shutdown.py) ──────────
+#
+# Job-survival design: a chunk's checkpoint lets audio_jobs.py persist real
+# progress to the DB so a routine server restart doesn't discard a
+# long-running transcription — see app.job_shutdown's module docstring for
+# the full "stop fast, trust the checkpoint" rationale. These tests exercise
+# transcribe_audio's own half of that contract directly (on_checkpoint,
+# should_stop, resume), independent of audio_jobs.py's DB wiring.
+
+def _chunk_fakes(tmp_path, n=3, texts=None):
+    chunk_paths = [tmp_path / f"c{i}.mp3" for i in range(n)]
+    for p in chunk_paths:
+        p.write_bytes(b"x")
+    texts = texts or [f"part {i}" for i in range(n)]
+
+    async def fake_probe(path):
+        return 3600.0
+
+    async def fake_split(path, chunk_seconds):
+        return chunk_paths, None
+
+    async def fake_transcribe_one(path, glossary, language):
+        return texts[chunk_paths.index(path)]
+
+    return chunk_paths, fake_probe, fake_split, fake_transcribe_one
+
+
+@pytest.mark.asyncio
+async def test_transcribe_calls_on_checkpoint_after_every_chunk(tmp_path, monkeypatch):
+    _chunk_paths, fake_probe, fake_split, fake_transcribe_one = _chunk_fakes(tmp_path)
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", fake_transcribe_one)
+
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"audio-bytes")
+    checkpoints = []
+    result = await ai_module.transcribe_audio(f, on_checkpoint=checkpoints.append)
+
+    assert result == "part 0\npart 1\npart 2"
+    assert [c["chunks_done"] for c in checkpoints] == [1, 2, 3]
+    assert all(c["phase"] == "transcribe" for c in checkpoints)
+    assert all(c["chunk_total"] == 3 for c in checkpoints)
+    assert all(c["audio_size"] == f.stat().st_size for c in checkpoints)
+    assert all(c["chunk_seconds"] == ai_module.WHISPER_CHUNK_SECONDS for c in checkpoints)
+    assert checkpoints[0]["text"] == "part 0"
+    assert checkpoints[-1]["text"] == "part 0\npart 1\npart 2"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_on_checkpoint_not_called_for_an_unchunked_clip(tmp_path, monkeypatch):
+    async def fake_probe(path):
+        return 5.0  # short — skips chunking entirely
+
+    async def fake_transcribe_one(path, glossary, language):
+        return "whole clip"
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", fake_transcribe_one)
+
+    f = tmp_path / "short.mp3"
+    f.write_bytes(b"x")
+    checkpoints = []
+    result = await ai_module.transcribe_audio(f, on_checkpoint=checkpoints.append)
+    assert result == "whole clip"
+    assert checkpoints == []
+
+
+@pytest.mark.asyncio
+async def test_transcribe_resumes_from_a_matching_checkpoint_and_skips_done_chunks(tmp_path, monkeypatch):
+    chunk_paths, fake_probe, fake_split, fake_transcribe_one = _chunk_fakes(tmp_path)
+    called_with = []
+
+    async def tracking_transcribe_one(path, glossary, language):
+        called_with.append(path)
+        return await fake_transcribe_one(path, glossary, language)
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", tracking_transcribe_one)
+
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"audio-bytes")
+    resume = {
+        "phase": "transcribe", "chunks_done": 1, "chunk_total": 3,
+        "chunk_seconds": ai_module.WHISPER_CHUNK_SECONDS, "audio_size": f.stat().st_size,
+        "text": "part 0",
+    }
+    result = await ai_module.transcribe_audio(f, resume=resume)
+    assert result == "part 0\npart 1\npart 2"
+    assert called_with == [chunk_paths[1], chunk_paths[2]]  # chunk 0 was skipped, not re-transcribed
+
+
+@pytest.mark.asyncio
+async def test_transcribe_resumed_result_contains_both_the_prior_and_new_text(tmp_path, monkeypatch):
+    _chunk_paths, fake_probe, fake_split, fake_transcribe_one = _chunk_fakes(tmp_path, texts=["irrelevant", "part 1", "part 2"])
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", fake_transcribe_one)
+
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"audio-bytes")
+    resume = {
+        "phase": "transcribe", "chunks_done": 1, "chunk_total": 3,
+        "chunk_seconds": ai_module.WHISPER_CHUNK_SECONDS, "audio_size": f.stat().st_size,
+        "text": "part 0 from before the restart",
+    }
+    result = await ai_module.transcribe_audio(f, resume=resume)
+    assert result == "part 0 from before the restart\npart 1\npart 2"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_discards_a_checkpoint_with_a_different_chunk_total(tmp_path, monkeypatch):
+    chunk_paths, fake_probe, fake_split, fake_transcribe_one = _chunk_fakes(tmp_path)
+    called_with = []
+
+    async def tracking_transcribe_one(path, glossary, language):
+        called_with.append(path)
+        return await fake_transcribe_one(path, glossary, language)
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", tracking_transcribe_one)
+
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"audio-bytes")
+    resume = {
+        "phase": "transcribe", "chunks_done": 1, "chunk_total": 99,  # doesn't match this call's 3 chunks
+        "chunk_seconds": ai_module.WHISPER_CHUNK_SECONDS, "audio_size": f.stat().st_size,
+        "text": "stale",
+    }
+    result = await ai_module.transcribe_audio(f, resume=resume)
+    assert result == "part 0\npart 1\npart 2"  # started over, not spliced onto "stale"
+    assert called_with == chunk_paths  # every chunk re-transcribed, none skipped
+
+
+@pytest.mark.asyncio
+async def test_transcribe_discards_a_checkpoint_with_a_different_audio_size(tmp_path, monkeypatch):
+    _chunk_paths, fake_probe, fake_split, fake_transcribe_one = _chunk_fakes(tmp_path)
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", fake_transcribe_one)
+
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"audio-bytes")
+    resume = {
+        "phase": "transcribe", "chunks_done": 1, "chunk_total": 3,
+        "chunk_seconds": ai_module.WHISPER_CHUNK_SECONDS, "audio_size": f.stat().st_size + 1,  # mismatch
+        "text": "stale",
+    }
+    result = await ai_module.transcribe_audio(f, resume=resume)
+    assert result == "part 0\npart 1\npart 2"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_raises_job_interrupted_at_the_next_chunk_boundary_when_should_stop(tmp_path, monkeypatch):
+    chunk_paths, fake_probe, fake_split, fake_transcribe_one = _chunk_fakes(tmp_path)
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", fake_transcribe_one)
+
+    calls = {"n": 0}
+    def should_stop():
+        calls["n"] += 1
+        return calls["n"] > 1  # stop right before the second chunk
+
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"audio-bytes")
+    checkpoints = []
+    with pytest.raises(JobInterrupted):
+        await ai_module.transcribe_audio(f, should_stop=should_stop, on_checkpoint=checkpoints.append)
+    assert len(checkpoints) == 1  # chunk 0's checkpoint was saved before the interrupt
+
+
+@pytest.mark.asyncio
+async def test_transcribe_partial_transcript_on_whisper_error_includes_the_resumed_prefix(tmp_path, monkeypatch):
+    chunk_paths, fake_probe, fake_split, _fake_transcribe_one = _chunk_fakes(tmp_path)
+
+    async def failing_transcribe_one(path, glossary, language):
+        if path == chunk_paths[2]:
+            raise ai_module.WhisperError("boom")
+        return "part 1"
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", failing_transcribe_one)
+
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"audio-bytes")
+    resume = {
+        "phase": "transcribe", "chunks_done": 1, "chunk_total": 3,
+        "chunk_seconds": ai_module.WHISPER_CHUNK_SECONDS, "audio_size": f.stat().st_size,
+        "text": "part 0 from before the restart",
+    }
+    with pytest.raises(ai_module.WhisperError) as exc_info:
+        await ai_module.transcribe_audio(f, resume=resume)
+    assert "part 0 from before the restart" in exc_info.value.partial_transcript
+    assert "part 1" in exc_info.value.partial_transcript

@@ -8,6 +8,7 @@ import ollama as _ollama
 import httpx as _httpx
 
 from .imaging import make_thumbnail
+from .job_shutdown import JobInterrupted
 
 _log = logging.getLogger("nd.ai")
 
@@ -824,7 +825,8 @@ def _with_instructions(system: str, extra_instructions: str) -> str:
     return f"{system}\n\nAdditional instructions from the GM (follow these too): {extra_instructions}"
 
 
-async def summarize_transcript(transcript: str, model: str = "", extra_instructions: str = "", on_progress=None) -> str:
+async def summarize_transcript(transcript: str, model: str = "", extra_instructions: str = "", on_progress=None,
+                                on_checkpoint=None, should_stop=None, resume: dict | None = None) -> str:
     """Turn a raw Whisper transcript (see transcribe_audio) of a session
     recording into a narrative recap. Transcripts that fit in one context
     window go through a single generate_chat call, same as before.
@@ -862,7 +864,21 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
     called before each part's summarize call (current is 1-based —
     "currently on part 2 of 5") so a caller (audio_jobs.py) can persist
     real progress instead of a bare "summarizing" placeholder. Never
-    called at all for a short, unchunked transcript."""
+    called at all for a short, unchunked transcript.
+
+    `on_checkpoint(state)`, `should_stop`, and `resume` are the same
+    checkpoint/resume contract transcribe_audio uses (see its own
+    docstring) — also only exercised on the chunked path, since an
+    unchunked transcript is one call with nothing to checkpoint between.
+    `should_stop()` is polled before each part; if it goes true,
+    JobInterrupted is raised instead of continuing (see app.job_shutdown).
+    `resume`, if given and its "phase"/"chunk_total"/"chunk_chars" match
+    this call's own chunking exactly, skips the parts already summarized
+    and continues from resume["text"] (the prior parts already joined) —
+    a mismatch (e.g. num_ctx or extra_instructions changed since the
+    checkpoint was written, changing chunk_chars) is logged and discarded
+    rather than risking a spliced-together recap from two different
+    chunkings."""
     transcript = (transcript or "").strip()
     if not transcript:
         return ""
@@ -870,15 +886,33 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
     # decided) since that's the one whose length actually matters here —
     # extra_instructions is free text the GM controls and can be long.
     part_system = _with_instructions(_SUMMARIZE_TRANSCRIPT_PART_SYSTEM, extra_instructions)
-    chunks = _split_transcript_into_chunks(transcript, _transcript_chunk_char_budget(transcript, part_system))
+    chunk_chars = _transcript_chunk_char_budget(transcript, part_system)
+    chunks = _split_transcript_into_chunks(transcript, chunk_chars)
     if len(chunks) <= 1:
         system = _with_instructions(_SUMMARIZE_TRANSCRIPT_SYSTEM, extra_instructions)
         return await generate_chat([{"role": "user", "content": transcript}], system=system, model=model)
 
     _log.info("summarize_transcript: chunking into %d part(s) (%d chars total)", len(chunks), len(transcript))
     system = part_system
+
+    start = 0
     part_summaries = []
-    for i, chunk in enumerate(chunks):
+    if resume and resume.get("phase") == "summarize" and resume.get("chunk_total") == len(chunks) \
+            and resume.get("chunk_chars") == chunk_chars:
+        start = resume.get("parts_done", 0)
+        part_summaries = [resume.get("text", "")]
+    elif resume:
+        _log.warning(
+            "discarding a summarization checkpoint that no longer matches this transcript's chunking "
+            "(chunk_total=%s vs %s, chunk_chars=%s vs %s) — the recap's context/instructions likely "
+            "changed since the checkpoint was written",
+            resume.get("chunk_total"), len(chunks), resume.get("chunk_chars"), chunk_chars,
+        )
+
+    for i in range(start, len(chunks)):
+        chunk = chunks[i]
+        if should_stop and should_stop():
+            raise JobInterrupted(f"stopped before summarizing part {i + 1} of {len(chunks)}")
         if on_progress:
             on_progress(i + 1, len(chunks))
         part = await generate_chat([{"role": "user", "content": chunk}], system=system, model=model)
@@ -895,6 +929,11 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
             # chunk's events should be.
             return f"[empty response from part {i + 1} of {len(chunks)} — the model returned no usable text for this part]"
         part_summaries.append(part)
+        if on_checkpoint:
+            on_checkpoint({
+                "phase": "summarize", "parts_done": i + 1, "chunk_total": len(chunks),
+                "chunk_chars": chunk_chars, "text": "\n\n".join(part_summaries),
+            })
     return "\n\n".join(part_summaries)
 
 
@@ -1237,7 +1276,8 @@ async def _transcribe_one_file(path: Path, glossary: str, language: str) -> str:
         raise WhisperError(f"Whisper returned an unreadable response: {exc}") from exc
 
 
-async def transcribe_audio(path: Path, glossary: str = "", language: str = "", on_progress=None) -> str:
+async def transcribe_audio(path: Path, glossary: str = "", language: str = "", on_progress=None,
+                            on_checkpoint=None, should_stop=None, resume: dict | None = None) -> str:
     """Transcribe an audio file via whisper.cpp's /inference endpoint,
     transparently splitting a long recording into chunks first (see
     _split_audio_into_chunks) and collapsing any residual repetition-loop
@@ -1288,7 +1328,27 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "", o
     summarize_transcript's own on_progress already uses, so a caller
     (audio_jobs.py) can persist real progress with the same DB fields for
     either phase. Never called at all for a clip short enough to skip
-    chunking."""
+    chunking.
+
+    `on_checkpoint(state)`, if given, is called after each chunk
+    transcribes successfully, with enough to both resume and to show a
+    partial result: {"phase": "transcribe", "chunks_done", "chunk_total",
+    "chunk_seconds" (WHISPER_CHUNK_SECONDS at split time), "audio_size"
+    (path.stat().st_size), "text" (everything transcribed so far,
+    collapsed)}. `should_stop`, if given, is polled before each chunk;
+    when it returns true, JobInterrupted is raised instead of continuing
+    — the caller's already-persisted checkpoint is the resume point, not
+    this call's return value. `resume`, if given, is a previous
+    checkpoint to continue from: chunks already covered by
+    resume["chunks_done"] are skipped and resume["text"] seeds the
+    accumulated result, but ONLY if chunk_total/chunk_seconds/audio_size
+    all still match this exact call — a mismatch (different audio, or
+    WHISPER_CHUNK_SECONDS changed since the checkpoint was written) means
+    the chunk boundaries themselves may differ, so splicing old and new
+    text could silently duplicate or drop audio; discarded (logged, not
+    raised) and transcription starts over from chunk 0 instead. Only the
+    multi-chunk loop below checkpoints/resumes — the two single-call
+    paths above have nothing to checkpoint between."""
     duration = await _probe_audio_duration(path)
     if not duration or duration <= _WHISPER_CHUNK_MIN_DURATION:
         text = await _transcribe_one_file(path, glossary, language)
@@ -1306,8 +1366,25 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "", o
             text = await _transcribe_one_file(chunks[0], glossary, language)
             return _collapse_repeated_transcript_lines(text)
 
+        audio_size = path.stat().st_size
+        start = 0
         parts = []
-        for i, chunk_path in enumerate(chunks):
+        if resume and resume.get("phase") == "transcribe" and resume.get("chunk_total") == len(chunks) \
+                and resume.get("chunk_seconds") == WHISPER_CHUNK_SECONDS and resume.get("audio_size") == audio_size:
+            start = resume.get("chunks_done", 0)
+            parts = [resume.get("text", "")]
+        elif resume:
+            _log.warning(
+                "discarding a transcription checkpoint that no longer matches this audio "
+                "(chunk_total=%s vs %s, chunk_seconds=%s vs %s, audio_size=%s vs %s)",
+                resume.get("chunk_total"), len(chunks), resume.get("chunk_seconds"), WHISPER_CHUNK_SECONDS,
+                resume.get("audio_size"), audio_size,
+            )
+
+        for i in range(start, len(chunks)):
+            chunk_path = chunks[i]
+            if should_stop and should_stop():
+                raise JobInterrupted(f"stopped before transcribing part {i + 1} of {len(chunks)}")
             if on_progress:
                 on_progress(i + 1, len(chunks))
             try:
@@ -1322,6 +1399,12 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "", o
                         partial_transcript=partial,
                     ) from exc
                 raise
+            if on_checkpoint:
+                on_checkpoint({
+                    "phase": "transcribe", "chunks_done": i + 1, "chunk_total": len(chunks),
+                    "chunk_seconds": WHISPER_CHUNK_SECONDS, "audio_size": audio_size,
+                    "text": _collapse_repeated_transcript_lines("\n".join(p for p in parts if p)),
+                })
         return _collapse_repeated_transcript_lines("\n".join(p for p in parts if p))
     finally:
         if tmpdir:

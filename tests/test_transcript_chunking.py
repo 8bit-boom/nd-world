@@ -31,6 +31,7 @@ import re
 import pytest
 
 from app import ai as ai_module
+from app.job_shutdown import JobInterrupted
 
 
 # ── _split_transcript_into_chunks ───────────────────────────────────────────
@@ -332,3 +333,109 @@ def test_is_failure_sentinel_recognizes_both_families():
     assert ai_module.is_failure_sentinel("[empty response from x (done_reason=length) — try again]")
     assert not ai_module.is_failure_sentinel("A real recap paragraph.")
     assert not ai_module.is_failure_sentinel("")
+
+
+# ── summarize_transcript: checkpoint/resume (see app/job_shutdown.py) ──────
+#
+# Same job-survival contract as transcribe_audio's own (see test_whisper.py)
+# — a chunk's checkpoint lets audio_jobs.py persist real progress so a
+# routine server restart mid-summarize doesn't discard already-written part
+# summaries. chunk_chars (not chunk_seconds/audio_size, transcribe_audio's
+# own validation fields) is the thing that must match on resume here: it's
+# derived from num_ctx and the system prompt, either of which could differ
+# between the checkpoint being written and the process restarting.
+
+_LONG_TRANSCRIPT = ("The party explored the ruins. " * 30).strip()
+
+
+@pytest.mark.asyncio
+async def test_summarize_calls_on_checkpoint_after_every_part(monkeypatch):
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
+    calls = []
+
+    async def fake_generate_chat(messages, system="", model=""):
+        calls.append(messages[0]["content"])
+        return f"Summary {len(calls)}."
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    checkpoints = []
+    result = await ai_module.summarize_transcript(_LONG_TRANSCRIPT, on_checkpoint=checkpoints.append)
+
+    assert len(checkpoints) == len(calls)
+    assert [c["parts_done"] for c in checkpoints] == list(range(1, len(calls) + 1))
+    assert all(c["phase"] == "summarize" for c in checkpoints)
+    assert all(c["chunk_total"] == len(calls) for c in checkpoints)
+    assert all(c["chunk_chars"] == 50 for c in checkpoints)
+    assert checkpoints[-1]["text"] == result
+
+
+@pytest.mark.asyncio
+async def test_summarize_on_checkpoint_not_called_for_a_short_unchunked_transcript(monkeypatch):
+    async def fake_generate_chat(messages, system="", model=""):
+        return "one short summary"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    checkpoints = []
+    result = await ai_module.summarize_transcript("short transcript", on_checkpoint=checkpoints.append)
+    assert result == "one short summary"
+    assert checkpoints == []
+
+
+@pytest.mark.asyncio
+async def test_summarize_resumes_from_a_matching_checkpoint_and_skips_done_parts(monkeypatch):
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
+    chunks = ai_module._split_transcript_into_chunks(_LONG_TRANSCRIPT, 50)
+    assert len(chunks) > 1
+    seen_chunks = []
+
+    async def fake_generate_chat(messages, system="", model=""):
+        seen_chunks.append(messages[0]["content"])
+        return f"Summary of {chunks.index(messages[0]['content']) if messages[0]['content'] in chunks else '?'}."
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    resume = {
+        "phase": "summarize", "parts_done": 1, "chunk_total": len(chunks), "chunk_chars": 50,
+        "text": "Prior summary of part 0.",
+    }
+    result = await ai_module.summarize_transcript(_LONG_TRANSCRIPT, resume=resume)
+    assert seen_chunks == chunks[1:]  # chunk 0 was skipped, not re-summarized
+    assert result.startswith("Prior summary of part 0.\n\n")
+
+
+@pytest.mark.asyncio
+async def test_summarize_discards_a_checkpoint_with_a_different_chunk_budget(monkeypatch):
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
+    chunks = ai_module._split_transcript_into_chunks(_LONG_TRANSCRIPT, 50)
+    seen_chunks = []
+
+    async def fake_generate_chat(messages, system="", model=""):
+        seen_chunks.append(messages[0]["content"])
+        return "a summary"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    resume = {
+        "phase": "summarize", "parts_done": 1, "chunk_total": len(chunks), "chunk_chars": 999,  # mismatch
+        "text": "stale",
+    }
+    await ai_module.summarize_transcript(_LONG_TRANSCRIPT, resume=resume)
+    assert seen_chunks == chunks  # started over — every chunk re-summarized
+
+
+@pytest.mark.asyncio
+async def test_summarize_raises_job_interrupted_at_the_next_part_boundary_when_should_stop(monkeypatch):
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
+
+    async def fake_generate_chat(messages, system="", model=""):
+        return "a summary"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    calls = {"n": 0}
+
+    def should_stop():
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    checkpoints = []
+    with pytest.raises(JobInterrupted):
+        await ai_module.summarize_transcript(_LONG_TRANSCRIPT, should_stop=should_stop, on_checkpoint=checkpoints.append)
+    assert len(checkpoints) == 1
