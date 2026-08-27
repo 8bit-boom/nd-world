@@ -608,6 +608,71 @@ async def test_transcribe_audio_chunking_applies_repeat_collapsing(tmp_path, mon
     assert await ai_module.transcribe_audio(f) == "loop\nnormal text"
 
 
+@pytest.mark.asyncio
+async def test_transcribe_audio_mid_chunk_failure_preserves_prior_chunks_as_partial(tmp_path, monkeypatch):
+    """Regression test: a mid-way chunk failure (e.g. the whisper container
+    restarting 3 hours into a 4-hour session) used to discard every
+    already-transcribed chunk along with the error. The raised WhisperError
+    must now carry everything transcribed before the failure as
+    partial_transcript, so a caller can save it rather than losing hours
+    of completed work."""
+    chunk_paths = [tmp_path / f"c{i}.mp3" for i in range(4)]
+    for p in chunk_paths:
+        p.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 3600.0
+
+    async def fake_split(path, chunk_seconds):
+        return chunk_paths, None
+
+    async def fake_transcribe_one(path, glossary, language):
+        idx = chunk_paths.index(path)
+        if idx == 2:
+            raise ai_module.WhisperError("whisper container restarted")
+        return f"part {idx}"
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", fake_transcribe_one)
+
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"x")
+    with pytest.raises(ai_module.WhisperError) as excinfo:
+        await ai_module.transcribe_audio(f)
+
+    assert "part 3 of 4" in str(excinfo.value)
+    assert "whisper container restarted" in str(excinfo.value)
+    assert excinfo.value.partial_transcript == "part 0\npart 1"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_audio_failure_on_the_first_chunk_has_no_partial(tmp_path, monkeypatch):
+    chunk_paths = [tmp_path / f"c{i}.mp3" for i in range(3)]
+    for p in chunk_paths:
+        p.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 3600.0
+
+    async def fake_split(path, chunk_seconds):
+        return chunk_paths, None
+
+    async def fake_transcribe_one(path, glossary, language):
+        raise ai_module.WhisperError("whisper unreachable")
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file", fake_transcribe_one)
+
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"x")
+    with pytest.raises(ai_module.WhisperError) as excinfo:
+        await ai_module.transcribe_audio(f)
+    assert excinfo.value.partial_transcript == ""
+    assert str(excinfo.value) == "whisper unreachable"  # no wrapping when there's nothing to salvage
+
+
 # ── debug_info() surfaces Whisper status alongside Ollama's ────────────────
 
 @pytest.mark.asyncio

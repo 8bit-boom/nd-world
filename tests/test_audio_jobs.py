@@ -162,6 +162,49 @@ async def test_job_ends_in_error_on_empty_transcript(client, seed, tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_job_saves_partial_transcript_on_mid_chunk_whisper_failure(client, seed, tmp_path, monkeypatch):
+    """A WhisperError carrying partial_transcript (transcribe_audio's
+    chunked path, on a failure after at least one chunk succeeded) must be
+    saved to the job row — not just the error message — so the GM can
+    resummarize from what was actually transcribed instead of losing it
+    along with the failure."""
+    async def failing_transcribe(path, glossary="", **kwargs):
+        raise ai_module.WhisperError(
+            "Whisper failed on part 3 of 4: container restarted. The first 2 part(s) were transcribed.",
+            partial_transcript="part 0\npart 1",
+        )
+    monkeypatch.setattr(ai_module, "transcribe_audio", failing_transcribe)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "error"
+    assert "part 3 of 4" in job.error
+    assert job.transcript == "part 0\npart 1"
+
+
+@pytest.mark.asyncio
+async def test_job_error_has_no_transcript_when_whisper_error_has_no_partial(client, seed, tmp_path, monkeypatch):
+    async def failing_transcribe(path, glossary="", **kwargs):
+        raise ai_module.WhisperError("whisper unreachable")
+    monkeypatch.setattr(ai_module, "transcribe_audio", failing_transcribe)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "error"
+    assert not job.transcript
+
+
+@pytest.mark.asyncio
 async def test_job_ends_in_error_on_exception(client, seed, tmp_path, monkeypatch):
     async def raising_transcribe(path, glossary="", **kwargs):
         raise RuntimeError("boom")

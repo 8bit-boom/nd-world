@@ -190,7 +190,14 @@ async def _run_job(
                 on_progress=lambda current, total: _set(chunk_current=current, chunk_total=total),
             )
         except _ai_module.WhisperError as exc:
-            _set(status="error", error=str(exc), finished_at=datetime.utcnow())
+            fields = {"status": "error", "error": str(exc), "finished_at": datetime.utcnow()}
+            if exc.partial_transcript:
+                # At least one chunk transcribed before the failure — save
+                # it so the GM can resummarize from the salvaged partial
+                # (start_resummarize_job only needs job.transcript) instead
+                # of re-uploading and re-transcribing the whole recording.
+                fields["transcript"] = exc.partial_transcript
+            _set(**fields)
             return
         if not transcript:
             _set(status="error", finished_at=datetime.utcnow(), error=(

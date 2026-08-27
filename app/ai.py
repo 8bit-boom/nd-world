@@ -980,7 +980,20 @@ class WhisperError(Exception):
     GM (audio jobs, session recap routes) catch this and surface str(exc);
     callers where a failed transcription should just quietly leave an
     attachment without transcript text (_finish_attachment_upload) catch
-    and swallow it instead."""
+    and swallow it instead.
+
+    `partial_transcript`, when non-empty, is every chunk successfully
+    transcribed before the failing one, already joined and collapsed —
+    set only by transcribe_audio's chunked path, when at least one prior
+    chunk succeeded. A whisper container restart 3 hours into a 4-hour
+    session used to discard all 3 hours of already-completed work along
+    with the error; a caller that saves this (audio_jobs.py) lets the GM
+    resummarize from the salvaged partial instead of re-uploading and
+    re-transcribing the whole recording from scratch."""
+
+    def __init__(self, message: str, partial_transcript: str = ""):
+        super().__init__(message)
+        self.partial_transcript = partial_transcript
 
 
 def _collapse_repeated_transcript_lines(text: str, min_repeat: int = 4) -> str:
@@ -1208,7 +1221,18 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "", o
         for i, chunk_path in enumerate(chunks):
             if on_progress:
                 on_progress(i + 1, len(chunks))
-            parts.append(await _transcribe_one_file(chunk_path, glossary, language))
+            try:
+                parts.append(await _transcribe_one_file(chunk_path, glossary, language))
+            except WhisperError as exc:
+                if parts:
+                    partial = _collapse_repeated_transcript_lines("\n".join(p for p in parts if p))
+                    raise WhisperError(
+                        f"Whisper failed on part {i + 1} of {len(chunks)}: {exc}. The first {i} part(s) "
+                        "were transcribed and have been saved — you can re-summarize from the partial "
+                        "transcript, or re-upload to redo the whole recording.",
+                        partial_transcript=partial,
+                    ) from exc
+                raise
         return _collapse_repeated_transcript_lines("\n".join(p for p in parts if p))
     finally:
         if tmpdir:
