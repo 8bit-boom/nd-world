@@ -26,6 +26,8 @@ ever has to see more than one chunk's raw transcript text, and nothing is
 ever re-summarized (so nothing already-written can be dropped by a later
 pass).
 """
+import re
+
 import pytest
 
 from app import ai as ai_module
@@ -54,6 +56,23 @@ def test_split_no_boundaries_hard_cuts_without_losing_data():
     chunks = ai_module._split_transcript_into_chunks(text, 1000)
     assert len(chunks) == 5
     assert "".join(chunks) == text
+
+
+def test_split_prefers_a_single_newline_over_hard_cutting_mid_word():
+    # whisper.cpp's real transcript output is one segment per line, joined
+    # with a bare "\n" — no blank-line paragraph breaks, no "word. "
+    # sentence spacing. Without a "\n" break candidate, every cut on a real
+    # transcript lands mid-word. Each line ends with a unique marker so a
+    # mid-word cut is easy to detect: a clean cut leaves every non-final
+    # chunk ending with a complete "ENDn" marker.
+    lines = [f"segment {i} continues with some filler words here END{i}" for i in range(40)]
+    text = "\n".join(lines)
+    chunks = ai_module._split_transcript_into_chunks(text, 400)
+    assert len(chunks) > 1
+    for chunk in chunks[:-1]:
+        assert re.search(r"END\d+$", chunk), f"chunk did not end on a line boundary: {chunk!r}"
+    covered = "".join(chunks)
+    assert covered.replace(" ", "").replace("\n", "") == text.replace(" ", "").replace("\n", "")
 
 
 def test_split_each_chunk_within_budget_or_is_a_forced_single_run():

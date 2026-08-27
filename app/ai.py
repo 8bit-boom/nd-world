@@ -722,10 +722,16 @@ def _transcript_chunk_char_budget() -> int:
 
 
 def _split_transcript_into_chunks(transcript: str, chunk_chars: int) -> list[str]:
-    """Split on a paragraph or sentence boundary near the end of each window
-    where one exists, so a chunk doesn't get cut mid-sentence — falls back
-    to a hard cut at chunk_chars if no such boundary is found late enough
-    in the window to still make meaningful progress."""
+    """Split on a paragraph, line, or sentence boundary near the end of each
+    window where one exists, so a chunk doesn't get cut mid-sentence — falls
+    back to a hard cut at chunk_chars if no such boundary is found late
+    enough in the window to still make meaningful progress.
+
+    A single "\\n" is checked between the paragraph and sentence-punctuation
+    candidates because that's the real per-segment separator whisper.cpp
+    writes into a transcript — a raw Whisper transcript essentially never
+    contains a blank-line paragraph break or "word. " sentence spacing, so
+    without this candidate every long transcript hard-cut mid-word."""
     if len(transcript) <= chunk_chars:
         return [transcript]
     chunks = []
@@ -737,6 +743,10 @@ def _split_transcript_into_chunks(transcript: str, chunk_chars: int) -> list[str
         if end < n:
             window = transcript[pos:end]
             break_at = window.rfind("\n\n")
+            if break_at < min_break:
+                idx = window.rfind("\n")
+                if idx > break_at:
+                    break_at = idx
             if break_at < min_break:
                 for sep in (". ", "! ", "? "):
                     idx = window.rfind(sep)
