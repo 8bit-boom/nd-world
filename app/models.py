@@ -661,6 +661,43 @@ class AudioClip(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class VideoAlbum(Base):
+    """A GM-created folder for organizing VideoClips into albums and nested
+    sub-albums — same self-referential parent_id tree as AudioAlbum. NULL
+    parent_id means top-level. See app/routers/video.py for breadcrumb/
+    cascade-delete handling."""
+    __tablename__ = "video_albums"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    parent_id = Column(Integer, ForeignKey("video_albums.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class VideoClip(Base):
+    """A GM-uploaded video file (a recorded cutscene, a handout clip, an
+    NPC video message) for the /video library — see app/routers/video.py.
+    Same ownership/visibility shape as AudioClip: each row owns exactly one
+    file, deleting the row deletes the file, visible_to_players defaults
+    True (a GM only has to act to hide a clip). poster_url is a best-effort
+    ffmpeg-generated thumbnail frame — nullable, since ffmpeg is optional
+    (see app.ai's identical graceful-degradation pattern for Whisper audio
+    splitting) and a player's browser still shows a native video-element
+    frame if it's missing. album_id is NULL for a top-level (unfiled) clip."""
+    __tablename__ = "video_clips"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    name = Column(String(256), nullable=False)
+    description = Column(String(512), default="")
+    file_url = Column(String(512), nullable=False)  # "/uploads/video/<file>"
+    poster_url = Column(String(512), nullable=True)  # "/uploads/video/<file>.jpg", best-effort
+    visible_to_players = Column(Boolean, default=True)
+    album_id = Column(Integer, ForeignKey("video_albums.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class GameSession(Base):
     """A per-session prep/recap log: prep checklist, NPCs featured, loot
     given, XP awarded. Named GameSession (not Session) to avoid colliding

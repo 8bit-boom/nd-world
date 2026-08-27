@@ -62,6 +62,7 @@ STATIC_CATALOG = [
     {"id": "rules", "label": "Rules", "icon": "📖", "href": "/rules", "exact": True, "gm_only": False},
     {"id": "characters", "label": "Player Characters", "icon": "🎲", "href": "/characters", "gm_only": False},
     {"id": "audio", "label": "Audio", "icon": "🎵", "href": "/audio", "exact": True, "gm_only": False},
+    {"id": "video", "label": "Video", "icon": "🎬", "href": "/video", "exact": True, "gm_only": False},
     {"id": "androidapp", "label": "Android App", "icon": "📱", "href": "/androidapp", "exact": True, "gm_only": False},
 ]
 # Every static item gets the same ql_type/ql_ref defaults so templates and

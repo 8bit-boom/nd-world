@@ -58,6 +58,7 @@ from .routers.chronicler import router as chronicler_router
 from .routers.gallery import router as gallery_router
 from .routers.audio import router as audio_router
 from .routers.audio_jobs import router as audio_jobs_router
+from .routers.video import router as video_router
 from .routers.nav_menus_admin import router as nav_menus_admin_router
 from . import gallery as _gallery_module
 from . import mcp_server
@@ -109,6 +110,7 @@ app.include_router(chronicler_router)
 app.include_router(gallery_router)
 app.include_router(audio_router)
 app.include_router(audio_jobs_router)
+app.include_router(video_router)
 app.include_router(nav_menus_admin_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
@@ -257,11 +259,13 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if method != "GET":
         return False
-    if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log", "/audio"):
+    if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log", "/audio", "/video"):
         return True
     if path.startswith("/kind/") or path.startswith("/uploads/"):
         return True
     if re.match(r"^/audio/albums/\d+$", path):
+        return True
+    if re.match(r"^/video/albums/\d+$", path):
         return True
     if re.match(r"^/entity/\d+(/download\.md)?$", path):
         return True

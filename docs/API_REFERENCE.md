@@ -54,6 +54,8 @@ worlds they've been invited into (`WorldMembership`).
 - [Investigation Boards](#investigation-boards)
 - [King in Yellow & Dreamlands](#king-in-yellow--dreamlands)
 - [Handouts](#handouts)
+- [Audio Library](#audio-library)
+- [Video Library](#video-library)
 - [Random Tables](#random-tables)
 - [Rules](#rules)
 - [Search](#search)
@@ -441,6 +443,38 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/handout/{entity_id}` | GM | Single printable handout for one entity. |
 | GET | `/handouts` | GM | Gallery of handout-eligible entities. |
 | POST | `/handouts/print` | GM | Generates a combined multi-entity printable page. |
+
+## Audio Library
+
+`app/routers/audio.py` — a per-world tree of GM-uploaded audio clips (ambiance, sound effects, NPC voice lines, recorded handouts), organized into nested albums (`AudioAlbum`/`AudioClip` in `app/models.py`). Unlike Images (GM-only end to end), the library itself is player-safe: a player sees a read-only view filtered to `visible_to_players=True`, same default-visible convention as an `Entity`. Upload/edit/delete/album management are GM-only, enforced in each handler.
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/audio` | Player | Top-level clip/album list for the active world. |
+| GET | `/audio/albums/{album_id}` | Player | One album's clips and sub-albums, with a breadcrumb. |
+| POST | `/audio/albums/new` | GM | Creates an album (optionally as a child, via `parent_id`). |
+| POST | `/audio/albums/{album_id}/rename` | GM | Renames an album. |
+| POST | `/audio/albums/{album_id}/delete` | GM | Deletes an album, cascading to its sub-albums and their clips (and files). |
+| POST | `/audio/upload` | GM | Uploads one audio clip (single request, up to `MAX_AUDIO_UPLOAD_BYTES`). |
+| POST | `/audio/upload/chunk`, `/audio/upload/complete` | GM | Client-split large-upload pair (see `app/uploads.py`) for a clip too big for a single request behind a reverse proxy's body-size cap. |
+| POST | `/audio/{clip_id}/edit` | GM | Updates a clip's name/description/visibility/album. |
+| POST | `/audio/{clip_id}/delete` | GM | Deletes a clip and its file. |
+
+## Video Library
+
+`app/routers/video.py` — the video counterpart to the Audio Library above (a recorded cutscene, a handout clip, an NPC video message), same album-tree/visibility/chunked-upload shape (`VideoAlbum`/`VideoClip` in `app/models.py`). The one real difference: `VideoClip.poster_url` is a best-effort ffmpeg-generated thumbnail frame (nullable — a missing poster just means the `<video>` element falls back to its own native preview frame, never a failed upload). Upload size defaults to 2 GB (`MAX_VIDEO_UPLOAD_BYTES`, separate from audio's own limit).
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/video` | Player | Top-level clip/album list for the active world. |
+| GET | `/video/albums/{album_id}` | Player | One album's clips and sub-albums, with a breadcrumb. |
+| POST | `/video/albums/new` | GM | Creates an album (optionally as a child, via `parent_id`). |
+| POST | `/video/albums/{album_id}/rename` | GM | Renames an album. |
+| POST | `/video/albums/{album_id}/delete` | GM | Deletes an album, cascading to its sub-albums and their clips (and files). |
+| POST | `/video/upload` | GM | Uploads one video clip (single request, up to `MAX_VIDEO_UPLOAD_BYTES`); generates a poster frame best-effort. |
+| POST | `/video/upload/chunk`, `/video/upload/complete` | GM | Client-split large-upload pair, same as the Audio Library's. |
+| POST | `/video/{clip_id}/edit` | GM | Updates a clip's name/description/visibility/album. |
+| POST | `/video/{clip_id}/delete` | GM | Deletes a clip and its file (and poster, if one was generated). |
 
 ## Random Tables
 
