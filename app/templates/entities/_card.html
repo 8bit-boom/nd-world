@@ -1,7 +1,7 @@
 <div class="entity-card-wrap">
   <input type="checkbox" class="row-cb card-cb" data-id="{{ e.id }}" onclick="event.stopPropagation()"/>
   <a href="{{ ('/entity/' + e.id|string)|wq }}" class="entity-card kind-{{ e.kind }}">
-    {% if e.image_url %}<img src="{{ e.image_url }}" alt="{{ e.name }}"/>{% endif %}
+    {% if e.image_url %}<img src="{{ e.image_url|thumb }}" alt="{{ e.name }}" loading="lazy"/>{% endif %}
     <div class="entity-card-body">
       <span class="entity-kind">{{ kind_icons[e.kind] }} {{ e.kind }}</span>
       {% if e.subtype %}<span class="entity-sub">{{ e.subtype }}</span>{% endif %}

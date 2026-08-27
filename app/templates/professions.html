@@ -132,7 +132,7 @@
   {% for e in world_by_tier[tier] %}
   <div class="profession-card" onclick="openEntityProfession({{ e.id }})">
     {% if e.image_url %}
-    <img class="profession-card-img" src="{{ e.image_url }}" alt="{{ e.name }}" loading="lazy"/>
+    <img class="profession-card-img" src="{{ e.image_url|thumb }}" alt="{{ e.name }}" loading="lazy"/>
     {% else %}
     <div class="profession-card-placeholder">🎭</div>
     {% endif %}
@@ -173,7 +173,7 @@
         {% for r in available_by_tier[tier] %}
         <div class="available-card" id="avail-{{ r.slug }}-{{ r.tier }}">
           {% if r.image_url %}
-          <img class="available-card-img" src="{{ r.image_url }}" loading="lazy"/>
+          <img class="available-card-img" src="{{ r.image_url|thumb }}" loading="lazy"/>
           {% else %}
           <div class="available-card-placeholder">🎭</div>
           {% endif %}

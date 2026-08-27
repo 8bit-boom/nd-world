@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db, get_app_settings
 from ..deps import get_world_ctx
-from ..imaging import convert_image
+from ..imaging import convert_image, make_thumbnail
 from ..models import Entity
 from ..rendering import render_md
 from ..templating import templates
@@ -52,6 +52,7 @@ def _upload_profession_image(file: Optional[UploadFile], db: Optional[Session] =
                               animated_format=settings.animated_format)
     else:
         dest = convert_image(dest)
+    make_thumbnail(dest)
     return f"/uploads/professions/{dest.name}"
 
 

@@ -230,7 +230,14 @@ async def _generate_poster(video_path: Path, dest_dir: Path) -> Optional[str]:
     poster_path = dest_dir / f"{video_path.stem}.jpg"
     try:
         proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-ss", "1", "-i", str(video_path), "-frames:v", "1", "-q:v", "4", str(poster_path),
+            # scale=min(iw\,480):-2 caps the poster's width at 480px (a no-op,
+            # via ffmpeg's own min(), for anything already narrower) — the
+            # Video tab grid only ever displays this at a small card size, so
+            # writing it out at full source resolution (often 1080p+) was
+            # pure wasted bytes on every page load. -2 keeps height even, as
+            # required by JPEG's 4:2:0 chroma subsampling.
+            "ffmpeg", "-y", "-ss", "1", "-i", str(video_path), "-frames:v", "1",
+            "-vf", "scale=min(iw\\,480):-2", "-q:v", "4", str(poster_path),
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
         )
         await proc.communicate()

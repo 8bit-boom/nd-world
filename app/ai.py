@@ -7,6 +7,8 @@ from collections.abc import AsyncGenerator
 import ollama as _ollama
 import httpx as _httpx
 
+from .imaging import make_thumbnail
+
 _log = logging.getLogger("nd.ai")
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
@@ -2041,7 +2043,9 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                 if img_raw.startswith("data:"):
                     img_raw = img_raw.split(",", 1)[1]
                 fname = str(_uuid.uuid4()) + ".png"
-                (ai_img_dir / fname).write_bytes(_b64.b64decode(img_raw))
+                out_path = ai_img_dir / fname
+                out_path.write_bytes(_b64.b64decode(img_raw))
+                make_thumbnail(out_path)  # best-effort — the Image tab's history/starred grids fall back to this full PNG if it fails
                 urls.append(f"/uploads/ai-images/{fname}")
 
         else:  # comfyui
@@ -2074,7 +2078,9 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                                                  "subfolder": img_info.get("subfolder", ""),
                                                  "type": "output"})
                         fname = str(_uuid.uuid4()) + ".png"
-                        (ai_img_dir / fname).write_bytes(ir.content)
+                        out_path = ai_img_dir / fname
+                        out_path.write_bytes(ir.content)
+                        make_thumbnail(out_path)
                         urls.append(f"/uploads/ai-images/{fname}")
                     break
 

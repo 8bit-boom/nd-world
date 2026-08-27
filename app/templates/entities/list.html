@@ -100,7 +100,7 @@
       <tr class="kind-{{ e.kind }}{% if not st %} no-stats{% endif %}">
         <td class="col-cb"><input type="checkbox" class="row-cb" data-id="{{ e.id }}"/></td>
         <td class="col-name">
-          {% if e.image_url %}<img class="tbl-thumb" src="{{ e.image_url }}" alt=""/>{% endif %}
+          {% if e.image_url %}<img class="tbl-thumb" src="{{ e.image_url|thumb }}" alt="" loading="lazy"/>{% endif %}
           <div class="col-name-text">
             <a href="{{ ('/entity/' + e.id|string)|wq }}">{{ e.name }}</a>
             {% if e.subtype %}<span class="entity-sub">{{ e.subtype }}</span>{% endif %}
@@ -132,7 +132,7 @@
       <tr class="kind-{{ e.kind }}">
         <td class="col-cb"><input type="checkbox" class="row-cb" data-id="{{ e.id }}"/></td>
         <td class="col-name">
-          {% if e.image_url %}<img class="tbl-thumb" src="{{ e.image_url }}" alt=""/>{% endif %}
+          {% if e.image_url %}<img class="tbl-thumb" src="{{ e.image_url|thumb }}" alt="" loading="lazy"/>{% endif %}
           <div class="col-name-text"><a href="/entity/{{ e.id }}">{{ e.name }}</a></div>
         </td>
         {% if char_feat_folder %}

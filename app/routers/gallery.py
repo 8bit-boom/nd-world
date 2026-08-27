@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx
 from ..gallery import all_world_image_urls, discover_world_images, image_display_name
-from ..imaging import convert_image
+from ..imaging import convert_image, make_thumbnail
 from ..models import ImageAlbum, World
 from ..templating import templates
 from ..uploads import copy_upload_bounded, unique_upload_filename
@@ -45,6 +45,7 @@ def _upload_album_image(file: Optional[UploadFile], db: Session) -> Optional[str
     copy_upload_bounded(file, dest)
     settings = get_app_settings(db)
     dest = convert_image(dest, static_format=settings.static_format, animated_format=settings.animated_format)
+    make_thumbnail(dest)
     return f"/uploads/gallery/{dest.name}"
 
 

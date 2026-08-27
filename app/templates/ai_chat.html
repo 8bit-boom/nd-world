@@ -4085,6 +4085,23 @@ async function igLoadUpscalers() {
 const _HIST_KEY = 'nd_imagegen_history';
 const _HIST_MAX = 50;
 
+// A generated image is saved full-resolution (often several MB — SwarmUI/
+// ComfyUI output) but app.imaging.make_thumbnail also writes a small WebP
+// preview alongside it at generation time (see app/ai.py's imagegen_generate)
+// under a predictable name. Grids here load that instead — an <img>'s own
+// onerror fallback to the full image covers the one case a thumbnail might
+// not exist: an entry saved to localStorage/starred before this feature
+// shipped, since there's no per-request way to check the file exists from
+// plain JS the way the server-side thumb_url() Jinja filter can.
+function ndThumbSrc(url) {
+  const i = url.lastIndexOf('.');
+  return i === -1 ? url : url.slice(0, i) + '_thumb.webp';
+}
+function ndThumbFallback(img) {
+  img.onerror = null;
+  img.src = img.dataset.full;
+}
+
 function igSaveToHistory(urls, params) {
   if (!urls || !urls.length) return;
   try {
@@ -4113,7 +4130,8 @@ function igLoadHistory() {
       const shortPrompt = (p.prompt || '').slice(0, 45);
       return `
         <div class="ig-result-card">
-          <img src="${url}" alt="Generated" loading="lazy" style="cursor:pointer" onclick="igHistViewAll(${i})">
+          <img src="${ndThumbSrc(url)}" data-full="${url}" alt="Generated" loading="lazy" style="cursor:pointer"
+               onclick="igHistViewAll(${i})" onerror="ndThumbFallback(this)">
           <div class="ig-result-card-actions" style="flex-direction:column;gap:.22rem;padding:.3rem .4rem">
             <div style="font-size:.63rem;color:var(--text-dim)">${date} ${time}${more}</div>
             <div style="font-size:.63rem;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
@@ -4145,7 +4163,8 @@ function igHistViewAll(idx) {
       const card = document.createElement('div');
       card.className = 'ig-result-card';
       const img = document.createElement('img');
-      img.src = url; img.alt = `Generated image ${i + 1}`;
+      img.src = ndThumbSrc(url); img.dataset.full = url; img.alt = `Generated image ${i + 1}`;
+      img.onerror = () => ndThumbFallback(img);
       const actions = document.createElement('div');
       actions.className = 'ig-result-card-actions';
       const dlLink = document.createElement('a');
@@ -4522,8 +4541,9 @@ async function igLoadStarred() {
       const card = document.createElement('div');
       card.className = 'starred-card';
       const imgEl = document.createElement('img');
-      imgEl.src = img.url; imgEl.alt = 'Starred image';
+      imgEl.src = ndThumbSrc(img.url); imgEl.dataset.full = img.url; imgEl.alt = 'Starred image';
       imgEl.loading = 'lazy';
+      imgEl.onerror = () => ndThumbFallback(imgEl);
       imgEl.onclick = () => window.open(img.url, '_blank');
       const info = document.createElement('div');
       info.className = 'starred-card-info';

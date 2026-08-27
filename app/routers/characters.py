@@ -20,7 +20,7 @@ from ..constants import (
 )
 from ..database import get_db, get_app_settings
 from ..deps import get_world_ctx
-from ..imaging import convert_image
+from ..imaging import convert_image, make_thumbnail
 from ..templating import templates
 from ..uploads import copy_upload_bounded, unique_upload_filename
 from ..models import PlayerCharacter, SheetTemplate, User, World, WorldMembership
@@ -213,6 +213,7 @@ def _upload_portrait(file: UploadFile, db: Optional[Session] = None) -> Optional
                               animated_format=settings.animated_format)
     else:
         dest = convert_image(dest)
+    make_thumbnail(dest)
     return f"/uploads/portraits/{dest.name}"
 
 

@@ -88,7 +88,7 @@
   <div class="map-mini-grid">
     {% for m in preview_maps %}
     <a href="{{ ('/maps/' + m.slug)|wq }}" class="map-mini-card">
-      {% if m.image_url %}<img src="{{ m.image_url }}" alt="{{ m.name }}"/>{% else %}<div class="map-mini-ph">🗺</div>{% endif %}
+      {% if m.image_url %}<img src="{{ m.image_url|thumb }}" alt="{{ m.name }}" loading="lazy"/>{% else %}<div class="map-mini-ph">🗺</div>{% endif %}
       <span class="map-mini-name">{{ m.name }}</span>
     </a>
     {% endfor %}
@@ -102,7 +102,7 @@
   <div class="card-grid">
     {% for e in recent %}
     <a href="{{ ('/entity/' + e.id|string)|wq }}" class="entity-card kind-{{ e.kind }}">
-      {% if e.image_url %}<img src="{{ e.image_url }}" alt="{{ e.name }}"/>{% endif %}
+      {% if e.image_url %}<img src="{{ e.image_url|thumb }}" alt="{{ e.name }}" loading="lazy"/>{% endif %}
       <div class="entity-card-body">
         <span class="entity-kind">{{ kind_icons[e.kind] }} {{ e.kind }}</span>
         {% if e.subtype %}<span class="entity-sub">{{ e.subtype }}</span>{% endif %}
@@ -124,7 +124,7 @@
   <div class="linked-strip">
     {% for ent, n in most_linked %}
     <a href="{{ ('/entity/' + ent.id|string)|wq }}" class="linked-card">
-      {% if ent.image_url %}<img src="{{ ent.image_url }}" class="linked-img" alt=""/>{% else %}<div class="linked-icon">{{ kind_icons[ent.kind] }}</div>{% endif %}
+      {% if ent.image_url %}<img src="{{ ent.image_url|thumb }}" class="linked-img" alt="" loading="lazy"/>{% else %}<div class="linked-icon">{{ kind_icons[ent.kind] }}</div>{% endif %}
       <div class="linked-name">{{ ent.name }}</div>
       <div class="linked-badge">{{ n }} link{{ 's' if n != 1 }}</div>
     </a>

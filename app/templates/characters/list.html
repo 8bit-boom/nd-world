@@ -23,7 +23,7 @@
   <a href="{{ ('/characters/' + pc.id|string)|wq }}" class="pc-card">
     <div class="pc-card-portrait">
       {% if pc.portrait_url %}
-      <img src="{{ pc.portrait_url }}" alt="{{ pc.name }}">
+      <img src="{{ pc.portrait_url|thumb }}" alt="{{ pc.name }}" loading="lazy">
       {% else %}
       <div class="pc-card-portrait-placeholder">{{ pc.name[0] | upper }}</div>
       {% endif %}

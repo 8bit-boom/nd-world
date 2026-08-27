@@ -15,7 +15,7 @@
     <div class="map-img-wrap">
       <a href="{{ ('/maps/' + m.slug)|wq }}">
         {% if m.image_url %}
-        <img class="map-img" src="{{ m.image_url }}" alt="{{ m.name }}"/>
+        <img class="map-img" src="{{ m.image_url|thumb }}" alt="{{ m.name }}" loading="lazy"/>
         {% else %}
         <div class="map-placeholder">🗺</div>
         {% endif %}
@@ -75,7 +75,7 @@
     <div class="map-img-wrap">
       {% if s.image_url %}
       {% if _s_href %}<a href="{{ _s_href }}">{% endif %}
-        <img class="map-img" src="{{ s.image_url }}" alt="{{ s.name }}"/>
+        <img class="map-img" src="{{ s.image_url|thumb }}" alt="{{ s.name }}" loading="lazy"/>
       {% if _s_href %}</a>{% endif %}
       {% else %}
       {% if _s_href %}<a href="{{ _s_href }}" class="map-placeholder" style="text-decoration:none">{% else %}<div class="map-placeholder">{% endif %}

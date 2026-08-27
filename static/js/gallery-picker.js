@@ -27,6 +27,22 @@ let _ndGalleryPickerBreadcrumb = []; // [{id, name}], id === ALL_IMAGES_ID for t
 let _ndGalleryPickerRootAlbums = null; // cached after first fetch — root rarely changes mid-session
 let _ndGalleryPickerToken = 0; // guards against a slow fetch resolving after a newer navigation started
 
+// app.imaging.make_thumbnail writes a small WebP preview alongside every
+// upload under a predictable name — this picker can render potentially every
+// image in the world (all_world_image_urls has no size cap), so loading full
+// resolution here is the single worst offender for "everywhere" being slow.
+// onerror falls back to the full image for anything uploaded before this
+// feature shipped, since plain JS has no way to check the file exists first
+// the way the server-side thumb_url() Jinja filter can.
+function _ndThumbSrc(url) {
+  const i = url.lastIndexOf(".");
+  return i === -1 ? url : url.slice(0, i) + "_thumb.webp";
+}
+function _ndThumbFallback(img) {
+  img.onerror = null;
+  img.src = img.dataset.full;
+}
+
 function _ndGalleryPickerSetLoading() {
   const grid = document.getElementById("gallery-picker-grid");
   grid.innerHTML = '<div class="gallery-picker-empty">Loading…</div>';
@@ -63,8 +79,10 @@ function _ndGalleryPickerAlbumCard(album) {
   thumb.className = "gallery-picker-folder-thumb";
   if (album.cover_url) {
     const img = document.createElement("img");
-    img.src = album.cover_url;
+    img.src = _ndThumbSrc(album.cover_url);
+    img.dataset.full = album.cover_url;
     img.loading = "lazy";
+    img.onerror = () => _ndThumbFallback(img);
     thumb.appendChild(img);
   } else {
     thumb.classList.add("gallery-picker-folder-empty");
@@ -87,9 +105,11 @@ function _ndGalleryPickerImageCard(entry) {
   const cell = document.createElement("div");
   cell.className = "gallery-picker-cell";
   const img = document.createElement("img");
-  img.src = entry.url;
+  img.src = _ndThumbSrc(entry.url);
+  img.dataset.full = entry.url;
   img.alt = entry.name;
   img.loading = "lazy";
+  img.onerror = () => _ndThumbFallback(img);
   cell.appendChild(img);
   const name = document.createElement("div");
   name.className = "gallery-picker-cell-name";

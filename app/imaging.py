@@ -1,11 +1,20 @@
 """Post-processing for uploaded portraits/entity images: convert to AVIF,
-WebP, PNG, or JPEG."""
+WebP, PNG, or JPEG, and generate a small preview variant for gallery/list
+grids."""
 from pathlib import Path
 from typing import Optional
 
 from PIL import Image
 
 CONVERT_QUALITY = 90
+THUMBNAIL_QUALITY = 74
+# Longest edge of a generated preview, in pixels — chosen to look sharp at
+# the ~140-260px CSS box every gallery/list grid actually renders these at
+# (even on a 2x-DPR display), while landing an order of magnitude smaller in
+# bytes than a full SwarmUI/ComfyUI generation (often several MB) or an
+# unresized phone-camera upload.
+THUMBNAIL_MAX_DIM = 440
+THUMBNAIL_SUFFIX = "_thumb.webp"
 
 # Only rasterized formats get converted at all. SVG is vector — re-saving
 # would rasterize it, losing scalability — so it's excluded outright. GIF,
@@ -116,4 +125,43 @@ def convert_image_to(path: Path, target_format: str, quality: int = CONVERT_QUAL
     if dest is None:
         return None
     path.unlink(missing_ok=True)
+    return dest
+
+
+def thumbnail_path_for(path: Path) -> Path:
+    """The predictable sibling filename make_thumbnail() writes/would write
+    for `path` — e.g. .../abc123.avif -> .../abc123_thumb.webp. Pure string
+    manipulation, no filesystem access, so callers (including the Jinja
+    thumb_url() global in app/main.py) can compute this for any known image
+    path without needing a DB column to remember it."""
+    return path.with_name(path.stem + THUMBNAIL_SUFFIX)
+
+
+def make_thumbnail(path: Path, max_dim: int = THUMBNAIL_MAX_DIM, quality: int = THUMBNAIL_QUALITY) -> Optional[Path]:
+    """Write a small WebP preview of `path` alongside it (see
+    thumbnail_path_for for the exact name) and return its Path, or None if
+    the source isn't a raster format this module handles (svg), or it fails
+    to decode — callers should treat that as "no thumbnail available, fall
+    back to the full image" rather than an error, same graceful-degradation
+    convention as convert_image.
+
+    Always WebP regardless of the source's own format/AppSettings choice —
+    a preview grid doesn't need to match the source's format, just be small
+    and universally displayable, so there's no reason to duplicate the
+    avif/webp static_format branching convert_image already does for the
+    real asset. Always the first frame only, even for an animated source —
+    a moving thumbnail in a dense grid is more distracting than useful, and
+    decoding/re-encoding every frame at preview time would multiply the
+    encode cost for no benefit a small static frame doesn't already give."""
+    if path.suffix.lower() not in _CONVERTIBLE_EXTS:
+        return None
+    dest = thumbnail_path_for(path)
+    try:
+        img = Image.open(path)
+        img.load()
+        frame = img.convert(_frame_mode(img, "WEBP"))
+        frame.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        frame.save(dest, format="WEBP", quality=quality)
+    except Exception:
+        return None
     return dest

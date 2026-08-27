@@ -27,7 +27,7 @@ from . import deps
 from . import nav_menus as _nav_menus_module
 from .database import init_db, get_db, SessionLocal, get_app_settings
 from .deps import get_world_ctx, resolve_world_slug, with_world
-from .imaging import convert_image
+from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, render_md, html_to_markdown, sanitize_note_html
 from .templating import templates
 from .uploads import copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES
@@ -425,6 +425,7 @@ def save_upload(file: UploadFile, subdir: str = "", db: Optional[Session] = None
                               animated_format=settings.animated_format)
     else:
         dest = convert_image(dest)
+    make_thumbnail(dest)  # best-effort; see app/imaging.py — gallery/list grids fall back to the full image if this fails
     url_path = f"/uploads/{subdir}/{dest.name}" if subdir else f"/uploads/{dest.name}"
     return url_path
 

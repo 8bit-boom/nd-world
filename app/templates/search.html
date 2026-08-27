@@ -33,7 +33,7 @@
       <div class="search-result-list">
         {% for e in items %}
         <a href="{{ ('/entity/' + e.id|string)|wq }}" class="search-result-item kind-{{ e.kind }}">
-          {% if e.image_url %}<img src="{{ e.image_url }}" alt="{{ e.name }}" class="search-thumb"/>{% endif %}
+          {% if e.image_url %}<img src="{{ e.image_url|thumb }}" alt="{{ e.name }}" class="search-thumb" loading="lazy"/>{% endif %}
           <div class="search-result-body">
             <div class="search-result-title">
               {{ e.name }}

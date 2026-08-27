@@ -50,7 +50,7 @@
       <a class="gallery-album-card" href="/images/albums/{{ a.id }}">
         {% set urls = child_album_urls.get(a.id, []) %}
         {% if urls %}
-        <img src="{{ urls[0] }}" alt=""/>
+        <img src="{{ urls[0]|thumb }}" alt="" loading="lazy"/>
         {% else %}
         <div class="gallery-album-empty">No images yet</div>
         {% endif %}
@@ -78,7 +78,7 @@
   <div class="gallery-img-grid">
     {% for url in image_urls %}
     <div class="gallery-album-img-cell">
-      <img src="{{ url }}" alt="{{ image_names.get(url, url) }}" loading="lazy" onclick="openLightbox(this.src, this.alt)"/>
+      <img src="{{ url|thumb }}" data-full="{{ url }}" alt="{{ image_names.get(url, url) }}" loading="lazy" onclick="openLightbox(this.dataset.full, this.alt)"/>
       <div class="gallery-img-actions">
         <button type="button" class="gallery-icon-btn" title="Send to players" onclick="ndSendSpotlight('{{ url|e }}')">📤</button>
         <button type="button" class="gallery-icon-btn" title="Delete image permanently" onclick="galleryDeleteImage('{{ url|e }}')">🗑</button>

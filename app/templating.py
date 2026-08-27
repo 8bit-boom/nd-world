@@ -10,6 +10,7 @@ everything exactly once here fixes that app-wide and is the reason this module
 (like app/rendering.py and app/deps.py) deliberately doesn't import main.
 """
 import json
+import os
 from pathlib import Path
 
 import jinja2
@@ -20,6 +21,7 @@ from . import deps
 from . import nav_menus as _nav_menus
 from .constants import KIND_ICONS, KINDS, SUBTYPES
 from .database import SessionLocal, get_app_settings
+from .imaging import thumbnail_path_for
 from .rendering import body_summary, entry_text, parse_stats, render_md, strip_md
 
 # Duplicated from main.py's DEFAULT_WORLD_COOKIE — same rationale as this
@@ -105,3 +107,30 @@ def _wq(ctx, path):
 
 
 templates.env.filters["wq"] = _wq
+
+
+# Duplicated from app/main.py's own UPLOADS_DIR (same DB_PATH-relative
+# computation) — importing main.py here would be circular, same rationale as
+# this module's own docstring above.
+_UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+
+
+def thumb_url(url: str) -> str:
+    """A grid/list preview's `src` — the small WebP make_thumbnail() writes
+    alongside an upload, if one exists on disk, else `url` unchanged
+    (a pre-existing upload from before this feature shipped, an svg, or any
+    other non-thumbnailable source — see app/imaging.py's own docstrings for
+    why those are skipped). Deliberately checks the filesystem rather than
+    trusting a DB flag: thumbnails are a derived, best-effort artifact with
+    no column of their own, so "does the file exist" is the only source of
+    truth and is one cheap local stat() per image, not a network call."""
+    if not url or not url.startswith("/uploads/"):
+        return url
+    thumb = thumbnail_path_for(_UPLOADS_DIR / url[len("/uploads/"):])
+    if not thumb.is_file():
+        return url
+    return "/uploads/" + thumb.relative_to(_UPLOADS_DIR).as_posix()
+
+
+templates.env.filters["thumb"] = thumb_url
+templates.env.globals["thumb_url"] = thumb_url

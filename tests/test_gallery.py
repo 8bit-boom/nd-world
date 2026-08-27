@@ -265,11 +265,15 @@ def test_album_upload_rejects_bad_extension(client, seed):
 # ── Full-resolution lightbox on thumbnails ──────────────────────────────────
 
 def test_album_thumbnail_opens_lightbox(client, seed):
+    """The lightbox must open the full-resolution image, not whatever small
+    preview variant the grid itself displays (see app.templating.thumb_url)
+    — hence data-full rather than this.src in the onclick."""
     album_id = _make_album(seed.world_a.id, "Album", urls=["/uploads/pic.png"])
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get(f"/images/albums/{album_id}")
-    assert 'onclick="openLightbox(this.src, this.alt)"' in r.text
+    assert 'onclick="openLightbox(this.dataset.full, this.alt)"' in r.text
+    assert 'data-full="/uploads/pic.png"' in r.text
 
 
 def test_index_thumbnail_has_expand_button_that_opens_lightbox_without_toggling_checkbox(client, seed):
