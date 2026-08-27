@@ -548,6 +548,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/ai/stream` | GM* | Streaming chat completion (SSE) — GM always; a player may if the active world's `players_can_ask_ai` is on. Accepts a per-request `options` (temperature/top_p/etc, clamped) and a `surface` for per-surface default-model fallback; the SSE stream leads with a `note` event if the requested model had to be fuzzy-matched to an available one. |
 | GET | `/api/ai/models` | GM | Lists available/known Ollama models with loaded/builtin flags. |
 | GET | `/api/ai/resident` | GM | Models actually resident in memory (VRAM/RAM), for the Models tab's residency cockpit. |
+| GET | `/api/ai/hardware` | GM | Best-effort CPU/RAM/GPU detection plus a coarse per-model settings recommendation (per-request options and server env vars) for each installed Ollama model, for the Settings → System "Detected hardware" panel. |
 | POST | `/api/ai/unload` | GM | Unloads a model from memory. |
 | GET | `/api/ai/defaults` | GM | Per-surface (`chat`/`ask_ai`/`image`) default model ids. |
 | POST | `/api/ai/defaults` | GM | Sets a surface's default model. |
@@ -631,7 +632,7 @@ worlds they've been invited into (`WorldMembership`).
 |---|---|---|---|
 | GET | `/settings` | GM | Settings page (Options / System / Visibility tabs). |
 | POST | `/settings` | GM | Saves per-GM display preferences. |
-| POST | `/settings/system` | GM | Saves instance-wide settings: image format/quality, Ollama URL/model override, SwarmUI/Android-emulator/Editor external URLs, hover-preview timing, and the Dreamlands/King in Yellow enable toggles. |
+| POST | `/settings/system` | GM | Saves instance-wide settings: image format/quality, Ollama URL/model override, per-request Ollama generation tuning (temperature/top_p/.../use_mmap, a VRAM override for hardware detection), Ollama server-level tuning (flash attention, KV cache type, and the rest — written to a shared-volume env file for the "ollama" service to pick up on its next restart; see docs/DEPLOYMENT.md), SwarmUI/Android-emulator/Editor external URLs, hover-preview timing, and the Dreamlands/King in Yellow enable toggles. |
 
 ## Admin & Uploads
 

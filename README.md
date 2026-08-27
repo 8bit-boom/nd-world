@@ -23,6 +23,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - **Investment boards** — node-and-edge graph boards for plotting organization structures and story threads
 - **AI chat** — Ollama LLM integration with streaming responses and world-lore RAG context
 - **AI Models tab** — download, manage, and delete Ollama models directly from the app UI with live progress bars; popular model quick-picks included
+- **Ollama tuning from the browser** — full per-request generation options (temperature, sampling, context length, and more) plus server-level tuning (flash attention, KV cache quantization, parallelism, GPU selection, ...) from Settings → System, no `.env` editing required; a "Detected hardware" panel reads the host's CPU/RAM/GPU and recommends a starting-point configuration per installed model (see [Deploying nd-world](docs/DEPLOYMENT.md))
 - **AI image generation** — SwarmUI or ComfyUI backend with sampler/scheduler, LoRA, VAE, CLIP skip, upscaling, img2img, batch output, and generation history with parameter reuse
 - **Image Studio** — embedded SwarmUI iframe at `/imagestudio`
 - **Universal character sheets** — fully configurable stats, skills, and currency (N&D defaults: POW/AGI/FOR/INT/PER/SOC); optional secondary resource tracker
@@ -339,6 +340,7 @@ In the TrueNAS web UI go to **Datasets** and create the following datasets under
 | `DeadPool/apps/swarmui/models` | Checkpoint/LoRA model files |
 | `DeadPool/apps/swarmui/dlbackend` | ComfyUI backend (auto-downloaded) |
 | `DeadPool/apps/ollama` | Ollama model storage |
+| `DeadPool/apps/nd-world-ollama-config` | Shared with nd-world — lets Settings → System save Ollama server tuning without editing this file (see docs/DEPLOYMENT.md) |
 | `DeadPool/apps/whisper` | Whisper transcription model storage |
 
 > **Or** create them all via SSH shell:
@@ -346,6 +348,7 @@ In the TrueNAS web UI go to **Datasets** and create the following datasets under
 > mkdir -p /mnt/DeadPool/apps/nd-world
 > mkdir -p /mnt/DeadPool/apps/swarmui/{data,models,dlbackend}
 > mkdir -p /mnt/DeadPool/apps/ollama
+> mkdir -p /mnt/DeadPool/apps/nd-world-ollama-config
 > mkdir -p /mnt/DeadPool/apps/whisper
 > ```
 

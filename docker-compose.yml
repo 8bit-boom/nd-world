@@ -13,6 +13,7 @@ services:
       - swarmui-ac:/data/swarmui-ac   # shared with swarmui for native tag autocompletions
       - ${AI_MODELS_DIR:-./ai-models}/whisper:/data/whisper-models   # shared with whisper — lets nd-world download a model file into the same place the "whisper" service loads from
       - ${AI_MODELS_DIR:-./ai-models}/swarmui:/data/swarmui-models   # shared with swarmui's own Models mount below — same pattern as whisper-models above, lets nd-world download a checkpoint/VAE/text-encoder straight into SwarmUI's model folders
+      - ollama-config:/data/ollama-config   # shared with ollama — lets Settings > System > "Ollama server tuning" write ollama.env for the "ollama" service's entrypoint to pick up on its next restart, without editing this file
     environment:
       DB_PATH: /data/world.db
       # AI chat / image generation are optional (see the "ollama"/"swarmui" Compose
@@ -31,6 +32,7 @@ services:
       EDITOR_EXTERNAL_URL: ""
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: gemma4:26b   # change to whichever model you've pulled
+      OLLAMA_CONFIG_DIR: /data/ollama-config   # shared volume → the "ollama" service's own config dir below
       WHISPER_URL: http://whisper:8080
       WHISPER_MODELS_DIR: /data/whisper-models
       WHISPER_MODEL_FILE: ggml-large-v3-turbo.bin   # must match the "whisper" service's own -m filename below
@@ -57,11 +59,17 @@ services:
     ports:
       - "11434:11434"
     # Server-level tuning — these control the Ollama process itself and need
-    # a container restart to take effect (`docker compose up -d ollama`), so
-    # they live here rather than in nd-world's own Settings page (which only
-    # controls per-request options — see OLLAMA_TEMPERATURE etc. there).
-    # All optional; unset any you don't need. See .env.example for defaults
-    # and https://github.com/ollama/ollama/blob/main/docs/faq.md for more.
+    # a container restart to take effect. As of the ollama-config volume +
+    # entrypoint below, you no longer have to edit this file (or restart
+    # anything by hand) to change them: Settings > System > "Ollama server
+    # tuning" in nd-world writes an ollama.env into that shared volume, and
+    # this service's entrypoint sources it on every start/restart, where it
+    # WINS over the environment vars below — those still work exactly as
+    # before and now just act as the pre-GM-interaction default (e.g. a
+    # value you set once here, or leaving a field blank on the Settings
+    # page to fall back to it). All optional; unset any you don't need. See
+    # .env.example for defaults and
+    # https://github.com/ollama/ollama/blob/main/docs/faq.md for more.
     environment:
       # f16 (default, most VRAM), q8_0, or q4_0 (least VRAM, some quality
       # loss) — only takes effect with flash attention on.
@@ -78,12 +86,18 @@ services:
       # own num_ctx (see nd-world's own Settings > System tab).
       OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-}
       OLLAMA_MAX_QUEUE: ${OLLAMA_MAX_QUEUE:-}
+      OLLAMA_LOAD_TIMEOUT: ${OLLAMA_LOAD_TIMEOUT:-}
+      OLLAMA_GPU_OVERHEAD: ${OLLAMA_GPU_OVERHEAD:-}
+      OLLAMA_SCHED_SPREAD: ${OLLAMA_SCHED_SPREAD:-}
       OLLAMA_DEBUG: ${OLLAMA_DEBUG:-}
+      OLLAMA_IGPU_ENABLE: ${OLLAMA_IGPU_ENABLE:-}
+      OLLAMA_VULKAN: ${OLLAMA_VULKAN:-}
       # AMD (ROCm) GPU selection — e.g. an RX 9070 XT is gfx1201, natively
       # supported on Linux via ROCm 7+, no HSA_OVERRIDE_GFX_VERSION needed.
       # Leave blank on NVIDIA/CPU-only hosts.
       HSA_OVERRIDE_GFX_VERSION: ${HSA_OVERRIDE_GFX_VERSION:-}
       ROCR_VISIBLE_DEVICES: ${ROCR_VISIBLE_DEVICES:-}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-}
     volumes:
       # Same parent directory as swarmui's model volume below (see
       # AI_MODELS_DIR) — not because Ollama and SwarmUI can read each
@@ -91,6 +105,28 @@ services:
       # every downloaded model — text or image — lives under one directory
       # tree you can point at existing models, back up, or browse as a unit.
       - ${AI_MODELS_DIR:-./ai-models}/ollama:/root/.ollama
+      - ollama-config:/ollama-config   # shared with world — see docs/DEPLOYMENT.md and the entrypoint below
+    # entrypoint/command together run this as `sh -c "<script>"` so a shell can
+    # source ollama.env (if nd-world has ever saved one — see the volume and
+    # comment above) into this process's environment before ollama itself
+    # starts, then stamp a copy as ollama.env.applied so nd-world's Settings
+    # page can honestly report whether a restart is still pending. `set -a`
+    # makes every `KEY=value` line the file sources behave as if it were
+    # `export KEY=value`, since ollama.env itself contains plain assignments
+    # (see app/ollama_tuning.py's render_env_file). `exec` at the end so
+    # ollama (not the shell) is PID 1 and gets signals directly — otherwise
+    # `docker compose stop`/restart would wait out the shell's term-signal
+    # grace period instead of stopping ollama right away. Same word-splitting
+    # caution as the "whisper" service's own entrypoint below: this is ONE
+    # `command:` list item, not a bare scalar string.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        mkdir -p /ollama-config &&
+        if [ -f /ollama-config/ollama.env ]; then set -a; . /ollama-config/ollama.env; set +a; fi &&
+        cp -f /ollama-config/ollama.env /ollama-config/ollama.env.applied 2>/dev/null ||
+        printf '# nd-world has not saved any server tuning yet.\n' > /ollama-config/ollama.env.applied;
+        exec ollama serve
     # To pull a model after first start:
     #   docker compose exec ollama ollama pull gemma4:26b
     # For NVIDIA GPU, uncomment the deploy block below:
@@ -275,6 +311,8 @@ services:
 
 volumes:
   nd-world-data:
+    driver: local
+  ollama-config:
     driver: local
   swarmui-data:
     driver: local

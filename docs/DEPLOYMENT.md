@@ -367,6 +367,57 @@ above, just for audio instead of a GUI session.
 
 ---
 
+## Optional: tuning Ollama from the browser (no `.env` editing)
+
+Ollama has two different kinds of settings. Per-request options — temperature,
+context length, sampling, and the rest — apply to the very next AI request and
+have always lived on nd-world's own **Settings → System** tab, no restart ever
+needed. Server-level settings — flash attention, KV cache quantization,
+parallelism, GPU selection — configure the Ollama *process itself*, which only
+reads them once at start-up; historically that meant editing `OLLAMA_*` values
+in `.env` and running `docker compose up -d ollama` by hand. As of this
+version, both live on the same Settings → System page.
+
+**How it works**: saving the "Ollama server tuning" section writes an
+`ollama.env` file into a small shared volume (`ollama-config` in
+`docker-compose.yml` / `/mnt/DeadPool/apps/nd-world-ollama-config` in
+`truenas-compose.yml`) that only the `world` and `ollama` containers can see.
+The `ollama` service's entrypoint sources that file into its own environment
+on every start, where it wins over anything set directly in `.env` — those
+`.env` values still work exactly as before and now just act as the
+pre-GM-interaction default, or what a field falls back to when left blank on
+the Settings page. Either way, Ollama still only reads its environment at
+start-up, so a value saved here doesn't take effect until the `ollama`
+container actually restarts — nd-world can write the file, but deliberately
+does **not** restart the container for you (that would need Docker socket
+access mounted into the `world` container, i.e. root-equivalent host access,
+just to save you one command — not a trade this app makes). The Settings page
+tracks this honestly: it compares the file it last wrote against a copy the
+entrypoint stamps back (`ollama.env.applied`) once it's actually loaded, and
+shows a banner with the exact command to run when the two differ:
+```bash
+docker compose restart ollama
+```
+If you're on an existing deployment from before this volume existed, the
+banner instead tells you the `ollama` service isn't wired up yet — pull the
+latest `docker-compose.yml`/`truenas-compose.yml` (or re-apply the two
+`volumes:` entries and the `entrypoint:`/`command:` override on the `ollama`
+service by hand if you've customized yours) and restart it once to pick up
+the new entrypoint; the shared volume itself is created automatically.
+
+**Hardware detection**: the same tab also shows a best-effort read of the
+host's CPU, RAM, and GPU (via `nvidia-smi` or AMD's sysfs, whichever is
+visible from inside the `world` container — which is normally neither, since
+only the `ollama` service is given GPU access in `docker-compose.yml`; enter
+your card's VRAM manually in that case, or mirror `ollama`'s GPU access onto
+`world` if you'd rather this auto-detect) plus a "recommend settings for"
+picker over whatever models you've actually pulled. Recommendations are a
+coarse starting point (context length, KV cache quantization, flash
+attention, and similar), not a precise sizing tool — click **Apply
+recommended** to fill the relevant fields, review them, then Save as normal.
+
+---
+
 ## Inviting players
 
 Once nd-world is reachable (locally or over the internet):
