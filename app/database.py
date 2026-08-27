@@ -493,6 +493,18 @@ def _migrate():
                 ("ollama_mirostat_eta", "FLOAT"),
                 ("ollama_keep_alive", "VARCHAR(32) DEFAULT ''"),
                 ("ollama_num_gpu", "INTEGER"),
+                ("ollama_min_p", "FLOAT"),
+                ("ollama_typical_p", "FLOAT"),
+                ("ollama_repeat_last_n", "INTEGER"),
+                ("ollama_presence_penalty", "FLOAT"),
+                ("ollama_frequency_penalty", "FLOAT"),
+                ("ollama_num_keep", "INTEGER"),
+                ("ollama_num_batch", "INTEGER"),
+                ("ollama_num_thread", "INTEGER"),
+                ("ollama_main_gpu", "INTEGER"),
+                ("ollama_use_mmap", "VARCHAR(8) DEFAULT ''"),
+                ("ollama_server_env_json", "TEXT DEFAULT '{}'"),
+                ("ollama_vram_override_mb", "INTEGER"),
             ]:
                 if col not in as_cols:
                     conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN {col} {defn}"))

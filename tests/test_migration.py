@@ -4,6 +4,8 @@ _once/schema_meta): the legacy-import cleanup used to run its destructive DML
 boot, silently reverting a GM's deliberate edit on every container restart —
 which with Watchtower polling happens every few minutes in production.
 """
+import json
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
@@ -219,6 +221,54 @@ def test_heals_pre_lore_extras_toggle_schema(tmp_path, monkeypatch):
         s = get_app_settings(db)
         assert not s.dreamlands_enabled
         assert not s.king_in_yellow_enabled
+    finally:
+        db.close()
+
+    engine.dispose()
+
+
+def test_heals_pre_ollama_server_env_schema(tmp_path, monkeypatch):
+    """An app_settings row predating the Bucket-C per-request fields (min_p,
+    num_batch, etc.) and ollama_server_env_json/ollama_vram_override_mb
+    (the server-level Ollama tuning + hardware-detection feature) must heal
+    onto NULL/'' defaults, not crash get_app_settings()."""
+    from app.database import get_app_settings
+
+    db_path = tmp_path / "pre_ollama_server_env.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE app_settings (id INTEGER PRIMARY KEY, static_format VARCHAR(16), "
+            "animated_format VARCHAR(16), ollama_model VARCHAR(256), ollama_url VARCHAR(512), "
+            "ollama_temperature FLOAT, ollama_num_gpu INTEGER, updated_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO app_settings (id, static_format, animated_format) VALUES (1, 'avif', 'avif')"
+        ))
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        settings_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(app_settings)")).fetchall()}
+    assert {
+        "ollama_min_p", "ollama_typical_p", "ollama_repeat_last_n", "ollama_presence_penalty",
+        "ollama_frequency_penalty", "ollama_num_keep", "ollama_num_batch", "ollama_num_thread",
+        "ollama_main_gpu", "ollama_use_mmap", "ollama_server_env_json", "ollama_vram_override_mb",
+    } <= settings_cols
+
+    db = SessionLocal()
+    try:
+        s = get_app_settings(db)
+        assert s.ollama_min_p is None
+        assert s.ollama_num_batch is None
+        assert s.ollama_use_mmap == "" or s.ollama_use_mmap is None
+        assert json.loads(s.ollama_server_env_json or "{}") == {}
+        assert s.ollama_vram_override_mb is None
     finally:
         db.close()
 

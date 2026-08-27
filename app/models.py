@@ -1071,9 +1071,11 @@ class AppSettings(Base):
     # and set_ollama_generation_overrides()) — all nullable/blank so an unset
     # field just omits that key from the options= dict passed to the Ollama
     # client, letting Ollama/the model's own Modelfile default apply. These
-    # tune inference quality/speed/VRAM use per chat call; they're distinct
-    # from the server-level env vars (OLLAMA_KV_CACHE_TYPE etc.) that must be
-    # set on the ollama container itself — see docker-compose.yml.
+    # tune inference quality/speed/VRAM use per chat call. Two buckets live on
+    # this app now (see app/ollama_tuning.py's module docstring): these
+    # per-request fields apply live on the very next call, no restart; the
+    # genuinely server-process-level knobs (OLLAMA_FLASH_ATTENTION,
+    # OLLAMA_KV_CACHE_TYPE, etc.) are ollama_server_env_json below.
     ollama_temperature = Column(Float, nullable=True)
     ollama_top_p = Column(Float, nullable=True)
     ollama_top_k = Column(Integer, nullable=True)
@@ -1081,6 +1083,12 @@ class AppSettings(Base):
     ollama_num_predict = Column(Integer, nullable=True)
     ollama_num_ctx = Column(Integer, nullable=True)
     ollama_seed = Column(Integer, nullable=True)
+    # Deprecated: current Ollama (verified against api/types.go) has no
+    # mirostat/mirostat_tau/mirostat_eta fields on its Options struct at all
+    # — an unknown option key just logs "invalid option provided" server-side
+    # and is otherwise ignored. Kept (not sent — see effective_ollama_options())
+    # so an older Ollama server still honors a GM's saved value, and so
+    # upgrading this app never silently discards one.
     ollama_mirostat = Column(Integer, nullable=True)
     ollama_mirostat_tau = Column(Float, nullable=True)
     ollama_mirostat_eta = Column(Float, nullable=True)
@@ -1089,6 +1097,40 @@ class AppSettings(Base):
     # after this request, e.g. "5m", "1h", "-1" (forever), "0" (unload now).
     ollama_keep_alive = Column(String(32), default="")
     ollama_num_gpu = Column(Integer, nullable=True)
+    # Bucket-C additions — every one of these is a real field of Ollama's
+    # api.Options/api.Runner today (verified against api/types.go), so like
+    # the fields above they apply live on the next request with no restart.
+    # The Runner ones (num_batch/num_thread/main_gpu/use_mmap, same as
+    # num_ctx/num_gpu above) are applied at model-load time, so changing one
+    # costs a model reload on the next call — still never a container restart.
+    ollama_min_p = Column(Float, nullable=True)
+    ollama_typical_p = Column(Float, nullable=True)
+    ollama_repeat_last_n = Column(Integer, nullable=True)
+    ollama_presence_penalty = Column(Float, nullable=True)
+    ollama_frequency_penalty = Column(Float, nullable=True)
+    ollama_num_keep = Column(Integer, nullable=True)
+    ollama_num_batch = Column(Integer, nullable=True)
+    ollama_num_thread = Column(Integer, nullable=True)
+    ollama_main_gpu = Column(Integer, nullable=True)
+    # Tri-state as a string ("", "1", "0"), not Boolean, to keep this app's
+    # established "blank means unset, let Ollama decide" convention for
+    # optional Ollama options — use_mmap is a real bool in Ollama itself,
+    # where False is meaningfully different from "not sent".
+    ollama_use_mmap = Column(String(8), default="")
+    # Bucket A — the ollama SERVER process's own environment, which Ollama
+    # only reads at process start (no runtime API exists to change it). One
+    # JSON bag keyed by env-var name (same pattern as World.theme_json/
+    # home_sections_json) rather than one column per var, since it's an
+    # opaque allowlisted key/value set — app/ollama_tuning.py's
+    # SERVER_ENV_SPEC is the schema, so adding a new knob there never needs
+    # a migration. Written out to a shared volume for the ollama service's
+    # entrypoint to source at start; see app/ollama_tuning.py and
+    # docs/DEPLOYMENT.md.
+    ollama_server_env_json = Column(Text, default="{}")
+    # GM-supplied total VRAM in MB, used when nd-world's own container can't
+    # see the GPU (the normal case — only the ollama/swarmui services get GPU
+    # passthrough in docker-compose.yml). Blank/None = rely on auto-detection.
+    ollama_vram_override_mb = Column(Integer, nullable=True)
     # Hover-a-link-for-N-seconds entity preview popup (base.html's global
     # mouseover handler + GET /api/entity/{id}/preview) — instance-wide like
     # everything else on this row, editable from Settings > Options.
