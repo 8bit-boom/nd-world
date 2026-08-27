@@ -657,6 +657,125 @@ def test_cancel_requires_gm(client, seed, _hanging_transcribe):
     client.post(f"/api/audio-jobs/{job_id}/cancel")
 
 
+# ── _forget_task — the done-callback's registry race + stuck-pending fix ───
+
+class _FakeTask:
+    def __init__(self, cancelled=False):
+        self._cancelled = cancelled
+
+    def cancelled(self):
+        return self._cancelled
+
+
+def test_forget_task_does_not_evict_a_newer_task_for_the_same_job_id():
+    """The race this fixes: a resummarize starts in the brief window
+    between the prior task finishing (row already out of
+    IN_PROGRESS_STATUSES) and its own done-callback actually running
+    (asyncio schedules callbacks via call_soon, not synchronously) — the
+    OLD task's callback must not evict the NEW task's registry entry, or
+    the new task becomes only weakly-referenced and cancel_job can no
+    longer find it."""
+    old_task = _FakeTask()
+    new_task = _FakeTask()
+    audio_jobs._running_tasks[999999] = new_task
+    try:
+        audio_jobs._forget_task(999999, old_task)
+        assert audio_jobs._running_tasks.get(999999) is new_task
+    finally:
+        audio_jobs._running_tasks.pop(999999, None)
+
+
+def test_forget_task_removes_its_own_entry():
+    task = _FakeTask()
+    audio_jobs._running_tasks[999999] = task
+    audio_jobs._forget_task(999999, task)
+    assert 999999 not in audio_jobs._running_tasks
+
+
+def test_forget_task_reconciles_a_job_cancelled_before_its_body_ever_ran(client, seed, tmp_path):
+    """asyncio.Task.cancel() on a task whose coroutine body hasn't started
+    yet skips the body entirely — neither _run_job's own `except
+    CancelledError` nor its `finally: audio_path.unlink(...)` ever runs.
+    Without this reconciliation the row stays "pending" forever (both
+    cancel_job and delete_job refuse a row in IN_PROGRESS_STATUSES) and
+    the uploaded audio leaks."""
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="pending", filename="x.mp3")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    task = _FakeTask(cancelled=True)
+    audio_jobs._running_tasks[job_id] = task
+    audio_jobs._forget_task(job_id, task, audio, True)
+
+    assert job_id not in audio_jobs._running_tasks
+    assert not audio.exists()
+    db = SessionLocal()
+    try:
+        updated = db.get(AudioJob, job_id)
+        assert updated.status == "cancelled"
+        assert updated.error == "Cancelled by GM."
+        assert updated.finished_at is not None
+    finally:
+        db.close()
+
+
+def test_forget_task_keeps_audio_when_delete_after_is_false(client, seed, tmp_path):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="pending", filename="x.mp3")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    task = _FakeTask(cancelled=True)
+    audio_jobs._running_tasks[job_id] = task
+    audio_jobs._forget_task(job_id, task, audio, False)
+    assert audio.exists()
+
+
+def test_forget_task_does_not_touch_a_job_that_finished_normally(client, seed):
+    """A task that ran its body to completion (whether cancelled partway
+    through and handled by _run_job's own CancelledError branch, or simply
+    finished with done/error) has already moved the row out of
+    IN_PROGRESS_STATUSES before this callback fires — the reconciliation
+    must be a no-op then, not overwrite whatever real outcome was
+    recorded."""
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done", filename="x.mp3", recap="a real recap")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    task = _FakeTask(cancelled=False)
+    audio_jobs._running_tasks[job_id] = task
+    audio_jobs._forget_task(job_id, task)
+
+    db = SessionLocal()
+    try:
+        updated = db.get(AudioJob, job_id)
+        assert updated.status == "done"
+        assert updated.recap == "a real recap"
+    finally:
+        db.close()
+
+
 # ── Per-job model selection + resummarize (retry with a different model) ───
 #
 # A job's own summarize_transcript() call passes model= (see

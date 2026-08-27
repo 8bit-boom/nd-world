@@ -24,6 +24,52 @@ _running_tasks: dict[int, asyncio.Task] = {}
 IN_PROGRESS_STATUSES = ("pending", "transcribing", "summarizing")
 
 
+def _forget_task(job_id: int, task: asyncio.Task, audio_path: Optional[Path] = None, delete_after: bool = False) -> None:
+    """Done-callback for a job's background task.
+
+    Identity-checked — only removes the registry entry if it's still THIS
+    task — because asyncio schedules done-callbacks via call_soon, so
+    there's at least one event-loop turn between a task finishing (after
+    it has already written a terminal status) and this callback actually
+    running. A resummarize started in that window sees a row that's
+    already out of IN_PROGRESS_STATUSES, installs its own new task into
+    _running_tasks, and then the OLD task's callback — using the old
+    lambda's bare `_running_tasks.pop(job_id, None)` — would delete that
+    live task's registry entry out from under it: it becomes only
+    weakly-referenced (asyncio doesn't hold a strong reference of its
+    own — eligible for GC mid-run) and cancel_job() can no longer find it
+    to cancel.
+
+    Also reconciles a task that was cancelled before its coroutine body
+    ever started running at all: asyncio.Task.cancel() on such a task
+    skips the body entirely, so neither _run_job's own `except
+    asyncio.CancelledError` nor its `finally: audio_path.unlink(...)` ever
+    executes, leaving the row stuck at "pending" forever (cancel_job and
+    delete_job both refuse a row in IN_PROGRESS_STATUSES) and leaking the
+    uploaded audio. Safe to run unconditionally on every cancelled task:
+    when the body DID run far enough to reach its own CancelledError
+    handler, that handler has already moved the row out of
+    IN_PROGRESS_STATUSES (and already deleted the audio file) before this
+    callback ever fires, so the checks below are then no-ops."""
+    if _running_tasks.get(job_id) is not task:
+        return
+    del _running_tasks[job_id]
+    if not task.cancelled():
+        return
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        if job and job.status in IN_PROGRESS_STATUSES:
+            job.status = "cancelled"
+            job.error = "Cancelled by GM."
+            job.finished_at = datetime.utcnow()
+            db.commit()
+    finally:
+        db.close()
+    if delete_after and audio_path is not None:
+        audio_path.unlink(missing_ok=True)
+
+
 def _looks_like_failure(result: str) -> bool:
     """summarize_transcript() never raises on an Ollama-side failure — it
     returns a failure-sentinel string instead (see _ai_module.
@@ -75,7 +121,7 @@ def create_job(
 
     task = asyncio.create_task(_run_job(job_id, audio_path, purpose, delete_after, model, world_id, extra_instructions))
     _running_tasks[job_id] = task
-    task.add_done_callback(lambda t: _running_tasks.pop(job_id, None))
+    task.add_done_callback(lambda t, jid=job_id, p=audio_path, d=delete_after: _forget_task(jid, t, p, d))
     return job_id
 
 
@@ -263,7 +309,7 @@ def start_resummarize_job(job_id: int, model: str = "", extra_instructions: Opti
 
     task = asyncio.create_task(_run_resummarize_job(job_id, chosen_model, world_id, chosen_instructions))
     _running_tasks[job_id] = task
-    task.add_done_callback(lambda t: _running_tasks.pop(job_id, None))
+    task.add_done_callback(lambda t, jid=job_id: _forget_task(jid, t))
     return job_snapshot
 
 
