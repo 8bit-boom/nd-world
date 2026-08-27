@@ -20,14 +20,15 @@ _running_tasks: dict[int, asyncio.Task] = {}
 
 IN_PROGRESS_STATUSES = ("pending", "generating")
 
-# generate_chat() never raises — a failure comes back as a "[AI error: ...]"/
-# "[AI unavailable: ...]"/"[empty response ...]" string instead (see its own
-# docstring), the same convention summarize_transcript's map-reduce step
-# already checks for. A background job with no exception to catch would
-# otherwise show "✓ Done" with an error message as its "result" — check for
-# that sentinel so the job list can be honest about what actually happened.
+# generate_chat() never raises — a failure comes back as a sentinel string
+# instead (see _ai_module.is_failure_sentinel's own docstring). A background
+# job with no exception to catch would otherwise show "✓ Done" with an error
+# message as its "result" — check for that sentinel so the job list can be
+# honest about what actually happened. Delegates to the shared predicate
+# rather than keeping a local copy of the prefix check — audio_jobs.py's own
+# copy once drifted to check only one of the two sentinel families.
 def _looks_like_failure(result: str) -> bool:
-    return result.startswith("[AI ") or result.startswith("[empty response")
+    return _ai_module.is_failure_sentinel(result)
 
 
 def create_job(

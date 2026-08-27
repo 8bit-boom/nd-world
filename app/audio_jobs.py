@@ -26,13 +26,14 @@ IN_PROGRESS_STATUSES = ("pending", "transcribing", "summarizing")
 
 def _looks_like_failure(result: str) -> bool:
     """summarize_transcript() never raises on an Ollama-side failure — it
-    returns a "[AI ...]"/"[empty response ...]" sentinel string instead
-    (see generate_chat's own docstring in app/ai.py). Same check as
-    chat_jobs.py's identical helper, kept as its own small copy here rather
-    than shared, matching this codebase's per-module convention — without
-    it a failed summarize would get marked "done" with the error text
-    sitting in the recap field."""
-    return result.startswith("[AI ") or result.startswith("[empty response")
+    returns a failure-sentinel string instead (see _ai_module.
+    is_failure_sentinel's own docstring). Delegates there rather than
+    keeping a second copy of the prefix check, after the two previously
+    drifted apart: this module's own copy only checked one of the two
+    sentinel families, which let a failed part-summary get woven into a
+    "done" recap on the chunked summarization path — without this check
+    entirely, the same bug applies to any Ollama-side failure."""
+    return _ai_module.is_failure_sentinel(result)
 
 
 def create_job(

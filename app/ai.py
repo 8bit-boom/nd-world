@@ -406,6 +406,18 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
         return f"[AI unavailable: {type(exc).__name__}: {exc}]"
 
 
+def is_failure_sentinel(result: str) -> bool:
+    """True if `result` is one of generate_chat's two failure-sentinel
+    families rather than real model output: "[AI error: ...]"/"[AI
+    unavailable: ...]" (a request/connection failure) or "[empty response
+    ...]" (a successful call that produced no usable content). Callers
+    that chain multiple generate_chat calls together (summarize_transcript
+    below; audio_jobs.py's job engine) must check both — checking only the
+    first family let a genuine failure get woven into a recap as if it
+    were prose, with the job still marked "done"."""
+    return result.startswith("[AI ") or result.startswith("[empty response")
+
+
 async def stream_chat(messages: list[dict], system: str = "", model: str = "", options: dict = None) -> AsyncGenerator[str, None]:
     m = model or effective_ollama_model()
     _log.info("stream_chat model=%s msgs=%d", m, len(messages))
@@ -801,9 +813,19 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
         if on_progress:
             on_progress(i + 1, len(chunks))
         part = await generate_chat([{"role": "user", "content": chunk}], system=system, model=model)
-        if part.startswith("[AI "):
+        if is_failure_sentinel(part):
             return part  # propagate the failure rather than weaving an error string into the recap
-        part_summaries.append(part.strip())
+        part = part.strip()
+        if not part:
+            # generate_chat's own empty-content sentinel starts with
+            # "[empty response" (caught above) — this is the separate case
+            # of a technically-successful call whose content was only
+            # whitespace, which is_failure_sentinel can't see. Treat it the
+            # same way: abort with a clear reason rather than silently
+            # joining a blank paragraph into the recap where a whole
+            # chunk's events should be.
+            return f"[empty response from part {i + 1} of {len(chunks)} — the model returned no usable text for this part]"
+        part_summaries.append(part)
     return "\n\n".join(part_summaries)
 
 

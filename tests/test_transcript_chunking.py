@@ -222,3 +222,61 @@ async def test_long_transcript_propagates_a_part_summary_failure(monkeypatch):
     # Stops at the failing part rather than continuing on to join an error
     # string into the recap as if it were content.
     assert call_count["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_long_transcript_propagates_an_empty_response_part_failure(monkeypatch):
+    """Regression test: generate_chat has TWO failure-sentinel families
+    ("[AI ...]" and "[empty response ...]" — see is_failure_sentinel's
+    docstring), and the chunked path used to check only the first. A part
+    coming back as "[empty response from <model> ...]" (a real, fairly
+    common failure — a reasoning model burning its output budget on hidden
+    thinking) would get silently joined into the recap as if it were a
+    real paragraph, with the job still ending up "done"."""
+    call_count = {"n": 0}
+
+    async def fake_generate_chat(messages, system="", model=""):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            return "[empty response from gemma4:26b (done_reason=length) — try a different model]"
+        return "part summary"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
+    long_transcript = ("The party explored the ruins. " * 30).strip()
+    result = await ai_module.summarize_transcript(long_transcript)
+
+    assert result.startswith("[empty response")
+    assert call_count["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_long_transcript_aborts_on_a_whitespace_only_part(monkeypatch):
+    """A technically-successful call whose content is only whitespace isn't
+    caught by is_failure_sentinel (it doesn't start with either sentinel
+    prefix) — must still abort rather than join a blank paragraph into the
+    recap where a whole chunk's events should be."""
+    call_count = {"n": 0}
+
+    async def fake_generate_chat(messages, system="", model=""):
+        call_count["n"] += 1
+        if call_count["n"] == 2:
+            return "   \n  "
+        return "part summary"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda: 50)
+    long_transcript = ("The party explored the ruins. " * 30).strip()
+    result = await ai_module.summarize_transcript(long_transcript)
+
+    assert result.startswith("[empty response")
+    assert "part 2" in result
+    assert call_count["n"] == 2
+
+
+def test_is_failure_sentinel_recognizes_both_families():
+    assert ai_module.is_failure_sentinel("[AI error: Ollama 404: model not found]")
+    assert ai_module.is_failure_sentinel("[AI unavailable: ConnectionError: x]")
+    assert ai_module.is_failure_sentinel("[empty response from x (done_reason=length) — try again]")
+    assert not ai_module.is_failure_sentinel("A real recap paragraph.")
+    assert not ai_module.is_failure_sentinel("")
