@@ -23,9 +23,10 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from . import ai as _ai_module
 from . import auth
+from . import retrieval as _retrieval
 from .database import SessionLocal
 from .models import Entity, Fact, GameSession, Quest, World
-from .routers.chronicler import build_chronicler_system_prompt, visible_entities, visible_facts
+from .routers.chronicler import build_chronicler_system_prompt, visible_facts
 
 mcp = FastMCP(
     name="nd-world",
@@ -177,7 +178,7 @@ def search_entities(ctx: Context, world_id: int, query: str, kind: Optional[str]
     try:
         user = _current_user(ctx)
         world = _load_world(db, world_id, user)
-        entities = visible_entities(db, world.id, query, user, limit=25)
+        entities = _retrieval.find_relevant_entities(db, world.id, query, limit=25, user=user)
         if kind:
             entities = [e for e in entities if e.kind == kind]
         return [

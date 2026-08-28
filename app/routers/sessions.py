@@ -2,6 +2,7 @@ import io
 import json
 import os
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -979,6 +980,22 @@ def session_log_detail(session_id: int, request: Request, db: Session = Depends(
     })
 
 
+_SESSION_LOG_RECAP_CACHE_TTL = 20.0
+# Keyed by (session_id, is_gm) — Fact visibility for this route is purely
+# GM/non-GM (no per-player entity_player_access-style individual sharing),
+# so every non-GM caller for a given session legitimately gets the same
+# answer and can safely share one cache entry. Cleared wholesale by
+# routers.facts whenever a Fact is created/edited/deleted (see
+# clear_session_log_recap_cache) — same "just clear it" pattern
+# app.main._spotlight_cache already uses, rather than tracking exactly
+# which session_id(s) a fact_edit reassignment touched.
+_session_log_recap_cache: dict[tuple, dict] = {}
+
+
+def clear_session_log_recap_cache() -> None:
+    _session_log_recap_cache.clear()
+
+
 @router.post("/api/session-log/{session_id}/recap")
 async def api_session_log_recap(session_id: int, request: Request, db: Session = Depends(get_db)):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
@@ -986,13 +1003,28 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     user = getattr(request.state, "user", None)
     if not gs or not auth.user_can_access_world(db, user, world):
         raise HTTPException(404)
-    if not (user and user.is_gm):
+    is_gm = bool(user and user.is_gm)
+    # Cache check comes BEFORE the cooldown gate: serving a still-fresh
+    # cached recap costs nothing (no Ollama call happens), so it shouldn't
+    # consume/trigger the same rate limit that exists to stop a player
+    # spamming real generations — e.g. reloading the session-log page
+    # repeatedly should just keep hitting cache, not 429.
+    cache_key = (session_id, is_gm)
+    cached = _session_log_recap_cache.get(cache_key)
+    now = time.monotonic()
+    if cached and now - cached[0] < _SESSION_LOG_RECAP_CACHE_TTL:
+        return cached[1]
+    if not is_gm:
         check_llm_cooldown(user.id if user else 0)
     q = db.query(Fact).filter(Fact.game_session_id == session_id)
-    if not (user and user.is_gm):
+    if not is_gm:
         q = q.filter(Fact.visible_to_players.isnot(False))
     facts = q.order_by(Fact.created_at).all()
     if not facts:
-        return {"recap": "", "empty": True}
+        result = {"recap": "", "empty": True}
+        _session_log_recap_cache[cache_key] = (now, result)
+        return result
     recap = await _ai_module.summarize_session_from_facts([f.content for f in facts], model=_recap_model(""), extra_instructions=_recap_instructions_for_world(world))
-    return {"recap": recap}
+    result = {"recap": recap}
+    _session_log_recap_cache[cache_key] = (now, result)
+    return result

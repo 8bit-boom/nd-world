@@ -450,7 +450,11 @@ def test_build_rag_context_pinned_entity_not_duplicated_when_also_relevant(clien
         seed.world_a.id, "Gareth Ashfall the blacksmith", entity_limit=10, notes_limit=0,
         pinned_entity_ids=[pinned_id],
     )
-    assert context.count("Gareth Ashfall") == 1
+    # Count the entity's own one-liner bullet, not every substring
+    # occurrence — format_context_from_entities (see AI 1.1) also appends
+    # a body excerpt under the first few entities, which for this entity
+    # legitimately repeats its name as part of the body text itself.
+    assert context.count("- [character] Gareth Ashfall") == 1
 
 
 def test_session_featured_picks_reads_saved_npcs_json(client, seed):

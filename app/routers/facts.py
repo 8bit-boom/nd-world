@@ -7,6 +7,7 @@ from ..database import get_db
 from ..deps import get_world_ctx
 from ..models import Fact, GameSession
 from ..templating import templates
+from .sessions import clear_session_log_recap_cache
 
 router = APIRouter()
 
@@ -48,6 +49,7 @@ async def fact_create(request: Request, db: Session = Depends(get_db), active_wo
     )
     db.add(f)
     db.commit()
+    clear_session_log_recap_cache()
     return RedirectResponse("/facts", status_code=303)
 
 
@@ -64,6 +66,7 @@ async def fact_edit(fact_id: int, request: Request, db: Session = Depends(get_db
     session_id = form.get("game_session_id")
     fact.game_session_id = int(session_id) if session_id else None
     db.commit()
+    clear_session_log_recap_cache()
     return RedirectResponse("/facts", status_code=303)
 
 
@@ -74,6 +77,7 @@ def fact_delete(fact_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404)
     db.delete(fact)
     db.commit()
+    clear_session_log_recap_cache()
     return RedirectResponse("/facts", status_code=303)
 
 
@@ -123,4 +127,5 @@ async def api_facts_bulk(request: Request, db: Session = Depends(get_db), active
         db.add(f)
         created.append(f)
     db.commit()
+    clear_session_log_recap_cache()
     return {"created": len(created)}

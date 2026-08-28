@@ -94,6 +94,15 @@ def client():
     # above are reset per test.
     from app.deps import _llm_cooldowns
     _llm_cooldowns.clear()
+    # Same reasoning, same fix, for the two small AI-answer caches added in
+    # Wave 3 (plan item 1.9) — process-local dicts keyed by ids (session_id,
+    # world_id/user_id) that get reused across tests once the DB is reset
+    # above, so a cached recap/answer from one test would otherwise leak
+    # into an unrelated later test reusing the "same" id.
+    from app.routers.chronicler import _ask_cache
+    from app.routers.sessions import _session_log_recap_cache
+    _ask_cache.clear()
+    _session_log_recap_cache.clear()
     # app.ai.whisper_job_semaphore/ollama_job_semaphore are module-level
     # singletons that lazily bind to whichever asyncio event loop first
     # actually contends them (see asyncio.Semaphore.acquire — it only

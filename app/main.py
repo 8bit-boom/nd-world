@@ -27,6 +27,7 @@ from pathlib import Path
 
 from . import deps
 from . import nav_menus as _nav_menus_module
+from . import retrieval as _retrieval
 from .database import init_db, get_db, SessionLocal, get_app_settings
 from .deps import get_world_ctx, resolve_world_slug, with_world
 from .imaging import convert_image, make_thumbnail
@@ -2435,76 +2436,6 @@ def ai_world_context(request: Request, db: Session = Depends(get_db), active_wor
     return {"context": "\n".join(lines), "world_name": world.name}
 
 
-def _find_relevant_entities_fts(db: Session, world_id: int, words: list, limit: int) -> list:
-    """FTS5 prefix search over Entity(name, summary, body, tags) — unlike the
-    _ilike fallback below, this also matches an entity's full body text, and
-    ranks results by SQLite's own bm25-based relevance (`rank`) instead of
-    "whatever order the table happens to be in". Raises on any failure
-    (FTS5 unavailable, entity_fts missing on an old/degraded DB) — the
-    caller falls back to _find_relevant_entities_ilike in that case."""
-    fts_query = " OR ".join(f'"{w.replace(chr(34), chr(34)*2)}"*' for w in words)
-    rows = db.execute(
-        text(
-            "SELECT entities.id FROM entity_fts "
-            "JOIN entities ON entities.id = entity_fts.rowid "
-            "WHERE entity_fts MATCH :q AND entities.world_id = :wid "
-            "ORDER BY rank LIMIT :lim"
-        ),
-        {"q": fts_query, "wid": world_id, "lim": limit},
-    ).fetchall()
-    ids = [r[0] for r in rows]
-    if not ids:
-        return []
-    by_id = {e.id: e for e in db.query(Entity).filter(Entity.id.in_(ids)).all()}
-    return [by_id[i] for i in ids if i in by_id]
-
-
-def _find_relevant_entities_ilike(db: Session, world_id: int, words: list, limit: int) -> list:
-    filters = [
-        or_(
-            Entity.name.ilike(f'%{w}%'),
-            Entity.summary.ilike(f'%{w}%'),
-            Entity.tags.ilike(f'%{w}%'),
-        )
-        for w in words
-    ]
-    return (
-        db.query(Entity)
-        .filter(Entity.world_id == world_id, or_(*filters))
-        .order_by(Entity.kind, Entity.name)
-        .limit(limit)
-        .all()
-    )
-
-
-def _find_relevant_entities(db: Session, world_id: int, query: str, limit: int = 25) -> list:
-    words = [w for w in re.split(r'\W+', query.lower()) if len(w) > 3]
-    if not words:
-        return (
-            db.query(Entity)
-            .filter(Entity.world_id == world_id)
-            .order_by(Entity.kind, Entity.name)
-            .limit(limit)
-            .all()
-        )
-    try:
-        return _find_relevant_entities_fts(db, world_id, words, limit)
-    except Exception:
-        return _find_relevant_entities_ilike(db, world_id, words, limit)
-
-
-def _format_context_from_entities(entities: list) -> str:
-    lines = []
-    for e in entities:
-        line = f"- [{e.kind}] {e.name}"
-        if e.subtype:
-            line += f" ({e.subtype})"
-        if e.summary:
-            line += f": {e.summary}"
-        lines.append(line)
-    return "\n".join(lines)
-
-
 class _SmartCtxBody(BaseModel):
     query: str = ""
     limit: int = 25
@@ -2521,7 +2452,7 @@ def ai_world_context_smart(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         return {"context": "", "count": 0, "notes": 0, "entities": []}
-    entities = _find_relevant_entities(db, world.id, body.query, limit=body.limit)
+    entities = _retrieval.find_relevant_entities(db, world.id, body.query, limit=body.limit)
     notes = [e for e in entities if e.kind == "note"]
     non_notes = [e for e in entities if e.kind != "note"]
     # Also search notes separately if notes_limit > 0
@@ -2529,7 +2460,7 @@ def ai_world_context_smart(
         note_entities = (
             db.query(Entity)
             .filter(Entity.world_id == world.id, Entity.kind == "note")
-            .order_by(Entity.name)
+            .order_by(Entity.updated_at.desc())
             .limit(body.notes_limit)
             .all()
         )
@@ -2538,7 +2469,7 @@ def ai_world_context_smart(
         notes = notes + extra_notes
     combined = non_notes + notes
     return {
-        "context": _format_context_from_entities(combined),
+        "context": _retrieval.format_context_from_entities(combined),
         "count": len(non_notes),
         "notes": len(notes),
         # What actually got retrieved, for the RAG transparency panel (see
@@ -2594,8 +2525,8 @@ async def gen_entity_smart(
     world, _ = get_world_ctx(request, db, active_world)
     related_ctx = ""
     if world:
-        related = _find_relevant_entities(db, world.id, f"{body.name} {body.summary}", limit=12)
-        related_ctx = _format_context_from_entities(related)
+        related = _retrieval.find_relevant_entities(db, world.id, f"{body.name} {body.summary}", limit=12)
+        related_ctx = _retrieval.format_context_from_entities(related)
     prompt = (
         f"Write an expanded lore entry for this {body.kind}"
         + (f" ({body.subtype})" if body.subtype else "")
@@ -4265,6 +4196,47 @@ def _snippet(text: str, q: str, window: int = 120) -> str:
 _SEARCH_RESULT_CAP = 25  # per result type — this is a quick-jump search box, not a report
 
 
+def _search_entities(db: Session, world: World, request: Request, q: str, kind: str) -> list:
+    """The main /search entity match — tries FTS5 first (fast and indexed;
+    the same entity_fts index app.retrieval's RAG search already relies
+    on), falling back to the original ILIKE substring scan when FTS raises
+    (FTS5 unavailable/degraded — see find_relevant_entities_fts's own
+    docstring) or when the query has no word of 2+ characters to search on
+    (e.g. a single stray character) that a real FTS query could even be
+    built from.
+
+    This is a real, accepted tradeoff already used everywhere else this
+    app's retrieval touches entity_fts (see app.retrieval.
+    find_relevant_entities): FTS5 only matches whole-word prefixes ("ash"
+    matches "Ashfall"/"Ashen"), not an arbitrary mid-word substring the way
+    ILIKE's leading-wildcard %q% could ("shfa" would no longer match
+    "Ashfall" on the FTS path) — capped either way (_SEARCH_RESULT_CAP) so
+    a large world's search can't return an unbounded result set, which the
+    ILIKE path previously did."""
+    user = getattr(request.state, "user", None)
+    words = [w for w in re.split(r'\W+', q.lower()) if len(w) >= 2]
+    if words:
+        try:
+            return _retrieval.find_relevant_entities_fts(
+                db, world.id, words, _SEARCH_RESULT_CAP, user=user, kind=kind or None,
+            )
+        except Exception:
+            pass
+    query = db.query(Entity).filter(
+        Entity.world_id == world.id,
+        or_(
+            Entity.name.ilike(f"%{q}%"),
+            Entity.tags.ilike(f"%{q}%"),
+            Entity.summary.ilike(f"%{q}%"),
+            Entity.body.ilike(f"%{q}%"),
+        )
+    )
+    query = _filter_visible_entities(query, request)
+    if kind:
+        query = query.filter(Entity.kind == kind)
+    return query.order_by(Entity.kind, Entity.name).limit(_SEARCH_RESULT_CAP).all()
+
+
 def _search_characters(db: Session, world: World, request: Request, q: str) -> list[dict]:
     """Player-reachable: a player may see their own character(s) plus, if the
     GM has players_see_party on, other party members' — the same rule
@@ -4360,19 +4332,7 @@ def search(request: Request, q: str = "", kind: str = "",
     other_grouped: dict[str, list] = {}
 
     if q:
-        query = db.query(Entity).filter(
-            Entity.world_id == world.id,
-            or_(
-                Entity.name.ilike(f"%{q}%"),
-                Entity.tags.ilike(f"%{q}%"),
-                Entity.summary.ilike(f"%{q}%"),
-                Entity.body.ilike(f"%{q}%"),
-            )
-        )
-        query = _filter_visible_entities(query, request)
-        if kind:
-            query = query.filter(Entity.kind == kind)
-        results = query.order_by(Entity.kind, Entity.name).all()
+        results = _search_entities(db, world, request, q, kind)
 
         for e in results:
             grouped.setdefault(e.kind, []).append(e)

@@ -1,6 +1,6 @@
 """Tests for POST /api/ai/world-context-smart's "entities" field — added so
 AI Chat's RAG status line can be clickable, showing what actually got
-retrieved for a message (app.main._find_relevant_entities) and letting the
+retrieved for a message (app.retrieval.find_relevant_entities) and letting the
 GM pin any of it into every future message of the conversation (see
 ai_chat.html's ctx-panel/renderCtxPanel/pinEntity). Purely additive to the
 existing context/count/notes response shape.

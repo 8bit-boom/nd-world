@@ -22,6 +22,7 @@ from mcp.client.streamable_http import streamablehttp_client
 
 from app import auth as auth_module
 from app.database import SessionLocal, engine
+from app.database import _migrate as _db_migrate
 from app.main import app
 from app.models import ApiToken, Base, Entity, Fact, Quest, User, World, WorldMembership
 
@@ -33,6 +34,15 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 def _reset_db():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    # entity_fts (and its sync triggers) live outside Base.metadata — see
+    # database._migrate's own comment on why drop_all/create_all alone
+    # leaves it stale — so search_entities/ask_chronicler (both now routed
+    # through app.retrieval.find_relevant_entities, which tries FTS first)
+    # would otherwise silently retrieve nothing rather than falling back to
+    # ILIKE: an unsynced FTS5 query doesn't raise, it just returns no rows.
+    # _migrate() alone (not the rest of init_db, i.e. no _seed()) repairs
+    # this without adding an unwanted default World to these tests' counts.
+    _db_migrate()
 
 
 def _seed():

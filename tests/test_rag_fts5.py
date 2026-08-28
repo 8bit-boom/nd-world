@@ -1,12 +1,13 @@
-"""Tests for the FTS5 upgrade to app.main._find_relevant_entities (RAG
-retrieval for AI Chat's /api/ai/world-context-smart): it now matches an
-entity's full `body` text (the old per-word ILIKE only checked name/summary/
-tags), ranks by SQLite's own relevance instead of table order, stays in
-sync with inserts/updates/deletes via the entity_fts triggers, and falls
-back to the old ILIKE matcher if FTS5 itself ever fails.
+"""Tests for the FTS5 upgrade to app.retrieval.find_relevant_entities (RAG
+retrieval for AI Chat's /api/ai/world-context-smart, Chronicler, and session
+Summarize/Condense — see app/retrieval.py, extracted from app.main): it
+matches an entity's full `body` text (the old per-word ILIKE only checked
+name/summary/tags), ranks by SQLite's own relevance instead of table order,
+stays in sync with inserts/updates/deletes via the entity_fts triggers, and
+falls back to the old ILIKE matcher if FTS5 itself ever fails.
 """
 from app.database import SessionLocal
-from app.main import _find_relevant_entities, _find_relevant_entities_ilike
+from app.retrieval import find_relevant_entities, find_relevant_entities_ilike
 from app.models import Entity
 
 from .conftest import GM_PASSWORD, login
@@ -105,23 +106,23 @@ def test_ilike_fallback_still_matches_name_summary_tags(client, seed):
     db = SessionLocal()
     try:
         eid = _make_entity(seed.world_a.id, name="Fallback Target", kind="character", summary="Findable via ILIKE.")
-        results = _find_relevant_entities_ilike(db, seed.world_a.id, ["fallback"], 10)
+        results = find_relevant_entities_ilike(db, seed.world_a.id, ["fallback"], 10)
         assert eid in {e.id for e in results}
     finally:
         db.close()
 
 
 def test_find_relevant_entities_falls_back_when_fts_raises(client, seed, monkeypatch):
-    import app.main as main_module
+    import app.retrieval as retrieval_module
     eid = _make_entity(seed.world_a.id, name="Resilient Entity", kind="character", summary="Still findable.")
 
-    def _broken_fts(db, world_id, words, limit):
+    def _broken_fts(db, world_id, words, limit, user=None):
         raise Exception("simulated FTS5 failure")
-    monkeypatch.setattr(main_module, "_find_relevant_entities_fts", _broken_fts)
+    monkeypatch.setattr(retrieval_module, "find_relevant_entities_fts", _broken_fts)
 
     db = SessionLocal()
     try:
-        results = _find_relevant_entities(db, seed.world_a.id, "Resilient", limit=10)
+        results = find_relevant_entities(db, seed.world_a.id, "Resilient", limit=10)
         assert eid in {e.id for e in results}
     finally:
         db.close()

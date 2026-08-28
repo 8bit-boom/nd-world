@@ -356,16 +356,17 @@ def _migrate():
             conn.execute(text("ALTER TABLE entity_notes ADD COLUMN content_is_html BOOLEAN DEFAULT 0"))
 
         # FTS5 full-text index over Entity(name, summary, body, tags), backing
-        # app.main._find_relevant_entities (RAG retrieval for AI Chat) — an
-        # upgrade from plain per-word ILIKE, which never matched `body` at
-        # all. "External content" table (content='entities') so the indexed
-        # text isn't duplicated on disk; triggers keep it in sync on every
-        # future insert/update/delete, and the SELECT right after creation
+        # app.retrieval.find_relevant_entities (RAG retrieval for AI Chat,
+        # Chronicler, session Summarize/Condense) — an upgrade from plain
+        # per-word ILIKE, which never matched `body` at all. "External
+        # content" table (content='entities') so the indexed text isn't
+        # duplicated on disk; triggers keep it in sync on every future
+        # insert/update/delete, and the SELECT right after creation
         # backfills every entity that existed before this migration ran.
         # Deliberately NOT allowed to fail the whole migration (see
         # init_db's "startup dies either way" contract just above this
         # function) — some SQLite builds may lack FTS5, and RAG search
-        # falling back to the old ILIKE matcher (see _find_relevant_entities)
+        # falling back to the old ILIKE matcher (see find_relevant_entities)
         # is far preferable to the entire app refusing to start over it.
         try:
             fts_exists = conn.execute(text(

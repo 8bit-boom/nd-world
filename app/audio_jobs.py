@@ -14,6 +14,7 @@ from typing import Optional
 
 from . import ai as _ai_module
 from . import job_shutdown as _job_shutdown
+from . import retrieval as _retrieval
 from .database import SessionLocal
 from .models import AudioJob, Entity, GameSession, PlayerCharacter, World
 
@@ -346,7 +347,7 @@ def _combined_recap_instructions(world_instructions: str, job_instructions: str)
 _DEFAULT_RAG_ENTITY_LIMIT = 15
 _DEFAULT_RAG_NOTES_LIMIT = 5
 
-# The FTS query app.main._find_relevant_entities builds has one OR-clause
+# The FTS query app.retrieval.find_relevant_entities builds has one OR-clause
 # per unique word over 3 characters in the query text — capped here so
 # handing it an entire transcript unclipped can't balloon into a
 # query with thousands of clauses; the session's real subject matter/proper
@@ -394,7 +395,7 @@ def _session_featured_picks(game_session_id: int) -> tuple[list[int], list[int]]
 
 def _format_pc_line(pc: PlayerCharacter) -> str:
     """One reference line for a pinned PlayerCharacter — same rough shape
-    app.main._format_context_from_entities uses for an Entity, but
+    app.retrieval.format_context_from_entities uses for an Entity, but
     PlayerCharacter isn't an Entity (its own id sequence, its own table),
     so it can't just be handed to that function."""
     detail = " ".join(x for x in (pc.char_class, pc.race) if x)
@@ -412,26 +413,20 @@ def _build_rag_context(
 ) -> str:
     """RAG retrieval for a summarize/condense job's system prompt (see
     app.ai._with_world_context, which is what actually prepends the result
-    onto the system prompt) — reuses app.main's own entity search
-    (_find_relevant_entities) and its notes-guarantee logic verbatim rather
+    onto the system prompt) — reuses app.retrieval's entity search
+    (find_relevant_entities) and its notes-guarantee logic verbatim rather
     than keeping a second copy of either; this is the same retrieval
     /api/ai/world-context-smart (AI Chat's RAG panel) is built on.
-
-    Deferred import, not module-level: app.main imports this module at
-    import time (`from . import audio_jobs as _audio_jobs`, for the startup
-    job-resume sweep), so a module-level `from .main import ...` here would
-    be circular. See app.database's own `from . import auth as _auth` for
-    the identical, already-established pattern in this codebase.
 
     entity_limit/notes_limit <= 0 means "don't retrieve that category at
     all" — mirrors _SmartCtxBody's own notes_limit convention (0 there
     already means "skip the guaranteed-notes fetch").
 
     Non-note entities get the same "top up toward the limit" treatment as
-    notes already had, for a case _find_relevant_entities' own keyword
+    notes already had, for a case find_relevant_entities' own keyword
     search can't handle: a `query` in a different language/script than
     the World's entity names (e.g. a Russian session transcript against
-    English-named characters/places). _find_relevant_entities' FTS/ILIKE
+    English-named characters/places). find_relevant_entities' FTS/ILIKE
     matching has no literal text overlap to find there — it comes back
     empty even though there ARE relevant entities to reference — while its
     OWN "no query words at all" fallback (returning entities ordered by
@@ -455,8 +450,6 @@ def _build_rag_context(
     `kind`/`summary` of its own, and is never subject to the keyword
     search or top-up above, only ever appearing here because it was
     pinned (see _format_pc_line)."""
-    from . import main as _main_module  # deferred — see docstring above
-
     db = SessionLocal()
     try:
         pinned = (
@@ -476,7 +469,7 @@ def _build_rag_context(
         seen_ids = {e.id for e in pinned}
 
         entities = (
-            _main_module._find_relevant_entities(db, world_id, query[:_RAG_QUERY_CHAR_BUDGET], limit=entity_limit)
+            _retrieval.find_relevant_entities(db, world_id, query[:_RAG_QUERY_CHAR_BUDGET], limit=entity_limit)
             if entity_limit > 0 else []
         )
         notes = [e for e in entities if e.kind == "note" and e.id not in seen_ids]
@@ -493,7 +486,7 @@ def _build_rag_context(
             note_entities = (
                 db.query(Entity)
                 .filter(Entity.world_id == world_id, Entity.kind == "note")
-                .order_by(Entity.name)
+                .order_by(Entity.updated_at.desc())
                 .limit(notes_limit)
                 .all()
             )
@@ -501,7 +494,7 @@ def _build_rag_context(
 
         pinned_notes = [e for e in pinned if e.kind == "note"]
         pinned_non_notes = [e for e in pinned if e.kind != "note"]
-        entity_context = _main_module._format_context_from_entities(pinned_non_notes + non_notes + pinned_notes + notes)
+        entity_context = _retrieval.format_context_from_entities(pinned_non_notes + non_notes + pinned_notes + notes)
         pc_context = "\n".join(_format_pc_line(pc) for pc in pinned_pcs)
         return "\n".join(part for part in (pc_context, entity_context) if part)
     finally:

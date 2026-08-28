@@ -78,15 +78,23 @@ def test_chronicler_ask_gm_is_never_rate_limited(client, seed, monkeypatch):
 
 
 def test_session_log_recap_second_call_from_same_player_is_rate_limited(client, seed, monkeypatch):
-    session_id = _make_session(seed.world_a.id)
-    _add_fact(seed.world_a.id, session_id, "The party arrived.")
+    """Two DIFFERENT sessions, not a repeat of the same one — a repeat now
+    legitimately hits the session-log recap cache (see AI 1.9 / tests/
+    test_ai_answer_caching.py) rather than the cooldown gate, since serving
+    a cached answer costs nothing. The cooldown still has to apply across
+    two genuinely different (uncached) generation requests in the window,
+    which is what this asserts."""
+    session_id_1 = _make_session(seed.world_a.id)
+    session_id_2 = _make_session(seed.world_a.id)
+    _add_fact(seed.world_a.id, session_id_1, "The party arrived.")
+    _add_fact(seed.world_a.id, session_id_2, "The party left.")
 
     async def fake_summarize(facts, model="", extra_instructions=""):
         return "A recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
     login(client, seed.player_a.email, PLAYER_PASSWORD)
-    r1 = client.post(f"/api/session-log/{session_id}/recap")
+    r1 = client.post(f"/api/session-log/{session_id_1}/recap")
     assert r1.status_code == 200
-    r2 = client.post(f"/api/session-log/{session_id}/recap")
+    r2 = client.post(f"/api/session-log/{session_id_2}/recap")
     assert r2.status_code == 429
