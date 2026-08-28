@@ -9,8 +9,11 @@ the standalone "Background Jobs" page (GM-only) where a GM can see
 everything in flight across the whole world and cancel one, separate from
 the smaller inline panels embedded on each originating page.
 """
+import io
+from pathlib import Path
+
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from .. import audio_jobs as _audio_jobs
@@ -85,6 +88,49 @@ def api_audio_job_status(job_id: int, request: Request, db: Session = Depends(ge
     if not job:
         raise HTTPException(404)
     return _job_to_dict(job)
+
+
+def _audio_job_download_filename(job: AudioJob, suffix: str) -> str:
+    """Same sanitize-then-append idiom used by /entity/{id}/download.md and
+    the character .ndc/.foundry.json exports — job.filename is the original
+    uploaded audio's name (free text), not a slug."""
+    base_raw = Path(job.filename).stem if job.filename else f"job-{job.id}"
+    base = "".join(c if c.isalnum() or c in " -_" else "" for c in base_raw) or f"job-{job.id}"
+    return f"{base}-{suffix}.md"
+
+
+@router.get("/api/audio-jobs/{job_id}/transcript.md")
+def api_audio_job_download_transcript(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = db.query(AudioJob).filter(AudioJob.id == job_id, AudioJob.world_id == world.id).first()
+    if not job:
+        raise HTTPException(404)
+    if not job.transcript:
+        raise HTTPException(404, "This job has no transcript yet")
+    return StreamingResponse(
+        io.BytesIO(job.transcript.encode()), media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{_audio_job_download_filename(job, "transcript")}"'},
+    )
+
+
+@router.get("/api/audio-jobs/{job_id}/recap.md")
+def api_audio_job_download_recap(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = db.query(AudioJob).filter(AudioJob.id == job_id, AudioJob.world_id == world.id).first()
+    if not job:
+        raise HTTPException(404)
+    if not job.recap:
+        raise HTTPException(404, "This job has no recap yet")
+    return StreamingResponse(
+        io.BytesIO(job.recap.encode()), media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{_audio_job_download_filename(job, "recap")}"'},
+    )
 
 
 @router.post("/api/audio-jobs/{job_id}/cancel")

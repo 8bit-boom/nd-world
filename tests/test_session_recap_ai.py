@@ -565,3 +565,72 @@ def test_player_cannot_reach_session_log_in_other_world(client, seed):
 
     r2 = client.post(f"/api/session-log/{session_id}/recap")
     assert r2.status_code == 404
+
+
+# ── Download summary/live transcript as .md (GM-only) ───────────────────────
+
+def _set_live_transcript(session_id, text):
+    db = SessionLocal()
+    try:
+        gs = db.get(GameSession, session_id)
+        gs.live_transcript = text
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_download_summary_md(client, seed):
+    session_id = _make_session(seed.world_a, title="Session 1")
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.get(f"/sessions/{session_id}/summary.md")
+    assert r.status_code == 200
+    assert r.text == "RAW GM-ONLY SECRET TEXT never meant for players"
+    assert r.headers["content-type"].startswith("text/markdown")
+    assert 'filename="Session 1-summary.md"' in r.headers["content-disposition"]
+
+
+def test_download_transcript_md(client, seed):
+    session_id = _make_session(seed.world_a, title="Session 1")
+    _set_live_transcript(session_id, "Raw live transcript text.")
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.get(f"/sessions/{session_id}/transcript.md")
+    assert r.status_code == 200
+    assert r.text == "Raw live transcript text."
+    assert 'filename="Session 1-transcript.md"' in r.headers["content-disposition"]
+
+
+def test_download_summary_md_404_when_empty(client, seed):
+    session_id = _make_session(seed.world_a)
+    db = SessionLocal()
+    try:
+        gs = db.get(GameSession, session_id)
+        gs.summary = ""
+        db.commit()
+    finally:
+        db.close()
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.get(f"/sessions/{session_id}/summary.md")
+    assert r.status_code == 404
+
+
+def test_download_transcript_md_404_when_empty(client, seed):
+    session_id = _make_session(seed.world_a)
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.get(f"/sessions/{session_id}/transcript.md")
+    assert r.status_code == 404
+
+
+def test_download_md_player_forbidden(client, seed):
+    session_id = _make_session(seed.world_a)
+    _set_live_transcript(session_id, "secret")
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    assert client.get(f"/sessions/{session_id}/summary.md").status_code == 403
+    assert client.get(f"/sessions/{session_id}/transcript.md").status_code == 403
+
+
+def test_download_md_404_for_unknown_session(client, seed):
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.get("/sessions/999999/summary.md")
+    assert r.status_code == 404
+    r2 = client.get("/sessions/999999/transcript.md")
+    assert r2.status_code == 404

@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import tempfile
@@ -6,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -175,6 +176,48 @@ def session_detail(session_id: int, request: Request, db: Session = Depends(get_
         "prep": json.loads(gs.prep_json or "[]"), "loot": json.loads(gs.loot_json or "[]"),
         "npcs": npcs,
     })
+
+
+def _session_download_filename(gs: GameSession, suffix: str) -> str:
+    """Same sanitize-then-append idiom used by /entity/{id}/download.md and
+    the character .ndc/.foundry.json exports — the title is free text, not
+    a slug, so strip anything that isn't safe in a filename before adding
+    the fixed suffix."""
+    base = "".join(c if c.isalnum() or c in " -_" else "" for c in (gs.title or "session")) or "session"
+    return f"{base}-{suffix}.md"
+
+
+@router.get("/sessions/{session_id}/summary.md")
+def session_download_summary(session_id: int, db: Session = Depends(get_db)):
+    """GM-only, like every other route in this file that isn't in
+    app.main._is_player_safe — the middleware already blocks a non-GM
+    caller before this handler ever runs (see test_player_cannot_call_gm_
+    ai_endpoints for the pattern this mirrors), so there's nothing to check
+    here beyond the session existing. No active_world scoping either,
+    matching session_detail/session_edit/session_delete above — a
+    GameSession is looked up by id alone throughout this file."""
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    if not gs:
+        raise HTTPException(404)
+    if not gs.summary:
+        raise HTTPException(404, "This session has no summary yet")
+    return StreamingResponse(
+        io.BytesIO(gs.summary.encode()), media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{_session_download_filename(gs, "summary")}"'},
+    )
+
+
+@router.get("/sessions/{session_id}/transcript.md")
+def session_download_transcript(session_id: int, db: Session = Depends(get_db)):
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    if not gs:
+        raise HTTPException(404)
+    if not gs.live_transcript:
+        raise HTTPException(404, "This session has no live transcript yet")
+    return StreamingResponse(
+        io.BytesIO(gs.live_transcript.encode()), media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{_session_download_filename(gs, "transcript")}"'},
+    )
 
 
 @router.post("/sessions/{session_id}/edit")

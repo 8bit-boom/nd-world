@@ -49,6 +49,9 @@
           <button type="button" class="ai-recap-btn" onclick="aiCondenseRecapFit()" title="Temporarily sizes the model's context window to fit this whole pasted summary (then reverts) — use for a long summary the normal context would truncate">📏 Condense (fit context)</button>
           {% if gsession %}
           <button type="button" class="ai-recap-btn" onclick="aiSummarizeFromFacts()">📎 Summarize from Facts</button>
+          {% if gsession.summary %}
+          <a class="ai-recap-btn" href="{{ ('/sessions/' + gsession.id|string + '/summary.md')|wq }}" style="text-decoration:none" title="Downloads the last saved summary — save first if you've made unsaved edits">⬇ Download .md</a>
+          {% endif %}
           {% endif %}
           <span id="ai-recap-status" style="font-size:.78rem;color:var(--text-dim)"></span>
         </div>
@@ -133,6 +136,7 @@
       <button type="button" id="live-record-btn" class="ai-recap-btn" onclick="toggleLiveRecording()">🔴 Start Recording</button>
       <button type="button" class="ai-recap-btn" onclick="summarizeLiveTranscript()">✨ Summarize transcript</button>
       <button type="button" class="ai-recap-btn" onclick="clearLiveTranscript()">🗑 Clear transcript</button>
+      <a id="live-transcript-download-link" class="ai-recap-btn" href="{{ ('/sessions/' + gsession.id|string + '/transcript.md')|wq }}" style="display:none;text-decoration:none">⬇ Download .md</a>
       <span id="live-record-status" style="font-size:.78rem;color:var(--text-dim)"></span>
     </div>
     <div id="live-transcript-text" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem .75rem;font-size:.82rem;color:var(--text-dim);white-space:pre-wrap;max-height:200px;overflow-y:auto">{{ gsession.live_transcript or '(nothing recorded yet)' }}</div>
@@ -469,6 +473,8 @@ function liveSetTranscriptDisplay(text) {
   el.scrollTop = el.scrollHeight;
   const countEl = document.getElementById('live-transcript-token-count');
   if (countEl) countEl.textContent = text ? `(${ndTokenLabel(text)})` : '';
+  const downloadLink = document.getElementById('live-transcript-download-link');
+  if (downloadLink) downloadLink.style.display = text && text.trim() ? '' : 'none';
 }
 
 async function liveProcessQueue() {

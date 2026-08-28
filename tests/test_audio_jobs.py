@@ -2132,3 +2132,86 @@ def test_resummarize_route_cross_world_isolation(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.post(f"/api/audio-jobs/{job_id}/resummarize", data={"model": ""})
     assert r.status_code == 404
+
+
+# ── Download transcript/recap as .md ────────────────────────────────────────
+
+def _make_done_job(world_id, filename="session1.mp3", transcript="", recap=""):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=world_id, purpose="session_recap", status="done",
+                        filename=filename, transcript=transcript, recap=recap)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        return job.id
+    finally:
+        db.close()
+
+
+def test_download_transcript_md(client, seed):
+    job_id = _make_done_job(seed.world_a.id, transcript="Raw transcript text here.")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}/transcript.md")
+    assert r.status_code == 200
+    assert r.text == "Raw transcript text here."
+    assert r.headers["content-type"].startswith("text/markdown")
+    assert 'filename="session1-transcript.md"' in r.headers["content-disposition"]
+
+
+def test_download_recap_md(client, seed):
+    job_id = _make_done_job(seed.world_a.id, recap="Polished recap text.")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}/recap.md")
+    assert r.status_code == 200
+    assert r.text == "Polished recap text."
+    assert 'filename="session1-recap.md"' in r.headers["content-disposition"]
+
+
+def test_download_transcript_md_404_when_empty(client, seed):
+    job_id = _make_done_job(seed.world_a.id, transcript="")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}/transcript.md")
+    assert r.status_code == 404
+
+
+def test_download_recap_md_404_when_empty(client, seed):
+    job_id = _make_done_job(seed.world_a.id, recap="")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}/recap.md")
+    assert r.status_code == 404
+
+
+def test_download_md_player_forbidden(client, seed):
+    job_id = _make_done_job(seed.world_a.id, transcript="secret", recap="secret")
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get(f"/api/audio-jobs/{job_id}/transcript.md").status_code == 403
+    assert client.get(f"/api/audio-jobs/{job_id}/recap.md").status_code == 403
+
+
+def test_download_md_cross_world_isolation(client, seed):
+    job_id = _make_done_job(seed.world_b.id, transcript="text", recap="text")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get(f"/api/audio-jobs/{job_id}/transcript.md").status_code == 404
+    assert client.get(f"/api/audio-jobs/{job_id}/recap.md").status_code == 404
+
+
+def test_download_md_sanitizes_filename_and_falls_back_without_original_name(client, seed):
+    job_id = _make_done_job(seed.world_a.id, filename="../weird name! ??.mp3", transcript="hi")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}/transcript.md")
+    assert r.status_code == 200
+    disposition = r.headers["content-disposition"]
+    assert ".." not in disposition and "!" not in disposition and "?" not in disposition
+
+    no_name_job_id = _make_done_job(seed.world_a.id, filename="", transcript="hi")
+    r2 = client.get(f"/api/audio-jobs/{no_name_job_id}/transcript.md")
+    assert r2.status_code == 200
+    assert f'filename="job-{no_name_job_id}-transcript.md"' in r2.headers["content-disposition"]

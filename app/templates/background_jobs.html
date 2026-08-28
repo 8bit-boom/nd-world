@@ -238,12 +238,24 @@ function bgRenderJob(job) {
   }
   if (actions.children.length) card.appendChild(actions);
 
+  const bgResultLabel = (text, downloadHref) => {
+    const label = document.createElement('div');
+    label.className = 'bg-job-result-label';
+    label.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:.5rem';
+    const span = document.createElement('span');
+    span.textContent = text;
+    label.appendChild(span);
+    const link = document.createElement('a');
+    link.href = downloadHref;
+    link.textContent = '⬇ .md';
+    link.style.cssText = 'color:var(--text-dim);text-decoration:none';
+    label.appendChild(link);
+    return label;
+  };
+
   if (_bgExpanded.has(job.id) && job.status === 'done') {
     if (job.recap) {
-      const recapLabel = document.createElement('div');
-      recapLabel.className = 'bg-job-result-label';
-      recapLabel.textContent = `Recap (${ndTokenLabel(job.recap)})`;
-      card.appendChild(recapLabel);
+      card.appendChild(bgResultLabel(`Recap (${ndTokenLabel(job.recap)})`, `/api/audio-jobs/${job.id}/recap.md`));
       const recapBox = document.createElement('div');
       recapBox.className = 'bg-job-result';
       recapBox.style.display = 'block';
@@ -251,10 +263,7 @@ function bgRenderJob(job) {
       card.appendChild(recapBox);
     }
     if (job.transcript) {
-      const tLabel = document.createElement('div');
-      tLabel.className = 'bg-job-result-label';
-      tLabel.textContent = `Transcript (${ndTokenLabel(job.transcript)})`;
-      card.appendChild(tLabel);
+      card.appendChild(bgResultLabel(`Transcript (${ndTokenLabel(job.transcript)})`, `/api/audio-jobs/${job.id}/transcript.md`));
       const tBox = document.createElement('div');
       tBox.className = 'bg-job-result';
       tBox.style.display = 'block';
