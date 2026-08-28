@@ -28,7 +28,7 @@ from pathlib import Path
 from . import deps
 from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
-from .database import init_db, get_db, SessionLocal, get_app_settings
+from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache
 from .deps import get_world_ctx, resolve_world_slug, with_world
 from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, render_md, html_to_markdown, sanitize_note_html
@@ -2842,6 +2842,7 @@ def settings_system_save(
     settings.ollama_use_mmap = ollama_use_mmap
     settings.ollama_server_env_json = json.dumps(srv_values)
     db.commit()
+    _clear_app_settings_flags_cache()
     _refresh_settings_overrides(db)
     try:
         _tuning.write_server_env(srv_values)

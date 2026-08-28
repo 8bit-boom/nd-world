@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import time
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 from .models import (
@@ -14,7 +15,14 @@ _log = logging.getLogger("nd.db")
 
 
 def get_app_settings(db):
-    """The single instance-wide settings row, created lazily on first use."""
+    """The single instance-wide settings row, created lazily on first use.
+    Always a live ORM object bound to `db` — callers routinely mutate the
+    returned object's fields and commit it on their own session (every
+    Settings-tab save route does exactly this), so this function itself is
+    deliberately NOT cached: an object cached from a different, possibly-
+    already-closed session would silently discard those writes. See
+    get_app_settings_flags_cached below for the read-only, high-frequency
+    case that doesn't need a live/writable object at all."""
     s = db.query(AppSettings).first()
     if not s:
         s = AppSettings(id=1)
@@ -22,6 +30,48 @@ def get_app_settings(db):
         db.commit()
         db.refresh(s)
     return s
+
+
+# app.templating._kinds_context_processor runs on every single templated
+# page render and used to call get_app_settings(db) — a real DB query —
+# just to read two rarely-changed feature-flag booleans. Short-TTL, plain-
+# dict cache (same tradeoff app.ai's own _status_cache/_STATUS_CACHE_TTL
+# already makes for similarly low-churn, read-heavy state): a GM's just-
+# saved Settings change can take up to this many seconds to show up on
+# another page, in exchange for skipping a DB round-trip on almost every
+# request. No explicit invalidation wiring needed across Settings' many
+# save routes as a result.
+_APP_SETTINGS_FLAGS_CACHE_TTL = 5.0
+_app_settings_flags_cache: tuple[float, dict] | None = None
+
+
+def clear_app_settings_flags_cache() -> None:
+    """Called by the Settings > System save route right after it commits a
+    change to dreamlands_enabled/king_in_yellow_enabled, so a GM enabling
+    an optional-extras page doesn't see stale (absent) nav links for up to
+    _APP_SETTINGS_FLAGS_CACHE_TTL seconds on their very next click."""
+    global _app_settings_flags_cache
+    _app_settings_flags_cache = None
+
+
+def get_app_settings_flags_cached(db) -> dict:
+    """Read-only snapshot of the handful of AppSettings fields the nav/
+    context processor reads on every render. NOT a substitute for
+    get_app_settings(db) — see that function's own docstring for why a
+    cached ORM object would be unsafe; this returns a plain dict instead,
+    which sidesteps the problem entirely (nothing to accidentally write
+    back through)."""
+    global _app_settings_flags_cache
+    now = time.monotonic()
+    if _app_settings_flags_cache and now - _app_settings_flags_cache[0] < _APP_SETTINGS_FLAGS_CACHE_TTL:
+        return _app_settings_flags_cache[1]
+    s = get_app_settings(db)
+    flags = {
+        "dreamlands_enabled": bool(s.dreamlands_enabled),
+        "king_in_yellow_enabled": bool(s.king_in_yellow_enabled),
+    }
+    _app_settings_flags_cache = (now, flags)
+    return flags
 
 def _heal_table(conn, table, columns, foreign_keys=None, indexes=None, unique_indexes=None):
     """Self-heal a table against its model's expected columns: add whatever's
@@ -350,6 +400,12 @@ def _migrate():
             conn.execute(text("ALTER TABLE entities ADD COLUMN template_id INTEGER"))
         if "custom_fields_json" not in cols:
             conn.execute(text("ALTER TABLE entities ADD COLUMN custom_fields_json TEXT DEFAULT '{}'"))
+        # Composite index backing the (world_id, kind) filter almost every
+        # entity query uses — see Entity.__table_args__'s own comment.
+        # CREATE INDEX IF NOT EXISTS is naturally idempotent, unlike the
+        # ADD COLUMN checks above it doesn't need a PRAGMA table_info
+        # existence check first.
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_entities_world_id_kind ON entities (world_id, kind)"))
 
         note_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(entity_notes)")).fetchall()]
         if note_cols and "content_is_html" not in note_cols:

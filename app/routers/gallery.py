@@ -17,7 +17,7 @@ from ..deps import get_world_ctx
 from ..gallery import all_world_image_urls, discover_world_images, image_display_name
 from ..imaging import convert_image, make_thumbnail
 from ..models import ImageAlbum, World
-from ..templating import templates
+from ..templating import templates, thumb_url
 from ..uploads import copy_upload_bounded, unique_upload_filename
 
 router = APIRouter()
@@ -25,6 +25,16 @@ router = APIRouter()
 _MAX_ALBUMS_PER_WORLD = 100
 _MAX_ALBUM_NAME = 120
 _MAX_IMAGES_PER_ALBUM = 500
+
+# /images renders one <label class="gallery-img-cell"> (checkbox + two
+# buttons + thumbnail + two text rows) per discovered image, server-side —
+# fine up to a few hundred, but a world with thousands of images/notes
+# would mean thousands of DOM nodes (and thumbnail <img> tags) painted on
+# first load. Only the first batch renders through the normal Jinja loop;
+# the rest ships as a JSON payload the page appends in further batches on
+# "Load more" clicks instead (see gallery_index.html's own JS) — same
+# image data either way, just not all forced into the DOM at once.
+_GALLERY_INITIAL_BATCH = 200
 
 # Duplicated locally rather than imported from main.py — main.py imports
 # this router, so the reverse would be circular (same rationale as every
@@ -165,7 +175,15 @@ def images_gallery(request: Request, db: Session = Depends(get_db), active_world
     }
     return templates.TemplateResponse("gallery_index.html", {
         "request": request, "world": world, "worlds": worlds,
-        "images": images, "albums": albums, "album_urls": album_urls,
+        "images": images[:_GALLERY_INITIAL_BATCH], "images_total": len(images),
+        # thumb_url precomputed here (the Jinja loop above uses the |thumb
+        # filter for its own batch instead) since this list is serialized
+        # straight to JSON for client-side appending — no Jinja filter
+        # available there to compute it on the fly.
+        "images_remaining": [
+            {**img, "thumb_url": thumb_url(img["url"])} for img in images[_GALLERY_INITIAL_BATCH:]
+        ],
+        "albums": albums, "album_urls": album_urls,
         "sub_album_counts": sub_album_counts,
     })
 

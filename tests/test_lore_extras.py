@@ -6,7 +6,7 @@ Dreamlands and King in Yellow are additionally gated behind an instance-wide
 AppSettings toggle (off by default) — see Settings > System > Optional
 extras — so a table that doesn't use them doesn't see the nav clutter.
 """
-from app.database import SessionLocal
+from app.database import SessionLocal, clear_app_settings_flags_cache
 from app.models import AppSettings, Entity, InvestBoard
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
@@ -24,6 +24,12 @@ def _enable_lore_extras(world_a_slug=None):
         db.commit()
     finally:
         db.close()
+    # A raw DB write, not the real Settings-save route — the route clears
+    # app.database's own short-TTL flags cache (Wave 4, Speed 4.5) itself,
+    # but this test helper bypasses it entirely, so do the same here or
+    # the very next page render could still see the pre-write, cached
+    # value for up to _APP_SETTINGS_FLAGS_CACHE_TTL seconds.
+    clear_app_settings_flags_cache()
 
 
 def test_dreamlands_and_kiy_pages_are_gm_only(client, seed):

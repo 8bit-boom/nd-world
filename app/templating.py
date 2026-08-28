@@ -20,7 +20,7 @@ from fastapi.templating import Jinja2Templates
 from . import deps
 from . import nav_menus as _nav_menus
 from .constants import KIND_ICONS, KINDS, SUBTYPES
-from .database import SessionLocal, get_app_settings
+from .database import SessionLocal, get_app_settings_flags_cached
 from .imaging import thumbnail_path_for
 from .rendering import body_summary, entry_text, parse_stats, render_md, strip_md
 
@@ -46,16 +46,16 @@ def _kinds_context_processor(request: Request) -> dict:
     try:
         world, _ = deps.get_world_ctx(request, db, request.cookies.get(_ACTIVE_WORLD_COOKIE))
         kinds, kind_icons = deps.effective_kinds(world)
-        settings = get_app_settings(db)
+        flags = get_app_settings_flags_cached(db)
         user = getattr(request.state, "user", None)
         nav_menus, nav_ungrouped_items = _nav_menus.resolve_nav_menus(
-            world, bool(settings.dreamlands_enabled), bool(settings.king_in_yellow_enabled),
+            world, flags["dreamlands_enabled"], flags["king_in_yellow_enabled"],
             bool(user and user.is_gm),
         )
         return {
             "kinds": kinds, "kind_icons": kind_icons, "subtypes": deps.effective_subtypes(world),
-            "dreamlands_enabled": bool(settings.dreamlands_enabled),
-            "king_in_yellow_enabled": bool(settings.king_in_yellow_enabled),
+            "dreamlands_enabled": flags["dreamlands_enabled"],
+            "king_in_yellow_enabled": flags["king_in_yellow_enabled"],
             "nav_menus": nav_menus, "nav_ungrouped_items": nav_ungrouped_items,
             "world_theme": _parse_world_theme(world),
         }

@@ -6,7 +6,7 @@ app/models.py) without having to hunt through individual entities."""
 import json
 import re
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from .models import Entity, ImageAlbum, PlayerCharacter, World
 
@@ -50,7 +50,14 @@ def discover_world_images(db: Session, world: World) -> list:
         entry = found.setdefault(url, {"url": url, "uses": []})
         entry["uses"].append({"label": label, "href": href})
 
-    entities = db.query(Entity).filter(Entity.world_id == world.id).all()
+    # selectinload(Entity.notes): without it, the loop below's `e.notes`
+    # lazy-loads once per entity — one extra SQL query per entity in the
+    # world, every single /images page load. This batches all of them into
+    # one additional query (a single `WHERE entity_id IN (...)`) instead.
+    entities = (
+        db.query(Entity).options(selectinload(Entity.notes))
+        .filter(Entity.world_id == world.id).all()
+    )
     for e in entities:
         href = f"/entity/{e.id}"
         if e.image_url:

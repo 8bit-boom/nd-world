@@ -103,6 +103,14 @@ def client():
     from app.routers.sessions import _session_log_recap_cache
     _ask_cache.clear()
     _session_log_recap_cache.clear()
+    # app.database._app_settings_flags_cache (Wave 4, Speed 4.5) — a single
+    # cached snapshot, not a dict, so reset the module attribute directly
+    # rather than .clear(); same drop_all/create_all-reuse leak risk as the
+    # dict caches above (a world's AppSettings row is a fresh id=1 every
+    # test, but the OLD test's cached flags would otherwise still be
+    # "fresh" by the TTL clock and get served into the new test).
+    import app.database as _database_module
+    _database_module._app_settings_flags_cache = None
     # app.ai.whisper_job_semaphore/ollama_job_semaphore are module-level
     # singletons that lazily bind to whichever asyncio event loop first
     # actually contends them (see asyncio.Semaphore.acquire — it only

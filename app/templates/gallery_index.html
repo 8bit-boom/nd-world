@@ -42,7 +42,7 @@
 
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.6rem;margin-bottom:.8rem">
-      <h2 style="color:var(--neon);font-size:.95rem;margin:0">🗂 All Images ({{ images|length }})</h2>
+      <h2 style="color:var(--neon);font-size:.95rem;margin:0">🗂 All Images ({{ images_total }})</h2>
       {% if images %}
       <div style="display:flex;gap:.5rem;align-items:center">
         <button type="button" class="btn-cancel" onclick="galleryToggleAll()">Select All / None</button>
@@ -76,6 +76,12 @@
       </label>
       {% endfor %}
     </div>
+    {% if images_remaining %}
+    <div style="text-align:center;margin-top:1rem">
+      <button type="button" id="gallery-load-more-btn" class="btn-cancel" onclick="galleryLoadMore()"></button>
+    </div>
+    <script>const NDGalleryRemaining = {{ images_remaining | tojson }};</script>
+    {% endif %}
     {% else %}
     <p style="color:var(--text-dim);font-size:.82rem;margin:0">No images found yet — add a portrait or embed an image in an entity's description to see it here.</p>
     {% endif %}
@@ -121,6 +127,93 @@ function galleryToggleAll() {
   const boxes = document.querySelectorAll('.gallery-img-check');
   const anyUnchecked = Array.from(boxes).some(b => !b.checked);
   boxes.forEach(b => b.checked = anyUnchecked);
+}
+
+// Speed 4.6 — the server only renders the first _GALLERY_INITIAL_BATCH
+// images (app/routers/gallery.py); the rest ship as NDGalleryRemaining and
+// get appended here in further batches on "Load more" clicks, so a huge
+// gallery doesn't force thousands of DOM nodes into the page on first
+// load. Builds the identical cell markup the Jinja loop above does, via
+// DOM APIs (not innerHTML + string interpolation) so an image name/URL
+// containing HTML-special characters can't inject markup.
+const GALLERY_LOAD_MORE_BATCH = 100;
+let _galleryRemainingIdx = 0;
+
+function galleryBuildCell(img) {
+  const label = document.createElement('label');
+  label.className = 'gallery-img-cell';
+
+  const check = document.createElement('input');
+  check.type = 'checkbox';
+  check.className = 'gallery-img-check';
+  check.value = img.url;
+  label.appendChild(check);
+
+  const actions = document.createElement('div');
+  actions.className = 'gallery-img-actions';
+  const sendBtn = document.createElement('button');
+  sendBtn.type = 'button';
+  sendBtn.className = 'gallery-img-send';
+  sendBtn.title = 'Send to players';
+  sendBtn.textContent = '📤';
+  sendBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); ndSendSpotlight(img.url); };
+  const expandBtn = document.createElement('button');
+  expandBtn.type = 'button';
+  expandBtn.className = 'gallery-img-expand';
+  expandBtn.title = 'View full size';
+  expandBtn.textContent = '🔍';
+  expandBtn.onclick = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const cellImg = expandBtn.closest('.gallery-img-cell').querySelector('img');
+    openLightbox(cellImg.dataset.full, cellImg.alt);
+  };
+  actions.append(sendBtn, expandBtn);
+  label.appendChild(actions);
+
+  const thumb = document.createElement('img');
+  thumb.src = img.thumb_url || img.url;
+  thumb.dataset.full = img.url;
+  thumb.alt = img.name;
+  thumb.loading = 'lazy';
+  label.appendChild(thumb);
+
+  const nameDiv = document.createElement('div');
+  nameDiv.className = 'gallery-img-name';
+  nameDiv.title = img.name;
+  nameDiv.textContent = img.name;
+  label.appendChild(nameDiv);
+
+  const uses = img.uses || [];
+  const usesDiv = document.createElement('div');
+  usesDiv.className = 'gallery-img-uses';
+  usesDiv.title = uses.map((u) => u.label).join(', ');
+  usesDiv.textContent = `used in ${uses.length} place${uses.length === 1 ? '' : 's'}`;
+  label.appendChild(usesDiv);
+
+  return label;
+}
+
+function galleryLoadMore() {
+  const grid = document.querySelector('.gallery-img-grid');
+  const batch = NDGalleryRemaining.slice(_galleryRemainingIdx, _galleryRemainingIdx + GALLERY_LOAD_MORE_BATCH);
+  batch.forEach((img) => grid.appendChild(galleryBuildCell(img)));
+  _galleryRemainingIdx += batch.length;
+  galleryUpdateLoadMoreButton();
+}
+
+function galleryUpdateLoadMoreButton() {
+  const btn = document.getElementById('gallery-load-more-btn');
+  if (!btn) return;
+  const remaining = NDGalleryRemaining.length - _galleryRemainingIdx;
+  if (remaining <= 0) {
+    btn.style.display = 'none';
+    return;
+  }
+  btn.textContent = `Load ${Math.min(GALLERY_LOAD_MORE_BATCH, remaining)} more (${remaining} remaining)`;
+}
+
+if (typeof NDGalleryRemaining !== 'undefined') {
+  galleryUpdateLoadMoreButton();
 }
 
 async function galleryAddSelectedToAlbum() {

@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, Table, ForeignKey, Float
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, Table, ForeignKey, Float, Index
 from sqlalchemy.orm import relationship, declarative_base
 
 Base = declarative_base()
@@ -323,6 +323,13 @@ class Entity(Base):
     custom_fields_json = Column(Text, default="{}")  # {field_id: value or [ {...}, ... ] for list fields}
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Almost every entity query filters on both columns at once (/kind/{kind},
+    # search, RAG retrieval, the home page's per-kind counts) — world_id and
+    # kind already each have their own single-column index above, which
+    # SQLite can combine via index intersection, but a composite index lets
+    # a (world_id, kind) lookup resolve as one index scan instead of two.
+    __table_args__ = (Index("ix_entities_world_id_kind", "world_id", "kind"),)
 
     world = relationship("World", back_populates="entities")
     template = relationship("EntityTemplate")
