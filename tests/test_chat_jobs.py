@@ -6,12 +6,14 @@ route for a generation slow enough that keeping the tab open isn't
 practical.
 """
 import asyncio
+import json
 import time
 
 import pytest
 
 from app import ai as ai_module
 from app import chat_jobs
+from app import job_shutdown
 from app.database import SessionLocal
 from app.models import ChatJob
 
@@ -31,7 +33,7 @@ async def _await_terminal(job_id, timeout=5.0):
         while time.time() < deadline:
             db.expire_all()
             job = db.get(ChatJob, job_id)
-            if job.status in ("done", "error", "cancelled"):
+            if job.status in ("done", "error", "cancelled", "interrupted"):
                 return job
             await asyncio.sleep(0.02)
         raise AssertionError(f"job never reached a terminal status, last seen status={job.status!r}")
@@ -199,7 +201,13 @@ def test_delete_returns_false_for_unknown_job():
     assert chat_jobs.delete_job(999999) is False
 
 
-def test_sweep_interrupted_jobs_marks_in_progress_as_error(client, seed):
+def test_sweep_interrupted_jobs_marks_in_progress_as_interrupted(client, seed):
+    """A job still mid-flight at boot means the process died UNCLEANLY (a
+    crash/OOM/SIGKILL — job_shutdown's own drain()/mark_stragglers_interrupted
+    already handle a clean shutdown). It's marked "interrupted", not
+    "error", so resume_interrupted_jobs (called right after this in the
+    same startup hook) auto-restarts it from its saved request, same as
+    any other interruption."""
     db = SessionLocal()
     try:
         job = ChatJob(world_id=seed.world_a.id, prompt="hi", status="generating")
@@ -215,8 +223,161 @@ def test_sweep_interrupted_jobs_marks_in_progress_as_error(client, seed):
     db = SessionLocal()
     try:
         job = db.get(ChatJob, job_id)
-        assert job.status == "error"
+        assert job.status == "interrupted"
         assert "restart" in job.error.lower()
+    finally:
+        db.close()
+
+
+# ── Job survival: checkpointing, resume, shutdown guard (app/job_shutdown.py) ─
+#
+# See that module's own docstring for the "stop fast" design, and
+# audio_jobs.py's own equivalent tests for the fuller pattern this mirrors.
+# A chat completion has no intermediate state to checkpoint (one opaque
+# non-streaming generate_chat call) — an interrupted job restarts from its
+# saved request on the next boot rather than truly resuming.
+
+@pytest.fixture(autouse=True)
+def _reset_job_shutdown_flag():
+    job_shutdown.clear_stop()
+    yield
+    job_shutdown.clear_stop()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancel_marks_interrupted_not_cancelled(client, seed, monkeypatch):
+    async def hang(messages, system="", model="", options=None):
+        await asyncio.sleep(30)
+        return "unused"
+    monkeypatch.setattr(ai_module, "generate_chat", hang)
+
+    job_id = chat_jobs.create_job(
+        world_id=seed.world_a.id, messages=[{"role": "user", "content": "hi"}],
+        system="", model="", options={},
+    )
+    await asyncio.sleep(0.05)
+    job_shutdown.request_stop()
+    assert chat_jobs.cancel_job(job_id)
+    job = await _await_terminal(job_id)
+    assert job.status == "interrupted"
+    assert "restart" in job.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_gm_cancel_still_marks_cancelled(client, seed, monkeypatch):
+    async def hang(messages, system="", model="", options=None):
+        await asyncio.sleep(30)
+        return "unused"
+    monkeypatch.setattr(ai_module, "generate_chat", hang)
+
+    job_id = chat_jobs.create_job(
+        world_id=seed.world_a.id, messages=[{"role": "user", "content": "hi"}],
+        system="", model="", options={},
+    )
+    await asyncio.sleep(0.05)
+    assert not job_shutdown.stopping()
+    assert chat_jobs.cancel_job(job_id)
+    job = await _await_terminal(job_id)
+    assert job.status == "cancelled"
+    assert job.error == "Cancelled by GM."
+
+
+@pytest.mark.asyncio
+async def test_resume_interrupted_jobs_restarts_from_the_persisted_request(client, seed, monkeypatch):
+    calls = []
+
+    async def fake_generate(messages, system="", model="", options=None):
+        calls.append(messages)
+        return "resumed reply"
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate)
+
+    db = SessionLocal()
+    try:
+        job = ChatJob(world_id=seed.world_a.id, prompt="hi", status="interrupted",
+                      messages_json=json.dumps([{"role": "user", "content": "hi"}]),
+                      system="", options_json="{}")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    resumed = chat_jobs.resume_interrupted_jobs()
+    assert resumed == 1
+
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.resumed_count == 1
+    assert calls and calls[0] == [{"role": "user", "content": "hi"}]
+
+
+def test_resume_gives_up_after_max_auto_resumes(client, seed):
+    db = SessionLocal()
+    try:
+        job = ChatJob(world_id=seed.world_a.id, prompt="hi", status="interrupted",
+                      messages_json=json.dumps([{"role": "user", "content": "hi"}]),
+                      system="", options_json="{}", resumed_count=job_shutdown.MAX_AUTO_RESUMES)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    resumed = chat_jobs.resume_interrupted_jobs()
+    assert resumed == 0
+
+    db = SessionLocal()
+    try:
+        j = db.get(ChatJob, job_id)
+        assert j.status == "error"
+        assert "restart" in j.error.lower()
+        assert str(job_shutdown.MAX_AUTO_RESUMES) in j.error
+    finally:
+        db.close()
+
+
+class _FakeTask:
+    def __init__(self, cancelled=False):
+        self._cancelled = cancelled
+
+    def cancelled(self):
+        return self._cancelled
+
+
+def test_forget_task_does_not_evict_a_newer_task_for_the_same_job_id():
+    old_task = _FakeTask()
+    new_task = _FakeTask()
+    chat_jobs._running_tasks[999999] = new_task
+    try:
+        chat_jobs._forget_task(999999, old_task)
+        assert chat_jobs._running_tasks.get(999999) is new_task
+    finally:
+        chat_jobs._running_tasks.pop(999999, None)
+
+
+def test_forget_task_reconciles_a_job_cancelled_before_its_body_ever_ran(client, seed):
+    db = SessionLocal()
+    try:
+        job = ChatJob(world_id=seed.world_a.id, prompt="hi", status="pending")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    task = _FakeTask(cancelled=True)
+    chat_jobs._running_tasks[job_id] = task
+    chat_jobs._forget_task(job_id, task)
+
+    assert job_id not in chat_jobs._running_tasks
+    db = SessionLocal()
+    try:
+        updated = db.get(ChatJob, job_id)
+        assert updated.status == "cancelled"
+        assert updated.error == "Cancelled by GM."
     finally:
         db.close()
 
