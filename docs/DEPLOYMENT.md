@@ -394,6 +394,11 @@ docker compose build --build-arg INSTALL_DENOISE=true world
 docker compose up -d world
 ```
 (Or, without Compose: `docker build --build-arg INSTALL_DENOISE=true -t nd-world .`)
+This layer installs a temporary Rust toolchain to compile deepfilternet's
+DSP core (no prebuilt wheel exists for every platform), then removes it —
+expect the first build with this flag to take noticeably longer than a
+normal build, on top of the torch/torchaudio download itself.
+
 The model itself (~50MB) downloads automatically on first use, into the same
 `/data` volume everything else persists to — so it survives container
 recreation and only downloads once.

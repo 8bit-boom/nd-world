@@ -22,10 +22,26 @@ RUN pip install --no-cache-dir -r requirements.txt
 # feature. Build with `--build-arg INSTALL_DENOISE=true` to include it;
 # app.ai.speech_enhancement_available() feature-detects at runtime, and
 # the per-World toggle refuses to enable itself if this wasn't installed.
+#
+# deepfilternet's compiled DSP core (deepfilterlib) has no prebuilt wheel
+# on PyPI for every platform/Python combination — pip falls back to its
+# source tarball, which needs a Rust toolchain to compile. python:3.12-slim
+# has none, so pip fails with "Cargo ... is not installed" without this.
+# rustup (not apt's rustc/cargo, which can be too old for this crate's
+# MSRV) installs a current toolchain just for this RUN, then removes it —
+# together with the build-essential/curl only Rust's own install needed —
+# so none of it lingers in the final image; the compiled extension itself
+# is already installed into site-packages by the time cargo is removed.
 ARG INSTALL_DENOISE=false
 COPY requirements-denoise.txt .
 RUN if [ "$INSTALL_DENOISE" = "true" ]; then \
-        pip install --no-cache-dir -r requirements-denoise.txt; \
+        apt-get update && apt-get install -y --no-install-recommends build-essential curl && \
+        rm -rf /var/lib/apt/lists/* && \
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal && \
+        . "$HOME/.cargo/env" && \
+        pip install --no-cache-dir -r requirements-denoise.txt && \
+        rm -rf "$HOME/.cargo" "$HOME/.rustup" && \
+        apt-get purge -y --auto-remove build-essential curl; \
     fi
 
 COPY app/ ./app/
