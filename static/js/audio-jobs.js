@@ -22,6 +22,7 @@ function ndAudioJobs(panelEl, opts) {
   const STATUS_LABEL = {
     pending: "Queued…", transcribing: "Transcribing…", summarizing: "Summarizing…",
     done: "✓ Done", error: "✗ Failed", cancelled: "○ Cancelled",
+    interrupted: "⏸ Interrupted",
   };
   const IN_PROGRESS = new Set(["pending", "transcribing", "summarizing"]);
   const FINISHED = new Set(["done", "error", "cancelled"]);

@@ -11,6 +11,7 @@ so the task actually gets a chance to progress between polls.
 """
 import asyncio
 import io
+import json
 import os
 import shutil
 import time
@@ -21,6 +22,7 @@ import pytest
 
 from app import ai as ai_module
 from app import audio_jobs
+from app import job_shutdown as _job_shutdown
 from app.database import SessionLocal
 from app.models import AudioJob, World
 
@@ -318,7 +320,596 @@ def test_session_job_status_route_exposes_chunk_progress(client, seed):
     assert r.json()["chunk_total"] == 3
 
 
-def test_sweep_interrupted_jobs_marks_in_progress_as_error(client, seed):
+# ── Job survival: checkpointing, resume, shutdown guard (app/job_shutdown.py) ─
+#
+# See that module's own docstring for the full "stop fast, trust the
+# checkpoint" design. These tests cover audio_jobs.py's own half of the
+# contract: persisting audio_path/delete_after so a resume can find the
+# file, wiring app.ai's on_checkpoint/should_stop/resume through _run_job,
+# distinguishing a shutdown-driven cancel from a GM-driven one, and the
+# boot-time auto-resume pass.
+
+@pytest.fixture(autouse=True)
+def _reset_job_shutdown_flag():
+    _job_shutdown.clear_stop()
+    yield
+    _job_shutdown.clear_stop()
+
+
+async def _await_status_in(job_id, statuses, timeout=5.0):
+    deadline = time.time() + timeout
+    db = SessionLocal()
+    try:
+        job = None
+        while time.time() < deadline:
+            db.expire_all()
+            job = db.get(AudioJob, job_id)
+            if job.status in statuses:
+                return job
+            await asyncio.sleep(0.02)
+        raise AssertionError(f"job never reached one of {statuses}, last seen status={job.status!r}")
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_create_job_persists_audio_path_and_delete_after(client, seed, tmp_path):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="attachment", filename="clip.mp3",
+        audio_path=audio, delete_after=False,
+    )
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.audio_path == str(audio)
+        assert job.delete_after is False
+    finally:
+        db.close()
+    await _await_terminal(job_id)
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_written_to_the_row_after_each_transcribed_chunk(client, seed, tmp_path, monkeypatch):
+    hang = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        on_checkpoint = kwargs["on_checkpoint"]
+        on_checkpoint({"phase": "transcribe", "chunks_done": 1, "chunk_total": 2,
+                        "chunk_seconds": 600, "audio_size": path.stat().st_size, "text": "part 0"})
+        hang.set()
+        await release.wait()
+        on_checkpoint({"phase": "transcribe", "chunks_done": 2, "chunk_total": 2,
+                        "chunk_seconds": 600, "audio_size": path.stat().st_size, "text": "part 0\npart 1"})
+        return "part 0\npart 1"
+
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="attachment", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    await asyncio.wait_for(hang.wait(), timeout=5)
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        cp = json.loads(job.checkpoint_json)
+        assert cp["chunks_done"] == 1
+        assert cp["chunk_total"] == 2
+    finally:
+        db.close()
+
+    release.set()
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_mirrors_the_partial_transcript_into_the_transcript_column(client, seed, tmp_path, monkeypatch):
+    hang = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        on_checkpoint = kwargs["on_checkpoint"]
+        on_checkpoint({"phase": "transcribe", "chunks_done": 1, "chunk_total": 2,
+                        "chunk_seconds": 600, "audio_size": path.stat().st_size, "text": "part 0 so far"})
+        hang.set()
+        await release.wait()
+        return "part 0 so far\npart 1"
+
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="attachment", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    await asyncio.wait_for(hang.wait(), timeout=5)
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        # A GM watching the Background Jobs page mid-run sees real progress,
+        # same as WhisperError's own partial_transcript salvage already did
+        # on a hard failure — this is the checkpoint's live-progress version.
+        assert job.transcript == "part 0 so far"
+    finally:
+        db.close()
+
+    release.set()
+    await _await_terminal(job_id)
+
+
+@pytest.mark.asyncio
+async def test_summarize_checkpoint_is_not_mirrored_into_recap(client, seed, tmp_path, monkeypatch):
+    hang = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_summarize(transcript, model="", extra_instructions="", **kwargs):
+        on_checkpoint = kwargs["on_checkpoint"]
+        on_checkpoint({"phase": "summarize", "parts_done": 1, "chunk_total": 2,
+                        "chunk_chars": 50, "text": "part summary 0"})
+        hang.set()
+        await release.wait()
+        return "part summary 0\n\npart summary 1"
+
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    await asyncio.wait_for(hang.wait(), timeout=5)
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.recap == ""  # unlike the transcribe phase, deliberately not mirrored
+        assert json.loads(job.checkpoint_json)["text"] == "part summary 0"
+    finally:
+        db.close()
+
+    release.set()
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.recap == "part summary 0\n\npart summary 1"
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_cleared_once_the_job_reaches_a_terminal_status(client, seed, tmp_path, monkeypatch):
+    async def fake_transcribe(path, glossary="", **kwargs):
+        on_checkpoint = kwargs["on_checkpoint"]
+        on_checkpoint({"phase": "transcribe", "chunks_done": 1, "chunk_total": 1,
+                        "chunk_seconds": 600, "audio_size": path.stat().st_size, "text": "part 0"})
+        return "part 0"
+
+    async def failing_summarize(transcript, model="", extra_instructions="", **kwargs):
+        return "[AI error: boom]"
+
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+    monkeypatch.setattr(ai_module, "summarize_transcript", failing_summarize)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "error"
+    assert job.checkpoint_json == ""
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancel_marks_interrupted_not_cancelled(client, seed, tmp_path, _hanging_transcribe):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="attachment", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    await _await_status_in(job_id, {"transcribing"})
+    _job_shutdown.request_stop()
+    assert audio_jobs.cancel_job(job_id)
+    job = await _await_status_in(job_id, {"interrupted", "cancelled", "done", "error"})
+    assert job.status == "interrupted"
+    assert "restart" in job.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_gm_cancel_still_marks_cancelled_while_not_stopping(client, seed, tmp_path, _hanging_transcribe):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="attachment", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    await _await_status_in(job_id, {"transcribing"})
+    assert not _job_shutdown.stopping()
+    assert audio_jobs.cancel_job(job_id)
+    job = await _await_status_in(job_id, {"interrupted", "cancelled", "done", "error"})
+    assert job.status == "cancelled"
+    assert job.error == "Cancelled by GM."
+
+
+@pytest.mark.asyncio
+async def test_interrupted_job_keeps_its_audio_file_for_resume(client, seed, tmp_path, _hanging_transcribe):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="attachment", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    await _await_status_in(job_id, {"transcribing"})
+    _job_shutdown.request_stop()
+    audio_jobs.cancel_job(job_id)
+    await _await_status_in(job_id, {"interrupted", "cancelled", "done", "error"})
+    assert audio.exists()  # kept despite delete_after=True — a resume needs it
+
+
+@pytest.mark.asyncio
+async def test_gm_cancelled_job_still_deletes_its_audio_file(client, seed, tmp_path, _hanging_transcribe):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="attachment", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    await _await_status_in(job_id, {"transcribing"})
+    audio_jobs.cancel_job(job_id)
+    await _await_status_in(job_id, {"interrupted", "cancelled", "done", "error"})
+    assert not audio.exists()  # a genuine GM cancel still cleans up, same as before
+
+
+def test_forget_task_marks_interrupted_when_stopping(client, seed, tmp_path):
+    _job_shutdown.request_stop()
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="pending", filename="x.mp3",
+                        audio_path=str(audio), delete_after=True)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    task = _FakeTask(cancelled=True)
+    audio_jobs._running_tasks[job_id] = task
+    audio_jobs._forget_task(job_id, task)
+
+    assert audio.exists()  # kept for resume, unlike the GM-cancel path
+    db = SessionLocal()
+    try:
+        updated = db.get(AudioJob, job_id)
+        assert updated.status == "interrupted"
+        assert "restart" in updated.error.lower()
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_interrupted_jobs_restarts_from_the_checkpoint(client, seed, tmp_path, monkeypatch):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"audio-bytes")
+
+    calls = []
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        calls.append(kwargs.get("resume"))
+        return "part 0\npart 1"
+
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    checkpoint = {"phase": "transcribe", "chunks_done": 1, "chunk_total": 2,
+                  "chunk_seconds": 600, "audio_size": audio.stat().st_size, "text": "part 0"}
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="interrupted",
+                       filename="clip.mp3", audio_path=str(audio), delete_after=True,
+                       checkpoint_json=json.dumps(checkpoint), chunk_current=1, chunk_total=2,
+                       error="Paused by a server restart at part 1 of 2 — the work so far is saved.")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    resumed_count = audio_jobs.resume_interrupted_jobs()
+    assert resumed_count == 1
+
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.resumed_count == 1
+    assert calls and calls[0] == checkpoint
+
+
+@pytest.mark.asyncio
+async def test_resume_skips_already_transcribed_chunks(client, seed, tmp_path, monkeypatch):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"audio-bytes")
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        resume = kwargs.get("resume")
+        assert resume and resume["chunks_done"] == 1
+        return resume["text"] + "\npart 1"
+
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    checkpoint = {"phase": "transcribe", "chunks_done": 1, "chunk_total": 2,
+                  "chunk_seconds": 600, "audio_size": audio.stat().st_size, "text": "part 0"}
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="interrupted",
+                       filename="clip.mp3", audio_path=str(audio), delete_after=True,
+                       checkpoint_json=json.dumps(checkpoint))
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    audio_jobs.resume_interrupted_jobs()
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.transcript == "part 0\npart 1"
+
+
+@pytest.mark.asyncio
+async def test_resume_of_a_job_with_a_transcript_goes_straight_to_summarizing(client, seed, monkeypatch):
+    transcribe_calls = []
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        transcribe_calls.append(1)
+        return "should not be called"
+
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="interrupted",
+                       filename="clip.mp3", audio_path="", delete_after=True,
+                       transcript="the party explored the ruins")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    audio_jobs.resume_interrupted_jobs()
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert transcribe_calls == []  # never re-transcribed — the audio is gone anyway
+    assert job.recap  # from the file's autouse _fake_ai fixture
+
+
+def test_resume_gives_up_after_max_auto_resumes_and_keeps_the_transcript(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="interrupted",
+                       filename="clip.mp3", audio_path="/nonexistent/path.mp3", delete_after=True,
+                       transcript="salvaged so far", resumed_count=_job_shutdown.MAX_AUTO_RESUMES)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    resumed = audio_jobs.resume_interrupted_jobs()
+    assert resumed == 0
+
+    db = SessionLocal()
+    try:
+        j = db.get(AudioJob, job_id)
+        assert j.status == "error"
+        assert "restart" in j.error.lower()
+        assert str(_job_shutdown.MAX_AUTO_RESUMES) in j.error
+        assert j.transcript == "salvaged so far"  # kept, not discarded
+    finally:
+        db.close()
+
+
+def test_resume_marks_error_when_the_audio_file_is_gone_and_no_transcript(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="interrupted",
+                       filename="clip.mp3", audio_path="/nonexistent/path.mp3", delete_after=True)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    resumed = audio_jobs.resume_interrupted_jobs()
+    assert resumed == 0
+
+    db = SessionLocal()
+    try:
+        j = db.get(AudioJob, job_id)
+        assert j.status == "error"
+        assert "restart" in j.error.lower()
+        assert "re-upload" in j.error.lower()
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_sets_chunk_progress_synchronously_before_the_task_starts(client, seed, tmp_path):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    checkpoint = {"phase": "transcribe", "chunks_done": 3, "chunk_total": 7,
+                  "chunk_seconds": 600, "audio_size": audio.stat().st_size, "text": "abc"}
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="interrupted",
+                       filename="clip.mp3", audio_path=str(audio), delete_after=True,
+                       checkpoint_json=json.dumps(checkpoint))
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    job_snapshot = audio_jobs.start_resume_job(job_id)
+    assert job_snapshot.status == "transcribing"
+    assert job_snapshot.chunk_current == 3
+    assert job_snapshot.chunk_total == 7
+    assert job_snapshot.resumed_count == 1
+
+    await _await_terminal(job_id)  # let the (fast, faked) background task finish cleanly
+
+
+def test_resume_route_round_trip(client, seed, tmp_path):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="interrupted",
+                       filename="clip.mp3", audio_path=str(audio), delete_after=True)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/api/audio-jobs/{job_id}/resume")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "transcribing"
+    assert body["resumable"] is False  # no longer "interrupted"
+
+    data = _poll_until_terminal(client, f"/api/audio-jobs/{job_id}")
+    assert data["status"] == "done"
+
+
+def test_resume_route_requires_gm(client, seed, tmp_path):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="interrupted",
+                       filename="clip.mp3", audio_path=str(audio), delete_after=True)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/api/audio-jobs/{job_id}/resume")
+    assert r.status_code == 403
+
+
+def test_resume_route_cross_world_isolation(client, seed, tmp_path):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="interrupted",
+                       filename="clip.mp3", audio_path=str(audio), delete_after=True)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_b.slug)
+    r = client.post(f"/api/audio-jobs/{job_id}/resume")
+    assert r.status_code == 404
+
+
+def test_resume_route_rejects_a_job_already_in_progress(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="transcribing", filename="clip.mp3")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/api/audio-jobs/{job_id}/resume")
+    assert r.status_code == 400
+
+
+def test_resume_route_resets_the_attempt_counter(client, seed, tmp_path):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="interrupted",
+                       filename="clip.mp3", audio_path=str(audio), delete_after=True,
+                       resumed_count=_job_shutdown.MAX_AUTO_RESUMES)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/api/audio-jobs/{job_id}/resume")
+    assert r.status_code == 200, r.text
+    assert r.json()["resumed_count"] == 0
+
+
+def test_sweep_orphaned_job_audio_keeps_a_file_a_resumable_job_still_needs(client, seed, tmp_path):
+    jobs_dir = _session_audio_jobs_dir_for_test()
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    kept_file = jobs_dir / "still-needed.mp3"
+    kept_file.write_bytes(b"x")
+    old_cutoff_time = time.time() - audio_jobs._SESSION_AUDIO_JOBS_CUTOFF_SECONDS - 3600
+    os.utime(kept_file, (old_cutoff_time, old_cutoff_time))  # old enough to normally be swept
+
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="interrupted",
+                       filename="clip.mp3", audio_path=str(kept_file), delete_after=True)
+        db.add(job)
+        db.commit()
+    finally:
+        db.close()
+
+    audio_jobs.sweep_orphaned_job_audio()
+
+    assert kept_file.exists()
+    kept_file.unlink()
+
+
+def test_sweep_interrupted_jobs_marks_in_progress_as_interrupted(client, seed):
+    """A job still mid-flight at boot means the process died UNCLEANLY (a
+    crash/OOM/SIGKILL — job_shutdown's own drain()/mark_stragglers_interrupted
+    already handle a clean shutdown). It's marked "interrupted", not
+    "error" — the same status a clean shutdown leaves a paused job in — so
+    resume_interrupted_jobs (called right after this in the same startup
+    hook) picks it up and auto-resumes it, same as any other interruption."""
     db = SessionLocal()
     try:
         stuck = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="transcribing", filename="x.mp3")
@@ -337,7 +928,7 @@ def test_sweep_interrupted_jobs_marks_in_progress_as_error(client, seed):
     try:
         s = db.get(AudioJob, stuck_id)
         d = db.get(AudioJob, done_id)
-        assert s.status == "error"
+        assert s.status == "interrupted"
         assert "restart" in s.error.lower()
         assert d.status == "done"
         assert d.error == ""
@@ -807,9 +1398,12 @@ def test_forget_task_reconciles_a_job_cancelled_before_its_body_ever_ran(client,
     Without this reconciliation the row stays "pending" forever (both
     cancel_job and delete_job refuse a row in IN_PROGRESS_STATUSES) and
     the uploaded audio leaks."""
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
     db = SessionLocal()
     try:
-        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="pending", filename="x.mp3")
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="pending", filename="x.mp3",
+                        audio_path=str(audio), delete_after=True)
         db.add(job)
         db.commit()
         db.refresh(job)
@@ -817,11 +1411,9 @@ def test_forget_task_reconciles_a_job_cancelled_before_its_body_ever_ran(client,
     finally:
         db.close()
 
-    audio = tmp_path / "clip.mp3"
-    audio.write_bytes(b"x")
     task = _FakeTask(cancelled=True)
     audio_jobs._running_tasks[job_id] = task
-    audio_jobs._forget_task(job_id, task, audio, True)
+    audio_jobs._forget_task(job_id, task)
 
     assert job_id not in audio_jobs._running_tasks
     assert not audio.exists()
@@ -836,9 +1428,12 @@ def test_forget_task_reconciles_a_job_cancelled_before_its_body_ever_ran(client,
 
 
 def test_forget_task_keeps_audio_when_delete_after_is_false(client, seed, tmp_path):
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"x")
     db = SessionLocal()
     try:
-        job = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="pending", filename="x.mp3")
+        job = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="pending", filename="x.mp3",
+                        audio_path=str(audio), delete_after=False)
         db.add(job)
         db.commit()
         db.refresh(job)
@@ -846,11 +1441,9 @@ def test_forget_task_keeps_audio_when_delete_after_is_false(client, seed, tmp_pa
     finally:
         db.close()
 
-    audio = tmp_path / "clip.mp3"
-    audio.write_bytes(b"x")
     task = _FakeTask(cancelled=True)
     audio_jobs._running_tasks[job_id] = task
-    audio_jobs._forget_task(job_id, task, audio, False)
+    audio_jobs._forget_task(job_id, task)
     assert audio.exists()
 
 
@@ -1387,7 +1980,7 @@ def test_sweep_interrupted_jobs_sets_finished_at(client, seed):
     db = SessionLocal()
     try:
         s = db.get(AudioJob, stuck_id)
-        assert s.status == "error"
+        assert s.status == "interrupted"
         assert s.finished_at is not None
     finally:
         db.close()

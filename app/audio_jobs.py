@@ -4,6 +4,7 @@ Kept in its own module (not routers/sessions.py or routers/ai.py) since
 both routers start/poll the identical job engine.
 """
 import asyncio
+import json as _json
 import logging
 import os
 import time
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import ai as _ai_module
+from . import job_shutdown as _job_shutdown
 from .database import SessionLocal
 from .models import AudioJob, World
 
@@ -26,18 +28,33 @@ _running_tasks: dict[int, asyncio.Task] = {}
 IN_PROGRESS_STATUSES = ("pending", "transcribing", "summarizing")
 
 
-def _forget_task(job_id: int, task: asyncio.Task, audio_path: Optional[Path] = None, delete_after: bool = False) -> None:
+def _interrupted_note(chunk_current: Optional[int] = None, chunk_total: Optional[int] = None) -> str:
+    """The status/error message for a job paused mid-run by a server
+    shutdown — not really an error, just explains what happened and that
+    the saved checkpoint is what makes a resume possible. One shared
+    wording so every call site that can transition a job to "interrupted"
+    (both CancelledError-adjacent handlers and JobInterrupted handling in
+    both run functions below, plus the boot/shutdown sweeps) says the same
+    thing."""
+    if chunk_total and chunk_current:
+        return (
+            f"Paused by a server restart at part {chunk_current} of {chunk_total} — "
+            "the work so far is saved; it will resume automatically, or use ▶ Resume."
+        )
+    return "Paused by a server restart — the work so far is saved; it will resume automatically, or use ▶ Resume."
+
+
+def _forget_task(job_id: int, task: asyncio.Task) -> None:
     """Done-callback for a job's background task.
 
     Identity-checked — only removes the registry entry if it's still THIS
     task — because asyncio schedules done-callbacks via call_soon, so
     there's at least one event-loop turn between a task finishing (after
     it has already written a terminal status) and this callback actually
-    running. A resummarize started in that window sees a row that's
-    already out of IN_PROGRESS_STATUSES, installs its own new task into
-    _running_tasks, and then the OLD task's callback — using the old
-    lambda's bare `_running_tasks.pop(job_id, None)` — would delete that
-    live task's registry entry out from under it: it becomes only
+    running. A resume/resummarize started in that window sees a row
+    that's already out of IN_PROGRESS_STATUSES, installs its own new task
+    into _running_tasks, and then the OLD task's callback would delete
+    that live task's registry entry out from under it: it becomes only
     weakly-referenced (asyncio doesn't hold a strong reference of its
     own — eligible for GC mid-run) and cancel_job() can no longer find it
     to cancel.
@@ -45,14 +62,18 @@ def _forget_task(job_id: int, task: asyncio.Task, audio_path: Optional[Path] = N
     Also reconciles a task that was cancelled before its coroutine body
     ever started running at all: asyncio.Task.cancel() on such a task
     skips the body entirely, so neither _run_job's own `except
-    asyncio.CancelledError` nor its `finally: audio_path.unlink(...)` ever
-    executes, leaving the row stuck at "pending" forever (cancel_job and
-    delete_job both refuse a row in IN_PROGRESS_STATUSES) and leaking the
-    uploaded audio. Safe to run unconditionally on every cancelled task:
-    when the body DID run far enough to reach its own CancelledError
-    handler, that handler has already moved the row out of
-    IN_PROGRESS_STATUSES (and already deleted the audio file) before this
-    callback ever fires, so the checks below are then no-ops."""
+    asyncio.CancelledError` nor its cleanup ever executes, leaving the row
+    stuck in an in-progress status forever (cancel_job and delete_job both
+    refuse a row in IN_PROGRESS_STATUSES). Safe to run unconditionally on
+    every cancelled task: when the body DID run far enough to reach its
+    own CancelledError handler, that handler has already moved the row out
+    of IN_PROGRESS_STATUSES before this callback ever fires, so the checks
+    below are then no-ops.
+
+    audio_path/delete_after are read off the row itself, not passed in —
+    create_job/start_resume_job persist both (see AudioJob's own
+    docstring) specifically so a resume after a restart can find the audio
+    again without this module needing to thread them through every call."""
     if _running_tasks.get(job_id) is not task:
         return
     del _running_tasks[job_id]
@@ -61,15 +82,24 @@ def _forget_task(job_id: int, task: asyncio.Task, audio_path: Optional[Path] = N
     db = SessionLocal()
     try:
         job = db.get(AudioJob, job_id)
-        if job and job.status in IN_PROGRESS_STATUSES:
+        if not job or job.status not in IN_PROGRESS_STATUSES:
+            return
+        if _job_shutdown.stopping():
+            # Cancelled before its body ever ran, during a shutdown drain —
+            # keep the audio and any checkpoint already on the row so a
+            # resume can pick this job back up, same as _run_job's own
+            # CancelledError handling below.
+            job.status = "interrupted"
+            job.error = _interrupted_note(job.chunk_current, job.chunk_total)
+        else:
             job.status = "cancelled"
             job.error = "Cancelled by GM."
-            job.finished_at = datetime.utcnow()
-            db.commit()
+            if job.delete_after and job.audio_path:
+                Path(job.audio_path).unlink(missing_ok=True)
+        job.finished_at = datetime.utcnow()
+        db.commit()
     finally:
         db.close()
-    if delete_after and audio_path is not None:
-        audio_path.unlink(missing_ok=True)
 
 
 def _looks_like_failure(result: str) -> bool:
@@ -105,7 +135,13 @@ def create_job(
     `extra_instructions`, if given, is a one-off note for THIS run's
     summarization only (purpose="session_recap" only) — combined with the
     world's own persistent World.recap_instructions rather than replacing
-    it, see _combined_recap_instructions."""
+    it, see _combined_recap_instructions.
+
+    audio_path and delete_after are persisted onto the row (not just
+    passed to _run_job as arguments) so a resume after a server restart —
+    which has none of this call's local variables, only the DB row — can
+    find the audio again and know whether it owns the file. See
+    AudioJob's own docstring."""
     db = SessionLocal()
     try:
         job = AudioJob(
@@ -113,6 +149,7 @@ def create_job(
             game_session_id=game_session_id, created_by_user_id=created_by_user_id,
             attachment_url=attachment_url, status="pending", model=model or None,
             extra_instructions=extra_instructions.strip() or None,
+            audio_path=str(audio_path), delete_after=delete_after,
         )
         db.add(job)
         db.commit()
@@ -121,9 +158,9 @@ def create_job(
     finally:
         db.close()
 
-    task = asyncio.create_task(_run_job(job_id, audio_path, purpose, delete_after, model, world_id, extra_instructions))
+    task = asyncio.create_task(_run_job(job_id))
     _running_tasks[job_id] = task
-    task.add_done_callback(lambda t, jid=job_id, p=audio_path, d=delete_after: _forget_task(jid, t, p, d))
+    task.add_done_callback(lambda t, jid=job_id: _forget_task(jid, t))
     return job_id
 
 
@@ -166,10 +203,38 @@ def _combined_recap_instructions(world_instructions: str, job_instructions: str)
     return "\n\n".join(parts)
 
 
-async def _run_job(
-    job_id: int, audio_path: Path, purpose: str, delete_after: bool, model: str = "",
-    world_id: Optional[int] = None, extra_instructions: str = "",
-) -> None:
+async def _run_job(job_id: int) -> None:
+    """Runs (or resumes) a job's transcribe [+ summarize] work. Everything
+    this used to take as function arguments (audio_path, purpose,
+    delete_after, model, world_id, extra_instructions) now lives on the
+    row instead, read once at the top — create_job and start_resume_job
+    both just start this same task, rather than one being a subtly
+    different reimplementation of the other.
+
+    If the row already has a transcript (job.transcript non-empty) —
+    which only happens when resuming a job that was interrupted during or
+    after the summarize phase — transcription is skipped entirely and
+    this picks up straight at summarizing, using that saved transcript.
+    A checkpoint left on the row (job.checkpoint_json) is passed through
+    to whichever phase it belongs to; app.ai's transcribe_audio/
+    summarize_transcript each validate it still matches before trusting
+    it (see their own docstrings) and discard/start over silently if not."""
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        if not job:
+            return
+        audio_path = Path(job.audio_path) if job.audio_path else None
+        purpose = job.purpose
+        delete_after = job.delete_after
+        model = job.model or ""
+        world_id = job.world_id
+        extra_instructions = job.extra_instructions or ""
+        existing_transcript = job.transcript or ""
+        checkpoint = _json.loads(job.checkpoint_json) if job.checkpoint_json else None
+    finally:
+        db.close()
+
     def _set(**fields):
         db = SessionLocal()
         try:
@@ -182,62 +247,113 @@ async def _run_job(
         finally:
             db.close()
 
+    def _checkpoint(state: dict) -> None:
+        fields = {"checkpoint_json": _json.dumps(state)}
+        if state.get("phase") == "transcribe":
+            # Mirrored into `transcript` (not just checkpoint_json) so the
+            # partial is independently useful the same way WhisperError's
+            # own partial_transcript already is — the existing "Retry
+            # summary"/"Extract facts" actions key off job.transcript, and
+            # a GM watching the Background Jobs page sees real progress
+            # without waiting for the job to finish. Summarization
+            # checkpoints are deliberately NOT mirrored into `recap` — a
+            # half-written recap would look like a finished answer instead
+            # of a work in progress.
+            fields["transcript"] = state.get("text", "")
+        _set(**fields)
+
+    progress = {
+        "current": (checkpoint or {}).get("chunks_done") or (checkpoint or {}).get("parts_done"),
+        "total": (checkpoint or {}).get("chunk_total"),
+    }
+
+    def _on_progress(current, total):
+        progress["current"] = current
+        progress["total"] = total
+        _set(chunk_current=current, chunk_total=total)
+
+    keep_audio = False
     try:
-        _set(status="transcribing", run_started_at=datetime.utcnow(), finished_at=None)
-        glossary = _glossary_for_world(world_id) if world_id else ""
-        language = _whisper_language_for_world(world_id) if world_id else ""
-        try:
-            transcript = await _ai_module.transcribe_audio(
-                audio_path, glossary=glossary, language=language,
-                on_progress=lambda current, total: _set(chunk_current=current, chunk_total=total),
-            )
-        except _ai_module.WhisperError as exc:
-            fields = {"status": "error", "error": str(exc), "finished_at": datetime.utcnow()}
-            if exc.partial_transcript:
-                # At least one chunk transcribed before the failure — save
-                # it so the GM can resummarize from the salvaged partial
-                # (start_resummarize_job only needs job.transcript) instead
-                # of re-uploading and re-transcribing the whole recording.
-                fields["transcript"] = exc.partial_transcript
-            _set(**fields)
-            return
-        if not transcript:
-            _set(status="error", finished_at=datetime.utcnow(), error=(
-                "Whisper transcribed this clip successfully but found no speech in it "
-                "— check the recording actually captured audio."
-            ))
-            return
-        _set(transcript=transcript, chunk_current=None, chunk_total=None)
+        skip_transcribe = bool(existing_transcript)
+        if not skip_transcribe:
+            _set(status="transcribing", run_started_at=datetime.utcnow(), finished_at=None)
+            glossary = _glossary_for_world(world_id) if world_id else ""
+            language = _whisper_language_for_world(world_id) if world_id else ""
+            transcribe_resume = checkpoint if checkpoint and checkpoint.get("phase") == "transcribe" else None
+            try:
+                transcript = await _ai_module.transcribe_audio(
+                    audio_path, glossary=glossary, language=language,
+                    on_progress=_on_progress, on_checkpoint=_checkpoint,
+                    should_stop=_job_shutdown.stopping, resume=transcribe_resume,
+                )
+            except _ai_module.WhisperError as exc:
+                fields = {"status": "error", "error": str(exc), "finished_at": datetime.utcnow(), "checkpoint_json": ""}
+                if exc.partial_transcript:
+                    # At least one chunk transcribed before the failure —
+                    # save it so the GM can resummarize from the salvaged
+                    # partial (start_resummarize_job only needs
+                    # job.transcript) instead of re-uploading and
+                    # re-transcribing the whole recording.
+                    fields["transcript"] = exc.partial_transcript
+                _set(**fields)
+                return
+            if not transcript:
+                _set(status="error", finished_at=datetime.utcnow(), checkpoint_json="", error=(
+                    "Whisper transcribed this clip successfully but found no speech in it "
+                    "— check the recording actually captured audio."
+                ))
+                return
+            _set(transcript=transcript, chunk_current=None, chunk_total=None, checkpoint_json="")
+        else:
+            transcript = existing_transcript
 
         if purpose == "session_recap":
             _set(status="summarizing")
             instructions = _combined_recap_instructions(
                 _recap_instructions_for_world(world_id) if world_id else "", extra_instructions,
             )
+            summarize_resume = checkpoint if checkpoint and checkpoint.get("phase") == "summarize" else None
             recap = await _ai_module.summarize_transcript(
                 transcript, model=model, extra_instructions=instructions,
-                on_progress=lambda current, total: _set(chunk_current=current, chunk_total=total),
+                on_progress=_on_progress, on_checkpoint=_checkpoint,
+                should_stop=_job_shutdown.stopping, resume=summarize_resume,
             )
             if _looks_like_failure(recap):
-                _set(status="error", error=recap, chunk_current=None, chunk_total=None, finished_at=datetime.utcnow())
+                _set(status="error", error=recap, chunk_current=None, chunk_total=None,
+                     finished_at=datetime.utcnow(), checkpoint_json="")
             else:
-                _set(status="done", recap=recap, chunk_current=None, chunk_total=None, finished_at=datetime.utcnow())
+                _set(status="done", recap=recap, chunk_current=None, chunk_total=None,
+                     finished_at=datetime.utcnow(), checkpoint_json="")
         else:
             _set(status="done", finished_at=datetime.utcnow())
+    except _job_shutdown.JobInterrupted:
+        keep_audio = True
+        _set(status="interrupted", error=_interrupted_note(progress["current"], progress["total"]),
+             finished_at=datetime.utcnow())
     except asyncio.CancelledError:
-        # cancel_job() below calls Task.cancel() — record it as a distinct
-        # outcome (not "error") before letting the cancellation actually
-        # propagate, so the row doesn't sit at whatever status it was in
-        # forever (a GM cancelling from the Background Jobs tab is the only
-        # way this fires; a process restart goes through
-        # sweep_interrupted_jobs instead, since there's no task to cancel).
-        _set(status="cancelled", error="Cancelled by GM.", finished_at=datetime.utcnow())
+        # cancel_job() calls Task.cancel() for a GM-initiated cancel; a
+        # server shutdown calls it too (via job_shutdown.drain) when a job
+        # doesn't reach a chunk boundary inside the stop grace window —
+        # stopping() is what tells the two apart. A process restart with
+        # no task to cancel at all (a crash/SIGKILL) goes through
+        # sweep_interrupted_jobs/_forget_task instead, not this handler.
+        #
+        # Everything below is synchronous (no `await`) — cancellation only
+        # delivers at an await point, so this handler cannot itself be
+        # re-cancelled and does not need asyncio.shield. Keep it that way;
+        # adding an `await` here would silently reintroduce that need.
+        if _job_shutdown.stopping():
+            keep_audio = True
+            _set(status="interrupted", error=_interrupted_note(progress["current"], progress["total"]),
+                 finished_at=datetime.utcnow())
+        else:
+            _set(status="cancelled", error="Cancelled by GM.", finished_at=datetime.utcnow())
         raise
     except Exception as exc:
         _log.exception("audio job %s failed", job_id)
-        _set(status="error", error=f"{type(exc).__name__}: {exc}", finished_at=datetime.utcnow())
+        _set(status="error", error=f"{type(exc).__name__}: {exc}", finished_at=datetime.utcnow(), checkpoint_json="")
     finally:
-        if delete_after:
+        if audio_path and delete_after and not keep_audio:
             audio_path.unlink(missing_ok=True)
 
 
@@ -288,7 +404,18 @@ def start_resummarize_job(job_id: int, model: str = "", extra_instructions: Opti
     `extra_instructions`, same convention as `model` just above: blank/None
     keeps whatever the job was created with (or last resummarized with),
     a non-blank value replaces it for this run and is persisted for next
-    time too."""
+    time too.
+
+    Deliberately always a FRESH pass, not a resume of some prior
+    interrupted attempt: checkpoint_json is cleared and resumed_count reset
+    before starting, even if this job happened to be sitting on a
+    checkpoint from an earlier run that got interrupted by a shutdown.
+    Reusing that checkpoint here — possibly against a different model or
+    different instructions — could silently splice output from two
+    different summarization passes together. POST .../resume
+    (start_resume_job) is the entry point that continues an interrupted
+    run instead of restarting it; this one is the GM's explicit "redo it"
+    action."""
     db = SessionLocal()
     try:
         job = db.get(AudioJob, job_id)
@@ -300,14 +427,16 @@ def start_resummarize_job(job_id: int, model: str = "", extra_instructions: Opti
             raise ValueError("This job has no transcript yet to summarize.")
         if job.status in IN_PROGRESS_STATUSES:
             raise ValueError("This job is already in progress.")
-        world_id = job.world_id
         chosen_model = model or job.model or ""
         chosen_instructions = (extra_instructions or "").strip() or (job.extra_instructions or "")
         job.status = "summarizing"
         job.error = ""
         job.chunk_current = None
         job.chunk_total = None
+        job.model = chosen_model or None
         job.extra_instructions = chosen_instructions or None
+        job.checkpoint_json = ""
+        job.resumed_count = 0
         job.run_started_at = datetime.utcnow()
         job.finished_at = None
         db.commit()
@@ -316,72 +445,167 @@ def start_resummarize_job(job_id: int, model: str = "", extra_instructions: Opti
     finally:
         db.close()
 
-    task = asyncio.create_task(_run_resummarize_job(job_id, chosen_model, world_id, chosen_instructions))
+    task = asyncio.create_task(_run_job(job_id))
     _running_tasks[job_id] = task
     task.add_done_callback(lambda t, jid=job_id: _forget_task(jid, t))
     return job_snapshot
 
 
-async def _run_resummarize_job(job_id: int, model: str, world_id: Optional[int], extra_instructions: str = "") -> None:
-    def _set(**fields):
-        db = SessionLocal()
-        try:
-            job = db.get(AudioJob, job_id)
-            if not job:
-                return
-            for k, v in fields.items():
-                setattr(job, k, v)
-            db.commit()
-        finally:
-            db.close()
+def start_resume_job(job_id: int, reset_attempts: bool = False) -> AudioJob:
+    """Continue a job that was paused by a server restart (status=
+    "interrupted") from its saved checkpoint, instead of starting over.
+    Mirrors start_resummarize_job's shape and contract: validates
+    synchronously up front (raises ValueError with a caller-displayable
+    message on any invalid state) and sets the row into its resuming
+    phase BEFORE create_task, so no HTTP poll immediately after this call
+    ever sees the job flicker back to "interrupted".
 
+    Which phase it resumes into is decided from the checkpoint (or, if
+    there isn't one — e.g. the job was interrupted right as transcription
+    finished, just before the first summarize checkpoint could be
+    written — from whether a transcript already exists): _run_job itself
+    is what actually skips straight to summarizing when job.transcript is
+    already set, so this only needs to validate the audio is still there
+    when it ISN'T.
+
+    `reset_attempts`, if true, zeroes resumed_count — for a GM manually
+    resuming a job that hit job_shutdown.MAX_AUTO_RESUMES and gave up
+    automatically; a manual resume is a deliberate human decision, not
+    another automatic retry, so it shouldn't inherit the cap that stopped
+    further AUTOMATIC attempts. The HTTP route always passes True."""
     db = SessionLocal()
     try:
         job = db.get(AudioJob, job_id)
-        transcript = job.transcript if job else ""
+        if not job:
+            raise ValueError("Job not found.")
+        if job.status != "interrupted":
+            raise ValueError("Only a job paused by a server restart can be resumed this way.")
+        if not job.audio_path and not job.transcript:
+            raise ValueError("This job's audio is gone and it has no transcript to resume from — please re-upload.")
+        checkpoint = _json.loads(job.checkpoint_json) if job.checkpoint_json else None
+        phase = (checkpoint or {}).get("phase")
+        resuming_summarize = phase == "summarize" or (not phase and bool(job.transcript))
+        if resuming_summarize:
+            job.status = "summarizing"
+        else:
+            if not job.audio_path or not Path(job.audio_path).is_file():
+                raise ValueError("This job's audio file is gone — please re-upload to redo the recording.")
+            job.status = "transcribing"
+        job.error = ""
+        job.chunk_current = ((checkpoint or {}).get("chunks_done") or (checkpoint or {}).get("parts_done")) if checkpoint else None
+        job.chunk_total = (checkpoint or {}).get("chunk_total") if checkpoint else None
+        job.resumed_count = 0 if reset_attempts else job.resumed_count + 1
+        job.run_started_at = datetime.utcnow()
+        job.finished_at = None
+        db.commit()
+        db.refresh(job)
+        job_snapshot = job
     finally:
         db.close()
 
-    try:
-        instructions = _combined_recap_instructions(
-            _recap_instructions_for_world(world_id) if world_id else "", extra_instructions,
-        )
-        recap = await _ai_module.summarize_transcript(
-            transcript, model=model, extra_instructions=instructions,
-            on_progress=lambda current, total: _set(chunk_current=current, chunk_total=total),
-        )
-        fields = {"chunk_current": None, "chunk_total": None, "finished_at": datetime.utcnow()}
-        if model:
-            fields["model"] = model
-        if _looks_like_failure(recap):
-            _set(status="error", error=recap, **fields)
-        else:
-            _set(status="done", recap=recap, error="", **fields)
-    except asyncio.CancelledError:
-        _set(status="cancelled", error="Cancelled by GM.", finished_at=datetime.utcnow())
-        raise
-    except Exception as exc:
-        _log.exception("audio job %s resummarize failed", job_id)
-        _set(status="error", error=f"{type(exc).__name__}: {exc}", finished_at=datetime.utcnow())
+    task = asyncio.create_task(_run_job(job_id))
+    _running_tasks[job_id] = task
+    task.add_done_callback(lambda t, jid=job_id: _forget_task(jid, t))
+    return job_snapshot
 
 
-def sweep_interrupted_jobs() -> None:
-    """Called once at startup: any job still mid-flight when the process
-    last stopped (a crash, a deploy, a Watchtower update) has no background
-    task to resume it — asyncio.create_task's state doesn't survive a
-    process restart — so mark it failed with a clear reason instead of
-    leaving it stuck showing "transcribing" forever."""
+def live_tasks() -> list[asyncio.Task]:
+    """Every currently-running task this engine owns — app.main's shutdown
+    handler passes this (alongside image_jobs'/chat_jobs' own) to
+    job_shutdown.drain() so it knows what to wait for/cancel."""
+    return list(_running_tasks.values())
+
+
+def mark_stragglers_interrupted() -> None:
+    """Called right after job_shutdown.drain() returns during shutdown:
+    belt-and-braces sweep for any row still mid-flight whose task's own
+    CancelledError handler (or _forget_task) didn't get to run in time —
+    same shape as the boot-time sweep_interrupted_jobs below, just running
+    at the other end of the process's life instead."""
     db = SessionLocal()
     try:
         stuck = db.query(AudioJob).filter(AudioJob.status.in_(IN_PROGRESS_STATUSES)).all()
         for job in stuck:
-            job.status = "error"
-            job.error = "Interrupted by a server restart — please re-upload."
+            job.status = "interrupted"
+            job.error = _interrupted_note(job.chunk_current, job.chunk_total)
             job.finished_at = datetime.utcnow()
         if stuck:
             db.commit()
     finally:
         db.close()
+
+
+def sweep_interrupted_jobs() -> None:
+    """Called once at startup, before resume_interrupted_jobs: any job
+    still mid-flight when the process last stopped UNCLEANLY (a crash,
+    OOM, or a SIGKILL past the graceful-shutdown window — job_shutdown's
+    own drain()/mark_stragglers_interrupted already handle a clean
+    shutdown) has no background task to resume it in THIS process —
+    asyncio.create_task's state doesn't survive a process restart — so
+    it's marked "interrupted" here too, the same status a clean shutdown
+    leaves a paused job in, so resume_interrupted_jobs (called right after
+    this, same startup hook) treats both cases identically."""
+    db = SessionLocal()
+    try:
+        stuck = db.query(AudioJob).filter(AudioJob.status.in_(IN_PROGRESS_STATUSES)).all()
+        for job in stuck:
+            job.status = "interrupted"
+            job.error = _interrupted_note(job.chunk_current, job.chunk_total)
+            job.finished_at = datetime.utcnow()
+        if stuck:
+            db.commit()
+    finally:
+        db.close()
+
+
+def resume_interrupted_jobs() -> int:
+    """Called once at startup, right after sweep_interrupted_jobs:
+    auto-resumes every job left at status="interrupted" up to
+    job_shutdown.MAX_AUTO_RESUMES times each — a job past the cap, or with
+    no viable resume point (its audio is gone and it never got as far as
+    saving a transcript), is marked "error" instead with a message
+    explaining why, keeping whatever transcript/recap was already
+    salvaged. Auto-resuming (rather than just leaving it for a GM to
+    notice and click Resume) is the point of this whole feature: a routine
+    `git pull && docker compose up -d --build` shouldn't require a human to
+    intervene to get their transcription finished. Returns how many jobs
+    were resumed, for the caller to log."""
+    db = SessionLocal()
+    try:
+        job_ids = [j.id for j in db.query(AudioJob).filter(AudioJob.status == "interrupted").all()]
+    finally:
+        db.close()
+
+    resumed = 0
+    for job_id in job_ids:
+        db = SessionLocal()
+        try:
+            job = db.get(AudioJob, job_id)
+            if not job or job.status != "interrupted":
+                continue
+            if job.resumed_count >= _job_shutdown.MAX_AUTO_RESUMES:
+                job.status = "error"
+                job.error = (
+                    f"Interrupted by a server restart {job.resumed_count} times in a row — resume it by "
+                    "hand from Background Jobs once the server is stable."
+                )
+                job.finished_at = datetime.utcnow()
+                db.commit()
+                continue
+            if not job.transcript and (not job.audio_path or not Path(job.audio_path).is_file()):
+                job.status = "error"
+                job.error = "Interrupted by a server restart — please re-upload."
+                job.finished_at = datetime.utcnow()
+                db.commit()
+                continue
+        finally:
+            db.close()
+        try:
+            start_resume_job(job_id)
+            resumed += 1
+        except ValueError as exc:
+            _log.warning("could not auto-resume audio job %s: %s", job_id, exc)
+    return resumed
 
 
 # Same path routers/sessions.py's own _session_audio_jobs_dir() computes —
@@ -391,24 +615,40 @@ _SESSION_AUDIO_JOBS_CUTOFF_SECONDS = 24 * 60 * 60
 
 
 def sweep_orphaned_job_audio() -> None:
-    """Called once at startup, right after sweep_interrupted_jobs: a
-    session-recap job's uploaded audio (up to MAX_AUDIO_UPLOAD_BYTES, 1 GB
-    default) is only ever deleted by _run_job's own `finally` clause —
-    a crash, deploy, or Watchtower update mid-job skips that entirely, and
-    sweep_interrupted_jobs only fixes up the DB row, not the file it left
-    behind. Deletes any file under uploads/session_audio/_jobs/ older than
-    the cutoff — safely longer than any real in-flight job, since
-    sweep_interrupted_jobs (called first, same startup hook) has already
-    errored out anything that was actually still running at shutdown.
-    Deliberately does NOT touch uploads/ai_attachments/: those jobs run
-    with delete_after=False because the file IS the attachment, not
-    working storage to clean up."""
+    """Called once at startup, after sweep_interrupted_jobs/
+    resume_interrupted_jobs: a session-recap job's uploaded audio (up to
+    MAX_AUDIO_UPLOAD_BYTES, 1 GB default) is only ever deleted by
+    _run_job's own cleanup — a crash, deploy, or Watchtower update mid-job
+    used to skip that entirely, leaving the file behind with no DB record
+    pointing at it. Now that AudioJob.audio_path is persisted, this builds
+    a keep-set from it first: any file still referenced by a job that's in
+    progress or interrupted (awaiting a resume) is kept regardless of
+    age — deleting it out from under a job still waiting to resume would
+    silently turn "resume" into "start over" the next time a GM (or
+    auto-resume, just above) tries. Everything else under
+    uploads/session_audio/_jobs/ older than the cutoff is still swept, same
+    as before. Deliberately does NOT touch uploads/ai_attachments/: those
+    jobs run with delete_after=False because the file IS the attachment,
+    not working storage to clean up."""
     jobs_dir = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads" / "session_audio" / "_jobs"
     if not jobs_dir.is_dir():
         return
+
+    db = SessionLocal()
+    try:
+        keep = {
+            Path(j.audio_path).name
+            for j in db.query(AudioJob).filter(AudioJob.status.in_(IN_PROGRESS_STATUSES + ("interrupted",))).all()
+            if j.audio_path
+        }
+    finally:
+        db.close()
+
     cutoff = time.time() - _SESSION_AUDIO_JOBS_CUTOFF_SECONDS
     for child in jobs_dir.iterdir():
         try:
+            if child.name in keep:
+                continue
             if child.is_file() and child.stat().st_mtime < cutoff:
                 child.unlink()
         except OSError:

@@ -39,6 +39,7 @@ const IN_PROGRESS = new Set(['pending', 'transcribing', 'summarizing']);
 const STATUS_LABEL = {
   pending: 'Queued…', transcribing: 'Transcribing…', summarizing: 'Summarizing…',
   done: '✓ Done', error: '✗ Failed', cancelled: '○ Cancelled',
+  interrupted: '⏸ Interrupted',
 };
 let _bgPollTimer = null;
 const _bgExpanded = new Set();

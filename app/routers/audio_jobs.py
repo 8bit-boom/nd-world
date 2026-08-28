@@ -43,6 +43,10 @@ def _job_to_dict(job: AudioJob) -> dict:
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+        "resumed_count": job.resumed_count,
+        # Whether the ▶ Resume button should show — see app.audio_jobs.
+        # start_resume_job for the full contract this mirrors.
+        "resumable": job.status == "interrupted",
     }
 
 
@@ -139,6 +143,29 @@ async def api_audio_job_resummarize(
         raise HTTPException(404)
     try:
         job = _audio_jobs.start_resummarize_job(job_id, model=model.strip(), extra_instructions=extra_instructions)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return _job_to_dict(job)
+
+
+@router.post("/api/audio-jobs/{job_id}/resume")
+async def api_audio_job_resume(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Continue a job paused by a server restart (status="interrupted")
+    from its saved checkpoint — see app.audio_jobs.start_resume_job's own
+    docstring for the full contract. Always resets the auto-resume attempt
+    counter: a manual click here is a deliberate human decision, not
+    another automatic retry, so a job that hit job_shutdown.
+    MAX_AUTO_RESUMES and gave up automatically can still be resumed by
+    hand without immediately re-hitting that same cap."""
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = db.query(AudioJob).filter(AudioJob.id == job_id, AudioJob.world_id == world.id).first()
+    if not job:
+        raise HTTPException(404)
+    try:
+        job = _audio_jobs.start_resume_job(job_id, reset_attempts=True)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return _job_to_dict(job)
