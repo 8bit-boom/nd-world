@@ -18,11 +18,15 @@
       <div class="detail-date">Updated: {{ entity.updated_at.strftime('%Y-%m-%d %H:%M') }}</div>
     </div>
     <div class="detail-actions">
+      {% if (request.state.user and request.state.user.is_gm) or world.players_can_download_entities %}
       <a href="/entity/{{ entity.id }}/download.md" class="btn-edit" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim)">⬇ Download .md</a>
+      {% endif %}
+      {% if request.state.user and request.state.user.is_gm %}
       <a href="{{ ('/entity/' + entity.id|string + '/edit')|wq }}" class="btn-edit">Edit</a>
       <form action="/entity/{{ entity.id }}/delete" method="post" onsubmit="return confirm('Delete {{ entity.name }}?')">
         <button class="btn-delete" type="submit">Delete</button>
       </form>
+      {% endif %}
     </div>
   </header>
 
@@ -212,6 +216,7 @@
     </details>
   </section>
 
+  {% if (request.state.user and request.state.user.is_gm) or world.players_can_ask_ai %}
   <details class="ai-panel" id="ep-panel" data-dropzone>
     <summary>🤖 Ask AI about {{ entity.name }}</summary>
     <div class="ai-panel-body">
@@ -239,6 +244,7 @@
       </div>
     </div>
   </details>
+  {% endif %}
 </article>
 
 <style>
@@ -407,6 +413,7 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
       bubble.parentElement.classList.remove('ai-thinking');
       bubble.innerHTML = '';
       let full = '';
+      let noteText = '';
       let tokenCount = 0;
       let firstToken = true;
       let startTime = 0;
@@ -422,7 +429,17 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
           if (!p.startsWith('data: ')) continue;
           const pay = p.slice(6);
           if (pay === '[DONE]') break;
-          const { token } = JSON.parse(pay);
+          const obj = JSON.parse(pay);
+          if (obj.note) {
+            // resolve_model substituted a different model than requested —
+            // surface it instead of silently swapping (or, before this
+            // fix, corrupting the reply with the literal "undefined").
+            noteText = obj.note;
+            bubble.innerHTML = `<div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.4rem">ℹ️ ${_escHtml(noteText)}</div>` + _mdToHtml(full);
+            continue;
+          }
+          if (typeof obj.token !== 'string') continue;
+          const token = obj.token;
           if (firstToken) {
             firstToken = false;
             startTime = Date.now();
@@ -434,7 +451,7 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
           }
           full += token;
           tokenCount++;
-          bubble.innerHTML = _mdToHtml(full);
+          bubble.innerHTML = (noteText ? `<div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.4rem">ℹ️ ${_escHtml(noteText)}</div>` : '') + _mdToHtml(full);
           document.getElementById('ep-messages').scrollTop = 99999;
         }
       }

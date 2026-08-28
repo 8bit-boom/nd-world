@@ -768,6 +768,42 @@ def test_spotlight_version_unchanged_across_repeated_polls(client, seed):
     assert v1 == v2
 
 
+def test_spotlight_cache_serves_a_hit_within_ttl_and_invalidates_on_write(client, seed):
+    """api_spotlight caches its response per (user, world) for a couple
+    seconds — this pins the actual caching mechanism (not just its
+    externally-visible effect, already covered by the repeated-polls test
+    above): a direct DB mutation bypassing the write routes must NOT be
+    visible on the very next poll (proves the cache, not just the DB, is
+    what's being read), and going through the real write route must
+    invalidate it immediately regardless of the TTL."""
+    from app.main import _spotlight_cache
+    from app.database import SessionLocal
+    from app.models import World
+
+    _make_album(seed.world_a.id, "Album", urls=["/uploads/scene.png"])
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/images/spotlight", json={"url": "/uploads/scene.png"})
+    v_sent = client.get("/api/spotlight").json()["version"]
+
+    # Bypass the write route entirely — the cache should still return the
+    # value it already has, not this new one, until invalidated.
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.spotlight_version = v_sent + 999
+        db.commit()
+    finally:
+        db.close()
+    assert client.get("/api/spotlight").json()["version"] == v_sent
+
+    # The real write route clears the cache, so the next poll sees fresh data.
+    client.post("/images/spotlight/clear")
+    assert client.get("/api/spotlight").json()["image_url"] is None
+
+    _spotlight_cache.clear()  # don't leak state into other tests
+
+
 def test_send_spotlight_is_gm_only(client, seed):
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)

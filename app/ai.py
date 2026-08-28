@@ -1,6 +1,7 @@
 import os
 import json as _json
 import logging
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 from collections.abc import AsyncGenerator
@@ -1162,13 +1163,27 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
     return "\n\n".join(part_summaries)
 
 
+# base.html polls POST /api/ai/status once per open tab per page load — a
+# GM with several tabs open (or repeatedly navigating) re-hits Ollama's
+# /api/tags every time for a value that almost never changes second to
+# second. A short cache collapses that into one real call per window.
+_STATUS_CACHE_TTL = 15.0
+_status_cache: tuple[float, dict] | None = None
+
+
 async def status() -> dict:
+    global _status_cache
+    now = time.monotonic()
+    if _status_cache and now - _status_cache[0] < _STATUS_CACHE_TTL:
+        return _status_cache[1]
     try:
         resp = await _client().list()
         models = [m.model for m in resp.models]
-        return {"status": "ok", "model": effective_ollama_model(), "loaded_models": models}
+        result = {"status": "ok", "model": effective_ollama_model(), "loaded_models": models}
     except Exception:
-        return {"status": "unavailable", "model": effective_ollama_model()}
+        result = {"status": "unavailable", "model": effective_ollama_model()}
+    _status_cache = (now, result)
+    return result
 
 
 async def debug_info() -> dict:

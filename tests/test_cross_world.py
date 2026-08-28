@@ -73,3 +73,37 @@ def test_gm_can_view_characters_and_entities_in_any_world(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     assert client.get(f"/characters/{pc.id}").status_code == 200
     assert client.get(f"/entity/{ent.id}").status_code == 200
+
+
+def test_gm_cannot_link_entities_across_worlds(client, seed):
+    """POST /entity/{id}/link/{id} previously had no world check at all —
+    a stray API call (the UI's own picker never offers a cross-world
+    target) could connect entities from two different worlds, producing a
+    link the detail page's own picker could never cleanly remove."""
+    src = _make_entity_in(seed.world_a, name="Source")
+    tgt = _make_entity_in(seed.world_b, name="Target")
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(f"/entity/{src.id}/link/{tgt.id}")
+    assert r.status_code == 400
+
+    db = SessionLocal()
+    try:
+        fresh_src = db.get(Entity, src.id)
+        assert tgt.id not in [e.id for e in fresh_src.related]
+    finally:
+        db.close()
+
+
+def test_gm_can_link_entities_in_the_same_world(client, seed):
+    src = _make_entity_in(seed.world_a, name="Source")
+    tgt = _make_entity_in(seed.world_a, name="Target")
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(f"/entity/{src.id}/link/{tgt.id}", follow_redirects=False)
+    assert r.status_code == 303
+
+    db = SessionLocal()
+    try:
+        fresh_src = db.get(Entity, src.id)
+        assert tgt.id in [e.id for e in fresh_src.related]
+    finally:
+        db.close()

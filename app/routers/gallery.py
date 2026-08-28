@@ -245,6 +245,8 @@ async def image_spotlight_send(request: Request, db: Session = Depends(get_db), 
     world.spotlight_label = entries[url][:256]
     world.spotlight_version = (world.spotlight_version or 0) + 1
     db.commit()
+    from .. import main as _main_module  # deferred — see audio_jobs.py's own use of this pattern
+    _main_module._spotlight_cache.clear()
     return {"ok": True}
 
 
@@ -257,6 +259,8 @@ def image_spotlight_clear(request: Request, db: Session = Depends(get_db), activ
     world.spotlight_label = None
     world.spotlight_version = (world.spotlight_version or 0) + 1
     db.commit()
+    from .. import main as _main_module
+    _main_module._spotlight_cache.clear()
     return {"ok": True}
 
 

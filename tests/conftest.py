@@ -84,6 +84,14 @@ def client():
     Base.metadata.drop_all(bind=engine)
     from app.main import UPLOADS_DIR
     shutil.rmtree(UPLOADS_DIR, ignore_errors=True)
+    # Dropping/recreating the tables above restarts autoincrement ids from 1
+    # every test, so a user id gets reused across tests — a process-local,
+    # user-id-keyed dict like app.deps._llm_cooldowns would otherwise leak a
+    # timestamp from one test into the "same" id in the next and produce a
+    # false 429 there. Clear it here for the same reason the DB/uploads
+    # above are reset per test.
+    from app.deps import _llm_cooldowns
+    _llm_cooldowns.clear()
     with TestClient(app) as c:
         yield c
 

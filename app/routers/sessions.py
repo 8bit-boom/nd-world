@@ -15,7 +15,7 @@ from .. import auth
 from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
 from ..database import get_db
-from ..deps import get_world_ctx, paginate
+from ..deps import check_llm_cooldown, get_world_ctx, paginate
 from ..models import AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, Quest, World
 from ..templating import templates
 from ..uploads import copy_upload_bounded, reassemble_upload_chunks, save_upload_chunk
@@ -975,6 +975,8 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     user = getattr(request.state, "user", None)
     if not gs or not auth.user_can_access_world(db, user, world):
         raise HTTPException(404)
+    if not (user and user.is_gm):
+        check_llm_cooldown(user.id if user else 0)
     q = db.query(Fact).filter(Fact.game_session_id == session_id)
     if not (user and user.is_gm):
         q = q.filter(Fact.visible_to_players.isnot(False))

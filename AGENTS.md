@@ -36,9 +36,13 @@ schematic slugs); the importer resolves templates by name/slug instead.
 
 Every content-creation route requires an authenticated **GM** session
 cookie — log in via `POST /login` (form-encoded `email`/`password`) first.
-There's no API key/token auth; it's all cookie/session-based, exactly like
-a real browser session. Content routes are GM-only by default; a logged-in
-player account will get 403s from all of the above.
+These routes are cookie/session-based only, exactly like a real browser
+session — there's no API key/token auth for them. Content routes are
+GM-only by default; a logged-in player account will get 403s from all of
+the above. (The separate `/mcp` server does support personal-access-token
+bearer auth — see `ApiToken` in `app/models.py` — but that's a distinct
+surface from the content-creation REST routes described here, and MCP
+tools that require GM access still check `is_gm` at call time.)
 
 ## If you're asked to modify the application code itself
 

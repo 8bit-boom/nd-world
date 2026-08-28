@@ -17,6 +17,7 @@ import html
 import logging
 import os
 import secrets
+import time
 import uuid
 import shutil
 import json
@@ -624,6 +625,16 @@ def serve_upload(filepath: str):
     # that change still exist on disk — force them to download instead of render.
     if path.suffix.lower() == ".svg":
         headers["Content-Disposition"] = f'attachment; filename="{path.name}"'
+    # Every upload gets a uuid-prefixed, content-unique filename (see
+    # unique_upload_filename in app/uploads.py) EXCEPT map images, which are
+    # saved under stable slug-based names and overwritten in place on
+    # re-upload (see _iter_world_maps/the map-image save routes) — caching
+    # those immutably would keep serving a stale image after a GM replaces
+    # one. Everything else can never legitimately change at the same URL,
+    # so a long, immutable cache is safe and cuts a full re-fetch/
+    # re-validate per view for every grid/gallery/thumbnail on the site.
+    if not filepath.startswith("maps/"):
+        headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return FileResponse(path, headers=headers)
 
 # ── Worlds management ─────────────────────────────────────────────────────────
@@ -3266,6 +3277,8 @@ _COL_PRIORITY_IDX = {c.lower(): i for i, c in enumerate(_COL_PRIORITY)}
 def list_entities(request: Request, kind: str, q: str = "", folder: Optional[str] = None,
                   view: str = "", db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world = get_active_world(request, db, active_world)
+    if not world:
+        return RedirectResponse("/worlds")
 
     # Base searchable query (no folder filter — used for counts/sidebar)
     base_q = db.query(Entity).filter(Entity.kind == kind, Entity.world_id == world.id)
@@ -3604,6 +3617,19 @@ def hover_preview_config(db: Session = Depends(get_db)):
     }
 
 
+# Every open tab polls /api/spotlight every 4s; several tabs of the SAME
+# logged-in user (a GM juggling multiple worlds/windows, or a duplicated
+# tab) each re-resolve accessible_world_ids + the world list independently.
+# A short in-process cache keyed by (user, world slug) collapses those
+# overlapping requests into one real lookup — safe to skip auth ONLY within
+# this tiny window since it's keyed by the caller's own resolved identity,
+# not shared across users, and staleness this small is a non-issue for a
+# feature already polled every 4s. Bounded in practice by real users ×
+# worlds for a self-hosted app, so no eviction is needed.
+_SPOTLIGHT_CACHE_TTL = 2.0
+_spotlight_cache: dict[tuple, tuple[float, dict]] = {}
+
+
 @app.get("/api/spotlight")
 def api_spotlight(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     """Polled every 4s by base.html's spotlight poller (both GM and
@@ -3612,14 +3638,24 @@ def api_spotlight(request: Request, db: Session = Depends(get_db), active_world:
     world, or the active_world cookie points at a world this user can't
     access — get_world_ctx already filters that out silently) is not an
     error here since this is polled unconditionally on every page."""
+    user = getattr(request.state, "user", None)
+    cache_key = (user.id if user else None, resolve_world_slug(request, active_world))
+    now = time.monotonic()
+    cached = _spotlight_cache.get(cache_key)
+    if cached and now - cached[0] < _SPOTLIGHT_CACHE_TTL:
+        return cached[1]
+
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
-        return {"version": 0, "image_url": None, "label": None}
-    return {
-        "version": world.spotlight_version or 0,
-        "image_url": world.spotlight_image_url,
-        "label": world.spotlight_label,
-    }
+        result = {"version": 0, "image_url": None, "label": None}
+    else:
+        result = {
+            "version": world.spotlight_version or 0,
+            "image_url": world.spotlight_image_url,
+            "label": world.spotlight_label,
+        }
+    _spotlight_cache[cache_key] = (now, result)
+    return result
 
 
 @app.get("/entity/{entity_id}", response_class=HTMLResponse)
@@ -3990,6 +4026,8 @@ def link(entity_id: int, target_id: int, db: Session = Depends(get_db)):
     tgt = db.get(Entity, target_id)
     if not src or not tgt:
         raise HTTPException(404)
+    if src.world_id != tgt.world_id:
+        raise HTTPException(400, "Cannot link entities from different worlds")
     if tgt not in src.related:
         src.related.append(tgt)
         db.commit()
@@ -4227,6 +4265,8 @@ def _search_notes(db: Session, world: World, request: Request, q: str) -> list[d
 def search(request: Request, q: str = "", kind: str = "",
            db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world = get_active_world(request, db, active_world)
+    if not world:
+        return RedirectResponse("/worlds")
     results = []
     grouped: dict[str, list] = {}
     snippets: dict[int, str] = {}

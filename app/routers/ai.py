@@ -755,9 +755,16 @@ def ai_attachment_audio_job_status(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
-    job = db.query(AudioJob).filter(
+    q = db.query(AudioJob).filter(
         AudioJob.id == job_id, AudioJob.world_id == world.id, AudioJob.purpose == "attachment",
-    ).first()
+    )
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        # A player's own voice-memo transcript is theirs to check on — not
+        # every player's, which world_id+purpose alone would allow once
+        # players_can_ask_ai is on.
+        q = q.filter(AudioJob.created_by_user_id == _current_user_id(request))
+    job = q.first()
     if not job:
         raise HTTPException(404)
     return _job_to_dict(job)
@@ -772,13 +779,14 @@ def ai_attachment_audio_job_list(request: Request, db=Depends(get_db), active_wo
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
-    jobs = (
-        db.query(AudioJob)
-        .filter(AudioJob.world_id == world.id, AudioJob.purpose == "attachment")
-        .order_by(AudioJob.created_at.desc())
-        .limit(20)
-        .all()
-    )
+    q = db.query(AudioJob).filter(AudioJob.world_id == world.id, AudioJob.purpose == "attachment")
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        # Same scoping as the single-job route above — a player should
+        # only ever see their own attachment jobs in this list, not every
+        # player's (including the GM's own voice memos).
+        q = q.filter(AudioJob.created_by_user_id == _current_user_id(request))
+    jobs = q.order_by(AudioJob.created_at.desc()).limit(20).all()
     return [_job_to_dict(j) for j in jobs]
 
 

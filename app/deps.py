@@ -4,9 +4,10 @@ Kept separate from main.py so routers (imported BY main.py) can use these
 without a circular import — see app/templating.py for the same rationale.
 """
 import json
+import time
 from typing import Optional
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from sqlalchemy.orm import Session
 
 from . import auth
@@ -138,3 +139,28 @@ def paginate(query, page: int, page_size: int = PAGE_SIZE):
     page = min(page, total_pages)
     items = query.offset((page - 1) * page_size).limit(page_size).all()
     return items, page, total_pages
+
+
+# ── LLM-invoking endpoint cooldown ──────────────────────────────────────────
+# A handful of player-facing endpoints call Ollama directly with no other
+# rate limit (Chronicler's /api/chronicler/ask, the session log's own
+# /recap) — a player mashing the button (or a script) would otherwise fire
+# one real generation per click with nothing to slow it down. Process-local
+# for the same reason app/routers/auth.py's login-lockout dict is (single
+# uvicorn worker, no --workers flag) — see that module's own note.
+_llm_cooldowns: dict[int, float] = {}  # user_id -> last-call monotonic time
+_LLM_COOLDOWN_SECONDS = 3.0
+
+
+def check_llm_cooldown(user_id: int, seconds: float = _LLM_COOLDOWN_SECONDS) -> None:
+    """Raise 429 if this user already hit an LLM-cooldown-guarded endpoint
+    within the last `seconds` — call at the very top of the route, before
+    any real work starts, and only for non-GM callers (a GM is exempt at
+    every other player-facing AI gate in this app — see
+    _require_ask_ai_access in routers/ai.py — so callers should skip this
+    check entirely for a GM rather than pass their id through)."""
+    now = time.monotonic()
+    last = _llm_cooldowns.get(user_id)
+    if last is not None and now - last < seconds:
+        raise HTTPException(429, "Please wait a few seconds before asking again.")
+    _llm_cooldowns[user_id] = now

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from .. import ai as _ai_module
 from ..database import get_db
-from ..deps import get_world_ctx
+from ..deps import check_llm_cooldown, get_world_ctx
 from ..models import Entity, Fact, entity_player_access
 from ..templating import templates
 
@@ -95,6 +95,8 @@ async def chronicler_ask(request: Request, db: Session = Depends(get_db), active
     if not question:
         raise HTTPException(400, "No question provided")
     user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        check_llm_cooldown(user.id if user else 0)
     system = build_chronicler_system_prompt(db, world.id, question, user)
     answer = await _ai_module.generate_chat([{"role": "user", "content": question}], system=system)
     return {"answer": answer}

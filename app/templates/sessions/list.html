@@ -16,7 +16,12 @@
       <span class="entity-kind">📓 Session #{{ s.session_num }}</span>
       <h3>{{ s.title }}</h3>
       {% if s.session_date %}<p>{{ s.session_date }}</p>{% endif %}
-      {% if s.xp_awarded %}<p style="color:var(--text-dim);font-size:.78rem">{{ s.xp_awarded }} XP awarded</p>{% endif %}
+      {% if s.summary %}<p style="color:var(--text-dim);font-size:.78rem">{{ s.summary|strip_md|truncate(160) }}</p>{% endif %}
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.3rem">
+        {% if s.xp_awarded %}<span class="tag" style="font-size:.68rem">{{ s.xp_awarded }} XP</span>{% endif %}
+        {% if s.live_transcript %}<span class="tag" style="font-size:.68rem">📝 transcript</span>{% endif %}
+        {% if s.summary %}<span class="tag" style="font-size:.68rem">📓 recap</span>{% endif %}
+      </div>
     </div>
   </a>
   {% endfor %}

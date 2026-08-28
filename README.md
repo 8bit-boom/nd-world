@@ -11,12 +11,12 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 ## Features
 
 - **Multi-world support** — create and switch between separate game worlds, each with its own colour accent
-- **8 entity types** — Characters, Locations, Organizations, Creatures, Events, Items, Feats, Notes — each with TTRPG-specific subtypes
+- **10 entity types** — Characters, Locations, Organizations, Creatures, Events, Items, Feats, Notes, Races, Professions — each with TTRPG-specific subtypes, plus GM-defined custom kinds
 - **Entity relationships** — link any entity to any other; navigate connections from the detail page
 - **Entity notes** — attach multiple discrete notes to any entity, each independently hideable/un-hideable from players regardless of the entity's own visibility (e.g. reveal one detail about a location while keeping the rest secret). Type one directly, or import from a file — `.md`/`.txt`/`.pdf` become plain text, `.html`/`.htm` convert to markdown by default (or keep original formatting, sanitized, with "preserve original formatting" checked), images become an embedded note
 - **Custom entity fields & stat blocks** — Field Templates add structured data (age, title, alive/dead/missing status, a repeatable combat stat block, or any fields you define) to Characters, Creatures, or any other entity kind, on top of the usual free-text body — ships with built-in "NPC Details" and "Stat Block" templates (see [Entity Field Templates](#entity-field-templates))
 - **Folder organization** — hierarchical folders per entity type for large lore collections; the entity form offers a picker of existing folders (still free-text for new ones), and any folder you're browsing can be renamed/moved or removed (entities become Unfiled) from its breadcrumb
-- **Image attachments** — upload JPG/PNG/GIF/WebP/SVG images to any entity
+- **Image attachments** — upload JPG/PNG/GIF/WebP/AVIF images to any entity (SVG is deliberately rejected — it can carry `<script>` and would be served from the app's own origin)
 - **Rules viewer** — built-in core rules rendered from Markdown with auto-generated table of contents
 - **Interactive maps** — add custom markers and region overlays to map images
 - **Schematics** — SVG-based canvas editor for drawing station/dungeon layouts
@@ -26,7 +26,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - **Ollama tuning from the browser** — full per-request generation options (temperature, sampling, context length, and more) plus server-level tuning (flash attention, KV cache quantization, parallelism, GPU selection, ...) from Settings → System, no `.env` editing required; a "Detected hardware" panel reads the host's CPU/RAM/GPU and recommends a starting-point configuration per installed model (see [Deploying nd-world](docs/DEPLOYMENT.md))
 - **AI image generation** — SwarmUI or ComfyUI backend with sampler/scheduler, LoRA, VAE, CLIP skip, upscaling, img2img, batch output, and generation history with parameter reuse
 - **Image Studio** — embedded SwarmUI iframe at `/imagestudio`
-- **Universal character sheets** — fully configurable stats, skills, and currency (N&D defaults: POW/AGI/FOR/INT/PER/SOC); optional secondary resource tracker
+- **Universal character sheets** — fully configurable stats, skills, and currency (N&D defaults: STR/DEX/BOD/PER/WIL/INT/CHA/ITU); optional secondary resource tracker
 - **Rules-driven Player Character creation wizard** — guided Race → Profession → Stats (point-buy) → Feats → Equipment flow implementing the Neon & Dragons Core Rules character creation procedure, backed by the same race/profession/feat/equipment catalog used by the NeonDragonsApp Android app and NeonDragonsEditor desktop tool
 - **Custom character systems** — not locked into N&D: a Sheet Template can fully replace the N&D sheet with its own fields (including repeatable lists like abilities or a session log) for running a different TTRPG entirely in the same world — ships with a built-in **Asterion** system alongside N&D (see [Custom Character Systems](#custom-character-systems))
 - **`.ndc` character export** — export any Player Character as a `.ndc` file importable directly into both the NeonDragonsApp Android app and the NeonDragonsEditor desktop editor (see [Character creation wizard & export](#character-creation-wizard--export))

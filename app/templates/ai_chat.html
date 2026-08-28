@@ -2015,7 +2015,7 @@ async function testSse() {
         if (!p.startsWith('data: ')) continue;
         const payload = p.slice(6);
         if (payload === '[DONE]') break;
-        try { tokens.push(JSON.parse(payload).token); } catch(_) {}
+        try { const t = JSON.parse(payload).token; if (typeof t === 'string') tokens.push(t); } catch(_) {}
       }
     }
     el.textContent = tokens.length
@@ -2748,6 +2748,7 @@ async function sendMessage() {
     thinking.parentElement.classList.remove('ai-thinking');
     thinking.innerHTML = '';
     let fullText = '';
+    let noteText = '';
     let tokenCount = 0;
     let firstToken = true;
     let startTime = 0;
@@ -2775,7 +2776,17 @@ async function sendMessage() {
         if (!part.startsWith('data: ')) continue;
         const payload = part.slice(6);
         if (payload === '[DONE]') break;
-        const { token } = JSON.parse(payload);
+        const _obj = JSON.parse(payload);
+        if (_obj.note) {
+          // resolve_model substituted a different model than requested —
+          // surface it instead of silently swapping (or, before this fix,
+          // corrupting the reply with the literal string "undefined").
+          noteText = _obj.note;
+          thinking.innerHTML = `<div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.4rem">ℹ️ ${escHtml(noteText)}</div>` + mdToHtml(fullText);
+          continue;
+        }
+        if (typeof _obj.token !== 'string') continue;
+        const token = _obj.token;
         if (firstToken) {
           firstToken = false;
           startTime = Date.now();
@@ -2787,7 +2798,7 @@ async function sendMessage() {
         }
         fullText += token;
         tokenCount++;
-        thinking.innerHTML = mdToHtml(fullText);
+        thinking.innerHTML = (noteText ? `<div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.4rem">ℹ️ ${escHtml(noteText)}</div>` : '') + mdToHtml(fullText);
         document.getElementById('ai-messages').scrollTop = 99999;
       }
     }

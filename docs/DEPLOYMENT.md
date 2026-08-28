@@ -30,6 +30,20 @@ stack. This doc explains what that does and covers Part B in detail.
 `.env`, fill in `SECRET_KEY` (`openssl rand -hex 32`) and `GM_EMAIL`/
 `GM_PASSWORD`, then run `docker compose up -d --build`.
 
+**A note on the optional AI service ports**: `docker-compose.yml`/
+`truenas-compose.yml` publish Ollama (`11434`), whisper.cpp (`8090`), and
+SwarmUI (`7801`) on every network interface (`0.0.0.0`), not just
+`localhost` — anyone on your LAN can reach them directly, and none of the
+three have their own authentication. nd-world itself only ever needs them
+over the internal Compose network (`http://ollama:11434` etc.), never the
+published host port — that's only there so you can open SwarmUI's own UI
+in a browser, or (on TrueNAS SCALE) so the Apps page's own portal links
+work. If that's more exposure than you want on a shared network, bind them
+to `127.0.0.1:` instead of leaving the host address blank in each
+service's `ports:` list — just be aware that on TrueNAS this also breaks
+the **Apps → Discover Apps → &lt;app&gt; → Web Portal** shortcut for that
+service, since it relies on reaching the published port directly.
+
 ---
 
 ## Part B — Make it reachable from the internet
