@@ -300,6 +300,19 @@ def test_with_world_context_passthrough_when_blank():
     assert ai_module._with_world_context("SYSTEM PROMPT", "") == "SYSTEM PROMPT"
 
 
+def test_with_world_context_instructs_against_inventing_a_translation():
+    """Real report: without an explicit call-out, the model translated a
+    Russian character name into a plausible but wrong English rendering
+    instead of the one actually established in the World's entities — a
+    bare "for accuracy" framing wasn't enough to stop it. The instruction
+    must explicitly tell the model to use the reference list's name even
+    when the input spells/transliterates/translates it differently."""
+    result = ai_module._with_world_context("SYSTEM PROMPT", "- [character] Crimson Doll: a masked performer")
+    assert "translat" in result.lower()
+    assert "transliterat" in result.lower()
+    assert "Crimson Doll" in result
+
+
 @pytest.mark.asyncio
 async def test_condense_recap_world_context_reaches_the_system_prompt(monkeypatch):
     calls = []

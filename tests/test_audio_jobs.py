@@ -377,6 +377,37 @@ def test_build_rag_context_zero_limits_retrieve_nothing():
     assert context == ""
 
 
+def test_build_rag_context_tops_up_entities_for_a_foreign_language_query(client, seed):
+    """A Russian-language transcript against English-named entities has no
+    literal keyword overlap for _find_relevant_entities' FTS/ILIKE search
+    to find — real report: a GM running Russian-language sessions got RAG
+    context with notes but no characters/places at all, since the keyword
+    search came back empty without ever hitting _find_relevant_entities'
+    own "no query words" fallback (a foreign-language query still splits
+    into plenty of real "words," just ones that can't match anything).
+    The top-up must still surface the character even though the query
+    text shares no characters with its name."""
+    npc_id = _make_entity(
+        seed.world_a.id, name="Gareth Ashfall", kind="character", summary="A blacksmith.",
+        body="Gareth Ashfall runs the forge near the eastern gate.",
+    )
+    russian_query = "Партия встретила Гарета возле восточных ворот"
+    context = audio_jobs._build_rag_context(seed.world_a.id, russian_query, entity_limit=10, notes_limit=0)
+    assert "Gareth Ashfall" in context
+
+
+def test_build_rag_context_no_topup_leak_when_relevance_search_already_fills_the_limit(client, seed):
+    """When the keyword search alone already returns entity_limit results,
+    the top-up must not add anything beyond that budget — an unrelated
+    entity that would otherwise get topped up must not appear once the
+    limit is already spent on genuinely relevant matches."""
+    _make_entity(seed.world_a.id, name="Gareth Ashfall", kind="character", body="A blacksmith.")
+    _make_entity(seed.world_a.id, name="Completely Unrelated Entity", kind="location", body="Nothing to do with Gareth.")
+    context = audio_jobs._build_rag_context(seed.world_a.id, "Gareth Ashfall the blacksmith", entity_limit=1, notes_limit=0)
+    assert "Gareth Ashfall" in context
+    assert "Completely Unrelated Entity" not in context
+
+
 @pytest.mark.asyncio
 async def test_create_condense_job_passes_min_max_tokens_and_extra_instructions(client, seed, monkeypatch):
     captured = {}

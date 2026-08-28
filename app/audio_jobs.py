@@ -305,7 +305,24 @@ def _build_rag_context(world_id: int, query: str, entity_limit: int, notes_limit
 
     entity_limit/notes_limit <= 0 means "don't retrieve that category at
     all" — mirrors _SmartCtxBody's own notes_limit convention (0 there
-    already means "skip the guaranteed-notes fetch")."""
+    already means "skip the guaranteed-notes fetch").
+
+    Non-note entities get the same "top up toward the limit" treatment as
+    notes already had, for a case _find_relevant_entities' own keyword
+    search can't handle: a `query` in a different language/script than
+    the World's entity names (e.g. a Russian session transcript against
+    English-named characters/places). _find_relevant_entities' FTS/ILIKE
+    matching has no literal text overlap to find there — it comes back
+    empty even though there ARE relevant entities to reference — while its
+    OWN "no query words at all" fallback (returning entities ordered by
+    kind, name) never triggers, because a foreign-language query still
+    splits into plenty of real "words," just ones that can't match
+    anything. Without this top-up, a GM running non-English sessions would
+    silently get a RAG context with notes but no characters/places at all
+    — exactly the case this feature exists for: the model can usually
+    still recognize a phonetic/translated rendering of an established
+    name once it has the reference list on hand (see _with_world_context's
+    own instruction wording), it just needs to actually be given one."""
     from . import main as _main_module  # deferred — see docstring above
 
     db = SessionLocal()
@@ -316,6 +333,14 @@ def _build_rag_context(world_id: int, query: str, entity_limit: int, notes_limit
         )
         notes = [e for e in entities if e.kind == "note"]
         non_notes = [e for e in entities if e.kind != "note"]
+        if entity_limit > 0 and len(non_notes) < entity_limit:
+            seen_ids = {e.id for e in non_notes}
+            topup_q = db.query(Entity).filter(Entity.world_id == world_id, Entity.kind != "note")
+            if seen_ids:
+                topup_q = topup_q.filter(~Entity.id.in_(seen_ids))
+            non_notes = non_notes + (
+                topup_q.order_by(Entity.kind, Entity.name).limit(entity_limit - len(non_notes)).all()
+            )
         if notes_limit > 0:
             note_entities = (
                 db.query(Entity)

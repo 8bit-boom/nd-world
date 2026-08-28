@@ -1011,11 +1011,31 @@ def _with_world_context(system: str, world_context: str) -> str:
     ahead of the rest of the system prompt, so the model has established
     names/places/facts on hand for accuracy — e.g. spelling an NPC's name
     correctly in a condensed recap instead of guessing from the transcript
-    alone. Purely reference material, not an instruction, so it's labeled
-    and kept separate from _with_instructions' GM-steering block."""
+    alone.
+
+    The explicit call-out for a differently-spelled/transliterated/
+    translated name exists for a reported real case: a GM's sessions are
+    recorded (and transcribed) in Russian, but their World's entities are
+    named in English — left to its own judgment, the model translated a
+    character's Russian name into a plausible but wrong English rendering
+    ("Crimson Puppet") instead of the one actually established in the
+    World ("Crimson Doll"). A bare "for accuracy" framing doesn't reliably
+    stop a model from confidently inventing its own translation of a name
+    it doesn't recognize as already having a canonical English form — this
+    has to ask for that explicitly.
+
+    Still purely reference material, not a GM instruction, so it's labeled
+    and kept separate from _with_instructions' own GM-steering block."""
     if not world_context:
         return system
-    return f"Relevant world lore and notes (for accuracy only — don't invent beyond what's here):\n{world_context}\n\n{system}"
+    return (
+        "Relevant world lore and notes (for accuracy only — don't invent beyond what's here). "
+        "If the input text refers to a character or place differently than this list — a "
+        "different spelling, transliteration, or translation, e.g. because the input is in "
+        "another language — use the exact name from this list instead; don't invent your own "
+        "translation or transliteration of it:\n"
+        f"{world_context}\n\n{system}"
+    )
 
 
 async def summarize_transcript(transcript: str, model: str = "", extra_instructions: str = "", on_progress=None,
