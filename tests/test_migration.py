@@ -599,10 +599,11 @@ def test_heals_pre_job_resume_audio_jobs_schema(tmp_path, monkeypatch):
 
 
 def test_heals_pre_thinking_toggle_audio_jobs_schema(tmp_path, monkeypatch):
-    """An audio_jobs table predating the think/fit_context columns (the
-    "Thinking" checkbox and Condense's "fit context" option) must heal onto
-    usable defaults on both a fresh DB and one with existing rows, without
-    disturbing that row's own data."""
+    """An audio_jobs table predating the think/fit_context/min_tokens/
+    max_tokens columns (the "Thinking" checkbox and Condense's "fit
+    context"/length-target options) must heal onto usable defaults on both
+    a fresh DB and one with existing rows, without disturbing that row's
+    own data."""
     from app.models import AudioJob
 
     db_path = tmp_path / "pre_thinking_toggle_audio.db"
@@ -641,7 +642,7 @@ def test_heals_pre_thinking_toggle_audio_jobs_schema(tmp_path, monkeypatch):
 
     with engine.begin() as conn:
         cols = {r[1] for r in conn.execute(text("PRAGMA table_info(audio_jobs)")).fetchall()}
-    assert {"think", "fit_context"} <= cols
+    assert {"think", "fit_context", "min_tokens", "max_tokens"} <= cols
 
     db = SessionLocal()
     try:
@@ -649,6 +650,8 @@ def test_heals_pre_thinking_toggle_audio_jobs_schema(tmp_path, monkeypatch):
         assert job.transcript == "the party explored the ruins"  # untouched by the heal
         assert job.think is None  # heals to NULL — treated as True by the caller
         assert job.fit_context in (0, False, None)
+        assert job.min_tokens is None
+        assert job.max_tokens is None
     finally:
         db.close()
 

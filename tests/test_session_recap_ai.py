@@ -78,7 +78,7 @@ def test_expand_notes_requires_notes(client, seed):
 def test_condense_recap(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_condense(recap, model="", options=None, think=True):
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
         assert options is None
         captured["model"] = model
         captured["think"] = think
@@ -96,7 +96,7 @@ def test_condense_recap(client, seed, monkeypatch):
 def test_condense_recap_passes_model_and_think(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_condense(recap, model="", options=None, think=True):
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
         captured["model"] = model
         captured["think"] = think
         return "Short version."
@@ -112,7 +112,7 @@ def test_condense_recap_passes_model_and_think(client, seed, monkeypatch):
 def test_condense_recap_fit_context_sizes_num_ctx_to_the_pasted_text(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_condense(recap, model="", options=None, think=True):
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
         captured["options"] = options
         return "Short version."
     monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
@@ -130,7 +130,7 @@ def test_condense_recap_fit_context_sizes_num_ctx_to_the_pasted_text(client, see
 def test_condense_recap_fit_context_false_by_default(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_condense(recap, model="", options=None, think=True):
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
         captured["options"] = options
         return "Short version."
     monkeypatch.setattr(ai_module, "condense_recap", fake_condense)

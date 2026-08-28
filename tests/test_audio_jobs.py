@@ -67,7 +67,7 @@ def _fake_ai(monkeypatch):
     async def fake_summarize(transcript, model="", extra_instructions="", **kwargs):
         return "The party met Elena at the bazaar."
 
-    async def fake_condense(recap, model="", options=None, think=True):
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
         return "Condensed: " + recap[:20]
 
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
@@ -183,7 +183,7 @@ async def test_create_condense_job_never_transcribes(client, seed, monkeypatch):
 async def test_create_condense_job_passes_model_and_think(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_condense(recap, model="", options=None, think=True):
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
         captured["model"] = model
         captured["think"] = think
         return "condensed"
@@ -204,7 +204,7 @@ async def test_create_condense_job_passes_model_and_think(client, seed, monkeypa
 async def test_create_condense_job_fit_context_sizes_num_ctx(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_condense(recap, model="", options=None, think=True):
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
         captured["options"] = options
         return "condensed"
     monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
@@ -221,7 +221,7 @@ async def test_create_condense_job_fit_context_sizes_num_ctx(client, seed, monke
 async def test_create_condense_job_fit_context_off_by_default(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_condense(recap, model="", options=None, think=True):
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
         captured["options"] = options
         return "condensed"
     monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
@@ -233,8 +233,52 @@ async def test_create_condense_job_fit_context_off_by_default(client, seed, monk
 
 
 @pytest.mark.asyncio
+async def test_create_condense_job_passes_min_max_tokens_and_extra_instructions(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None, think=True, extra_instructions="", min_tokens=None, max_tokens=None):
+        captured["extra_instructions"] = extra_instructions
+        captured["min_tokens"] = min_tokens
+        captured["max_tokens"] = max_tokens
+        return "condensed"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text="some recap",
+        extra_instructions="focus on combat", min_tokens=50, max_tokens=200,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["extra_instructions"] == "focus on combat"
+    assert captured["min_tokens"] == 50
+    assert captured["max_tokens"] == 200
+    assert job.min_tokens == 50
+    assert job.max_tokens == 200
+    assert job.extra_instructions == "focus on combat"
+
+
+@pytest.mark.asyncio
+async def test_create_condense_job_fit_context_widens_reserve_for_max_tokens(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
+        captured["options"] = options
+        return "condensed"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    text = "word " * 2000
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text=text, fit_context=True, max_tokens=4000,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    default_ctx = ai_module.context_sized_options(text)["num_ctx"]
+    assert captured["options"]["num_ctx"] > default_ctx
+
+
+@pytest.mark.asyncio
 async def test_create_condense_job_marks_error_on_failure_sentinel(client, seed, monkeypatch):
-    async def failing_condense(recap, model="", options=None, think=True):
+    async def failing_condense(recap, model="", options=None, think=True, **kwargs):
         return "[AI error: Ollama unreachable]"
     monkeypatch.setattr(ai_module, "condense_recap", failing_condense)
 
@@ -1281,7 +1325,7 @@ def test_condense_job_requires_gm(client, seed):
 def test_condense_job_passes_model_think_and_fit_context(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_condense(recap, model="", options=None, think=True):
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
         captured["model"] = model
         captured["think"] = think
         captured["options"] = options
@@ -1314,6 +1358,72 @@ def test_condense_job_cross_world_isolation(client, seed):
     assert r.status_code == 404
     listed = client.get("/api/sessions/ai/audio-jobs").json()
     assert all(j["id"] != job_id for j in listed)
+
+
+def test_condense_job_passes_min_max_tokens_and_extra_instructions(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None, think=True, extra_instructions="", min_tokens=None, max_tokens=None):
+        captured["extra_instructions"] = extra_instructions
+        captured["min_tokens"] = min_tokens
+        captured["max_tokens"] = max_tokens
+        return "condensed"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/condense-job", json={
+        "recap": "text", "min_tokens": 20, "max_tokens": 100, "extra_instructions": "focus on combat",
+    })
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    data = _poll_until_terminal(client, f"/api/sessions/ai/audio-jobs/{job_id}")
+    assert data["status"] == "done", data
+    assert captured["extra_instructions"] == "focus on combat"
+    assert captured["min_tokens"] == 20
+    assert captured["max_tokens"] == 100
+
+
+@pytest.mark.parametrize("body", [
+    {"recap": "text", "min_tokens": "not a number"},
+    {"recap": "text", "max_tokens": "not a number"},
+    {"recap": "text", "min_tokens": 0},
+    {"recap": "text", "max_tokens": -5},
+    {"recap": "text", "min_tokens": 100, "max_tokens": 50},
+])
+def test_condense_job_rejects_invalid_token_bounds(client, seed, body):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/condense-job", json=body)
+    assert r.status_code == 400
+
+
+def test_condense_recap_route_passes_min_max_tokens_and_extra_instructions(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None, think=True, extra_instructions="", min_tokens=None, max_tokens=None):
+        captured["extra_instructions"] = extra_instructions
+        captured["min_tokens"] = min_tokens
+        captured["max_tokens"] = max_tokens
+        return "condensed"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/condense-recap", json={
+        "recap": "text", "min_tokens": 20, "max_tokens": 100, "extra_instructions": "focus on combat",
+    })
+    assert r.status_code == 200, r.text
+    assert captured["extra_instructions"] == "focus on combat"
+    assert captured["min_tokens"] == 20
+    assert captured["max_tokens"] == 100
+
+
+def test_condense_recap_route_rejects_min_greater_than_max(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/condense-recap", json={"recap": "text", "min_tokens": 100, "max_tokens": 50})
+    assert r.status_code == 400
 
 
 def test_session_job_list_excludes_attachment_purpose_jobs(client, seed):

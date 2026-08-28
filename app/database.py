@@ -835,6 +835,8 @@ def _migrate():
             # to preserve either way.
             ("think",               "BOOLEAN", True),
             ("fit_context",         "BOOLEAN DEFAULT 0", True),
+            ("min_tokens",          "INTEGER", True),
+            ("max_tokens",          "INTEGER", True),
         ], foreign_keys=[
             ("world_id", "worlds", "id"),
             ("created_by_user_id", "users", "id"),

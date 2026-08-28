@@ -854,6 +854,16 @@ class AudioJob(Base):
     # context — set once at job creation from the "Condense (fit context)"
     # button, replayed identically on a resume.
     fit_context = Column(Boolean, default=False)
+    # purpose="condense" only: soft length targets (in tokens) for the
+    # condensed OUTPUT — see app.ai.condense_recap's own docstring for how
+    # each is actually enforced (max_tokens sets Ollama's real num_predict
+    # cap; min_tokens is prompt guidance only, Ollama has no native
+    # minimum-output-length option). NULL means "no target set" for
+    # either. `extra_instructions` (already a column above, shared with
+    # session_recap) doubles as Condense's own one-off GM steering — no
+    # separate column needed for that.
+    min_tokens = Column(Integer, nullable=True)
+    max_tokens = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

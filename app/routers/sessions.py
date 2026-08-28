@@ -404,6 +404,31 @@ def _think_from_body(body: dict) -> bool:
     return bool(body.get("think", True))
 
 
+def _condense_token_bounds(body: dict) -> tuple[Optional[int], Optional[int]]:
+    """Parse+validate Condense's optional min_tokens/max_tokens settings —
+    a blank/missing value means "no target", not 0 (which would ask
+    condense_recap for an empty response). Raises HTTPException(400) with
+    a caller-displayable message on anything that isn't a positive int, or
+    a min bigger than the max, so a bad request fails fast rather than
+    quietly producing a confusing prompt."""
+    bounds = {}
+    for key, label in (("min_tokens", "Min tokens"), ("max_tokens", "Max tokens")):
+        raw = body.get(key)
+        if raw in (None, ""):
+            bounds[key] = None
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{label} must be a whole number")
+        if value < 1:
+            raise HTTPException(400, f"{label} must be at least 1")
+        bounds[key] = value
+    if bounds["min_tokens"] and bounds["max_tokens"] and bounds["min_tokens"] > bounds["max_tokens"]:
+        raise HTTPException(400, "Min tokens can't be greater than max tokens")
+    return bounds["min_tokens"], bounds["max_tokens"]
+
+
 @router.post("/api/sessions/ai/expand-notes")
 async def api_expand_recap_notes(request: Request):
     """Expand terse GM notes (whatever's currently in the Summary textarea)
@@ -422,12 +447,23 @@ async def api_condense_recap(request: Request):
     recap = str(body.get("recap", "")).strip()
     if not recap:
         raise HTTPException(400, "No recap provided")
+    min_tokens, max_tokens = _condense_token_bounds(body)
     # fit_context: size num_ctx to this one recap instead of the GM's
     # configured/default context — see context_sized_options's docstring.
     # A one-call override only; the instance-wide default is untouched.
-    options = _ai_module.context_sized_options(recap) if body.get("fit_context") else None
+    # Widen the reserve when max_tokens is set so num_ctx still leaves
+    # room for that much output (see context_sized_options's own
+    # docstring for `reserve_tokens`).
+    options = None
+    if body.get("fit_context"):
+        reserve = max(_ai_module._CONTEXT_FIT_RESERVED_TOKENS, (max_tokens or 0) + 256)
+        options = _ai_module.context_sized_options(recap, reserve_tokens=reserve)
     model = str(body.get("model", "")).strip()
-    recap_result = await _ai_module.condense_recap(recap, model=model, options=options, think=_think_from_body(body))
+    extra_instructions = str(body.get("extra_instructions", "")).strip()
+    recap_result = await _ai_module.condense_recap(
+        recap, model=model, options=options, think=_think_from_body(body),
+        extra_instructions=extra_instructions, min_tokens=min_tokens, max_tokens=max_tokens,
+    )
     return {"recap": recap_result}
 
 
@@ -449,11 +485,14 @@ async def api_condense_job_create(
     recap = str(body.get("recap", "")).strip()
     if not recap:
         raise HTTPException(400, "No recap provided")
+    min_tokens, max_tokens = _condense_token_bounds(body)
     game_session_id = body.get("game_session_id")
     gs_id = int(game_session_id) if game_session_id else None
     job_id = _audio_jobs.create_condense_job(
         world_id=world.id, text=recap, model=str(body.get("model", "")).strip(),
         think=_think_from_body(body), fit_context=bool(body.get("fit_context")),
+        extra_instructions=str(body.get("extra_instructions", "")).strip(),
+        min_tokens=min_tokens, max_tokens=max_tokens,
         game_session_id=gs_id, created_by_user_id=_current_user_id(request),
     )
     return {"job_id": job_id}

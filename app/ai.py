@@ -718,7 +718,10 @@ _CONDENSE_RECAP_SYSTEM = (
 )
 
 
-async def condense_recap(recap: str, model: str = "", options: dict = None, think: bool = True) -> str:
+async def condense_recap(
+    recap: str, model: str = "", options: dict = None, think: bool = True,
+    extra_instructions: str = "", min_tokens: int | None = None, max_tokens: int | None = None,
+) -> str:
     """Condense an existing recap into a tighter 'previously on...' summary.
     `options` (see generate_chat) is an optional per-call override — the
     caller passes context_sized_options(recap) to force num_ctx to
@@ -726,8 +729,43 @@ async def condense_recap(recap: str, model: str = "", options: dict = None, thin
     touching app.ai's instance-wide default the next call falls back to.
     `think` defaults to True — see expand_recap_notes's docstring for why
     this family of functions differs from generate_chat's own plain
-    default."""
-    return await generate_chat([{"role": "user", "content": recap}], system=_CONDENSE_RECAP_SYSTEM, model=model, options=options, think=think)
+    default.
+
+    `extra_instructions` is a GM's steering appended to the system prompt,
+    same _with_instructions convention every other recap function here
+    uses (e.g. "focus on combat", "write in French").
+
+    `min_tokens`/`max_tokens` are soft length targets for the CONDENSED
+    OUTPUT, described to the model in the system prompt using the same
+    coarse chars-per-token estimate the rest of this module relies on
+    (_chars_per_token_estimate) — Ollama has no native minimum-output-
+    length option, so min_tokens is prompt guidance only, honored on a
+    best-effort basis like any other free-text instruction. max_tokens
+    ALSO sets options["num_predict"], a real Ollama-enforced hard cap —
+    layered onto whatever `options` the caller already computed (e.g.
+    context_sized_options for fit_context) rather than replacing it. The
+    prompt mention gives the model a chance to land inside that cap on
+    its own instead of just getting abruptly cut off mid-sentence once
+    num_predict runs out."""
+    system = _with_instructions(_CONDENSE_RECAP_SYSTEM, extra_instructions)
+    chars_per_token = _chars_per_token_estimate(recap)
+    length_notes = []
+    if min_tokens:
+        length_notes.append(
+            f"at least ~{min_tokens} tokens (~{min_tokens * chars_per_token} characters) — "
+            "don't cut it any shorter than that even if you could say it in fewer words"
+        )
+    if max_tokens:
+        length_notes.append(f"no more than ~{max_tokens} tokens (~{max_tokens * chars_per_token} characters)")
+    if length_notes:
+        system += "\n\nLength target for the condensed recap: " + " and ".join(length_notes) + "."
+    opts = dict(options) if options else {}
+    if max_tokens:
+        opts["num_predict"] = max_tokens
+    return await generate_chat(
+        [{"role": "user", "content": recap}], system=system, model=model,
+        options=opts or None, think=think,
+    )
 
 
 # Reserved for the system prompt (_CONDENSE_RECAP_SYSTEM is short, but this
@@ -741,7 +779,7 @@ _CONTEXT_FIT_RESERVED_TOKENS = 512
 _CONTEXT_FIT_FLOOR_TOKENS = 1024
 
 
-def context_sized_options(text: str) -> dict:
+def context_sized_options(text: str, reserve_tokens: int = _CONTEXT_FIT_RESERVED_TOKENS) -> dict:
     """A one-off num_ctx override sized to comfortably fit `text` for a
     single AI call, instead of relying on whatever num_ctx the GM has
     configured (or Ollama/the model's own Modelfile default — commonly as
@@ -749,6 +787,14 @@ def context_sized_options(text: str) -> dict:
     silently truncated before the model ever reads all of it. Reuses the
     same chars-per-token heuristic _transcript_chunk_char_budget already
     relies on (_chars_per_token_estimate) rather than a fixed assumption.
+
+    `reserve_tokens` defaults to _CONTEXT_FIT_RESERVED_TOKENS (system
+    prompt + a short response + margin) — a caller expecting a longer
+    response than that (e.g. condense_recap's own max_tokens set well
+    above the default reserve) should pass a larger value so num_ctx
+    still leaves room for the model to actually use that output budget,
+    instead of the response getting squeezed by a context window sized
+    for a much shorter answer.
 
     Pass the result as generate_chat's/condense_recap's `options` kwarg — a
     per-call override layered on top of app.ai's instance-wide default for
@@ -759,7 +805,7 @@ def context_sized_options(text: str) -> dict:
     touched in the first place."""
     chars_per_token = _chars_per_token_estimate(text)
     input_tokens = -(-len(text) // chars_per_token)  # ceil division
-    return {"num_ctx": max(_CONTEXT_FIT_FLOOR_TOKENS, input_tokens + _CONTEXT_FIT_RESERVED_TOKENS)}
+    return {"num_ctx": max(_CONTEXT_FIT_FLOOR_TOKENS, input_tokens + reserve_tokens)}
 
 
 _SUMMARIZE_TRANSCRIPT_SYSTEM = (

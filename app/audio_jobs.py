@@ -173,6 +173,7 @@ def create_job(
 
 def create_condense_job(
     world_id: int, text: str, model: str = "", think: bool = True, fit_context: bool = False,
+    extra_instructions: str = "", min_tokens: Optional[int] = None, max_tokens: Optional[int] = None,
     game_session_id: Optional[int] = None, created_by_user_id: Optional[int] = None,
 ) -> int:
     """Condense `text` (typically a Session page's current Summary field) as
@@ -190,13 +191,20 @@ def create_condense_job(
     instead of summarize_transcript. The condensed result lands in
     job.recap, same field a session_recap job's summary does — so the
     existing polling/"Use this" UI (ndAudioJobs) needs no purpose-specific
-    branch to display it."""
+    branch to display it.
+
+    `extra_instructions`/`min_tokens`/`max_tokens` are condense_recap's own
+    steering/length-target params (see its docstring) — persisted on the
+    row like every other condense setting so a resume/redo uses the same
+    values the GM originally set."""
     db = SessionLocal()
     try:
         job = AudioJob(
             world_id=world_id, purpose="condense", filename="Condense", status="pending",
             game_session_id=game_session_id, created_by_user_id=created_by_user_id,
             model=model or None, think=think, fit_context=fit_context,
+            extra_instructions=extra_instructions.strip() or None,
+            min_tokens=min_tokens, max_tokens=max_tokens,
             transcript=text, audio_path="", delete_after=False,
         )
         db.add(job)
@@ -294,6 +302,8 @@ async def _run_job(job_id: int) -> None:
         # begin with) is treated as True — see AudioJob.think's docstring.
         think = job.think if job.think is not None else True
         fit_context = bool(job.fit_context)
+        min_tokens = job.min_tokens
+        max_tokens = job.max_tokens
         existing_transcript = job.transcript or ""
         checkpoint = _json.loads(job.checkpoint_json) if job.checkpoint_json else None
     finally:
@@ -387,8 +397,27 @@ async def _run_job(job_id: int) -> None:
             # there's no partial-progress state to persist between chunks
             # the way session_recap's map-reduce path has.
             _set(status="summarizing")
-            options = _ai_module.context_sized_options(transcript) if fit_context else None
-            recap = await _ai_module.condense_recap(transcript, model=model, options=options, think=think)
+            options = None
+            if fit_context:
+                # A caller-set max_tokens can ask for a bigger response than
+                # the default fixed reserve budgets for — widen it so num_ctx
+                # still leaves room for the model to actually use that output
+                # budget instead of it getting squeezed by a context window
+                # sized for a much shorter answer (see context_sized_options'
+                # own docstring for `reserve_tokens`).
+                reserve = max(_ai_module._CONTEXT_FIT_RESERVED_TOKENS, (max_tokens or 0) + 256)
+                options = _ai_module.context_sized_options(transcript, reserve_tokens=reserve)
+            # Same world-level recap_instructions + this job's own one-off
+            # extra_instructions combination session_recap uses just below —
+            # a GM's standing "always write in French" preference should
+            # steer Condense too, not just the initial summarize.
+            instructions = _combined_recap_instructions(
+                _recap_instructions_for_world(world_id) if world_id else "", extra_instructions,
+            )
+            recap = await _ai_module.condense_recap(
+                transcript, model=model, options=options, think=think,
+                extra_instructions=instructions, min_tokens=min_tokens, max_tokens=max_tokens,
+            )
             if _looks_like_failure(recap):
                 _set(status="error", error=recap, finished_at=datetime.utcnow())
             else:

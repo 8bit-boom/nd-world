@@ -125,6 +125,59 @@ async def test_condense_recap_forwards_options_to_generate_chat(monkeypatch):
     assert calls[0]["options"] == ai_module.context_sized_options("a long recap")
 
 
+@pytest.mark.asyncio
+async def test_condense_recap_extra_instructions_reach_the_system_prompt(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", extra_instructions="focus on combat")
+    system = calls[0]["messages"][0]["content"]
+    assert "focus on combat" in system
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_max_tokens_sets_num_predict(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", max_tokens=150)
+    assert calls[0]["options"]["num_predict"] == 150
+    system = calls[0]["messages"][0]["content"]
+    assert "150" in system
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_max_tokens_layers_onto_existing_options(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", options={"num_ctx": 4096}, max_tokens=150)
+    assert calls[0]["options"] == {"num_ctx": 4096, "num_predict": 150}
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_min_tokens_is_prompt_only_no_options_change(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", min_tokens=80)
+    assert "options" not in calls[0]  # no options dict at all — min_tokens sets no Ollama param
+    system = calls[0]["messages"][0]["content"]
+    assert "80" in system
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_no_length_notes_when_neither_bound_given(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap")
+    system = calls[0]["messages"][0]["content"]
+    assert "Length target" not in system
+
+
+def test_context_sized_options_reserve_tokens_widens_num_ctx():
+    text = "word " * 2000
+    default_reserve = ai_module.context_sized_options(text)
+    wider_reserve = ai_module.context_sized_options(text, reserve_tokens=5000)
+    assert wider_reserve["num_ctx"] > default_reserve["num_ctx"]
+
+
 class _FakeRespFull:
     """Same shape as _FakeResp but also carries done_reason/eval_count and
     message.thinking, like a real ollama.ChatResponse — needed to exercise
