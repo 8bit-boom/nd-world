@@ -73,7 +73,12 @@ async def _transcribe_chunk(file: UploadFile, max_bytes: int = MAX_LIVE_CHUNK_BY
 
 
 def _glossary_for_world(world) -> str:
-    return (world.whisper_glossary or "").strip() if world else ""
+    """Delegates to audio_jobs' own _glossary_for_world (world_id, not the
+    World object this takes) rather than keeping a second copy of the
+    entity-name merge logic — see its own docstring for what "glossary"
+    actually includes beyond whatever the GM typed into World.
+    whisper_glossary."""
+    return _audio_jobs._glossary_for_world(world.id) if world else ""
 
 
 def _language_for_world(world) -> str:

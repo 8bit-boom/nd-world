@@ -1673,12 +1673,14 @@
     <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Name glossary</div>
     <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
       Campaign NPC names, places, and invented terms — hinted to Whisper on every session-recording transcription (background jobs, one-shot upload, and live recording) so it doesn't autocorrect them to real words. One-off chat attachments don't use this. Comma or newline separated.
+      World entity names (characters, creatures, locations, organizations, races, professions — up to 50) are automatically added on top of whatever you type here, so you don't have to keep this list in sync by hand.
     </div>
     <textarea id="wg-textarea" rows="3" placeholder="Elyndra, Karrveth Hollow, the Undermarket, Sable Company…"
               style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .6rem;font-family:inherit;font-size:.82rem;border-radius:4px;box-sizing:border-box;resize:vertical"></textarea>
     <div style="display:flex;align-items:center;gap:.6rem;margin-top:.5rem">
       <button class="ig-btn" id="wg-save-btn" onclick="wgSaveGlossary()" style="border-color:var(--neon);color:var(--neon)">💾 Save</button>
       <span id="wg-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+      <span id="wg-entity-count" style="font-size:.78rem;color:var(--text-dim)"></span>
     </div>
   </div>
   <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-top:1rem">
@@ -5247,6 +5249,12 @@ async function wgLoadGlossary() {
   try {
     const d = await fetch('/api/ai/whisper/glossary').then(r => r.json());
     ta.value = d.glossary || '';
+    const countEl = document.getElementById('wg-entity-count');
+    if (countEl) {
+      countEl.textContent = d.entity_terms_count
+        ? `+ ${d.entity_terms_count} entity name${d.entity_terms_count === 1 ? '' : 's'} from this World`
+        : '';
+    }
   } catch (e) { /* leave blank — save will still work */ }
 }
 

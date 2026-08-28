@@ -234,13 +234,69 @@ def create_condense_job(
     return job_id
 
 
+# Kinds worth hinting Whisper toward — proper nouns a session's spoken
+# audio is likely to actually contain. Excludes "note" (free text with no
+# guarantee its title is a clean proper noun) and "event"/"item"/"feat"
+# (not asked for, and less likely to be spoken names Whisper would
+# otherwise autocorrect). Both NPC and PC-subtype characters are included —
+# a player's own character's name gets said just as often as any NPC's.
+GLOSSARY_ENTITY_KINDS = ("character", "creature", "location", "organization", "race", "profession")
+# Cap on how many entity names get merged in — whisper.cpp's own
+# initial_prompt shares a real (if not precisely documented) token budget
+# with whatever a GM already typed by hand; capping keeps a large world's
+# full entity roster from crowding that out entirely rather than silently
+# truncating mid-list. Ordered by kind then name for a stable, predictable
+# list if a world does have more entities than fit.
+GLOSSARY_ENTITY_LIMIT = 50
+
+
+def entity_glossary_terms(world_id: int, limit: int = GLOSSARY_ENTITY_LIMIT) -> list[str]:
+    """Entity names (see GLOSSARY_ENTITY_KINDS) to merge into a world's
+    Whisper glossary — see _glossary_for_world, which actually merges
+    these into the GM's own typed text. Public (no leading underscore):
+    also used by routers/ai.py's GET /whisper/glossary to show a GM how
+    many entity names are being added on top of what they typed, since the
+    merge happens at transcribe time and isn't visible in the saved
+    World.whisper_glossary text itself."""
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Entity.name)
+            .filter(Entity.world_id == world_id, Entity.kind.in_(GLOSSARY_ENTITY_KINDS))
+            .order_by(Entity.kind, Entity.name)
+            .limit(limit)
+            .all()
+        )
+        return [r[0] for r in rows if r[0]]
+    finally:
+        db.close()
+
+
+def _merge_glossary(gm_glossary: str, entity_terms: list[str]) -> str:
+    """GM-typed terms first (a GM who bothered to type something presumably
+    cares about it most, and it's least likely to fall outside whatever
+    truncation whisper.cpp's own prompt budget applies), then entity names
+    — comma/newline-separated either way, matching whisper_glossary's own
+    existing free-text convention. Case-insensitive dedup against the GM's
+    own terms so a name that's both hand-typed AND an Entity isn't sent
+    twice."""
+    if not entity_terms:
+        return gm_glossary
+    gm_terms_lower = {t.strip().lower() for t in gm_glossary.replace("\n", ",").split(",") if t.strip()}
+    new_terms = [t for t in entity_terms if t.strip().lower() not in gm_terms_lower]
+    if not new_terms:
+        return gm_glossary
+    return f"{gm_glossary}, {', '.join(new_terms)}" if gm_glossary else ", ".join(new_terms)
+
+
 def _glossary_for_world(world_id: int) -> str:
     db = SessionLocal()
     try:
         w = db.get(World, world_id)
-        return (w.whisper_glossary or "").strip() if w else ""
+        gm_glossary = (w.whisper_glossary or "").strip() if w else ""
     finally:
         db.close()
+    return _merge_glossary(gm_glossary, entity_glossary_terms(world_id))
 
 
 def _whisper_language_for_world(world_id: int) -> str:

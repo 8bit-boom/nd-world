@@ -1050,7 +1050,14 @@ def api_whisper_glossary_get(request: Request, db=Depends(get_db), active_world:
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
-    return {"glossary": world.whisper_glossary or ""}
+    # entity_terms_count: how many World entity names get merged in on top
+    # of the saved text below at actual transcribe time (see audio_jobs.
+    # _glossary_for_world) — surfaced so the GM isn't left guessing why
+    # Whisper seems to know names they never typed here themselves.
+    return {
+        "glossary": world.whisper_glossary or "",
+        "entity_terms_count": len(_audio_jobs.entity_glossary_terms(world.id)),
+    }
 
 
 class WhisperGlossaryBody(BaseModel):
