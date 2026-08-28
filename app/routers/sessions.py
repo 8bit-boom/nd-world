@@ -371,7 +371,11 @@ async def api_condense_recap(request: Request):
     recap = str(body.get("recap", "")).strip()
     if not recap:
         raise HTTPException(400, "No recap provided")
-    return {"recap": await _ai_module.condense_recap(recap)}
+    # fit_context: size num_ctx to this one recap instead of the GM's
+    # configured/default context — see context_sized_options's docstring.
+    # A one-call override only; the instance-wide default is untouched.
+    options = _ai_module.context_sized_options(recap) if body.get("fit_context") else None
+    return {"recap": await _ai_module.condense_recap(recap, options=options)}
 
 
 @router.post("/api/sessions/ai/summarize-from-audio")

@@ -704,9 +704,45 @@ _CONDENSE_RECAP_SYSTEM = (
 )
 
 
-async def condense_recap(recap: str, model: str = "") -> str:
-    """Condense an existing recap into a tighter 'previously on...' summary."""
-    return await generate_chat([{"role": "user", "content": recap}], system=_CONDENSE_RECAP_SYSTEM, model=model)
+async def condense_recap(recap: str, model: str = "", options: dict = None) -> str:
+    """Condense an existing recap into a tighter 'previously on...' summary.
+    `options` (see generate_chat) is an optional per-call override — the
+    caller passes context_sized_options(recap) to force num_ctx to
+    comfortably fit the whole pasted recap for this one call only, without
+    touching app.ai's instance-wide default the next call falls back to."""
+    return await generate_chat([{"role": "user", "content": recap}], system=_CONDENSE_RECAP_SYSTEM, model=model, options=options)
+
+
+# Reserved for the system prompt (_CONDENSE_RECAP_SYSTEM is short, but this
+# also covers the condensed output itself sharing the same context window)
+# plus margin — same reasoning as _CHUNK_RESERVED_TOKENS above, just a
+# smaller budget since condensing produces a few sentences, not a chunked
+# summary. Never request less than _CONTEXT_FIT_FLOOR_TOKENS even for a
+# one-line paste — a tiny context window has no headroom for the model's
+# own response.
+_CONTEXT_FIT_RESERVED_TOKENS = 512
+_CONTEXT_FIT_FLOOR_TOKENS = 1024
+
+
+def context_sized_options(text: str) -> dict:
+    """A one-off num_ctx override sized to comfortably fit `text` for a
+    single AI call, instead of relying on whatever num_ctx the GM has
+    configured (or Ollama/the model's own Modelfile default — commonly as
+    low as 2048-4096 tokens) — a long pasted recap that exceeds that gets
+    silently truncated before the model ever reads all of it. Reuses the
+    same chars-per-token heuristic _transcript_chunk_char_budget already
+    relies on (_chars_per_token_estimate) rather than a fixed assumption.
+
+    Pass the result as generate_chat's/condense_recap's `options` kwarg — a
+    per-call override layered on top of app.ai's instance-wide default for
+    that one request (see _chat_kwargs). It never mutates
+    set_ollama_generation_overrides' own state, so the very next call keeps
+    using the GM's configured/default context size — there's nothing to
+    "set back to normal" because the instance-wide setting was never
+    touched in the first place."""
+    chars_per_token = _chars_per_token_estimate(text)
+    input_tokens = -(-len(text) // chars_per_token)  # ceil division
+    return {"num_ctx": max(_CONTEXT_FIT_FLOOR_TOKENS, input_tokens + _CONTEXT_FIT_RESERVED_TOKENS)}
 
 
 _SUMMARIZE_TRANSCRIPT_SYSTEM = (

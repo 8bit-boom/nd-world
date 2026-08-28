@@ -141,6 +141,40 @@ def test_chunk_budget_uses_a_tighter_estimate_for_non_english_transcript(monkeyp
     assert cyrillic_budget < english_budget
 
 
+# ── context_sized_options ───────────────────────────────────────────────────
+
+def test_context_sized_options_scales_with_input_length():
+    short_ctx = ai_module.context_sized_options("just a few words")["num_ctx"]
+    long_ctx = ai_module.context_sized_options("word " * 5000)["num_ctx"]
+    assert long_ctx > short_ctx
+
+
+def test_context_sized_options_has_a_floor_for_tiny_text():
+    assert ai_module.context_sized_options("hi")["num_ctx"] == ai_module._CONTEXT_FIT_FLOOR_TOKENS
+
+
+def test_context_sized_options_reserves_headroom_beyond_the_raw_token_count():
+    text = "word " * 5000
+    tokens = ai_module._chars_per_token_estimate(text)
+    input_tokens = -(-len(text) // tokens)
+    assert ai_module.context_sized_options(text)["num_ctx"] == input_tokens + ai_module._CONTEXT_FIT_RESERVED_TOKENS
+
+
+def test_context_sized_options_is_tighter_for_non_ascii_script():
+    # Same text, but the non-ASCII sample estimates more tokens per
+    # character (see _chars_per_token_estimate), so it should ask for a
+    # larger context than the same-length English text would.
+    english = "just some plain English words here " * 200
+    cyrillic = "Партия вошла в подземелье и обнаружила древний алтарь. " * 200
+    assert ai_module.context_sized_options(cyrillic)["num_ctx"] > ai_module.context_sized_options(english)["num_ctx"]
+
+
+def test_context_sized_options_never_mutates_instance_wide_overrides():
+    before = ai_module.effective_ollama_options()
+    ai_module.context_sized_options("word " * 5000)
+    assert ai_module.effective_ollama_options() == before
+
+
 # ── summarize_transcript's chunked, append-only orchestration ──────────────
 
 @pytest.mark.asyncio

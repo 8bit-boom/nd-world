@@ -46,6 +46,7 @@
         <div style="display:flex;gap:.5rem;margin-top:.4rem;flex-wrap:wrap;align-items:center">
           <button type="button" class="ai-recap-btn" onclick="aiExpandNotes()">✨ Expand notes into recap</button>
           <button type="button" class="ai-recap-btn" onclick="aiCondenseRecap()">✂ Condense recap</button>
+          <button type="button" class="ai-recap-btn" onclick="aiCondenseRecapFit()" title="Temporarily sizes the model's context window to fit this whole pasted summary (then reverts) — use for a long summary the normal context would truncate">📏 Condense (fit context)</button>
           {% if gsession %}
           <button type="button" class="ai-recap-btn" onclick="aiSummarizeFromFacts()">📎 Summarize from Facts</button>
           {% endif %}
@@ -236,6 +237,12 @@ function aiCondenseRecap() {
   const recap = document.getElementById('summary-field').value.trim();
   if (!recap) { alert('Nothing to condense yet.'); return; }
   aiRunRecap('/api/sessions/ai/condense-recap', { recap });
+}
+
+function aiCondenseRecapFit() {
+  const recap = document.getElementById('summary-field').value.trim();
+  if (!recap) { alert('Nothing to condense yet.'); return; }
+  aiRunRecap('/api/sessions/ai/condense-recap', { recap, fit_context: true });
 }
 
 {% if gsession %}

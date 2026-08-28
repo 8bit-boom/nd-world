@@ -58,7 +58,8 @@ def test_expand_notes_requires_notes(client, seed):
 
 
 def test_condense_recap(client, seed, monkeypatch):
-    async def fake_condense(recap, model=""):
+    async def fake_condense(recap, model="", options=None):
+        assert options is None
         return "Short version."
     monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
 
@@ -66,6 +67,38 @@ def test_condense_recap(client, seed, monkeypatch):
     r = client.post("/api/sessions/ai/condense-recap", json={"recap": "A very long recap..."})
     assert r.status_code == 200
     assert r.json()["recap"] == "Short version."
+
+
+def test_condense_recap_fit_context_sizes_num_ctx_to_the_pasted_text(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None):
+        captured["options"] = options
+        return "Short version."
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    _login_gm_in(client, seed, seed.world_a)
+    recap = "word " * 2000  # long enough that the estimate clears the floor
+    r = client.post("/api/sessions/ai/condense-recap", json={"recap": recap, "fit_context": True})
+    assert r.status_code == 200
+    assert r.json()["recap"] == "Short version."
+    expected = ai_module.context_sized_options(recap)
+    assert captured["options"] == expected
+    assert captured["options"]["num_ctx"] > 2000  # comfortably covers the input, not just the floor
+
+
+def test_condense_recap_fit_context_false_by_default(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None):
+        captured["options"] = options
+        return "Short version."
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post("/api/sessions/ai/condense-recap", json={"recap": "short recap"})
+    assert r.status_code == 200
+    assert captured["options"] is None
 
 
 def test_summarize_from_facts_gm(client, seed, monkeypatch):

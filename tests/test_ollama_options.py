@@ -99,6 +99,32 @@ async def test_generate_chat_passes_options_and_keep_alive(monkeypatch):
     assert calls[0]["keep_alive"] == "5m"
 
 
+@pytest.mark.asyncio
+async def test_generate_chat_per_call_options_override_instance_default_for_that_call_only(monkeypatch):
+    """A per-call `options=` kwarg (e.g. context_sized_options's num_ctx)
+    layers over the instance-wide default — overriding a shared key, adding
+    a new one — and, since it's never written into
+    set_ollama_generation_overrides' own state, the very next call reverts
+    to the plain instance default with no explicit "reset" step needed."""
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    ai_module.set_ollama_generation_overrides({"temperature": 0.2, "num_ctx": 4096})
+
+    await ai_module.generate_chat([{"role": "user", "content": "hi"}], options={"num_ctx": 20000})
+    assert calls[0]["options"] == {"temperature": 0.2, "num_ctx": 20000}
+
+    await ai_module.generate_chat([{"role": "user", "content": "hi"}])
+    assert calls[1]["options"] == {"temperature": 0.2, "num_ctx": 4096}
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_forwards_options_to_generate_chat(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a long recap", options=ai_module.context_sized_options("a long recap"))
+    assert calls[0]["options"] == ai_module.context_sized_options("a long recap")
+
+
 class _FakeRespFull:
     """Same shape as _FakeResp but also carries done_reason/eval_count and
     message.thinking, like a real ollama.ChatResponse — needed to exercise
