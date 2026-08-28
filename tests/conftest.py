@@ -111,6 +111,14 @@ def client():
     # "fresh" by the TTL clock and get served into the new test).
     import app.database as _database_module
     _database_module._app_settings_flags_cache = None
+    # app.rendering._parse_stats_cache (Wave 4, Speed 4.1) — keyed by
+    # (entity.id, entity.updated_at). A DB reset restarts autoincrement ids,
+    # and datetime.utcnow()'s microsecond precision makes an exact collision
+    # with a prior test's timestamp for the "same" id astronomically
+    # unlikely but not impossible in a fast-running suite — clear it
+    # unconditionally for the same reason as the caches above.
+    from app.rendering import clear_parse_stats_cache
+    clear_parse_stats_cache()
     # app.ai.whisper_job_semaphore/ollama_job_semaphore are module-level
     # singletons that lazily bind to whichever asyncio event loop first
     # actually contends them (see asyncio.Semaphore.acquire — it only

@@ -29,9 +29,9 @@ from . import deps
 from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
 from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache
-from .deps import get_world_ctx, resolve_world_slug, with_world
+from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE
 from .imaging import convert_image, make_thumbnail
-from .rendering import parse_stats, render_md, html_to_markdown, sanitize_note_html
+from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html
 from .templating import templates
 from .uploads import copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob
@@ -3229,7 +3229,7 @@ _COL_PRIORITY_IDX = {c.lower(): i for i, c in enumerate(_COL_PRIORITY)}
 
 @app.get("/kind/{kind}", response_class=HTMLResponse)
 def list_entities(request: Request, kind: str, q: str = "", folder: Optional[str] = None,
-                  view: str = "", db: Session = Depends(get_db), active_world: str = Cookie(None)):
+                  view: str = "", page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world = get_active_world(request, db, active_world)
     if not world:
         return RedirectResponse("/worlds")
@@ -3312,7 +3312,7 @@ def list_entities(request: Request, kind: str, q: str = "", folder: Optional[str
         for e in entities:
             d: dict[str, str] = {}
             if kind in _STAT_KINDS and not char_feat_folder:
-                rows = parse_stats(e.body or "")
+                rows = parse_stats_cached(e.id, e.updated_at, e.body or "")
                 if rows:
                     d = {r["key"]: r["val"] for r in rows}
             # inject Rank from folder path for character-creation feats
@@ -3334,6 +3334,18 @@ def list_entities(request: Request, kind: str, q: str = "", folder: Optional[str
     if not view:
         view = "table" if folder is not None else "grid"
 
+    # Paginate the leaf-folder table only — a plain, already-ungrouped list,
+    # unlike the root/parent-folder views which group entities by (sub)folder
+    # and would have a group silently split across pages by a raw slice.
+    # entity_stats/table_cols above still cover every entity in the folder
+    # (not just this page) so the column set stays stable while paging.
+    table_page, table_total_pages = 1, 1
+    table_page_entities = entities
+    if folder is not None and not is_parent_folder and view == "table":
+        table_total_pages = max(1, (len(entities) + PAGE_SIZE - 1) // PAGE_SIZE)
+        table_page = min(max(1, page), table_total_pages)
+        table_page_entities = entities[(table_page - 1) * PAGE_SIZE: table_page * PAGE_SIZE]
+
     worlds = _visible_worlds(request, db)
     return templates.TemplateResponse("entities/list.html", {
         "request": request, "kind": kind, "entities": entities,
@@ -3343,6 +3355,8 @@ def list_entities(request: Request, kind: str, q: str = "", folder: Optional[str
         "view": view, "entity_stats": entity_stats, "table_cols": table_cols,
         "is_parent_folder": is_parent_folder, "subfolder_groups": subfolder_groups,
         "char_feat_folder": char_feat_folder, "world_players": world_players,
+        "table_page_entities": table_page_entities,
+        "table_page": table_page, "table_total_pages": table_total_pages,
     })
 
 # ── Detail ────────────────────────────────────────────────────────────────────

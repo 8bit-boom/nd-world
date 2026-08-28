@@ -7,6 +7,7 @@ import was the root cause of every router building its own copy-pasted
 Jinja2Templates instance instead of sharing one (see app/templating.py).
 """
 import re
+from collections import OrderedDict
 
 import html2text
 import markdown2
@@ -235,6 +236,33 @@ def parse_stats(body: str) -> list[dict]:
             continue
         rows.append({"key": key, "val": val, "special": key.lower() == "special conditions"})
     return rows
+
+
+# /kind/{kind} folder views call parse_stats() once per visible entity on
+# every request. Keyed on (entity.id, entity.updated_at) rather than the
+# body text itself — that way a cache hit doesn't need to hash the (often
+# multi-KB) body string, just a cheap int+datetime tuple, and the key
+# naturally goes stale the moment an edit bumps updated_at, so there's
+# nothing to invalidate on writes.
+_PARSE_STATS_CACHE_SIZE = 512
+_parse_stats_cache: "OrderedDict[tuple, list[dict]]" = OrderedDict()
+
+
+def parse_stats_cached(entity_id: int, updated_at, body: str) -> list[dict]:
+    key = (entity_id, updated_at)
+    cached = _parse_stats_cache.get(key)
+    if cached is not None:
+        _parse_stats_cache.move_to_end(key)
+        return cached
+    rows = parse_stats(body)
+    _parse_stats_cache[key] = rows
+    if len(_parse_stats_cache) > _PARSE_STATS_CACHE_SIZE:
+        _parse_stats_cache.popitem(last=False)
+    return rows
+
+
+def clear_parse_stats_cache():
+    _parse_stats_cache.clear()
 
 
 def _decode(text: str) -> str:

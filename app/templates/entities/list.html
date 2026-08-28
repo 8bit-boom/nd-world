@@ -193,8 +193,24 @@
     {% endfor %}
 
     {% else %}
-    {# ── Single table (leaf folder) ── #}
-    {{ render_table(entities) }}
+    {# ── Single table (leaf folder), paginated ── #}
+    {{ render_table(table_page_entities) }}
+    {% if table_total_pages > 1 %}
+    {% set qs_prefix = '?' + ('folder=' + active_folder|urlencode + '&' if active_folder is not none else '') + ('q=' + q + '&' if q else '') + 'view=table&page=' %}
+    <div class="pagination">
+      {% if table_page > 1 %}
+      <a href="{{ (qs_prefix + (table_page - 1)|string)|wq }}" class="page-link">&larr; Prev</a>
+      {% else %}
+      <span class="page-link disabled">&larr; Prev</span>
+      {% endif %}
+      <span class="page-info">Page {{ table_page }} of {{ table_total_pages }}</span>
+      {% if table_page < table_total_pages %}
+      <a href="{{ (qs_prefix + (table_page + 1)|string)|wq }}" class="page-link">Next &rarr;</a>
+      {% else %}
+      <span class="page-link disabled">Next &rarr;</span>
+      {% endif %}
+    </div>
+    {% endif %}
     {% endif %}
 
     {% else %}
