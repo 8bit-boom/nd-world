@@ -155,8 +155,26 @@ def session_detail(session_id: int, request: Request, db: Session = Depends(get_
     parties = db.query(Party).filter(Party.world_id == gs.world_id).order_by(Party.name).all()
     linked_combats = db.query(CombatSession).filter(CombatSession.game_session_id == gs.id).all()
     npcs = json.loads(gs.npcs_json or "[]")
-    entity_map = {e.id: e for e in db.query(Entity).filter(Entity.id.in_([n["entity_id"] for n in npcs])).all()} if npcs else {}
-    npc_names = [entity_map[n["entity_id"]].name for n in npcs if entity_map.get(n["entity_id"])]
+    # "kind" defaults to "entity" — a pre-existing row saved before
+    # PlayerCharacter support was added never had this key at all (see
+    # _featured_entity_candidates' own docstring).
+    npc_entity_ids = [n["entity_id"] for n in npcs if n.get("kind", "entity") == "entity"]
+    npc_pc_ids = [n["entity_id"] for n in npcs if n.get("kind") == "player_character"]
+    entity_map = {e.id: e for e in db.query(Entity).filter(Entity.id.in_(npc_entity_ids)).all()} if npc_entity_ids else {}
+    npc_pc_map = {p.id: p for p in db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(npc_pc_ids)).all()} if npc_pc_ids else {}
+    npc_names = []
+    npc_selected = []
+    for n in npcs:
+        if n.get("kind") == "player_character":
+            pc = npc_pc_map.get(n["entity_id"])
+            if pc:
+                npc_names.append(pc.name)
+                npc_selected.append(f"{_PC_ID_PREFIX}{n['entity_id']}")
+        else:
+            e = entity_map.get(n["entity_id"])
+            if e:
+                npc_names.append(e.name)
+                npc_selected.append(n["entity_id"])
     party_pc_ids = json.loads(gs.party.member_pc_ids_json or "[]") if gs.party else []
     party_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(party_pc_ids)).all() if party_pc_ids else []
     return templates.TemplateResponse("sessions/detail.html", {
@@ -164,6 +182,7 @@ def session_detail(session_id: int, request: Request, db: Session = Depends(get_
         "parties": parties, "next_num": gs.session_num, "linked_combats": linked_combats,
         "npc_names": npc_names, "party_pcs": party_pcs,
         "npc_candidates_json": _featured_entity_candidates(db, gs.world_id),
+        "npc_selected_json": npc_selected,
         "prep": json.loads(gs.prep_json or "[]"), "loot": json.loads(gs.loot_json or "[]"),
         "npcs": npcs,
     })
@@ -189,28 +208,44 @@ _FEATURED_ENTITY_GROUPS = [
 ]
 
 
+_PC_ID_PREFIX = "pc:"
+
+
 def _featured_entity_candidates(db: Session, world_id: int) -> list[dict]:
     """Candidate entities for a session's "Entities Featured" picker —
     originally "NPCs Featured" (character/creature entities only, mirroring
     parties.py's companion picker); broadened to also cover player-character
-    lore write-ups (character entities tagged subtype="PC" — a player's own
-    mechanical sheet lives in PlayerCharacter, not here; subtype is a
+    lore write-ups (character entities tagged subtype="PC" — subtype is a
     suggestion, not enforced, see deps.effective_subtypes), locations,
     organizations, races, professions, and notes — so a GM can tag
     everything actually featured in a session, not just who showed up.
 
+    Real PlayerCharacter sheets (the party's actual mechanical characters —
+    most GMs never write a separate Entity lore write-up for these, so the
+    "Player Characters" group was otherwise near-always empty) are ALSO
+    included in this same group. PlayerCharacter has its own independent id
+    sequence, unrelated to Entity's — its candidates get a "pc:" prefix on
+    `id` (e.g. "pc:5") to keep the two id spaces from colliding when both
+    end up in the same npc_entity_ids form field. Everything else about a
+    PlayerCharacter candidate (folder grouping, its row in the picker) is
+    otherwise identical to any Entity candidate; entity-picker.js needs no
+    changes for this — `id` was always just an opaque value it echoes back
+    into a checkbox's `value`, never assumed to be numeric.
+
     Still saved into the SAME gs.npcs_json field / npc_entity_ids form
-    field as before (a list of {entity_id, name} regardless of kind) — no
-    schema change, no migration, and every existing session's saved
-    NPC-only picks keep working unchanged; only the candidate POOL and the
-    picker's on-page label broadened, not the storage shape.
+    field as before, now with a "kind" tag per pick ("entity" or
+    "player_character" — see session_edit/session_detail) so a saved
+    PlayerCharacter pick can be told apart from an Entity one on load; a
+    pre-existing row with no "kind" key defaults to "entity" — no schema
+    change, no migration, and every existing session's saved NPC-only
+    picks keep working unchanged.
 
     What a GM checks here also becomes the pinned/guaranteed set for RAG
-    (see app.audio_jobs._session_featured_entity_ids/_build_rag_context's
-    `pinned_entity_ids`) — deterministic, unlike keyword search, which
-    matters most for exactly the case that prompted this: a session
-    transcribed in a different language than the World's entity names has
-    no literal text for keyword search to match at all."""
+    (see app.audio_jobs._session_featured_picks/_build_rag_context's
+    `pinned_entity_ids`/`pinned_pc_ids`) — deterministic, unlike keyword
+    search, which matters most for exactly the case that prompted this: a
+    session transcribed in a different language than the World's entity
+    names has no literal text for keyword search to match at all."""
     candidates = []
     for kinds, extra_filter, label in _FEATURED_ENTITY_GROUPS:
         q = db.query(Entity).filter(Entity.world_id == world_id, Entity.kind.in_(kinds))
@@ -219,6 +254,9 @@ def _featured_entity_candidates(db: Session, world_id: int) -> list[dict]:
         for e in q.order_by(Entity.folder, Entity.name).all():
             folder = f"{label}/{e.folder}" if e.folder else label
             candidates.append({"id": e.id, "name": e.name, "folder": folder})
+    pc_label = "🧑 Player Characters"
+    for pc in db.query(PlayerCharacter).filter(PlayerCharacter.world_id == world_id).order_by(PlayerCharacter.name).all():
+        candidates.append({"id": f"{_PC_ID_PREFIX}{pc.id}", "name": pc.name, "folder": pc_label})
     return candidates
 
 
@@ -276,9 +314,20 @@ async def session_edit(session_id: int, request: Request, db: Session = Depends(
     gs.summary = str(form.get("summary", ""))
     party_id = form.get("party_id")
     gs.party_id = int(party_id) if party_id else None
-    npc_ids = [int(v) for v in form.getlist("npc_entity_ids")]
-    entity_names = {e.id: e.name for e in db.query(Entity).filter(Entity.id.in_(npc_ids)).all()} if npc_ids else {}
-    gs.npcs_json = json.dumps([{"entity_id": i, "name": entity_names.get(i, "")} for i in npc_ids])
+    # "pc:N" values (see _featured_entity_candidates/_PC_ID_PREFIX) are a
+    # PlayerCharacter id, not an Entity id — the two id sequences are
+    # independent, so they're kept apart here rather than risking an
+    # unrelated Entity/PlayerCharacter pair that happen to share a numeric
+    # id getting conflated.
+    raw_ids = form.getlist("npc_entity_ids")
+    entity_ids = [int(v) for v in raw_ids if not v.startswith(_PC_ID_PREFIX)]
+    pc_ids = [int(v[len(_PC_ID_PREFIX):]) for v in raw_ids if v.startswith(_PC_ID_PREFIX)]
+    entity_names = {e.id: e.name for e in db.query(Entity).filter(Entity.id.in_(entity_ids)).all()} if entity_ids else {}
+    pc_names = {p.id: p.name for p in db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all()} if pc_ids else {}
+    gs.npcs_json = json.dumps(
+        [{"entity_id": i, "name": entity_names.get(i, ""), "kind": "entity"} for i in entity_ids]
+        + [{"entity_id": i, "name": pc_names.get(i, ""), "kind": "player_character"} for i in pc_ids]
+    )
     db.commit()
     return RedirectResponse(f"/sessions/{session_id}?saved=1", status_code=303)
 

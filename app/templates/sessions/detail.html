@@ -390,7 +390,11 @@ function aiSummarizeFromFacts() {
 // DOM client-side (no reload) so the rest of the recap form's unsaved
 // state (Summary, etc.) is never disturbed while picking NPCs.
 const NPC_CANDIDATES = {{ npc_candidates_json | tojson }};
-const NPC_SELECTED = {{ (npcs | map(attribute='entity_id') | list) | tojson }};
+// A PlayerCharacter pick's id is "pc:N" (see _PC_ID_PREFIX in
+// routers/sessions.py) — computed server-side (npc_selected_json), not
+// via a plain map(attribute='entity_id') here, since that alone can't
+// distinguish a PlayerCharacter pick from an Entity one.
+const NPC_SELECTED = {{ npc_selected_json | tojson }};
 
 ndEntityPicker(
   document.getElementById('npc-picker-tree'),

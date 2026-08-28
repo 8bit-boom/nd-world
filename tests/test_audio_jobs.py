@@ -453,7 +453,7 @@ def test_build_rag_context_pinned_entity_not_duplicated_when_also_relevant(clien
     assert context.count("Gareth Ashfall") == 1
 
 
-def test_session_featured_entity_ids_reads_saved_npcs_json(client, seed):
+def test_session_featured_picks_reads_saved_npcs_json(client, seed):
     from app.database import SessionLocal as _SL
     from app.models import GameSession as _GameSession
 
@@ -463,7 +463,10 @@ def test_session_featured_entity_ids_reads_saved_npcs_json(client, seed):
     try:
         gs = _GameSession(
             world_id=seed.world_a.id, title="Session 1", session_num=1,
-            npcs_json=json.dumps([{"entity_id": e1, "name": "Gareth Ashfall"}, {"entity_id": e2, "name": "The Bazaar"}]),
+            npcs_json=json.dumps([
+                {"entity_id": e1, "name": "Gareth Ashfall", "kind": "entity"},
+                {"entity_id": e2, "name": "The Bazaar", "kind": "entity"},
+            ]),
         )
         db.add(gs)
         db.commit()
@@ -472,11 +475,134 @@ def test_session_featured_entity_ids_reads_saved_npcs_json(client, seed):
     finally:
         db.close()
 
-    assert set(audio_jobs._session_featured_entity_ids(gs_id)) == {e1, e2}
+    entity_ids, pc_ids = audio_jobs._session_featured_picks(gs_id)
+    assert set(entity_ids) == {e1, e2}
+    assert pc_ids == []
 
 
-def test_session_featured_entity_ids_empty_for_no_session_or_no_picks(client, seed):
-    assert audio_jobs._session_featured_entity_ids(999999) == []
+def test_session_featured_picks_splits_player_character_kind(client, seed):
+    from app.database import SessionLocal as _SL
+    from app.models import GameSession as _GameSession, PlayerCharacter as _PlayerCharacter
+
+    e1 = _make_entity(seed.world_a.id, name="Gareth Ashfall", kind="character")
+    db = _SL()
+    try:
+        pc = _PlayerCharacter(world_id=seed.world_a.id, name="Boric Stonehand")
+        db.add(pc)
+        db.commit()
+        db.refresh(pc)
+        pc_id = pc.id
+        gs = _GameSession(
+            world_id=seed.world_a.id, title="Session 1", session_num=1,
+            npcs_json=json.dumps([
+                {"entity_id": e1, "name": "Gareth Ashfall", "kind": "entity"},
+                {"entity_id": pc_id, "name": "Boric Stonehand", "kind": "player_character"},
+            ]),
+        )
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        gs_id = gs.id
+    finally:
+        db.close()
+
+    entity_ids, pc_ids = audio_jobs._session_featured_picks(gs_id)
+    assert entity_ids == [e1]
+    assert pc_ids == [pc_id]
+
+
+def test_session_featured_picks_legacy_rows_without_kind_default_to_entity(client, seed):
+    """A pre-existing row saved before PlayerCharacter picks existed has no
+    "kind" key at all — must default to "entity", not drop the pick."""
+    from app.database import SessionLocal as _SL
+    from app.models import GameSession as _GameSession
+
+    e1 = _make_entity(seed.world_a.id, name="Gareth Ashfall", kind="character")
+    db = _SL()
+    try:
+        gs = _GameSession(
+            world_id=seed.world_a.id, title="Session 1", session_num=1,
+            npcs_json=json.dumps([{"entity_id": e1, "name": "Gareth Ashfall"}]),
+        )
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        gs_id = gs.id
+    finally:
+        db.close()
+
+    entity_ids, pc_ids = audio_jobs._session_featured_picks(gs_id)
+    assert entity_ids == [e1]
+    assert pc_ids == []
+
+
+def test_session_featured_picks_empty_for_no_session_or_no_picks(client, seed):
+    assert audio_jobs._session_featured_picks(999999) == ([], [])
+
+
+def test_build_rag_context_always_includes_pinned_player_characters(client, seed):
+    from app.database import SessionLocal as _SL
+    from app.models import PlayerCharacter as _PlayerCharacter
+
+    db = _SL()
+    try:
+        pc = _PlayerCharacter(world_id=seed.world_a.id, name="Boric Stonehand", race="Dwarf", char_class="Fighter", background="Blacksmith's apprentice")
+        db.add(pc)
+        db.commit()
+        db.refresh(pc)
+        pc_id = pc.id
+    finally:
+        db.close()
+
+    context = audio_jobs._build_rag_context(
+        seed.world_a.id, "completely unrelated query text", entity_limit=0, notes_limit=0,
+        pinned_pc_ids=[pc_id],
+    )
+    assert "Boric Stonehand" in context
+    assert "Dwarf" in context
+    assert "Fighter" in context
+
+
+@pytest.mark.asyncio
+async def test_create_condense_job_use_rag_pins_session_player_character(client, seed, monkeypatch):
+    """End-to-end through the job engine: a session's saved PlayerCharacter
+    pick reaches world_context even though the condensed text shares no
+    words with the character's name at all."""
+    from app.database import SessionLocal as _SL
+    from app.models import GameSession as _GameSession, PlayerCharacter as _PlayerCharacter
+
+    db = _SL()
+    try:
+        pc = _PlayerCharacter(world_id=seed.world_a.id, name="Boric Stonehand")
+        db.add(pc)
+        db.commit()
+        db.refresh(pc)
+        pc_id = pc.id
+        gs = _GameSession(
+            world_id=seed.world_a.id, title="Session 1", session_num=1,
+            npcs_json=json.dumps([{"entity_id": pc_id, "name": "Boric Stonehand", "kind": "player_character"}]),
+        )
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        gs_id = gs.id
+    finally:
+        db.close()
+
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
+        captured["world_context"] = kwargs.get("world_context")
+        return "condensed"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text="something entirely unrelated to any established name",
+        use_rag=True, game_session_id=gs_id,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert "Boric Stonehand" in (captured["world_context"] or "")
 
 
 @pytest.mark.asyncio

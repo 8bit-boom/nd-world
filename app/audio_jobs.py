@@ -15,7 +15,7 @@ from typing import Optional
 from . import ai as _ai_module
 from . import job_shutdown as _job_shutdown
 from .database import SessionLocal
-from .models import AudioJob, Entity, GameSession, World
+from .models import AudioJob, Entity, GameSession, PlayerCharacter, World
 
 _log = logging.getLogger("nd.audio_jobs")
 
@@ -345,34 +345,61 @@ _DEFAULT_RAG_NOTES_LIMIT = 5
 _RAG_QUERY_CHAR_BUDGET = 4000
 
 
-def _session_featured_entity_ids(game_session_id: int) -> list[int]:
-    """Entity ids a GM checked in the Sessions page's "Entities Featured"
-    picker (app.routers.sessions._featured_entity_candidates), read back
-    off GameSession.npcs_json — a [{entity_id, name}] list, saved by the
-    ordinary session_edit form POST. These become _build_rag_context's
-    `pinned_entity_ids`: a GM-curated, deterministic set that's included
+def _session_featured_picks(game_session_id: int) -> tuple[list[int], list[int]]:
+    """(entity_ids, player_character_ids) a GM checked in the Sessions
+    page's "Entities Featured" picker (app.routers.sessions.
+    _featured_entity_candidates), read back off GameSession.npcs_json — a
+    [{entity_id, name, kind}] list, saved by the ordinary session_edit form
+    POST. These become _build_rag_context's `pinned_entity_ids`/
+    `pinned_pc_ids`: a GM-curated, deterministic set that's included
     regardless of keyword search, unlike everything else RAG retrieves —
     see _build_rag_context's own docstring for why that matters most for a
     session whose transcript is in a different language than the World's
-    entity names. Reads from the DB, not any in-browser/unsaved checkbox
-    state — a GM needs to Save the session before a Condense/Summarize run
-    picks up their latest picks."""
+    entity names.
+
+    A pre-existing row saved before PlayerCharacter picks existed has no
+    "kind" key at all — defaults to "entity", same convention session_
+    detail's own read path uses. Reads from the DB, not any in-browser/
+    unsaved checkbox state — a GM needs to Save the session before a
+    Condense/Summarize run picks up their latest picks."""
     db = SessionLocal()
     try:
         gs = db.get(GameSession, game_session_id)
         if not gs or not gs.npcs_json:
-            return []
+            return [], []
         try:
-            return [n["entity_id"] for n in _json.loads(gs.npcs_json)]
-        except (ValueError, KeyError, TypeError):
-            return []
+            picks = _json.loads(gs.npcs_json)
+        except (ValueError, TypeError):
+            return [], []
+        entity_ids, pc_ids = [], []
+        for n in picks:
+            try:
+                eid = n["entity_id"]
+            except (KeyError, TypeError):
+                continue
+            (pc_ids if n.get("kind") == "player_character" else entity_ids).append(eid)
+        return entity_ids, pc_ids
     finally:
         db.close()
 
 
+def _format_pc_line(pc: PlayerCharacter) -> str:
+    """One reference line for a pinned PlayerCharacter — same rough shape
+    app.main._format_context_from_entities uses for an Entity, but
+    PlayerCharacter isn't an Entity (its own id sequence, its own table),
+    so it can't just be handed to that function."""
+    detail = " ".join(x for x in (pc.char_class, pc.race) if x)
+    line = f"- [player character] {pc.name}"
+    if detail:
+        line += f" ({detail})"
+    if pc.background:
+        line += f": {pc.background}"
+    return line
+
+
 def _build_rag_context(
     world_id: int, query: str, entity_limit: int, notes_limit: int,
-    pinned_entity_ids: Optional[list[int]] = None,
+    pinned_entity_ids: Optional[list[int]] = None, pinned_pc_ids: Optional[list[int]] = None,
 ) -> str:
     """RAG retrieval for a summarize/condense job's system prompt (see
     app.ai._with_world_context, which is what actually prepends the result
@@ -408,13 +435,17 @@ def _build_rag_context(
     name once it has the reference list on hand (see _with_world_context's
     own instruction wording), it just needs to actually be given one.
 
-    `pinned_entity_ids` (see _session_featured_entity_ids) are ALWAYS
-    included, listed first, and never count against entity_limit/
+    `pinned_entity_ids`/`pinned_pc_ids` (see _session_featured_picks) are
+    ALWAYS included, listed first, and never count against entity_limit/
     notes_limit — a GM's own deliberate "this session featured these"
     picks are a much stronger signal than keyword search, so they're
     guaranteed rather than competing with it for budget. Everything else
     (keyword search, its top-up, the guaranteed-recent-notes fetch) then
-    excludes whatever's already pinned."""
+    excludes whatever's already pinned. pinned_pc_ids is a separate id
+    space from pinned_entity_ids — PlayerCharacter isn't an Entity, has no
+    `kind`/`summary` of its own, and is never subject to the keyword
+    search or top-up above, only ever appearing here because it was
+    pinned (see _format_pc_line)."""
     from . import main as _main_module  # deferred — see docstring above
 
     db = SessionLocal()
@@ -425,6 +456,13 @@ def _build_rag_context(
             .order_by(Entity.kind, Entity.name)
             .all()
             if pinned_entity_ids else []
+        )
+        pinned_pcs = (
+            db.query(PlayerCharacter)
+            .filter(PlayerCharacter.world_id == world_id, PlayerCharacter.id.in_(pinned_pc_ids))
+            .order_by(PlayerCharacter.name)
+            .all()
+            if pinned_pc_ids else []
         )
         seen_ids = {e.id for e in pinned}
 
@@ -454,7 +492,9 @@ def _build_rag_context(
 
         pinned_notes = [e for e in pinned if e.kind == "note"]
         pinned_non_notes = [e for e in pinned if e.kind != "note"]
-        return _main_module._format_context_from_entities(pinned_non_notes + non_notes + pinned_notes + notes)
+        entity_context = _main_module._format_context_from_entities(pinned_non_notes + non_notes + pinned_notes + notes)
+        pc_context = "\n".join(_format_pc_line(pc) for pc in pinned_pcs)
+        return "\n".join(part for part in (pc_context, entity_context) if part)
     finally:
         db.close()
 
@@ -601,16 +641,17 @@ async def _run_job(job_id: int) -> None:
             # one, so the input being summarized IS the best signal for what
             # entities/notes are relevant to it (see _build_rag_context's
             # own docstring for the query-length cap this relies on).
-            # pinned_entity_ids: whatever the GM checked in this session's
-            # own "Entities Featured" picker (see _session_featured_entity_
-            # ids) — guaranteed inclusion regardless of what the keyword
-            # search above finds, not just this run's best-effort query.
-            pinned_entity_ids = _session_featured_entity_ids(game_session_id) if game_session_id else []
+            # pinned_entity_ids/pinned_pc_ids: whatever the GM checked in
+            # this session's own "Entities Featured" picker (see _session_
+            # featured_picks) — guaranteed inclusion regardless of what the
+            # keyword search above finds, not just this run's best-effort
+            # query.
+            pinned_entity_ids, pinned_pc_ids = _session_featured_picks(game_session_id) if game_session_id else ([], [])
             world_context = _build_rag_context(
                 world_id, transcript,
                 rag_entity_limit if rag_entity_limit is not None else _DEFAULT_RAG_ENTITY_LIMIT,
                 rag_notes_limit if rag_notes_limit is not None else _DEFAULT_RAG_NOTES_LIMIT,
-                pinned_entity_ids=pinned_entity_ids,
+                pinned_entity_ids=pinned_entity_ids, pinned_pc_ids=pinned_pc_ids,
             )
 
         if purpose == "condense":
