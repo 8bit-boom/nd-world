@@ -118,7 +118,7 @@ def create_job(
     world_id: int, purpose: str, filename: str, audio_path: Path,
     delete_after: bool = True, game_session_id: Optional[int] = None,
     created_by_user_id: Optional[int] = None, attachment_url: str = "",
-    model: str = "", extra_instructions: str = "",
+    model: str = "", extra_instructions: str = "", think: bool = True,
 ) -> int:
     """Create the job row and start its background task immediately —
     returns the job id right away, well before transcription (let alone
@@ -129,13 +129,20 @@ def create_job(
     doesn't stop it.
 
     `model`, if given, is the Ollama model to use for the summarization
-    step (purpose="session_recap" only — ignored for "attachment", which
-    only transcribes). Blank means "whatever the instance default is."
+    step (purpose="session_recap"/"condense" only — ignored for
+    "attachment", which only transcribes). Blank means "whatever the
+    instance default is."
 
     `extra_instructions`, if given, is a one-off note for THIS run's
     summarization only (purpose="session_recap" only) — combined with the
     world's own persistent World.recap_instructions rather than replacing
     it, see _combined_recap_instructions.
+
+    `think` (purpose="session_recap"/"condense" only) is whether the
+    summarize/condense step runs with the model's "thinking" mode on —
+    persisted onto the row so a resume uses the same setting; see
+    AudioJob.think's own docstring for why NULL (a pre-migration row) and
+    the default here both mean "on."
 
     audio_path and delete_after are persisted onto the row (not just
     passed to _run_job as arguments) so a resume after a server restart —
@@ -148,8 +155,49 @@ def create_job(
             world_id=world_id, purpose=purpose, filename=filename,
             game_session_id=game_session_id, created_by_user_id=created_by_user_id,
             attachment_url=attachment_url, status="pending", model=model or None,
-            extra_instructions=extra_instructions.strip() or None,
+            extra_instructions=extra_instructions.strip() or None, think=think,
             audio_path=str(audio_path), delete_after=delete_after,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    task = asyncio.create_task(_run_job(job_id))
+    _running_tasks[job_id] = task
+    task.add_done_callback(lambda t, jid=job_id: _forget_task(jid, t))
+    return job_id
+
+
+def create_condense_job(
+    world_id: int, text: str, model: str = "", think: bool = True, fit_context: bool = False,
+    game_session_id: Optional[int] = None, created_by_user_id: Optional[int] = None,
+) -> int:
+    """Condense `text` (typically a Session page's current Summary field) as
+    a durable background job instead of a blocking request — same "survives
+    closing the tab" contract create_job's own docstring describes, reusing
+    the identical task-registration/checkpoint/interrupt machinery.
+
+    Unlike a real audio job, there is no transcription phase: `text` is
+    stored directly into job.transcript at creation (the row's "input"
+    field, same slot a Whisper transcript would occupy), audio_path is
+    blank, and delete_after is False (nothing to delete — there was never
+    an uploaded file). _run_job sees a non-empty job.transcript and no
+    audio_path, skips straight past the transcribe branch (see its own
+    dispatch docstring), and for purpose="condense" calls condense_recap
+    instead of summarize_transcript. The condensed result lands in
+    job.recap, same field a session_recap job's summary does — so the
+    existing polling/"Use this" UI (ndAudioJobs) needs no purpose-specific
+    branch to display it."""
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=world_id, purpose="condense", filename="Condense", status="pending",
+            game_session_id=game_session_id, created_by_user_id=created_by_user_id,
+            model=model or None, think=think, fit_context=fit_context,
+            transcript=text, audio_path="", delete_after=False,
         )
         db.add(job)
         db.commit()
@@ -209,7 +257,12 @@ async def _run_job(job_id: int) -> None:
     delete_after, model, world_id, extra_instructions) now lives on the
     row instead, read once at the top — create_job and start_resume_job
     both just start this same task, rather than one being a subtly
-    different reimplementation of the other.
+    different reimplementation of the other. purpose="condense" jobs (see
+    create_condense_job) are seeded with job.transcript already holding
+    the text to condense and no audio_path at all, so the "already has a
+    transcript" carve-out just below skips the transcribe phase
+    unconditionally on their very first run too — there is no audio to
+    transcribe in the first place.
 
     If the row already has a transcript (job.transcript non-empty) AND
     there's no still-outstanding transcribe-phase checkpoint, transcription
@@ -237,6 +290,10 @@ async def _run_job(job_id: int) -> None:
         model = job.model or ""
         world_id = job.world_id
         extra_instructions = job.extra_instructions or ""
+        # NULL (a pre-migration row that never had a "Thinking" checkbox to
+        # begin with) is treated as True — see AudioJob.think's docstring.
+        think = job.think if job.think is not None else True
+        fit_context = bool(job.fit_context)
         existing_transcript = job.transcript or ""
         checkpoint = _json.loads(job.checkpoint_json) if job.checkpoint_json else None
     finally:
@@ -323,7 +380,20 @@ async def _run_job(job_id: int) -> None:
         else:
             transcript = existing_transcript
 
-        if purpose == "session_recap":
+        if purpose == "condense":
+            # No chunking/checkpoint support — condense_recap is always a
+            # single call (that's the whole point of fit_context: size
+            # num_ctx to fit the entire input rather than splitting it), so
+            # there's no partial-progress state to persist between chunks
+            # the way session_recap's map-reduce path has.
+            _set(status="summarizing")
+            options = _ai_module.context_sized_options(transcript) if fit_context else None
+            recap = await _ai_module.condense_recap(transcript, model=model, options=options, think=think)
+            if _looks_like_failure(recap):
+                _set(status="error", error=recap, finished_at=datetime.utcnow())
+            else:
+                _set(status="done", recap=recap, finished_at=datetime.utcnow())
+        elif purpose == "session_recap":
             _set(status="summarizing")
             instructions = _combined_recap_instructions(
                 _recap_instructions_for_world(world_id) if world_id else "", extra_instructions,
@@ -332,7 +402,7 @@ async def _run_job(job_id: int) -> None:
             recap = await _ai_module.summarize_transcript(
                 transcript, model=model, extra_instructions=instructions,
                 on_progress=_on_progress, on_checkpoint=_checkpoint,
-                should_stop=_job_shutdown.stopping, resume=summarize_resume,
+                should_stop=_job_shutdown.stopping, resume=summarize_resume, think=think,
             )
             if _looks_like_failure(recap):
                 _set(status="error", error=recap, chunk_current=None, chunk_total=None,
@@ -401,7 +471,9 @@ def delete_job(job_id: int) -> bool:
         db.close()
 
 
-def start_resummarize_job(job_id: int, model: str = "", extra_instructions: Optional[str] = None) -> AudioJob:
+def start_resummarize_job(
+    job_id: int, model: str = "", extra_instructions: Optional[str] = None, think: Optional[bool] = None,
+) -> AudioJob:
     """Kick off re-running just the summarization step against a job's
     already-saved transcript, optionally with a different model — for when
     the first summary failed (wrong/unpulled model, Ollama unreachable) or
@@ -421,6 +493,11 @@ def start_resummarize_job(job_id: int, model: str = "", extra_instructions: Opti
     keeps whatever the job was created with (or last resummarized with),
     a non-blank value replaces it for this run and is persisted for next
     time too.
+
+    `think`, same "None keeps the prior value" convention: unlike `model`/
+    `extra_instructions` there's no separate blank-string sentinel to worry
+    about (it's already a real Optional[bool]), so None alone means "keep
+    whatever this job was created/last resummarized with."
 
     Deliberately always a FRESH pass, not a resume of some prior
     interrupted attempt: checkpoint_json is cleared and resumed_count reset
@@ -451,6 +528,8 @@ def start_resummarize_job(job_id: int, model: str = "", extra_instructions: Opti
         job.chunk_total = None
         job.model = chosen_model or None
         job.extra_instructions = chosen_instructions or None
+        if think is not None:
+            job.think = think
         job.checkpoint_json = ""
         job.resumed_count = 0
         job.run_started_at = datetime.utcnow()

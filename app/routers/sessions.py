@@ -396,6 +396,14 @@ async def session_loot_transfer(session_id: int, request: Request, db: Session =
 
 # ── AI recap assist (GM-only, via the Sessions edit page) ────────────────────
 
+def _think_from_body(body: dict) -> bool:
+    """The "Thinking" checkbox on the Recap panel / Retry-summary row is
+    checked by default — a request that omits `think` entirely (an older
+    client, or a direct API call) gets the same default the checkbox
+    itself starts in, not the plain generate_chat default of False."""
+    return bool(body.get("think", True))
+
+
 @router.post("/api/sessions/ai/expand-notes")
 async def api_expand_recap_notes(request: Request):
     """Expand terse GM notes (whatever's currently in the Summary textarea)
@@ -405,7 +413,7 @@ async def api_expand_recap_notes(request: Request):
     notes = str(body.get("notes", "")).strip()
     if not notes:
         raise HTTPException(400, "No notes provided")
-    return {"recap": await _ai_module.expand_recap_notes(notes)}
+    return {"recap": await _ai_module.expand_recap_notes(notes, think=_think_from_body(body))}
 
 
 @router.post("/api/sessions/ai/condense-recap")
@@ -418,12 +426,43 @@ async def api_condense_recap(request: Request):
     # configured/default context — see context_sized_options's docstring.
     # A one-call override only; the instance-wide default is untouched.
     options = _ai_module.context_sized_options(recap) if body.get("fit_context") else None
-    return {"recap": await _ai_module.condense_recap(recap, options=options)}
+    model = str(body.get("model", "")).strip()
+    recap_result = await _ai_module.condense_recap(recap, model=model, options=options, think=_think_from_body(body))
+    return {"recap": recap_result}
+
+
+@router.post("/api/sessions/ai/condense-job")
+async def api_condense_job_create(
+    request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Condense as a durable background job instead of a blocking request —
+    same "keeps running after you close the tab or navigate away" contract
+    audio_jobs.create_condense_job's own docstring describes. Returns the
+    job id immediately; the client picks the result up through the same
+    sessionAudioJobs panel/poll loop "Process in Background" summarize jobs
+    already use (see api_audio_job_list/api_audio_job_status's purpose
+    filter below, widened to include "condense")."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    body = await request.json()
+    recap = str(body.get("recap", "")).strip()
+    if not recap:
+        raise HTTPException(400, "No recap provided")
+    game_session_id = body.get("game_session_id")
+    gs_id = int(game_session_id) if game_session_id else None
+    job_id = _audio_jobs.create_condense_job(
+        world_id=world.id, text=recap, model=str(body.get("model", "")).strip(),
+        think=_think_from_body(body), fit_context=bool(body.get("fit_context")),
+        game_session_id=gs_id, created_by_user_id=_current_user_id(request),
+    )
+    return {"job_id": job_id}
 
 
 @router.post("/api/sessions/ai/summarize-from-audio")
 async def api_summarize_from_audio(
     request: Request, file: UploadFile = File(...), extra_instructions: str = Form(""),
+    think: bool = Form(True),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Transcribe an uploaded (file-picked, dropped, or mic-recorded) session
@@ -449,7 +488,7 @@ async def api_summarize_from_audio(
             "check the recording actually captured audio.",
         )
     instructions = _combine_recap_instructions(_recap_instructions_for_world(world), extra_instructions)
-    recap = await _ai_module.summarize_transcript(transcript, extra_instructions=instructions)
+    recap = await _ai_module.summarize_transcript(transcript, extra_instructions=instructions, think=think)
     return {"transcript": transcript, "recap": recap}
 
 
@@ -472,7 +511,7 @@ async def api_summarize_from_audio_chunk(
 async def api_summarize_from_audio_complete(
     request: Request,
     upload_id: str = Form(...), filename: str = Form(...), total_chunks: int = Form(...),
-    extra_instructions: str = Form(""),
+    extra_instructions: str = Form(""), think: bool = Form(True),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Reassemble the parts uploaded via .../chunk and finish exactly like
@@ -501,7 +540,7 @@ async def api_summarize_from_audio_complete(
             "check the recording actually captured audio.",
         )
     instructions = _combine_recap_instructions(_recap_instructions_for_world(world), extra_instructions)
-    recap = await _ai_module.summarize_transcript(transcript, extra_instructions=instructions)
+    recap = await _ai_module.summarize_transcript(transcript, extra_instructions=instructions, think=think)
     return {"transcript": transcript, "recap": recap}
 
 
@@ -536,7 +575,7 @@ def _job_to_dict(job: AudioJob) -> dict:
 @router.post("/api/sessions/ai/audio-jobs")
 async def api_audio_job_create(
     request: Request, file: UploadFile = File(...), game_session_id: str = Form(""),
-    model: str = Form(""), extra_instructions: str = Form(""),
+    model: str = Form(""), extra_instructions: str = Form(""), think: bool = Form(True),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Start a durable background transcribe+summarize job for a session
@@ -558,7 +597,7 @@ async def api_audio_job_create(
         world_id=world.id, purpose="session_recap", filename=file.filename or "",
         audio_path=dest, delete_after=True, game_session_id=gs_id,
         created_by_user_id=_current_user_id(request), model=model.strip(),
-        extra_instructions=extra_instructions.strip(),
+        extra_instructions=extra_instructions.strip(), think=think,
     )
     return {"job_id": job_id}
 
@@ -578,7 +617,7 @@ async def api_audio_job_chunk(
 async def api_audio_job_complete(
     request: Request, upload_id: str = Form(...), filename: str = Form(...),
     total_chunks: int = Form(...), game_session_id: str = Form(""),
-    model: str = Form(""), extra_instructions: str = Form(""),
+    model: str = Form(""), extra_instructions: str = Form(""), think: bool = Form(True),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Reassemble the parts uploaded via .../audio-jobs/chunk and start a
@@ -599,9 +638,16 @@ async def api_audio_job_complete(
         world_id=world.id, purpose="session_recap", filename=filename,
         audio_path=dest, delete_after=True, game_session_id=gs_id,
         created_by_user_id=_current_user_id(request), model=model.strip(),
-        extra_instructions=extra_instructions.strip(),
+        extra_instructions=extra_instructions.strip(), think=think,
     )
     return {"job_id": job_id}
+
+
+# purpose IN (session_recap, condense): both are session-scoped recap-style
+# jobs the sessionAudioJobs panel on the Sessions page polls/lists together
+# — "attachment" jobs (AI Chat voice memos) are a different panel entirely
+# and must stay excluded here.
+_SESSION_JOB_PURPOSES = ("session_recap", "condense")
 
 
 @router.get("/api/sessions/ai/audio-jobs/{job_id}")
@@ -610,7 +656,7 @@ def api_audio_job_status(job_id: int, request: Request, db: Session = Depends(ge
     if not world:
         raise HTTPException(404)
     job = db.query(AudioJob).filter(
-        AudioJob.id == job_id, AudioJob.world_id == world.id, AudioJob.purpose == "session_recap",
+        AudioJob.id == job_id, AudioJob.world_id == world.id, AudioJob.purpose.in_(_SESSION_JOB_PURPOSES),
     ).first()
     if not job:
         raise HTTPException(404)
@@ -628,7 +674,7 @@ def api_audio_job_list(request: Request, db: Session = Depends(get_db), active_w
         raise HTTPException(404)
     jobs = (
         db.query(AudioJob)
-        .filter(AudioJob.world_id == world.id, AudioJob.purpose == "session_recap")
+        .filter(AudioJob.world_id == world.id, AudioJob.purpose.in_(_SESSION_JOB_PURPOSES))
         .order_by(AudioJob.created_at.desc())
         .limit(20)
         .all()
@@ -675,7 +721,7 @@ def api_live_transcript_clear(session_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/api/sessions/{session_id}/ai/summarize-live-transcript")
-async def api_summarize_live_transcript(session_id: int, db: Session = Depends(get_db)):
+async def api_summarize_live_transcript(session_id: int, request: Request, db: Session = Depends(get_db)):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
@@ -685,12 +731,20 @@ async def api_summarize_live_transcript(session_id: int, db: Session = Depends(g
     # this route has no cookie param, and the session's own world is always
     # the right one regardless of which world tab is currently active.
     world = db.get(World, gs.world_id)
-    recap = await _ai_module.summarize_transcript(gs.live_transcript, extra_instructions=_recap_instructions_for_world(world))
+    # Same "predates taking a body" situation summarize-from-facts is in —
+    # read think optionally rather than requiring a caller to start sending
+    # an otherwise-pointless empty JSON body.
+    raw = await request.body()
+    body = json.loads(raw) if raw else {}
+    recap = await _ai_module.summarize_transcript(
+        gs.live_transcript, extra_instructions=_recap_instructions_for_world(world),
+        think=_think_from_body(body),
+    )
     return {"transcript": gs.live_transcript, "recap": recap}
 
 
 @router.post("/api/sessions/{session_id}/ai/summarize-from-facts")
-async def api_summarize_from_facts(session_id: int, db: Session = Depends(get_db)):
+async def api_summarize_from_facts(session_id: int, request: Request, db: Session = Depends(get_db)):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
@@ -698,7 +752,15 @@ async def api_summarize_from_facts(session_id: int, db: Session = Depends(get_db
     if not facts:
         raise HTTPException(400, "No facts logged for this session yet — log some on the Facts page first.")
     world = db.get(World, gs.world_id)
-    recap = await _ai_module.summarize_session_from_facts([f.content for f in facts], extra_instructions=_recap_instructions_for_world(world))
+    # This route predates taking a body at all (the client's existing call
+    # sends none) — read think optionally rather than requiring every
+    # caller to start sending an (otherwise pointless) empty JSON body.
+    raw = await request.body()
+    body = json.loads(raw) if raw else {}
+    recap = await _ai_module.summarize_session_from_facts(
+        [f.content for f in facts], extra_instructions=_recap_instructions_for_world(world),
+        think=_think_from_body(body),
+    )
     return {"recap": recap}
 
 

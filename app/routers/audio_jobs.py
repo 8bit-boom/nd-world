@@ -24,7 +24,7 @@ from ..templating import templates
 
 router = APIRouter()
 
-PURPOSE_LABELS = {"session_recap": "Session Recap", "attachment": "Voice Attachment"}
+PURPOSE_LABELS = {"session_recap": "Session Recap", "attachment": "Voice Attachment", "condense": "Condense"}
 
 
 def _require_gm(request: Request) -> None:
@@ -47,6 +47,11 @@ def _job_to_dict(job: AudioJob) -> dict:
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         "resumed_count": job.resumed_count,
+        # NULL (a pre-migration row) reads as True — same convention
+        # _run_job itself uses, see AudioJob.think's docstring — so the
+        # Retry-summary row's checkbox pre-checks correctly for every job.
+        "think": job.think if job.think is not None else True,
+        "fit_context": bool(job.fit_context),
         # Whether the ▶ Resume button should show — see app.audio_jobs.
         # start_resume_job for the full contract this mirrors.
         "resumable": job.status == "interrupted",
@@ -166,6 +171,7 @@ def api_audio_job_delete(job_id: int, request: Request, db: Session = Depends(ge
 @router.post("/api/audio-jobs/{job_id}/resummarize")
 async def api_audio_job_resummarize(
     job_id: int, request: Request, model: str = Form(""), extra_instructions: str = Form(""),
+    think: bool = Form(True),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Kick off re-running the summarization step against a job's already-
@@ -188,7 +194,7 @@ async def api_audio_job_resummarize(
     if not job:
         raise HTTPException(404)
     try:
-        job = _audio_jobs.start_resummarize_job(job_id, model=model.strip(), extra_instructions=extra_instructions)
+        job = _audio_jobs.start_resummarize_job(job_id, model=model.strip(), extra_instructions=extra_instructions, think=think)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return _job_to_dict(job)

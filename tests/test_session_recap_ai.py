@@ -40,8 +40,11 @@ def _login_gm_in(client, seed, world):
 # ── GM-only AI recap assist ──────────────────────────────────────────────────
 
 def test_expand_notes(client, seed, monkeypatch):
-    async def fake_expand(notes, model=""):
+    captured = {}
+
+    async def fake_expand(notes, model="", think=True):
         assert notes == "went to the tavern, met Elyra"
+        captured["think"] = think
         return "The party visited the tavern and met Elyra."
     monkeypatch.setattr(ai_module, "expand_recap_notes", fake_expand)
 
@@ -49,6 +52,21 @@ def test_expand_notes(client, seed, monkeypatch):
     r = client.post("/api/sessions/ai/expand-notes", json={"notes": "went to the tavern, met Elyra"})
     assert r.status_code == 200
     assert r.json()["recap"] == "The party visited the tavern and met Elyra."
+    assert captured["think"] is True  # checkbox is checked by default
+
+
+def test_expand_notes_think_off(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_expand(notes, model="", think=True):
+        captured["think"] = think
+        return "recap"
+    monkeypatch.setattr(ai_module, "expand_recap_notes", fake_expand)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post("/api/sessions/ai/expand-notes", json={"notes": "notes", "think": False})
+    assert r.status_code == 200
+    assert captured["think"] is False
 
 
 def test_expand_notes_requires_notes(client, seed):
@@ -58,8 +76,12 @@ def test_expand_notes_requires_notes(client, seed):
 
 
 def test_condense_recap(client, seed, monkeypatch):
-    async def fake_condense(recap, model="", options=None):
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None, think=True):
         assert options is None
+        captured["model"] = model
+        captured["think"] = think
         return "Short version."
     monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
 
@@ -67,12 +89,30 @@ def test_condense_recap(client, seed, monkeypatch):
     r = client.post("/api/sessions/ai/condense-recap", json={"recap": "A very long recap..."})
     assert r.status_code == 200
     assert r.json()["recap"] == "Short version."
+    assert captured["model"] == ""
+    assert captured["think"] is True  # checkbox is checked by default
+
+
+def test_condense_recap_passes_model_and_think(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None, think=True):
+        captured["model"] = model
+        captured["think"] = think
+        return "Short version."
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post("/api/sessions/ai/condense-recap", json={"recap": "text", "model": "llama3.1", "think": False})
+    assert r.status_code == 200
+    assert captured["model"] == "llama3.1"
+    assert captured["think"] is False
 
 
 def test_condense_recap_fit_context_sizes_num_ctx_to_the_pasted_text(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_condense(recap, model="", options=None):
+    async def fake_condense(recap, model="", options=None, think=True):
         captured["options"] = options
         return "Short version."
     monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
@@ -90,7 +130,7 @@ def test_condense_recap_fit_context_sizes_num_ctx_to_the_pasted_text(client, see
 def test_condense_recap_fit_context_false_by_default(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_condense(recap, model="", options=None):
+    async def fake_condense(recap, model="", options=None, think=True):
         captured["options"] = options
         return "Short version."
     monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
@@ -108,8 +148,9 @@ def test_summarize_from_facts_gm(client, seed, monkeypatch):
 
     captured = {}
 
-    async def fake_summarize(facts, model="", extra_instructions=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True):
         captured["facts"] = facts
+        captured["think"] = think
         return "Woven recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -119,6 +160,7 @@ def test_summarize_from_facts_gm(client, seed, monkeypatch):
     assert r.json()["recap"] == "Woven recap."
     # GM's summarize call includes every fact, secret or not.
     assert set(captured["facts"]) == {"Fact one", "Fact two (secret)"}
+    assert captured["think"] is True  # checkbox is checked by default, even with no body sent at all
 
 
 def test_summarize_from_facts_requires_facts(client, seed):

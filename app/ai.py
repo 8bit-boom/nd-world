@@ -88,7 +88,7 @@ def effective_ollama_keep_alive() -> str:
     return _ollama_keep_alive_override
 
 
-def _chat_kwargs(extra_options: dict = None) -> dict:
+def _chat_kwargs(extra_options: dict = None, think: bool = False) -> dict:
     """Extra kwargs (options=, keep_alive=, think=) to splat into every
     .chat() call below — built fresh each call so a runtime settings change
     (no server restart needed) takes effect on the very next request.
@@ -98,15 +98,21 @@ def _chat_kwargs(extra_options: dict = None) -> dict:
     Settings > System configured, so a preset only has to specify what it
     wants to differ.
 
-    think=False is unconditional: every caller of generate_chat/stream_chat/
-    parse_facts_from_recap/parse_entity_from_text/benchmark_model wants a
-    single direct answer, never a "thinking"/reasoning model's hidden
-    chain-of-thought. Without it, a thinking-capable model can spend its
-    whole output budget on reasoning tokens and return an empty `content`
-    with `thinking` full of text instead — see generate_chat's empty-content
-    handling below for what happens if that still slips through (a model
-    that doesn't honor think=False, or a genuinely empty answer)."""
-    kwargs = {"think": False}
+    think defaults to False for every caller that doesn't pass it —
+    parse_facts_from_recap/parse_entity_from_text/generate_session_prep
+    need clean JSON back and benchmark_model needs a stable timing
+    comparison, so none of those ever opt in. Without think=False, a
+    thinking-capable model can spend its whole output budget on reasoning
+    tokens and return an empty `content` with `thinking` full of text
+    instead — see generate_chat's empty-content handling below for what
+    happens if that still slips through (a model that doesn't honor
+    think=False, or a genuinely empty answer). The session-recap-assist
+    family (expand_recap_notes/condense_recap/summarize_transcript/
+    summarize_session_from_facts) defaults ITS OWN think to True instead —
+    see their docstrings — and is the only thing that ever passes
+    think=True down to here; a GM's "Thinking" checkbox on those pages
+    controls it per call."""
+    kwargs = {"think": think}
     opts = {**effective_ollama_options(), **(extra_options or {})}
     if opts:
         kwargs["options"] = opts
@@ -389,7 +395,7 @@ _SYSTEM = (
 )
 
 
-async def generate_chat(messages: list[dict], system: str = "", model: str = "", options: dict = None) -> str:
+async def generate_chat(messages: list[dict], system: str = "", model: str = "", options: dict = None, think: bool = False) -> str:
     m = model or effective_ollama_model()
     _log.info("generate_chat model=%s msgs=%d", m, len(messages))
     full = []
@@ -397,7 +403,7 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
         full.append({"role": "system", "content": system})
     full.extend(messages)
     try:
-        resp = await _client().chat(model=m, messages=full, **_chat_kwargs(options))
+        resp = await _client().chat(model=m, messages=full, **_chat_kwargs(options, think))
         content = resp.message.content
         if content:
             return content
@@ -664,14 +670,20 @@ _EXPAND_NOTES_SYSTEM = (
 )
 
 
-async def expand_recap_notes(notes: str, model: str = "") -> str:
+async def expand_recap_notes(notes: str, model: str = "", think: bool = True) -> str:
     """Expand terse GM notes into a polished narrative session recap. Unlike
     parse_facts_from_recap, this doesn't need JSON-schema-constrained output
     (free-text prose, not discrete structured facts) so it just wraps
     generate_chat directly — same "[AI error: ...]"/"[AI unavailable: ...]"
     inline-string failure convention as every other chat call in this module,
-    which the caller can display as-is instead of catching an exception."""
-    return await generate_chat([{"role": "user", "content": notes}], system=_EXPAND_NOTES_SYSTEM, model=model)
+    which the caller can display as-is instead of catching an exception.
+
+    think defaults to True (unlike generate_chat's own plain default of
+    False) — this is one of the session-recap-assist functions a GM's
+    "Thinking" checkbox on the Sessions page controls; the checkbox is
+    checked by default, so the common case is this default applying
+    unchanged."""
+    return await generate_chat([{"role": "user", "content": notes}], system=_EXPAND_NOTES_SYSTEM, model=model, think=think)
 
 
 _SUMMARIZE_FACTS_SYSTEM = (
@@ -683,16 +695,18 @@ _SUMMARIZE_FACTS_SYSTEM = (
 )
 
 
-async def summarize_session_from_facts(facts: list[str], model: str = "", extra_instructions: str = "") -> str:
+async def summarize_session_from_facts(facts: list[str], model: str = "", extra_instructions: str = "", think: bool = True) -> str:
     """Weave a list of discrete session facts (see the Facts feature, which
     logs these per-session) into a readable narrative recap. `extra_instructions`
     is a GM's steering (e.g. World.recap_instructions — "write in Spanish"),
-    same as summarize_transcript's own parameter of the same name."""
+    same as summarize_transcript's own parameter of the same name. `think`
+    defaults to True — see expand_recap_notes's docstring for why this
+    family of functions differs from generate_chat's own plain default."""
     if not facts:
         return ""
     bullet_list = "\n".join(f"- {f}" for f in facts)
     system = _with_instructions(_SUMMARIZE_FACTS_SYSTEM, extra_instructions)
-    return await generate_chat([{"role": "user", "content": bullet_list}], system=system, model=model)
+    return await generate_chat([{"role": "user", "content": bullet_list}], system=system, model=model, think=think)
 
 
 _CONDENSE_RECAP_SYSTEM = (
@@ -704,13 +718,16 @@ _CONDENSE_RECAP_SYSTEM = (
 )
 
 
-async def condense_recap(recap: str, model: str = "", options: dict = None) -> str:
+async def condense_recap(recap: str, model: str = "", options: dict = None, think: bool = True) -> str:
     """Condense an existing recap into a tighter 'previously on...' summary.
     `options` (see generate_chat) is an optional per-call override — the
     caller passes context_sized_options(recap) to force num_ctx to
     comfortably fit the whole pasted recap for this one call only, without
-    touching app.ai's instance-wide default the next call falls back to."""
-    return await generate_chat([{"role": "user", "content": recap}], system=_CONDENSE_RECAP_SYSTEM, model=model, options=options)
+    touching app.ai's instance-wide default the next call falls back to.
+    `think` defaults to True — see expand_recap_notes's docstring for why
+    this family of functions differs from generate_chat's own plain
+    default."""
+    return await generate_chat([{"role": "user", "content": recap}], system=_CONDENSE_RECAP_SYSTEM, model=model, options=options, think=think)
 
 
 # Reserved for the system prompt (_CONDENSE_RECAP_SYSTEM is short, but this
@@ -862,7 +879,8 @@ def _with_instructions(system: str, extra_instructions: str) -> str:
 
 
 async def summarize_transcript(transcript: str, model: str = "", extra_instructions: str = "", on_progress=None,
-                                on_checkpoint=None, should_stop=None, resume: dict | None = None) -> str:
+                                on_checkpoint=None, should_stop=None, resume: dict | None = None,
+                                think: bool = True) -> str:
     """Turn a raw Whisper transcript (see transcribe_audio) of a session
     recording into a narrative recap. Transcripts that fit in one context
     window go through a single generate_chat call, same as before.
@@ -914,7 +932,12 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
     a mismatch (e.g. num_ctx or extra_instructions changed since the
     checkpoint was written, changing chunk_chars) is logged and discarded
     rather than risking a spliced-together recap from two different
-    chunkings."""
+    chunkings.
+
+    `think` defaults to True (unlike generate_chat's own plain default of
+    False) and is forwarded to every generate_chat call this makes,
+    chunked or not — see expand_recap_notes's docstring for why this
+    family of functions differs from generate_chat's own default."""
     transcript = (transcript or "").strip()
     if not transcript:
         return ""
@@ -926,7 +949,7 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
     chunks = _split_transcript_into_chunks(transcript, chunk_chars)
     if len(chunks) <= 1:
         system = _with_instructions(_SUMMARIZE_TRANSCRIPT_SYSTEM, extra_instructions)
-        return await generate_chat([{"role": "user", "content": transcript}], system=system, model=model)
+        return await generate_chat([{"role": "user", "content": transcript}], system=system, model=model, think=think)
 
     _log.info("summarize_transcript: chunking into %d part(s) (%d chars total)", len(chunks), len(transcript))
     system = part_system
@@ -951,7 +974,7 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
             raise JobInterrupted(f"stopped before summarizing part {i + 1} of {len(chunks)}")
         if on_progress:
             on_progress(i + 1, len(chunks))
-        part = await generate_chat([{"role": "user", "content": chunk}], system=system, model=model)
+        part = await generate_chat([{"role": "user", "content": chunk}], system=system, model=model, think=think)
         if is_failure_sentinel(part):
             return part  # propagate the failure rather than weaving an error string into the recap
         part = part.strip()

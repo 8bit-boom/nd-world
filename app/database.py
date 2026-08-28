@@ -829,6 +829,12 @@ def _migrate():
             ("delete_after",        "BOOLEAN DEFAULT 1", True),
             ("checkpoint_json",     "TEXT DEFAULT ''", True),
             ("resumed_count",       "INTEGER DEFAULT 0", True),
+            # NULL heals to "treated as True" (see AudioJob.think's own
+            # docstring) — an existing pre-migration job never had a
+            # "Thinking" checkbox to begin with, so there's no prior choice
+            # to preserve either way.
+            ("think",               "BOOLEAN", True),
+            ("fit_context",         "BOOLEAN DEFAULT 0", True),
         ], foreign_keys=[
             ("world_id", "worlds", "id"),
             ("created_by_user_id", "users", "id"),

@@ -214,13 +214,21 @@ function bgRenderJob(job) {
     instructionsInput.value = job.extra_instructions || '';
     instructionsInput.style.cssText = 'font-size:.75rem;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:.2rem .4rem;width:180px';
 
+    const thinkLabel = document.createElement('label');
+    thinkLabel.style.cssText = 'display:inline-flex;align-items:center;gap:.25rem;font-size:.75rem;color:var(--text-dim);cursor:pointer';
+    thinkLabel.title = "Uses the model's thinking/reasoning mode for this re-summarize pass — usually better quality, but slower.";
+    const thinkCheckbox = document.createElement('input');
+    thinkCheckbox.type = 'checkbox';
+    thinkCheckbox.checked = job.think !== false;
+    thinkLabel.append(thinkCheckbox, document.createTextNode('🧠 Thinking'));
+
     const retryBtn = document.createElement('button');
     retryBtn.type = 'button';
     retryBtn.className = 'bg-job-btn';
     retryBtn.textContent = '🔁 Retry summary';
-    retryBtn.onclick = () => bgResummarize(job.id, sel.value, instructionsInput.value, retryBtn);
+    retryBtn.onclick = () => bgResummarize(job.id, sel.value, instructionsInput.value, thinkCheckbox.checked, retryBtn);
 
-    retryWrap.append(sel, instructionsInput, retryBtn);
+    retryWrap.append(sel, instructionsInput, thinkLabel, retryBtn);
     actions.appendChild(retryWrap);
 
     const factsBtn = document.createElement('button');
@@ -327,7 +335,7 @@ async function bgResumeJob(jobId, btn) {
   bgRefresh();
 }
 
-async function bgResummarize(jobId, model, extraInstructions, btn) {
+async function bgResummarize(jobId, model, extraInstructions, think, btn) {
   // Only starts the job here — it now runs as a background task (a long
   // transcript's map-reduce summarize can take several minutes, too long
   // for this request/response to sit open through a reverse proxy without
@@ -339,7 +347,8 @@ async function bgResummarize(jobId, model, extraInstructions, btn) {
     const res = await fetch(`/api/audio-jobs/${jobId}/resummarize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'model=' + encodeURIComponent(model || '') + '&extra_instructions=' + encodeURIComponent(extraInstructions || ''),
+      body: 'model=' + encodeURIComponent(model || '') + '&extra_instructions=' + encodeURIComponent(extraInstructions || '')
+        + '&think=' + (think ? 'true' : 'false'),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));

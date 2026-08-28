@@ -181,7 +181,7 @@ def test_context_sized_options_never_mutates_instance_wide_overrides():
 async def test_short_transcript_uses_a_single_call(monkeypatch):
     calls = []
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", think=True):
         calls.append({"messages": messages, "system": system})
         return "A short recap."
 
@@ -197,7 +197,7 @@ async def test_long_transcript_summarizes_each_part_and_joins_them(monkeypatch):
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
     calls = []
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", think=True):
         calls.append({"content": messages[0]["content"], "system": system})
         return f"Summary of part {len(calls)}."
 
@@ -222,7 +222,7 @@ async def test_part_summaries_receive_only_their_own_chunk_never_the_whole_trans
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
     seen_lengths = []
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", think=True):
         seen_lengths.append(len(messages[0]["content"]))
         return "part summary"
 
@@ -243,7 +243,7 @@ async def test_recap_instructions_applied_to_every_part_call(monkeypatch):
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
     systems_seen = []
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", think=True):
         systems_seen.append(system)
         return "part summary"
 
@@ -265,7 +265,7 @@ async def test_on_progress_called_once_per_part_before_each_call(monkeypatch):
     "summarizing" instead of a bare placeholder."""
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", think=True):
         return "part summary"
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
 
@@ -281,7 +281,7 @@ async def test_on_progress_called_once_per_part_before_each_call(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_progress_not_called_for_a_short_unchunked_transcript(monkeypatch):
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", think=True):
         return "A short recap."
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
 
@@ -294,7 +294,7 @@ async def test_on_progress_not_called_for_a_short_unchunked_transcript(monkeypat
 async def test_long_transcript_propagates_a_part_summary_failure(monkeypatch):
     call_count = {"n": 0}
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", think=True):
         call_count["n"] += 1
         if call_count["n"] == 2:
             return "[AI unavailable: ConnectionError: Failed to connect to Ollama.]"
@@ -322,7 +322,7 @@ async def test_long_transcript_propagates_an_empty_response_part_failure(monkeyp
     real paragraph, with the job still ending up "done"."""
     call_count = {"n": 0}
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", think=True):
         call_count["n"] += 1
         if call_count["n"] == 2:
             return "[empty response from gemma4:26b (done_reason=length) — try a different model]"
@@ -345,7 +345,7 @@ async def test_long_transcript_aborts_on_a_whitespace_only_part(monkeypatch):
     recap where a whole chunk's events should be."""
     call_count = {"n": 0}
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", think=True):
         call_count["n"] += 1
         if call_count["n"] == 2:
             return "   \n  "
@@ -387,7 +387,7 @@ async def test_summarize_calls_on_checkpoint_after_every_part(monkeypatch):
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
     calls = []
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", think=True):
         calls.append(messages[0]["content"])
         return f"Summary {len(calls)}."
 
@@ -405,7 +405,7 @@ async def test_summarize_calls_on_checkpoint_after_every_part(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_summarize_on_checkpoint_not_called_for_a_short_unchunked_transcript(monkeypatch):
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", think=True):
         return "one short summary"
 
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
@@ -422,7 +422,7 @@ async def test_summarize_resumes_from_a_matching_checkpoint_and_skips_done_parts
     assert len(chunks) > 1
     seen_chunks = []
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", think=True):
         seen_chunks.append(messages[0]["content"])
         return f"Summary of {chunks.index(messages[0]['content']) if messages[0]['content'] in chunks else '?'}."
 
@@ -442,7 +442,7 @@ async def test_summarize_discards_a_checkpoint_with_a_different_chunk_budget(mon
     chunks = ai_module._split_transcript_into_chunks(_LONG_TRANSCRIPT, 50)
     seen_chunks = []
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", think=True):
         seen_chunks.append(messages[0]["content"])
         return "a summary"
 
@@ -459,7 +459,7 @@ async def test_summarize_discards_a_checkpoint_with_a_different_chunk_budget(mon
 async def test_summarize_raises_job_interrupted_at_the_next_part_boundary_when_should_stop(monkeypatch):
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", think=True):
         return "a summary"
 
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)

@@ -105,7 +105,7 @@ def test_with_instructions_appends_when_set():
 async def test_summarize_transcript_single_call_applies_instructions(monkeypatch):
     captured = {}
 
-    async def fake_generate_chat(messages, system="", model="", options=None):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         captured["system"] = system
         return "a recap"
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
@@ -123,7 +123,7 @@ async def test_summarize_transcript_chunked_path_applies_instructions_to_every_p
     part's own summary is final as written."""
     systems_seen = []
 
-    async def fake_generate_chat(messages, system="", model="", options=None):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         systems_seen.append(system)
         return "part summary"
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)

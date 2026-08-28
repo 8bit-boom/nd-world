@@ -53,6 +53,10 @@
           <a class="ai-recap-btn" href="{{ ('/sessions/' + gsession.id|string + '/summary.md')|wq }}" style="text-decoration:none" title="Downloads the last saved summary — save first if you've made unsaved edits">⬇ Download .md</a>
           {% endif %}
           {% endif %}
+          <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
+                 title="Uses the model's 'thinking'/reasoning mode for every AI action on this panel (Expand/Condense/Summarize from Facts, and Summarize/Process in Background below) — usually better quality, but slower and can leave a small/tight-context model with no room left to answer.">
+            <input type="checkbox" id="recap-think-checkbox" checked> 🧠 Thinking
+          </label>
           <span id="ai-recap-status" style="font-size:.78rem;color:var(--text-dim)"></span>
         </div>
 
@@ -221,13 +225,19 @@ function _setRecapTranscriptText(text) {
   document.getElementById('ai-recap-transcript-wrap').style.display = 'block';
 }
 
+function _recapThinkEnabled() {
+  const box = document.getElementById('recap-think-checkbox');
+  return box ? box.checked : true;
+}
+
 async function aiRunRecap(url, body) {
   const status = document.getElementById('ai-recap-status');
   status.textContent = 'Thinking…';
   _aiRecapButtons().forEach(b => b.disabled = true);
   try {
     const res = await fetch(url, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ think: _recapThinkEnabled(), ...body }),
     });
     if (!res.ok) throw await ndApiErrorFrom(res);
     const data = await res.json();
@@ -252,16 +262,45 @@ function aiExpandNotes() {
   aiRunRecap('/api/sessions/ai/expand-notes', { notes });
 }
 
+// Condense runs as a durable background job (like "Process in Background"
+// below) rather than a blocking request — it uses whatever model is
+// selected in the audio panel's model picker, and keeps running even if
+// this tab is closed or you navigate away. Poll/result handling is the
+// existing sessionAudioJobs panel (it already lists purpose="condense"
+// jobs alongside session_recap ones, see api_audio_job_list's purpose
+// filter) — "Use this" on a finished job loads it into the AI-draft
+// preview exactly like every other recap source on this page.
+async function aiStartCondenseJob(recap, fitContext) {
+  const status = document.getElementById('ai-recap-status');
+  status.textContent = 'Starting…';
+  const modelSel = document.getElementById('audio-bgjob-model');
+  try {
+    const res = await fetch('/api/sessions/ai/condense-job', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recap, fit_context: !!fitContext, think: _recapThinkEnabled(),
+        model: modelSel ? modelSel.value : '',
+        game_session_id: {{ gsession.id if gsession else 'null' }},
+      }),
+    });
+    if (!res.ok) throw await ndApiErrorFrom(res);
+    status.textContent = 'Condensing in the background — see Background Jobs below for the result.';
+    await sessionAudioJobs.refreshList();
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  }
+}
+
 function aiCondenseRecap() {
   const recap = document.getElementById('summary-field').value.trim();
   if (!recap) { alert('Nothing to condense yet.'); return; }
-  aiRunRecap('/api/sessions/ai/condense-recap', { recap });
+  aiStartCondenseJob(recap, false);
 }
 
 function aiCondenseRecapFit() {
   const recap = document.getElementById('summary-field').value.trim();
   if (!recap) { alert('Nothing to condense yet.'); return; }
-  aiRunRecap('/api/sessions/ai/condense-recap', { recap, fit_context: true });
+  aiStartCondenseJob(recap, true);
 }
 
 {% if gsession %}
@@ -320,7 +359,10 @@ async function aiSummarizeFromAudio(file) {
       directUrl: '/api/sessions/ai/summarize-from-audio',
       chunkUrl: '/api/sessions/ai/summarize-from-audio/chunk',
       completeUrl: '/api/sessions/ai/summarize-from-audio/complete',
-      extraFields: { extra_instructions: document.getElementById('audio-recap-instructions').value },
+      extraFields: {
+        extra_instructions: document.getElementById('audio-recap-instructions').value,
+        think: _recapThinkEnabled(),
+      },
       onProgress: (e) => ndProgressFromUpload(bar, e, 'Transcribing & summarizing — can take a while for a long recording…'),
     });
     _aiRecapDraft = data.recap || '';
@@ -378,7 +420,10 @@ document.getElementById('audio-bgjob-input').addEventListener('change', async fu
   try {
     await sessionAudioJobs.startJob(
       file,
-      { game_session_id: '{{ gsession.id if gsession else "" }}', model: model, extra_instructions: instructions },
+      {
+        game_session_id: '{{ gsession.id if gsession else "" }}', model: model,
+        extra_instructions: instructions, think: _recapThinkEnabled(),
+      },
       (e) => ndProgressFromUpload(bar, e, 'Job started — processing in background…'),
     );
     status.textContent = 'Background job started — see the jobs list below.';

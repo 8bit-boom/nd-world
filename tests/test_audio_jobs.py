@@ -67,8 +67,12 @@ def _fake_ai(monkeypatch):
     async def fake_summarize(transcript, model="", extra_instructions="", **kwargs):
         return "The party met Elena at the bazaar."
 
+    async def fake_condense(recap, model="", options=None, think=True):
+        return "Condensed: " + recap[:20]
+
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
     monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
 
 
 # ── app/audio_jobs.py engine, exercised directly ────────────────────────────
@@ -147,6 +151,97 @@ async def test_create_job_attachment_purpose_has_no_recap_and_keeps_file(client,
     assert job.recap == ""  # attachment purpose never summarizes
     assert job.attachment_url == "/uploads/ai_attachments/clip.mp3"
     assert audio.exists()  # delete_after=False
+
+
+# ── purpose="condense" (create_condense_job) ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_create_condense_job_runs_to_completion(client, seed):
+    job_id = audio_jobs.create_condense_job(world_id=seed.world_a.id, text="A long existing recap.")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.transcript == "A long existing recap."  # the input, unchanged
+    assert job.recap == "Condensed: A long existing reca"
+    assert job.audio_path == ""
+
+
+@pytest.mark.asyncio
+async def test_create_condense_job_never_transcribes(client, seed, monkeypatch):
+    """purpose="condense" has no audio at all — if _run_job's dispatch ever
+    regressed to calling transcribe_audio for it, this would fail loudly
+    instead of silently succeeding on the wrong path."""
+    async def fail_if_called(*a, **kw):
+        raise AssertionError("condense jobs must never transcribe")
+    monkeypatch.setattr(ai_module, "transcribe_audio", fail_if_called)
+
+    job_id = audio_jobs.create_condense_job(world_id=seed.world_a.id, text="text to condense")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+
+
+@pytest.mark.asyncio
+async def test_create_condense_job_passes_model_and_think(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None, think=True):
+        captured["model"] = model
+        captured["think"] = think
+        return "condensed"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text="some recap", model="llama3.1", think=False,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["model"] == "llama3.1"
+    assert captured["think"] is False
+    assert job.think is False
+    assert job.model == "llama3.1"
+
+
+@pytest.mark.asyncio
+async def test_create_condense_job_fit_context_sizes_num_ctx(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None, think=True):
+        captured["options"] = options
+        return "condensed"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    text = "word " * 2000
+    job_id = audio_jobs.create_condense_job(world_id=seed.world_a.id, text=text, fit_context=True)
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["options"] == ai_module.context_sized_options(text)
+    assert job.fit_context is True
+
+
+@pytest.mark.asyncio
+async def test_create_condense_job_fit_context_off_by_default(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None, think=True):
+        captured["options"] = options
+        return "condensed"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    job_id = audio_jobs.create_condense_job(world_id=seed.world_a.id, text="short recap")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["options"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_condense_job_marks_error_on_failure_sentinel(client, seed, monkeypatch):
+    async def failing_condense(recap, model="", options=None, think=True):
+        return "[AI error: Ollama unreachable]"
+    monkeypatch.setattr(ai_module, "condense_recap", failing_condense)
+
+    job_id = audio_jobs.create_condense_job(world_id=seed.world_a.id, text="text")
+    job = await _await_terminal(job_id)
+    assert job.status == "error"
+    assert job.error == "[AI error: Ollama unreachable]"
 
 
 @pytest.mark.asyncio
@@ -242,7 +337,7 @@ async def test_chunk_progress_visible_mid_summarize_and_cleared_when_done(client
     async def fake_transcribe(path, glossary="", **kwargs):
         return ("The party explored the ruins. " * 30).strip()
 
-    async def fake_generate_chat(messages, system="", model="", options=None):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         call_count["n"] += 1
         if call_count["n"] == 2:
             hang_on_second_chunk.set()
@@ -1146,6 +1241,77 @@ def test_session_job_cross_world_isolation(client, seed):
     client.cookies.set("active_world", seed.world_b.slug)
     r = client.get(f"/api/sessions/ai/audio-jobs/{job_id}")
     assert r.status_code == 404
+
+
+# ── Sessions routes: /api/sessions/ai/condense-job ──────────────────────────
+
+def test_condense_job_create_poll_and_list(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.post("/api/sessions/ai/condense-job", json={"recap": "A long recap to condense."})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+
+    data = _poll_until_terminal(client, f"/api/sessions/ai/audio-jobs/{job_id}")
+    assert data["status"] == "done", data
+    assert data["purpose"] == "condense"
+    assert data["transcript"] == "A long recap to condense."
+    assert data["recap"] == "Condensed: A long recap to cond"
+
+    r = client.get("/api/sessions/ai/audio-jobs")
+    assert r.status_code == 200
+    assert any(j["id"] == job_id for j in r.json())  # shows up alongside session_recap jobs
+
+
+def test_condense_job_requires_recap(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/condense-job", json={"recap": "  "})
+    assert r.status_code == 400
+
+
+def test_condense_job_requires_gm(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/condense-job", json={"recap": "text"})
+    assert r.status_code == 403
+
+
+def test_condense_job_passes_model_think_and_fit_context(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None, think=True):
+        captured["model"] = model
+        captured["think"] = think
+        captured["options"] = options
+        return "condensed"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    recap = "word " * 2000
+    r = client.post("/api/sessions/ai/condense-job", json={
+        "recap": recap, "model": "llama3.1", "think": False, "fit_context": True,
+    })
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    data = _poll_until_terminal(client, f"/api/sessions/ai/audio-jobs/{job_id}")
+    assert data["status"] == "done", data
+    assert captured["model"] == "llama3.1"
+    assert captured["think"] is False
+    assert captured["options"] == ai_module.context_sized_options(recap)
+
+
+def test_condense_job_cross_world_isolation(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/condense-job", json={"recap": "text"})
+    job_id = r.json()["job_id"]
+
+    client.cookies.set("active_world", seed.world_b.slug)
+    r = client.get(f"/api/sessions/ai/audio-jobs/{job_id}")
+    assert r.status_code == 404
     listed = client.get("/api/sessions/ai/audio-jobs").json()
     assert all(j["id"] != job_id for j in listed)
 
@@ -1781,6 +1947,40 @@ def test_resummarize_route_round_trip(client, seed, monkeypatch):
     assert data["recap"] == "Recap via llama3.1: hello there"
     assert data["model"] == "llama3.1"
     assert data["error"] == ""
+
+
+def test_resummarize_route_think_defaults_true_and_is_overridable(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_summarize_capture(transcript, model="", extra_instructions="", think=True, **kwargs):
+        captured["think"] = think
+        return "recap"
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize_capture)
+
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done",
+                        filename="x.mp3", transcript="hello there")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.post(f"/api/audio-jobs/{job_id}/resummarize", data={"model": ""})
+    assert r.status_code == 200, r.text
+    _poll_until_terminal(client, f"/api/audio-jobs/{job_id}")
+    assert captured["think"] is True
+
+    r2 = client.post(f"/api/audio-jobs/{job_id}/resummarize", data={"model": "", "think": "false"})
+    assert r2.status_code == 200, r2.text
+    data = _poll_until_terminal(client, f"/api/audio-jobs/{job_id}")
+    assert captured["think"] is False
+    assert data["think"] is False
 
 
 def test_resummarize_route_does_not_block_on_a_slow_summarize(client, seed, monkeypatch):

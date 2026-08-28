@@ -598,6 +598,63 @@ def test_heals_pre_job_resume_audio_jobs_schema(tmp_path, monkeypatch):
     engine.dispose()
 
 
+def test_heals_pre_thinking_toggle_audio_jobs_schema(tmp_path, monkeypatch):
+    """An audio_jobs table predating the think/fit_context columns (the
+    "Thinking" checkbox and Condense's "fit context" option) must heal onto
+    usable defaults on both a fresh DB and one with existing rows, without
+    disturbing that row's own data."""
+    from app.models import AudioJob
+
+    db_path = tmp_path / "pre_thinking_toggle_audio.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE worlds (id INTEGER PRIMARY KEY, name VARCHAR(256) NOT NULL, "
+            "slug VARCHAR(64) UNIQUE NOT NULL, description VARCHAR(512), accent VARCHAR(16), "
+            "players_see_party BOOLEAN, rules_md TEXT, home_welcome_md TEXT, "
+            "home_sections_json TEXT, custom_kinds_json TEXT, created_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO worlds (id, name, slug, home_sections_json, custom_kinds_json) "
+            "VALUES (1, 'World', 'world', '[]', '[]')"
+        ))
+        conn.execute(text(
+            "CREATE TABLE audio_jobs (id INTEGER PRIMARY KEY, world_id INTEGER NOT NULL, "
+            "created_by_user_id INTEGER, purpose VARCHAR(32) NOT NULL, game_session_id INTEGER, "
+            "filename VARCHAR(256), status VARCHAR(32), error TEXT, transcript TEXT, recap TEXT, "
+            "attachment_url VARCHAR(512), model VARCHAR(128), extra_instructions TEXT, "
+            "chunk_current INTEGER, chunk_total INTEGER, run_started_at DATETIME, "
+            "finished_at DATETIME, created_at DATETIME, updated_at DATETIME, "
+            "audio_path VARCHAR(1024), delete_after BOOLEAN, checkpoint_json TEXT, resumed_count INTEGER)"
+        ))
+        conn.execute(text(
+            "INSERT INTO audio_jobs (id, world_id, purpose, status, transcript) "
+            "VALUES (1, 1, 'session_recap', 'done', 'the party explored the ruins')"
+        ))
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        cols = {r[1] for r in conn.execute(text("PRAGMA table_info(audio_jobs)")).fetchall()}
+    assert {"think", "fit_context"} <= cols
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, 1)
+        assert job.transcript == "the party explored the ruins"  # untouched by the heal
+        assert job.think is None  # heals to NULL — treated as True by the caller
+        assert job.fit_context in (0, False, None)
+    finally:
+        db.close()
+
+    engine.dispose()
+
+
 def test_heals_pre_job_resume_image_and_chat_jobs_schema(tmp_path, monkeypatch):
     """image_jobs/chat_jobs tables predating resumed_count (see
     app/job_shutdown.py — caps how many times a job auto-restarts itself

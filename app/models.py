@@ -839,6 +839,21 @@ class AudioJob(Base):
     # create_job's row-insert, so a still-"pending" job has neither yet).
     run_started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
+    # Whether the summarization step (purpose="session_recap" or "condense")
+    # runs with the model's "thinking"/reasoning mode on — a GM-facing
+    # "Thinking" checkbox on the upload panel / Retry-summary row, checked
+    # by default. Persisted (not just a call-time argument) so a resume
+    # after a server restart or an explicit re-summarize uses the same
+    # setting the GM chose, same as `model`/`extra_instructions` already
+    # are. NULL (the pre-migration default) is treated as True — see
+    # app.audio_jobs.create_job's docstring.
+    think = Column(Boolean, nullable=True)
+    # purpose="condense" only: whether the job's num_ctx was sized to fit
+    # the whole input text for this one call (see app.ai.
+    # context_sized_options) rather than using the GM's configured/default
+    # context — set once at job creation from the "Condense (fit context)"
+    # button, replayed identically on a resume.
+    fit_context = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
