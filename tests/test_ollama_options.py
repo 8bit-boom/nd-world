@@ -186,7 +186,9 @@ def test_generation_settings_gm_only(client, seed):
     assert r.status_code == 403
 
 
-def test_generation_settings_roundtrip(client, seed):
+def test_generation_settings_roundtrip(client, seed, tmp_path, monkeypatch):
+    import app.ollama_tuning as tuning_module
+    monkeypatch.setattr(tuning_module, "OLLAMA_CONFIG_DIR", tmp_path)
     login(client, seed.gm.email, GM_PASSWORD)
     r = client.post("/settings/system", data={
         "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
