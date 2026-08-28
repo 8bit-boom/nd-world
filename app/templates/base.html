@@ -309,6 +309,18 @@ function ndAccentFromHex(hexInput) {
 // {start, stop, isRecording} — start() is async (awaits the mic permission
 // prompt) and resolves to false (after calling onError) if it couldn't
 // start, true otherwise.
+//
+// echoCancellation/noiseSuppression/autoGainControl: the browser's own
+// baseline audio processing (same class of tech Discord/Zoom/Meet apply
+// before any fancier ML add-on) — helps with steady background noise and,
+// if background audio (e.g. ambience/music) is playing from this SAME
+// device, echo cancellation can meaningfully suppress it since that's
+// exactly what AEC is designed to cancel: sound the device itself just
+// played. It is NOT real music/vocal separation, though — background
+// audio from a different speaker/device in the room won't be reliably
+// removed by this (or by any realtime noise suppressor); that needs to be
+// handled upstream (lower the music, a closer/directional mic) rather than
+// fixed after the fact here.
 function ndMicRecorder(onStop, onError) {
   var mediaRecorder = null;
   var chunks = [];
@@ -320,7 +332,9 @@ function ndMicRecorder(onStop, onError) {
       return false;
     }
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
     } catch (e) {
       if (onError) onError(e);
       return false;
