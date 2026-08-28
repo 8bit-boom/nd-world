@@ -41,8 +41,8 @@
         </select>
       </div>
       <div class="form-group" style="margin-top:.75rem">
-        <label>Summary <small>(Markdown)</small></label>
-        <textarea name="summary" id="summary-field" rows="8" style="font-family:var(--font);font-size:.85rem">{{ gsession.summary if gsession else '' }}</textarea>
+        <label>Summary <small>(Markdown)</small> <small id="summary-token-count" style="color:var(--text-dim)"></small></label>
+        <textarea name="summary" id="summary-field" rows="8" style="font-family:var(--font);font-size:.85rem" oninput="ndUpdateTokenCount('summary-field','summary-token-count')">{{ gsession.summary if gsession else '' }}</textarea>
         <div style="display:flex;gap:.5rem;margin-top:.4rem;flex-wrap:wrap;align-items:center">
           <button type="button" class="ai-recap-btn" onclick="aiExpandNotes()">✨ Expand notes into recap</button>
           <button type="button" class="ai-recap-btn" onclick="aiCondenseRecap()">✂ Condense recap</button>
@@ -79,10 +79,10 @@
         <div id="audio-jobs-panel" class="nd-jobs-panel" style="display:none"></div>
 
         <div id="ai-recap-preview" style="display:none;margin-top:.6rem;background:var(--bg3);border:1px solid var(--neon);border-radius:4px;padding:.7rem">
-          <div style="font-size:.78rem;color:var(--neon);margin-bottom:.4rem">AI draft — review before applying</div>
+          <div style="font-size:.78rem;color:var(--neon);margin-bottom:.4rem">AI draft — review before applying <small id="ai-recap-preview-token-count" style="color:var(--text-dim)"></small></div>
           <div id="ai-recap-preview-text" style="font-size:.85rem;white-space:pre-wrap;max-height:220px;overflow-y:auto;margin-bottom:.5rem"></div>
           <details id="ai-recap-transcript-wrap" style="display:none;margin-bottom:.5rem">
-            <summary style="cursor:pointer;font-size:.75rem;color:var(--text-dim)">Raw transcript</summary>
+            <summary style="cursor:pointer;font-size:.75rem;color:var(--text-dim)">Raw transcript <small id="ai-recap-transcript-token-count"></small></summary>
             <div id="ai-recap-transcript-text" style="font-size:.78rem;color:var(--text-dim);white-space:pre-wrap;max-height:160px;overflow-y:auto;margin-top:.3rem"></div>
           </details>
           <div style="display:flex;gap:.5rem;flex-wrap:wrap">
@@ -123,7 +123,7 @@
        saving each one as it finishes, so a long session survives a crashed
        tab or dropped connection with at most one chunk lost. -->
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
-    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">🔴 Live Session Recording</h2>
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">🔴 Live Session Recording <small id="live-transcript-token-count" style="color:var(--text-dim);font-weight:normal"></small></h2>
     <p style="font-size:.8rem;color:var(--text-dim);margin:0 0 .6rem">
       Records in ~1-minute chunks, each transcribed and saved to this session as it finishes — safe for a
       multi-hour session, and nothing is lost beyond the current chunk if your browser or connection drops.
@@ -199,8 +199,23 @@
 // ── AI recap assist — unconditional (works on the New Session form too,
 // where gsession doesn't exist yet, unlike the prep/loot/XP panels below) ──
 let _aiRecapDraft = '';
+ndUpdateTokenCount('summary-field', 'summary-token-count');
+{% if gsession %}
+liveSetTranscriptDisplay({{ (gsession.live_transcript or '')|tojson }});
+{% endif %}
 
 function _aiRecapButtons() { return document.querySelectorAll('.ai-recap-btn'); }
+
+function _setRecapPreviewText(text) {
+  document.getElementById('ai-recap-preview-text').textContent = text;
+  document.getElementById('ai-recap-preview-token-count').textContent = text ? `(${ndTokenLabel(text)})` : '';
+}
+
+function _setRecapTranscriptText(text) {
+  document.getElementById('ai-recap-transcript-text').textContent = text;
+  document.getElementById('ai-recap-transcript-token-count').textContent = text ? `(${ndTokenLabel(text)})` : '';
+  document.getElementById('ai-recap-transcript-wrap').style.display = 'block';
+}
 
 async function aiRunRecap(url, body) {
   const status = document.getElementById('ai-recap-status');
@@ -217,7 +232,7 @@ async function aiRunRecap(url, body) {
       status.textContent = data.empty ? 'No facts logged for this session yet.' : 'No recap produced.';
       return;
     }
-    document.getElementById('ai-recap-preview-text').textContent = _aiRecapDraft;
+    _setRecapPreviewText(_aiRecapDraft);
     document.getElementById('ai-recap-preview').style.display = 'block';
     status.textContent = '';
   } catch (e) {
@@ -305,12 +320,10 @@ async function aiSummarizeFromAudio(file) {
       onProgress: (e) => ndProgressFromUpload(bar, e, 'Transcribing & summarizing — can take a while for a long recording…'),
     });
     _aiRecapDraft = data.recap || '';
-    document.getElementById('ai-recap-preview-text').textContent = _aiRecapDraft || '(empty recap)';
+    _setRecapPreviewText(_aiRecapDraft);
+    if (!_aiRecapDraft) document.getElementById('ai-recap-preview-text').textContent = '(empty recap)';
     document.getElementById('ai-recap-preview').style.display = 'block';
-    if (data.transcript) {
-      document.getElementById('ai-recap-transcript-text').textContent = data.transcript;
-      document.getElementById('ai-recap-transcript-wrap').style.display = 'block';
-    }
+    if (data.transcript) _setRecapTranscriptText(data.transcript);
   } catch (e) {
     status.textContent = 'Failed: ' + e.message;
   } finally {
@@ -327,12 +340,10 @@ const sessionAudioJobs = ndAudioJobs(document.getElementById('audio-jobs-panel')
   listUrl: '/api/sessions/ai/audio-jobs',
   onUse: (job) => {
     _aiRecapDraft = job.recap || '';
-    document.getElementById('ai-recap-preview-text').textContent = _aiRecapDraft || '(empty recap)';
+    _setRecapPreviewText(_aiRecapDraft);
+    if (!_aiRecapDraft) document.getElementById('ai-recap-preview-text').textContent = '(empty recap)';
     document.getElementById('ai-recap-preview').style.display = 'block';
-    if (job.transcript) {
-      document.getElementById('ai-recap-transcript-text').textContent = job.transcript;
-      document.getElementById('ai-recap-transcript-wrap').style.display = 'block';
-    }
+    if (job.transcript) _setRecapTranscriptText(job.transcript);
   },
 });
 
@@ -456,6 +467,8 @@ function liveSetTranscriptDisplay(text) {
   const el = document.getElementById('live-transcript-text');
   el.textContent = text && text.trim() ? text : '(nothing recorded yet)';
   el.scrollTop = el.scrollHeight;
+  const countEl = document.getElementById('live-transcript-token-count');
+  if (countEl) countEl.textContent = text ? `(${ndTokenLabel(text)})` : '';
 }
 
 async function liveProcessQueue() {

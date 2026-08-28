@@ -141,6 +141,16 @@ function bgRenderJob(job) {
     card.appendChild(note);
   }
 
+  if (job.status === 'done' && (job.transcript || job.recap)) {
+    const sizes = [];
+    if (job.transcript) sizes.push(`Transcript: ${ndTokenLabel(job.transcript)}`);
+    if (job.recap) sizes.push(`Recap: ${ndTokenLabel(job.recap)}`);
+    const sizeLine = document.createElement('div');
+    sizeLine.className = 'bg-job-time';
+    sizeLine.textContent = sizes.join(' · ');
+    card.appendChild(sizeLine);
+  }
+
   const actions = document.createElement('div');
   actions.className = 'bg-job-actions';
   if (IN_PROGRESS.has(job.status)) {
@@ -232,7 +242,7 @@ function bgRenderJob(job) {
     if (job.recap) {
       const recapLabel = document.createElement('div');
       recapLabel.className = 'bg-job-result-label';
-      recapLabel.textContent = 'Recap';
+      recapLabel.textContent = `Recap (${ndTokenLabel(job.recap)})`;
       card.appendChild(recapLabel);
       const recapBox = document.createElement('div');
       recapBox.className = 'bg-job-result';
@@ -243,7 +253,7 @@ function bgRenderJob(job) {
     if (job.transcript) {
       const tLabel = document.createElement('div');
       tLabel.className = 'bg-job-result-label';
-      tLabel.textContent = 'Transcript';
+      tLabel.textContent = `Transcript (${ndTokenLabel(job.transcript)})`;
       card.appendChild(tLabel);
       const tBox = document.createElement('div');
       tBox.className = 'bg-job-result';

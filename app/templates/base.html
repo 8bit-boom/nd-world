@@ -245,6 +245,41 @@ function ndDurationLabel(startIso, endIso) {
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
+// Shared by the Background Jobs page and every Session page's Summary/
+// transcript panels — a rough "how big is this AI text" indicator, mirroring
+// app/ai.py's _chars_per_token_estimate heuristic (English ~4 chars/token,
+// ~2 for a non-ASCII-heavy script like Cyrillic/Arabic/CJK, sampled from the
+// first 4000 chars) so the number shown here is in the same ballpark as what
+// actually drives the server's num_ctx sizing (see context_sized_options) —
+// not a real tokenizer call, just consistent with it. Keep this in sync with
+// _chars_per_token_estimate if that heuristic ever changes.
+function ndEstimateTokens(text) {
+  if (!text) return 0;
+  const sample = text.slice(0, 4000);
+  let nonAscii = 0;
+  for (let i = 0; i < sample.length; i++) {
+    if (sample.charCodeAt(i) > 127) nonAscii++;
+  }
+  const charsPerToken = (sample.length && nonAscii / sample.length > 0.3) ? 2 : 4;
+  return Math.ceil(text.length / charsPerToken);
+}
+
+function ndTokenLabel(text) {
+  return `~${ndEstimateTokens(text).toLocaleString()} tokens`;
+}
+
+// Convenience for a live-typed textarea/input (id `srcId`) whose token count
+// should update as the GM types, into a small label element (id `labelId`) —
+// used by Session pages' Summary/transcript panels. Wrap the label text in
+// parens itself; this just fills in (or clears) it.
+function ndUpdateTokenCount(srcId, labelId) {
+  const src = document.getElementById(srcId);
+  const label = document.getElementById(labelId);
+  if (!src || !label) return;
+  const text = ('value' in src) ? src.value : src.textContent;
+  label.textContent = text ? `(${ndTokenLabel(text)})` : '';
+}
+
 // Shared by world_edit.html and worlds.html's accent-colour pickers — keeps
 // the native <input type=color> swatch and a typed hex-code field in sync
 // both ways, since the color input alone doesn't let you type/paste a code.
