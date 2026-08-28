@@ -24,7 +24,7 @@ from app import ai as ai_module
 from app import audio_jobs
 from app import job_shutdown as _job_shutdown
 from app.database import SessionLocal
-from app.models import AudioJob, World
+from app.models import AudioJob, Entity, World
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -32,6 +32,18 @@ from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 # need the REAL map-reduce chunking logic (not _fake_ai's flat fake) can
 # restore it for just that one test.
 _REAL_SUMMARIZE_TRANSCRIPT = ai_module.summarize_transcript
+
+
+def _make_entity(world_id, **kwargs):
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=world_id, kind=kwargs.pop("kind", "character"), name=kwargs.pop("name", "Entity"), **kwargs)
+        db.add(e)
+        db.commit()
+        db.refresh(e)
+        return e.id
+    finally:
+        db.close()
 
 
 def _set_world(world_id, **kw):
@@ -232,11 +244,122 @@ async def test_create_condense_job_fit_context_off_by_default(client, seed, monk
     assert captured["options"] is None
 
 
+# ── RAG (use_rag/rag_entity_limit/rag_notes_limit) ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_create_condense_job_use_rag_off_by_default_no_world_context(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
+        captured["world_context"] = kwargs.get("world_context")
+        return "condensed"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    def fail_if_called(*a, **kw):
+        raise AssertionError("must not retrieve RAG context when use_rag is off")
+    monkeypatch.setattr(audio_jobs, "_build_rag_context", fail_if_called)
+
+    job_id = audio_jobs.create_condense_job(world_id=seed.world_a.id, text="some recap")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["world_context"] == ""
+    assert job.use_rag is False
+
+
+@pytest.mark.asyncio
+async def test_create_condense_job_use_rag_passes_retrieved_context_through(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
+        captured["world_context"] = kwargs.get("world_context")
+        return "condensed"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    build_calls = []
+
+    def fake_build_rag_context(world_id, query, entity_limit, notes_limit):
+        build_calls.append((world_id, query, entity_limit, notes_limit))
+        return "- [npc] Gareth: a blacksmith"
+    monkeypatch.setattr(audio_jobs, "_build_rag_context", fake_build_rag_context)
+
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text="some recap", use_rag=True, rag_entity_limit=7, rag_notes_limit=2,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["world_context"] == "- [npc] Gareth: a blacksmith"
+    assert build_calls == [(seed.world_a.id, "some recap", 7, 2)]
+    assert job.use_rag is True
+    assert job.rag_entity_limit == 7
+    assert job.rag_notes_limit == 2
+
+
+@pytest.mark.asyncio
+async def test_create_condense_job_use_rag_blank_limits_use_module_defaults(client, seed, monkeypatch):
+    build_calls = []
+
+    def fake_build_rag_context(world_id, query, entity_limit, notes_limit):
+        build_calls.append((entity_limit, notes_limit))
+        return ""
+    monkeypatch.setattr(audio_jobs, "_build_rag_context", fake_build_rag_context)
+
+    job_id = audio_jobs.create_condense_job(world_id=seed.world_a.id, text="some recap", use_rag=True)
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert build_calls == [(audio_jobs._DEFAULT_RAG_ENTITY_LIMIT, audio_jobs._DEFAULT_RAG_NOTES_LIMIT)]
+
+
+@pytest.mark.asyncio
+async def test_create_job_session_recap_use_rag_passes_retrieved_context_through(client, seed, tmp_path, monkeypatch):
+    build_calls = []
+
+    def fake_build_rag_context(world_id, query, entity_limit, notes_limit):
+        build_calls.append((world_id, query, entity_limit, notes_limit))
+        return "- [place] The Rusty Anchor: a tavern"
+    monkeypatch.setattr(audio_jobs, "_build_rag_context", fake_build_rag_context)
+
+    captured = {}
+
+    async def fake_summarize(transcript, model="", extra_instructions="", **kwargs):
+        captured["world_context"] = kwargs.get("world_context")
+        return "recap"
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True, use_rag=True, rag_entity_limit=3, rag_notes_limit=1,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["world_context"] == "- [place] The Rusty Anchor: a tavern"
+    # queried against the transcribed transcript (fake_transcribe's fixed
+    # output), not the audio file itself — there's nothing else to search on.
+    assert build_calls == [(seed.world_a.id, "the party met elena at the bazaar", 3, 1)]
+
+
+def test_build_rag_context_combines_relevant_entities_and_guaranteed_notes(client, seed):
+    npc_id = _make_entity(
+        seed.world_a.id, name="Gareth", kind="character", summary="A blacksmith.",
+        body="Gareth runs the forge near the eastern gate.",
+    )
+    other_note_id = _make_entity(seed.world_a.id, name="Unrelated Note", kind="note", body="Nothing to do with Gareth.")
+    context = audio_jobs._build_rag_context(seed.world_a.id, "Gareth the blacksmith", entity_limit=10, notes_limit=10)
+    assert "Gareth" in context
+    assert "Unrelated Note" in context  # guaranteed via notes_limit, independent of relevance
+
+
+def test_build_rag_context_zero_limits_retrieve_nothing():
+    context = audio_jobs._build_rag_context(999999, "anything", entity_limit=0, notes_limit=0)
+    assert context == ""
+
+
 @pytest.mark.asyncio
 async def test_create_condense_job_passes_min_max_tokens_and_extra_instructions(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_condense(recap, model="", options=None, think=True, extra_instructions="", min_tokens=None, max_tokens=None):
+    async def fake_condense(recap, model="", options=None, think=True, extra_instructions="", min_tokens=None, max_tokens=None, **kwargs):
         captured["extra_instructions"] = extra_instructions
         captured["min_tokens"] = min_tokens
         captured["max_tokens"] = max_tokens
@@ -1363,7 +1486,7 @@ def test_condense_job_cross_world_isolation(client, seed):
 def test_condense_job_passes_min_max_tokens_and_extra_instructions(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_condense(recap, model="", options=None, think=True, extra_instructions="", min_tokens=None, max_tokens=None):
+    async def fake_condense(recap, model="", options=None, think=True, extra_instructions="", min_tokens=None, max_tokens=None, **kwargs):
         captured["extra_instructions"] = extra_instructions
         captured["min_tokens"] = min_tokens
         captured["max_tokens"] = max_tokens
@@ -1396,6 +1519,87 @@ def test_condense_job_rejects_invalid_token_bounds(client, seed, body):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.post("/api/sessions/ai/condense-job", json=body)
     assert r.status_code == 400
+
+
+def test_condense_job_route_persists_rag_options(client, seed, monkeypatch):
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
+        return "condensed"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/condense-job", json={
+        "recap": "text", "use_rag": True, "rag_entity_limit": 12, "rag_notes_limit": 3,
+    })
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    data = _poll_until_terminal(client, f"/api/sessions/ai/audio-jobs/{job_id}")
+    assert data["status"] == "done", data
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.use_rag is True
+        assert job.rag_entity_limit == 12
+        assert job.rag_notes_limit == 3
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("body", [
+    {"recap": "text", "use_rag": True, "rag_entity_limit": "not a number"},
+    {"recap": "text", "use_rag": True, "rag_notes_limit": "not a number"},
+    {"recap": "text", "use_rag": True, "rag_entity_limit": -1},
+    {"recap": "text", "use_rag": True, "rag_notes_limit": -1},
+])
+def test_condense_job_rejects_invalid_rag_limits(client, seed, body):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/condense-job", json=body)
+    assert r.status_code == 400
+
+
+def test_audio_job_create_route_persists_rag_options(client, seed, tmp_path):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(
+        "/api/sessions/ai/audio-jobs",
+        files={"file": ("clip.mp3", b"fake audio bytes", "audio/mpeg")},
+        data={"use_rag": "true", "rag_entity_limit": "9", "rag_notes_limit": "4"},
+    )
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    _poll_until_terminal(client, f"/api/sessions/ai/audio-jobs/{job_id}")
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.use_rag is True
+        assert job.rag_entity_limit == 9
+        assert job.rag_notes_limit == 4
+    finally:
+        db.close()
+
+
+def test_audio_job_create_route_rag_off_by_default(client, seed, tmp_path):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(
+        "/api/sessions/ai/audio-jobs",
+        files={"file": ("clip.mp3", b"fake audio bytes", "audio/mpeg")},
+    )
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    _poll_until_terminal(client, f"/api/sessions/ai/audio-jobs/{job_id}")
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.use_rag is False
+        assert job.rag_entity_limit is None
+        assert job.rag_notes_limit is None
+    finally:
+        db.close()
 
 
 def test_condense_recap_route_passes_min_max_tokens_and_extra_instructions(client, seed, monkeypatch):

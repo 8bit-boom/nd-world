@@ -429,6 +429,29 @@ def _condense_token_bounds(body: dict) -> tuple[Optional[int], Optional[int]]:
     return bounds["min_tokens"], bounds["max_tokens"]
 
 
+def _rag_options_from_body(body: dict) -> tuple[bool, Optional[int], Optional[int]]:
+    """Parse+validate Condense/Summarize's optional RAG opt-in from a JSON
+    request body — same "blank means unset" convention _condense_token_bounds
+    uses, except here 0 is itself a valid, meaningful value (see
+    AudioJob.use_rag's own docstring: 0 means "retrieve none of that
+    category", distinct from unset/"use the module's own default")."""
+    use_rag = bool(body.get("use_rag"))
+    limits = {}
+    for key, label in (("rag_entity_limit", "Entity limit"), ("rag_notes_limit", "Notes limit")):
+        raw = body.get(key)
+        if raw in (None, ""):
+            limits[key] = None
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{label} must be a whole number")
+        if value < 0:
+            raise HTTPException(400, f"{label} must be 0 or greater")
+        limits[key] = value
+    return use_rag, limits["rag_entity_limit"], limits["rag_notes_limit"]
+
+
 @router.post("/api/sessions/ai/expand-notes")
 async def api_expand_recap_notes(request: Request):
     """Expand terse GM notes (whatever's currently in the Summary textarea)
@@ -486,6 +509,7 @@ async def api_condense_job_create(
     if not recap:
         raise HTTPException(400, "No recap provided")
     min_tokens, max_tokens = _condense_token_bounds(body)
+    use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
     game_session_id = body.get("game_session_id")
     gs_id = int(game_session_id) if game_session_id else None
     job_id = _audio_jobs.create_condense_job(
@@ -493,6 +517,7 @@ async def api_condense_job_create(
         think=_think_from_body(body), fit_context=bool(body.get("fit_context")),
         extra_instructions=str(body.get("extra_instructions", "")).strip(),
         min_tokens=min_tokens, max_tokens=max_tokens,
+        use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
         game_session_id=gs_id, created_by_user_id=_current_user_id(request),
     )
     return {"job_id": job_id}
@@ -615,6 +640,7 @@ def _job_to_dict(job: AudioJob) -> dict:
 async def api_audio_job_create(
     request: Request, file: UploadFile = File(...), game_session_id: str = Form(""),
     model: str = Form(""), extra_instructions: str = Form(""), think: bool = Form(True),
+    use_rag: bool = Form(False), rag_entity_limit: str = Form(""), rag_notes_limit: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Start a durable background transcribe+summarize job for a session
@@ -637,6 +663,9 @@ async def api_audio_job_create(
         audio_path=dest, delete_after=True, game_session_id=gs_id,
         created_by_user_id=_current_user_id(request), model=model.strip(),
         extra_instructions=extra_instructions.strip(), think=think,
+        use_rag=use_rag,
+        rag_entity_limit=int(rag_entity_limit) if rag_entity_limit.strip().isdigit() else None,
+        rag_notes_limit=int(rag_notes_limit) if rag_notes_limit.strip().isdigit() else None,
     )
     return {"job_id": job_id}
 
@@ -657,6 +686,7 @@ async def api_audio_job_complete(
     request: Request, upload_id: str = Form(...), filename: str = Form(...),
     total_chunks: int = Form(...), game_session_id: str = Form(""),
     model: str = Form(""), extra_instructions: str = Form(""), think: bool = Form(True),
+    use_rag: bool = Form(False), rag_entity_limit: str = Form(""), rag_notes_limit: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Reassemble the parts uploaded via .../audio-jobs/chunk and start a
@@ -678,6 +708,9 @@ async def api_audio_job_complete(
         audio_path=dest, delete_after=True, game_session_id=gs_id,
         created_by_user_id=_current_user_id(request), model=model.strip(),
         extra_instructions=extra_instructions.strip(), think=think,
+        use_rag=use_rag,
+        rag_entity_limit=int(rag_entity_limit) if rag_entity_limit.strip().isdigit() else None,
+        rag_notes_limit=int(rag_notes_limit) if rag_notes_limit.strip().isdigit() else None,
     )
     return {"job_id": job_id}
 

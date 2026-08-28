@@ -837,6 +837,12 @@ def _migrate():
             ("fit_context",         "BOOLEAN DEFAULT 0", True),
             ("min_tokens",          "INTEGER", True),
             ("max_tokens",          "INTEGER", True),
+            # RAG opt-in (see app.audio_jobs._build_rag_context) — off by
+            # default, same as fit_context above; NULL limits mean "use the
+            # module's own defaults" (see AudioJob.use_rag's own docstring).
+            ("use_rag",             "BOOLEAN DEFAULT 0", True),
+            ("rag_entity_limit",    "INTEGER", True),
+            ("rag_notes_limit",     "INTEGER", True),
         ], foreign_keys=[
             ("world_id", "worlds", "id"),
             ("created_by_user_id", "users", "id"),

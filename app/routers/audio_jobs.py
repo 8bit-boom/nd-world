@@ -52,6 +52,9 @@ def _job_to_dict(job: AudioJob) -> dict:
         # Retry-summary row's checkbox pre-checks correctly for every job.
         "think": job.think if job.think is not None else True,
         "fit_context": bool(job.fit_context),
+        "use_rag": bool(job.use_rag),
+        "rag_entity_limit": job.rag_entity_limit,
+        "rag_notes_limit": job.rag_notes_limit,
         # Whether the ▶ Resume button should show — see app.audio_jobs.
         # start_resume_job for the full contract this mirrors.
         "resumable": job.status == "interrupted",

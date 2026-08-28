@@ -15,7 +15,7 @@ from typing import Optional
 from . import ai as _ai_module
 from . import job_shutdown as _job_shutdown
 from .database import SessionLocal
-from .models import AudioJob, World
+from .models import AudioJob, Entity, World
 
 _log = logging.getLogger("nd.audio_jobs")
 
@@ -119,6 +119,7 @@ def create_job(
     delete_after: bool = True, game_session_id: Optional[int] = None,
     created_by_user_id: Optional[int] = None, attachment_url: str = "",
     model: str = "", extra_instructions: str = "", think: bool = True,
+    use_rag: bool = False, rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
 ) -> int:
     """Create the job row and start its background task immediately —
     returns the job id right away, well before transcription (let alone
@@ -144,6 +145,13 @@ def create_job(
     AudioJob.think's own docstring for why NULL (a pre-migration row) and
     the default here both mean "on."
 
+    `use_rag`/`rag_entity_limit`/`rag_notes_limit` (purpose="session_recap"
+    only — ignored for "attachment", which has no summarization step to feed
+    context into) opt this run into retrieving relevant World entities/notes
+    (see _build_rag_context) and prepending them to the summarize system
+    prompt for accuracy. Blank limits fall back to _DEFAULT_RAG_ENTITY_LIMIT/
+    _DEFAULT_RAG_NOTES_LIMIT at run time, not here — see _run_job.
+
     audio_path and delete_after are persisted onto the row (not just
     passed to _run_job as arguments) so a resume after a server restart —
     which has none of this call's local variables, only the DB row — can
@@ -156,6 +164,7 @@ def create_job(
             game_session_id=game_session_id, created_by_user_id=created_by_user_id,
             attachment_url=attachment_url, status="pending", model=model or None,
             extra_instructions=extra_instructions.strip() or None, think=think,
+            use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
             audio_path=str(audio_path), delete_after=delete_after,
         )
         db.add(job)
@@ -175,6 +184,7 @@ def create_condense_job(
     world_id: int, text: str, model: str = "", think: bool = True, fit_context: bool = False,
     extra_instructions: str = "", min_tokens: Optional[int] = None, max_tokens: Optional[int] = None,
     game_session_id: Optional[int] = None, created_by_user_id: Optional[int] = None,
+    use_rag: bool = False, rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
 ) -> int:
     """Condense `text` (typically a Session page's current Summary field) as
     a durable background job instead of a blocking request — same "survives
@@ -196,7 +206,10 @@ def create_condense_job(
     `extra_instructions`/`min_tokens`/`max_tokens` are condense_recap's own
     steering/length-target params (see its docstring) — persisted on the
     row like every other condense setting so a resume/redo uses the same
-    values the GM originally set."""
+    values the GM originally set.
+
+    `use_rag`/`rag_entity_limit`/`rag_notes_limit` — same RAG opt-in
+    create_job's own docstring describes, see _build_rag_context."""
     db = SessionLocal()
     try:
         job = AudioJob(
@@ -205,6 +218,7 @@ def create_condense_job(
             model=model or None, think=think, fit_context=fit_context,
             extra_instructions=extra_instructions.strip() or None,
             min_tokens=min_tokens, max_tokens=max_tokens,
+            use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
             transcript=text, audio_path="", delete_after=False,
         )
         db.add(job)
@@ -259,6 +273,64 @@ def _combined_recap_instructions(world_instructions: str, job_instructions: str)
     return "\n\n".join(parts)
 
 
+# Defaults used when a job has use_rag=True but the GM left the entity/notes
+# limit fields blank — same ballpark as _SmartCtxBody's own defaults
+# (limit=25, notes_limit=5) in app.main, just a bit tighter on entities since
+# these land in a system prompt alongside a whole transcript/recap rather
+# than a short chat message.
+_DEFAULT_RAG_ENTITY_LIMIT = 15
+_DEFAULT_RAG_NOTES_LIMIT = 5
+
+# The FTS query app.main._find_relevant_entities builds has one OR-clause
+# per unique word over 3 characters in the query text — capped here so
+# handing it an entire transcript unclipped can't balloon into a
+# query with thousands of clauses; the session's real subject matter/proper
+# nouns are already well represented in the first few thousand characters.
+_RAG_QUERY_CHAR_BUDGET = 4000
+
+
+def _build_rag_context(world_id: int, query: str, entity_limit: int, notes_limit: int) -> str:
+    """RAG retrieval for a summarize/condense job's system prompt (see
+    app.ai._with_world_context, which is what actually prepends the result
+    onto the system prompt) — reuses app.main's own entity search
+    (_find_relevant_entities) and its notes-guarantee logic verbatim rather
+    than keeping a second copy of either; this is the same retrieval
+    /api/ai/world-context-smart (AI Chat's RAG panel) is built on.
+
+    Deferred import, not module-level: app.main imports this module at
+    import time (`from . import audio_jobs as _audio_jobs`, for the startup
+    job-resume sweep), so a module-level `from .main import ...` here would
+    be circular. See app.database's own `from . import auth as _auth` for
+    the identical, already-established pattern in this codebase.
+
+    entity_limit/notes_limit <= 0 means "don't retrieve that category at
+    all" — mirrors _SmartCtxBody's own notes_limit convention (0 there
+    already means "skip the guaranteed-notes fetch")."""
+    from . import main as _main_module  # deferred — see docstring above
+
+    db = SessionLocal()
+    try:
+        entities = (
+            _main_module._find_relevant_entities(db, world_id, query[:_RAG_QUERY_CHAR_BUDGET], limit=entity_limit)
+            if entity_limit > 0 else []
+        )
+        notes = [e for e in entities if e.kind == "note"]
+        non_notes = [e for e in entities if e.kind != "note"]
+        if notes_limit > 0:
+            note_entities = (
+                db.query(Entity)
+                .filter(Entity.world_id == world_id, Entity.kind == "note")
+                .order_by(Entity.name)
+                .limit(notes_limit)
+                .all()
+            )
+            seen_ids = {e.id for e in entities}
+            notes = notes + [e for e in note_entities if e.id not in seen_ids]
+        return _main_module._format_context_from_entities(non_notes + notes)
+    finally:
+        db.close()
+
+
 async def _run_job(job_id: int) -> None:
     """Runs (or resumes) a job's transcribe [+ summarize] work. Everything
     this used to take as function arguments (audio_path, purpose,
@@ -304,6 +376,9 @@ async def _run_job(job_id: int) -> None:
         fit_context = bool(job.fit_context)
         min_tokens = job.min_tokens
         max_tokens = job.max_tokens
+        use_rag = bool(job.use_rag)
+        rag_entity_limit = job.rag_entity_limit
+        rag_notes_limit = job.rag_notes_limit
         existing_transcript = job.transcript or ""
         checkpoint = _json.loads(job.checkpoint_json) if job.checkpoint_json else None
     finally:
@@ -390,6 +465,19 @@ async def _run_job(job_id: int) -> None:
         else:
             transcript = existing_transcript
 
+        world_context = ""
+        if use_rag and world_id and purpose in ("condense", "session_recap"):
+            # Query the transcript/text-to-condense itself — there's no
+            # separate short "user question" here the way AI Chat's RAG has
+            # one, so the input being summarized IS the best signal for what
+            # entities/notes are relevant to it (see _build_rag_context's
+            # own docstring for the query-length cap this relies on).
+            world_context = _build_rag_context(
+                world_id, transcript,
+                rag_entity_limit if rag_entity_limit is not None else _DEFAULT_RAG_ENTITY_LIMIT,
+                rag_notes_limit if rag_notes_limit is not None else _DEFAULT_RAG_NOTES_LIMIT,
+            )
+
         if purpose == "condense":
             # No chunking/checkpoint support — condense_recap is always a
             # single call (that's the whole point of fit_context: size
@@ -417,6 +505,7 @@ async def _run_job(job_id: int) -> None:
             recap = await _ai_module.condense_recap(
                 transcript, model=model, options=options, think=think,
                 extra_instructions=instructions, min_tokens=min_tokens, max_tokens=max_tokens,
+                world_context=world_context,
             )
             if _looks_like_failure(recap):
                 _set(status="error", error=recap, finished_at=datetime.utcnow())
@@ -432,6 +521,7 @@ async def _run_job(job_id: int) -> None:
                 transcript, model=model, extra_instructions=instructions,
                 on_progress=_on_progress, on_checkpoint=_checkpoint,
                 should_stop=_job_shutdown.stopping, resume=summarize_resume, think=think,
+                world_context=world_context,
             )
             if _looks_like_failure(recap):
                 _set(status="error", error=recap, chunk_current=None, chunk_total=None,

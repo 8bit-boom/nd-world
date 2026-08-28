@@ -864,6 +864,18 @@ class AudioJob(Base):
     # separate column needed for that.
     min_tokens = Column(Integer, nullable=True)
     max_tokens = Column(Integer, nullable=True)
+    # purpose="condense"/"session_recap" only: opt this run into RAG —
+    # retrieving relevant World entities/notes and prepending them to the
+    # summarize/condense system prompt for accuracy (spelling names,
+    # remembering established places) — see app.audio_jobs._build_rag_context
+    # and app.ai._with_world_context. Off by default (a GM opts in per run,
+    # same pattern as fit_context above). rag_entity_limit/rag_notes_limit
+    # cap how many entities/notes get pulled in; NULL means "use
+    # app.audio_jobs._DEFAULT_RAG_ENTITY_LIMIT/_DEFAULT_RAG_NOTES_LIMIT" —
+    # distinct from 0, which means "retrieve none of that category."
+    use_rag = Column(Boolean, default=False)
+    rag_entity_limit = Column(Integer, nullable=True)
+    rag_notes_limit = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

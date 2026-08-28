@@ -721,6 +721,7 @@ _CONDENSE_RECAP_SYSTEM = (
 async def condense_recap(
     recap: str, model: str = "", options: dict = None, think: bool = True,
     extra_instructions: str = "", min_tokens: int | None = None, max_tokens: int | None = None,
+    world_context: str = "",
 ) -> str:
     """Condense an existing recap into a tighter 'previously on...' summary.
     `options` (see generate_chat) is an optional per-call override — the
@@ -746,8 +747,12 @@ async def condense_recap(
     context_sized_options for fit_context) rather than replacing it. The
     prompt mention gives the model a chance to land inside that cap on
     its own instead of just getting abruptly cut off mid-sentence once
-    num_predict runs out."""
-    system = _with_instructions(_CONDENSE_RECAP_SYSTEM, extra_instructions)
+    num_predict runs out.
+
+    `world_context`, if given, is RAG-retrieved World lore/Notes text
+    (see app.audio_jobs._build_rag_context) prepended ahead of everything
+    else — see _with_world_context's own docstring."""
+    system = _with_world_context(_with_instructions(_CONDENSE_RECAP_SYSTEM, extra_instructions), world_context)
     chars_per_token = _chars_per_token_estimate(recap)
     length_notes = []
     if min_tokens:
@@ -924,9 +929,22 @@ def _with_instructions(system: str, extra_instructions: str) -> str:
     return f"{system}\n\nAdditional instructions from the GM (follow these too): {extra_instructions}"
 
 
+def _with_world_context(system: str, world_context: str) -> str:
+    """Prepend RAG-retrieved World lore/Notes (see app.audio_jobs._build_
+    rag_context — the same entity/notes retrieval AI Chat's own RAG uses)
+    ahead of the rest of the system prompt, so the model has established
+    names/places/facts on hand for accuracy — e.g. spelling an NPC's name
+    correctly in a condensed recap instead of guessing from the transcript
+    alone. Purely reference material, not an instruction, so it's labeled
+    and kept separate from _with_instructions' GM-steering block."""
+    if not world_context:
+        return system
+    return f"Relevant world lore and notes (for accuracy only — don't invent beyond what's here):\n{world_context}\n\n{system}"
+
+
 async def summarize_transcript(transcript: str, model: str = "", extra_instructions: str = "", on_progress=None,
                                 on_checkpoint=None, should_stop=None, resume: dict | None = None,
-                                think: bool = True) -> str:
+                                think: bool = True, world_context: str = "") -> str:
     """Turn a raw Whisper transcript (see transcribe_audio) of a session
     recording into a narrative recap. Transcripts that fit in one context
     window go through a single generate_chat call, same as before.
@@ -983,18 +1001,24 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
     `think` defaults to True (unlike generate_chat's own plain default of
     False) and is forwarded to every generate_chat call this makes,
     chunked or not — see expand_recap_notes's docstring for why this
-    family of functions differs from generate_chat's own default."""
+    family of functions differs from generate_chat's own default.
+
+    `world_context`, if given, is RAG-retrieved World lore/Notes text (see
+    app.audio_jobs._build_rag_context) prepended ahead of everything else —
+    see _with_world_context's own docstring."""
     transcript = (transcript or "").strip()
     if not transcript:
         return ""
     # Budgeted against the PART system prompt (used once chunking is
     # decided) since that's the one whose length actually matters here —
-    # extra_instructions is free text the GM controls and can be long.
-    part_system = _with_instructions(_SUMMARIZE_TRANSCRIPT_PART_SYSTEM, extra_instructions)
+    # extra_instructions is free text the GM controls and can be long, and
+    # world_context (RAG lore/notes) can be too — both must be included
+    # here so chunk sizing accounts for the system prompt's real length.
+    part_system = _with_world_context(_with_instructions(_SUMMARIZE_TRANSCRIPT_PART_SYSTEM, extra_instructions), world_context)
     chunk_chars = _transcript_chunk_char_budget(transcript, part_system)
     chunks = _split_transcript_into_chunks(transcript, chunk_chars)
     if len(chunks) <= 1:
-        system = _with_instructions(_SUMMARIZE_TRANSCRIPT_SYSTEM, extra_instructions)
+        system = _with_world_context(_with_instructions(_SUMMARIZE_TRANSCRIPT_SYSTEM, extra_instructions), world_context)
         return await generate_chat([{"role": "user", "content": transcript}], system=system, model=model, think=think)
 
     _log.info("summarize_transcript: chunking into %d part(s) (%d chars total)", len(chunks), len(transcript))

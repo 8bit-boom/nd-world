@@ -178,6 +178,57 @@ def test_context_sized_options_reserve_tokens_widens_num_ctx():
     assert wider_reserve["num_ctx"] > default_reserve["num_ctx"]
 
 
+# ── RAG world_context wiring (condense_recap/summarize_transcript) ─────────
+
+def test_with_world_context_prepends_labeled_block_ahead_of_system():
+    result = ai_module._with_world_context("SYSTEM PROMPT", "- [npc] Gareth: a blacksmith")
+    assert result.index("Gareth") < result.index("SYSTEM PROMPT")
+    assert "for accuracy only" in result
+
+
+def test_with_world_context_passthrough_when_blank():
+    assert ai_module._with_world_context("SYSTEM PROMPT", "") == "SYSTEM PROMPT"
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_world_context_reaches_the_system_prompt(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", world_context="- [npc] Gareth: a blacksmith")
+    system = calls[0]["messages"][0]["content"]
+    assert "Gareth" in system
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_no_world_context_block_when_blank(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap")
+    system = calls[0]["messages"][0]["content"]
+    assert "Relevant world lore" not in system
+
+
+@pytest.mark.asyncio
+async def test_summarize_transcript_world_context_reaches_unchunked_system(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.summarize_transcript("a short transcript", world_context="- [place] The Rusty Anchor: a tavern")
+    system = calls[0]["messages"][0]["content"]
+    assert "Rusty Anchor" in system
+
+
+@pytest.mark.asyncio
+async def test_summarize_transcript_world_context_reaches_chunked_part_system(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda transcript, system: 50)
+    long_transcript = "word " * 500
+    await ai_module.summarize_transcript(long_transcript, world_context="- [place] The Rusty Anchor: a tavern")
+    assert len(calls) > 1  # actually chunked, given the tiny forced budget
+    for call in calls:
+        assert "Rusty Anchor" in call["messages"][0]["content"]
+
+
 class _FakeRespFull:
     """Same shape as _FakeResp but also carries done_reason/eval_count and
     message.thinking, like a real ollama.ChatResponse — needed to exercise

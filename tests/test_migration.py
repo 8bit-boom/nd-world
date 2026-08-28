@@ -642,7 +642,7 @@ def test_heals_pre_thinking_toggle_audio_jobs_schema(tmp_path, monkeypatch):
 
     with engine.begin() as conn:
         cols = {r[1] for r in conn.execute(text("PRAGMA table_info(audio_jobs)")).fetchall()}
-    assert {"think", "fit_context", "min_tokens", "max_tokens"} <= cols
+    assert {"think", "fit_context", "min_tokens", "max_tokens", "use_rag", "rag_entity_limit", "rag_notes_limit"} <= cols
 
     db = SessionLocal()
     try:
@@ -652,6 +652,9 @@ def test_heals_pre_thinking_toggle_audio_jobs_schema(tmp_path, monkeypatch):
         assert job.fit_context in (0, False, None)
         assert job.min_tokens is None
         assert job.max_tokens is None
+        assert job.use_rag in (0, False, None)
+        assert job.rag_entity_limit is None
+        assert job.rag_notes_limit is None
     finally:
         db.close()
 
