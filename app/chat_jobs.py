@@ -113,7 +113,11 @@ async def _run_job(job_id: int, messages: list[dict], system: str, model: str, o
 
     try:
         _set(status="generating")
-        result = await _ai_module.generate_chat(messages, system, model, options)
+        # See ai.ollama_job_semaphore's own docstring — shared with
+        # audio_jobs.py so a queued chat job and a queued recap job don't
+        # run their Ollama calls on top of each other either.
+        async with _ai_module.ollama_job_semaphore:
+            result = await _ai_module.generate_chat(messages, system, model, options)
         if _looks_like_failure(result):
             _set(status="error", error=result)
         else:

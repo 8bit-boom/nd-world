@@ -1,3 +1,4 @@
+import asyncio
 import os
 import json as _json
 import logging
@@ -15,6 +16,22 @@ _log = logging.getLogger("nd.ai")
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:26b")
+
+# Concurrency limits for BACKGROUND-JOB work only (app/audio_jobs.py,
+# app/chat_jobs.py) — not the interactive chat/ask-AI/condense routes a GM
+# is actively waiting on, which should never queue behind a background job.
+# Without these, two session-recap jobs queued together interleave Whisper
+# chunks (or Ollama calls) against each other on the same backend, roughly
+# doubling wall time for both and thrashing whatever's resident in VRAM.
+# Held for the FULL duration of one transcribe_audio/summarize_transcript/
+# condense_recap/generate_chat call (including that call's own internal
+# per-chunk loop), not just one HTTP request, so a job's chunks always run
+# back-to-back rather than interleaved with another job's. Env-tunable in
+# case a beefier host can genuinely run more than one at a time.
+WHISPER_JOB_CONCURRENCY = max(1, int(os.getenv("WHISPER_JOB_CONCURRENCY", "1")))
+OLLAMA_JOB_CONCURRENCY = max(1, int(os.getenv("OLLAMA_JOB_CONCURRENCY", "1")))
+whisper_job_semaphore = asyncio.Semaphore(WHISPER_JOB_CONCURRENCY)
+ollama_job_semaphore = asyncio.Semaphore(OLLAMA_JOB_CONCURRENCY)
 
 # Optional whisper.cpp server (see the "whisper" Compose profile) for
 # transcribing an audio chat attachment into text — blank like IMAGEGEN_URL
@@ -190,8 +207,12 @@ def reset_hidden() -> None:
 # the per-entity "Ask AI" panel on something faster. "image" is a SwarmUI/
 # ComfyUI checkpoint name, not an Ollama model — a completely different
 # namespace, but stored alongside the other two since all three are
-# configured from the same Models tab.
-DEFAULT_SURFACES = ("chat", "ask_ai", "image")
+# configured from the same Models tab. "recap" covers session recap/
+# condense background jobs (app/audio_jobs.py) — added after the other
+# three surfaces already existed, since those jobs previously only fell
+# back to the single instance-wide default with no way to pin a different
+# model for recap work specifically, unlike every other surface here.
+DEFAULT_SURFACES = ("chat", "ask_ai", "image", "recap")
 
 
 def get_defaults() -> dict:

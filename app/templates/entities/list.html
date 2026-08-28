@@ -61,11 +61,41 @@
   {% endif %}
 
   <div class="list-main">
-    <div id="bulk-action-bar" style="display:none">
+    <div id="bulk-action-bar" style="display:none;flex-wrap:wrap">
       <button type="button" id="bulk-select-all-btn">☑ Select All</button>
       <span><span id="bulk-count">0</span> selected</span>
       <button type="button" id="bulk-download-btn" disabled>⬇ Download Selected</button>
+      <button type="button" id="bulk-vis-toggle-btn" disabled>👁 Set Visibility</button>
+      <button type="button" id="bulk-folder-toggle-btn" disabled>📁 Move to Folder</button>
       <button type="button" id="bulk-delete-btn" disabled>🗑 Delete Selected</button>
+      <span id="bulk-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+    </div>
+
+    <div id="bulk-vis-panel" style="display:none;flex-wrap:wrap;align-items:center;gap:.5rem;margin:-.3rem 0 .7rem;padding:.5rem .8rem;background:var(--bg2);border:1px solid var(--border);border-radius:5px;font-size:.82rem">
+      <select id="bulk-vis-mode-select" style="max-width:200px">
+        <option value="everyone">🌐 Everyone</option>
+        <option value="gm">🔒 GM only</option>
+        <option value="players">👥 Specific players</option>
+      </select>
+      <div id="bulk-vis-player-picker" style="display:none;gap:.5rem;flex-wrap:wrap">
+        {% for p in world_players %}
+        <label style="display:flex;align-items:center;gap:.3rem;font-size:.78rem;font-weight:normal">
+          <input type="checkbox" class="bulk-vis-player-cb" value="{{ p.id }}" style="width:auto">
+          {{ p.display_name or p.email }}
+        </label>
+        {% else %}
+        <span style="font-size:.78rem;color:var(--text-dim)">No players in this world yet.</span>
+        {% endfor %}
+      </div>
+      <button type="button" id="bulk-vis-apply-btn" class="btn-primary">Apply</button>
+    </div>
+
+    <div id="bulk-folder-panel" style="display:none;flex-wrap:wrap;align-items:center;gap:.5rem;margin:-.3rem 0 .7rem;padding:.5rem .8rem;background:var(--bg2);border:1px solid var(--border);border-radius:5px;font-size:.82rem">
+      <input id="bulk-folder-input" list="bulk-folder-options" placeholder="Folder name (blank = Unfiled)" style="max-width:240px">
+      <datalist id="bulk-folder-options">
+        {% for f in folders %}<option value="{{ f }}">{% endfor %}
+      </datalist>
+      <button type="button" id="bulk-folder-apply-btn" class="btn-primary">Apply</button>
     </div>
 
     {# Subfolder cards — JS fills this when inside a folder that has children #}
@@ -214,6 +244,12 @@
 }
 #bulk-download-btn:hover:not(:disabled) { border-color:var(--neon); color:var(--neon); }
 #bulk-download-btn:disabled { opacity:.5; cursor:default; }
+#bulk-vis-toggle-btn, #bulk-folder-toggle-btn {
+  background:var(--bg3); color:var(--text-dim); border:1px solid var(--border); border-radius:3px;
+  padding:.3rem .7rem; font-size:.8rem; cursor:pointer;
+}
+#bulk-vis-toggle-btn:hover:not(:disabled), #bulk-folder-toggle-btn:hover:not(:disabled) { border-color:var(--neon); color:var(--neon); }
+#bulk-vis-toggle-btn:disabled, #bulk-folder-toggle-btn:disabled { opacity:.5; cursor:default; }
 .entity-card-wrap { position:relative; }
 .entity-card-wrap .card-cb {
   position:absolute; top:.5rem; left:.5rem; z-index:2; width:16px; height:16px; cursor:pointer;
@@ -471,6 +507,12 @@ function updateBulkBar() {
   document.getElementById('bulk-count').textContent = checked.length;
   document.getElementById('bulk-download-btn').disabled = checked.length === 0;
   document.getElementById('bulk-delete-btn').disabled = checked.length === 0;
+  document.getElementById('bulk-vis-toggle-btn').disabled = checked.length === 0;
+  document.getElementById('bulk-folder-toggle-btn').disabled = checked.length === 0;
+  if (checked.length === 0) {
+    document.getElementById('bulk-vis-panel').style.display = 'none';
+    document.getElementById('bulk-folder-panel').style.display = 'none';
+  }
   const allSelected = all.length > 0 && checked.length === all.length;
   document.getElementById('bulk-select-all-btn').textContent = allSelected ? '☐ Deselect All' : '☑ Select All';
   document.querySelectorAll('.table-select-all-cb').forEach(headCb => {
@@ -525,6 +567,73 @@ document.getElementById('bulk-delete-btn').addEventListener('click', async () =>
     window.location.href = res.url;
   } catch (e) {
     alert('Delete failed: ' + e.message);
+    btn.disabled = false;
+  }
+});
+
+// ── Bulk visibility / move-to-folder ────────────────────────────────────────
+const bulkVisPanel = document.getElementById('bulk-vis-panel');
+const bulkFolderPanel = document.getElementById('bulk-folder-panel');
+const bulkStatus = document.getElementById('bulk-status');
+
+document.getElementById('bulk-vis-toggle-btn').addEventListener('click', () => {
+  bulkFolderPanel.style.display = 'none';
+  bulkVisPanel.style.display = bulkVisPanel.style.display === 'none' ? 'flex' : 'none';
+});
+document.getElementById('bulk-folder-toggle-btn').addEventListener('click', () => {
+  bulkVisPanel.style.display = 'none';
+  bulkFolderPanel.style.display = bulkFolderPanel.style.display === 'none' ? 'flex' : 'none';
+});
+
+const bulkVisModeSelect = document.getElementById('bulk-vis-mode-select');
+const bulkVisPlayerPicker = document.getElementById('bulk-vis-player-picker');
+bulkVisModeSelect.addEventListener('change', () => {
+  bulkVisPlayerPicker.style.display = bulkVisModeSelect.value === 'players' ? 'flex' : 'none';
+});
+
+document.getElementById('bulk-vis-apply-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('bulk-vis-apply-btn');
+  const checked = allRowCbs().filter(cb => cb.checked);
+  if (!checked.length) return;
+  const allowedIds = Array.from(document.querySelectorAll('.bulk-vis-player-cb:checked')).map(cb => parseInt(cb.value, 10));
+  btn.disabled = true;
+  bulkStatus.textContent = 'Applying…';
+  try {
+    const res = await fetch('/api/entities/bulk-visibility', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entity_ids: checked.map(cb => parseInt(cb.dataset.id, 10)),
+        visibility_mode: bulkVisModeSelect.value,
+        allowed_player_ids: allowedIds,
+      }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    window.location.reload();
+  } catch (e) {
+    bulkStatus.textContent = 'Failed: ' + e.message;
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('bulk-folder-apply-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('bulk-folder-apply-btn');
+  const checked = allRowCbs().filter(cb => cb.checked);
+  if (!checked.length) return;
+  const folder = document.getElementById('bulk-folder-input').value;
+  btn.disabled = true;
+  bulkStatus.textContent = 'Moving…';
+  try {
+    const res = await fetch('/api/entities/bulk-folder', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entity_ids: checked.map(cb => parseInt(cb.dataset.id, 10)),
+        folder: folder,
+      }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    window.location.reload();
+  } catch (e) {
+    bulkStatus.textContent = 'Failed: ' + e.message;
     btn.disabled = false;
   }
 });

@@ -544,7 +544,11 @@ async def _run_job(job_id: int) -> None:
         audio_path = Path(job.audio_path) if job.audio_path else None
         purpose = job.purpose
         delete_after = job.delete_after
-        model = job.model or ""
+        # A GM who never picked a model for this specific job falls back to
+        # the "recap" surface default (Models tab) rather than straight to
+        # the single instance-wide default — same per-surface convention
+        # already used for chat/ask_ai/image (see DEFAULT_SURFACES).
+        model = job.model or _ai_module.get_defaults().get("recap", "")
         world_id = job.world_id
         game_session_id = job.game_session_id
         extra_instructions = job.extra_instructions or ""
@@ -618,11 +622,16 @@ async def _run_job(job_id: int) -> None:
             denoise = _denoise_for_world(world_id) if world_id else False
             transcribe_resume = checkpoint if checkpoint and checkpoint.get("phase") == "transcribe" else None
             try:
-                transcript = await _ai_module.transcribe_audio(
-                    audio_path, glossary=glossary, language=language, denoise=denoise,
-                    on_progress=_on_progress, on_checkpoint=_checkpoint,
-                    should_stop=_job_shutdown.stopping, resume=transcribe_resume,
-                )
+                # Held for this whole call (all its internal chunks), not
+                # just one HTTP request — see ai.whisper_job_semaphore's own
+                # docstring for why: it's what actually stops two jobs'
+                # chunks from interleaving on the same Whisper backend.
+                async with _ai_module.whisper_job_semaphore:
+                    transcript = await _ai_module.transcribe_audio(
+                        audio_path, glossary=glossary, language=language, denoise=denoise,
+                        on_progress=_on_progress, on_checkpoint=_checkpoint,
+                        should_stop=_job_shutdown.stopping, resume=transcribe_resume,
+                    )
             except _ai_module.WhisperError as exc:
                 fields = {"status": "error", "error": str(exc), "finished_at": datetime.utcnow(), "checkpoint_json": ""}
                 if exc.partial_transcript:
@@ -689,11 +698,14 @@ async def _run_job(job_id: int) -> None:
                 transcript, extra_instructions=instructions, world_context=world_context,
                 max_tokens=max_tokens, think=think, force_fit=fit_context,
             )
-            recap = await _ai_module.condense_recap(
-                transcript, model=model, options=options, think=think,
-                extra_instructions=instructions, min_tokens=min_tokens, max_tokens=max_tokens,
-                world_context=world_context,
-            )
+            # See ai.ollama_job_semaphore's own docstring — held for the
+            # whole call, same reasoning as the transcribe semaphore above.
+            async with _ai_module.ollama_job_semaphore:
+                recap = await _ai_module.condense_recap(
+                    transcript, model=model, options=options, think=think,
+                    extra_instructions=instructions, min_tokens=min_tokens, max_tokens=max_tokens,
+                    world_context=world_context,
+                )
             if _looks_like_failure(recap):
                 _set(status="error", error=recap, finished_at=datetime.utcnow())
             else:
@@ -704,12 +716,13 @@ async def _run_job(job_id: int) -> None:
                 _recap_instructions_for_world(world_id) if world_id else "", extra_instructions,
             )
             summarize_resume = checkpoint if checkpoint and checkpoint.get("phase") == "summarize" else None
-            recap = await _ai_module.summarize_transcript(
-                transcript, model=model, extra_instructions=instructions,
-                on_progress=_on_progress, on_checkpoint=_checkpoint,
-                should_stop=_job_shutdown.stopping, resume=summarize_resume, think=think,
-                world_context=world_context,
-            )
+            async with _ai_module.ollama_job_semaphore:
+                recap = await _ai_module.summarize_transcript(
+                    transcript, model=model, extra_instructions=instructions,
+                    on_progress=_on_progress, on_checkpoint=_checkpoint,
+                    should_stop=_job_shutdown.stopping, resume=summarize_resume, think=think,
+                    world_context=world_context,
+                )
             if _looks_like_failure(recap):
                 _set(status="error", error=recap, chunk_current=None, chunk_total=None,
                      finished_at=datetime.utcnow(), checkpoint_json="")

@@ -104,6 +104,17 @@ def _combine_recap_instructions(world_instructions: str, job_instructions: str) 
     return "\n\n".join(parts)
 
 
+def _recap_model(model: str) -> str:
+    """Falls back to the "recap" surface default (Models tab) instead of
+    letting an unspecified model fall straight through to resolve_model's
+    instance-wide default — same per-surface fallback app.audio_jobs.
+    _run_job already applies for job-based condense/summarize work,
+    extended here to the direct (non-job) routes below that call
+    condense_recap/summarize_transcript/summarize_session_from_facts
+    straight from a request instead of going through a background job."""
+    return model or _ai_module.get_defaults().get("recap", "")
+
+
 @router.get("/sessions", response_class=HTMLResponse)
 def sessions_list(request: Request, page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
@@ -568,7 +579,7 @@ async def api_condense_recap(request: Request):
     if not recap:
         raise HTTPException(400, "No recap provided")
     min_tokens, max_tokens = _condense_token_bounds(body)
-    model = str(body.get("model", "")).strip()
+    model = _recap_model(str(body.get("model", "")).strip())
     extra_instructions = str(body.get("extra_instructions", "")).strip()
     # See app.ai.condense_call_options' own docstring: sizes num_ctx to fit
     # recap + extra_instructions + the requested output length whenever
@@ -650,7 +661,7 @@ async def api_summarize_from_audio(
             "check the recording actually captured audio.",
         )
     instructions = _combine_recap_instructions(_recap_instructions_for_world(world), extra_instructions)
-    recap = await _ai_module.summarize_transcript(transcript, extra_instructions=instructions, think=think)
+    recap = await _ai_module.summarize_transcript(transcript, model=_recap_model(""), extra_instructions=instructions, think=think)
     return {"transcript": transcript, "recap": recap}
 
 
@@ -702,7 +713,7 @@ async def api_summarize_from_audio_complete(
             "check the recording actually captured audio.",
         )
     instructions = _combine_recap_instructions(_recap_instructions_for_world(world), extra_instructions)
-    recap = await _ai_module.summarize_transcript(transcript, extra_instructions=instructions, think=think)
+    recap = await _ai_module.summarize_transcript(transcript, model=_recap_model(""), extra_instructions=instructions, think=think)
     return {"transcript": transcript, "recap": recap}
 
 
@@ -907,7 +918,7 @@ async def api_summarize_live_transcript(session_id: int, request: Request, db: S
     raw = await request.body()
     body = json.loads(raw) if raw else {}
     recap = await _ai_module.summarize_transcript(
-        gs.live_transcript, extra_instructions=_recap_instructions_for_world(world),
+        gs.live_transcript, model=_recap_model(""), extra_instructions=_recap_instructions_for_world(world),
         think=_think_from_body(body),
     )
     return {"transcript": gs.live_transcript, "recap": recap}
@@ -928,7 +939,7 @@ async def api_summarize_from_facts(session_id: int, request: Request, db: Sessio
     raw = await request.body()
     body = json.loads(raw) if raw else {}
     recap = await _ai_module.summarize_session_from_facts(
-        [f.content for f in facts], extra_instructions=_recap_instructions_for_world(world),
+        [f.content for f in facts], model=_recap_model(""), extra_instructions=_recap_instructions_for_world(world),
         think=_think_from_body(body),
     )
     return {"recap": recap}
@@ -983,5 +994,5 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     facts = q.order_by(Fact.created_at).all()
     if not facts:
         return {"recap": "", "empty": True}
-    recap = await _ai_module.summarize_session_from_facts([f.content for f in facts], extra_instructions=_recap_instructions_for_world(world))
+    recap = await _ai_module.summarize_session_from_facts([f.content for f in facts], model=_recap_model(""), extra_instructions=_recap_instructions_for_world(world))
     return {"recap": recap}

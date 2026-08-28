@@ -1493,6 +1493,12 @@
           <option value="">— none set —</option>
         </select>
       </label>
+      <label style="display:flex;align-items:center;gap:.6rem;font-size:.82rem;color:var(--text-dim)">
+        <span style="width:70px;flex-shrink:0">Recap</span>
+        <select id="mp-default-recap" class="ig-select" style="flex:1" onchange="mpSetDefault('recap', this.value)">
+          <option value="">— use system default —</option>
+        </select>
+      </label>
     </div>
     <div id="mp-defaults-status" style="font-size:.7rem;color:var(--text-dim);margin-top:.4rem;min-height:1em"></div>
   </div>
@@ -4727,15 +4733,18 @@ async function mpUnloadModel(modelId, btn) {
 }
 
 async function mpLoadDefaults(defaults) {
-  const chatSel = document.getElementById('mp-default-chat');
-  const askSel  = document.getElementById('mp-default-ask_ai');
-  const imgSel  = document.getElementById('mp-default-image');
+  const chatSel  = document.getElementById('mp-default-chat');
+  const askSel   = document.getElementById('mp-default-ask_ai');
+  const imgSel   = document.getElementById('mp-default-image');
+  const recapSel = document.getElementById('mp-default-recap');
 
   const llmOptions = _mpModels.map(m => `<option value="${m.id}">${m.label || m.id}</option>`).join('');
-  chatSel.innerHTML = '<option value="">— use system default —</option>' + llmOptions;
-  askSel.innerHTML  = '<option value="">— use system default —</option>' + llmOptions;
-  chatSel.value = defaults.chat || '';
-  askSel.value  = defaults.ask_ai || '';
+  chatSel.innerHTML  = '<option value="">— use system default —</option>' + llmOptions;
+  askSel.innerHTML   = '<option value="">— use system default —</option>' + llmOptions;
+  recapSel.innerHTML = '<option value="">— use system default —</option>' + llmOptions;
+  chatSel.value  = defaults.chat || '';
+  askSel.value   = defaults.ask_ai || '';
+  recapSel.value = defaults.recap || '';
 
   try {
     const mr = await fetch('/api/ai/imagegen/models').then(r => r.json());

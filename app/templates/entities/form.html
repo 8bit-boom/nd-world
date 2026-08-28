@@ -153,6 +153,9 @@
 
     <div class="form-actions">
       <button type="submit" class="btn-save">Save</button>
+      {% if not entity %}
+      <button type="submit" name="save_and_new" value="1" class="btn-save" style="background:var(--bg3);border:1px solid var(--border);color:var(--text)" title="Save this one and open a blank form for the next, same kind and folder">Save &amp; Add Another</button>
+      {% endif %}
       {% if entity %}
       <a href="{{ ('/entity/' + entity.id|string)|wq }}" class="btn-cancel">Cancel</a>
       {% else %}

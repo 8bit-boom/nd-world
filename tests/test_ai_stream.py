@@ -92,7 +92,7 @@ def test_ai_defaults_empty_by_default(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     r = client.get("/api/ai/defaults")
     assert r.status_code == 200
-    assert r.json() == {"chat": "", "ask_ai": "", "image": ""}
+    assert r.json() == {"chat": "", "ask_ai": "", "image": "", "recap": ""}
 
 
 def test_ai_defaults_set_and_get_roundtrip(client, seed):
@@ -101,7 +101,7 @@ def test_ai_defaults_set_and_get_roundtrip(client, seed):
     assert r.status_code == 200
     assert r.json()["defaults"]["ask_ai"] == "gemma4:26b"
     r = client.get("/api/ai/defaults")
-    assert r.json() == {"chat": "", "ask_ai": "gemma4:26b", "image": ""}
+    assert r.json() == {"chat": "", "ask_ai": "gemma4:26b", "image": "", "recap": ""}
 
 
 def test_ai_defaults_rejects_unknown_surface(client, seed):

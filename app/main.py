@@ -33,7 +33,7 @@ from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, render_md, html_to_markdown, sanitize_note_html
 from .templating import templates
 from .uploads import copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, ApiToken, ImageAlbum, AudioClip, AudioAlbum
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -60,7 +60,7 @@ from .routers.chronicler import router as chronicler_router
 from .routers.gallery import router as gallery_router
 from .routers.audio import router as audio_router
 from .routers.audio_jobs import router as audio_jobs_router
-from .routers.video import router as video_router
+from .routers.video import router as video_router, _delete_clip_file as _delete_video_clip_file
 from .routers.nav_menus_admin import router as nav_menus_admin_router
 from . import gallery as _gallery_module
 from . import mcp_server
@@ -739,25 +739,43 @@ def world_create(
     resp.set_cookie(DEFAULT_WORLD_COOKIE, w.slug, max_age=60*60*24*365)
     return resp
 
+# Every model whose rows world_delete removes via a plain
+# `.filter(model.world_id == world_id).delete()` — pulled out to a named
+# constant (rather than an inline tuple in the function body) so
+# tests/test_world_delete.py can directly compare it against every table
+# Base.metadata actually knows has a world_id column, catching a future
+# model that gets a world_id but is never wired in here. Previously just
+# db.delete(w) — SQLite's foreign_keys pragma is never turned on (see
+# database.py) and World has no ORM cascade configured for most child
+# tables (only Entity does), so every one of these was silently orphaned
+# forever on every world delete until this loop existed; Video, Fact,
+# ChatSession, PromptPreset, the three background-job tables, and the two
+# per-world template tables were added to the schema later than this
+# cleanup and were missed the same way until the metadata-driven test
+# caught them.
+_WORLD_DELETE_MODELS = (
+    Entity, PlayerCharacter, Schematic, WorldMembership, InviteCode, PrivateNote,
+    InvestBoard, RandomTable, CombatSession, Party, Quest, GameSession,
+    WorldCalendar, CalendarEvent, ImageAlbum, AudioClip, AudioAlbum,
+    VideoClip, VideoAlbum, Fact, ChatSession, PromptPreset,
+    AudioJob, ImageJob, ChatJob, EntityTemplate, SheetTemplate,
+)
+
+
 @app.post("/worlds/{world_id}/delete")
 def world_delete(world_id: int, db: Session = Depends(get_db)):
     """Deletes every row and file this world owns before removing the World
-    row itself. Previously just did db.delete(w) — SQLite's foreign_keys
-    pragma is never turned on (see database.py) and World has no ORM cascade
-    configured for most of its child tables (only Entity does), so every
-    PlayerCharacter, Schematic, WorldMembership, InviteCode, CombatSession,
-    Party, Quest, GameSession, PrivateNote, InvestBoard, RandomTable,
-    WorldCalendar/CalendarEvent row — plus every filesystem-backed Map JSON
-    file, its MapOverlay row, and every uploaded map/schematic image — was
-    silently orphaned forever on every world delete.
+    row itself — see _WORLD_DELETE_MODELS just above for why that list
+    exists as a named constant, not an inline tuple.
 
     Deliberately out of scope: uploaded Entity/PlayerCharacter/Party
-    portrait images. Those use a flat /uploads/{filename} naming scheme
-    (unlike maps/schematics, which are already carefully cleaned up
-    elsewhere in this file) that isn't safely reversible from just the DB
-    row without real risk of deleting the wrong file — a pre-existing,
-    broader orphaned-upload problem that predates and outlives world-delete
-    specifically."""
+    portrait images, and any AI-generated image URLs referenced by
+    ImageJob.result_urls_json. Those use a flat /uploads/{filename} naming
+    scheme (unlike maps/schematics/video, which are already carefully
+    cleaned up elsewhere in this file) that isn't safely reversible from
+    just the DB row without real risk of deleting the wrong file — a
+    pre-existing, broader orphaned-upload problem that predates and
+    outlives world-delete specifically."""
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
@@ -781,6 +799,12 @@ def world_delete(world_id: int, db: Session = Depends(get_db)):
             if p.is_relative_to(UPLOADS_DIR.resolve()) and p.is_file():
                 p.unlink()
 
+    # Same ownership shape as AudioClip — each VideoClip row owns exactly
+    # one file (plus an optional poster frame) — reuses video.py's own
+    # delete helper rather than duplicating its containment/extension logic.
+    for clip in db.query(VideoClip).filter(VideoClip.world_id == world_id).all():
+        _delete_video_clip_file(clip)
+
     for slug, _data in list(_iter_world_maps(world_id)):
         jf = _MAPS_DIR / f"{slug}.json"
         if jf.exists():
@@ -791,9 +815,7 @@ def world_delete(world_id: int, db: Session = Depends(get_db)):
                 img.unlink()
         db.query(MapOverlay).filter(MapOverlay.slug == slug).delete(synchronize_session=False)
 
-    for model in (Entity, PlayerCharacter, Schematic, WorldMembership, InviteCode, PrivateNote,
-                  InvestBoard, RandomTable, CombatSession, Party, Quest, GameSession,
-                  WorldCalendar, CalendarEvent, ImageAlbum, AudioClip, AudioAlbum):
+    for model in _WORLD_DELETE_MODELS:
         db.query(model).filter(model.world_id == world_id).delete(synchronize_session=False)
 
     db.delete(w)
@@ -3279,6 +3301,7 @@ def list_entities(request: Request, kind: str, q: str = "", folder: Optional[str
     world = get_active_world(request, db, active_world)
     if not world:
         return RedirectResponse("/worlds")
+    world_players = _world_player_list(db, world.id)
 
     # Base searchable query (no folder filter — used for counts/sidebar)
     base_q = db.query(Entity).filter(Entity.kind == kind, Entity.world_id == world.id)
@@ -3387,7 +3410,7 @@ def list_entities(request: Request, kind: str, q: str = "", folder: Optional[str
         "q": q, "world": world, "worlds": worlds,
         "view": view, "entity_stats": entity_stats, "table_cols": table_cols,
         "is_parent_folder": is_parent_folder, "subfolder_groups": subfolder_groups,
-        "char_feat_folder": char_feat_folder,
+        "char_feat_folder": char_feat_folder, "world_players": world_players,
     })
 
 # ── Detail ────────────────────────────────────────────────────────────────────
@@ -3820,6 +3843,7 @@ async def create(
     allowed_player_ids: List[int] = Form([]),
     template_id: Optional[str] = Form(None),
     custom_fields_json: str = Form("{}"),
+    save_and_new: Optional[str] = Form(None),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     world = get_active_world(request, db, active_world)
@@ -3838,7 +3862,41 @@ async def create(
     db.commit()
     db.refresh(e)
     _sync_entity_access(db, e.id, allowed_player_ids if visibility_mode == "players" else [])
+    if save_and_new:
+        # Removes the biggest friction in batch NPC/item entry — carries the
+        # same kind/folder forward so the next entry starts right where this
+        # one left off, instead of the GM re-navigating from the entity list
+        # every time. Query params, not a redirect straight back into POST
+        # /new, so a page refresh on the fresh form is a plain GET.
+        return RedirectResponse(with_world(f"/new?kind={quote(kind)}&folder={quote(folder.strip())}", world), status_code=303)
     return RedirectResponse(f"/entity/{e.id}", status_code=303)
+
+
+@app.post("/entity/{entity_id}/duplicate")
+def duplicate_entity(entity_id: int, db: Session = Depends(get_db)):
+    """Clone an entity — common for stat-blocked mooks (five nearly-
+    identical goblins) where retyping the whole body is pure friction.
+    Copies every Entity column (including custom_fields_json) except
+    id/created_at/updated_at, appends "(copy)" to the name so the clone is
+    never confused for the original in a list. Deliberately does NOT copy
+    EntityNotes, entity_links, or entity_player_access grants — those are
+    sub-resources with their own meaning (a note recorded in play, a
+    specific player's access) that copying silently would be more
+    surprising than useful; a GM who wants those on the clone too can add
+    them the same way as on any other entity."""
+    src = db.get(Entity, entity_id)
+    if not src:
+        raise HTTPException(404)
+    clone = Entity(
+        world_id=src.world_id, kind=src.kind, subtype=src.subtype, name=f"{src.name} (copy)",
+        folder=src.folder, tags=src.tags, image_url=src.image_url, summary=src.summary,
+        body=src.body, visible_to_players=src.visible_to_players, template_id=src.template_id,
+        custom_fields_json=src.custom_fields_json,
+    )
+    db.add(clone)
+    db.commit()
+    db.refresh(clone)
+    return RedirectResponse(f"/entity/{clone.id}", status_code=303)
 
 # ── Edit ──────────────────────────────────────────────────────────────────────
 
@@ -4016,6 +4074,35 @@ async def bulk_set_visibility(request: Request, db: Session = Depends(get_db), a
     db.commit()
     for e in entities:
         _sync_entity_access(db, e.id, allowed_player_ids if mode == "players" else [])
+    return {"updated": len(entities)}
+
+
+@app.post("/api/entities/bulk-folder")
+async def bulk_set_folder(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Move a batch of entities into a folder at once — the entity list's
+    bulk-action-bar equivalent of dragging each one over individually.
+    Same shape as bulk_set_visibility just above. An empty `folder` moves
+    the batch to Unfiled, matching the per-entity edit form's own
+    "blank folder = Unfiled" convention."""
+    world = get_active_world(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    body = await request.json()
+    ids = []
+    for v in body.get("entity_ids") or []:
+        try:
+            ids.append(int(v))
+        except (TypeError, ValueError):
+            continue
+    folder = str(body.get("folder", "")).strip() or None
+
+    entities = (
+        db.query(Entity).filter(Entity.id.in_(ids), Entity.world_id == world.id).all()
+        if ids else []
+    )
+    for e in entities:
+        e.folder = folder
+    db.commit()
     return {"updated": len(entities)}
 
 # ── Relations ─────────────────────────────────────────────────────────────────

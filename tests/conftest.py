@@ -28,11 +28,13 @@ os.environ["ND_JOB_STOP_GRACE_SECONDS"] = "0"
 os.environ.pop("GM_EMAIL", None)
 os.environ.pop("GM_PASSWORD", None)
 
+import asyncio
 import shutil
 
 import pytest
 from starlette.testclient import TestClient
 
+from app import ai as ai_module
 from app import auth
 from app.database import SessionLocal, engine
 from app.main import app
@@ -92,6 +94,19 @@ def client():
     # above are reset per test.
     from app.deps import _llm_cooldowns
     _llm_cooldowns.clear()
+    # app.ai.whisper_job_semaphore/ollama_job_semaphore are module-level
+    # singletons that lazily bind to whichever asyncio event loop first
+    # actually contends them (see asyncio.Semaphore.acquire — it only
+    # calls _get_loop(), and so only binds, once a second waiter shows up)
+    # — harmless in production, where the process has exactly one event
+    # loop for its whole lifetime, but pytest-asyncio hands each test
+    # function its own fresh loop, so a semaphore genuinely contended (two
+    # jobs queued at once) in one test would raise "bound to a different
+    # event loop" in any later test whose own contention is the first to
+    # reach it. Give every test fresh, as-yet-unbound instances, same
+    # reasoning as _llm_cooldowns above.
+    ai_module.whisper_job_semaphore = asyncio.Semaphore(ai_module.WHISPER_JOB_CONCURRENCY)
+    ai_module.ollama_job_semaphore = asyncio.Semaphore(ai_module.OLLAMA_JOB_CONCURRENCY)
     with TestClient(app) as c:
         yield c
 

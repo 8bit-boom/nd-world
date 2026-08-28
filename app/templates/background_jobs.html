@@ -5,7 +5,7 @@
   <h1>⏳ Background Jobs</h1>
 </div>
 <p style="color:var(--text-dim);font-size:.85rem;margin:-.5rem 0 1rem">
-  Every durable audio-transcription job started from a "🔒 Process in Background" button (Session recap, Whisper Test, AI Chat/Ask AI attachments) — these keep running here even if the tab that started them is closed. A job still shows here after you close this page too; reopen it any time to check on things or cancel one. A job interrupted by a server restart resumes automatically from its last checkpoint on the next boot — "⏸ Interrupted" just means it's between attempts (or, past a few auto-retries, needs a manual ▶ Resume click here).
+  Every durable job started from a "🔒 Process in Background" button — 🎙 audio (Session recap, Whisper Test, AI Chat/Ask AI attachments), 💬 chat, and 🎨 image generation alike — these keep running here even if the tab that started them is closed. A job still shows here after you close this page too; reopen it any time to check on things or cancel one. An audio job interrupted by a server restart resumes automatically from its last checkpoint on the next boot — "⏸ Interrupted" just means it's between attempts (or, past a few auto-retries, needs a manual ▶ Resume click here); chat/image jobs restart from the same saved request instead, with no checkpoint to resume from.
 </p>
 
 <div id="bg-jobs-list"></div>
@@ -39,10 +39,17 @@
 
 <script src="/static/js/progress-bar.js"></script>
 <script>
-const BG_LIST_URL = '/api/audio-jobs';
-const IN_PROGRESS = new Set(['pending', 'transcribing', 'summarizing']);
+// Three job engines (app/audio_jobs.py, app/chat_jobs.py, app/image_jobs.py)
+// share this one page — each has its own table/routes/status vocabulary
+// (audio: transcribing/summarizing; chat/image: generating), so every job
+// fetched below is tagged with a `job_type` telling the rest of this file
+// which endpoint base and field names apply to it.
+const JOB_TYPE_ENDPOINT = { audio: '/api/audio-jobs', chat: '/api/ai/chat/jobs', image: '/api/ai/imagegen/jobs' };
+const JOB_TYPE_ICON = { audio: '🎙', chat: '💬', image: '🎨' };
+const JOB_TYPE_LABEL = { audio: null, chat: 'Chat', image: 'Image Gen' };  // audio uses its own purpose_label instead
+const IN_PROGRESS = new Set(['pending', 'transcribing', 'summarizing', 'generating']);
 const STATUS_LABEL = {
-  pending: 'Queued…', transcribing: 'Transcribing…', summarizing: 'Summarizing…',
+  pending: 'Queued…', transcribing: 'Transcribing…', summarizing: 'Summarizing…', generating: 'Generating…',
   done: '✓ Done', error: '✗ Failed', cancelled: '○ Cancelled',
   interrupted: '⏸ Interrupted',
 };
@@ -76,6 +83,13 @@ function bgElapsedLabel(job) {
   return ndElapsedLabel(base, job.run_started_at || job.created_at);
 }
 
+function bgKey(job) {
+  // Audio/chat/image jobs are separate tables with their own independent
+  // id sequences — a bare job.id would collide _bgExpanded/_bgBars state
+  // between e.g. AudioJob #5 and ChatJob #5 once both exist on the page.
+  return job.job_type + ':' + job.id;
+}
+
 function bgRenderJob(job) {
   const card = document.createElement('div');
   card.className = 'bg-job-card' + (job.status === 'error' ? ' bg-job-card--error' : '')
@@ -84,12 +98,21 @@ function bgRenderJob(job) {
 
   const head = document.createElement('div');
   head.className = 'bg-job-head';
+  const typeIcon = document.createElement('span');
+  typeIcon.title = { audio: 'Audio', chat: 'Chat', image: 'Image Gen' }[job.job_type] || '';
+  typeIcon.textContent = JOB_TYPE_ICON[job.job_type] || '';
+  head.appendChild(typeIcon);
   const name = document.createElement('span');
   name.className = 'bg-job-filename';
-  name.textContent = job.filename || 'audio';
+  if (job.job_type === 'audio') {
+    name.textContent = job.filename || 'audio';
+  } else {
+    const p = job.prompt || '';
+    name.textContent = p.length > 80 ? p.slice(0, 80) + '…' : (p || (job.job_type === 'image' ? 'image' : 'message'));
+  }
   const purpose = document.createElement('span');
   purpose.className = 'bg-job-purpose';
-  purpose.textContent = job.purpose_label;
+  purpose.textContent = job.job_type === 'audio' ? job.purpose_label : JOB_TYPE_LABEL[job.job_type];
   const status = document.createElement('span');
   status.className = 'bg-job-status-label bg-job-status-label--' + job.status;
   status.textContent = STATUS_LABEL[job.status] || job.status;
@@ -104,7 +127,7 @@ function bgRenderJob(job) {
   const barWrap = document.createElement('div');
   card.appendChild(barWrap);
   const bar = ndProgressBar(barWrap);
-  _bgBars[job.id] = bar;
+  _bgBars[bgKey(job)] = bar;
   if (job.chunk_total && (job.status === 'summarizing' || job.status === 'transcribing')) {
     // Both phases can have a real, measurable percentage now — audio
     // chunking (app.ai._split_audio_into_chunks) gives transcribing one
@@ -141,7 +164,7 @@ function bgRenderJob(job) {
     card.appendChild(note);
   }
 
-  if (job.status === 'done' && (job.transcript || job.recap)) {
+  if (job.job_type === 'audio' && job.status === 'done' && (job.transcript || job.recap)) {
     const sizes = [];
     if (job.transcript) sizes.push(`Transcript: ${ndTokenLabel(job.transcript)}`);
     if (job.recap) sizes.push(`Recap: ${ndTokenLabel(job.recap)}`);
@@ -149,7 +172,21 @@ function bgRenderJob(job) {
     sizeLine.className = 'bg-job-time';
     sizeLine.textContent = sizes.join(' · ');
     card.appendChild(sizeLine);
+  } else if (job.job_type === 'chat' && job.status === 'done' && job.result) {
+    const sizeLine = document.createElement('div');
+    sizeLine.className = 'bg-job-time';
+    sizeLine.textContent = `Result: ${ndTokenLabel(job.result)}`;
+    card.appendChild(sizeLine);
+  } else if (job.job_type === 'image' && job.status === 'done' && job.urls && job.urls.length) {
+    const sizeLine = document.createElement('div');
+    sizeLine.className = 'bg-job-time';
+    sizeLine.textContent = `${job.urls.length} image${job.urls.length === 1 ? '' : 's'}`;
+    card.appendChild(sizeLine);
   }
+
+  const hasResult = job.job_type === 'audio' ? (job.transcript || job.recap)
+    : job.job_type === 'chat' ? !!job.result
+    : (job.urls && job.urls.length);
 
   const actions = document.createElement('div');
   actions.className = 'bg-job-actions';
@@ -158,7 +195,7 @@ function bgRenderJob(job) {
     cancelBtn.type = 'button';
     cancelBtn.className = 'bg-job-btn bg-job-btn--cancel';
     cancelBtn.textContent = '✕ Cancel';
-    cancelBtn.onclick = () => bgCancelJob(job.id, cancelBtn);
+    cancelBtn.onclick = () => bgCancelJob(job.job_type, job.id, cancelBtn);
     actions.appendChild(cancelBtn);
   } else {
     if (job.resumable) {
@@ -174,21 +211,21 @@ function bgRenderJob(job) {
     deleteBtn.type = 'button';
     deleteBtn.className = 'bg-job-btn bg-job-btn--cancel';
     deleteBtn.textContent = '🗑 Delete';
-    deleteBtn.onclick = () => bgDeleteJob(job.id, deleteBtn);
+    deleteBtn.onclick = () => bgDeleteJob(job.job_type, job.id, deleteBtn);
     actions.appendChild(deleteBtn);
   }
-  if (job.status === 'done' && (job.transcript || job.recap)) {
+  if (job.status === 'done' && hasResult) {
     const toggleBtn = document.createElement('button');
     toggleBtn.type = 'button';
     toggleBtn.className = 'bg-job-btn';
-    toggleBtn.textContent = _bgExpanded.has(job.id) ? 'Hide result' : 'View result';
+    toggleBtn.textContent = _bgExpanded.has(bgKey(job)) ? 'Hide result' : 'View result';
     toggleBtn.onclick = () => {
-      if (_bgExpanded.has(job.id)) _bgExpanded.delete(job.id); else _bgExpanded.add(job.id);
+      if (_bgExpanded.has(bgKey(job))) _bgExpanded.delete(bgKey(job)); else _bgExpanded.add(bgKey(job));
       bgRefresh();
     };
     actions.appendChild(toggleBtn);
   }
-  if (job.purpose === 'session_recap' && job.transcript && !IN_PROGRESS.has(job.status)) {
+  if (job.job_type === 'audio' && job.purpose === 'session_recap' && job.transcript && !IN_PROGRESS.has(job.status)) {
     const retryWrap = document.createElement('span');
     retryWrap.style.cssText = 'display:inline-flex;gap:.3rem;align-items:center';
 
@@ -261,8 +298,8 @@ function bgRenderJob(job) {
     return label;
   };
 
-  if (_bgExpanded.has(job.id) && job.status === 'done') {
-    if (job.recap) {
+  if (_bgExpanded.has(bgKey(job)) && job.status === 'done') {
+    if (job.job_type === 'audio' && job.recap) {
       card.appendChild(bgResultLabel(`Recap (${ndTokenLabel(job.recap)})`, `/api/audio-jobs/${job.id}/recap.md`));
       const recapBox = document.createElement('div');
       recapBox.className = 'bg-job-result';
@@ -270,7 +307,7 @@ function bgRenderJob(job) {
       recapBox.textContent = job.recap;
       card.appendChild(recapBox);
     }
-    if (job.transcript) {
+    if (job.job_type === 'audio' && job.transcript) {
       card.appendChild(bgResultLabel(`Transcript (${ndTokenLabel(job.transcript)})`, `/api/audio-jobs/${job.id}/transcript.md`));
       const tBox = document.createElement('div');
       tBox.className = 'bg-job-result';
@@ -278,16 +315,48 @@ function bgRenderJob(job) {
       tBox.textContent = job.transcript;
       card.appendChild(tBox);
     }
+    if (job.job_type === 'chat' && job.result) {
+      const label = document.createElement('div');
+      label.className = 'bg-job-result-label';
+      label.textContent = `Result (${ndTokenLabel(job.result)})`;
+      card.appendChild(label);
+      const box = document.createElement('div');
+      box.className = 'bg-job-result';
+      box.style.display = 'block';
+      box.textContent = job.result;
+      card.appendChild(box);
+    }
+    if (job.job_type === 'image' && job.urls && job.urls.length) {
+      const label = document.createElement('div');
+      label.className = 'bg-job-result-label';
+      label.textContent = `${job.urls.length} image${job.urls.length === 1 ? '' : 's'}`;
+      card.appendChild(label);
+      const grid = document.createElement('div');
+      grid.style.cssText = 'display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.3rem';
+      job.urls.forEach((u) => {
+        const a = document.createElement('a');
+        a.href = u;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        const img = document.createElement('img');
+        img.src = u;
+        img.loading = 'lazy';
+        img.style.cssText = 'width:110px;height:110px;object-fit:cover;border-radius:4px;border:1px solid var(--border)';
+        a.appendChild(img);
+        grid.appendChild(a);
+      });
+      card.appendChild(grid);
+    }
   }
 
   return card;
 }
 
-async function bgCancelJob(jobId, btn) {
+async function bgCancelJob(jobType, jobId, btn) {
   btn.disabled = true;
   btn.textContent = 'Cancelling…';
   try {
-    const res = await fetch(`/api/audio-jobs/${jobId}/cancel`, { method: 'POST' });
+    const res = await fetch(`${JOB_TYPE_ENDPOINT[jobType]}/${jobId}/cancel`, { method: 'POST' });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || `HTTP ${res.status}`);
@@ -298,11 +367,11 @@ async function bgCancelJob(jobId, btn) {
   bgRefresh();
 }
 
-async function bgDeleteJob(jobId, btn) {
+async function bgDeleteJob(jobType, jobId, btn) {
   btn.disabled = true;
   btn.textContent = 'Deleting…';
   try {
-    const res = await fetch(`/api/audio-jobs/${jobId}`, { method: 'DELETE' });
+    const res = await fetch(`${JOB_TYPE_ENDPOINT[jobType]}/${jobId}`, { method: 'DELETE' });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || `HTTP ${res.status}`);
@@ -317,6 +386,9 @@ async function bgDeleteJob(jobId, btn) {
 }
 
 async function bgResumeJob(jobId, btn) {
+  // Audio-only — chat/image jobs restart from their saved request on the
+  // next server boot instead of offering a manual resume (see chat_jobs.
+  // _run_job's own CancelledError-handler comment for why).
   // Only starts the job here — the actual work continues as a background
   // task, same hand-off-to-the-poll-loop shape as bgResummarize below.
   btn.disabled = true;
@@ -362,12 +434,36 @@ async function bgResummarize(jobId, model, extraInstructions, think, btn) {
   bgRefresh();
 }
 
-async function bgRefresh() {
-  let jobs = [];
+async function bgFetchJobs(jobType, url, unwrap) {
   try {
-    const res = await fetch(BG_LIST_URL);
-    if (res.ok) jobs = (await res.json()).jobs;
-  } catch (e) { /* transient — next poll retries */ }
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    const list = unwrap ? (data.jobs || []) : (data || []);
+    // Tag every job with which engine/table/endpoint it came from — the
+    // rest of this file (bgRenderJob, bgCancelJob/bgDeleteJob, the size/
+    // result blocks) all branch on this instead of guessing from shape.
+    return list.map((j) => ({ ...j, job_type: jobType }));
+  } catch (e) {
+    return [];  // transient — next poll retries
+  }
+}
+
+async function bgRefresh() {
+  // Three separate job engines (audio/chat/image), each with its own
+  // table and route prefix — merged into one timeline here so a GM sees
+  // everything running in the background from a single page instead of
+  // hunting through the AI Chat tab's own small per-type panels for chat/
+  // image jobs. Chat jobs are GM-only at the API level too (_require_gm
+  // in routers/ai.py) — fine here since this whole page is already
+  // GM-gated (audio_jobs.background_jobs_page).
+  const [audioJobs, chatJobs, imageJobs] = await Promise.all([
+    bgFetchJobs('audio', '/api/audio-jobs', true),
+    bgFetchJobs('chat', '/api/ai/chat/jobs', false),
+    bgFetchJobs('image', '/api/ai/imagegen/jobs', false),
+  ]);
+  const jobs = [...audioJobs, ...chatJobs, ...imageJobs]
+    .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
 
   const list = document.getElementById('bg-jobs-list');
   list.innerHTML = '';
