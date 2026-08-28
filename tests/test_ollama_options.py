@@ -135,11 +135,27 @@ async def test_condense_recap_extra_instructions_reach_the_system_prompt(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_condense_recap_max_tokens_sets_num_predict(monkeypatch):
+async def test_condense_recap_max_tokens_sets_num_predict_when_not_thinking(monkeypatch):
     calls = []
     monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
-    await ai_module.condense_recap("a recap", max_tokens=150)
+    await ai_module.condense_recap("a recap", max_tokens=150, think=False)
     assert calls[0]["options"]["num_predict"] == 150
+    system = calls[0]["messages"][0]["content"]
+    assert "150" in system
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_max_tokens_is_prompt_only_when_thinking(monkeypatch):
+    """think=True means hidden reasoning tokens share num_predict's budget
+    with the visible answer — a real, reported failure was the model
+    spending its whole num_predict budget on reasoning and writing no
+    visible answer at all. So with thinking on, max_tokens becomes prompt
+    guidance only, same contract min_tokens already has — no num_predict
+    cap gets set at all."""
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", max_tokens=150, think=True)
+    assert "num_predict" not in (calls[0].get("options") or {})
     system = calls[0]["messages"][0]["content"]
     assert "150" in system
 
@@ -148,7 +164,7 @@ async def test_condense_recap_max_tokens_sets_num_predict(monkeypatch):
 async def test_condense_recap_max_tokens_layers_onto_existing_options(monkeypatch):
     calls = []
     monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
-    await ai_module.condense_recap("a recap", options={"num_ctx": 4096}, max_tokens=150)
+    await ai_module.condense_recap("a recap", options={"num_ctx": 4096}, max_tokens=150, think=False)
     assert calls[0]["options"] == {"num_ctx": 4096, "num_predict": 150}
 
 
@@ -251,6 +267,25 @@ def test_condense_call_options_force_fit_overrides_a_larger_gm_configured_ctx():
         assert options["num_ctx"] < 32768
     finally:
         ai_module.set_ollama_generation_overrides({})
+
+
+def test_condense_call_options_widens_further_for_thinking_plus_max_tokens():
+    """A thinking model's hidden reasoning shares condense_recap's
+    num_predict budget with the visible answer (see condense_recap's own
+    docstring) — num_ctx needs matching extra headroom, or reasoning plus
+    an uncapped answer could still overflow the window."""
+    long_transcript = "word " * 20000  # long enough that both sides widen
+    thinking_off = ai_module.condense_call_options(long_transcript, max_tokens=500, think=False)
+    thinking_on = ai_module.condense_call_options(long_transcript, max_tokens=500, think=True)
+    assert thinking_off is not None and thinking_on is not None
+    assert thinking_on["num_ctx"] > thinking_off["num_ctx"]
+
+
+def test_condense_call_options_no_thinking_headroom_without_max_tokens():
+    """condense_recap never touches num_predict when max_tokens isn't set,
+    thinking or not — nothing extra to make room for, so a short recap
+    with thinking on but no max_tokens still returns None."""
+    assert ai_module.condense_call_options("short recap", think=True) is None
 
 
 # ── RAG world_context wiring (condense_recap/summarize_transcript) ─────────

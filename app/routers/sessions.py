@@ -479,12 +479,13 @@ async def api_condense_recap(request: Request):
     # call would otherwise risk silently overflowing the GM's configured/
     # assumed context — the failure mode for the latter isn't a clean
     # error, it's the model responding with garbage.
+    think = _think_from_body(body)
     options = _ai_module.condense_call_options(
         recap, extra_instructions=extra_instructions, max_tokens=max_tokens,
-        force_fit=bool(body.get("fit_context")),
+        think=think, force_fit=bool(body.get("fit_context")),
     )
     recap_result = await _ai_module.condense_recap(
-        recap, model=model, options=options, think=_think_from_body(body),
+        recap, model=model, options=options, think=think,
         extra_instructions=extra_instructions, min_tokens=min_tokens, max_tokens=max_tokens,
     )
     return {"recap": recap_result}

@@ -501,7 +501,7 @@ async def _run_job(job_id: int) -> None:
             # clean error, it's the model responding with garbage.
             options = _ai_module.condense_call_options(
                 transcript, extra_instructions=instructions, world_context=world_context,
-                max_tokens=max_tokens, force_fit=fit_context,
+                max_tokens=max_tokens, think=think, force_fit=fit_context,
             )
             recap = await _ai_module.condense_recap(
                 transcript, model=model, options=options, think=think,

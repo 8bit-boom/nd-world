@@ -744,10 +744,20 @@ async def condense_recap(
     best-effort basis like any other free-text instruction. max_tokens
     ALSO sets options["num_predict"], a real Ollama-enforced hard cap —
     layered onto whatever `options` the caller already computed (e.g.
-    context_sized_options for fit_context) rather than replacing it. The
-    prompt mention gives the model a chance to land inside that cap on
-    its own instead of just getting abruptly cut off mid-sentence once
-    num_predict runs out.
+    context_sized_options for fit_context) rather than replacing it — but
+    ONLY when think=False. With think=True, hidden reasoning tokens share
+    that same num_predict budget with the visible answer; forcing
+    num_predict down to exactly max_tokens risks the model spending its
+    entire budget on reasoning and writing no visible answer at all — a
+    real, reported failure (see generate_chat's own empty-content/
+    "had_thinking" diagnostic for exactly what that looks like: content
+    empty, thinking full of text, usually done_reason=="length"). So with
+    think=True, max_tokens becomes prompt guidance only too, same
+    best-effort contract min_tokens already has — the model isn't
+    hard-stopped, just asked nicely via the "Length target" text above.
+    See condense_call_options' own docstring for how the caller should
+    widen num_ctx to match, giving thinking generous room instead of a
+    hard cap.
 
     `world_context`, if given, is RAG-retrieved World lore/Notes text
     (see app.audio_jobs._build_rag_context) prepended ahead of everything
@@ -765,7 +775,7 @@ async def condense_recap(
     if length_notes:
         system += "\n\nLength target for the condensed recap: " + " and ".join(length_notes) + "."
     opts = dict(options) if options else {}
-    if max_tokens:
+    if max_tokens and not think:
         opts["num_predict"] = max_tokens
     return await generate_chat(
         [{"role": "user", "content": recap}], system=system, model=model,
@@ -782,6 +792,13 @@ async def condense_recap(
 # own response.
 _CONTEXT_FIT_RESERVED_TOKENS = 512
 _CONTEXT_FIT_FLOOR_TOKENS = 1024
+
+# Generous assumed budget for a thinking-enabled model's hidden reasoning,
+# on top of the visible answer's own max_tokens target — see condense_recap's
+# own docstring for why max_tokens can't safely double as num_predict's hard
+# cap once think=True, and condense_call_options' docstring for why num_ctx
+# needs matching headroom.
+_THINKING_HEADROOM_TOKENS = 4096
 
 
 def context_sized_options(text: str, reserve_tokens: int = _CONTEXT_FIT_RESERVED_TOKENS) -> dict:
@@ -882,7 +899,7 @@ def _transcript_chunk_char_budget(transcript: str = "", system: str = "") -> int
 
 def condense_call_options(
     transcript: str, extra_instructions: str = "", world_context: str = "",
-    max_tokens: int | None = None, force_fit: bool = False,
+    max_tokens: int | None = None, think: bool = True, force_fit: bool = False,
 ) -> dict | None:
     """The `options` a Condense call (job-based or the blocking route)
     should pass to condense_recap, so a long input — further lengthened by
@@ -902,6 +919,18 @@ def condense_call_options(
     generate_chat's own failure sentinels — is_failure_sentinel has no way
     to catch it.
 
+    `think`, together with `max_tokens`, widens the reserve by
+    _THINKING_HEADROOM_TOKENS: condense_recap stops treating max_tokens as
+    a hard num_predict cap once think=True (see its own docstring for why
+    — hidden reasoning tokens would otherwise compete with the visible
+    answer for that same budget), so num_ctx needs generous matching
+    headroom instead, or a long reasoning-plus-answer generation could
+    still hit the SAME kind of context-overflow corruption this function
+    exists to prevent — just from an uncapped generation instead of an
+    oversized prompt. No widening when max_tokens isn't set at all:
+    condense_recap never touches num_predict in that case either way, so
+    there's nothing extra to make room for here.
+
     `force_fit=True` (the "Condense (fit context)" button) always returns
     the computed size — a deliberate override even of a GM's own larger
     configured num_ctx, e.g. to save VRAM on a short recap, same behavior
@@ -915,7 +944,11 @@ def condense_call_options(
     gets the protection."""
     chars_per_token = _chars_per_token_estimate(transcript)
     extra_chars = len(extra_instructions or "") + len(world_context or "")
-    reserve = max(_CONTEXT_FIT_RESERVED_TOKENS, (max_tokens or 0) + 256) + extra_chars // chars_per_token
+    thinking_headroom = _THINKING_HEADROOM_TOKENS if (think and max_tokens) else 0
+    reserve = (
+        max(_CONTEXT_FIT_RESERVED_TOKENS, (max_tokens or 0) + 256)
+        + extra_chars // chars_per_token + thinking_headroom
+    )
     needed = context_sized_options(transcript, reserve_tokens=reserve)["num_ctx"]
     if force_fit:
         return {"num_ctx": needed}
