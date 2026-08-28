@@ -880,6 +880,49 @@ def _transcript_chunk_char_budget(transcript: str = "", system: str = "") -> int
     return input_tokens * chars_per_token
 
 
+def condense_call_options(
+    transcript: str, extra_instructions: str = "", world_context: str = "",
+    max_tokens: int | None = None, force_fit: bool = False,
+) -> dict | None:
+    """The `options` a Condense call (job-based or the blocking route)
+    should pass to condense_recap, so a long input — further lengthened by
+    a GM's extra_instructions and/or RAG's world_context, both of which
+    land in the system prompt ahead of the model ever reading `transcript`
+    — can't silently exceed the model's real usable context.
+
+    Unlike summarize_transcript's map-reduce chunking (already defended by
+    _transcript_chunk_char_budget's _DEFAULT_ASSUMED_CTX_TOKENS fallback —
+    see its own comment), condense_recap is always a single unchunked call
+    with no chunking to fall back on. Ollama silently truncates a prompt
+    that overflows num_ctx instead of raising — observed in practice (with
+    Gemma) to corrupt the prompt badly enough that the model responds with
+    a run of reserved/unused vocabulary tokens (e.g. "<unused49>") instead
+    of an error or a sensible answer, which still reads back as a
+    successful, "done" job since it's real (if garbage) text, not one of
+    generate_chat's own failure sentinels — is_failure_sentinel has no way
+    to catch it.
+
+    `force_fit=True` (the "Condense (fit context)" button) always returns
+    the computed size — a deliberate override even of a GM's own larger
+    configured num_ctx, e.g. to save VRAM on a short recap, same behavior
+    this had before this function existed. Otherwise (plain Condense) this
+    only steps in when the computed requirement exceeds BOTH the GM's
+    configured num_ctx (if any) and _DEFAULT_ASSUMED_CTX_TOKENS — the same
+    "we can't know the real default, so assume the conservative low end"
+    reasoning _transcript_chunk_char_budget already uses — so an ordinary
+    short recap keeps using the GM's configured/default context unchanged
+    (returns None, same as always), and only a genuinely oversized call
+    gets the protection."""
+    chars_per_token = _chars_per_token_estimate(transcript)
+    extra_chars = len(extra_instructions or "") + len(world_context or "")
+    reserve = max(_CONTEXT_FIT_RESERVED_TOKENS, (max_tokens or 0) + 256) + extra_chars // chars_per_token
+    needed = context_sized_options(transcript, reserve_tokens=reserve)["num_ctx"]
+    if force_fit:
+        return {"num_ctx": needed}
+    baseline = effective_ollama_options().get("num_ctx") or _DEFAULT_ASSUMED_CTX_TOKENS
+    return {"num_ctx": needed} if needed > baseline else None
+
+
 def _split_transcript_into_chunks(transcript: str, chunk_chars: int) -> list[str]:
     """Split on a paragraph, line, or sentence boundary near the end of each
     window where one exists, so a chunk doesn't get cut mid-sentence — falls

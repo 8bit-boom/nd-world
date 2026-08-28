@@ -244,6 +244,28 @@ async def test_create_condense_job_fit_context_off_by_default(client, seed, monk
     assert captured["options"] is None
 
 
+@pytest.mark.asyncio
+async def test_create_condense_job_auto_widens_ctx_for_a_long_input_without_fit_context(client, seed, monkeypatch):
+    """Plain (non-fit-context) Condense on an input long enough to risk
+    silently overflowing the assumed default context must still protect
+    itself — see app.ai.condense_call_options' own docstring for why (a
+    long unchunked call that overflows num_ctx can come back as garbage,
+    e.g. reserved-vocabulary tokens, instead of a clean error)."""
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
+        captured["options"] = options
+        return "condensed"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    long_text = "word " * 20000
+    job_id = audio_jobs.create_condense_job(world_id=seed.world_a.id, text=long_text)
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["options"] is not None
+    assert captured["options"]["num_ctx"] > ai_module._DEFAULT_ASSUMED_CTX_TOKENS
+
+
 # ── RAG (use_rag/rag_entity_limit/rag_notes_limit) ──────────────────────────
 
 @pytest.mark.asyncio

@@ -471,18 +471,18 @@ async def api_condense_recap(request: Request):
     if not recap:
         raise HTTPException(400, "No recap provided")
     min_tokens, max_tokens = _condense_token_bounds(body)
-    # fit_context: size num_ctx to this one recap instead of the GM's
-    # configured/default context — see context_sized_options's docstring.
-    # A one-call override only; the instance-wide default is untouched.
-    # Widen the reserve when max_tokens is set so num_ctx still leaves
-    # room for that much output (see context_sized_options's own
-    # docstring for `reserve_tokens`).
-    options = None
-    if body.get("fit_context"):
-        reserve = max(_ai_module._CONTEXT_FIT_RESERVED_TOKENS, (max_tokens or 0) + 256)
-        options = _ai_module.context_sized_options(recap, reserve_tokens=reserve)
     model = str(body.get("model", "")).strip()
     extra_instructions = str(body.get("extra_instructions", "")).strip()
+    # See app.ai.condense_call_options' own docstring: sizes num_ctx to fit
+    # recap + extra_instructions + the requested output length whenever
+    # fit_context was explicitly asked for, OR whenever the plain (non-fit)
+    # call would otherwise risk silently overflowing the GM's configured/
+    # assumed context — the failure mode for the latter isn't a clean
+    # error, it's the model responding with garbage.
+    options = _ai_module.condense_call_options(
+        recap, extra_instructions=extra_instructions, max_tokens=max_tokens,
+        force_fit=bool(body.get("fit_context")),
+    )
     recap_result = await _ai_module.condense_recap(
         recap, model=model, options=options, think=_think_from_body(body),
         extra_instructions=extra_instructions, min_tokens=min_tokens, max_tokens=max_tokens,

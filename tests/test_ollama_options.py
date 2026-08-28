@@ -178,6 +178,81 @@ def test_context_sized_options_reserve_tokens_widens_num_ctx():
     assert wider_reserve["num_ctx"] > default_reserve["num_ctx"]
 
 
+# ── condense_call_options (context-overflow safety net for plain Condense) ──
+#
+# A long transcript/recap that overflows the model's real context gets
+# silently truncated by Ollama instead of raising — in practice (Gemma)
+# this can corrupt the prompt badly enough that the model responds with a
+# run of reserved/unused vocabulary tokens instead of an error, which still
+# reads back as a "done" job since it's real (if garbage) text. Unlike
+# summarize_transcript's chunking, condense_recap is a single unchunked
+# call with nothing else protecting it — these tests cover the safety net
+# that closes that gap.
+
+def test_condense_call_options_none_for_a_short_recap_no_configured_ctx():
+    assert ai_module.condense_call_options("short recap") is None
+
+
+def test_condense_call_options_widens_when_input_exceeds_assumed_default():
+    long_transcript = "word " * 20000  # ~20000 tokens, well past _DEFAULT_ASSUMED_CTX_TOKENS
+    options = ai_module.condense_call_options(long_transcript)
+    assert options is not None
+    assert options["num_ctx"] > ai_module._DEFAULT_ASSUMED_CTX_TOKENS
+
+
+def test_condense_call_options_accounts_for_extra_instructions_and_world_context_length():
+    long_transcript = "word " * 20000
+    bare = ai_module.condense_call_options(long_transcript)
+    padded = ai_module.condense_call_options(
+        long_transcript,
+        extra_instructions="x" * 20000,
+        world_context="y" * 20000,
+    )
+    assert padded["num_ctx"] > bare["num_ctx"]
+
+
+def test_condense_call_options_accounts_for_max_tokens_headroom():
+    long_transcript = "word " * 20000
+    without_max = ai_module.condense_call_options(long_transcript)
+    with_max = ai_module.condense_call_options(long_transcript, max_tokens=8000)
+    assert with_max["num_ctx"] > without_max["num_ctx"]
+
+
+def test_condense_call_options_respects_a_larger_gm_configured_ctx():
+    long_transcript = "word " * 5000  # would otherwise exceed the 4096 assumed default
+    ai_module.set_ollama_generation_overrides({"num_ctx": 32768})
+    try:
+        assert ai_module.condense_call_options(long_transcript) is None
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+def test_condense_call_options_still_widens_past_a_too_small_gm_configured_ctx():
+    long_transcript = "word " * 20000
+    ai_module.set_ollama_generation_overrides({"num_ctx": 2048})
+    try:
+        options = ai_module.condense_call_options(long_transcript)
+        assert options is not None
+        assert options["num_ctx"] > 2048
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+def test_condense_call_options_force_fit_always_returns_a_value_even_for_a_short_recap():
+    options = ai_module.condense_call_options("short recap", force_fit=True)
+    assert options is not None
+    assert options["num_ctx"] == ai_module._CONTEXT_FIT_FLOOR_TOKENS
+
+
+def test_condense_call_options_force_fit_overrides_a_larger_gm_configured_ctx():
+    ai_module.set_ollama_generation_overrides({"num_ctx": 32768})
+    try:
+        options = ai_module.condense_call_options("short recap", force_fit=True)
+        assert options["num_ctx"] < 32768
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
 # ── RAG world_context wiring (condense_recap/summarize_transcript) ─────────
 
 def test_with_world_context_prepends_labeled_block_ahead_of_system():

@@ -485,22 +485,23 @@ async def _run_job(job_id: int) -> None:
             # there's no partial-progress state to persist between chunks
             # the way session_recap's map-reduce path has.
             _set(status="summarizing")
-            options = None
-            if fit_context:
-                # A caller-set max_tokens can ask for a bigger response than
-                # the default fixed reserve budgets for — widen it so num_ctx
-                # still leaves room for the model to actually use that output
-                # budget instead of it getting squeezed by a context window
-                # sized for a much shorter answer (see context_sized_options'
-                # own docstring for `reserve_tokens`).
-                reserve = max(_ai_module._CONTEXT_FIT_RESERVED_TOKENS, (max_tokens or 0) + 256)
-                options = _ai_module.context_sized_options(transcript, reserve_tokens=reserve)
             # Same world-level recap_instructions + this job's own one-off
             # extra_instructions combination session_recap uses just below —
             # a GM's standing "always write in French" preference should
             # steer Condense too, not just the initial summarize.
             instructions = _combined_recap_instructions(
                 _recap_instructions_for_world(world_id) if world_id else "", extra_instructions,
+            )
+            # See condense_call_options' own docstring: sizes num_ctx to
+            # actually fit transcript + instructions + world_context + the
+            # requested output length whenever fit_context was explicitly
+            # asked for, OR whenever the plain (non-fit) call would
+            # otherwise risk silently overflowing the GM's configured/
+            # assumed context — the failure mode for the latter isn't a
+            # clean error, it's the model responding with garbage.
+            options = _ai_module.condense_call_options(
+                transcript, extra_instructions=instructions, world_context=world_context,
+                max_tokens=max_tokens, force_fit=fit_context,
             )
             recap = await _ai_module.condense_recap(
                 transcript, model=model, options=options, think=think,
