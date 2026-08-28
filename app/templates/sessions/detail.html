@@ -142,8 +142,14 @@
       {% endif %}
       {% if gsession %}
       <div class="form-group" style="margin-top:.75rem">
-        <label>NPCs Featured</label>
-        <input type="text" id="npc-search-input" placeholder="Search NPCs…" autocomplete="off"
+        <label>Entities Featured</label>
+        <div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.4rem">
+          Tag who/what showed up this session — NPCs, player characters, locations, organizations, races,
+          professions, notes. Checked entities are always included as RAG context for Summarize/Condense on
+          this session (once saved below), regardless of whether keyword search would have found them —
+          the most reliable way to keep names consistent in the recap.
+        </div>
+        <input type="text" id="npc-search-input" placeholder="Search entities…" autocomplete="off"
                style="width:100%;margin-bottom:.4rem;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px;box-sizing:border-box"/>
         <div id="npc-picker-tree" style="max-height:220px;overflow-y:auto;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.5rem"></div>
       </div>
@@ -391,7 +397,7 @@ ndEntityPicker(
   document.getElementById('npc-search-input'),
   {
     entities: NPC_CANDIDATES, mode: 'multi', selected: NPC_SELECTED, fieldName: 'npc_entity_ids',
-    emptyText: 'No NPC-eligible entities (character/creature) in this world yet.',
+    emptyText: 'No eligible entities in this world yet.',
   },
 );
 {% endif %}

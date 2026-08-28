@@ -299,7 +299,7 @@ async def test_create_condense_job_use_rag_passes_retrieved_context_through(clie
 
     build_calls = []
 
-    def fake_build_rag_context(world_id, query, entity_limit, notes_limit):
+    def fake_build_rag_context(world_id, query, entity_limit, notes_limit, **kwargs):
         build_calls.append((world_id, query, entity_limit, notes_limit))
         return "- [npc] Gareth: a blacksmith"
     monkeypatch.setattr(audio_jobs, "_build_rag_context", fake_build_rag_context)
@@ -320,7 +320,7 @@ async def test_create_condense_job_use_rag_passes_retrieved_context_through(clie
 async def test_create_condense_job_use_rag_blank_limits_use_module_defaults(client, seed, monkeypatch):
     build_calls = []
 
-    def fake_build_rag_context(world_id, query, entity_limit, notes_limit):
+    def fake_build_rag_context(world_id, query, entity_limit, notes_limit, **kwargs):
         build_calls.append((entity_limit, notes_limit))
         return ""
     monkeypatch.setattr(audio_jobs, "_build_rag_context", fake_build_rag_context)
@@ -335,7 +335,7 @@ async def test_create_condense_job_use_rag_blank_limits_use_module_defaults(clie
 async def test_create_job_session_recap_use_rag_passes_retrieved_context_through(client, seed, tmp_path, monkeypatch):
     build_calls = []
 
-    def fake_build_rag_context(world_id, query, entity_limit, notes_limit):
+    def fake_build_rag_context(world_id, query, entity_limit, notes_limit, **kwargs):
         build_calls.append((world_id, query, entity_limit, notes_limit))
         return "- [place] The Rusty Anchor: a tavern"
     monkeypatch.setattr(audio_jobs, "_build_rag_context", fake_build_rag_context)
@@ -406,6 +406,115 @@ def test_build_rag_context_no_topup_leak_when_relevance_search_already_fills_the
     context = audio_jobs._build_rag_context(seed.world_a.id, "Gareth Ashfall the blacksmith", entity_limit=1, notes_limit=0)
     assert "Gareth Ashfall" in context
     assert "Completely Unrelated Entity" not in context
+
+
+# ── pinned_entity_ids (GM-checked "Entities Featured" → guaranteed RAG) ─────
+
+def test_build_rag_context_always_includes_pinned_entities(client, seed):
+    """A pinned entity must show up even when the query text shares no
+    words with it at all — exactly the case a GM checking it manually is
+    meant to guarantee against keyword search missing it."""
+    pinned_id = _make_entity(seed.world_a.id, name="Crimson Doll", kind="character", body="A masked performer.")
+    context = audio_jobs._build_rag_context(
+        seed.world_a.id, "completely unrelated query text", entity_limit=0, notes_limit=0,
+        pinned_entity_ids=[pinned_id],
+    )
+    assert "Crimson Doll" in context
+
+
+def test_build_rag_context_pinned_entities_dont_count_against_entity_limit(client, seed):
+    """Pinned entities are guaranteed ON TOP of entity_limit, not carved
+    out of it — a relevant match found by keyword search must still appear
+    alongside a pinned entity, not get bumped out to make room."""
+    pinned_id = _make_entity(seed.world_a.id, name="Crimson Doll", kind="character", body="A masked performer.")
+    relevant_id = _make_entity(
+        seed.world_a.id, name="Gareth Ashfall", kind="character",
+        body="Gareth Ashfall runs the forge near the eastern gate.",
+    )
+    context = audio_jobs._build_rag_context(
+        seed.world_a.id, "Gareth Ashfall the blacksmith", entity_limit=1, notes_limit=0,
+        pinned_entity_ids=[pinned_id],
+    )
+    assert "Crimson Doll" in context
+    assert "Gareth Ashfall" in context
+
+
+def test_build_rag_context_pinned_entity_not_duplicated_when_also_relevant(client, seed):
+    """A pinned entity that the keyword search would ALSO have found on
+    its own must appear exactly once, not twice."""
+    pinned_id = _make_entity(
+        seed.world_a.id, name="Gareth Ashfall", kind="character",
+        body="Gareth Ashfall runs the forge near the eastern gate.",
+    )
+    context = audio_jobs._build_rag_context(
+        seed.world_a.id, "Gareth Ashfall the blacksmith", entity_limit=10, notes_limit=0,
+        pinned_entity_ids=[pinned_id],
+    )
+    assert context.count("Gareth Ashfall") == 1
+
+
+def test_session_featured_entity_ids_reads_saved_npcs_json(client, seed):
+    from app.database import SessionLocal as _SL
+    from app.models import GameSession as _GameSession
+
+    e1 = _make_entity(seed.world_a.id, name="Gareth Ashfall", kind="character")
+    e2 = _make_entity(seed.world_a.id, name="The Bazaar", kind="location")
+    db = _SL()
+    try:
+        gs = _GameSession(
+            world_id=seed.world_a.id, title="Session 1", session_num=1,
+            npcs_json=json.dumps([{"entity_id": e1, "name": "Gareth Ashfall"}, {"entity_id": e2, "name": "The Bazaar"}]),
+        )
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        gs_id = gs.id
+    finally:
+        db.close()
+
+    assert set(audio_jobs._session_featured_entity_ids(gs_id)) == {e1, e2}
+
+
+def test_session_featured_entity_ids_empty_for_no_session_or_no_picks(client, seed):
+    assert audio_jobs._session_featured_entity_ids(999999) == []
+
+
+@pytest.mark.asyncio
+async def test_create_condense_job_use_rag_pins_session_featured_entities(client, seed, monkeypatch):
+    """End-to-end through the job engine: a session's saved "Entities
+    Featured" picks reach world_context even though the condensed text
+    shares no words with the pinned entity's name at all."""
+    from app.database import SessionLocal as _SL
+    from app.models import GameSession as _GameSession
+
+    pinned_id = _make_entity(seed.world_a.id, name="Crimson Doll", kind="character", body="A masked performer.")
+    db = _SL()
+    try:
+        gs = _GameSession(
+            world_id=seed.world_a.id, title="Session 1", session_num=1,
+            npcs_json=json.dumps([{"entity_id": pinned_id, "name": "Crimson Doll"}]),
+        )
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        gs_id = gs.id
+    finally:
+        db.close()
+
+    captured = {}
+
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
+        captured["world_context"] = kwargs.get("world_context")
+        return "condensed"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text="something entirely unrelated to any established name",
+        use_rag=True, game_session_id=gs_id,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert "Crimson Doll" in (captured["world_context"] or "")
 
 
 @pytest.mark.asyncio

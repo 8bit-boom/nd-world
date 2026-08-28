@@ -152,30 +152,69 @@ def session_detail(session_id: int, request: Request, db: Session = Depends(get_
     npcs = json.loads(gs.npcs_json or "[]")
     entity_map = {e.id: e for e in db.query(Entity).filter(Entity.id.in_([n["entity_id"] for n in npcs])).all()} if npcs else {}
     npc_names = [entity_map[n["entity_id"]].name for n in npcs if entity_map.get(n["entity_id"])]
-    # NPC picker candidates: character/creature entities only (mirrors
-    # parties.py's companion picker), excluding anything explicitly tagged
-    # subtype="PC" — a player's own mechanical sheet lives in
-    # PlayerCharacter, not Entity, so a character Entity is either an NPC or
-    # (rarely) a lore write-up of a PC for flavor, which "PC" marks. subtype
-    # is a suggestion, not enforced (see deps.effective_subtypes), so this
-    # is a best-effort filter, not a hard guarantee.
-    npc_candidates = (
-        db.query(Entity)
-        .filter(Entity.world_id == gs.world_id, Entity.kind.in_(("character", "creature")))
-        .filter(or_(Entity.subtype != "PC", Entity.subtype.is_(None)))
-        .order_by(Entity.folder, Entity.name)
-        .all()
-    )
     party_pc_ids = json.loads(gs.party.member_pc_ids_json or "[]") if gs.party else []
     party_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(party_pc_ids)).all() if party_pc_ids else []
     return templates.TemplateResponse("sessions/detail.html", {
         "request": request, "world": world, "worlds": worlds, "gsession": gs,
         "parties": parties, "next_num": gs.session_num, "linked_combats": linked_combats,
         "npc_names": npc_names, "party_pcs": party_pcs,
-        "npc_candidates_json": [{"id": e.id, "name": e.name, "folder": e.folder or ""} for e in npc_candidates],
+        "npc_candidates_json": _featured_entity_candidates(db, gs.world_id),
         "prep": json.loads(gs.prep_json or "[]"), "loot": json.loads(gs.loot_json or "[]"),
         "npcs": npcs,
     })
+
+
+# Groups for the "Entities Featured" picker (still keyed name "npc_entity_
+# ids"/npcs_json on the wire and in the DB — see _featured_entity_candidates'
+# own docstring for why this wasn't renamed). Each group gets its own
+# top-level branch in the picker's folder tree by prefixing a synthetic
+# "{label}/{entity's own folder}" — reuses ndEntityPicker's existing
+# folder-grouping verbatim rather than teaching the shared JS component a
+# second, kind-based grouping concept.
+_FEATURED_ENTITY_GROUPS = [
+    # (kinds, extra SQLAlchemy filter or None, group label)
+    (("character",), lambda q: q.filter(or_(Entity.subtype != "PC", Entity.subtype.is_(None))), "👤 NPCs"),
+    (("character",), lambda q: q.filter(Entity.subtype == "PC"), "🧑 Player Characters"),
+    (("creature",), None, "☠ Creatures"),
+    (("location",), None, "🗺 Locations"),
+    (("organization",), None, "🏢 Organizations"),
+    (("race",), None, "🧬 Races"),
+    (("profession",), None, "🎭 Professions"),
+    (("note",), None, "📄 Notes"),
+]
+
+
+def _featured_entity_candidates(db: Session, world_id: int) -> list[dict]:
+    """Candidate entities for a session's "Entities Featured" picker —
+    originally "NPCs Featured" (character/creature entities only, mirroring
+    parties.py's companion picker); broadened to also cover player-character
+    lore write-ups (character entities tagged subtype="PC" — a player's own
+    mechanical sheet lives in PlayerCharacter, not here; subtype is a
+    suggestion, not enforced, see deps.effective_subtypes), locations,
+    organizations, races, professions, and notes — so a GM can tag
+    everything actually featured in a session, not just who showed up.
+
+    Still saved into the SAME gs.npcs_json field / npc_entity_ids form
+    field as before (a list of {entity_id, name} regardless of kind) — no
+    schema change, no migration, and every existing session's saved
+    NPC-only picks keep working unchanged; only the candidate POOL and the
+    picker's on-page label broadened, not the storage shape.
+
+    What a GM checks here also becomes the pinned/guaranteed set for RAG
+    (see app.audio_jobs._session_featured_entity_ids/_build_rag_context's
+    `pinned_entity_ids`) — deterministic, unlike keyword search, which
+    matters most for exactly the case that prompted this: a session
+    transcribed in a different language than the World's entity names has
+    no literal text for keyword search to match at all."""
+    candidates = []
+    for kinds, extra_filter, label in _FEATURED_ENTITY_GROUPS:
+        q = db.query(Entity).filter(Entity.world_id == world_id, Entity.kind.in_(kinds))
+        if extra_filter:
+            q = extra_filter(q)
+        for e in q.order_by(Entity.folder, Entity.name).all():
+            folder = f"{label}/{e.folder}" if e.folder else label
+            candidates.append({"id": e.id, "name": e.name, "folder": folder})
+    return candidates
 
 
 def _session_download_filename(gs: GameSession, suffix: str) -> str:

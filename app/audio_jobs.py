@@ -15,7 +15,7 @@ from typing import Optional
 from . import ai as _ai_module
 from . import job_shutdown as _job_shutdown
 from .database import SessionLocal
-from .models import AudioJob, Entity, World
+from .models import AudioJob, Entity, GameSession, World
 
 _log = logging.getLogger("nd.audio_jobs")
 
@@ -289,7 +289,35 @@ _DEFAULT_RAG_NOTES_LIMIT = 5
 _RAG_QUERY_CHAR_BUDGET = 4000
 
 
-def _build_rag_context(world_id: int, query: str, entity_limit: int, notes_limit: int) -> str:
+def _session_featured_entity_ids(game_session_id: int) -> list[int]:
+    """Entity ids a GM checked in the Sessions page's "Entities Featured"
+    picker (app.routers.sessions._featured_entity_candidates), read back
+    off GameSession.npcs_json — a [{entity_id, name}] list, saved by the
+    ordinary session_edit form POST. These become _build_rag_context's
+    `pinned_entity_ids`: a GM-curated, deterministic set that's included
+    regardless of keyword search, unlike everything else RAG retrieves —
+    see _build_rag_context's own docstring for why that matters most for a
+    session whose transcript is in a different language than the World's
+    entity names. Reads from the DB, not any in-browser/unsaved checkbox
+    state — a GM needs to Save the session before a Condense/Summarize run
+    picks up their latest picks."""
+    db = SessionLocal()
+    try:
+        gs = db.get(GameSession, game_session_id)
+        if not gs or not gs.npcs_json:
+            return []
+        try:
+            return [n["entity_id"] for n in _json.loads(gs.npcs_json)]
+        except (ValueError, KeyError, TypeError):
+            return []
+    finally:
+        db.close()
+
+
+def _build_rag_context(
+    world_id: int, query: str, entity_limit: int, notes_limit: int,
+    pinned_entity_ids: Optional[list[int]] = None,
+) -> str:
     """RAG retrieval for a summarize/condense job's system prompt (see
     app.ai._with_world_context, which is what actually prepends the result
     onto the system prompt) — reuses app.main's own entity search
@@ -322,25 +350,42 @@ def _build_rag_context(world_id: int, query: str, entity_limit: int, notes_limit
     — exactly the case this feature exists for: the model can usually
     still recognize a phonetic/translated rendering of an established
     name once it has the reference list on hand (see _with_world_context's
-    own instruction wording), it just needs to actually be given one."""
+    own instruction wording), it just needs to actually be given one.
+
+    `pinned_entity_ids` (see _session_featured_entity_ids) are ALWAYS
+    included, listed first, and never count against entity_limit/
+    notes_limit — a GM's own deliberate "this session featured these"
+    picks are a much stronger signal than keyword search, so they're
+    guaranteed rather than competing with it for budget. Everything else
+    (keyword search, its top-up, the guaranteed-recent-notes fetch) then
+    excludes whatever's already pinned."""
     from . import main as _main_module  # deferred — see docstring above
 
     db = SessionLocal()
     try:
+        pinned = (
+            db.query(Entity)
+            .filter(Entity.world_id == world_id, Entity.id.in_(pinned_entity_ids))
+            .order_by(Entity.kind, Entity.name)
+            .all()
+            if pinned_entity_ids else []
+        )
+        seen_ids = {e.id for e in pinned}
+
         entities = (
             _main_module._find_relevant_entities(db, world_id, query[:_RAG_QUERY_CHAR_BUDGET], limit=entity_limit)
             if entity_limit > 0 else []
         )
-        notes = [e for e in entities if e.kind == "note"]
-        non_notes = [e for e in entities if e.kind != "note"]
+        notes = [e for e in entities if e.kind == "note" and e.id not in seen_ids]
+        non_notes = [e for e in entities if e.kind != "note" and e.id not in seen_ids]
+        seen_ids |= {e.id for e in non_notes} | {e.id for e in notes}
         if entity_limit > 0 and len(non_notes) < entity_limit:
-            seen_ids = {e.id for e in non_notes}
             topup_q = db.query(Entity).filter(Entity.world_id == world_id, Entity.kind != "note")
             if seen_ids:
                 topup_q = topup_q.filter(~Entity.id.in_(seen_ids))
-            non_notes = non_notes + (
-                topup_q.order_by(Entity.kind, Entity.name).limit(entity_limit - len(non_notes)).all()
-            )
+            topup = topup_q.order_by(Entity.kind, Entity.name).limit(entity_limit - len(non_notes)).all()
+            non_notes = non_notes + topup
+            seen_ids |= {e.id for e in topup}
         if notes_limit > 0:
             note_entities = (
                 db.query(Entity)
@@ -349,9 +394,11 @@ def _build_rag_context(world_id: int, query: str, entity_limit: int, notes_limit
                 .limit(notes_limit)
                 .all()
             )
-            seen_ids = {e.id for e in entities}
             notes = notes + [e for e in note_entities if e.id not in seen_ids]
-        return _main_module._format_context_from_entities(non_notes + notes)
+
+        pinned_notes = [e for e in pinned if e.kind == "note"]
+        pinned_non_notes = [e for e in pinned if e.kind != "note"]
+        return _main_module._format_context_from_entities(pinned_non_notes + non_notes + pinned_notes + notes)
     finally:
         db.close()
 
@@ -394,6 +441,7 @@ async def _run_job(job_id: int) -> None:
         delete_after = job.delete_after
         model = job.model or ""
         world_id = job.world_id
+        game_session_id = job.game_session_id
         extra_instructions = job.extra_instructions or ""
         # NULL (a pre-migration row that never had a "Thinking" checkbox to
         # begin with) is treated as True — see AudioJob.think's docstring.
@@ -497,10 +545,16 @@ async def _run_job(job_id: int) -> None:
             # one, so the input being summarized IS the best signal for what
             # entities/notes are relevant to it (see _build_rag_context's
             # own docstring for the query-length cap this relies on).
+            # pinned_entity_ids: whatever the GM checked in this session's
+            # own "Entities Featured" picker (see _session_featured_entity_
+            # ids) — guaranteed inclusion regardless of what the keyword
+            # search above finds, not just this run's best-effort query.
+            pinned_entity_ids = _session_featured_entity_ids(game_session_id) if game_session_id else []
             world_context = _build_rag_context(
                 world_id, transcript,
                 rag_entity_limit if rag_entity_limit is not None else _DEFAULT_RAG_ENTITY_LIMIT,
                 rag_notes_limit if rag_notes_limit is not None else _DEFAULT_RAG_NOTES_LIMIT,
+                pinned_entity_ids=pinned_entity_ids,
             )
 
         if purpose == "condense":
