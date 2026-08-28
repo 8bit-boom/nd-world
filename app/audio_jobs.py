@@ -211,14 +211,21 @@ async def _run_job(job_id: int) -> None:
     both just start this same task, rather than one being a subtly
     different reimplementation of the other.
 
-    If the row already has a transcript (job.transcript non-empty) —
-    which only happens when resuming a job that was interrupted during or
-    after the summarize phase — transcription is skipped entirely and
-    this picks up straight at summarizing, using that saved transcript.
-    A checkpoint left on the row (job.checkpoint_json) is passed through
-    to whichever phase it belongs to; app.ai's transcribe_audio/
-    summarize_transcript each validate it still matches before trusting
-    it (see their own docstrings) and discard/start over silently if not."""
+    If the row already has a transcript (job.transcript non-empty) AND
+    there's no still-outstanding transcribe-phase checkpoint, transcription
+    is skipped entirely and this picks up straight at summarizing, using
+    that saved transcript — true when resuming a job interrupted during or
+    after the summarize phase. The transcribe-phase-checkpoint carve-out
+    matters because a checkpoint's own mirror (see _checkpoint below)
+    ALSO populates job.transcript while transcription is only partway
+    through the audio (see app.ai.transcribe_audio's on_checkpoint
+    contract) — without it, resuming a job interrupted mid-transcription
+    would skip straight to summarizing (or, for purpose="attachment",
+    straight to "done") on only a partial transcript. A checkpoint left
+    on the row (job.checkpoint_json) is passed through to whichever phase
+    it belongs to; app.ai's transcribe_audio/summarize_transcript each
+    validate it still matches before trusting it (see their own
+    docstrings) and discard/start over silently if not."""
     db = SessionLocal()
     try:
         job = db.get(AudioJob, job_id)
@@ -274,7 +281,16 @@ async def _run_job(job_id: int) -> None:
 
     keep_audio = False
     try:
-        skip_transcribe = bool(existing_transcript)
+        # A transcript on the row means transcription is DONE — except a
+        # checkpoint's own mirror (see _checkpoint above) also populates
+        # job.transcript while a transcribe-phase resume is still only
+        # partially through the audio, so a checkpoint still on
+        # "transcribe" always wins regardless of what transcript already
+        # holds (same phase-precedence start_resume_job's own dispatch
+        # uses, see its docstring — this must never disagree with it, or a
+        # resumed job could skip straight to a purpose="attachment" "done"
+        # after transcribing only part of the recording).
+        skip_transcribe = bool(existing_transcript) and not (checkpoint and checkpoint.get("phase") == "transcribe")
         if not skip_transcribe:
             _set(status="transcribing", run_started_at=datetime.utcnow(), finished_at=None)
             glossary = _glossary_for_world(world_id) if world_id else ""

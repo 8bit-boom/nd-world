@@ -11,6 +11,7 @@ from sqlalchemy.exc import OperationalError
 from typing import List, Optional
 from urllib.parse import quote
 import asyncio
+import contextlib
 import re
 import html
 import logging
@@ -67,6 +68,7 @@ from . import audio_jobs as _audio_jobs
 from . import ollama_tuning as _tuning
 from . import chat_jobs as _chat_jobs
 from . import image_jobs as _image_jobs
+from . import job_shutdown as _job_shutdown
 from . import auth as _auth
 from .constants import KINDS, SUBTYPES, KIND_ICONS
 
@@ -84,7 +86,26 @@ SWARMUI_EXTERNAL_URL = os.getenv("SWARMUI_EXTERNAL_URL", "").rstrip("/")
 ANDROID_EMULATOR_URL = os.getenv("ANDROID_EMULATOR_URL", "").rstrip("/")
 EDITOR_EXTERNAL_URL = os.getenv("EDITOR_EXTERNAL_URL", "").rstrip("/")
 
-app = FastAPI(title="N&D World")
+@contextlib.asynccontextmanager
+async def _lifespan(_app):
+    """Replaces the old @app.on_event("startup")/nonexistent shutdown pair.
+    _startup_tasks/_shutdown_tasks are defined later in this file (both
+    reference names — _seed_bundled_maps, _audio_jobs, etc. — declared
+    further down too) but that's fine: a lifespan body only actually RUNS
+    at app startup/shutdown, well after the whole module has finished
+    importing, so the forward references resolve by the time either is
+    called. See app/job_shutdown.py for why shutdown needs to exist at
+    all: a routine `docker compose up -d --build` used to just kill
+    whatever background job (audio transcription/summarization, image
+    generation, a chat completion) was mid-flight."""
+    _startup_tasks()
+    try:
+        yield
+    finally:
+        await _shutdown_tasks()
+
+
+app = FastAPI(title="N&D World", lifespan=_lifespan)
 _allowed = [h.strip() for h in os.getenv("ND_ALLOWED_HOSTS", "*").split(",") if h.strip()]
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed)
 app.include_router(ai_router)
@@ -202,8 +223,14 @@ def _sync_ollama_server_env() -> None:
         pass
 
 
-@app.on_event("startup")
-def startup():
+def _startup_tasks():
+    # The TestClient re-enters this lifespan once per test (~1000x in the
+    # full suite) — the stopping flag from one test's shutdown must not
+    # leak into the next test's boot, or a chunk loop would see stopping()
+    # already true and raise JobInterrupted immediately instead of running
+    # normally. A real deployment only ever boots once, so this is a no-op
+    # there (the flag starts False anyway).
+    _job_shutdown.clear_stop()
     init_db()
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     _seed_bundled_maps()
@@ -213,6 +240,23 @@ def startup():
     _audio_jobs.sweep_orphaned_job_audio()
     _image_jobs.sweep_interrupted_jobs()
     _chat_jobs.sweep_interrupted_jobs()
+    _audio_jobs.resume_interrupted_jobs()
+    _image_jobs.resume_interrupted_jobs()
+    _chat_jobs.resume_interrupted_jobs()
+
+
+async def _shutdown_tasks():
+    """Give in-flight background jobs a bounded chance to stop at a
+    checkpoint boundary before the container dies. See app/job_shutdown.py
+    for the three phases and why waiting for a job to actually FINISH is
+    not the mechanism (one Whisper chunk can take minutes; no Docker stop
+    grace period covers that)."""
+    _job_shutdown.request_stop()
+    tasks = _audio_jobs.live_tasks() + _image_jobs.live_tasks() + _chat_jobs.live_tasks()
+    await _job_shutdown.drain(tasks)
+    _audio_jobs.mark_stragglers_interrupted()
+    _image_jobs.mark_stragglers_interrupted()
+    _chat_jobs.mark_stragglers_interrupted()
 
 
 
@@ -4389,8 +4433,8 @@ async def _run_mcp_session_manager_forever():
     still be usable — anyio ties a task group's cancel scope to whichever
     task was running when it was entered, and that scope stops working once
     that task finishes, independent of whether __aexit__ was ever called.
-    A short-lived caller (an individual request handler, or an
-    @app.on_event("startup") hook, which Starlette awaits and discards) both
+    A short-lived caller (an individual request handler, or a lifespan
+    startup hook, which is awaited and discarded once it returns) both
     return almost immediately, so entering there produces a task group that
     already looks "torn down" to the very next request. Blocking forever
     after entering is what keeps the owning task — and so the task group —
@@ -4405,7 +4449,7 @@ async def _run_mcp_session_manager_forever():
 async def _mcp_entrypoint(scope, receive, send):
     """Lazily starts the above on the first real /mcp request rather than at
     app startup. Two things force lazy-on-first-use instead of an eager
-    app.on_event("startup") hook: StreamableHTTPSessionManager.run() raises
+    lifespan startup hook: StreamableHTTPSessionManager.run() raises
     if called more than once on the same instance even after a clean exit,
     and mcp_server.mcp is a module-level singleton — a real server only
     boots once so an eager hook would be fine there, but the test suite

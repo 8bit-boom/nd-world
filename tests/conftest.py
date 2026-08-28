@@ -16,6 +16,15 @@ os.environ["DB_PATH"] = str(_TEST_DATA_DIR / "world.db")
 os.environ["SECRET_KEY"] = "test-secret-key-not-for-production"
 os.environ["MAX_UPLOAD_BYTES"] = "1048576"  # 1 MiB — small so the 413 test stays fast
 os.environ["MAX_NOTE_IMPORT_BYTES"] = "1048576"  # same reason, for /entity/{id}/notes/import
+# app.job_shutdown.STOP_GRACE_SECONDS is read once at import time, so this
+# has to be set here (before any app.* module is imported) same as DB_PATH/
+# SECRET_KEY above. The `client` fixture below enters/exits the ASGI
+# lifespan once per test (~1000x in the full suite) — a non-zero grace
+# would add its full value to every test that deliberately leaves a
+# hanging background task in flight (_hanging_transcribe and friends).
+# Zero here means shutdown cancels immediately, which also stops those
+# tasks from leaking across tests.
+os.environ["ND_JOB_STOP_GRACE_SECONDS"] = "0"
 os.environ.pop("GM_EMAIL", None)
 os.environ.pop("GM_PASSWORD", None)
 

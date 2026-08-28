@@ -668,6 +668,54 @@ async def test_resume_skips_already_transcribed_chunks(client, seed, tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_resume_does_not_skip_transcription_when_transcript_is_only_a_checkpoint_mirror(
+    client, seed, tmp_path, monkeypatch,
+):
+    """Regression test: a transcribe-phase checkpoint's own on_checkpoint
+    callback mirrors its partial text into job.transcript (see _checkpoint
+    in _run_job) — the same field a FULLY finished transcription also
+    populates. Naively treating "job.transcript is non-empty" as "resume
+    straight into summarizing/done" would let a job interrupted partway
+    through transcription skip the rest of the audio entirely — for
+    purpose="attachment" (no summarize phase at all) that meant landing on
+    "done" having only transcribed the first chunk. transcribe_audio must
+    still be called (with the checkpoint as its resume=) whenever the
+    checkpoint's own phase is still "transcribe", regardless of what
+    job.transcript already holds."""
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"audio-bytes")
+
+    calls = []
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        calls.append(kwargs.get("resume"))
+        return "part 0\npart 1"
+
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    checkpoint = {"phase": "transcribe", "chunks_done": 1, "chunk_total": 2,
+                  "chunk_seconds": 600, "audio_size": audio.stat().st_size, "text": "part 0"}
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="interrupted",
+                       filename="clip.mp3", audio_path=str(audio), delete_after=True,
+                       checkpoint_json=json.dumps(checkpoint),
+                       transcript="part 0")  # the checkpoint's own mirror, NOT a finished transcript
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    audio_jobs.resume_interrupted_jobs()
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert calls and calls[0] == checkpoint  # transcribe_audio WAS called, not skipped
+    assert job.transcript == "part 0\npart 1"  # the real (full) result, not the stale mirror
+
+
+@pytest.mark.asyncio
 async def test_resume_of_a_job_with_a_transcript_goes_straight_to_summarizing(client, seed, monkeypatch):
     transcribe_calls = []
 

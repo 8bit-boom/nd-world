@@ -127,3 +127,192 @@ def test_job_interrupted_is_not_caught_by_except_cancelled_error():
             raise job_shutdown.JobInterrupted("stopped at a chunk boundary")
         except asyncio.CancelledError:
             raise AssertionError("JobInterrupted must not be caught as CancelledError")
+
+
+# ── app.main lifespan integration ───────────────────────────────────────────
+#
+# The unit tests above cover job_shutdown.py's own primitives; the ones in
+# each engine's own test file (test_audio_jobs.py etc.) cover the
+# stopping()/JobInterrupted wiring at the engine level by calling
+# request_stop()/cancel_job() directly. These instead drive the real ASGI
+# lifespan (app.main._lifespan, via a raw TestClient enter/exit) to prove
+# the actual wiring — app.main._startup_tasks/_shutdown_tasks calling the
+# right engine functions in the right order — is correct end to end.
+import time
+
+from starlette.testclient import TestClient
+
+import app.main as main_module
+
+
+def test_lifespan_startup_still_runs_every_boot_sweep(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main_module._audio_jobs, "sweep_interrupted_jobs", lambda: calls.append("audio_sweep"))
+    monkeypatch.setattr(main_module._audio_jobs, "sweep_orphaned_job_audio", lambda: calls.append("audio_orphan"))
+    monkeypatch.setattr(main_module._audio_jobs, "resume_interrupted_jobs", lambda: calls.append("audio_resume") or 0)
+    monkeypatch.setattr(main_module._image_jobs, "sweep_interrupted_jobs", lambda: calls.append("image_sweep"))
+    monkeypatch.setattr(main_module._image_jobs, "resume_interrupted_jobs", lambda: calls.append("image_resume") or 0)
+    monkeypatch.setattr(main_module._chat_jobs, "sweep_interrupted_jobs", lambda: calls.append("chat_sweep"))
+    monkeypatch.setattr(main_module._chat_jobs, "resume_interrupted_jobs", lambda: calls.append("chat_resume") or 0)
+
+    with TestClient(main_module.app):
+        pass
+
+    assert calls == [
+        "audio_sweep", "audio_orphan", "image_sweep", "chat_sweep",
+        "audio_resume", "image_resume", "chat_resume",
+    ]
+
+
+def test_lifespan_shutdown_is_fast_when_nothing_is_running():
+    start = time.time()
+    with TestClient(main_module.app):
+        pass
+    elapsed = time.time() - start
+    # Generous margin over the near-instant "empty task list" fast path in
+    # job_shutdown.drain() — this is what keeps the ~1000-test suite's
+    # wall-clock time flat despite every test entering/exiting this same
+    # lifespan (see tests/conftest.py's ND_JOB_STOP_GRACE_SECONDS=0).
+    assert elapsed < 2.0
+
+
+def test_no_deprecation_warning_for_on_event_handlers():
+    fastapi_app = main_module._fastapi_app
+    assert fastapi_app.router.on_startup == []
+    assert fastapi_app.router.on_shutdown == []
+    assert fastapi_app.router.lifespan_context is not None
+
+
+def test_lifespan_shutdown_marks_an_in_flight_job_interrupted(monkeypatch):
+    from app import ai as ai_module
+    from app.database import SessionLocal, engine
+    from app.models import AudioJob, Base, User, World
+    from app import auth as auth_module
+
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)  # so the seed insert below has tables to write to, before the TestClient's own init_db() would normally create them
+    db = SessionLocal()
+    try:
+        gm = User(email="gm-lifespan-a@test.local", password_hash=auth_module.hash_password("pw"),
+                  display_name="GM", is_gm=True)
+        world = World(name="W", slug="w-lifespan-a")
+        db.add_all([gm, world])
+        db.commit()
+    finally:
+        db.close()
+
+    async def hang(path, glossary="", **kwargs):
+        await asyncio.sleep(3600)
+        return "unused"
+    monkeypatch.setattr(ai_module, "transcribe_audio", hang)
+
+    with TestClient(main_module.app) as c:
+        c.post("/login", data={"email": "gm-lifespan-a@test.local", "password": "pw", "next": "/"})
+        c.cookies.set("active_world", "w-lifespan-a")
+        r = c.post("/api/ai/attachments/audio-jobs", files={"file": ("clip.mp3", b"fake", "audio/mpeg")})
+        assert r.status_code == 200, r.text
+        job_id = r.json()["job_id"]
+
+        deadline = time.time() + 5
+        db = SessionLocal()
+        try:
+            job = None
+            while time.time() < deadline:
+                db.expire_all()
+                job = db.get(AudioJob, job_id)
+                if job.status == "transcribing":
+                    break
+                time.sleep(0.02)
+            assert job.status == "transcribing", "job never reached transcribing before shutdown"
+        finally:
+            db.close()
+    # TestClient.__exit__ just ran the real ASGI lifespan shutdown.
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.status == "interrupted"
+        assert "restart" in job.error.lower()
+    finally:
+        db.close()
+
+
+def test_interrupted_job_from_shutdown_is_resumed_on_the_next_startup(monkeypatch):
+    """The end-to-end proof this whole feature exists for: a job's own
+    checkpoint survives a real TestClient shutdown/restart cycle (not just
+    the engine-level simulation other tests use) and auto-resumes with
+    resumed_count incremented on the next boot."""
+    from app import ai as ai_module
+    from app.database import SessionLocal, engine
+    from app.models import AudioJob, Base, User, World
+    from app import auth as auth_module
+
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)  # so the seed insert below has tables to write to, before the TestClient's own init_db() would normally create them
+    db = SessionLocal()
+    try:
+        gm = User(email="gm-lifespan-b@test.local", password_hash=auth_module.hash_password("pw"),
+                  display_name="GM", is_gm=True)
+        world = World(name="W", slug="w-lifespan-b")
+        db.add_all([gm, world])
+        db.commit()
+    finally:
+        db.close()
+
+    async def hang(path, glossary="", **kwargs):
+        on_checkpoint = kwargs["on_checkpoint"]
+        on_checkpoint({"phase": "transcribe", "chunks_done": 1, "chunk_total": 3,
+                        "chunk_seconds": 600, "audio_size": path.stat().st_size, "text": "part 0"})
+        await asyncio.sleep(3600)
+        return "unused"
+    monkeypatch.setattr(ai_module, "transcribe_audio", hang)
+
+    with TestClient(main_module.app) as c:
+        c.post("/login", data={"email": "gm-lifespan-b@test.local", "password": "pw", "next": "/"})
+        c.cookies.set("active_world", "w-lifespan-b")
+        r = c.post("/api/ai/attachments/audio-jobs", files={"file": ("clip.mp3", b"fake", "audio/mpeg")})
+        assert r.status_code == 200, r.text
+        job_id = r.json()["job_id"]
+
+        deadline = time.time() + 5
+        db = SessionLocal()
+        try:
+            job = None
+            while time.time() < deadline:
+                db.expire_all()
+                job = db.get(AudioJob, job_id)
+                if job.checkpoint_json:
+                    break
+                time.sleep(0.02)
+            assert job.checkpoint_json, "checkpoint was never written before shutdown"
+        finally:
+            db.close()
+    # First TestClient's __exit__ ran the real shutdown — job is "interrupted".
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.status == "interrupted"
+    finally:
+        db.close()
+
+    with TestClient(main_module.app):
+        # Entering runs the real startup, including resume_interrupted_jobs
+        # — which sets the resumed row's fields synchronously before this
+        # `with` block's body even starts (see start_resume_job's own
+        # docstring on why that ordering matters).
+        deadline = time.time() + 5
+        db = SessionLocal()
+        try:
+            job = None
+            while time.time() < deadline:
+                db.expire_all()
+                job = db.get(AudioJob, job_id)
+                if job.status == "transcribing":
+                    break
+                time.sleep(0.02)
+            assert job.status == "transcribing"
+            assert job.resumed_count == 1
+            assert job.checkpoint_json  # the prior checkpoint carried through
+        finally:
+            db.close()
