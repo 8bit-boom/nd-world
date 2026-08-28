@@ -3,6 +3,11 @@ services:
   world:
     image: ghcr.io/8bit-boom/nd-world:latest
     restart: unless-stopped
+    # See docker-compose.yml's identical setting for the full budget
+    # breakdown — a clean shutdown needs room to checkpoint in-flight
+    # background jobs (app/job_shutdown.py) before TrueNAS/Docker escalates
+    # to SIGKILL.
+    stop_grace_period: 30s
     ports:
       - "8087:8000"
     volumes:

@@ -1288,6 +1288,37 @@ def test_background_jobs_page_renders_for_gm(client, seed):
     assert "Background Jobs" in r.text
 
 
+def test_background_jobs_page_offers_resume_for_an_interrupted_job(client, seed):
+    """The page renders its job cards entirely client-side from
+    GET /api/audio-jobs (no server-rendered job list to grep the static
+    HTML for), so this checks both halves of the actual contract: the
+    static page ships the Resume button/handler gated on job.resumable,
+    and the API it fetches from reports resumable=true for precisely an
+    "interrupted" job and false for everything else."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    page_html = client.get("/background-jobs").text
+    assert "bgResumeJob" in page_html
+    assert "job.resumable" in page_html
+    assert "▶ Resume" in page_html
+
+    db = SessionLocal()
+    try:
+        interrupted = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="interrupted",
+                               filename="a.mp3", error="Paused by a server restart — the work so far is saved.")
+        done = AudioJob(world_id=seed.world_a.id, purpose="attachment", status="done", filename="b.mp3")
+        db.add_all([interrupted, done])
+        db.commit()
+    finally:
+        db.close()
+
+    r = client.get("/api/audio-jobs")
+    assert r.status_code == 200
+    by_filename = {j["filename"]: j for j in r.json()["jobs"]}
+    assert by_filename["a.mp3"]["resumable"] is True
+    assert by_filename["b.mp3"]["resumable"] is False
+
+
 def test_background_jobs_page_requires_gm(client, seed):
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)

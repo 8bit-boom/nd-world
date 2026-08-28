@@ -418,6 +418,66 @@ recommended** to fill the relevant fields, review them, then Save as normal.
 
 ---
 
+## Updating without losing in-flight jobs
+
+A routine `docker compose up -d --build` (or a Watchtower auto-update, or a
+plain container restart) used to just kill whatever background job — audio
+transcription/summarization, image generation, a chat completion — was
+mid-flight, leaving it stuck at "Interrupted by a server restart" with no
+way to continue. It doesn't anymore.
+
+**What actually happens on shutdown**: the container gets `SIGTERM`. nd-world
+stops accepting new work, gives any job that's about to finish a few seconds
+to reach its next checkpoint, then cancels whatever's still running and
+records exactly how far it got. This is deliberately NOT "wait for every job
+to finish" — a single Whisper chunk can take minutes on CPU, far longer than
+any sane shutdown window — the checkpoint from the last completed step is
+what actually survives, not the wait itself.
+
+**What "resumed automatically" means, per job type**:
+
+- **Audio transcription/summarization** (Session Recap, the Whisper Test
+  tab, an AI Chat voice-memo attachment) is a **true resume**: it picks back
+  up from the exact chunk it left off on, not from the beginning. A session
+  recording interrupted 80% of the way through transcribing doesn't
+  re-transcribe the first 80% — it only has to (re)do the rest.
+- **Image generation and chat completions** **restart** from the same saved
+  request rather than truly resuming — both are one opaque call to
+  SwarmUI/ComfyUI or Ollama with no intermediate progress to checkpoint, so
+  the only options are "wait for it" (not viable for an update) or "run it
+  again."
+
+Either way, this happens automatically on the next boot — no GM action
+needed for the common case of an update landing mid-job.
+
+**The 3-attempt cap**: if a job keeps getting interrupted on every single
+restart (extremely unusual — normally means something about that specific
+job is itself crashing the server, not just an unrelated deploy catching it
+mid-flight), auto-resume gives up after 3 attempts and marks it as an error
+instead, so a bad job can't turn into an infinite crash-loop-and-retry
+across every future restart. Whatever transcript was already salvaged is
+kept either way.
+
+**Manual resume**: an audio job that hit the cap, or was interrupted while
+the Whisper backend happened to be down, can still be continued by hand —
+open **🎧 Audio → Background Jobs**, find the job (shown as "⏸
+Interrupted"), and click **▶ Resume**. This also resets the 3-attempt
+counter, since a manual click is a deliberate decision, not another
+automatic retry. Image and chat jobs don't have a manual resume button —
+past the cap, just start a new one.
+
+**Deployment requirements**: `docker-compose.yml`/`truenas-compose.yml` set
+`stop_grace_period: 30s` on the `world` service, and the Dockerfile's `CMD`
+sets `--timeout-graceful-shutdown 10` — both are needed for any of this to
+actually run (see either file's own comments for the exact time budget).
+If you've forked/customized either file, carry both settings over. You can
+tune how long a shutdown waits for a job to reach a checkpoint boundary via
+`ND_JOB_STOP_GRACE_SECONDS` (see `.env.example`) — raising it much past the
+stop_grace_period budget above is pointless, since the container gets
+SIGKILLed before a longer wait would ever pay off.
+
+---
+
 ## Inviting players
 
 Once nd-world is reachable (locally or over the internet):

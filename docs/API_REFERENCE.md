@@ -62,6 +62,7 @@ worlds they've been invited into (`WorldMembership`).
 - [Import / Export](#import--export)
 - [AI — Chat & World-Building](#ai--chat--world-building)
 - [AI — Image Generation](#ai--image-generation)
+- [Background Jobs](#background-jobs)
 - [Settings](#settings)
 - [Admin & Uploads](#admin--uploads)
 - [MCP Server](#mcp-server)
@@ -623,6 +624,27 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/api/ai/imagegen/jobs/{job_id}` | GM | Poll one image generation job. |
 | POST | `/api/ai/imagegen/jobs/{job_id}/cancel` | GM | Cancels an in-progress image generation job. |
 | DELETE | `/api/ai/imagegen/jobs/{job_id}` | GM | Deletes a finished image generation job (400 if still in progress — cancel first). |
+
+## Background Jobs
+
+`app/routers/audio_jobs.py` — a unified view over every durable `AudioJob`
+regardless of which surface started it (Session Recap, an AI Chat/Ask AI
+voice-memo attachment, or the Whisper Test tab), backing the standalone
+**Background Jobs** page where a GM can see everything in flight across the
+whole world in one place, separate from the smaller inline panels embedded
+on each originating page. See [Updating without losing in-flight
+jobs](DEPLOYMENT.md#updating-without-losing-in-flight-jobs) for what
+`status: "interrupted"` and the resume flow below mean.
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/background-jobs` | GM | The standalone Background Jobs page. |
+| GET | `/api/audio-jobs` | GM | Every job for the active world, any purpose, most recent first. |
+| GET | `/api/audio-jobs/{job_id}` | GM | Poll one job. |
+| POST | `/api/audio-jobs/{job_id}/cancel` | GM | Cancels an in-progress job. |
+| DELETE | `/api/audio-jobs/{job_id}` | GM | Deletes a finished job (400 if still in progress — cancel first). |
+| POST | `/api/audio-jobs/{job_id}/resummarize` | GM | Re-runs just the summarization step against the job's already-saved transcript, optionally with a different model/instructions — no re-upload or re-transcription needed. Always a fresh pass, not a continuation of an interrupted attempt (see the next row for that). |
+| POST | `/api/audio-jobs/{job_id}/resume` | GM | Continue a job interrupted by a server restart (`status: "interrupted"`) from its saved checkpoint — a true resume, picking up from the exact chunk it left off on. Always resets the auto-resume attempt counter, since a manual click is a deliberate decision, not another automatic retry. 400 if the job isn't in the `"interrupted"` state, or if there's nothing left to resume from (audio gone, no transcript). |
 
 ## Settings
 

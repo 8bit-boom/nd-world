@@ -24,4 +24,13 @@ ENV DB_PATH=/data/world.db
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --timeout-graceful-shutdown bounds how long uvicorn waits for open
+# connections to drain before it runs the ASGI lifespan shutdown (see
+# app/job_shutdown.py) — uvicorn's own default is None, meaning it waits
+# INDEFINITELY for open connections first. An in-flight /api/ai/stream SSE
+# response left open by an idle browser tab would then hold uvicorn past
+# Docker's own stop grace period (see docker-compose.yml's
+# stop_grace_period) straight to SIGKILL, and the lifespan shutdown —
+# the part that checkpoints in-flight background jobs — would never run
+# at all.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "10"]

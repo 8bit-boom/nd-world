@@ -5,7 +5,7 @@
   <h1>⏳ Background Jobs</h1>
 </div>
 <p style="color:var(--text-dim);font-size:.85rem;margin:-.5rem 0 1rem">
-  Every durable audio-transcription job started from a "🔒 Process in Background" button (Session recap, Whisper Test, AI Chat/Ask AI attachments) — these keep running here even if the tab that started them is closed. A job still shows here after you close this page too; reopen it any time to check on things or cancel one.
+  Every durable audio-transcription job started from a "🔒 Process in Background" button (Session recap, Whisper Test, AI Chat/Ask AI attachments) — these keep running here even if the tab that started them is closed. A job still shows here after you close this page too; reopen it any time to check on things or cancel one. A job interrupted by a server restart resumes automatically from its last checkpoint on the next boot — "⏸ Interrupted" just means it's between attempts (or, past a few auto-retries, needs a manual ▶ Resume click here).
 </p>
 
 <div id="bg-jobs-list"></div>
@@ -15,6 +15,7 @@
 .bg-job-card { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:1rem; margin-bottom:.75rem; }
 .bg-job-card--error { border-color:#a33; }
 .bg-job-card--cancelled { opacity:.7; }
+.bg-job-card--interrupted { border-color:#e0a030; }
 .bg-job-head { display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; margin-bottom:.5rem; }
 .bg-job-filename { font-weight:bold; font-size:.9rem; flex:1; min-width:160px; word-break:break-word; }
 .bg-job-purpose { font-size:.7rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; background:var(--bg3); border:1px solid var(--border); border-radius:3px; padding:.15rem .5rem; }
@@ -22,12 +23,16 @@
 .bg-job-status-label--error { color:#e07; }
 .bg-job-status-label--cancelled { color:var(--text-dim); }
 .bg-job-status-label--done { color:var(--neon); }
+.bg-job-status-label--interrupted { color:#e0a030; }
 .bg-job-time { font-size:.72rem; color:var(--text-dim); }
 .bg-job-actions { display:flex; gap:.5rem; margin-top:.5rem; }
 .bg-job-btn { background:var(--bg3); border:1px solid var(--border); color:var(--text-dim); padding:.3rem .7rem; font-size:.78rem; border-radius:3px; cursor:pointer; font-family:var(--font); }
 .bg-job-btn:hover { border-color:var(--neon); color:var(--neon); }
 .bg-job-btn--cancel:hover { border-color:#e07; color:#e07; }
+.bg-job-btn--resume { border-color:#e0a030; color:#e0a030; }
+.bg-job-btn--resume:hover { border-color:var(--neon); color:var(--neon); }
 .bg-job-error-text { font-size:.78rem; color:#e07; margin-top:.4rem; }
+.bg-job-note-text { font-size:.78rem; color:var(--text-dim); margin-top:.4rem; }
 .bg-job-result { display:none; margin-top:.6rem; background:var(--bg3); border:1px solid var(--border); border-radius:4px; padding:.6rem .75rem; font-size:.82rem; white-space:pre-wrap; word-break:break-word; max-height:260px; overflow-y:auto; }
 .bg-job-result-label { font-size:.7rem; color:var(--text-dim); text-transform:uppercase; letter-spacing:.05em; margin-top:.6rem; margin-bottom:.2rem; }
 </style>
@@ -74,7 +79,8 @@ function bgElapsedLabel(job) {
 function bgRenderJob(job) {
   const card = document.createElement('div');
   card.className = 'bg-job-card' + (job.status === 'error' ? ' bg-job-card--error' : '')
-    + (job.status === 'cancelled' ? ' bg-job-card--cancelled' : '');
+    + (job.status === 'cancelled' ? ' bg-job-card--cancelled' : '')
+    + (job.status === 'interrupted' ? ' bg-job-card--interrupted' : '');
 
   const head = document.createElement('div');
   head.className = 'bg-job-head';
@@ -115,6 +121,8 @@ function bgRenderJob(job) {
     bar.setPercent(100, dur ? `✓ Done (took ${dur})` : '✓ Done');
   } else if (job.status === 'cancelled') {
     bar.setPercent(100, '○ Cancelled');
+  } else if (job.status === 'interrupted') {
+    bar.setPercent(job.chunk_total ? Math.round(job.chunk_current / job.chunk_total * 100) : 0, '⏸ Interrupted');
   } else {
     const dur = ndDurationLabel(job.run_started_at || job.created_at, job.finished_at);
     bar.setPercent(100, dur ? `✗ Failed (took ${dur})` : '✗ Failed');
@@ -125,6 +133,12 @@ function bgRenderJob(job) {
     err.className = 'bg-job-error-text';
     err.textContent = job.error;
     card.appendChild(err);
+  } else if (job.status === 'interrupted' && job.error) {
+    // Dim, not red — this is a pause waiting to resume, not a failure.
+    const note = document.createElement('div');
+    note.className = 'bg-job-note-text';
+    note.textContent = job.error;
+    card.appendChild(note);
   }
 
   const actions = document.createElement('div');
@@ -137,6 +151,15 @@ function bgRenderJob(job) {
     cancelBtn.onclick = () => bgCancelJob(job.id, cancelBtn);
     actions.appendChild(cancelBtn);
   } else {
+    if (job.resumable) {
+      const resumeBtn = document.createElement('button');
+      resumeBtn.type = 'button';
+      resumeBtn.className = 'bg-job-btn bg-job-btn--resume';
+      resumeBtn.textContent = '▶ Resume';
+      resumeBtn.title = 'Continue from where this job left off before the interruption';
+      resumeBtn.onclick = () => bgResumeJob(job.id, resumeBtn);
+      actions.appendChild(resumeBtn);
+    }
     const deleteBtn = document.createElement('button');
     deleteBtn.type = 'button';
     deleteBtn.className = 'bg-job-btn bg-job-btn--cancel';
@@ -262,6 +285,25 @@ async function bgDeleteJob(jobId, btn) {
     btn.disabled = false;
     btn.textContent = '🗑 Delete';
     return;
+  }
+  bgRefresh();
+}
+
+async function bgResumeJob(jobId, btn) {
+  // Only starts the job here — the actual work continues as a background
+  // task, same hand-off-to-the-poll-loop shape as bgResummarize below.
+  btn.disabled = true;
+  btn.textContent = 'Resuming…';
+  try {
+    const res = await fetch(`/api/audio-jobs/${jobId}/resume`, { method: 'POST' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `HTTP ${res.status}`);
+    }
+  } catch (e) {
+    alert('Failed to resume: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '▶ Resume';
   }
   bgRefresh();
 }

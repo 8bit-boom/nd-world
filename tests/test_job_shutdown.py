@@ -316,3 +316,25 @@ def test_interrupted_job_from_shutdown_is_resumed_on_the_next_startup(monkeypatc
             assert job.checkpoint_json  # the prior checkpoint carried through
         finally:
             db.close()
+
+
+# ── Deployment config: graceful shutdown timing ─────────────────────────────
+#
+# These guard against the two settings that make everything above actually
+# run in production drifting out of sync with each other or being dropped
+# on a future edit — see Dockerfile's/docker-compose.yml's own comments for
+# the full time-budget rationale.
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).parent.parent
+
+
+def test_dockerfile_sets_a_bounded_graceful_shutdown_timeout():
+    dockerfile = (_REPO_ROOT / "Dockerfile").read_text()
+    assert "--timeout-graceful-shutdown" in dockerfile
+
+
+def test_compose_files_set_a_stop_grace_period_for_the_world_service():
+    for name in ("docker-compose.yml", "truenas-compose.yml"):
+        text = (_REPO_ROOT / name).read_text()
+        assert "stop_grace_period" in text, f"{name} is missing stop_grace_period"

@@ -213,6 +213,12 @@ docker compose pull          # pull latest images
 docker compose up -d --build # rebuild and restart after code changes
 ```
 
+An update no longer discards whatever background jobs were mid-flight — audio
+transcription/summarization checkpoints per chunk and resumes automatically
+on the next boot; an in-flight image generation or chat completion restarts
+from the same saved request. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#updating-without-losing-in-flight-jobs)
+for the details.
+
 ---
 
 ## Install on Windows
