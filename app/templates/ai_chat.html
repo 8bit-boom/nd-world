@@ -1684,6 +1684,22 @@
     </div>
   </div>
   <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-top:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Speech enhancement</div>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
+      Run a real ML denoising model (DeepFilterNet) over every session-recording audio file before it reaches Whisper — meaningfully better against sustained background noise (music, hum, HVAC) than a browser's own echo-cancellation/noise-gate alone (see the mic recorder's built-in suppression, always on). Applies to background jobs, one-shot upload, and live recording. One-off chat attachments don't use this.
+    </div>
+    <div id="wd-unavailable" style="display:none;font-size:.78rem;color:var(--text-dim);background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.5rem .6rem;margin-bottom:.6rem">
+      Not installed on this server — see docs/DEPLOYMENT.md for how to build the image with speech enhancement enabled.
+    </div>
+    <label id="wd-label" style="display:flex;align-items:center;gap:.5rem;font-size:.85rem;cursor:pointer">
+      <input type="checkbox" id="wd-checkbox" onchange="wdSaveDenoise()">
+      Enable speech enhancement
+    </label>
+    <div style="display:flex;align-items:center;gap:.6rem;margin-top:.5rem">
+      <span id="wd-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+    </div>
+  </div>
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-top:1rem">
     <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Recap instructions</div>
     <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
       Extra steering for the AI-written recap itself (not transcription) — e.g. "Write summaries in Spanish", "Use a dry, sarcastic tone", "Focus only on combat". Applied to every session-recording recap (background jobs, one-shot upload, and re-summarize).
@@ -3095,7 +3111,7 @@ function switchTab(tab) {
   });
 
   if (tab === 'models')  { mpLoad(); wpLoadStatus(); }
-  if (tab === 'whisper') { wtLoadStatus(); wlLoadLanguage(); wgLoadGlossary(); riLoadInstructions(); }
+  if (tab === 'whisper') { wtLoadStatus(); wlLoadLanguage(); wgLoadGlossary(); wdLoadDenoise(); riLoadInstructions(); }
   if (tab === 'starred') igLoadStarred();
   if (tab === 'image')   dlmLoadDownloaded();
 }
@@ -5240,6 +5256,50 @@ async function wlSaveLanguage() {
     status.textContent = '✗ Could not save: ' + e.message;
   } finally {
     btn.disabled = false;
+  }
+}
+
+async function wdLoadDenoise() {
+  const cb = document.getElementById('wd-checkbox');
+  if (!cb) return;
+  try {
+    const d = await fetch('/api/ai/whisper/denoise').then(r => r.json());
+    cb.checked = !!d.enabled;
+    const unavailable = document.getElementById('wd-unavailable');
+    const label = document.getElementById('wd-label');
+    if (!d.available) {
+      if (unavailable) unavailable.style.display = '';
+      cb.disabled = true;
+      if (label) label.style.opacity = '0.5';
+    } else {
+      if (unavailable) unavailable.style.display = 'none';
+      cb.disabled = false;
+      if (label) label.style.opacity = '1';
+    }
+  } catch (e) { /* leave unchecked — save will still work (and 400 if unavailable) */ }
+}
+
+async function wdSaveDenoise() {
+  const cb = document.getElementById('wd-checkbox');
+  const status = document.getElementById('wd-status');
+  cb.disabled = true;
+  status.textContent = 'Saving…';
+  try {
+    const r = await fetch('/api/ai/whisper/denoise', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: cb.checked }),
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      throw new Error(body.detail || `HTTP ${r.status}`);
+    }
+    status.textContent = '✓ Saved';
+    setTimeout(() => { if (status.textContent === '✓ Saved') status.textContent = ''; }, 2000);
+  } catch (e) {
+    cb.checked = !cb.checked;
+    status.textContent = '✗ Could not save: ' + e.message;
+  } finally {
+    cb.disabled = false;
   }
 }
 

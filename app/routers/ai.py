@@ -1099,6 +1099,35 @@ def api_whisper_language_save(body: WhisperLanguageBody, request: Request, db=De
     return {"ok": True, "language": world.whisper_language}
 
 
+@router.get("/whisper/denoise")
+def api_whisper_denoise_get(request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    return {"enabled": bool(world.whisper_denoise), "available": _ai.speech_enhancement_available()}
+
+
+class WhisperDenoiseBody(BaseModel):
+    enabled: bool = False
+
+
+@router.post("/whisper/denoise")
+def api_whisper_denoise_save(body: WhisperDenoiseBody, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    if body.enabled and not _ai.speech_enhancement_available():
+        # Keeps World.whisper_denoise a reliable signal (see its own
+        # comment in models.py) instead of a flag that's silently
+        # ineffective on a deployment built without requirements-denoise.txt.
+        raise HTTPException(400, "Speech enhancement isn't installed on this server — see docs/DEPLOYMENT.md.")
+    world.whisper_denoise = body.enabled
+    db.commit()
+    return {"ok": True, "enabled": world.whisper_denoise}
+
+
 @router.get("/recap-instructions")
 def api_recap_instructions_get(request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
     _require_gm(request)

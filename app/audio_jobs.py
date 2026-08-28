@@ -308,6 +308,15 @@ def _whisper_language_for_world(world_id: int) -> str:
         db.close()
 
 
+def _denoise_for_world(world_id: int) -> bool:
+    db = SessionLocal()
+    try:
+        w = db.get(World, world_id)
+        return bool(w and w.whisper_denoise)
+    finally:
+        db.close()
+
+
 def _recap_instructions_for_world(world_id: int) -> str:
     db = SessionLocal()
     try:
@@ -606,10 +615,11 @@ async def _run_job(job_id: int) -> None:
             _set(status="transcribing", run_started_at=datetime.utcnow(), finished_at=None)
             glossary = _glossary_for_world(world_id) if world_id else ""
             language = _whisper_language_for_world(world_id) if world_id else ""
+            denoise = _denoise_for_world(world_id) if world_id else False
             transcribe_resume = checkpoint if checkpoint and checkpoint.get("phase") == "transcribe" else None
             try:
                 transcript = await _ai_module.transcribe_audio(
-                    audio_path, glossary=glossary, language=language,
+                    audio_path, glossary=glossary, language=language, denoise=denoise,
                     on_progress=_on_progress, on_checkpoint=_checkpoint,
                     should_stop=_job_shutdown.stopping, resume=transcribe_resume,
                 )

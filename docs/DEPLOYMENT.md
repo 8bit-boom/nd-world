@@ -367,6 +367,67 @@ above, just for audio instead of a GUI session.
 
 ---
 
+## Optional: server-side speech enhancement (DeepFilterNet)
+
+A browser's own microphone noise suppression (always on for every recording
+in nd-world — mic input requests `noiseSuppression`/`echoCancellation`/
+`autoGainControl` from the OS/browser) is heuristic: an echo canceller and a
+noise gate, not a model. It works well for typewriter clicks and steady hiss,
+but does little against sustained background audio like music playing from a
+speaker or another app — there's no reference signal for the browser to
+cancel it against. [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet)
+is a real, small neural speech-enhancement model that can meaningfully
+separate voice from that kind of background audio before the recording ever
+reaches Whisper. This is opt-in and, unlike the Whisper server above, runs
+**inside the `world` container itself** rather than as a separate service —
+there's no extra container to add to `docker-compose.yml`.
+
+**Why this isn't on by default**: DeepFilterNet needs `torch`/`torchaudio`,
+which add several hundred MB to the image and are otherwise completely
+unused by nd-world (everything else here is a thin client to external AI
+services). They're isolated into a separate `requirements-denoise.txt`
+layer, installed only if you ask for it at build time.
+
+**1. Build the image with the extra layer**:
+```bash
+docker compose build --build-arg INSTALL_DENOISE=true world
+docker compose up -d world
+```
+(Or, without Compose: `docker build --build-arg INSTALL_DENOISE=true -t nd-world .`)
+The model itself (~50MB) downloads automatically on first use, into the same
+`/data` volume everything else persists to — so it survives container
+recreation and only downloads once.
+
+**2. Enable it per World** — log in as the GM, open the **AI** page's
+**🎙 Whisper** tab, and check **Enable speech enhancement** under the new
+"Speech enhancement" panel. This is a per-World toggle, same as the
+language/glossary settings above it — off by default even on an image built
+with `INSTALL_DENOISE=true`, so nothing changes until you turn it on. If the
+image *wasn't* built with the extra layer, the checkbox is disabled with an
+explanation instead of silently doing nothing.
+
+Once enabled, it applies everywhere a session recording is transcribed
+(background jobs, one-shot upload, and live recording) — the same scope as
+the language/glossary settings, and separate from one-off chat attachments,
+which don't use it.
+
+**Known limitation**: this is real noise *suppression*, not perfect source
+*separation* — it meaningfully reduces sustained background music/hum
+relative to speech, but won't cleanly remove loud music mixed at similar
+volume to the speaker's voice. It also adds real CPU time per recording
+(a small neural net forward pass) on top of transcription itself. If
+enhancement fails for any reason (corrupt audio, out of memory, ...) on a
+given file, nd-world logs a warning and transcribes the raw audio instead —
+this can never be the reason a transcription fails outright.
+
+**TrueNAS / prebuilt-image deployments**: `truenas-compose.yml` pulls the
+published `ghcr.io/8bit-boom/nd-world:latest` image, which is built *without*
+this layer (the project doesn't currently publish a second `:denoise` image
+tag). Enabling this on a TrueNAS deployment means building and hosting your
+own image with the build-arg above instead of using the prebuilt one.
+
+---
+
 ## Optional: tuning Ollama from the browser (no `.env` editing)
 
 Ollama has two different kinds of settings. Per-request options — temperature,

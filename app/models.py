@@ -103,6 +103,22 @@ class World(Base):
     # one-off chat attachments don't use this, matching that field's own
     # established scope.
     whisper_language = Column(String(16), nullable=True)
+    # Run a real speech-enhancement model (DeepFilterNet) over each
+    # session-recording chunk before it reaches Whisper — meaningfully
+    # better than a browser's own noise suppression against sustained
+    # background audio (music, hum) since it's a proper ML model, not just
+    # echo/noise-gate heuristics. Off by default: torch/deepfilternet are
+    # NOT in the base image (torch alone is hundreds of MB) — a deployment
+    # has to opt in at build time too (see requirements-denoise.txt, the
+    # Dockerfile's INSTALL_DENOISE build arg, and app.ai.
+    # speech_enhancement_available()). POST /api/ai/whisper/denoise refuses
+    # to set this True when the current container doesn't actually have it
+    # installed, so this being True is a reliable signal the feature is
+    # both wanted AND available — but see app.ai's own transcribe_audio
+    # docstring for what happens if a deployment is later rebuilt WITHOUT
+    # it while this is still True on an existing World (graceful skip, not
+    # a hard failure).
+    whisper_denoise = Column(Boolean, default=False)
     # Free-text steering for the recap-writing step specifically (not
     # transcription — Whisper itself has no notion of "instructions", only
     # the glossary hint above) — e.g. "Write summaries in Spanish" or "Use a

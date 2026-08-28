@@ -1439,7 +1439,92 @@ async def _split_audio_into_chunks(path: Path, chunk_seconds: float) -> tuple[li
         return [path], None
 
 
-async def _transcribe_one_file(path: Path, glossary: str, language: str) -> str:
+# ── Speech enhancement (DeepFilterNet) ──────────────────────────────────────
+# Optional: a real ML denoising model run over each audio file before it
+# reaches Whisper, meaningfully better against sustained background audio
+# (music, hum, HVAC) than a browser's own echo-cancellation/noise-gate
+# heuristics (see ndMicRecorder in base.html). NOT a base dependency —
+# torch alone is hundreds of MB — see requirements-denoise.txt and the
+# Dockerfile's INSTALL_DENOISE build arg. Every entry point below degrades
+# to a no-op (raw audio, unchanged) if the dependency isn't installed or
+# anything about denoising fails, so enabling this can never be the reason
+# a transcription fails outright.
+
+_speech_enhancement_available_cache: bool | None = None
+_denoise_model_cache = None  # (model, df_state) tuple, loaded lazily once per process
+
+
+def speech_enhancement_available() -> bool:
+    """Whether this container actually has the DeepFilterNet dependency
+    stack installed. Feature-detected once via try/except ImportError and
+    cached — importing torch is itself slow (hundreds of ms) and this is
+    checked on every denoise-enabled transcription plus the settings
+    route that lets a GM toggle World.whisper_denoise on."""
+    global _speech_enhancement_available_cache
+    if _speech_enhancement_available_cache is None:
+        try:
+            import torch  # noqa: F401
+            import torchaudio  # noqa: F401
+            import df.enhance  # noqa: F401
+        except ImportError:
+            _speech_enhancement_available_cache = False
+        else:
+            _speech_enhancement_available_cache = True
+    return _speech_enhancement_available_cache
+
+
+def _init_denoise_model():
+    """Lazily loads and caches the DeepFilterNet model + DF state (the
+    STFT/filtering state paired with it). Model loading is slow (downloads
+    ~50MB to XDG_CACHE_HOME on first run — see the Dockerfile) and must
+    only happen once per process, not once per audio file."""
+    global _denoise_model_cache
+    if _denoise_model_cache is None:
+        from df.enhance import init_df
+        model, df_state, _ = init_df()
+        _denoise_model_cache = (model, df_state)
+    return _denoise_model_cache
+
+
+def _denoise_audio_file_sync(path: Path) -> Path:
+    """Blocking DeepFilterNet enhancement of one audio file, writing the
+    result to a new sibling file and returning its path. Always run via
+    asyncio.to_thread (see denoise_audio_file) — this is CPU-bound (a
+    small neural net forward pass) and would otherwise stall the event
+    loop for however long the clip takes to process."""
+    from df.enhance import enhance
+    from df.io import load_audio, save_audio, resample
+    from df.model import ModelParams
+    model, df_state = _init_denoise_model()
+    df_sr = ModelParams().sr
+    audio, meta = load_audio(str(path), sr=df_sr)
+    enhanced = enhance(model, df_state, audio)
+    enhanced = resample(enhanced, df_sr, meta.sample_rate)
+    out_path = path.with_name(f"{path.stem}.denoised{path.suffix}")
+    save_audio(str(out_path), enhanced, sr=meta.sample_rate, log=False)
+    return out_path
+
+
+async def denoise_audio_file(path: Path) -> Path:
+    """Run speech enhancement over an audio file and return the path to
+    the enhanced version — the ORIGINAL path, unchanged, if the
+    dependency isn't installed or anything about denoising fails (a
+    corrupt/unsupported file, a model load error, out of memory, ...).
+    A denoising failure must never block transcription, since the raw
+    audio would have transcribed fine before this feature existed. The
+    caller owns cleanup of the returned path when it differs from the
+    input (see _transcribe_one_file)."""
+    if not speech_enhancement_available():
+        return path
+    try:
+        import asyncio
+        return await asyncio.to_thread(_denoise_audio_file_sync, path)
+    except Exception as exc:
+        _log.warning("speech enhancement failed, using raw audio instead: %s: %s", type(exc).__name__, exc)
+        return path
+
+
+async def _transcribe_one_file(path: Path, glossary: str, language: str, denoise: bool = False) -> str:
     """The actual whisper.cpp /inference call for a single audio file —
     see transcribe_audio's docstring for the parameters this sends and
     why. Kept separate from transcribe_audio so the chunking orchestrator
@@ -1453,6 +1538,9 @@ async def _transcribe_one_file(path: Path, glossary: str, language: str) -> str:
         # reports as a network/server problem — misleading for what's
         # actually a local file that's missing or already cleaned up.
         raise WhisperError(f"Audio file not found: {path.name}")
+    send_path = path
+    if denoise:
+        send_path = await denoise_audio_file(path)
     data = {
         "response_format": "json",
         "language": language.strip() or "auto",
@@ -1472,37 +1560,42 @@ async def _transcribe_one_file(path: Path, glossary: str, language: str) -> str:
         # simply ignore it — no compatibility risk.
         data["carry_initial_prompt"] = "true"
     try:
-        async with _httpx.AsyncClient(timeout=WHISPER_TIMEOUT_SECONDS) as c:
-            with path.open("rb") as f:
-                r = await c.post(
-                    f"{url}/inference",
-                    files={"file": (path.name, f, "application/octet-stream")},
-                    data=data,
-                )
-    except (_httpx.TimeoutException, TimeoutError) as exc:
-        # httpx's own timeout exceptions (ReadTimeout/ConnectTimeout/...)
-        # derive from httpx.TimeoutException, NOT the builtin TimeoutError —
-        # catching only TimeoutError here meant a real Whisper timeout fell
-        # through to the generic "Could not reach Whisper" branch below
-        # (with an often-empty message, since httpx timeouts commonly
-        # stringify to "") instead of naming the actual timeout.
-        _log.warning("whisper transcription timed out: %s", exc)
-        raise WhisperError(f"Whisper timed out after {WHISPER_TIMEOUT_SECONDS}s — the clip may be too long, or the server is overloaded.") from exc
-    except Exception as exc:
-        _log.warning("whisper transcription unreachable: %s: %s", type(exc).__name__, exc)
-        raise WhisperError(f"Could not reach Whisper: {type(exc).__name__}: {exc}") from exc
-    if r.status_code != 200:
-        _log.warning("whisper transcription failed: HTTP %s: %s", r.status_code, r.text[:300])
-        raise WhisperError(f"Whisper returned HTTP {r.status_code}: {r.text[:200]}")
-    try:
-        return (r.json().get("text") or "").strip()
-    except Exception as exc:
-        _log.warning("whisper returned an unreadable response: %s", exc)
-        raise WhisperError(f"Whisper returned an unreadable response: {exc}") from exc
+        try:
+            async with _httpx.AsyncClient(timeout=WHISPER_TIMEOUT_SECONDS) as c:
+                with send_path.open("rb") as f:
+                    r = await c.post(
+                        f"{url}/inference",
+                        files={"file": (path.name, f, "application/octet-stream")},
+                        data=data,
+                    )
+        except (_httpx.TimeoutException, TimeoutError) as exc:
+            # httpx's own timeout exceptions (ReadTimeout/ConnectTimeout/...)
+            # derive from httpx.TimeoutException, NOT the builtin TimeoutError —
+            # catching only TimeoutError here meant a real Whisper timeout fell
+            # through to the generic "Could not reach Whisper" branch below
+            # (with an often-empty message, since httpx timeouts commonly
+            # stringify to "") instead of naming the actual timeout.
+            _log.warning("whisper transcription timed out: %s", exc)
+            raise WhisperError(f"Whisper timed out after {WHISPER_TIMEOUT_SECONDS}s — the clip may be too long, or the server is overloaded.") from exc
+        except Exception as exc:
+            _log.warning("whisper transcription unreachable: %s: %s", type(exc).__name__, exc)
+            raise WhisperError(f"Could not reach Whisper: {type(exc).__name__}: {exc}") from exc
+        if r.status_code != 200:
+            _log.warning("whisper transcription failed: HTTP %s: %s", r.status_code, r.text[:300])
+            raise WhisperError(f"Whisper returned HTTP {r.status_code}: {r.text[:200]}")
+        try:
+            return (r.json().get("text") or "").strip()
+        except Exception as exc:
+            _log.warning("whisper returned an unreadable response: %s", exc)
+            raise WhisperError(f"Whisper returned an unreadable response: {exc}") from exc
+    finally:
+        if send_path != path:
+            send_path.unlink(missing_ok=True)
 
 
 async def transcribe_audio(path: Path, glossary: str = "", language: str = "", on_progress=None,
-                            on_checkpoint=None, should_stop=None, resume: dict | None = None) -> str:
+                            on_checkpoint=None, should_stop=None, resume: dict | None = None,
+                            denoise: bool = False) -> str:
     """Transcribe an audio file via whisper.cpp's /inference endpoint,
     transparently splitting a long recording into chunks first (see
     _split_audio_into_chunks) and collapsing any residual repetition-loop
@@ -1573,10 +1666,16 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "", o
     text could silently duplicate or drop audio; discarded (logged, not
     raised) and transcription starts over from chunk 0 instead. Only the
     multi-chunk loop below checkpoints/resumes — the two single-call
-    paths above have nothing to checkpoint between."""
+    paths above have nothing to checkpoint between.
+
+    `denoise`, if true, runs each audio file (the whole clip, or each
+    chunk individually once split) through DeepFilterNet speech
+    enhancement before it's sent to Whisper — see denoise_audio_file's
+    own docstring for the no-op fallback if the dependency isn't
+    installed or enhancement fails on a given file."""
     duration = await _probe_audio_duration(path)
     if not duration or duration <= _WHISPER_CHUNK_MIN_DURATION:
-        text = await _transcribe_one_file(path, glossary, language)
+        text = await _transcribe_one_file(path, glossary, language, denoise)
         return _collapse_repeated_transcript_lines(text)
 
     chunks, tmpdir = await _split_audio_into_chunks(path, WHISPER_CHUNK_SECONDS)
@@ -1588,7 +1687,7 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "", o
             # try/finally as the multi-chunk loop below, not return before
             # it, or the tmpdir (a full stream-copy of the recording) is
             # never cleaned up.
-            text = await _transcribe_one_file(chunks[0], glossary, language)
+            text = await _transcribe_one_file(chunks[0], glossary, language, denoise)
             return _collapse_repeated_transcript_lines(text)
 
         audio_size = path.stat().st_size
@@ -1613,7 +1712,7 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "", o
             if on_progress:
                 on_progress(i + 1, len(chunks))
             try:
-                parts.append(await _transcribe_one_file(chunk_path, glossary, language))
+                parts.append(await _transcribe_one_file(chunk_path, glossary, language, denoise))
             except WhisperError as exc:
                 if parts:
                     partial = _collapse_repeated_transcript_lines("\n".join(p for p in parts if p))

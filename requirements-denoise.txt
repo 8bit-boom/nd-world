@@ -1,0 +1,12 @@
+# Optional dependencies for server-side speech enhancement (DeepFilterNet).
+#
+# NOT installed by default — torch alone is hundreds of MB, and this app
+# is otherwise a thin client to external AI services (Ollama, whisper.cpp,
+# SwarmUI) with no ML runtime of its own. Install this layer only if you
+# want the "Speech enhancement" toggle in Whisper settings to be usable;
+# see docs/DEPLOYMENT.md and the Dockerfile's INSTALL_DENOISE build arg.
+-r requirements.txt
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1
+torchaudio==2.5.1
+deepfilternet==0.5.6

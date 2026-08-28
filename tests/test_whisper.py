@@ -491,7 +491,7 @@ async def test_transcribe_audio_skips_chunking_for_short_clip(tmp_path, monkeypa
     async def fake_probe(path):
         return 60.0  # well under the chunking threshold
 
-    async def fake_transcribe_one(path, glossary, language):
+    async def fake_transcribe_one(path, glossary, language, denoise=False):
         calls.append(path)
         return "short clip text"
 
@@ -516,7 +516,7 @@ async def test_transcribe_audio_chunks_long_clip_and_reports_progress(tmp_path, 
     async def fake_split(path, chunk_seconds):
         return chunk_paths, None  # None: nothing for the caller to clean up in this test
 
-    async def fake_transcribe_one(path, glossary, language):
+    async def fake_transcribe_one(path, glossary, language, denoise=False):
         return f"part {chunk_paths.index(path)}"
 
     monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
@@ -550,7 +550,7 @@ async def test_transcribe_audio_glossary_is_resent_identically_to_every_chunk(tm
 
     received_glossaries = []
 
-    async def fake_transcribe_one(path, glossary, language):
+    async def fake_transcribe_one(path, glossary, language, denoise=False):
         received_glossaries.append(glossary)
         return f"part {chunk_paths.index(path)}"
 
@@ -572,7 +572,7 @@ async def test_transcribe_audio_falls_back_when_split_returns_single_file(tmp_pa
     async def fake_split(path, chunk_seconds):
         return [path], None  # ffmpeg unavailable/failed — see _split_audio_into_chunks
 
-    async def fake_transcribe_one(path, glossary, language):
+    async def fake_transcribe_one(path, glossary, language, denoise=False):
         return "whole file text"
 
     monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
@@ -605,7 +605,7 @@ async def test_transcribe_audio_removes_tmpdir_for_a_single_segment_split(tmp_pa
     async def fake_split(path, chunk_seconds):
         return [chunk_path], real_tmpdir
 
-    async def fake_transcribe_one(path, glossary, language):
+    async def fake_transcribe_one(path, glossary, language, denoise=False):
         return "whole file text"
 
     monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
@@ -632,7 +632,7 @@ async def test_transcribe_audio_removes_tmpdir_even_when_transcription_fails(tmp
     async def fake_split(path, chunk_seconds):
         return [chunk_path], real_tmpdir
 
-    async def fake_transcribe_one(path, glossary, language):
+    async def fake_transcribe_one(path, glossary, language, denoise=False):
         raise ai_module.WhisperError("whisper unreachable")
 
     monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
@@ -670,7 +670,7 @@ async def test_transcribe_audio_chunking_applies_repeat_collapsing(tmp_path, mon
     async def fake_split(path, chunk_seconds):
         return chunk_paths, None
 
-    async def fake_transcribe_one(path, glossary, language):
+    async def fake_transcribe_one(path, glossary, language, denoise=False):
         if chunk_paths.index(path) == 0:
             return "loop\nloop\nloop\nloop"
         return "normal text"
@@ -702,7 +702,7 @@ async def test_transcribe_audio_mid_chunk_failure_preserves_prior_chunks_as_part
     async def fake_split(path, chunk_seconds):
         return chunk_paths, None
 
-    async def fake_transcribe_one(path, glossary, language):
+    async def fake_transcribe_one(path, glossary, language, denoise=False):
         idx = chunk_paths.index(path)
         if idx == 2:
             raise ai_module.WhisperError("whisper container restarted")
@@ -734,7 +734,7 @@ async def test_transcribe_audio_failure_on_the_first_chunk_has_no_partial(tmp_pa
     async def fake_split(path, chunk_seconds):
         return chunk_paths, None
 
-    async def fake_transcribe_one(path, glossary, language):
+    async def fake_transcribe_one(path, glossary, language, denoise=False):
         raise ai_module.WhisperError("whisper unreachable")
 
     monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
@@ -1333,7 +1333,7 @@ def _chunk_fakes(tmp_path, n=3, texts=None):
     async def fake_split(path, chunk_seconds):
         return chunk_paths, None
 
-    async def fake_transcribe_one(path, glossary, language):
+    async def fake_transcribe_one(path, glossary, language, denoise=False):
         return texts[chunk_paths.index(path)]
 
     return chunk_paths, fake_probe, fake_split, fake_transcribe_one
@@ -1366,7 +1366,7 @@ async def test_transcribe_on_checkpoint_not_called_for_an_unchunked_clip(tmp_pat
     async def fake_probe(path):
         return 5.0  # short — skips chunking entirely
 
-    async def fake_transcribe_one(path, glossary, language):
+    async def fake_transcribe_one(path, glossary, language, denoise=False):
         return "whole clip"
 
     monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
@@ -1385,7 +1385,7 @@ async def test_transcribe_resumes_from_a_matching_checkpoint_and_skips_done_chun
     chunk_paths, fake_probe, fake_split, fake_transcribe_one = _chunk_fakes(tmp_path)
     called_with = []
 
-    async def tracking_transcribe_one(path, glossary, language):
+    async def tracking_transcribe_one(path, glossary, language, denoise=False):
         called_with.append(path)
         return await fake_transcribe_one(path, glossary, language)
 
@@ -1428,7 +1428,7 @@ async def test_transcribe_discards_a_checkpoint_with_a_different_chunk_total(tmp
     chunk_paths, fake_probe, fake_split, fake_transcribe_one = _chunk_fakes(tmp_path)
     called_with = []
 
-    async def tracking_transcribe_one(path, glossary, language):
+    async def tracking_transcribe_one(path, glossary, language, denoise=False):
         called_with.append(path)
         return await fake_transcribe_one(path, glossary, language)
 
@@ -1490,7 +1490,7 @@ async def test_transcribe_raises_job_interrupted_at_the_next_chunk_boundary_when
 async def test_transcribe_partial_transcript_on_whisper_error_includes_the_resumed_prefix(tmp_path, monkeypatch):
     chunk_paths, fake_probe, fake_split, _fake_transcribe_one = _chunk_fakes(tmp_path)
 
-    async def failing_transcribe_one(path, glossary, language):
+    async def failing_transcribe_one(path, glossary, language, denoise=False):
         if path == chunk_paths[2]:
             raise ai_module.WhisperError("boom")
         return "part 1"

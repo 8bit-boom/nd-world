@@ -16,11 +16,28 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Optional: server-side speech enhancement (DeepFilterNet) for session
+# recordings. Off by default — torch/torchaudio/deepfilternet add
+# hundreds of MB and are irrelevant to everyone who doesn't use the
+# feature. Build with `--build-arg INSTALL_DENOISE=true` to include it;
+# app.ai.speech_enhancement_available() feature-detects at runtime, and
+# the per-World toggle refuses to enable itself if this wasn't installed.
+ARG INSTALL_DENOISE=false
+COPY requirements-denoise.txt .
+RUN if [ "$INSTALL_DENOISE" = "true" ]; then \
+        pip install --no-cache-dir -r requirements-denoise.txt; \
+    fi
+
 COPY app/ ./app/
 COPY static/ ./static/
 
 VOLUME ["/data"]
 ENV DB_PATH=/data/world.db
+# DeepFilterNet downloads its model to this cache dir on first use;
+# pointing it at the /data volume means the download survives container
+# recreation instead of re-fetching every time (harmless/unused if
+# INSTALL_DENOISE=false).
+ENV XDG_CACHE_HOME=/data/.cache
 
 EXPOSE 8000
 
