@@ -1500,7 +1500,14 @@ def _denoise_audio_file_sync(path: Path) -> Path:
     audio, meta = load_audio(str(path), sr=df_sr)
     enhanced = enhance(model, df_state, audio)
     enhanced = resample(enhanced, df_sr, meta.sample_rate)
-    out_path = path.with_name(f"{path.stem}.denoised{path.suffix}")
+    # Always .wav regardless of the input's own container/codec (e.g. a
+    # browser mic recording is typically .webm/opus) — torchaudio's save
+    # path (used by save_audio) can't reliably ENCODE every container it
+    # can decode, and .wav is the one format every backend can always
+    # write. whisper.cpp accepts it natively either way (no conversion
+    # needed on that end, unlike webm/opus, which it transcodes via
+    # --convert).
+    out_path = path.with_name(f"{path.stem}.denoised.wav")
     save_audio(str(out_path), enhanced, sr=meta.sample_rate, log=False)
     return out_path
 
@@ -1565,7 +1572,7 @@ async def _transcribe_one_file(path: Path, glossary: str, language: str, denoise
                 with send_path.open("rb") as f:
                     r = await c.post(
                         f"{url}/inference",
-                        files={"file": (path.name, f, "application/octet-stream")},
+                        files={"file": (send_path.name, f, "application/octet-stream")},
                         data=data,
                     )
         except (_httpx.TimeoutException, TimeoutError) as exc:

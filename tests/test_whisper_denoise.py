@@ -135,6 +135,85 @@ async def test_denoise_audio_file_noop_when_unavailable(tmp_path, monkeypatch):
     assert out == src
 
 
+def test_denoise_audio_file_sync_always_outputs_wav(tmp_path, monkeypatch):
+    """A browser mic recording is typically .webm/opus (see ndMicRecorder
+    in base.html — no explicit mimeType is requested, so MediaRecorder
+    picks the browser's own default), which torchaudio's save path can
+    decode but can't reliably ENCODE back out. Forcing the denoised
+    output to always be .wav — a format every backend can write — avoids
+    a silent no-op (caught by denoise_audio_file's own try/except) on
+    exactly the recordings this feature exists for. Verified here by
+    injecting fake df.enhance/df.io/df.model modules, since the real
+    dependency isn't installed in this environment."""
+    import sys
+    import types
+
+    calls = {}
+
+    fake_enhance_mod = types.ModuleType("df.enhance")
+    fake_enhance_mod.enhance = lambda model, df_state, audio: audio
+
+    class _FakeMeta:
+        sample_rate = 44100
+
+    fake_io_mod = types.ModuleType("df.io")
+    fake_io_mod.load_audio = lambda path, sr=None: ("audio-tensor", _FakeMeta())
+    fake_io_mod.resample = lambda audio, orig_sr, new_sr: audio
+
+    def _fake_save_audio(path, audio, sr, log=False):
+        calls["save_path"] = path
+        calls["save_sr"] = sr
+
+    fake_io_mod.save_audio = _fake_save_audio
+
+    class _FakeModelParams:
+        sr = 48000
+
+    fake_model_mod = types.ModuleType("df.model")
+    fake_model_mod.ModelParams = _FakeModelParams
+
+    monkeypatch.setitem(sys.modules, "df.enhance", fake_enhance_mod)
+    monkeypatch.setitem(sys.modules, "df.io", fake_io_mod)
+    monkeypatch.setitem(sys.modules, "df.model", fake_model_mod)
+    monkeypatch.setattr(ai_module, "_init_denoise_model", lambda: (object(), object()))
+
+    src = tmp_path / "recording.webm"
+    src.write_bytes(b"x")
+    out = ai_module._denoise_audio_file_sync(src)
+
+    assert out.name == "recording.denoised.wav"
+    assert calls["save_path"] == str(out)
+    assert calls["save_sr"] == 44100
+
+
+@pytest.mark.asyncio
+async def test_transcribe_one_file_sends_denoised_filename_not_original(tmp_path, monkeypatch):
+    """The multipart upload's filename must match send_path (the actual
+    bytes being POSTed) not the original path — a mismatch (e.g. claiming
+    "recording.webm" while the body is really WAV, after denoising forces
+    .wav — see test above) is at best misleading and risks confusing a
+    stricter format prober on whisper.cpp's side than ffmpeg's own
+    content-sniffing."""
+    from .test_whisper import _patch_httpx, _FakeResponse
+
+    ai_module.set_whisper_override("http://127.0.0.1:8090")
+    captured = _patch_httpx(monkeypatch, response=_FakeResponse(200, {"text": "ok"}))
+
+    src = tmp_path / "recording.webm"
+    src.write_bytes(b"original webm bytes")
+    denoised = tmp_path / "recording.denoised.wav"
+    denoised.write_bytes(b"denoised wav bytes")
+
+    async def fake_denoise(path):
+        return denoised
+    monkeypatch.setattr(ai_module, "denoise_audio_file", fake_denoise)
+
+    await ai_module._transcribe_one_file(src, glossary="", language="", denoise=True)
+
+    sent_filename = captured["post_kwargs"]["files"]["file"][0]
+    assert sent_filename == "recording.denoised.wav"
+
+
 # ── audio_jobs/sessions.py thread the per-world denoise flag through ───────
 
 @pytest.mark.asyncio
