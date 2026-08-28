@@ -111,6 +111,7 @@ CASES = [
     ("GET", "/session-log", True),
     ("GET", "/session-log/5", True),
     ("POST", "/api/session-log/5/recap", True),
+    ("GET", "/api/entities/picker", True),
 ]
 
 

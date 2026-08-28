@@ -197,23 +197,12 @@
     </details>
     {% endif %}
 
-    <details class="add-link-panel">
+    <details class="add-link-panel" id="add-link-panel">
       <summary>+ Add connection</summary>
       <div class="add-link-body">
-        <div class="kind-filters" style="display:flex;flex-wrap:wrap;gap:.3rem;margin-bottom:.5rem">
-          <button class="kf-btn active" onclick="setKindFilter(this,'all')">All</button>
-          {% for k in kinds %}
-          <button class="kf-btn" onclick="setKindFilter(this,'{{ k }}')">{{ kind_icons[k] }} {{ k|capitalize }}</button>
-          {% endfor %}
-        </div>
-        <input id="link-search" placeholder="Filter entities…" oninput="filterLinks()"/>
+        <input id="link-search" placeholder="Filter entities…"/>
         <div id="link-list">
-          {% for e in all_entities %}
-          <form action="/entity/{{ entity.id }}/link/{{ e.id }}" method="post" class="link-item linkable-item" data-name="{{ e.name|lower }}" data-kind="{{ e.kind }}">
-            <span>{{ kind_icons[e.kind] }} {{ e.name }}{% if e.subtype %} <em>{{ e.subtype }}</em>{% endif %}</span>
-            <button type="submit">Link</button>
-          </form>
-          {% endfor %}
+          <p style="color:var(--text-dim);font-size:.8rem;font-style:italic;margin:.5rem 0 0">⏳ Loading…</p>
         </div>
       </div>
     </details>
@@ -286,9 +275,6 @@
 .rel-icon { font-size:1rem; }
 .rel-name { font-weight:600; }
 .rel-sub { font-size:.72rem; color:#777; }
-.kf-btn { font-size:.75rem; padding:.2rem .55rem; background:#1a1a1a; border:1px solid #333; border-radius:12px; color:#aaa; cursor:pointer; transition:border-color .12s,color .12s; }
-.kf-btn:hover { border-color:var(--neon); color:var(--neon); }
-.kf-btn.active { border-color:var(--neon); color:var(--neon); background:#0a0a0a; }
 /* AI panel */
 .ai-panel { margin-top:1.5rem; border:1px solid var(--border); border-radius:8px; padding:.5rem .75rem; }
 .ai-panel > summary { cursor:pointer; font-size:.9rem; color:var(--neon); padding:.25rem 0; user-select:none; }
@@ -321,22 +307,39 @@
 <script src="/static/js/progress-bar.js"></script>
 <script src="/static/js/audio-jobs.js"></script>
 <script src="/static/js/ai-attachments.js"></script>
+<script src="/static/js/entity-picker.js"></script>
 <script>
-let _activeKind = 'all';
-function setKindFilter(btn, kind) {
-  _activeKind = kind;
-  document.querySelectorAll('.kf-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  filterLinks();
-}
-function filterLinks() {
-  const q = (document.getElementById('link-search')?.value || '').toLowerCase();
-  document.querySelectorAll('.linkable-item').forEach(el => {
-    const nameMatch = !q || el.dataset.name.includes(q);
-    const kindMatch = _activeKind === 'all' || el.dataset.kind === _activeKind;
-    el.style.display = (nameMatch && kindMatch) ? '' : 'none';
+// "Add connection" panel — lazy-loads GET /api/entities/picker (visibility-
+// filtered for a player, unfiltered for a GM, same as every other entity
+// list) only once the <details> is actually opened, instead of the old
+// approach of rendering every entity in the world into this page's HTML on
+// every single load regardless of whether the panel was ever expanded.
+(function() {
+  const panel = document.getElementById('add-link-panel');
+  let loaded = false;
+  panel.addEventListener('toggle', () => {
+    if (!panel.open || loaded) return;
+    loaded = true;
+    const list = document.getElementById('link-list');
+    fetch('/api/entities/picker?exclude_id={{ entity.id }}')
+      .then(r => r.json())
+      .then((d) => {
+        ndEntityPicker(list, document.getElementById('link-search'), {
+          entities: d.entities || [], mode: 'single',
+          kindIcons: {{ kind_icons | tojson }},
+          emptyText: 'No other entities in this world yet.',
+          onPick: (e) => {
+            const f = document.createElement('form');
+            f.method = 'post';
+            f.action = '/entity/{{ entity.id }}/link/' + e.id;
+            document.body.appendChild(f);
+            f.submit();
+          },
+        });
+      })
+      .catch(() => { list.textContent = 'Failed to load entities.'; });
   });
-}
+})();
 
 function _mdToHtml(text) {
   let h = text

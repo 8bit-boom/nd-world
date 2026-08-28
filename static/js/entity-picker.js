@@ -15,6 +15,10 @@
 //   fieldName  — mode:"multi" only — the checkbox `name` attribute (default "entity_ids")
 //   onPick(entity) — mode:"single" only — called when a row is clicked
 //   emptyText  — message shown when `entities` is empty
+//   kindIcons  — optional {kind: icon} map — when given and an entity has a
+//                `.kind`, its row is prefixed with the icon (e.g. entities
+//                spanning every kind, unlike the original character/creature-
+//                only Session NPC picker this was factored out of)
 //
 // Returns { render, filter } — render() is called once up front; filter(q)
 // is wired to `searchInputEl`'s input event automatically if given, but is
@@ -45,9 +49,11 @@ function ndEntityPicker(containerEl, searchInputEl, opts) {
     row.className = "entity-picker-row";
     row.dataset.name = e.name.toLowerCase();
     row.style.cssText = "display:flex;align-items:center;gap:.5rem;font-size:.82rem;padding:.15rem 0";
+    const icon = opts.kindIcons && e.kind ? (opts.kindIcons[e.kind] || "") : "";
+    const label = icon ? icon + " " + e.name : e.name;
     if (mode === "single") {
       row.style.cursor = "pointer";
-      row.appendChild(document.createTextNode(e.name));
+      row.appendChild(document.createTextNode(label));
       row.onclick = () => opts.onPick(e);
     } else {
       const cb = document.createElement("input");
@@ -56,7 +62,7 @@ function ndEntityPicker(containerEl, searchInputEl, opts) {
       cb.value = e.id;
       cb.style.width = "auto";
       cb.checked = selected.has(e.id);
-      row.append(cb, document.createTextNode(" " + e.name));
+      row.append(cb, document.createTextNode(" " + label));
     }
     return row;
   }

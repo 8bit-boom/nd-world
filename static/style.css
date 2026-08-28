@@ -731,27 +731,6 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
 }
 .add-link-body input:focus { border-color: var(--neon); }
 #link-list { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: .3rem; }
-.link-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: .3rem .5rem;
-  background: var(--bg2);
-  border-radius: 2px;
-  font-size: .82rem;
-}
-.link-item button {
-  background: transparent;
-  border: 1px solid var(--neon);
-  color: var(--neon);
-  padding: .15rem .5rem;
-  cursor: pointer;
-  font-size: .75rem;
-  border-radius: 2px;
-  font-family: var(--font);
-}
-.link-item button:hover { background: var(--neon); color: #000; }
-.link-item em { color: var(--text-dim); font-style: normal; font-size: .75rem; margin-left: .3rem; }
 
 /* ── Form ── */
 .form-page { max-width: 760px; margin: 0 auto; }

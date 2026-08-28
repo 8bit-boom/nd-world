@@ -304,6 +304,10 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if path == "/api/spotlight":
         return True
+    if path == "/api/entities/picker":
+        # Handler applies _filter_visible_entities for a non-GM caller, same
+        # as every other player-facing entity list — see api_entities_picker.
+        return True
     if re.match(r"^/api/entity/\d+/preview$", path):
         return True
     if path == "/account" or path.startswith("/account/"):
@@ -3517,25 +3521,27 @@ def entity_preview(entity_id: int, request: Request, db: Session = Depends(get_d
 
 
 @app.get("/api/entities/picker")
-def api_entities_picker(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def api_entities_picker(
+    request: Request, exclude_id: Optional[int] = None,
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
     """Lightweight {id, name, kind, folder} listing for entity-picker UIs
-    (folder-tree + search — see static/js/entity-picker.js). GM-only,
-    matching every current caller's own access level (Image Studio's entity
-    picker and "set as portrait" attach flow); unlike the Session NPC
-    picker's narrower character/creature filter, this covers every kind
-    since an illustration is just as reasonable for a location or item."""
-    user = getattr(request.state, "user", None)
-    if not (user and user.is_gm):
-        raise HTTPException(403)
+    (folder-tree + search — see static/js/entity-picker.js): Image Studio's
+    entity picker/"set as portrait" attach flow (GM-only pages, so they
+    always got every entity — _filter_visible_entities is a no-op for a GM,
+    so that behavior is unchanged), plus entity detail's "Add connection"
+    panel, which players can also reach — _filter_visible_entities keeps a
+    player from discovering (or linking to) an entity they can't see, same
+    as every other player-facing entity list in this app. `exclude_id` lets
+    the entity-detail caller drop the entity being viewed from its own
+    picker without a client-side filter pass over the whole result."""
     world = get_active_world(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
-    entities = (
-        db.query(Entity)
-        .filter(Entity.world_id == world.id)
-        .order_by(Entity.kind, Entity.folder, Entity.name)
-        .all()
-    )
+    q = db.query(Entity).filter(Entity.world_id == world.id)
+    if exclude_id is not None:
+        q = q.filter(Entity.id != exclude_id)
+    entities = _filter_visible_entities(q, request).order_by(Entity.kind, Entity.folder, Entity.name).all()
     return {"entities": [{"id": e.id, "name": e.name, "kind": e.kind, "folder": e.folder or ""} for e in entities]}
 
 
@@ -3632,9 +3638,6 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
     entity = _entity_view_gate(db, request, entity_id)
     user = getattr(request.state, "user", None)
     world = get_active_world(request, db, active_world)
-    all_entities = _filter_visible_entities(
-        db.query(Entity).filter(Entity.id != entity_id, Entity.world_id == entity.world_id), request
-    ).order_by(Entity.name).all()
     worlds = _visible_worlds(request, db)
     backlinks = _filter_visible_entities(
         db.query(Entity)
@@ -3651,7 +3654,7 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
     else:
         custom_fields = {}
     return templates.TemplateResponse("entities/detail.html", {
-        "request": request, "entity": entity, "all_entities": all_entities,
+        "request": request, "entity": entity,
         "world": world, "worlds": worlds, "backlinks": backlinks,
         "entity_notes": entity_notes,
         "custom_sections": custom_sections, "custom_fields": custom_fields,
