@@ -109,7 +109,15 @@
           <select id="audio-bgjob-model" title="Which AI model summarizes this recording — see the AI page's Models tab" style="font-size:.78rem;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:.25rem .4rem">
             <option value="">(default model)</option>
           </select>
+          <button type="button" id="audio-library-picker-btn" class="ai-recap-btn" onclick="toggleAudioLibraryPicker()"
+                  title="Transcribe a recording already saved in this world's Audio Library, in the background — no re-upload needed">🎵 From Audio Library</button>
           <span id="mic-record-status" style="font-size:.75rem;color:var(--text-dim)"></span>
+          <div id="audio-library-picker" style="display:none;align-items:center;gap:.4rem;margin-top:.4rem">
+            <select id="audio-library-clip-select" style="flex:1;min-width:160px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;font-size:.78rem;border-radius:3px">
+              <option value="">Loading clips…</option>
+            </select>
+            <button type="button" class="ai-recap-btn" onclick="aiStartAudioJobFromClip()">Transcribe in Background</button>
+          </div>
           <div style="margin-top:.4rem">
             <input type="text" id="audio-recap-instructions" placeholder="Extra instructions for this summary (optional)…"
                    title="One-off notes for this summary, e.g. &quot;focus on combat tactics&quot; — added to (not replacing) the world's standing recap instructions"
@@ -575,6 +583,7 @@ const sessionAudioJobs = ndAudioJobs(document.getElementById('audio-jobs-panel')
   createUrl: '/api/sessions/ai/audio-jobs',
   chunkUrl: '/api/sessions/ai/audio-jobs/chunk',
   completeUrl: '/api/sessions/ai/audio-jobs/complete',
+  createFromClipUrl: '/api/sessions/ai/audio-jobs/from-clip',
   listUrl: '/api/sessions/ai/audio-jobs',
   onUse: (job) => {
     // A background job's own failure/retry story already lives on the
@@ -639,6 +648,65 @@ document.getElementById('audio-file-input').addEventListener('change', function 
   if (this.files[0]) aiSummarizeFromAudio(this.files[0]);
   this.value = '';
 });
+
+// "Choose from Audio Library" — transcribes a recording already saved in
+// this world's Audio Library (app/routers/audio.py's /api/audio/clips)
+// instead of uploading a new file. Clips are fetched once, on first open,
+// same lazy-load pattern loadBgJobModelOptions above uses for the model
+// dropdown.
+let _audioLibraryClipsLoaded = false;
+async function toggleAudioLibraryPicker() {
+  const picker = document.getElementById('audio-library-picker');
+  const showing = picker.style.display !== 'none';
+  picker.style.display = showing ? 'none' : 'flex';
+  if (!showing && !_audioLibraryClipsLoaded) await loadAudioLibraryClips();
+}
+
+async function loadAudioLibraryClips() {
+  const sel = document.getElementById('audio-library-clip-select');
+  try {
+    const res = await fetch('/api/audio/clips');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const clips = await res.json();
+    sel.innerHTML = '';
+    if (!clips.length) {
+      sel.innerHTML = '<option value="">No clips in the Audio Library yet</option>';
+    } else {
+      sel.innerHTML = '<option value="">Choose a clip…</option>';
+      clips.forEach((c) => {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.name;
+        sel.appendChild(opt);
+      });
+    }
+    _audioLibraryClipsLoaded = true;
+  } catch (e) {
+    sel.innerHTML = '<option value="">Failed to load clips</option>';
+  }
+}
+
+async function aiStartAudioJobFromClip() {
+  const clipId = document.getElementById('audio-library-clip-select').value;
+  if (!clipId) { alert('Choose a clip first.'); return; }
+  const status = document.getElementById('ai-recap-status');
+  const model = document.getElementById('audio-bgjob-model').value;
+  const instructions = document.getElementById('audio-recap-instructions').value;
+  const rag = _recapRagOptions();
+  status.textContent = 'Starting background job…';
+  try {
+    await sessionAudioJobs.startJobFromClip(clipId, {
+      game_session_id: '{{ gsession.id if gsession else "" }}', model: model,
+      extra_instructions: instructions, think: _recapThinkEnabled(),
+      use_rag: rag.use_rag,
+      rag_entity_limit: rag.rag_entity_limit === null ? '' : rag.rag_entity_limit,
+      rag_notes_limit: rag.rag_notes_limit === null ? '' : rag.rag_notes_limit,
+    });
+    status.textContent = 'Background job started — see the jobs list below.';
+  } catch (e) {
+    status.textContent = 'Failed to start background job: ' + e.message;
+  }
+}
 
 const _audioDropzone = document.getElementById('audio-dropzone');
 ['dragover', 'dragenter'].forEach(ev => _audioDropzone.addEventListener(ev, e => {

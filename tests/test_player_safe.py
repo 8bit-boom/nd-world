@@ -104,6 +104,8 @@ CASES = [
     ("GET", "/api/ai/attachments/audio-jobs", True),
     ("POST", "/api/sessions/ai/audio-jobs", False),
     ("GET", "/api/sessions/ai/audio-jobs/5", False),
+    ("POST", "/api/sessions/ai/audio-jobs/from-clip", False),
+    ("GET", "/api/audio/clips", False),
     ("GET", "/uploads/portraits/x.png", True),
     ("GET", "/maps/some-map", True),
     ("GET", "/worlds/switch/some-world", True),

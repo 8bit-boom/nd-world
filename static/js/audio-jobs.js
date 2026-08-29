@@ -175,7 +175,27 @@ function ndAudioJobs(panelEl, opts) {
     return data.job_id;
   }
 
+  // Starts a background job sourced from an already-uploaded file (an
+  // Audio Library clip, for the Session page's "choose from Audio Library"
+  // picker — see app/routers/sessions.py's from-clip route) instead of a
+  // fresh upload — no file to read/chunk, just clipId + extraFields.
+  // Requires opts.createFromClipUrl; callers that never use this (the AI
+  // Chat attachment panel, etc.) simply never call it.
+  async function startJobFromClip(clipId, extraFields) {
+    const fd = new FormData();
+    fd.append("clip_id", clipId);
+    for (const k in (extraFields || {})) fd.append(k, extraFields[k]);
+    const res = await fetch(opts.createFromClipUrl, { method: "POST", body: fd });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    await refreshList();
+    return data.job_id;
+  }
+
   refreshList();
 
-  return { startJob, refreshList };
+  return { startJob, startJobFromClip, refreshList };
 }

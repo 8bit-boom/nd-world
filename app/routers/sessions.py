@@ -17,7 +17,7 @@ from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
 from ..database import get_db
 from ..deps import check_llm_cooldown, get_world_ctx, paginate
-from ..models import AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, Quest, World
+from ..models import AudioClip, AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, Quest, World
 from ..templating import templates
 from ..uploads import copy_upload_bounded, reassemble_upload_chunks, save_upload_chunk
 
@@ -895,6 +895,62 @@ async def api_audio_job_complete(
     job_id = _audio_jobs.create_job(
         world_id=world.id, purpose="session_recap", filename=filename,
         audio_path=dest, delete_after=True, game_session_id=gs_id,
+        created_by_user_id=_current_user_id(request), model=model.strip(),
+        extra_instructions=extra_instructions.strip(), think=think,
+        use_rag=use_rag,
+        rag_entity_limit=int(rag_entity_limit) if rag_entity_limit.strip().isdigit() else None,
+        rag_notes_limit=int(rag_notes_limit) if rag_notes_limit.strip().isdigit() else None,
+    )
+    return {"job_id": job_id}
+
+
+def _audio_clip_disk_path(clip: AudioClip) -> Optional[Path]:
+    """Resolve an AudioClip's stored /uploads/... URL back to a file on
+    disk — same URL-to-path convention app.routers.audio's own
+    _delete_clip_file and app.routers.ai's _attachment_disk_path use
+    (refusing anything that isn't under the uploads root, or a crafted
+    "../" escape). Returns None for a missing/invalid/nonexistent file."""
+    if not clip.file_url or not clip.file_url.startswith("/uploads/"):
+        return None
+    root = (Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads").resolve()
+    try:
+        path = (root / clip.file_url[len("/uploads/"):]).resolve()
+    except (OSError, RuntimeError):
+        return None
+    return path if path.is_relative_to(root) and path.is_file() else None
+
+
+@router.post("/api/sessions/ai/audio-jobs/from-clip")
+async def api_audio_job_create_from_clip(
+    request: Request, clip_id: int = Form(...), game_session_id: str = Form(""),
+    model: str = Form(""), extra_instructions: str = Form(""), think: bool = Form(True),
+    use_rag: bool = Form(False), rag_entity_limit: str = Form(""), rag_notes_limit: str = Form(""),
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Same background transcribe+summarize job as api_audio_job_create, but
+    sourced from a recording already saved in this world's Audio Library
+    instead of a fresh upload — e.g. a session recorded on a phone and
+    uploaded to the Library first, or a recording worth keeping AND
+    transcribing. Reads the clip's file in place (delete_after=False)
+    rather than copying it into the jobs dir the way an upload does — that
+    copy exists only to give a job a file that outlives the request that
+    created it; a Library clip's file already lives independently of any
+    one job (same reasoning app.routers.ai's own attachment jobs use for
+    their delete_after=False — "the file IS the attachment" there, "the
+    file IS the Library's own copy" here)."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    clip = db.query(AudioClip).filter(AudioClip.id == clip_id, AudioClip.world_id == world.id).first()
+    if not clip:
+        raise HTTPException(404)
+    path = _audio_clip_disk_path(clip)
+    if not path:
+        raise HTTPException(404, "This clip's audio file is missing on disk")
+    gs_id = int(game_session_id) if game_session_id.strip().isdigit() else None
+    job_id = _audio_jobs.create_job(
+        world_id=world.id, purpose="session_recap", filename=clip.name or path.name,
+        audio_path=path, delete_after=False, game_session_id=gs_id,
         created_by_user_id=_current_user_id(request), model=model.strip(),
         extra_instructions=extra_instructions.strip(), think=think,
         use_rag=use_rag,

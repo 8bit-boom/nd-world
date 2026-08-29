@@ -178,6 +178,26 @@ def _clip_counts(db: Session, request: Request, album_ids: list) -> dict:
     return result
 
 
+@router.get("/api/audio/clips")
+def api_audio_clips(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Flat JSON list of every clip in the active world, across all
+    albums — powers the Session page's "choose from Audio Library" picker
+    (app/routers/sessions.py's from-clip audio-job route), which needs to
+    search/select from everything at once rather than browse album by
+    album the way the /audio page itself does. GM-only (not in
+    _is_player_safe, unlike /audio itself) since this is Session-page
+    tooling, not the read-only player-facing soundboard."""
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    clips = (
+        db.query(AudioClip).filter(AudioClip.world_id == world.id)
+        .order_by(AudioClip.name).all()
+    )
+    return [{"id": c.id, "name": c.name, "description": c.description or "", "album_id": c.album_id} for c in clips]
+
+
 @router.get("/audio", response_class=HTMLResponse)
 def audio_library(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
