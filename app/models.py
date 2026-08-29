@@ -1242,6 +1242,20 @@ class AppSettings(Base):
     # see the GPU (the normal case — only the ollama/swarmui services get GPU
     # passthrough in docker-compose.yml). Blank/None = rely on auto-detection.
     ollama_vram_override_mb = Column(Integer, nullable=True)
+    # Per-model overrides for the core "Bucket C" fields above — a GM-editable
+    # JSON dict {model_id: {field: value, ...}} keyed by exactly the same
+    # option names effective_ollama_options() builds (see
+    # _refresh_settings_overrides in main.py), plus "keep_alive". Scoped to
+    # just the fields on Settings > System's main Generation tuning panel
+    # (temperature/top_p/top_k/repeat_penalty/num_predict/num_ctx/seed/
+    # num_gpu/keep_alive) — the "Advanced sampling & runtime" extras stay
+    # global-only, the same "not every knob needs every axis" boundary this
+    # app already draws elsewhere (e.g. OLLAMA_LLM_LIBRARY's exclusion in
+    # ollama_tuning.py). Same JSON-bag-not-a-column-per-field reasoning as
+    # ollama_server_env_json above — an unbounded, GM-chosen set of model
+    # ids can't be columns. A model with no entry here just uses the plain
+    # instance-wide fields above, unchanged.
+    ollama_model_overrides_json = Column(Text, default="{}")
     # Hover-a-link-for-N-seconds entity preview popup (base.html's global
     # mouseover handler + GET /api/entity/{id}/preview) — instance-wide like
     # everything else on this row, editable from Settings > Options.

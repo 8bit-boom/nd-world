@@ -259,6 +259,7 @@ def test_heals_pre_ollama_server_env_schema(tmp_path, monkeypatch):
         "ollama_min_p", "ollama_typical_p", "ollama_repeat_last_n", "ollama_presence_penalty",
         "ollama_frequency_penalty", "ollama_num_keep", "ollama_num_batch", "ollama_num_thread",
         "ollama_main_gpu", "ollama_use_mmap", "ollama_server_env_json", "ollama_vram_override_mb",
+        "ollama_model_overrides_json",
     } <= settings_cols
 
     db = SessionLocal()
@@ -269,6 +270,7 @@ def test_heals_pre_ollama_server_env_schema(tmp_path, monkeypatch):
         assert s.ollama_use_mmap == "" or s.ollama_use_mmap is None
         assert json.loads(s.ollama_server_env_json or "{}") == {}
         assert s.ollama_vram_override_mb is None
+        assert json.loads(s.ollama_model_overrides_json or "{}") == {}
     finally:
         db.close()
 

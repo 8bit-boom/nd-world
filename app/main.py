@@ -196,7 +196,11 @@ def _refresh_settings_overrides(db: Session = None):
         }
         if settings.ollama_use_mmap in ("0", "1"):
             gen_options["use_mmap"] = settings.ollama_use_mmap == "1"
-        _ai_module.set_ollama_generation_overrides(gen_options, settings.ollama_keep_alive or "")
+        try:
+            model_overrides = json.loads(settings.ollama_model_overrides_json or "{}")
+        except Exception:
+            model_overrides = {}
+        _ai_module.set_ollama_generation_overrides(gen_options, settings.ollama_keep_alive or "", model_overrides)
     finally:
         if owns:
             db.close()
@@ -2642,6 +2646,10 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         # A hand-corrupted row must not 500 the settings page — treat it
         # the same as "nothing saved yet."
         ollama_server_env = {}
+    try:
+        ollama_model_overrides = json.loads(settings.ollama_model_overrides_json or "{}")
+    except (TypeError, ValueError):
+        ollama_model_overrides = {}
     return {
         "request": request, "world": world, "worlds": worlds,
         "settings": settings,
@@ -2663,6 +2671,7 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "ollama_server_status": _tuning.server_env_status(ollama_server_env),
         "ollama_server_spec": _tuning.SERVER_ENV_SPEC,
         "ollama_form_prefix": _tuning.FORM_PREFIX,
+        "ollama_model_overrides": ollama_model_overrides,
     }
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -2880,6 +2889,93 @@ def settings_system_save(
             status_code=200,
         )
     return RedirectResponse("/settings?tab=system", status_code=303)
+
+
+# Per-model overrides for the core Generation-tuning fields above (see
+# AppSettings.ollama_model_overrides_json's own docstring for the field
+# scope/reasoning) — small, focused save/remove routes rather than folding
+# into settings_system_save's one giant form post, since the set of models a
+# GM wants to override is open-ended and grows one at a time, unlike the
+# fixed global fields above.
+_MODEL_OVERRIDE_FIELD_SPEC = (
+    ("temperature", "Temperature", float, 0.0, 2.0),
+    ("top_p", "Top P", float, 0.0, 1.0),
+    ("top_k", "Top K", int, 0, None),
+    ("repeat_penalty", "Repeat penalty", float, 0.0, 5.0),
+    ("num_predict", "Max output tokens", int, -2, None),
+    ("num_ctx", "Context length", int, 1, None),
+    ("seed", "Seed", int, None, None),
+    ("num_gpu", "GPU layers", int, 0, None),
+)
+
+
+@app.post("/settings/system/model-override")
+def settings_model_override_save(
+    request: Request,
+    model: str = Form(...),
+    temperature: str = Form(""),
+    top_p: str = Form(""),
+    top_k: str = Form(""),
+    repeat_penalty: str = Form(""),
+    num_predict: str = Form(""),
+    num_ctx: str = Form(""),
+    seed: str = Form(""),
+    num_gpu: str = Form(""),
+    keep_alive: str = Form(""),
+    db: Session = Depends(get_db),
+    active_world: str = Cookie(None),
+):
+    model = model.strip()
+    if not model:
+        return templates.TemplateResponse(
+            "settings.html",
+            _settings_context(request, db, active_world, "system", system_error="Pick a model to override first"),
+            status_code=400,
+        )
+    local_vars = locals()
+    options = {}
+    for field, label, kind, lo, hi in _MODEL_OVERRIDE_FIELD_SPEC:
+        val, err = _parse_optional_number(label, local_vars[field], kind, lo, hi)
+        if err:
+            return templates.TemplateResponse(
+                "settings.html",
+                _settings_context(request, db, active_world, "system", system_error=err),
+                status_code=400,
+            )
+        if val is not None:
+            options[field] = val
+    keep_alive = keep_alive.strip()[:32]
+
+    settings = get_app_settings(db)
+    try:
+        overrides = json.loads(settings.ollama_model_overrides_json or "{}")
+    except Exception:
+        overrides = {}
+    if options or keep_alive:
+        overrides[model] = {"options": options, "keep_alive": keep_alive}
+    else:
+        # Nothing actually set for this model — same as never having added
+        # an override, so don't leave a phantom empty entry behind.
+        overrides.pop(model, None)
+    settings.ollama_model_overrides_json = json.dumps(overrides)
+    db.commit()
+    _refresh_settings_overrides(db)
+    return RedirectResponse("/settings?tab=system", status_code=303)
+
+
+@app.post("/settings/system/model-override/delete")
+def settings_model_override_delete(model: str = Form(...), db: Session = Depends(get_db)):
+    settings = get_app_settings(db)
+    try:
+        overrides = json.loads(settings.ollama_model_overrides_json or "{}")
+    except Exception:
+        overrides = {}
+    overrides.pop(model.strip(), None)
+    settings.ollama_model_overrides_json = json.dumps(overrides)
+    db.commit()
+    _refresh_settings_overrides(db)
+    return RedirectResponse("/settings?tab=system", status_code=303)
+
 
 @app.get("/boards", response_class=HTMLResponse)
 def boards_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):

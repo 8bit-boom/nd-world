@@ -998,3 +998,152 @@ def test_recommendation_keys_are_all_real():
                                   parameter_size="32.8B", size_bytes=int(19e9))
         for key in rec["per_request"]:
             assert key in _OPTION_ALLOWLIST, f"{key} (fit={rec['fit']}) not in routers.ai._OPTION_ALLOWLIST"
+
+
+# ── Per-model overrides ──────────────────────────────────────────────────────
+# A GM-editable {model: {"options": {...}, "keep_alive": "..."}} map layered
+# on top of the instance-wide fields above — see
+# AppSettings.ollama_model_overrides_json's own docstring for the field
+# scope (only the core Generation tuning panel, not Advanced sampling).
+
+def test_effective_options_no_model_overrides_untouched():
+    ai_module.set_ollama_generation_overrides({"temperature": 0.5}, "5m")
+    assert ai_module.effective_ollama_options() == {"temperature": 0.5}
+    assert ai_module.effective_ollama_options("some-other-model") == {"temperature": 0.5}
+    assert ai_module.effective_ollama_keep_alive("some-other-model") == "5m"
+
+
+def test_effective_options_per_model_layers_over_global():
+    ai_module.set_ollama_generation_overrides(
+        {"temperature": 0.5, "num_ctx": 4096}, "5m",
+        model_overrides={"gemma4:26b": {"options": {"num_ctx": 16000}, "keep_alive": "1h"}},
+    )
+    # The unset field (temperature) still falls back to the global value;
+    # num_ctx is the model's own override, winning over the global 4096.
+    assert ai_module.effective_ollama_options("gemma4:26b") == {"temperature": 0.5, "num_ctx": 16000}
+    assert ai_module.effective_ollama_keep_alive("gemma4:26b") == "1h"
+    # A different model is untouched by gemma4:26b's own override.
+    assert ai_module.effective_ollama_options("some-other-model") == {"temperature": 0.5, "num_ctx": 4096}
+    assert ai_module.effective_ollama_keep_alive("some-other-model") == "5m"
+
+
+def test_effective_options_per_model_keep_alive_falls_back_when_blank():
+    ai_module.set_ollama_generation_overrides(
+        {}, "5m", model_overrides={"gemma4:26b": {"options": {"temperature": 0.9}, "keep_alive": ""}},
+    )
+    # No per-model keep_alive set — falls back to the global one, not "".
+    assert ai_module.effective_ollama_keep_alive("gemma4:26b") == "5m"
+
+
+@pytest.mark.asyncio
+async def test_chat_kwargs_passes_per_model_options_via_generate_chat(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    ai_module.set_ollama_generation_overrides(
+        {"temperature": 0.5}, "5m",
+        model_overrides={"gemma4:26b": {"options": {"temperature": 0.1}, "keep_alive": "30m"}},
+    )
+    await ai_module.generate_chat([{"role": "user", "content": "hi"}], model="gemma4:26b")
+    assert calls[0]["options"] == {"temperature": 0.1}
+    assert calls[0]["keep_alive"] == "30m"
+    calls.clear()
+    await ai_module.generate_chat([{"role": "user", "content": "hi"}], model="some-other-model")
+    assert calls[0]["options"] == {"temperature": 0.5}
+    assert calls[0]["keep_alive"] == "5m"
+
+
+def test_model_override_route_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post("/settings/system/model-override", data={"model": "gemma4:26b", "temperature": "0.5"})
+    assert r.status_code == 403
+
+
+def test_model_override_save_and_apply_live(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/settings/system/model-override", data={
+        "model": "gemma4:26b", "temperature": "0.2", "num_ctx": "16000", "keep_alive": "1h",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        overrides = json.loads(settings.ollama_model_overrides_json)
+        assert overrides["gemma4:26b"] == {
+            "options": {"temperature": 0.2, "num_ctx": 16000}, "keep_alive": "1h",
+        }
+    finally:
+        db.close()
+
+    # Pushed live without a restart, same as the global fields.
+    assert ai_module.effective_ollama_options("gemma4:26b") == {"temperature": 0.2, "num_ctx": 16000}
+    assert ai_module.effective_ollama_keep_alive("gemma4:26b") == "1h"
+    # A model with no override is unaffected.
+    assert ai_module.effective_ollama_options("other-model") == {}
+
+    page = client.get("/settings?tab=system")
+    assert "gemma4:26b" in page.text
+
+
+def test_model_override_save_requires_a_model(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/settings/system/model-override", data={"model": "  ", "temperature": "0.5"})
+    assert r.status_code == 400
+
+
+def test_model_override_save_validates_range(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/settings/system/model-override", data={"model": "gemma4:26b", "temperature": "9"})
+    assert r.status_code == 400
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        assert json.loads(settings.ollama_model_overrides_json or "{}") == {}
+    finally:
+        db.close()
+
+
+def test_model_override_save_all_blank_removes_entry(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/settings/system/model-override", data={"model": "gemma4:26b", "temperature": "0.2"})
+    # Re-saving the same model with every field blank clears it back out —
+    # no phantom empty entry left behind.
+    client.post("/settings/system/model-override", data={"model": "gemma4:26b"})
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        assert json.loads(settings.ollama_model_overrides_json or "{}") == {}
+    finally:
+        db.close()
+    assert ai_module.effective_ollama_options("gemma4:26b") == {}
+
+
+def test_model_override_delete_route(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/settings/system/model-override", data={"model": "gemma4:26b", "temperature": "0.2"})
+    r = client.post("/settings/system/model-override/delete", data={"model": "gemma4:26b"}, follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        assert json.loads(settings.ollama_model_overrides_json or "{}") == {}
+    finally:
+        db.close()
+    assert ai_module.effective_ollama_options("gemma4:26b") == {}
+
+
+def test_model_override_delete_route_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post("/settings/system/model-override/delete", data={"model": "gemma4:26b"})
+    assert r.status_code == 403
+
+
+def test_settings_page_ships_per_model_override_form(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/settings/system/model-override", data={"model": "gemma4:26b", "temperature": "0.2"})
+    page = client.get("/settings?tab=system").text
+    assert 'action="/settings/system/model-override"' in page
+    assert 'name="model"' in page
+    assert 'action="/settings/system/model-override/delete"' in page
+    assert "gemma4:26b" in page
+    assert "temperature" in page

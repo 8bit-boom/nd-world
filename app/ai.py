@@ -90,23 +90,42 @@ def effective_whisper_url() -> str:
 # top-level kwarg on .chat()/.generate(), not nested inside options.
 _ollama_options_override: dict = {}
 _ollama_keep_alive_override: str = ""
+# Per-model overrides layered on TOP of the two globals above — a GM-editable
+# {model_id: {"options": {...}, "keep_alive": "..."}} map (see
+# AppSettings.ollama_model_overrides_json's own docstring for the field
+# scope/reasoning). A model with no entry here is unaffected; the two
+# globals above still apply to it exactly as before this existed.
+_ollama_model_overrides: dict = {}
 
 
-def set_ollama_generation_overrides(options: dict, keep_alive: str = "") -> None:
-    global _ollama_options_override, _ollama_keep_alive_override
+def set_ollama_generation_overrides(options: dict, keep_alive: str = "", model_overrides: dict = None) -> None:
+    global _ollama_options_override, _ollama_keep_alive_override, _ollama_model_overrides
     _ollama_options_override = dict(options) if options else {}
     _ollama_keep_alive_override = keep_alive or ""
+    _ollama_model_overrides = dict(model_overrides) if model_overrides else {}
 
 
-def effective_ollama_options() -> dict:
-    return dict(_ollama_options_override)
+def effective_ollama_options(model: str = "") -> dict:
+    """The instance-wide generation options, with `model`'s own per-model
+    override (if any) layered on top — per-model wins field-by-field, an
+    unset field on the per-model side still falls back to the instance-wide
+    value, same "layer, don't replace" rule _chat_kwargs already applies for
+    a caller's own extra_options."""
+    opts = dict(_ollama_options_override)
+    if model:
+        opts.update(_ollama_model_overrides.get(model, {}).get("options", {}))
+    return opts
 
 
-def effective_ollama_keep_alive() -> str:
+def effective_ollama_keep_alive(model: str = "") -> str:
+    if model:
+        per_model = _ollama_model_overrides.get(model, {}).get("keep_alive", "")
+        if per_model:
+            return per_model
     return _ollama_keep_alive_override
 
 
-def _chat_kwargs(extra_options: dict = None, think: bool = False) -> dict:
+def _chat_kwargs(extra_options: dict = None, think: bool = False, model: str = "") -> dict:
     """Extra kwargs (options=, keep_alive=, think=) to splat into every
     .chat() call below — built fresh each call so a runtime settings change
     (no server restart needed) takes effect on the very next request.
@@ -114,7 +133,11 @@ def _chat_kwargs(extra_options: dict = None, think: bool = False) -> dict:
     app/routers/ai.py) is layered OVER the instance-wide AppSettings
     defaults, not replacing them: an unset key still falls back to whatever
     Settings > System configured, so a preset only has to specify what it
-    wants to differ.
+    wants to differ. `model`, if given (every call site below already has
+    it resolved as `m` right before calling this), layers that model's own
+    Settings > System per-model override between those two — instance-wide
+    < per-model < extra_options, each layer only filling in what the one
+    before it left unset.
 
     think defaults to False for every caller that doesn't pass it —
     parse_facts_from_recap/parse_entity_from_text/generate_session_prep
@@ -131,10 +154,10 @@ def _chat_kwargs(extra_options: dict = None, think: bool = False) -> dict:
     think=True down to here; a GM's "Thinking" checkbox on those pages
     controls it per call."""
     kwargs = {"think": think}
-    opts = {**effective_ollama_options(), **(extra_options or {})}
+    opts = {**effective_ollama_options(model), **(extra_options or {})}
     if opts:
         kwargs["options"] = opts
-    keep_alive = effective_ollama_keep_alive()
+    keep_alive = effective_ollama_keep_alive(model)
     if keep_alive:
         kwargs["keep_alive"] = keep_alive
     return kwargs
@@ -339,7 +362,7 @@ async def benchmark_model(model: str) -> dict:
             # generate paragraphs for what's meant to be a two-sentence
             # timing probe, wasting tokens and making the eval_count-based
             # tokens_per_sec comparison across models less apples-to-apples.
-            **_chat_kwargs({"num_predict": 128}),
+            **_chat_kwargs({"num_predict": 128}, model=m),
         )
     except _ollama.ResponseError as exc:
         raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
@@ -448,7 +471,7 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
         full.append({"role": "system", "content": system})
     full.extend(messages)
     try:
-        resp = await _client().chat(model=m, messages=full, **_chat_kwargs(options, think))
+        resp = await _client().chat(model=m, messages=full, **_chat_kwargs(options, think, m))
         content = resp.message.content
         if content:
             return content
@@ -526,7 +549,7 @@ async def stream_chat(
     thinking_chars = 0
     done_reason = None
     try:
-        async for chunk in await _client().chat(model=m, messages=full, stream=True, **_chat_kwargs(options, think)):
+        async for chunk in await _client().chat(model=m, messages=full, stream=True, **_chat_kwargs(options, think, m)):
             token = chunk.message.content
             if token:
                 yielded_any = True
@@ -616,7 +639,7 @@ async def parse_facts_from_recap(raw_text: str, model: str = "") -> list[dict]:
                 {"role": "user", "content": raw_text},
             ],
             format=_RECAP_FACTS_SCHEMA,
-            **_chat_kwargs(),
+            **_chat_kwargs(model=m),
         )
     except _ollama.ResponseError as exc:
         raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
@@ -678,7 +701,7 @@ async def parse_entity_from_text(raw_text: str, kinds: list[str], model: str = "
                 {"role": "user", "content": raw_text},
             ],
             format=_entity_from_text_schema(kinds),
-            **_chat_kwargs(),
+            **_chat_kwargs(model=m),
         )
     except _ollama.ResponseError as exc:
         raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
@@ -736,7 +759,7 @@ async def generate_session_prep(context_text: str, model: str = "") -> list[str]
                 {"role": "user", "content": context_text},
             ],
             format=_SESSION_PREP_SCHEMA,
-            **_chat_kwargs(),
+            **_chat_kwargs(model=m),
         )
     except _ollama.ResponseError as exc:
         raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc

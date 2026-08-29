@@ -405,6 +405,75 @@
         <button type="submit" class="btn-primary">Save</button>
       </div>
     </form>
+
+    <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Per-model overrides</h2>
+    <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
+      Override the core Generation tuning fields above for one specific model — everything
+      else (Advanced sampling &amp; runtime, Server tuning) stays instance-wide only. A field
+      left blank here falls back to the instance-wide value above, same "blank = default"
+      rule as everywhere else on this page. Saves independently of the form above.
+    </p>
+    {% if ollama_model_overrides %}
+    <div id="pmo-list" style="margin-bottom:1rem">
+      {% for m, o in ollama_model_overrides.items() %}
+      <div class="nd-job-row" style="align-items:center">
+        <span class="nd-job-label">
+          <strong>{{ m }}</strong>
+          — {{ o.options.keys() | list | join(', ') if o.options else '' }}{% if o.keep_alive %}{{ ', ' if o.options else '' }}keep_alive={{ o.keep_alive }}{% endif %}
+        </span>
+        <form method="post" action="/settings/system/model-override/delete" style="display:inline;margin:0" onsubmit="return confirm('Remove the override for {{ m }}?')">
+          <input type="hidden" name="model" value="{{ m }}">
+          <button type="submit" class="nd-job-use-btn" title="Remove this override">🗑</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <form method="post" action="/settings/system/model-override" class="entity-form">
+      <div class="form-group">
+        <label for="pmo-model">Model</label>
+        <input id="pmo-model" name="model" placeholder="e.g. gemma4:26b" required>
+      </div>
+      <div class="form-group">
+        <label for="pmo-temperature">Temperature (0–2)</label>
+        <input id="pmo-temperature" type="number" step="0.01" min="0" max="2" name="temperature" placeholder="instance default">
+      </div>
+      <div class="form-group">
+        <label for="pmo-top-p">Top P (0–1)</label>
+        <input id="pmo-top-p" type="number" step="0.01" min="0" max="1" name="top_p" placeholder="instance default">
+      </div>
+      <div class="form-group">
+        <label for="pmo-top-k">Top K</label>
+        <input id="pmo-top-k" type="number" step="1" min="0" name="top_k" placeholder="instance default">
+      </div>
+      <div class="form-group">
+        <label for="pmo-repeat-penalty">Repeat penalty</label>
+        <input id="pmo-repeat-penalty" type="number" step="0.01" min="0" max="5" name="repeat_penalty" placeholder="instance default">
+      </div>
+      <div class="form-group">
+        <label for="pmo-num-predict">Max output tokens (num_predict, -1 = unlimited)</label>
+        <input id="pmo-num-predict" type="number" step="1" min="-2" name="num_predict" placeholder="instance default">
+      </div>
+      <div class="form-group">
+        <label for="pmo-num-ctx">Context length (num_ctx, tokens)</label>
+        <input id="pmo-num-ctx" type="number" step="1" min="1" name="num_ctx" placeholder="instance default">
+      </div>
+      <div class="form-group">
+        <label for="pmo-seed">Seed (fixed = reproducible output)</label>
+        <input id="pmo-seed" type="number" step="1" name="seed" placeholder="instance default">
+      </div>
+      <div class="form-group">
+        <label for="pmo-num-gpu">GPU layers (num_gpu, higher = more offloaded to VRAM)</label>
+        <input id="pmo-num-gpu" type="number" step="1" min="0" name="num_gpu" placeholder="instance default">
+      </div>
+      <div class="form-group">
+        <label for="pmo-keep-alive">Keep-alive (how long to keep the model loaded, e.g. 5m, 1h, -1, 0)</label>
+        <input id="pmo-keep-alive" name="keep_alive" placeholder="instance default">
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary">Save override</button>
+      </div>
+    </form>
   </div>
 
   <div id="pane-navigation" {% if active_tab != 'navigation' %}style="display:none"{% endif %}>

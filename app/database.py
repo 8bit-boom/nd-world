@@ -641,6 +641,7 @@ def _migrate():
                 ("ollama_use_mmap", "VARCHAR(8) DEFAULT ''"),
                 ("ollama_server_env_json", "TEXT DEFAULT '{}'"),
                 ("ollama_vram_override_mb", "INTEGER"),
+                ("ollama_model_overrides_json", "TEXT DEFAULT '{}'"),
             ]:
                 if col not in as_cols:
                     conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN {col} {defn}"))
