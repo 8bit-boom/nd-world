@@ -1722,6 +1722,33 @@ async def swarmui_refresh_after_local_change() -> bool:
         return False
 
 
+async def swarmui_restart() -> bool:
+    """Best-effort: ask SwarmUI to restart its own process via its Admin API
+    (/API/UpdateAndRestart — every update flag left False, so this is a
+    plain restart, not an update) instead of nd-world needing Docker
+    control over a sibling container to do it. Same "don't give this app
+    docker.sock access, SwarmUI's own API already covers it" reasoning as
+    swarmui_refresh_after_local_change's settings-toggle trick above — a
+    restart is the reliable fallback for exactly the case that trick
+    doesn't cover (see its own docstring: "SwarmUI has no dedicated
+    'rescan now' route," so a stubborn stale model list sometimes needs a
+    real restart to pick up a freshly downloaded model). Never raises;
+    returns False if not configured for SwarmUI, unreachable, or the
+    calling session lacks the `restart` permission."""
+    t, u = _get_type(), _get_url()
+    if t != "swarmui" or not u:
+        return False
+    try:
+        async with _httpx.AsyncClient(timeout=10) as c:
+            sid = await _swarmui_session(u, c)
+            r = await c.post(f"{u}/API/UpdateAndRestart", json={
+                "session_id": sid, "updateExtensions": False, "updateBackends": False, "force": False,
+            })
+            return bool(r.json().get("success"))
+    except Exception:
+        return False
+
+
 # ── Audio transcription (whisper.cpp server) ────────────────────────────────
 # See app/routers/ai.py's /attachments/upload — an uploaded audio attachment
 # is transcribed here (regardless of its original format; the server itself

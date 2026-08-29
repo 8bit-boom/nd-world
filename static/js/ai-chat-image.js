@@ -507,6 +507,38 @@ async function igReloadModels() {
   }
 }
 
+// Restarts the SwarmUI process via its own Admin API (app.ai.swarmui_restart,
+// /API/UpdateAndRestart) — the reliable fallback for the case
+// swarmui_refresh_after_local_change's automatic rescan doesn't cover, which
+// is exactly why a download can finish with "restart SwarmUI if it doesn't
+// show up in the pickers below" (see dlmStartDownload's own status text
+// below). Not a docker-restart — no Docker access needed, SwarmUI's own API
+// already exposes this.
+let _igRestartingSwarmui = false;
+async function igRestartSwarmUI() {
+  if (_igRestartingSwarmui) return;
+  if (!confirm('Restart SwarmUI now? Any in-progress image generation will be interrupted.')) return;
+  _igRestartingSwarmui = true;
+  const btn = document.getElementById('ig-restart-swarmui-btn');
+  const status = document.getElementById('ig-restart-swarmui-status');
+  btn.disabled = true;
+  status.textContent = 'Restarting…';
+  try {
+    const res = await fetch('/api/ai/imagegen/restart', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      status.textContent = '✗ Could not restart — is SwarmUI configured and reachable?';
+    } else {
+      status.textContent = '✓ Restart requested — give it a moment, then reload this tab.';
+    }
+  } catch (e) {
+    status.textContent = '✗ Failed: ' + (e.message || e);
+  } finally {
+    btn.disabled = false;
+    _igRestartingSwarmui = false;
+  }
+}
+
 async function dlmLoadDownloaded() {
   const list = document.getElementById('dlm-list');
   const suggestions = document.getElementById('dlm-subfolder-suggestions');

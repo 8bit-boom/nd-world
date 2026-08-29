@@ -20,7 +20,12 @@
       <!-- Model -->
       <div>
         <label class="ig-label">Model</label>
-        <select id="ig-model" class="ig-select"><option value="">— loading —</option></select>
+        <div style="display:flex;gap:.4rem;align-items:center">
+          <select id="ig-model" class="ig-select" style="flex:1"><option value="">— loading —</option></select>
+          <button type="button" id="ig-restart-swarmui-btn" class="ig-btn" onclick="igRestartSwarmUI()"
+                  title="Restart the SwarmUI process — fixes a model that doesn't show up here even after downloading it (SwarmUI's own automatic rescan doesn't always work)">🔄 Restart SwarmUI</button>
+        </div>
+        <span id="ig-restart-swarmui-status" style="font-size:.72rem;color:var(--text-dim)"></span>
       </div>
 
       <!-- Download models -->

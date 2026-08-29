@@ -447,3 +447,113 @@ def test_delete_route_requires_filename(client, seed, tmp_path, monkeypatch):
     login(client, seed.gm.email, GM_PASSWORD)
     r = client.delete("/api/ai/imagegen/models/downloaded")
     assert r.status_code == 404
+
+
+# ── swarmui_restart() / POST /imagegen/restart ──────────────────────────────
+# A GM's recovery button for when swarmui_refresh_after_local_change's own
+# best-effort rescan trick doesn't pan out (see that function's docstring:
+# "SwarmUI has no dedicated 'rescan now' route") — calls SwarmUI's own Admin
+# API (/API/UpdateAndRestart) with every update flag off, so this is a plain
+# restart rather than nd-world needing Docker control over a sibling
+# container to achieve the same thing.
+
+@pytest.mark.asyncio
+async def test_swarmui_restart_calls_update_and_restart_with_every_flag_off(monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    post_calls = []
+    _patch_httpx(monkeypatch, post_map={
+        "/API/GetNewSession": {"session_id": "sess1"},
+        "/API/UpdateAndRestart": {"success": True, "result": "Restarting..."},
+    }, post_calls=post_calls)
+
+    assert await ai_module.swarmui_restart() is True
+    restart_calls = [c for c in post_calls if c[0].endswith("/API/UpdateAndRestart")]
+    assert len(restart_calls) == 1
+    body = restart_calls[0][1]
+    assert body["session_id"] == "sess1"
+    assert body["updateExtensions"] is False
+    assert body["updateBackends"] is False
+    assert body["force"] is False
+
+
+@pytest.mark.asyncio
+async def test_swarmui_restart_false_when_not_configured(monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "")
+    post_calls = []
+    _patch_httpx(monkeypatch, post_calls=post_calls)
+
+    assert await ai_module.swarmui_restart() is False
+    assert post_calls == []
+
+
+@pytest.mark.asyncio
+async def test_swarmui_restart_false_when_backend_is_not_swarmui(monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "comfyui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-comfy")
+    post_calls = []
+    _patch_httpx(monkeypatch, post_calls=post_calls)
+
+    assert await ai_module.swarmui_restart() is False
+    assert post_calls == []
+
+
+@pytest.mark.asyncio
+async def test_swarmui_restart_false_when_api_reports_failure(monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    _patch_httpx(monkeypatch, post_map={
+        "/API/GetNewSession": {"session_id": "sess1"},
+        "/API/UpdateAndRestart": {"error": "not authorized"},
+    })
+
+    assert await ai_module.swarmui_restart() is False
+
+
+def test_restart_route_requires_gm(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    assert client.post("/api/ai/imagegen/restart").status_code == 403
+
+
+def test_restart_route_returns_ok_true_on_success(client, seed, monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    _patch_httpx(monkeypatch, post_map={
+        "/API/GetNewSession": {"session_id": "sess1"},
+        "/API/UpdateAndRestart": {"success": True},
+    })
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/imagegen/restart")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+
+def test_restart_route_returns_ok_false_when_not_configured(client, seed, monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "")
+    _patch_httpx(monkeypatch)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/imagegen/restart")
+    assert r.status_code == 200
+    assert r.json() == {"ok": False}
+
+
+# ── Shipped JS/template wiring (source assertion) ───────────────────────────
+
+def test_image_gen_tab_ships_the_restart_button(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    page = client.get("/ai").text
+    assert 'onclick="igRestartSwarmUI()"' in page
+    assert 'id="ig-restart-swarmui-status"' in page
+
+
+def test_ai_chat_image_js_defines_restart_and_confirms_first():
+    js = open("static/js/ai-chat-image.js").read()
+    assert "async function igRestartSwarmUI()" in js
+    assert "/api/ai/imagegen/restart" in js
+    body = js.split("async function igRestartSwarmUI()", 1)[1][:600]
+    assert "confirm(" in body

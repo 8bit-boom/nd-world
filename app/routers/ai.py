@@ -1382,6 +1382,19 @@ async def api_imagegen_status():
     return await _ai.imagegen_status()
 
 
+@router.post("/imagegen/restart")
+async def api_imagegen_restart():
+    """Restarts the SwarmUI process via its own Admin API
+    (app.ai.swarmui_restart) — a GM's recovery button for a stuck/stale
+    model list (see swarmui_refresh_after_local_change's own best-effort
+    refresh trick, which doesn't always work — the download flow already
+    falls back to telling the GM "restart SwarmUI" in exactly that case)
+    without needing shell/Docker access to the SwarmUI container. GM-only
+    by the same default-deny as every other /imagegen/* route here (not in
+    _is_player_safe)."""
+    return {"ok": await _ai.swarmui_restart()}
+
+
 class SwarmuiModelDownloadBody(BaseModel):
     url: str
     # Free text, not an enum — see app.ai.SWARMUI_MODEL_FOLDER_SUGGESTIONS'
