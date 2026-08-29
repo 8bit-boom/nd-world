@@ -46,6 +46,13 @@
       <button type="submit" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.25rem .6rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.75rem">Set</button>
     </form>
     {% endif %}
+    {% if pc and request.state.user and request.state.user.is_gm %}
+    <form method="post" action="/characters/{{ pc.id }}/retire-to-npc"
+          onsubmit="return confirm('Retire {{ pc.name }} to an NPC entity? This deletes the character sheet and creates a lore entity from it — this can\'t be undone.');"
+          style="display:inline;" title="Convert this character sheet into a lore Entity (NPC) and delete the sheet — for a PC that died or retired">
+      <button type="submit" style="background:transparent;border:1px solid var(--text-dim);color:var(--text-dim);padding:.35rem .75rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.85rem;">🎭 Retire to NPC</button>
+    </form>
+    {% endif %}
     {% if pc and can_manage %}
     <form method="post" action="/characters/{{ pc.id }}/delete" onsubmit="return confirm('Delete {{ pc.name }}?');" style="display:inline;">
       <button type="submit" style="background:transparent;border:1px solid var(--neon2);color:var(--neon2);padding:.35rem .75rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.85rem;">Delete</button>

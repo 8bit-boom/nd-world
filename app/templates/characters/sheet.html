@@ -149,6 +149,13 @@
     {% if can_manage %}<a href="{{ ('/characters/' + pc.id|string + '/edit')|wq }}" class="btn-primary" style="padding:.35rem .9rem;">Edit</a>{% endif %}
     <a href="/characters/{{ pc.id }}/export.ndc" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.35rem .75rem;border-radius:4px;font-size:.85rem;text-decoration:none;" title="Export .ndc — importable by the NeonDragonsApp Android app and NeonDragonsEditor">⬇ Export .ndc</a>
     <a href="/characters/{{ pc.id }}/export.foundry.json" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.35rem .75rem;border-radius:4px;font-size:.85rem;text-decoration:none;" title="Export a FoundryVTT Journal Entry — import via Journal Entries sidebar → Import Data, or drag the file in">⬇ Export for FoundryVTT</a>
+    {% if request.state.user and request.state.user.is_gm %}
+    <form method="post" action="/characters/{{ pc.id }}/retire-to-npc"
+          onsubmit="return confirm('Retire {{ pc.name }} to an NPC entity? This deletes the character sheet and creates a lore entity from it — this can\'t be undone.');"
+          style="display:inline;" title="Convert this character sheet into a lore Entity (NPC) and delete the sheet — for a PC that died or retired">
+      <button type="submit" style="background:transparent;border:1px solid var(--text-dim);color:var(--text-dim);padding:.35rem .75rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.85rem;">🎭 Retire to NPC</button>
+    </form>
+    {% endif %}
     {% if can_manage %}
     <form method="post" action="/characters/{{ pc.id }}/delete" onsubmit="return confirm('Delete {{ pc.name }}?');" style="display:inline;">
       <button type="submit" style="background:transparent;border:1px solid var(--neon2);color:var(--neon2);padding:.35rem .75rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.85rem;">Delete</button>

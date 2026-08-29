@@ -23,7 +23,7 @@ from ..deps import get_world_ctx
 from ..imaging import convert_image, make_thumbnail
 from ..templating import templates
 from ..uploads import copy_upload_bounded, unique_upload_filename
-from ..models import PlayerCharacter, SheetTemplate, User, World, WorldMembership
+from ..models import Entity, PlayerCharacter, SheetTemplate, User, World, WorldMembership
 
 router = APIRouter()
 
@@ -676,6 +676,73 @@ def character_delete(pc_id: int, request: Request, db: Session = Depends(get_db)
     db.delete(pc)
     db.commit()
     return RedirectResponse("/characters", status_code=303)
+
+
+# ── Retire → NPC (plan item: PC→NPC conversion) ──────────────────────────────
+
+def _pc_to_npc_markdown(pc: PlayerCharacter) -> str:
+    """Turn a character sheet into a lore-entity write-up — everything a GM
+    would actually want to keep once a PC stops being an active, mechanical
+    sheet: who they were (class/race/level), how they looked, and their
+    personality/backstory. Mechanical minutiae (equipment, exact HP, feats)
+    is deliberately left behind — that's sheet detail, not lore."""
+    parts = []
+    class_line = " · ".join(x for x in [pc.char_class, pc.race, f"Level {pc.level}" if pc.level else ""] if x)
+    if class_line:
+        parts.append(f"*{class_line}*")
+    tagline = " · ".join(x for x in [pc.background, pc.alignment] if x)
+    if tagline:
+        parts.append(tagline)
+
+    appearance = ", ".join(
+        f"{label}: {val}" for label, val in [
+            ("Age", pc.age), ("Height", pc.height), ("Weight", pc.weight_app),
+            ("Eyes", pc.eyes), ("Skin", pc.skin), ("Hair", pc.hair),
+        ] if val
+    )
+    for heading, text in [
+        ("Appearance", appearance),
+        ("Personality", pc.personality_traits),
+        ("Ideals", pc.ideals),
+        ("Bonds", pc.bonds),
+        ("Flaws", pc.flaws),
+        ("Backstory", pc.backstory),
+        ("Notes", pc.notes),
+    ]:
+        if text:
+            parts += ["", f"## {heading}", "", text]
+    return "\n".join(parts).strip()
+
+
+@router.post("/characters/{pc_id}/retire-to-npc")
+def character_retire_to_npc(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """GM-only: convert a retiring/dead PlayerCharacter into a lore Entity
+    (kind="character") and delete the PlayerCharacter row — one-way, same
+    as Delete, just with the character's write-up preserved as an NPC
+    first. GM-only rather than reusing _can_manage_character (which also
+    allows the owning player): entity creation is itself a GM-only
+    capability everywhere else in this app (POST /new has no
+    _is_player_safe entry), and turning a PC into GM-controlled lore
+    content is a campaign-level call, not a self-service one."""
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    user = _current_user(request)
+    if not user or not user.is_gm:
+        raise HTTPException(403)
+
+    entity = Entity(
+        world_id=pc.world_id, kind="character", name=pc.name,
+        summary=f"Formerly played by {pc.player_name}." if pc.player_name else None,
+        body=_pc_to_npc_markdown(pc),
+        image_url=pc.portrait_url or None,
+        visible_to_players=True,
+    )
+    db.add(entity)
+    db.delete(pc)
+    db.commit()
+    db.refresh(entity)
+    return RedirectResponse(f"/entity/{entity.id}", status_code=303)
 
 
 # ── Export (.ndc — importable by NeonDragonsApp & NeonDragonsEditor) ─────────
