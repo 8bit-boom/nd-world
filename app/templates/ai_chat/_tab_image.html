@@ -1,0 +1,556 @@
+<!-- ── Image Generation Panel ── -->
+<div id="image-panel">
+  <div class="ig-wrap">
+
+    <!-- ── Settings column ── -->
+    <div class="ig-settings">
+
+      <!-- Shown only when the configured backend is ComfyUI — its workflow
+           only wires prompt/negative/size/steps/cfg/seed/sampler/scheduler/
+           batch/upscale-model. Every other panel below (LoRA, VAE, CLIP
+           skip, img2img, ControlNet, hires-fix, refiner, FreeU, DynThresh,
+           IP-Adapter) still renders and accepts input on ComfyUI, but those
+           values are silently dropped rather than sent — this note exists
+           so a ComfyUI GM finds out before submitting, not after wondering
+           why a setting had no effect. -->
+      <div id="ig-comfyui-note" style="display:none;font-size:.72rem;color:#e8a33d;background:rgba(232,163,61,.1);border:1px solid rgba(232,163,61,.35);border-radius:4px;padding:.4rem .55rem;margin-bottom:.5rem;line-height:1.4">
+        ⚠ ComfyUI backend: only Model, Size, Steps, CFG, Seed, Sampler, Scheduler, Batch, and Upscale are sent. LoRA, VAE, CLIP skip, img2img, ControlNet, hires-fix, Refiner, FreeU, DynThresh, and IP-Adapter settings below are not supported on ComfyUI yet and will be ignored.
+      </div>
+
+      <!-- Model -->
+      <div>
+        <label class="ig-label">Model</label>
+        <select id="ig-model" class="ig-select"><option value="">— loading —</option></select>
+      </div>
+
+      <!-- Download models -->
+      <details class="ig-collapsible">
+        <summary>⬇ Download Models</summary>
+        <div class="ig-section-body">
+          <div style="font-size:.72rem;color:var(--text-dim);margin-bottom:.5rem;line-height:1.4">
+            Pulls a checkpoint/VAE/text-encoder/etc. straight into SwarmUI's own Models folder — only works when nd-world and SwarmUI share the model volume (the bundled "swarmui" Compose service does by default; an externally-run SwarmUI/ComfyUI won't). Paste a direct download link (HuggingFace, CivitAI, ...).
+          </div>
+          <input type="text" id="dlm-url" class="ig-select" style="width:100%;box-sizing:border-box;margin-bottom:.4rem"
+                 placeholder="https://huggingface.co/.../model.safetensors">
+          <div style="display:flex;gap:.4rem;margin-bottom:.5rem">
+            <input type="text" id="dlm-subfolder" list="dlm-subfolder-suggestions" class="ig-select" style="flex:1"
+                   placeholder="Subfolder (blank = root)">
+            <input type="text" id="dlm-filename" class="ig-select" style="flex:1"
+                   placeholder="Filename (blank = from URL)">
+          </div>
+          <datalist id="dlm-subfolder-suggestions"></datalist>
+          <button class="ig-btn" id="dlm-download-btn" onclick="dlmStartDownload()" style="border-color:var(--neon);color:var(--neon)">⬇ Download</button>
+          <div id="dlm-progress" style="display:none;margin-top:.5rem">
+            <div style="background:var(--bg3);border-radius:3px;height:6px;overflow:hidden">
+              <div id="dlm-progress-bar" style="height:100%;width:0%;background:var(--neon);border-radius:3px;transition:width .2s"></div>
+            </div>
+          </div>
+          <div id="dlm-status" style="font-size:.78rem;color:var(--text-dim);margin-top:.35rem"></div>
+          <div style="font-size:.72rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin:.9rem 0 .4rem">Already downloaded</div>
+          <div id="dlm-list" style="font-size:.78rem;color:var(--text-dim)">Loading…</div>
+        </div>
+      </details>
+
+      <!-- Size presets -->
+      <div>
+        <label class="ig-label">Size</label>
+        <div class="ig-presets">
+          <button class="ig-preset-btn ig-preset-active" onclick="igSetSize(512,512,this)">512²</button>
+          <button class="ig-preset-btn" onclick="igSetSize(768,512,this)">768×512</button>
+          <button class="ig-preset-btn" onclick="igSetSize(512,768,this)">512×768</button>
+          <button class="ig-preset-btn" onclick="igSetSize(1024,1024,this)">1024²</button>
+          <button class="ig-preset-btn" onclick="igSetSize(1216,832,this)">1216×832</button>
+          <button class="ig-preset-btn" onclick="igSetSize(832,1216,this)">832×1216</button>
+        </div>
+        <div class="ig-size-row">
+          <select id="ig-width" class="ig-select">
+            <option value="512" selected>512 W</option>
+            <option value="640">640 W</option>
+            <option value="768">768 W</option>
+            <option value="832">832 W</option>
+            <option value="1024">1024 W</option>
+            <option value="1152">1152 W</option>
+            <option value="1216">1216 W</option>
+          </select>
+          <span class="ig-size-sep">×</span>
+          <select id="ig-height" class="ig-select">
+            <option value="512" selected>512 H</option>
+            <option value="640">640 H</option>
+            <option value="768">768 H</option>
+            <option value="832">832 H</option>
+            <option value="1024">1024 H</option>
+            <option value="1152">1152 H</option>
+            <option value="1216">1216 H</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Sampling (open by default) -->
+      <details class="ig-collapsible" open>
+        <summary>⚙ Sampling</summary>
+        <div class="ig-section-body">
+          <div>
+            <label class="ig-label">Sampler</label>
+            <select id="ig-sampler" class="ig-select">
+              <option value="euler" selected>euler</option>
+            </select>
+          </div>
+          <div>
+            <label class="ig-label">Scheduler</label>
+            <select id="ig-scheduler" class="ig-select">
+              <option value="normal" selected>normal</option>
+            </select>
+          </div>
+          <div>
+            <label class="ig-label">Steps: <span id="ig-steps-val">20</span></label>
+            <div class="ig-range-row">
+              <input type="range" id="ig-steps" min="1" max="60" value="20"
+                     oninput="document.getElementById('ig-steps-val').textContent=this.value">
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">CFG Scale: <span id="ig-cfg-val">7</span></label>
+            <div class="ig-range-row">
+              <input type="range" id="ig-cfg" min="1" max="20" value="7" step="0.5"
+                     oninput="document.getElementById('ig-cfg-val').textContent=this.value">
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">Batch</label>
+            <div class="ig-batch-row">
+              <button class="ig-batch-btn ig-batch-active" data-val="1" onclick="igSetBatch(this)">×1</button>
+              <button class="ig-batch-btn" data-val="2" onclick="igSetBatch(this)">×2</button>
+              <button class="ig-batch-btn" data-val="3" onclick="igSetBatch(this)">×3</button>
+              <button class="ig-batch-btn" data-val="4" onclick="igSetBatch(this)">×4</button>
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">Seed (–1 = random)</label>
+            <input type="number" id="ig-seed" class="ig-input-num" value="-1">
+          </div>
+          <div>
+            <label class="ig-label">Variation seed <span style="color:var(--text-dim)">(–1 = off)</span></label>
+            <input type="number" id="ig-variation-seed" class="ig-input-num" value="-1"
+                   oninput="igUpdateVariationStrength()">
+          </div>
+          <div id="ig-variation-strength-row" style="display:none">
+            <label class="ig-label">Strength: <span id="ig-variation-str-val">0.00</span></label>
+            <div class="ig-range-row">
+              <input type="range" id="ig-variation-strength" min="0" max="1" step="0.05" value="0"
+                     oninput="document.getElementById('ig-variation-str-val').textContent=parseFloat(this.value).toFixed(2)">
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <!-- Advanced (collapsed) -->
+      <details class="ig-collapsible">
+        <summary>🔧 Advanced</summary>
+        <div class="ig-section-body">
+          <div>
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.2rem">
+              <label class="ig-label" style="margin:0">LoRA (max 4)</label>
+              <button class="ig-btn" type="button" onclick="igLoadLoras()" title="Refresh LoRA list"
+                      style="padding:.12rem .35rem;font-size:.68rem;line-height:1">↺</button>
+            </div>
+            <div id="ig-lora-list"></div>
+            <button class="ig-btn" id="ig-add-lora-btn" onclick="igAddLora()"
+                    style="width:100%;margin-top:.2rem;font-size:.75rem;text-align:center">+ Add LoRA</button>
+          </div>
+          <div>
+            <label class="ig-label">Refiner model <span style="color:var(--text-dim)">(SDXL)</span></label>
+            <div style="display:flex;gap:.25rem;margin-bottom:.3rem">
+              <select id="ig-refiner" class="ig-select" style="flex:1;font-size:.78rem">
+                <option value="">— none —</option>
+              </select>
+              <button class="ig-btn" type="button" onclick="igLoadRefiners()" title="Refresh"
+                      style="padding:.22rem .45rem;flex-shrink:0;font-size:.78rem;line-height:1">↺</button>
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">Switch at: <span id="ig-refiner-ctrl-val">0.80</span></label>
+            <div class="ig-range-row">
+              <input type="range" id="ig-refiner-ctrl" min="0" max="1" step="0.05" value="0.8"
+                     oninput="document.getElementById('ig-refiner-ctrl-val').textContent=parseFloat(this.value).toFixed(2)">
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">Seamless tiling</label>
+            <div style="display:flex;gap:.75rem;align-items:center">
+              <label style="display:flex;align-items:center;gap:.3rem;font-size:.82rem;cursor:pointer">
+                <input type="checkbox" id="ig-seamless-x"> Tile X
+              </label>
+              <label style="display:flex;align-items:center;gap:.3rem;font-size:.82rem;cursor:pointer">
+                <input type="checkbox" id="ig-seamless-y"> Tile Y
+              </label>
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">CFG Rescale <span style="color:var(--text-dim)">(0 = off · helps SDXL/Flux)</span>: <span id="ig-cfgrescale-val">0.00</span></label>
+            <div class="ig-range-row">
+              <input type="range" id="ig-cfgrescale" min="0" max="1" step="0.05" value="0"
+                     oninput="document.getElementById('ig-cfgrescale-val').textContent=parseFloat(this.value).toFixed(2)">
+            </div>
+          </div>
+          <div>
+            <label class="ig-label" style="margin-bottom:.3rem">Dynamic Thresholding</label>
+            <label style="display:flex;align-items:center;gap:.35rem;font-size:.82rem;cursor:pointer;margin-bottom:.25rem">
+              <input type="checkbox" id="ig-dynthresh-enable" onchange="igUpdateDynThreshState()"> Enable DynThresh
+            </label>
+            <div id="ig-dynthresh-body" style="opacity:.4;pointer-events:none;display:flex;flex-direction:column;gap:.28rem">
+              <div>
+                <label class="ig-label">Mimic CFG: <span id="ig-dynthresh-scale-val">7.0</span></label>
+                <div class="ig-range-row">
+                  <input type="range" id="ig-dynthresh-scale" min="1" max="20" step="0.5" value="7"
+                         oninput="document.getElementById('ig-dynthresh-scale-val').textContent=parseFloat(this.value).toFixed(1)">
+                </div>
+              </div>
+              <div>
+                <label class="ig-label">Percentile: <span id="ig-dynthresh-pct-val">0.999</span></label>
+                <div class="ig-range-row">
+                  <input type="range" id="ig-dynthresh-pct" min="0.9" max="1" step="0.001" value="0.999"
+                         oninput="document.getElementById('ig-dynthresh-pct-val').textContent=parseFloat(this.value).toFixed(3)">
+                </div>
+              </div>
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">VAE override</label>
+            <input type="text" id="ig-vae" class="ig-input-text" placeholder="blank = default">
+          </div>
+          <div>
+            <label class="ig-label">CLIP Skip</label>
+            <select id="ig-clipskip" class="ig-select">
+              <option value="-1" selected>Default</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+            </select>
+          </div>
+        </div>
+      </details>
+
+      <!-- FreeU (collapsed) -->
+      <details class="ig-collapsible">
+        <summary>⚡ FreeU</summary>
+        <div class="ig-section-body">
+          <label style="display:flex;align-items:center;gap:.35rem;font-size:.82rem;cursor:pointer;margin-bottom:.2rem">
+            <input type="checkbox" id="ig-freeu-enable" onchange="igUpdateFreeUState()"> Enable FreeU
+          </label>
+          <div id="ig-freeu-body" style="opacity:.4;pointer-events:none;display:flex;flex-direction:column;gap:.28rem">
+            <div style="display:flex;gap:.25rem;flex-wrap:wrap">
+              <button class="ig-preset-btn" onclick="igSetFreeUPreset(1.5,1.6,0.9,0.2)">SD 1.5</button>
+              <button class="ig-preset-btn" onclick="igSetFreeUPreset(1.3,1.4,0.9,0.2)">SDXL</button>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:.25rem">
+              <div>
+                <label class="ig-label">b1</label>
+                <input type="number" id="ig-freeu-b1" class="ig-input-num" value="1.3" step="0.05" min="0.5" max="3">
+              </div>
+              <div>
+                <label class="ig-label">b2</label>
+                <input type="number" id="ig-freeu-b2" class="ig-input-num" value="1.4" step="0.05" min="0.5" max="3">
+              </div>
+              <div>
+                <label class="ig-label">s1</label>
+                <input type="number" id="ig-freeu-s1" class="ig-input-num" value="0.9" step="0.05" min="0" max="2">
+              </div>
+              <div>
+                <label class="ig-label">s2</label>
+                <input type="number" id="ig-freeu-s2" class="ig-input-num" value="0.2" step="0.05" min="0" max="2">
+              </div>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <!-- Upscaling (collapsed) -->
+      <details class="ig-collapsible">
+        <summary>🔍 Upscaling</summary>
+        <div class="ig-section-body">
+          <div>
+            <label class="ig-label">Upscale model</label>
+            <div style="display:flex;gap:.25rem;margin-bottom:.3rem">
+              <select id="ig-upscaler" class="ig-select" style="flex:1;font-size:.78rem">
+                <option value="">— none (output at gen size) —</option>
+              </select>
+              <button class="ig-btn" type="button" onclick="igLoadUpscalers()" title="Refresh upscaler list"
+                      style="padding:.22rem .45rem;flex-shrink:0;font-size:.78rem;line-height:1">↺</button>
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">Scale factor</label>
+            <div class="ig-batch-row">
+              <button class="ig-batch-btn" data-scale="1.5" onclick="igSetUpscale(this)">×1.5</button>
+              <button class="ig-batch-btn ig-batch-active" data-scale="2" onclick="igSetUpscale(this)">×2</button>
+              <button class="ig-batch-btn" data-scale="3" onclick="igSetUpscale(this)">×3</button>
+              <button class="ig-batch-btn" data-scale="4" onclick="igSetUpscale(this)">×4</button>
+            </div>
+          </div>
+        </div>
+      </details>
+
+    </div><!-- /ig-settings -->
+
+    <!-- ── Prompts + Generate + Results ── -->
+    <div class="ig-main">
+
+      <!-- Illustrate an Entity -->
+      <div class="ig-field">
+        <label class="ig-label">Illustrate an entity <small>(builds the prompt from its own write-up)</small></label>
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <span id="ig-entity-picked-label" style="flex:1;min-width:140px;color:var(--text-dim);font-size:.82rem">No entity selected</span>
+          <button class="ig-btn" type="button" onclick="igPickEntityForPortrait()">🎭 Pick entity…</button>
+        </div>
+      </div>
+
+      <!-- Concept -->
+      <div class="ig-field">
+        <label class="ig-label">Concept / subject</label>
+        <div class="ig-concept-row">
+          <input type="text" id="ig-concept" placeholder="e.g. The King in Yellow on Hue rooftops at night">
+          <button class="ig-btn" id="ig-build-btn" onclick="igBuildPrompt()">✨ Build from World Lore</button>
+        </div>
+      </div>
+
+      <!-- Prompt Presets -->
+      <div id="ig-preset-row" style="display:flex;gap:.28rem;align-items:center">
+        <select id="ig-preset-sel" class="ig-select" style="flex:1;font-size:.76rem">
+          <option value="">— Saved presets —</option>
+        </select>
+        <button class="ig-btn" onclick="igLoadPreset()" style="font-size:.72rem;padding:.22rem .45rem;white-space:nowrap" title="Load preset">↩ Load</button>
+        <button class="ig-btn" onclick="igSavePreset()" style="font-size:.72rem;padding:.22rem .45rem;border-color:var(--neon);color:var(--neon);white-space:nowrap" title="Save current prompt as preset">💾 Save</button>
+        <button class="ig-btn" onclick="igDeletePreset()" style="font-size:.72rem;padding:.22rem .38rem;color:#c44;border-color:#c44" title="Delete selected preset">✕</button>
+      </div>
+
+      <!-- Tag sources manager -->
+      <details class="ig-collapsible" id="ig-tag-sources-section">
+        <summary>🏷 Tag Autocomplete — <span id="tag-ac-summary">checking…</span></summary>
+        <div class="ig-section-body" style="margin-top:.4rem">
+          <div id="tag-sources-list" style="display:flex;flex-direction:column;gap:0"></div>
+          <!-- Custom source -->
+          <div style="margin-top:.5rem;border-top:1px solid var(--border);padding-top:.5rem">
+            <div style="font-size:.68rem;color:var(--neon);margin-bottom:.3rem;text-transform:uppercase;letter-spacing:.06em">+ Custom source</div>
+            <div style="display:flex;gap:.25rem;flex-wrap:wrap">
+              <input id="tag-custom-id" placeholder="ID (e.g. my-tags)" class="ig-input-text" style="flex:1;min-width:80px;font-size:.75rem">
+              <input id="tag-custom-url" placeholder="CSV URL" class="ig-input-text" style="flex:2;min-width:160px;font-size:.75rem">
+              <button class="ig-btn" onclick="igAddCustomSource()" style="white-space:nowrap;font-size:.75rem">⬇ Download</button>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <!-- Full prompt -->
+      <div class="ig-field tag-ac-wrap" style="flex:1;min-height:0">
+        <label class="ig-label">Full prompt (editable)</label>
+        <textarea id="ig-prompt" placeholder="Detailed image generation prompt… (type a tag to autocomplete)" oninput="autoResize(this)"></textarea>
+        <div class="tag-ac-dropdown" id="tag-ac-pos" style="display:none"></div>
+      </div>
+
+      <!-- Negative -->
+      <div class="ig-field tag-ac-wrap">
+        <label class="ig-label">Negative prompt</label>
+        <textarea id="ig-negative" oninput="autoResize(this)">blurry, bad anatomy, watermark, text, low quality, deformed</textarea>
+        <div class="tag-ac-dropdown" id="tag-ac-neg" style="display:none"></div>
+      </div>
+
+      <!-- Img2img -->
+      <details class="ig-collapsible" id="ig-i2i-section">
+        <summary>🖼 Img2Img / Variation</summary>
+        <div class="ig-section-body">
+          <div>
+            <label class="ig-label">Source image</label>
+            <div class="form-dropzone" data-dropzone style="border:none;padding:0" title="Drag &amp; drop an image here">
+            <input type="file" id="ig-init-file" accept="image/*" onchange="igPreviewInit(this)"
+                   style="width:100%;font-size:.78rem;color:var(--text-dim);background:var(--bg3);border:1px dashed var(--border);border-radius:4px;padding:.3rem .5rem;cursor:pointer;box-sizing:border-box">
+            </div>
+          </div>
+          <div class="ig-i2i-preview" id="ig-i2i-preview" style="display:none">
+            <img id="ig-init-img" src="" alt="source">
+            <button onclick="igClearInit()" style="background:transparent;border:none;color:var(--neon2);cursor:pointer;font-size:.75rem;padding:.1rem 0;font-family:inherit;display:block;margin-top:.2rem">✕ Remove</button>
+          </div>
+          <div>
+            <label class="ig-label">Denoising: <span id="ig-strength-val">0.65</span>
+              <span style="color:var(--text-dim);font-weight:normal"> (0=copy · 1=ignore)</span>
+            </label>
+            <div class="ig-range-row">
+              <input type="range" id="ig-strength" min="0.05" max="1" step="0.05" value="0.65"
+                     oninput="document.getElementById('ig-strength-val').textContent=parseFloat(this.value).toFixed(2)">
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <!-- ControlNet -->
+      <details class="ig-collapsible" id="ig-cn-section">
+        <summary>🎛 ControlNet</summary>
+        <div class="ig-section-body">
+          <div>
+            <label class="ig-label">Control image</label>
+            <div class="form-dropzone" data-dropzone style="border:none;padding:0" title="Drag &amp; drop an image here">
+            <input type="file" id="ig-cn-file" accept="image/*" onchange="igPreviewCN(this)"
+                   style="width:100%;font-size:.78rem;color:var(--text-dim);background:var(--bg3);border:1px dashed var(--border);border-radius:4px;padding:.3rem .5rem;cursor:pointer;box-sizing:border-box">
+            </div>
+          </div>
+          <div id="ig-cn-preview" style="display:none">
+            <img id="ig-cn-img" src="" alt="control" style="max-width:100%;max-height:120px;border-radius:4px;border:1px solid var(--border);display:block;margin:.3rem 0">
+            <button onclick="igClearCN()" style="background:transparent;border:none;color:var(--neon2);cursor:pointer;font-size:.75rem;padding:.1rem 0;font-family:inherit;display:block">✕ Remove</button>
+          </div>
+          <div>
+            <label class="ig-label">Preprocessor</label>
+            <select id="ig-cn-preprocessor" class="ig-select">
+              <option value="">None (raw image)</option>
+              <option value="canny">Canny edge</option>
+              <option value="depth">Depth</option>
+              <option value="openpose">OpenPose</option>
+              <option value="lineart">Lineart</option>
+              <option value="softedge">SoftEdge</option>
+              <option value="scribble">Scribble</option>
+              <option value="normal">Normal map</option>
+            </select>
+          </div>
+          <div>
+            <label class="ig-label">Strength: <span id="ig-cn-str-val">0.80</span></label>
+            <div class="ig-range-row">
+              <input type="range" id="ig-cn-strength" min="0" max="2" step="0.05" value="0.8"
+                     oninput="document.getElementById('ig-cn-str-val').textContent=parseFloat(this.value).toFixed(2)">
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">ControlNet model <span style="color:var(--text-dim)">(blank = auto)</span></label>
+            <input type="text" id="ig-cn-model" class="ig-input-text" placeholder="e.g. control_v11p_sd15_canny">
+          </div>
+        </div>
+      </details>
+
+      <!-- IP-Adapter -->
+      <details class="ig-collapsible" id="ig-ipa-section">
+        <summary>🖼 IP-Adapter <span style="color:var(--text-dim);font-size:.68em">(image prompt)</span></summary>
+        <div class="ig-section-body">
+          <div>
+            <label class="ig-label">Reference image</label>
+            <div class="form-dropzone" data-dropzone style="border:none;padding:0" title="Drag &amp; drop an image here">
+            <input type="file" id="ig-ipa-file" accept="image/*" onchange="igPreviewIPA(this)"
+                   style="width:100%;font-size:.78rem;color:var(--text-dim);background:var(--bg3);border:1px dashed var(--border);border-radius:4px;padding:.3rem .5rem;cursor:pointer;box-sizing:border-box">
+            </div>
+          </div>
+          <div id="ig-ipa-preview" style="display:none">
+            <img id="ig-ipa-img" src="" alt="reference" style="max-width:100%;max-height:120px;border-radius:4px;border:1px solid var(--border);display:block;margin:.3rem 0">
+            <button onclick="igClearIPA()" style="background:transparent;border:none;color:var(--neon2);cursor:pointer;font-size:.75rem;padding:.1rem 0;font-family:inherit;display:block">✕ Remove</button>
+          </div>
+          <div>
+            <label class="ig-label">Style strength: <span id="ig-ipa-str-val">0.60</span></label>
+            <div class="ig-range-row">
+              <input type="range" id="ig-ipa-strength" min="0" max="1" step="0.05" value="0.6"
+                     oninput="document.getElementById('ig-ipa-str-val').textContent=parseFloat(this.value).toFixed(2)">
+            </div>
+          </div>
+          <div>
+            <label class="ig-label">IP-Adapter model <span style="color:var(--text-dim)">(blank = auto)</span></label>
+            <div style="display:flex;gap:.25rem">
+              <select id="ig-ipa-model" class="ig-select" style="flex:1;font-size:.78rem">
+                <option value="">— auto —</option>
+              </select>
+              <button class="ig-btn" type="button" onclick="igLoadIPAModels()" title="Refresh"
+                      style="padding:.22rem .45rem;flex-shrink:0;font-size:.78rem;line-height:1">↺</button>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <!-- Highres Fix -->
+      <details class="ig-collapsible" id="ig-hires-section">
+        <summary>🔬 Highres Fix</summary>
+        <div class="ig-section-body">
+          <div>
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;cursor:pointer">
+              <input type="checkbox" id="ig-hires-enable" onchange="_igHiresFix=this.checked;igUpdateHiresState()">
+              Enable Highres Fix
+            </label>
+          </div>
+          <div id="ig-hires-body" style="opacity:.4;pointer-events:none;display:flex;flex-direction:column;gap:.35rem">
+            <div>
+              <label class="ig-label">Scale</label>
+              <div class="ig-batch-row">
+                <button class="ig-batch-btn" data-hires-scale="1.5" onclick="igSetHiresScale(this)">×1.5</button>
+                <button class="ig-batch-btn ig-batch-active" data-hires-scale="2" onclick="igSetHiresScale(this)">×2</button>
+                <button class="ig-batch-btn" data-hires-scale="3" onclick="igSetHiresScale(this)">×3</button>
+              </div>
+            </div>
+            <div class="ig-size-row">
+              <select id="ig-hires-w" class="ig-select">
+                <option value="1024">1024 W</option>
+                <option value="1152">1152 W</option>
+                <option value="1216">1216 W</option>
+                <option value="1344">1344 W</option>
+                <option value="1536">1536 W</option>
+                <option value="2048">2048 W</option>
+              </select>
+              <span class="ig-size-sep">×</span>
+              <select id="ig-hires-h" class="ig-select">
+                <option value="1024">1024 H</option>
+                <option value="1152">1152 H</option>
+                <option value="1216">1216 H</option>
+                <option value="1344">1344 H</option>
+                <option value="1536">1536 H</option>
+                <option value="2048">2048 H</option>
+              </select>
+            </div>
+            <div>
+              <label class="ig-label">Denoise: <span id="ig-hires-denoise-val">0.50</span></label>
+              <div class="ig-range-row">
+                <input type="range" id="ig-hires-denoise" min="0.1" max="0.9" step="0.05" value="0.5"
+                       oninput="document.getElementById('ig-hires-denoise-val').textContent=parseFloat(this.value).toFixed(2)">
+              </div>
+            </div>
+            <div>
+              <label class="ig-label">Extra steps <span style="color:var(--text-dim)">(0 = same as main)</span></label>
+              <input type="number" id="ig-hires-steps" class="ig-input-num" value="0" min="0" max="60">
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <!-- Generate row -->
+      <div class="ig-generate-row">
+        <button class="ig-generate-btn" id="ig-generate-btn" onclick="igGenerate()">🎨 Generate</button>
+        <button class="ig-btn" id="ig-bgjob-btn" onclick="igStartBackgroundJob()"
+                title="Generate in the background — keeps running even if you close this tab (useful for a large batch, hires-fix, or a big upscale)">🔒 Generate in Background</button>
+        <span id="ig-status" style="display:none;font-size:.82rem;color:var(--neon)">⏳ Generating…</span>
+      </div>
+      <div id="ig-jobs-panel" class="nd-jobs-panel" style="display:none;margin-top:.5rem"></div>
+
+      <!-- Progress bar -->
+      <div id="ig-progress-wrap" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.25rem">
+          <span style="font-size:.75rem;color:var(--neon)">Generating…</span>
+          <span id="ig-progress-text" style="font-size:.72rem;color:var(--text-dim)"></span>
+        </div>
+        <div id="ig-progress-bar-track">
+          <div id="ig-progress-bar"></div>
+        </div>
+        <img id="ig-preview-thumb" src="" alt="preview">
+      </div>
+
+      <div id="ig-error" style="display:none;color:#c44;font-size:.82rem;padding:.3rem 0"></div>
+
+      <!-- Results -->
+      <div id="ig-results" style="display:none">
+        <div id="ig-results-grid" class="ig-results-grid"></div>
+      </div>
+
+      <!-- History -->
+      <div id="ig-history-section" style="display:none;margin-top:.75rem">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.4rem;">
+          <span style="font-size:.72rem;color:var(--neon);text-transform:uppercase;letter-spacing:.06em;">🕘 Generated History</span>
+          <button class="ig-btn" onclick="igClearHistory()"
+                  style="font-size:.68rem;padding:.15rem .4rem;color:var(--neon2);border-color:var(--neon2)">Clear all</button>
+        </div>
+        <div id="ig-history-grid" class="ig-results-grid"></div>
+      </div>
+
+    </div><!-- /ig-main -->
+
+  </div><!-- /ig-wrap -->
+</div><!-- /image-panel -->
+

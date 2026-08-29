@@ -1,0 +1,12 @@
+<!-- ── Starred Images Panel ── -->
+<div id="starred-panel" style="display:none;padding:1.2rem;max-width:1200px;margin:0 auto">
+  <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
+    <span style="font-size:1rem;color:var(--neon);font-weight:700;letter-spacing:.05em">⭐ Starred Images</span>
+    <button class="ig-btn" onclick="igLoadStarred()" style="white-space:nowrap">↺ Refresh</button>
+    <button class="ig-btn" onclick="igClearAllStarred()" style="white-space:nowrap;color:#c44;border-color:#c44">✕ Clear all</button>
+  </div>
+  <div id="starred-grid" class="starred-grid">
+    <div style="color:var(--text-dim);font-size:.82rem">Loading…</div>
+  </div>
+</div>
+

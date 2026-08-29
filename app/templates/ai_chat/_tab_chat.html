@@ -1,0 +1,182 @@
+<!-- Mobile-only: compact model selector (sidebar hidden on small screens) -->
+<div class="ai-model-bar" id="mobile-model-bar">
+  <span style="color:var(--text-dim);white-space:nowrap">Model:</span>
+  <select id="mobile-model-sel" onchange="mobileSelectModel(this.value)">
+    <option value="">⏳ Loading…</option>
+  </select>
+  <span id="mobile-ollama-dot" style="width:7px;height:7px;border-radius:50%;background:#444;flex-shrink:0" title="checking…"></span>
+</div>
+
+<div class="ai-page">
+
+  <div class="ai-sidebar">
+    <div>
+      <h3>{{ world.name if world else 'World' }}</h3>
+      {% for k in kinds %}{% if entity_counts.get(k, 0) > 0 %}
+      <div class="ai-stat">{{ kind_icons[k] }} {{ entity_counts[k] }} {{ k }}s</div>
+      {% endif %}{% endfor %}
+    </div>
+
+    <div>
+      <div class="ai-section-label">Quick prompts <small>(click to insert, edit before sending)</small></div>
+      <div id="quick-prompt-list"></div>
+      <button class="new-chat-btn" type="button" onclick="toggleQuickPromptManager()" style="margin-top:.4rem">⚙ Manage</button>
+      <div id="quick-prompt-manager" style="display:none;flex-direction:column;gap:.3rem;margin-top:.4rem">
+        <input id="qp-icon" placeholder="Icon (emoji, optional)"
+               style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:inherit;font-size:.78rem;border-radius:3px;box-sizing:border-box">
+        <input id="qp-label" placeholder="Button label"
+               style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:inherit;font-size:.78rem;border-radius:3px;box-sizing:border-box">
+        <textarea id="qp-text" rows="2" placeholder="Prompt text…"
+                  style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:inherit;font-size:.78rem;border-radius:3px;box-sizing:border-box;resize:vertical"></textarea>
+        <button class="new-chat-btn" type="button" onclick="addQuickPrompt()" style="border-color:var(--neon);color:var(--neon)">+ Add</button>
+      </div>
+    </div>
+
+    <div style="border-top:1px solid var(--border);padding-top:.75rem">
+      <div class="ai-section-label">Model</div>
+      <div id="model-list" style="font-size:.78rem;color:var(--text-dim)">⏳ Loading…</div>
+    </div>
+
+    <div style="border-top:1px solid var(--border);padding-top:.75rem">
+      <div class="ai-section-label">Preset <small>(model + tuning + persona)</small></div>
+      <select id="preset-select" onchange="applyPreset(this.value)"
+              style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:inherit;font-size:.78rem;border-radius:3px;margin-bottom:.4rem;box-sizing:border-box">
+        <option value="">— none —</option>
+      </select>
+      <button class="new-chat-btn" type="button" onclick="togglePresetManager()">⚙ Manage presets</button>
+      <div id="preset-manager" style="display:none;flex-direction:column;gap:.35rem;margin-top:.4rem">
+        <input id="preset-label" placeholder="Preset name"
+               style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:inherit;font-size:.78rem;border-radius:3px;box-sizing:border-box">
+        <div style="font-size:.68rem;color:var(--text-dim)">Uses the model currently selected above.</div>
+        <div style="display:flex;gap:.3rem">
+          <input id="preset-temperature" type="number" step="0.1" min="0" max="2" placeholder="Temp"
+                 style="flex:1;min-width:0;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .4rem;font-family:inherit;font-size:.78rem;border-radius:3px">
+          <input id="preset-top-p" type="number" step="0.05" min="0" max="1" placeholder="Top P"
+                 style="flex:1;min-width:0;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .4rem;font-family:inherit;font-size:.78rem;border-radius:3px">
+        </div>
+        <textarea id="preset-system-extra" rows="2" placeholder="Persona / extra instructions…"
+                  style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:inherit;font-size:.78rem;border-radius:3px;box-sizing:border-box;resize:vertical"></textarea>
+        <div style="display:flex;gap:.3rem">
+          <button class="new-chat-btn" type="button" onclick="savePreset()" style="flex:1;border-color:var(--neon);color:var(--neon)">💾 Save</button>
+          <button class="new-chat-btn" type="button" onclick="deletePreset()" style="flex:1;color:#c44;border-color:#c44">✕ Delete</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="border-top:1px solid var(--border);padding-top:.75rem">
+      <div class="ai-section-label">RAG — World lore &amp; Notes</div>
+      <div id="ctx-status" style="font-size:.78rem;color:var(--text-dim);cursor:pointer" onclick="toggleCtxPanel()" title="Click to see what was retrieved, and pin items into every message">○ Ready</div>
+      <div id="ctx-panel" style="display:none;margin-top:.4rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.5rem .6rem;font-size:.76rem;max-height:220px;overflow-y:auto">
+        <div id="ctx-panel-retrieved"></div>
+        <div id="ctx-panel-pinned-wrap" style="margin-top:.5rem;padding-top:.4rem;border-top:1px solid var(--border);display:none">
+          <div style="color:var(--neon);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.25rem">📌 Pinned (every message)</div>
+          <div id="ctx-panel-pinned"></div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:.4rem;margin-top:.45rem">
+        <label for="ctx-limit" style="font-size:.72rem;color:var(--text-dim);white-space:nowrap" title="Max entities fetched per message">Entities:</label>
+        <input type="range" id="ctx-limit" min="5" max="250" step="5" value="25"
+               style="flex:1;min-width:0;accent-color:var(--neon);cursor:pointer"
+               oninput="document.getElementById('ctx-limit-val').textContent=this.value==250?'max':this.value">
+        <span id="ctx-limit-val" style="font-size:.72rem;color:var(--neon);min-width:2.4rem;text-align:right">25</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:.4rem;margin-top:.3rem">
+        <label for="notes-limit" style="font-size:.72rem;color:var(--text-dim);white-space:nowrap" title="Extra notes included per message (0 = off)">Notes:</label>
+        <input type="range" id="notes-limit" min="0" max="20" step="1" value="5"
+               style="flex:1;min-width:0;accent-color:var(--neon);cursor:pointer"
+               oninput="document.getElementById('notes-limit-val').textContent=this.value==0?'off':this.value">
+        <span id="notes-limit-val" style="font-size:.72rem;color:var(--neon);min-width:2.4rem;text-align:right">5</span>
+      </div>
+    </div>
+
+    <div style="border-top:1px solid var(--border);padding-top:.75rem;flex:1;min-height:0;display:flex;flex-direction:column">
+      <div class="ai-section-label">History</div>
+      <button class="new-chat-btn" onclick="newChat()">+ New chat</button>
+      <div id="session-list" class="session-list" style="font-size:.78rem;color:var(--text-dim)"></div>
+    </div>
+
+    <div style="border-top:1px solid var(--border);padding-top:.75rem">
+      <div class="ai-section-label" style="cursor:pointer;user-select:none" onclick="toggleDebug()">🔧 Debug ▾</div>
+      <div id="debug-panel" style="display:none;font-size:.72rem;color:var(--text-dim);margin-top:.3rem">
+        <pre id="debug-content" style="margin:0;white-space:pre-wrap;word-break:break-all;font-family:inherit;font-size:.72rem;color:inherit;background:none;border:none;padding:0">—</pre>
+        <div style="display:flex;gap:.3rem;margin-top:.4rem;flex-wrap:wrap">
+          <button class="new-chat-btn" style="margin:0" onclick="loadDebug()">↺ Refresh</button>
+          <button class="new-chat-btn" style="margin:0" onclick="testSse()">▶ Test SSE</button>
+          <button class="new-chat-btn" style="margin:0" onclick="testModel()">🔬 Test model</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:.4rem">
+      <button id="save-chat-btn" class="save-chat-btn" onclick="saveChat()">💾 Save chat</button>
+      <button class="clear-btn" onclick="clearChat()">🗑 Clear chat</button>
+    </div>
+  </div>
+
+  <div class="ai-main" id="ai-main" data-dropzone>
+    <input type="file" id="ai-attach-input" multiple accept="image/*,audio/*,.txt,.md,.markdown,.pdf" style="display:none"
+           onchange="chatAttachments.addFiles(this.files); this.value='';"/>
+    <input type="file" id="ai-bgjob-input" accept="audio/*" style="display:none"
+           onchange="ndStartAttachmentBackgroundJob(chatAttachments, this.files[0]); this.value='';"/>
+    <div class="ai-messages" id="ai-messages">
+      <div class="ai-msg ai-msg--assistant">
+        <div class="ai-bubble">
+          Hello! I'm your world-building assistant for <strong>{{ world.name if world else 'your world' }}</strong>.
+          I'll look up relevant lore from your world automatically as you ask questions.
+          <br><br>Ask me anything — or try a quick prompt like "create an NPC" or "write a quest hook". You can also
+          attach an image, audio clip, or document (📎, or just drop it in here).
+        </div>
+      </div>
+    </div>
+
+    <div id="ai-bar"></div>
+    <div class="ai-attach-list" id="ai-attach-list"></div>
+    <div id="ai-jobs-panel" class="nd-jobs-panel" style="display:none;margin:0 1.2rem"></div>
+    <div id="chat-jobs-panel" class="nd-jobs-panel" style="display:none;margin:0 1.2rem"></div>
+    <div style="padding:.25rem 1.2rem 0;font-size:.72rem;color:var(--text-dim);display:flex;justify-content:space-between;align-items:center">
+      <span>Model: <span id="active-model-label" style="color:var(--neon)">—</span></span>
+      <span id="gen-stats" style="color:var(--text-dim)"></span>
+    </div>
+    <div class="ai-input-bar">
+      <button type="button" id="ai-attach-btn" title="Attach an image, audio clip, or document (audio needs a .wav model with audio support to be understood, not just uploaded)"
+              onclick="document.getElementById('ai-attach-input').click()">📎</button>
+      <button type="button" id="ai-mic-btn" title="Record a voice message — transcribed via Whisper and sent to the model as text"
+              onclick="ndToggleAttachMic('ai-mic-btn', chatAttachments)">🎤</button>
+      <button type="button" id="ai-bgjob-btn" title="Process a voice memo as a background job — keeps running even if you close this tab"
+              onclick="document.getElementById('ai-bgjob-input').click()">🔒</button>
+      <textarea id="ai-input" rows="2" placeholder="Ask anything… (Enter to send, Shift+Enter for new line)" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+      <button type="button" id="ai-send-bg" title="Send this message as a background job instead — keeps running even if you close this tab; the reply lands in Background jobs below, not the conversation, until you click Use this"
+              onclick="sendMessageAsBackgroundJob()">🔒</button>
+      <button id="ai-send" onclick="sendMessage()">Send ↵</button>
+    </div>
+
+    <!-- Mobile RAG settings bar (hidden on desktop via CSS) -->
+    <div id="mobile-rag-bar" style="display:none;padding:.45rem .9rem;background:var(--bg2);border-top:1px solid var(--border);flex-direction:column;gap:.35rem">
+      <div style="display:flex;align-items:center;gap:.4rem">
+        <span id="ctx-status-mob" style="font-size:.72rem;color:var(--text-dim);flex:1">○ Ready</span>
+        <button onclick="document.getElementById('mobile-rag-bar').style.display='none'" style="background:none;border:none;color:var(--text-dim);font-size:.85rem;cursor:pointer;padding:0 .2rem">✕</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:.4rem">
+        <label style="font-size:.72rem;color:var(--text-dim);white-space:nowrap;min-width:4rem" title="Max entities fetched per message">Entities:</label>
+        <input type="range" id="ctx-limit-mob" min="5" max="250" step="5" value="25"
+               style="flex:1;min-width:0;accent-color:var(--neon);cursor:pointer"
+               oninput="syncRagSliders('entities',this.value)">
+        <span id="ctx-limit-mob-val" style="font-size:.72rem;color:var(--neon);min-width:2.4rem;text-align:right">25</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:.4rem">
+        <label style="font-size:.72rem;color:var(--text-dim);white-space:nowrap;min-width:4rem" title="Extra notes included per message (0 = off)">Notes:</label>
+        <input type="range" id="notes-limit-mob" min="0" max="20" step="1" value="5"
+               style="flex:1;min-width:0;accent-color:var(--neon);cursor:pointer"
+               oninput="syncRagSliders('notes',this.value)">
+        <span id="notes-limit-mob-val" style="font-size:.72rem;color:var(--neon);min-width:2.4rem;text-align:right">5</span>
+      </div>
+    </div>
+
+    <!-- Mobile RAG toggle + status row -->
+    <div id="mobile-rag-toggle-row" style="display:none;padding:.3rem .9rem;border-top:1px solid var(--border);background:var(--bg);align-items:center;gap:.5rem">
+      <span id="ctx-status-mob2" style="font-size:.72rem;color:var(--text-dim);flex:1">○ Ready</span>
+      <button onclick="toggleMobileRag()" style="font-size:.7rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:4px;padding:.2rem .5rem;cursor:pointer">⚙ RAG</button>
+    </div>
+  </div>
+</div>
+

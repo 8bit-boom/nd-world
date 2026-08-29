@@ -217,7 +217,9 @@ def test_rag_sliders_can_shrink_to_make_room_for_their_value_label(client, seed)
 
 
 def test_ai_sidebar_width_scales_with_root_font_size():
-    with open(Path(__file__).parent.parent / "app" / "templates" / "ai_chat.html") as f:
+    # ai_chat.html's CSS lives in static/css/ai-chat.css (see UI 2.1's split
+    # of the template), not inline in the template file itself.
+    with open(Path(__file__).parent.parent / "static" / "css" / "ai-chat.css") as f:
         content = f.read()
     block = content.split(".ai-sidebar {", 1)[1].split("}", 1)[0]
     assert "260px" not in block

@@ -1,0 +1,144 @@
+<!-- ── Models Panel ── -->
+<div id="models-panel" style="display:none;padding:1.2rem;max-width:820px;margin:0 auto">
+
+  <!-- Ollama status + search -->
+  <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem;flex-wrap:wrap">
+    <span style="font-size:1rem;color:var(--neon);font-weight:700;letter-spacing:.05em">🤖 Ollama Models</span>
+    <span id="mp-status-dot" style="width:8px;height:8px;border-radius:50%;background:#444;flex-shrink:0" title="checking…"></span>
+    <span id="mp-status-txt" style="font-size:.78rem;color:var(--text-dim)">Checking…</span>
+    <input id="mp-search" type="text" placeholder="Filter models…"
+           oninput="mpFilter(this.value)"
+           style="flex:1;min-width:140px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:.82rem;padding:.3rem .55rem">
+    <button class="ig-btn" onclick="mpRefresh()" style="white-space:nowrap">↺ Refresh</button>
+  </div>
+
+  <!-- Default models per surface -->
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-bottom:1.2rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.6rem">🎯 Default Models</div>
+    <div style="display:flex;flex-direction:column;gap:.5rem" id="mp-defaults">
+      <label style="display:flex;align-items:center;gap:.6rem;font-size:.82rem;color:var(--text-dim)">
+        <span style="width:70px;flex-shrink:0">Chat</span>
+        <select id="mp-default-chat" class="ig-select" style="flex:1" onchange="mpSetDefault('chat', this.value)">
+          <option value="">— use system default —</option>
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;gap:.6rem;font-size:.82rem;color:var(--text-dim)">
+        <span style="width:70px;flex-shrink:0">Ask AI</span>
+        <select id="mp-default-ask_ai" class="ig-select" style="flex:1" onchange="mpSetDefault('ask_ai', this.value)">
+          <option value="">— use system default —</option>
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;gap:.6rem;font-size:.82rem;color:var(--text-dim)">
+        <span style="width:70px;flex-shrink:0">Image</span>
+        <select id="mp-default-image" class="ig-select" style="flex:1" onchange="mpSetDefault('image', this.value)">
+          <option value="">— none set —</option>
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;gap:.6rem;font-size:.82rem;color:var(--text-dim)">
+        <span style="width:70px;flex-shrink:0">Recap</span>
+        <select id="mp-default-recap" class="ig-select" style="flex:1" onchange="mpSetDefault('recap', this.value)">
+          <option value="">— use system default —</option>
+        </select>
+      </label>
+    </div>
+    <div id="mp-defaults-status" style="font-size:.7rem;color:var(--text-dim);margin-top:.4rem;min-height:1em"></div>
+  </div>
+
+  <!-- Resident in memory (VRAM/RAM) -->
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-bottom:1.2rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.55rem">
+      <span style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em">🧠 Resident in Memory</span>
+      <button class="ig-btn" onclick="mpLoadResident()" style="font-size:.7rem;padding:.15rem .5rem">↺</button>
+    </div>
+    <div id="mp-resident-list" style="display:flex;flex-direction:column;gap:.4rem">
+      <div style="color:var(--text-dim);font-size:.8rem">⏳ Loading…</div>
+    </div>
+  </div>
+
+  <!-- Model list -->
+  <div id="mp-model-list" style="display:flex;flex-direction:column;gap:.55rem;margin-bottom:1.2rem">
+    <div style="color:var(--text-dim);font-size:.82rem">⏳ Loading…</div>
+  </div>
+
+  <!-- Add custom model -->
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-bottom:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">+ Add / Download Model</div>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:flex-start">
+      <div style="flex:1;min-width:200px;display:flex;flex-direction:column;gap:.3rem">
+        <input id="mp-add-id" type="text" placeholder="Model ID — e.g. llama3.2:3b or hf.co/…"
+               style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:.85rem;padding:.38rem .55rem;width:100%;box-sizing:border-box"
+               onkeydown="if(event.key==='Enter')mpAddAndPull()">
+        <div style="font-size:.7rem;color:var(--text-dim)">
+          Browse models at
+          <a href="https://ollama.com/library" target="_blank" rel="noopener"
+             style="color:var(--neon);text-decoration:none">ollama.com/library</a>
+        </div>
+      </div>
+      <button class="ig-btn" onclick="mpAddAndPull()"
+              style="border-color:var(--neon);color:var(--neon);padding:.38rem 1rem;white-space:nowrap">⬇ Pull &amp; Add</button>
+    </div>
+    <!-- Pull progress -->
+    <div id="mp-pull-progress" style="display:none;margin-top:.65rem">
+      <div style="font-size:.78rem;color:var(--neon);margin-bottom:.25rem" id="mp-pull-label">Pulling…</div>
+      <div style="height:5px;background:var(--bg3);border-radius:3px;overflow:hidden">
+        <div id="mp-pull-bar" style="height:100%;width:0%;background:var(--neon);border-radius:3px;transition:width .2s"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quick-pick popular models -->
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2)">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Popular Models</div>
+    <div style="display:flex;flex-wrap:wrap;gap:.35rem" id="mp-popular">
+      {% for m in [
+        ('llama3.2:3b',       'Llama 3.2 3B',  '~2 GB'),
+        ('llama3.2:1b',       'Llama 3.2 1B',  '~0.9 GB'),
+        ('gemma3:4b',         'Gemma 3 4B',    '~3 GB'),
+        ('gemma3:12b',        'Gemma 3 12B',   '~8 GB'),
+        ('gemma4:26b',        'Gemma 4 26B',   '~17 GB'),
+        ('mistral:7b',        'Mistral 7B',    '~4 GB'),
+        ('qwen2.5:7b',        'Qwen 2.5 7B',   '~5 GB'),
+        ('qwen2.5:14b',       'Qwen 2.5 14B',  '~9 GB'),
+        ('phi4:14b',          'Phi-4 14B',     '~9 GB'),
+        ('deepseek-r1:8b',    'DeepSeek R1 8B','~5 GB'),
+        ('nomic-embed-text',  'Nomic Embed',   '~0.3 GB'),
+      ] %}
+      <button class="ig-preset-btn" onclick="mpQuickPull('{{ m[0] }}')"
+              title="{{ m[2] }}">{{ m[1] }}<span style="color:var(--text-dim);font-size:.65rem;margin-left:.3rem">{{ m[2] }}</span></button>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Whisper (audio transcription) model -->
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-top:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">🎙 Whisper (audio transcription)</div>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
+      Transcribes an audio file attached to an AI Chat/Ask AI message into text — see
+      <strong>docs/DEPLOYMENT.md</strong> to enable the "whisper" service first. Downloading a model
+      below just writes it into the shared volume (the "whisper" service doesn't need to be running
+      yet) — download as many as you like, they won't overwrite each other. Click <strong>★ Make
+      active</strong> on a downloaded model to switch to it — usually instant (no restart), or
+      you'll be told when one's still needed (e.g. Whisper isn't reachable right now).
+    </div>
+    <div id="wp-status" style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">⏳ Checking…</div>
+    <div id="wp-model-list" style="display:flex;flex-direction:column;gap:.35rem;margin-bottom:.6rem"></div>
+    <details>
+      <summary style="cursor:pointer;font-size:.78rem;color:var(--text-dim)">Download a different model by URL…</summary>
+      <div style="margin-top:.5rem">
+        <input id="wp-custom-url" type="text" placeholder="Direct download URL — saved to the currently-active model's file"
+               style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:.8rem;padding:.35rem .55rem;width:100%;box-sizing:border-box"
+               onkeydown="if(event.key==='Enter')wpDownload()">
+        <button class="ig-btn" onclick="wpDownload()"
+                style="margin-top:.4rem;border-color:var(--neon);color:var(--neon);padding:.3rem .8rem;font-size:.78rem">⬇ Download to active slot</button>
+      </div>
+    </details>
+    <div id="wp-progress" style="display:none;margin-top:.65rem">
+      <div style="font-size:.78rem;color:var(--neon);margin-bottom:.25rem" id="wp-progress-label">Starting…</div>
+      <div style="height:5px;background:var(--bg3);border-radius:3px;overflow:hidden">
+        <div id="wp-progress-bar" style="height:100%;width:0%;background:var(--neon);border-radius:3px;transition:width .2s"></div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /models-panel -->
+

@@ -1,0 +1,118 @@
+<!-- ── Whisper Test Panel ── -->
+<div id="whisper-panel" style="display:none;padding:1.2rem;max-width:800px;margin:0 auto">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+    <span style="font-size:1rem;color:var(--neon);font-weight:700;letter-spacing:.05em">🎙 Whisper Test</span>
+    <button class="ig-btn" onclick="wtLoadStatus()" style="white-space:nowrap">↺ Refresh</button>
+  </div>
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-bottom:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Status</div>
+    <div id="wt-status" style="font-size:.85rem;color:var(--text-dim);white-space:pre-line">⏳ Checking…</div>
+  </div>
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2)">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Test transcription</div>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
+      Pick an audio file and it's sent straight to Whisper to transcribe — nothing is saved or attached to a chat message, this is just a connectivity/sanity check.
+    </div>
+    <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
+      <input type="file" id="wt-file" accept=".mp3,.ogg,.oga,.wav,.m4a,.flac,.opus,.webm,.aac,audio/*"
+             style="color:var(--text);font-size:.82rem;max-width:100%">
+      <button class="ig-btn" id="wt-transcribe-btn" onclick="wtTranscribe()"
+              style="border-color:var(--neon);color:var(--neon);padding:.38rem 1rem;white-space:nowrap">▶ Transcribe</button>
+      <button class="ig-btn" id="wt-mic-btn" onclick="wtToggleMic()"
+              style="padding:.38rem 1rem;white-space:nowrap">🎤 Record</button>
+      <button class="ig-btn" id="wt-bgjob-btn" onclick="wtStartBackgroundJob()"
+              title="Process the picked file as a background job — keeps running even if you close this tab"
+              style="padding:.38rem 1rem;white-space:nowrap">🔒 Process in Background</button>
+    </div>
+    <div id="wt-progress"></div>
+    <div id="wt-jobs-panel" class="nd-jobs-panel" style="display:none;margin-top:.6rem"></div>
+    <div id="wt-result" style="margin-top:.8rem;display:none">
+      <div style="font-size:.72rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem">Transcript</div>
+      <pre id="wt-result-text" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem .75rem;font-size:.85rem;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;margin:0"></pre>
+    </div>
+  </div>
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-top:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Spoken language</div>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
+      Pin the language spoken at the table for every session-recording transcription (background jobs, one-shot upload, and live recording). Auto-detect works for most single-language sessions, but pinning is faster and avoids the garbled, repeating-phrase transcripts Whisper can produce when it misjudges the language. One-off chat attachments don't use this.
+    </div>
+    <select id="wl-select" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .6rem;font-family:inherit;font-size:.82rem;border-radius:4px;box-sizing:border-box">
+      <option value="">Auto-detect</option>
+      <option value="en">English</option>
+      <option value="ru">Russian</option>
+      <option value="es">Spanish</option>
+      <option value="fr">French</option>
+      <option value="de">German</option>
+      <option value="it">Italian</option>
+      <option value="pt">Portuguese</option>
+      <option value="pl">Polish</option>
+      <option value="uk">Ukrainian</option>
+      <option value="zh">Chinese</option>
+      <option value="ja">Japanese</option>
+      <option value="ko">Korean</option>
+      <option value="nl">Dutch</option>
+      <option value="sv">Swedish</option>
+      <option value="tr">Turkish</option>
+      <option value="ar">Arabic</option>
+      <option value="hi">Hindi</option>
+      <option value="fi">Finnish</option>
+      <option value="no">Norwegian</option>
+      <option value="da">Danish</option>
+      <option value="cs">Czech</option>
+      <option value="el">Greek</option>
+      <option value="he">Hebrew</option>
+      <option value="th">Thai</option>
+      <option value="vi">Vietnamese</option>
+      <option value="id">Indonesian</option>
+      <option value="ro">Romanian</option>
+      <option value="hu">Hungarian</option>
+    </select>
+    <div style="display:flex;align-items:center;gap:.6rem;margin-top:.5rem">
+      <button class="ig-btn" id="wl-save-btn" onclick="wlSaveLanguage()" style="border-color:var(--neon);color:var(--neon)">💾 Save</button>
+      <span id="wl-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+    </div>
+  </div>
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-top:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Name glossary</div>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
+      Campaign NPC names, places, and invented terms — hinted to Whisper on every session-recording transcription (background jobs, one-shot upload, and live recording) so it doesn't autocorrect them to real words. One-off chat attachments don't use this. Comma or newline separated.
+      World entity names (characters, creatures, locations, organizations, races, professions — up to 50) are automatically added on top of whatever you type here, so you don't have to keep this list in sync by hand.
+    </div>
+    <textarea id="wg-textarea" rows="3" placeholder="Elyndra, Karrveth Hollow, the Undermarket, Sable Company…"
+              style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .6rem;font-family:inherit;font-size:.82rem;border-radius:4px;box-sizing:border-box;resize:vertical"></textarea>
+    <div style="display:flex;align-items:center;gap:.6rem;margin-top:.5rem">
+      <button class="ig-btn" id="wg-save-btn" onclick="wgSaveGlossary()" style="border-color:var(--neon);color:var(--neon)">💾 Save</button>
+      <span id="wg-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+      <span id="wg-entity-count" style="font-size:.78rem;color:var(--text-dim)"></span>
+    </div>
+  </div>
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-top:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Speech enhancement</div>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
+      Run a real ML denoising model (DeepFilterNet) over every session-recording audio file before it reaches Whisper — meaningfully better against sustained background noise (music, hum, HVAC) than a browser's own echo-cancellation/noise-gate alone (see the mic recorder's built-in suppression, always on). Applies to background jobs, one-shot upload, and live recording. One-off chat attachments don't use this.
+    </div>
+    <div id="wd-unavailable" style="display:none;font-size:.78rem;color:var(--text-dim);background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.5rem .6rem;margin-bottom:.6rem">
+      Not installed on this server — see docs/DEPLOYMENT.md for how to build the image with speech enhancement enabled.
+    </div>
+    <label id="wd-label" style="display:flex;align-items:center;gap:.5rem;font-size:.85rem;cursor:pointer">
+      <input type="checkbox" id="wd-checkbox" onchange="wdSaveDenoise()">
+      Enable speech enhancement
+    </label>
+    <div style="display:flex;align-items:center;gap:.6rem;margin-top:.5rem">
+      <span id="wd-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+    </div>
+  </div>
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-top:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Recap instructions</div>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
+      Extra steering for the AI-written recap itself (not transcription) — e.g. "Write summaries in Spanish", "Use a dry, sarcastic tone", "Focus only on combat". Applied to every session-recording recap (background jobs, one-shot upload, and re-summarize).
+    </div>
+    <textarea id="ri-textarea" rows="2" placeholder="e.g. Write the summary in French."
+              style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .6rem;font-family:inherit;font-size:.82rem;border-radius:4px;box-sizing:border-box;resize:vertical"></textarea>
+    <div style="display:flex;align-items:center;gap:.6rem;margin-top:.5rem">
+      <button class="ig-btn" id="ri-save-btn" onclick="riSaveInstructions()" style="border-color:var(--neon);color:var(--neon)">💾 Save</button>
+      <span id="ri-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+    </div>
+  </div>
+</div><!-- /whisper-panel -->
+
