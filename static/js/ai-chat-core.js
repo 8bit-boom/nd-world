@@ -866,11 +866,93 @@ async function _updateCtxUsage(messages, system) {
   const allText = (system || '') + '\n' + messages.map((m) => m.content || '').join('\n');
   const tokens = ndEstimateTokens(allText);
   const numCtx = await _getCtxNumCtx();
+  const over = tokens > numCtx;
   el.textContent = `≈${tokens.toLocaleString()} tokens sent`;
-  el.style.color = tokens > numCtx ? '#f55' : 'var(--text-dim)';
-  el.title = tokens > numCtx
+  el.style.color = over ? '#f55' : 'var(--text-dim)';
+  el.title = over
     ? `Over the model's ~${numCtx.toLocaleString()}-token context — earliest turns may be getting dropped or the reply may get slower/worse`
     : `Estimated size of what was sent, out of a ~${numCtx.toLocaleString()}-token context`;
+
+  // Pairs the indicator with a way to act on it: auto-compact silently if
+  // the GM opted in (ndSetAutoCompact), otherwise just surface the link —
+  // never compact without either an explicit click or that explicit opt-in.
+  const suggestBtn = document.getElementById('ctx-compact-suggest');
+  if (over && history.length > COMPACT_KEEP_RECENT && !_compacting) {
+    if (ndGetAutoCompact()) {
+      compactChat();
+    } else if (suggestBtn) {
+      suggestBtn.style.display = 'inline-block';
+    }
+  } else if (suggestBtn) {
+    suggestBtn.style.display = 'none';
+  }
+}
+
+// ── Compact chat (plan follow-up to 4.2's context-usage indicator) ─────────
+// Same idea as this very CLI's own auto-compaction: summarize the OLDER
+// turns of a long-running conversation into one message via app.ai.
+// condense_chat_history, keeping the most recent turns verbatim so nothing
+// just-said is lossy-compressed. Manual by default (the 🗜 Compact chat
+// button, or the "Compact now?" link _updateCtxUsage shows once usage runs
+// over the model's context); ndSetAutoCompact lets a GM opt into doing this
+// automatically instead, via the sidebar checkbox.
+const COMPACT_KEEP_RECENT = 6;
+let _compacting = false;
+
+function ndSetAutoCompact(enabled) {
+  try { localStorage.setItem('nd_ai_autocompact', enabled ? '1' : '0'); } catch (e) { /* ignore */ }
+}
+
+function ndGetAutoCompact() {
+  try { return localStorage.getItem('nd_ai_autocompact') === '1'; } catch (e) { return false; }
+}
+
+async function compactChat() {
+  if (_compacting) return;
+  if (history.length <= COMPACT_KEEP_RECENT) {
+    alert('Not enough conversation yet to compact.');
+    return;
+  }
+  const older = history.slice(0, -COMPACT_KEEP_RECENT);
+  const recent = history.slice(-COMPACT_KEEP_RECENT);
+  _compacting = true;
+  const overlay = document.getElementById('compact-dialog-overlay');
+  const statusEl = document.getElementById('compact-dialog-status');
+  const suggestBtn = document.getElementById('ctx-compact-suggest');
+  if (suggestBtn) suggestBtn.style.display = 'none';
+  if (overlay) overlay.style.display = 'flex';
+  if (statusEl) statusEl.textContent = 'Summarizing older turns…';
+  try {
+    const res = await fetch('/api/ai/chat/compact', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: older, model: activeModel, think: true }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `Server error ${res.status}`);
+    }
+    const data = await res.json();
+    const summary = (data.summary || '').trim();
+    if (!summary) throw new Error('No summary returned');
+
+    history = [
+      { role: 'assistant', content: `📋 *Earlier conversation, compacted:*\n\n${summary}` },
+      ...recent,
+    ];
+    const box = document.getElementById('ai-messages');
+    box.innerHTML = '';
+    for (const m of history) addMessage(m.role, m.content, false, m.attachments);
+    box.scrollTop = box.scrollHeight;
+    autoSave();
+    _updateCtxUsage(history, WORLD_SYSTEM);
+  } catch (e) {
+    if (statusEl) statusEl.textContent = 'Failed: ' + (e.message || e);
+    await new Promise((r) => setTimeout(r, 1800));
+  } finally {
+    if (overlay) overlay.style.display = 'none';
+    _compacting = false;
+  }
 }
 
 // ── RAG transparency + pinning ───────────────────────────────────────────────
@@ -1470,4 +1552,11 @@ function switchTab(tab) {
   if (tab === 'starred') igLoadStarred();
   if (tab === 'image')   dlmLoadDownloaded();
 }
+
+// Restore the auto-compact checkbox's state — same per-browser localStorage
+// preference pattern base.html uses for theme/UI scale.
+(function () {
+  const cb = document.getElementById('autocompact-toggle');
+  if (cb) cb.checked = ndGetAutoCompact();
+})();
 

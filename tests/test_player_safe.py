@@ -95,6 +95,7 @@ CASES = [
     ("GET", "/kind/character/download.zip", True),
     ("GET", "/kind/character/download-selected.zip", True),
     ("POST", "/api/ai/stream", True),
+    ("POST", "/api/ai/chat/compact", True),
     ("POST", "/api/ai/attachments/upload", True),
     ("POST", "/api/ai/attachments/audio-jobs", True),
     ("POST", "/api/ai/attachments/audio-jobs/chunk", True),

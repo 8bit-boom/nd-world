@@ -324,12 +324,13 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if path == "/api/chronicler/ask":
         return True
-    if path == "/api/ai/stream":
+    if path in ("/api/ai/stream", "/api/ai/chat/compact"):
         # Middleware only decides "reachable" — the handler (app/routers/ai.py)
         # still gates a non-GM caller behind World.players_can_ask_ai, off by
         # default. The dedicated GM "/ai" World Chat page is a GET route and
         # stays off this allowlist entirely, so this only opens the shared
-        # streaming endpoint, not that page's GM-only quick-prompt toolkit.
+        # streaming endpoint (and its "Compact chat" sibling), not that
+        # page's GM-only quick-prompt toolkit.
         return True
     if path in (
         "/api/ai/attachments/upload",

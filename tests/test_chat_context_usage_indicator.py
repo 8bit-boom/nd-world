@@ -52,6 +52,7 @@ def test_ai_chat_core_js_computes_and_colors_ctx_usage(client, seed):
     assert "async function _updateCtxUsage(" in js
     assert "/api/ai/context-info" in js
     assert "ndEstimateTokens(allText)" in js
-    assert "tokens > numCtx ? '#f55'" in js
+    assert "const over = tokens > numCtx" in js
+    assert "over ? '#f55'" in js
     # Wired into the live send path with what was actually sent (post-RAG).
     assert "_updateCtxUsage(messagesWithCtx, presetSystem)" in js

@@ -323,6 +323,39 @@ async def ai_chat(body: ChatBody):
     return {"result": await _ai.generate_chat(msgs, body.system, body.model, _clamp_options(body.options))}
 
 
+@router.post("/chat/compact")
+async def api_chat_compact(body: ChatBody, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    """Compact older AI Chat turns into one summary message — see
+    app.ai.condense_chat_history's own docstring for the full reasoning
+    (the same idea as this very CLI's own auto-compaction, applied to the
+    chat surface). `body.messages` is whatever the client decided counts as
+    "older" — compactChat() in ai-chat-core.js keeps a handful of the most
+    recent turns out of this call entirely, splicing the returned summary
+    in ahead of them rather than losing anything recent to lossy
+    compression. Same access rule as /stream: a GM always may, a player
+    only if their world opted in via players_can_ask_ai."""
+    _require_ask_ai_access(request, db, active_world)
+    msgs = _build_ollama_messages(body.messages)
+    if not msgs:
+        raise HTTPException(400, "No messages to compact")
+    # Same "refuse rather than silently truncate" guard condense_recap's
+    # single-call entry point uses (docs/DYNAMIC_THINKING_AND_PIPELINE_
+    # PLAN.md item 3.3) — a compact call has nothing else protecting it the
+    # way summarize_transcript's own chunking does.
+    text = "".join((m.get("content") or "") for m in msgs)
+    chars_per_token = _ai._chars_per_token_estimate(text)
+    tokens = -(-len(text) // chars_per_token)  # ceil division
+    ceiling = _ai.MAX_AUTO_NUM_CTX - _ai._CONTEXT_FIT_RESERVED_TOKENS
+    if tokens > ceiling:
+        raise HTTPException(
+            400,
+            f"Too much conversation to compact in one call (≈{tokens} tokens > the "
+            f"{ceiling}-token ceiling) — try compacting more often, or clear the chat instead",
+        )
+    summary = await _ai.condense_chat_history(msgs, model=body.model, think=body.think)
+    return {"summary": summary}
+
+
 class EntityFromTextBody(BaseModel):
     text: str
 

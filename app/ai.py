@@ -840,6 +840,71 @@ async def summarize_session_from_facts(facts: list[str], model: str = "", extra_
     )
 
 
+_COMPACT_CHAT_SYSTEM = (
+    "You are compacting an ongoing AI Chat conversation between a GM and their world-building "
+    "assistant for a tabletop RPG. Summarize the conversation below into a concise recap of what "
+    "was discussed, decided, or created — preserve concrete facts, names, numbers, and decisions "
+    "the GM will still need, and drop exploratory back-and-forth, false starts, and small talk. "
+    "Write in flowing prose, third person. Respond with the summary only, no preamble or "
+    "commentary."
+)
+
+
+def _chat_history_to_text(messages: list[dict]) -> str:
+    lines = []
+    for m in messages:
+        role = "GM" if m.get("role") == "user" else "Assistant"
+        content = (m.get("content") or "").strip()
+        if content:
+            lines.append(f"{role}: {content}")
+    return "\n\n".join(lines)
+
+
+async def condense_chat_history(messages: list[dict], model: str = "", think: bool = True,
+                                 extra_instructions: str = "") -> str:
+    """Compact the older turns of an AI Chat conversation into one summary
+    message — the same idea as this very CLI's own auto-compaction, applied
+    to app/routers/ai.py's chat surface. History there is unbounded by
+    design (trimming it loses the GM's own memory of the conversation — see
+    docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md item 4.2's own reasoning for
+    why the context-usage indicator exists instead of a hard trim), so this
+    gives an explicit, on-demand way to shrink it back down once that
+    indicator flags it as large.
+
+    `messages` is the {role, content} list app.routers.ai.ChatMessage
+    already produces (see _build_ollama_messages) — the CALLER (ai-chat-
+    core.js's compactChat()) decides which turns count as "older" and
+    passes only those; a handful of the most recent turns stay verbatim in
+    `history` alongside this summary rather than being sent here at all, so
+    the freshest context is never lossy-compressed away.
+
+    `think` defaults to True, matching every other recap-family function in
+    this module (condense_recap/expand_recap_notes/summarize_session_from_
+    facts) — a compact summary benefits from the same reasoning budget a
+    recap condense gets. `extra_instructions` follows the same
+    _with_instructions convention as those siblings, though the chat route
+    doesn't currently thread a GM's standing recap instructions through —
+    it's a plain keyword-only extension point for now.
+
+    Sizes num_ctx via _ctx_override_if_needed like summarize_session_from_
+    facts does, rather than refusing oversized input outright the way
+    condense_recap's single-call entry point does (item 3.3) — a long-
+    running chat can outgrow even MAX_AUTO_NUM_CTX, and the caller already
+    controls how much text lands here by choosing where the "older" cutoff
+    falls, unlike a GM free-pasting an arbitrarily large recap."""
+    text = _chat_history_to_text(messages)
+    if not text:
+        return ""
+    system = _with_instructions(_COMPACT_CHAT_SYSTEM, extra_instructions)
+    opts = dict(_thinking_num_predict_override(think))
+    reserve = _CONTEXT_FIT_RESERVED_TOKENS + (_THINKING_HEADROOM_TOKENS if "num_predict" in opts else 0)
+    opts.update(_ctx_override_if_needed(system + text, reserve))
+    return await generate_chat(
+        [{"role": "user", "content": text}], system=system, model=model,
+        options=opts or None, think=think,
+    )
+
+
 _CONDENSE_RECAP_SYSTEM = (
     "You are a scribe for a tabletop RPG campaign. Condense the following session recap into a "
     "short, tight summary — a few sentences at most, hitting only the key beats a player would "

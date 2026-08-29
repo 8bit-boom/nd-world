@@ -108,6 +108,11 @@
     </div>
 
     <div style="display:flex;flex-direction:column;gap:.4rem">
+      <button id="compact-chat-btn" class="new-chat-btn" onclick="compactChat()" title="Summarize older turns into one message to free up context, keeping the most recent turns as-is">🗜 Compact chat</button>
+      <label style="display:flex;align-items:center;gap:.4rem;font-size:.72rem;color:var(--text-dim);cursor:pointer" title="Automatically compact without asking once the estimated tokens sent gets near the model's context window">
+        <input type="checkbox" id="autocompact-toggle" onchange="ndSetAutoCompact(this.checked)">
+        Auto-compact when near limit
+      </label>
       <button id="save-chat-btn" class="save-chat-btn" onclick="saveChat()">💾 Save chat</button>
       <button class="clear-btn" onclick="clearChat()">🗑 Clear chat</button>
     </div>
@@ -136,6 +141,8 @@
     <div style="padding:.25rem 1.2rem 0;font-size:.72rem;color:var(--text-dim);display:flex;justify-content:space-between;align-items:center;gap:.5rem">
       <span>Model: <span id="active-model-label" style="color:var(--neon)">—</span></span>
       <span id="ctx-usage" style="color:var(--text-dim)" title="Estimated size of the last message sent, including RAG lore and chat history"></span>
+      <button id="ctx-compact-suggest" type="button" onclick="compactChat()"
+              style="display:none;font-size:.7rem;background:none;border:1px solid #f55;color:#f55;border-radius:3px;padding:.1rem .4rem;cursor:pointer">Compact now?</button>
       <span id="gen-stats" style="color:var(--text-dim)"></span>
     </div>
     <div class="ai-input-bar">
@@ -182,6 +189,17 @@
       <span id="ctx-status-mob2" role="status" aria-live="polite" style="font-size:.72rem;color:var(--text-dim);flex:1">○ Ready</span>
       <button onclick="toggleMobileRag()" style="font-size:.7rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:4px;padding:.2rem .5rem;cursor:pointer">⚙ RAG</button>
     </div>
+  </div>
+</div>
+
+<!-- Compacting dialog — a brief modal shown while compactChat() runs, same
+     idea as this CLI's own "Compacting conversation…" message. Hidden by
+     default; compactChat() toggles it. -->
+<div id="compact-dialog-overlay" role="dialog" aria-modal="true" aria-label="Compacting conversation"
+     style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1.5rem 2rem;text-align:center;max-width:320px">
+    <div style="font-size:1.1rem;margin-bottom:.5rem">🗜 Compacting conversation…</div>
+    <div id="compact-dialog-status" style="font-size:.8rem;color:var(--text-dim)">Summarizing older turns…</div>
   </div>
 </div>
 
