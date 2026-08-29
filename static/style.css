@@ -8,7 +8,11 @@
   --neon3: #b44fff;
   --yellow: #ffe600;
   --text: #c8d0e0;
-  --text-dim: #606880;
+  /* Lightened from #606880 — that value only cleared ~3.3:1 against the
+     app's own backgrounds (--bg/--bg2/--bg3), short of WCAG AA's 4.5:1 for
+     normal-size text, which --text-dim is used at throughout (timestamps,
+     help text, secondary labels). This clears 4.5:1+ against all three. */
+  --text-dim: #7c849d;
   --font: 'Courier New', Courier, monospace;
 
   --kind-character: #00f0ff;
@@ -66,6 +70,41 @@ html[data-scale="150"] { font-size: 150%; }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html { scroll-behavior: smooth; }
+
+/* Visually hidden but still reachable by screen readers — for a status
+   conveyed only by color/an icon (e.g. #ai-dot) or a link meant only to
+   skip to content by keyboard. Standard clip-based pattern (not
+   display:none/visibility:hidden, which pull the content from the
+   accessibility tree entirely). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  z-index: 1000;
+  background: var(--neon);
+  color: #000;
+  padding: .6rem 1rem;
+  font-family: var(--font);
+  font-size: .85rem;
+  font-weight: 700;
+  text-decoration: none;
+  border-radius: 0 0 4px 0;
+  transition: top .15s;
+}
+.skip-link:focus {
+  top: 0;
+}
 
 body {
   background: var(--bg);

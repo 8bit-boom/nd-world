@@ -8,7 +8,7 @@
       <input name="q" placeholder="Filter…" value="{{ q }}"/>
       {% if active_folder is not none %}<input type="hidden" name="folder" value="{{ active_folder }}"/>{% endif %}
       <input type="hidden" name="w" value="{{ world.slug if world else '' }}"/>
-      <button type="submit">⌕</button>
+      <button type="submit" aria-label="Filter">⌕</button>
     </form>
     {% if active_folder is not none %}
     <div class="view-toggle">

@@ -40,12 +40,13 @@
 {% if world and world.hero_style == 'everywhere' %}
 {% include "_hero.html" %}
 {% endif %}
+<a href="#main-content" class="skip-link">Skip to content</a>
 <nav class="topbar">
   <a class="logo" href="{{ '/'|wq }}">N&amp;D <span>WORLD</span></a>
 
   <!-- World switcher -->
   <div class="world-switcher">
-    <button class="world-btn" onclick="this.parentElement.classList.toggle('open')">
+    <button class="world-btn" aria-haspopup="true" aria-expanded="false" onclick="ndToggleDropdown(this)">
       🌐 {{ world.name if world else 'Select World' }} ▾
     </button>
     <div class="world-dropdown">
@@ -64,18 +65,18 @@
   <form class="search-form" action="/search" method="get">
     <input name="q" placeholder="Search world…" value="{{ request.query_params.get('q','') }}"/>
     <input type="hidden" name="w" value="{{ world.slug if world else '' }}"/>
-    <button type="submit">⌕</button>
+    <button type="submit" aria-label="Search">⌕</button>
   </form>
   <button class="nav-hamburger" id="nav-toggle" aria-label="Toggle navigation">☰</button>
   <div class="nav-kinds" id="nav-kinds">
     {% macro nav_item_link(item, cls) %}
     <a href="{{ item.href|wq }}" draggable="true"
        {% if item.ql_type %}data-ql-type="{{ item.ql_type }}" data-ql-ref="{{ item.ql_ref }}"{% else %}data-ql-ref="{{ item.href }}"{% endif %}
-       class="{{ cls }} {% if (item.exact and request.url.path == item.href) or (not item.exact and request.url.path.startswith(item.href)) %}active{% endif %}">{{ item.icon }} {{ item.label }}{% if item.id == 'ai' %}<span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle"></span>{% endif %}</a>
+       class="{{ cls }} {% if (item.exact and request.url.path == item.href) or (not item.exact and request.url.path.startswith(item.href)) %}active{% endif %}">{{ item.icon }} {{ item.label }}{% if item.id == 'ai' %}<span id="ai-dot" title="AI unavailable" style="width:8px;height:8px;border-radius:50%;background:#444;display:inline-block;margin-left:.3rem;vertical-align:middle"></span><span id="ai-dot-status" class="sr-only">AI unavailable</span>{% endif %}</a>
     {% endmacro %}
     {% for menu in nav_menus %}
     <div class="tools-switcher">
-      <button type="button" class="tools-btn" onclick="event.stopPropagation(); this.parentElement.classList.toggle('open')">
+      <button type="button" class="tools-btn" aria-haspopup="true" aria-expanded="false" onclick="event.stopPropagation(); ndToggleDropdown(this)">
         {{ menu.icon }} {{ menu.label }} ▾
       </button>
       <div class="tools-dropdown">
@@ -123,12 +124,16 @@
 <script>
 (function(){
   var dot=document.getElementById('ai-dot');
+  var dotStatus=document.getElementById('ai-dot-status');
   if(dot){
     fetch('/api/ai/status',{method:'POST'})
       .then(r=>r.json())
       .then(d=>{
-        if(d.status==='ok'){dot.style.background='#4f4';dot.title='AI ready — '+d.model;}
-        else{dot.style.background='#888';dot.title='AI unavailable';}
+        var label = d.status==='ok' ? ('AI ready — '+d.model) : 'AI unavailable';
+        if(d.status==='ok'){dot.style.background='#4f4';}
+        else{dot.style.background='#888';}
+        dot.title=label;
+        if(dotStatus) dotStatus.textContent=label;
       }).catch(()=>{});
   }
   var THEMES=['dark','dim','light'];
@@ -402,28 +407,33 @@ function ndToggleAttachMic(btnId, attachments) {
   });
 }
 </script>
-<main>
+<main id="main-content">
   {% block content %}{% endblock %}
 </main>
 <footer>{{ world.name if world else 'N&D World' }} — self-hosted</footer>
 
-<div id="lightbox-overlay" class="lightbox-overlay" onclick="closeLightbox()">
+<div id="lightbox-overlay" class="lightbox-overlay" role="dialog" aria-modal="true" aria-label="Image preview" onclick="closeLightbox()">
   <button type="button" class="lightbox-close" onclick="closeLightbox()" aria-label="Close">✕</button>
   <img id="lightbox-img" src="" alt=""/>
 </div>
 
 <script>
+let _lightboxReturnFocus = null;
 function openLightbox(src, alt) {
   if (!src) return;
+  _lightboxReturnFocus = document.activeElement;
   document.getElementById('lightbox-img').src = src;
   document.getElementById('lightbox-img').alt = alt || '';
   document.getElementById('lightbox-overlay').classList.add('open');
   document.body.style.overflow = 'hidden';
+  document.querySelector('.lightbox-close').focus();
 }
 function closeLightbox() {
   document.getElementById('lightbox-overlay').classList.remove('open');
   document.getElementById('lightbox-img').src = '';
   document.body.style.overflow = '';
+  if (_lightboxReturnFocus && document.body.contains(_lightboxReturnFocus)) _lightboxReturnFocus.focus();
+  _lightboxReturnFocus = null;
 }
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') closeLightbox();
@@ -564,9 +574,12 @@ async function ndSpotlightClear() {
     positionPopup(anchor, popupEl);
   }
 
-  document.addEventListener('mouseover', e => {
+  // Shared by both pointer (mouseover/mouseout) and keyboard
+  // (focusin/focusout) triggers, so a keyboard user tabbing through links
+  // gets the exact same preview affordance a mouse user gets by hovering —
+  // same trigger delay, same hide grace period, same popup.
+  function handleAnchorEnter(a) {
     if (!cfg.enabled) return;
-    var a = e.target.closest('a[href^="/entity/"]');
     if (!a || a === currentAnchor) return;
     currentAnchor = a;
     cancelHide();
@@ -578,26 +591,61 @@ async function ndSpotlightClear() {
         if (data && currentAnchor === a) renderPopup(a, data);
       }).catch(() => {});
     }, cfg.delayMs);
-  });
-
-  document.addEventListener('mouseout', e => {
-    var a = e.target.closest('a[href^="/entity/"]');
+  }
+  function handleAnchorLeave(a) {
     if (!a || a !== currentAnchor) return;
     currentAnchor = null;
     clearTimeout(hoverTimer);
     scheduleHide();
+  }
+
+  document.addEventListener('mouseover', e => {
+    handleAnchorEnter(e.target.closest('a[href^="/entity/"]'));
+  });
+  document.addEventListener('mouseout', e => {
+    handleAnchorLeave(e.target.closest('a[href^="/entity/"]'));
+  });
+  document.addEventListener('focusin', e => {
+    handleAnchorEnter(e.target.closest && e.target.closest('a[href^="/entity/"]'));
+  });
+  document.addEventListener('focusout', e => {
+    handleAnchorLeave(e.target.closest && e.target.closest('a[href^="/entity/"]'));
   });
 })();
 </script>
 
 <script>
+// Shared open/close for both dropdown types (world switcher, per-menu tools
+// switcher) — mutual exclusion (opening one closes any other), Escape to
+// close with focus returned to the trigger button, and aria-expanded kept
+// in sync with the .open class on every path (click-toggle, click-outside,
+// Escape) so the three never drift apart.
+function ndCloseDropdowns(returnFocus) {
+  var opened = document.querySelector('.world-switcher.open, .tools-switcher.open');
+  var btn = opened ? opened.querySelector('.world-btn, .tools-btn') : null;
+  document.querySelectorAll('.world-switcher.open, .tools-switcher.open').forEach(function(el) {
+    el.classList.remove('open');
+    var b = el.querySelector('.world-btn, .tools-btn');
+    if (b) b.setAttribute('aria-expanded', 'false');
+  });
+  if (returnFocus && btn) btn.focus();
+}
+function ndToggleDropdown(btn) {
+  var wrap = btn.parentElement;
+  var willOpen = !wrap.classList.contains('open');
+  ndCloseDropdowns(false);
+  if (willOpen) {
+    wrap.classList.add('open');
+    btn.setAttribute('aria-expanded', 'true');
+  }
+}
 document.addEventListener('click', e => {
-  if (!e.target.closest('.world-switcher')) {
-    document.querySelectorAll('.world-switcher').forEach(el => el.classList.remove('open'));
+  if (!e.target.closest('.world-switcher') && !e.target.closest('.tools-switcher')) {
+    ndCloseDropdowns(false);
   }
-  if (!e.target.closest('.tools-switcher')) {
-    document.querySelectorAll('.tools-switcher').forEach(el => el.classList.remove('open'));
-  }
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') ndCloseDropdowns(true);
 });
 </script>
 </body>

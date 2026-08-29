@@ -65,7 +65,7 @@
 
     <div style="border-top:1px solid var(--border);padding-top:.75rem">
       <div class="ai-section-label">RAG — World lore &amp; Notes</div>
-      <div id="ctx-status" style="font-size:.78rem;color:var(--text-dim);cursor:pointer" onclick="toggleCtxPanel()" title="Click to see what was retrieved, and pin items into every message">○ Ready</div>
+      <div id="ctx-status" role="status" aria-live="polite" style="font-size:.78rem;color:var(--text-dim);cursor:pointer" onclick="toggleCtxPanel()" title="Click to see what was retrieved, and pin items into every message">○ Ready</div>
       <div id="ctx-panel" style="display:none;margin-top:.4rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.5rem .6rem;font-size:.76rem;max-height:220px;overflow-y:auto">
         <div id="ctx-panel-retrieved"></div>
         <div id="ctx-panel-pinned-wrap" style="margin-top:.5rem;padding-top:.4rem;border-top:1px solid var(--border);display:none">
@@ -139,13 +139,17 @@
     </div>
     <div class="ai-input-bar">
       <button type="button" id="ai-attach-btn" title="Attach an image, audio clip, or document (audio needs a .wav model with audio support to be understood, not just uploaded)"
+              aria-label="Attach a file"
               onclick="document.getElementById('ai-attach-input').click()">📎</button>
       <button type="button" id="ai-mic-btn" title="Record a voice message — transcribed via Whisper and sent to the model as text"
+              aria-label="Record a voice message"
               onclick="ndToggleAttachMic('ai-mic-btn', chatAttachments)">🎤</button>
       <button type="button" id="ai-bgjob-btn" title="Process a voice memo as a background job — keeps running even if you close this tab"
+              aria-label="Process a voice memo in the background"
               onclick="document.getElementById('ai-bgjob-input').click()">🔒</button>
       <textarea id="ai-input" rows="2" placeholder="Ask anything… (Enter to send, Shift+Enter for new line)" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
       <button type="button" id="ai-send-bg" title="Send this message as a background job instead — keeps running even if you close this tab; the reply lands in Background jobs below, not the conversation, until you click Use this"
+              aria-label="Send as a background job"
               onclick="sendMessageAsBackgroundJob()">🔒</button>
       <button id="ai-send" onclick="sendMessage()">Send ↵</button>
     </div>
@@ -153,7 +157,7 @@
     <!-- Mobile RAG settings bar (hidden on desktop via CSS) -->
     <div id="mobile-rag-bar" style="display:none;padding:.45rem .9rem;background:var(--bg2);border-top:1px solid var(--border);flex-direction:column;gap:.35rem">
       <div style="display:flex;align-items:center;gap:.4rem">
-        <span id="ctx-status-mob" style="font-size:.72rem;color:var(--text-dim);flex:1">○ Ready</span>
+        <span id="ctx-status-mob" role="status" aria-live="polite" style="font-size:.72rem;color:var(--text-dim);flex:1">○ Ready</span>
         <button onclick="document.getElementById('mobile-rag-bar').style.display='none'" style="background:none;border:none;color:var(--text-dim);font-size:.85rem;cursor:pointer;padding:0 .2rem">✕</button>
       </div>
       <div style="display:flex;align-items:center;gap:.4rem">
@@ -174,7 +178,7 @@
 
     <!-- Mobile RAG toggle + status row -->
     <div id="mobile-rag-toggle-row" style="display:none;padding:.3rem .9rem;border-top:1px solid var(--border);background:var(--bg);align-items:center;gap:.5rem">
-      <span id="ctx-status-mob2" style="font-size:.72rem;color:var(--text-dim);flex:1">○ Ready</span>
+      <span id="ctx-status-mob2" role="status" aria-live="polite" style="font-size:.72rem;color:var(--text-dim);flex:1">○ Ready</span>
       <button onclick="toggleMobileRag()" style="font-size:.7rem;background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:4px;padding:.2rem .5rem;cursor:pointer">⚙ RAG</button>
     </div>
   </div>

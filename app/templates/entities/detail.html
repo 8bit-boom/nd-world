@@ -226,10 +226,13 @@
       <div id="ep-jobs-panel" class="nd-jobs-panel" style="display:none"></div>
       <div class="ep-bar">
         <button type="button" id="ep-attach-btn" title="Attach an image, audio clip, or document (audio needs a .wav file and an audio-capable model to be understood)"
+                aria-label="Attach a file"
                 onclick="document.getElementById('ep-attach-input').click()">📎</button>
         <button type="button" id="ep-mic-btn" title="Record a voice message — transcribed via Whisper and sent to the model as text"
+                aria-label="Record a voice message"
                 onclick="ndToggleAttachMic('ep-mic-btn', epAttachments)">🎤</button>
         <button type="button" id="ep-bgjob-btn" title="Process a voice memo as a background job — keeps running even if you close this tab"
+                aria-label="Process a voice memo in the background"
                 onclick="document.getElementById('ep-bgjob-input').click()">🔒</button>
         <textarea id="ep-input" rows="1" placeholder="Ask about this entity… (Enter to send)" onkeydown="epKey(event)" oninput="epResize(this)"></textarea>
         <button id="ep-send" onclick="epSend()">Ask</button>
@@ -274,7 +277,7 @@
 .rel-card:hover { border-color:var(--neon); color:var(--neon); }
 .rel-icon { font-size:1rem; }
 .rel-name { font-weight:600; }
-.rel-sub { font-size:.72rem; color:#777; }
+.rel-sub { font-size:.72rem; color:#818181; }  /* was #777 — 4.04:1 against .rel-card's #161616, short of WCAG AA's 4.5:1 */
 /* AI panel */
 .ai-panel { margin-top:1.5rem; border:1px solid var(--border); border-radius:8px; padding:.5rem .75rem; }
 .ai-panel > summary { cursor:pointer; font-size:.9rem; color:var(--neon); padding:.25rem 0; user-select:none; }
