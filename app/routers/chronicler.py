@@ -33,15 +33,31 @@ _CHRONICLER_SYSTEM = (
     "slightly formal narrator's voice. Keep answers concise."
 )
 
+# Every visible Fact up to this cap goes into the prompt UNFILTERED (no
+# keyword match against the question, unlike the entity retrieval just
+# below) — on a mature campaign with thousands of logged facts that's a
+# multi-thousand-token system prompt on every single question, most of it
+# irrelevant to what was actually asked. Lowered from an unnamed inline 200
+# specifically to bound that cost; trades "the Chronicler has seen every
+# fact ever recorded" for materially fewer tokens per call. Facts are
+# ordered newest-first (see visible_facts below), so this caps to the most
+# RECENT facts, not a random/arbitrary subset — a deliberate choice given
+# there's no per-fact relevance signal to filter by the way entities have
+# (FTS5 body/summary matching via find_relevant_entities).
+_CHRONICLER_FACT_LIMIT = 60
+
 
 def visible_facts(db: Session, world_id: int, user) -> list:
     """The actual security boundary: a non-GM caller never gets a GM-only
     fact's content, even loaded into the prompt — not just told not to
-    repeat it. Same visible_to_players convention as Entity/EntityNote."""
+    repeat it. Same visible_to_players convention as Entity/EntityNote.
+
+    Capped at _CHRONICLER_FACT_LIMIT (newest first) — see that constant's
+    own comment for why this isn't relevance-filtered the way entities are."""
     q = db.query(Fact).filter(Fact.world_id == world_id)
     if not (user and user.is_gm):
         q = q.filter(Fact.visible_to_players.isnot(False))
-    return q.order_by(Fact.created_at.desc()).limit(200).all()
+    return q.order_by(Fact.created_at.desc()).limit(_CHRONICLER_FACT_LIMIT).all()
 
 
 def build_chronicler_system_prompt(db: Session, world_id: int, question: str, user) -> str:
@@ -96,7 +112,18 @@ async def chronicler_ask(request: Request, db: Session = Depends(get_db), active
     if not (user and user.is_gm):
         check_llm_cooldown(user_id)
     system = build_chronicler_system_prompt(db, world.id, question, user)
-    answer = await _ai_module.generate_chat([{"role": "user", "content": question}], system=system)
+    # Sizes num_ctx to actually fit the assembled system prompt (facts +
+    # entity excerpts, now capped but still potentially large) + the
+    # question — without this, a prompt longer than the GM's configured/
+    # assumed context gets silently truncated by Ollama instead of raising,
+    # which in practice (see condense_call_options' own docstring for the
+    # exact failure mode observed) can corrupt the prompt badly enough that
+    # the model responds with garbage instead of a real answer or a clean
+    # error.
+    answer = await _ai_module.generate_chat(
+        [{"role": "user", "content": question}], system=system,
+        options=_ai_module.context_sized_options(system + question),
+    )
     result = {"answer": answer}
     _ask_cache[cache_key] = (now, result)
     return result

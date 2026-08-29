@@ -53,7 +53,7 @@ def test_check_llm_cooldown_respects_a_custom_window():
 
 
 def test_chronicler_ask_second_call_from_same_player_is_rate_limited(client, seed, monkeypatch):
-    async def fake_generate_chat(messages, system=""):
+    async def fake_generate_chat(messages, system="", model="", options=None):
         return "An answer."
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
 
@@ -66,7 +66,7 @@ def test_chronicler_ask_second_call_from_same_player_is_rate_limited(client, see
 
 
 def test_chronicler_ask_gm_is_never_rate_limited(client, seed, monkeypatch):
-    async def fake_generate_chat(messages, system=""):
+    async def fake_generate_chat(messages, system="", model="", options=None):
         return "An answer."
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
 

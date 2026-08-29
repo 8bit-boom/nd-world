@@ -1,9 +1,12 @@
 """Tests for the player-accessible Chronicler chat — the security boundary
 is that GM-only fact/entity content never enters the prompt built for a
 player's question, not just that the model is told to withhold it."""
+from datetime import datetime, timedelta
+
 from app import ai as ai_module
 from app.database import SessionLocal
 from app.models import Entity, Fact
+from app.routers import chronicler as chronicler_module
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -40,7 +43,7 @@ def test_player_question_excludes_gm_only_content(client, seed, monkeypatch):
     _seed_facts_and_entity(seed.world_a)
     captured = {}
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", options=None):
         captured["system"] = system
         return "Here is what I know."
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
@@ -62,7 +65,7 @@ def test_gm_question_includes_gm_only_content(client, seed, monkeypatch):
     _seed_facts_and_entity(seed.world_a)
     captured = {}
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", options=None):
         captured["system"] = system
         return "Full truth revealed."
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
@@ -87,7 +90,7 @@ def test_chronicler_scoped_to_active_world(client, seed, monkeypatch):
 
     captured = {}
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", options=None):
         captured["system"] = system
         return "ok"
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
@@ -97,3 +100,71 @@ def test_chronicler_scoped_to_active_world(client, seed, monkeypatch):
     r = client.post("/api/chronicler/ask", json={"question": "anything?"})
     assert r.status_code == 200
     assert "World B only fact." not in captured["system"]
+
+
+# ── Wave 3 (token-usage plan item 2.2): context sizing + fact cap ──────────
+
+def test_chronicler_ask_passes_context_sized_options(client, seed, monkeypatch):
+    """Without this, a large assembled system prompt (many facts + entity
+    excerpts) silently overflowing the GM's configured/assumed num_ctx gets
+    truncated by Ollama instead of raising — see condense_call_options' own
+    docstring for the garbage-output failure mode this exists to prevent."""
+    captured = {}
+
+    async def fake_generate_chat(messages, system="", model="", options=None):
+        captured["options"] = options
+        captured["system"] = system
+        return "An answer."
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/chronicler/ask", json={"question": "Who is Elyra?"})
+    assert r.status_code == 200
+    assert captured["options"] is not None
+    assert "num_ctx" in captured["options"]
+
+    expected = ai_module.context_sized_options(captured["system"] + "Who is Elyra?")
+    assert captured["options"] == expected
+
+
+def test_chronicler_fact_prompt_is_capped_and_newest_first(client, seed, monkeypatch):
+    limit = chronicler_module._CHRONICLER_FACT_LIMIT
+    total = limit + 5  # more facts than the cap, so some are provably excluded
+    db = SessionLocal()
+    try:
+        db.add_all([
+            # Explicit, strictly increasing created_at — Fact.created_at.desc()
+            # ordering must be deterministic here, not rely on facts inserted
+            # in the same loop happening to get distinct default timestamps.
+            Fact(
+                world_id=seed.world_a.id, content=f"Fact number {i}.", visible_to_players=True,
+                created_at=datetime(2024, 1, 1) + timedelta(minutes=i),
+            )
+            for i in range(total)
+        ])
+        db.commit()
+    finally:
+        db.close()
+
+    captured = {}
+
+    async def fake_generate_chat(messages, system="", model="", options=None):
+        captured["system"] = system
+        return "An answer."
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/chronicler/ask", json={"question": "anything?"})
+    assert r.status_code == 200
+    system = captured["system"]
+    included = sum(1 for i in range(total) if f"Fact number {i}." in system)
+    assert included == limit
+    # Newest-first ordering (Fact.created_at.desc()) means the highest-
+    # numbered (most recently inserted) facts survive the cap, not the
+    # earliest ones.
+    for i in range(total - limit, total):
+        assert f"Fact number {i}." in system
+    for i in range(total - limit):
+        assert f"Fact number {i}." not in system

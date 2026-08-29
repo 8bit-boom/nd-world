@@ -422,6 +422,24 @@ _SYSTEM = (
 )
 
 
+def _empty_response_message(model: str, thinking_chars: int, done_reason: str | None) -> str:
+    """The exact wording generate_chat's empty-content branch has always
+    used, factored out so stream_chat's own empty-stream diagnostic (below)
+    can share it verbatim rather than risking the two texts drifting apart
+    — is_thinking_starved_sentinel and existing tests both pin this exact
+    phrasing (particularly the literal `hidden "thinking"` substring), so
+    any caller of this helper automatically stays compatible with both."""
+    if thinking_chars:
+        return (
+            f"[empty response from {model} — it produced {thinking_chars} character(s) of hidden "
+            "\"thinking\" output but no final answer (usually means it ran out of output "
+            "budget mid-reasoning). Try a shorter prompt, a higher response-length limit, "
+            "or a non-reasoning model.]"
+        )
+    detail = f"done_reason={done_reason}" if done_reason else "no done_reason reported"
+    return f"[empty response from {model} ({detail}) — try a different model, or check the Ollama server logs]"
+
+
 async def generate_chat(messages: list[dict], system: str = "", model: str = "", options: dict = None, think: bool = False) -> str:
     m = model or effective_ollama_model()
     _log.info("generate_chat model=%s msgs=%d", m, len(messages))
@@ -453,15 +471,7 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
             "had_thinking=%r, thinking_chars=%d)",
             m, done_reason, eval_count, bool(thinking), len(thinking or ""),
         )
-        if thinking:
-            return (
-                f"[empty response from {m} — it produced {len(thinking)} character(s) of hidden "
-                "\"thinking\" output but no final answer (usually means it ran out of output "
-                "budget mid-reasoning). Try a shorter prompt, a higher response-length limit, "
-                "or a non-reasoning model.]"
-            )
-        detail = f"done_reason={done_reason}" if done_reason else "no done_reason reported"
-        return f"[empty response from {m} ({detail}) — try a different model, or check the Ollama server logs]"
+        return _empty_response_message(m, len(thinking or ""), done_reason)
     except _ollama.ResponseError as exc:
         _log.error("generate_chat Ollama error: %s %s", exc.status_code, exc.error)
         return f"[AI error: Ollama {exc.status_code}: {exc.error}]"
@@ -503,11 +513,34 @@ async def stream_chat(messages: list[dict], system: str = "", model: str = "", o
     _log.info("stream_chat model=%s msgs=%d", m, len(messages))
     full = [{"role": "system", "content": system}] if system else []
     full.extend(messages)
+    yielded_any = False
+    thinking_chars = 0
+    done_reason = None
     try:
         async for chunk in await _client().chat(model=m, messages=full, stream=True, **_chat_kwargs(options)):
             token = chunk.message.content
             if token:
+                yielded_any = True
                 yield token
+            # think isn't forwarded to _chat_kwargs here (every stream_chat
+            # caller is an interactive surface with no Thinking toggle — see
+            # is_thinking_starved_sentinel's docstring for the full survey),
+            # so this is purely for the same "model ignores think=False"
+            # case generate_chat's own diagnostic exists for.
+            thinking_chars += len(getattr(chunk.message, "thinking", None) or "")
+            done_reason = getattr(chunk, "done_reason", None) or done_reason
+        if not yielded_any:
+            # Same empty-response case generate_chat handles (see its own
+            # comment) — a model that ignores think=False can burn its
+            # whole budget on hidden reasoning here too, but on the
+            # streaming path that used to come back as a completely silent
+            # reply with nothing for the caller to show at all, instead of
+            # generate_chat's own explanatory sentinel.
+            _log.warning(
+                "stream_chat model=%s yielded no content (done_reason=%r, thinking_chars=%d)",
+                m, done_reason, thinking_chars,
+            )
+            yield _empty_response_message(m, thinking_chars, done_reason)
     except _ollama.ResponseError as exc:
         _log.error("stream_chat Ollama error: %s %s", exc.status_code, exc.error)
         yield f"[AI error: Ollama {exc.status_code}: {exc.error}]"

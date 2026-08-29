@@ -472,6 +472,70 @@ async def test_stream_chat_passes_options(monkeypatch):
     assert "keep_alive" not in calls[0]
 
 
+# ── stream_chat: empty-stream diagnostic ────────────────────────────────────
+#
+# No surface using stream_chat exposes a Thinking toggle (see
+# is_thinking_starved_sentinel's own docstring for the full survey — every
+# caller runs think=False via _chat_kwargs' own default), but a model that
+# ignores that and burns its whole budget on hidden reasoning used to come
+# back as a completely silent reply on this path — nothing for the caller
+# to show at all, unlike generate_chat's own explanatory sentinel.
+
+class _FakeStreamChunk:
+    def __init__(self, content="", thinking=None, done_reason=None):
+        self.message = types.SimpleNamespace(content=content, thinking=thinking)
+        self.done_reason = done_reason
+
+
+class _FakeStreamClient:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    async def chat(self, **kwargs):
+        async def _gen():
+            for c in self._chunks:
+                yield c
+        return _gen()
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_empty_stream_with_thinking_yields_the_thinking_sentinel(monkeypatch):
+    chunks = [
+        _FakeStreamChunk(content="", thinking="pondering "),
+        _FakeStreamChunk(content="", thinking="deeply...", done_reason="length"),
+    ]
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeStreamClient(chunks))
+    tokens = [tok async for tok in ai_module.stream_chat([{"role": "user", "content": "hi"}])]
+    assert len(tokens) == 1
+    assert "hidden" in tokens[0] and "thinking" in tokens[0]
+    assert str(len("pondering deeply...")) in tokens[0]  # accumulated across chunks
+    assert "done_reason=length" not in tokens[0]  # same convention generate_chat's own sentinel uses
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_empty_stream_without_thinking_yields_the_done_reason_sentinel(monkeypatch):
+    chunks = [_FakeStreamChunk(content="", done_reason="length")]
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeStreamClient(chunks))
+    tokens = [tok async for tok in ai_module.stream_chat([{"role": "user", "content": "hi"}])]
+    assert len(tokens) == 1
+    assert "empty response" in tokens[0]
+    assert "done_reason=length" in tokens[0]
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_normal_stream_yields_no_sentinel(monkeypatch):
+    """A stream that DOES produce content must behave exactly as before —
+    no trailing empty-response sentinel appended just because the stream
+    also carried some thinking text alongside real tokens."""
+    chunks = [
+        _FakeStreamChunk(content="Hello", thinking="a little reasoning"),
+        _FakeStreamChunk(content=" there", done_reason="stop"),
+    ]
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeStreamClient(chunks))
+    tokens = [tok async for tok in ai_module.stream_chat([{"role": "user", "content": "hi"}])]
+    assert tokens == ["Hello", " there"]
+
+
 @pytest.mark.asyncio
 async def test_parse_facts_from_recap_passes_options_and_keep_alive(monkeypatch):
     calls = []

@@ -965,10 +965,24 @@ async function buildChatMessagesWithContext(extraUserMsg) {
   if (pinnedCtx) ctx = ctx ? (pinnedCtx + '\n\n' + ctx) : pinnedCtx;
 
   const base = extraUserMsg ? [...history, extraUserMsg] : [...history];
+  // The lore pair is injected immediately BEFORE the final (newest) user
+  // turn, not at the very front of the array. It differs every send (a
+  // fresh RAG query each time), so putting it first — as this used to do —
+  // made the very first messages in the array diverge from the previous
+  // send on every single turn, defeating Ollama's KV-prefix cache for the
+  // ENTIRE conversation: the server has to re-prefill the whole history
+  // from scratch each time instead of reusing what it already computed.
+  // Keeping everything before the newest turn byte-stable turn to turn
+  // means only the lore pair + that one new message ever need prefilling —
+  // large savings on a long-running chat, and arguably better grounding
+  // too (freshest instruction closest to what it's answering). The lore
+  // pair is never pushed into `history` either way, so nothing persisted
+  // changes.
   const messagesWithCtx = ctx ? [
+    ...base.slice(0, -1),
     { role: 'user', content: 'Relevant world lore:\n\n' + ctx },
     { role: 'assistant', content: 'Got it.' },
-    ...base
+    ...base.slice(-1),
   ] : base;
 
   const presetSystem = _chatPresetSystemExtra ? WORLD_SYSTEM + '\n\n' + _chatPresetSystemExtra : WORLD_SYSTEM;

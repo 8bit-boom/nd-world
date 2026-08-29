@@ -44,7 +44,7 @@ def _login_gm_in(client, seed, world):
 def test_chronicler_repeated_question_hits_cache(client, seed, monkeypatch):
     calls = []
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", options=None):
         calls.append(1)
         return "An answer."
     from app import ai as ai_module
@@ -61,7 +61,7 @@ def test_chronicler_repeated_question_hits_cache(client, seed, monkeypatch):
 def test_chronicler_question_is_case_insensitive_for_caching(client, seed, monkeypatch):
     calls = []
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", options=None):
         calls.append(1)
         return "An answer."
     from app import ai as ai_module
@@ -76,7 +76,7 @@ def test_chronicler_question_is_case_insensitive_for_caching(client, seed, monke
 def test_chronicler_different_question_is_not_cached(client, seed, monkeypatch):
     calls = []
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", options=None):
         calls.append(1)
         return "An answer."
     from app import ai as ai_module
@@ -97,7 +97,7 @@ def test_chronicler_cache_is_per_user_not_shared_across_players(client, seed, mo
     caching nuance."""
     calls = []
 
-    async def fake_generate_chat(messages, system="", model=""):
+    async def fake_generate_chat(messages, system="", model="", options=None):
         calls.append(1)
         return "An answer."
     from app import ai as ai_module
