@@ -249,6 +249,18 @@ GLOSSARY_ENTITY_KINDS = ("character", "creature", "location", "organization", "r
 # truncating mid-list. Ordered by kind then name for a stable, predictable
 # list if a world does have more entities than fit.
 GLOSSARY_ENTITY_LIMIT = 50
+# GLOSSARY_ENTITY_LIMIT bounds the entity-name COUNT, not their total
+# length — whisper.cpp's initial_prompt prompt window is a small, fixed
+# token budget in practice, shared with whatever a GM already typed by
+# hand (see merge_glossary below), so a long GM-typed glossary plus 50
+# potentially-long entity names can still overflow it; whisper silently
+# truncates the tail (the entity names, appended last — GM text is never
+# trimmed) with no signal anything was dropped. This is a second, byte-
+# length cap on top of the count cap. ~600 chars is a conservative
+# fraction of that real (undocumented) budget, erring toward dropping a
+# few extra names rather than risking the same silent-truncation problem
+# this whole mechanism exists to avoid.
+_GLOSSARY_ENTITY_CHAR_BUDGET = 600
 
 
 def entity_glossary_terms(world_id: int, limit: int = GLOSSARY_ENTITY_LIMIT) -> list[str]:
@@ -273,21 +285,49 @@ def entity_glossary_terms(world_id: int, limit: int = GLOSSARY_ENTITY_LIMIT) -> 
         db.close()
 
 
-def _merge_glossary(gm_glossary: str, entity_terms: list[str]) -> str:
+def merge_glossary(gm_glossary: str, entity_terms: list[str]) -> tuple[str, int, int]:
     """GM-typed terms first (a GM who bothered to type something presumably
     cares about it most, and it's least likely to fall outside whatever
     truncation whisper.cpp's own prompt budget applies), then entity names
     — comma/newline-separated either way, matching whisper_glossary's own
     existing free-text convention. Case-insensitive dedup against the GM's
     own terms so a name that's both hand-typed AND an Entity isn't sent
-    twice."""
+    twice.
+
+    Entity terms (post-dedup) are appended in order up to
+    _GLOSSARY_ENTITY_CHAR_BUDGET total characters — whole-term granularity
+    (never truncates mid-name), and GM text is never trimmed. Returns
+    (merged_text, included_count, dropped_count) rather than just the
+    string: `included`/`dropped` describe entity terms specifically (not
+    the GM's own text), and are what GET /api/ai/whisper/glossary surfaces
+    so a GM isn't left wondering why a name they know is on the roster
+    never gets biased for. Public (no leading underscore): called from
+    both _glossary_for_world below and that route, same reasoning
+    entity_glossary_terms' own docstring gives."""
     if not entity_terms:
-        return gm_glossary
+        return gm_glossary, 0, 0
     gm_terms_lower = {t.strip().lower() for t in gm_glossary.replace("\n", ",").split(",") if t.strip()}
     new_terms = [t for t in entity_terms if t.strip().lower() not in gm_terms_lower]
     if not new_terms:
-        return gm_glossary
-    return f"{gm_glossary}, {', '.join(new_terms)}" if gm_glossary else ", ".join(new_terms)
+        return gm_glossary, 0, 0
+    included = []
+    used_chars = 0
+    for t in new_terms:
+        added = len(t) + 2  # ", " separator
+        if used_chars + added > _GLOSSARY_ENTITY_CHAR_BUDGET:
+            break
+        included.append(t)
+        used_chars += added
+    dropped = len(new_terms) - len(included)
+    if dropped:
+        _log.info(
+            "merge_glossary: %d entity name(s) dropped past the %d-char budget (%d included)",
+            dropped, _GLOSSARY_ENTITY_CHAR_BUDGET, len(included),
+        )
+    if not included:
+        return gm_glossary, 0, dropped
+    merged = f"{gm_glossary}, {', '.join(included)}" if gm_glossary else ", ".join(included)
+    return merged, len(included), dropped
 
 
 def _glossary_for_world(world_id: int) -> str:
@@ -297,7 +337,7 @@ def _glossary_for_world(world_id: int) -> str:
         gm_glossary = (w.whisper_glossary or "").strip() if w else ""
     finally:
         db.close()
-    return _merge_glossary(gm_glossary, entity_glossary_terms(world_id))
+    return merge_glossary(gm_glossary, entity_glossary_terms(world_id))[0]
 
 
 def _whisper_language_for_world(world_id: int) -> str:

@@ -210,6 +210,110 @@ def test_summarize_from_audio_transcribes_and_summarizes(client, seed, monkeypat
     assert captured["path_exists_during_call"] is True
 
 
+def test_summarize_from_audio_reports_recap_failed_on_a_failure_sentinel(client, seed, monkeypatch):
+    """Transcribe succeeds but summarize itself returns a failure sentinel
+    (see is_failure_sentinel) — recap_failed must be True so the client
+    knows to offer a retry instead of treating the sentinel text as an
+    applyable draft. The transcript is still real and returned as-is."""
+    async def fake_transcribe(path, glossary="", **kwargs):
+        return "a real transcript"
+    async def failing_summarize(transcript, model="", extra_instructions="", **kwargs):
+        return "[AI unavailable: ConnectionError: refused]"
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+    monkeypatch.setattr(ai_module, "summarize_transcript", failing_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = _upload_audio(client)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["transcript"] == "a real transcript"
+    assert body["recap"] == "[AI unavailable: ConnectionError: refused]"
+    assert body["recap_failed"] is True
+
+
+def test_summarize_from_audio_recap_failed_false_on_success(client, seed, monkeypatch):
+    async def fake_transcribe(path, glossary="", **kwargs):
+        return "a real transcript"
+    async def fake_summarize(transcript, model="", extra_instructions="", **kwargs):
+        return "A real recap."
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = _upload_audio(client)
+    assert r.status_code == 200
+    assert r.json()["recap_failed"] is False
+
+
+# ── /api/sessions/ai/summarize-transcript (retry the summarize step only) ──
+#
+# For when .../summarize-from-audio(/complete) transcribed fine but
+# summarize itself failed — re-runs just that step over the already-
+# transcribed text, without re-uploading/re-transcribing the recording.
+
+def test_summarize_transcript_only_reruns_summarize_over_existing_text(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_summarize(transcript, model="", extra_instructions="", think=True, **kwargs):
+        captured["transcript"] = transcript
+        captured["think"] = think
+        return "A recap from the saved transcript."
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post("/api/sessions/ai/summarize-transcript", json={
+        "transcript": "a previously transcribed session", "think": False,
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["transcript"] == "a previously transcribed session"
+    assert body["recap"] == "A recap from the saved transcript."
+    assert body["recap_failed"] is False
+    assert captured["transcript"] == "a previously transcribed session"
+    assert captured["think"] is False
+
+
+def test_summarize_transcript_only_reports_recap_failed_again_if_still_failing(client, seed, monkeypatch):
+    async def failing_summarize(transcript, model="", extra_instructions="", **kwargs):
+        return "[AI unavailable: ConnectionError: refused]"
+    monkeypatch.setattr(ai_module, "summarize_transcript", failing_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post("/api/sessions/ai/summarize-transcript", json={"transcript": "a transcript"})
+    assert r.status_code == 200
+    assert r.json()["recap_failed"] is True
+
+
+def test_summarize_transcript_only_rejects_blank_transcript(client, seed):
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post("/api/sessions/ai/summarize-transcript", json={"transcript": "   "})
+    assert r.status_code == 400
+
+
+def test_summarize_transcript_only_requires_gm(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post("/api/sessions/ai/summarize-transcript", json={"transcript": "x"})
+    assert r.status_code == 403
+
+
+def test_new_session_form_wires_the_retry_without_reupload_button(client, seed):
+    """JS-source assertion (no server-rendered failure state to drive
+    through a plain HTTP test client) that the retry button, its failure/
+    draft state toggle, and the new route are actually wired into the page
+    — same style as test_recap_mention_check.py's own button-presence
+    checks."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/sessions/new")
+    assert r.status_code == 200
+    assert 'onclick="aiRetrySummaryFromTranscript()"' in r.text
+    assert "function aiRetrySummaryFromTranscript()" in r.text
+    assert "/api/sessions/ai/summarize-transcript" in r.text
+    assert "function _showRecapFailed(errorText)" in r.text
+    assert "function _showRecapDraft(text)" in r.text
+    assert "data.recap_failed" in r.text
+
+
 def test_summarize_from_audio_is_session_independent(client, seed, monkeypatch):
     """Works with no session_id in the path at all — usable on the New
     Session form before anything has been saved, like expand-notes/

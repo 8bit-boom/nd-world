@@ -4,12 +4,16 @@ threads into app.ai.transcribe_audio's request to whisper.cpp, so campaign
 NPC names/places bias transcription instead of getting autocorrected.
 
 Also covers audio_jobs._glossary_for_world/entity_glossary_terms/
-_merge_glossary: World entity names (characters, creatures, locations,
+merge_glossary: World entity names (characters, creatures, locations,
 organizations, races, professions) are merged into whatever the GM typed
 by hand at transcribe time — the saved World.whisper_glossary text itself
 is untouched, so a GM doesn't have to keep it in sync as entities are
 added/renamed, and every actual transcription call still gets the merged
-result without the GM needing to do anything.
+result without the GM needing to do anything. merge_glossary also caps
+entity terms by total character length (not just count), since whisper.cpp's
+initial_prompt window is a small, fixed token budget that a long GM
+glossary plus many entity names can still overflow even under the count
+cap — see merge_glossary's own docstring.
 """
 import asyncio
 import time
@@ -59,7 +63,10 @@ def test_glossary_empty_by_default(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/api/ai/whisper/glossary")
     assert r.status_code == 200
-    assert r.json() == {"glossary": "", "entity_terms_count": 0}
+    assert r.json() == {
+        "glossary": "", "entity_terms_count": 0,
+        "entity_terms_included": 0, "entity_terms_dropped": 0,
+    }
 
 
 def test_glossary_save_and_roundtrip(client, seed):
@@ -69,7 +76,10 @@ def test_glossary_save_and_roundtrip(client, seed):
     assert r.status_code == 200
     assert r.json()["glossary"] == "Elyndra, Karrveth Hollow"
     r2 = client.get("/api/ai/whisper/glossary")
-    assert r2.json() == {"glossary": "Elyndra, Karrveth Hollow", "entity_terms_count": 0}
+    assert r2.json() == {
+        "glossary": "Elyndra, Karrveth Hollow", "entity_terms_count": 0,
+        "entity_terms_included": 0, "entity_terms_dropped": 0,
+    }
 
 
 def test_glossary_save_strips_whitespace(client, seed):
@@ -96,7 +106,10 @@ def test_glossary_scoped_per_world(client, seed):
 
     client.cookies.set("active_world", seed.world_b.slug)
     r = client.get("/api/ai/whisper/glossary")
-    assert r.json() == {"glossary": "", "entity_terms_count": 0}
+    assert r.json() == {
+        "glossary": "", "entity_terms_count": 0,
+        "entity_terms_included": 0, "entity_terms_dropped": 0,
+    }
 
 
 # ── app.ai.transcribe_audio threads glossary through as "prompt" ───────────
@@ -207,19 +220,81 @@ def test_entity_glossary_terms_respects_limit(client, seed):
 
 
 def test_merge_glossary_appends_entity_terms_after_gm_text():
-    result = audio_jobs._merge_glossary("Elyndra, the Undermarket", ["Gareth Ashfall", "The Bazaar"])
+    result, included, dropped = audio_jobs.merge_glossary("Elyndra, the Undermarket", ["Gareth Ashfall", "The Bazaar"])
     assert result == "Elyndra, the Undermarket, Gareth Ashfall, The Bazaar"
+    assert included == 2
+    assert dropped == 0
 
 
 def test_merge_glossary_works_with_no_gm_text():
-    result = audio_jobs._merge_glossary("", ["Gareth Ashfall", "The Bazaar"])
+    result, included, dropped = audio_jobs.merge_glossary("", ["Gareth Ashfall", "The Bazaar"])
     assert result == "Gareth Ashfall, The Bazaar"
+    assert included == 2
+    assert dropped == 0
 
 
 def test_merge_glossary_dedups_case_insensitively_against_gm_text():
-    result = audio_jobs._merge_glossary("gareth ashfall, Elyndra", ["Gareth Ashfall", "The Bazaar"])
+    result, included, dropped = audio_jobs.merge_glossary("gareth ashfall, Elyndra", ["Gareth Ashfall", "The Bazaar"])
     assert result.lower().count("gareth ashfall") == 1
     assert "The Bazaar" in result
+    assert included == 1  # only "The Bazaar" was new
+    assert dropped == 0
+
+
+def test_merge_glossary_no_entity_terms_returns_gm_text_unchanged():
+    result, included, dropped = audio_jobs.merge_glossary("Elyndra", [])
+    assert result == "Elyndra"
+    assert included == 0
+    assert dropped == 0
+
+
+# ── merge_glossary: character budget (Wave 4 token-usage plan item 2.5) ────
+#
+# GLOSSARY_ENTITY_LIMIT bounds entity-term COUNT; whisper.cpp's own prompt
+# window is a small fixed TOKEN budget, so a long GM glossary plus many
+# (or long) entity names can still overflow it even under the count cap.
+# _GLOSSARY_ENTITY_CHAR_BUDGET stops appending entity terms — whole-term
+# granularity, GM text never trimmed — once their combined length would
+# exceed it.
+
+def test_merge_glossary_stops_appending_past_the_char_budget():
+    # Each name is ~14 chars + ", " = 16; budget is 600, so roughly 37 fit.
+    names = [f"Entity Number {i:03d}" for i in range(60)]
+    result, included, dropped = audio_jobs.merge_glossary("", names)
+    assert included + dropped == 60
+    assert included < 60  # some really were cut off, this isn't a no-op
+    assert dropped > 0
+    # Whole-term granularity: every included name appears in full, with no
+    # partial/truncated name fragment in the result.
+    for name in names[:included]:
+        assert name in result
+    for name in names[included:]:
+        assert name not in result
+
+
+def test_merge_glossary_never_trims_gm_text_even_when_entities_overflow():
+    gm_text = "x" * 500  # already large on its own
+    names = [f"Entity {i}" for i in range(60)]
+    result, included, dropped = audio_jobs.merge_glossary(gm_text, names)
+    assert result.startswith(gm_text)
+
+
+def test_merge_glossary_whole_term_kept_or_fully_dropped_never_truncated():
+    """A single term so long it alone would blow the budget must be either
+    fully included or fully dropped — never cut mid-word."""
+    long_name = "A" * 700
+    result, included, dropped = audio_jobs.merge_glossary("", [long_name, "Short Name"])
+    assert included == 0
+    assert dropped == 2
+    assert long_name not in result
+    assert "A" * 10 not in result  # no partial fragment leaked in either
+
+
+def test_merge_glossary_within_budget_drops_nothing():
+    names = ["Gareth Ashfall", "The Bazaar", "Elyndra"]
+    result, included, dropped = audio_jobs.merge_glossary("", names)
+    assert included == 3
+    assert dropped == 0
 
 
 def test_glossary_for_world_merges_entity_names(client, seed):
@@ -267,4 +342,19 @@ def test_whisper_glossary_route_reports_entity_terms_count(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/api/ai/whisper/glossary")
-    assert r.json()["entity_terms_count"] == 2
+    body = r.json()
+    assert body["entity_terms_count"] == 2
+    assert body["entity_terms_included"] == 2
+    assert body["entity_terms_dropped"] == 0
+
+
+def test_whisper_glossary_route_reports_entity_terms_dropped_past_char_budget(client, seed):
+    for i in range(60):
+        _make_entity(seed.world_a.id, "character", f"Entity Number {i:03d}")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/api/ai/whisper/glossary")
+    body = r.json()
+    assert body["entity_terms_count"] == 50  # GLOSSARY_ENTITY_LIMIT
+    assert body["entity_terms_dropped"] > 0
+    assert body["entity_terms_included"] + body["entity_terms_dropped"] == 50

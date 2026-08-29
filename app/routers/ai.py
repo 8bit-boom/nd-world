@@ -1062,9 +1062,18 @@ def api_whisper_glossary_get(request: Request, db=Depends(get_db), active_world:
     # of the saved text below at actual transcribe time (see audio_jobs.
     # _glossary_for_world) — surfaced so the GM isn't left guessing why
     # Whisper seems to know names they never typed here themselves.
+    # entity_terms_included/entity_terms_dropped: merge_glossary also caps
+    # entity terms by total character length (see its own docstring) — a
+    # GM whose roster is large enough to hit that cap should be able to see
+    # some names are being silently left out, not just how many exist.
+    gm_glossary = world.whisper_glossary or ""
+    entity_terms = _audio_jobs.entity_glossary_terms(world.id)
+    _, included, dropped = _audio_jobs.merge_glossary(gm_glossary, entity_terms)
     return {
-        "glossary": world.whisper_glossary or "",
-        "entity_terms_count": len(_audio_jobs.entity_glossary_terms(world.id)),
+        "glossary": gm_glossary,
+        "entity_terms_count": len(entity_terms),
+        "entity_terms_included": included,
+        "entity_terms_dropped": dropped,
     }
 
 

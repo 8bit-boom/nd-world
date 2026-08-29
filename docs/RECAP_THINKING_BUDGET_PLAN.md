@@ -395,20 +395,24 @@ padded tokens. Tests: `tests/test_benchmark.py` — assert the fake client saw
 Each wave is independently shippable by an implementer with no memory of this research —
 every item above carries its own file/function references and test plan.
 
-**Wave 1 — the core gap + cheap high-value wins:**
+**Wave 1 — the core gap + cheap high-value wins: ✅ done**
 1.1 (condense num_predict widening) · 1.5 (env-tunable headroom + thinking-length log) ·
 2.3 (session-log cache TTL) · 2.6 (micro-call caps)
 
-**Wave 2 — recovery from this exact failure:**
+**Wave 2 — recovery from this exact failure: ✅ done**
 1.2 (auto-retry with think=False, incl. `is_thinking_starved_sentinel` +
 `AudioJob.think_fallback`) · 1.3 (one-click Retry without Thinking — depends on 1.2's
 helper) · 1.6 (Settings/tooltip text)
 
-**Wave 3 — interactive surfaces:**
+**Wave 3 — interactive surfaces: ✅ done**
 1.4 (stream_chat diagnostic) · 2.1 (AI Chat lore-injection reorder) · 2.2 (Chronicler
 context sizing + fact cap)
 
-**Wave 4 — Whisper-side and blocking-route recovery:**
-2.4 (summarize-from-transcript retry route) · 2.5 (glossary char budget) · comment pass
-recording section 2's "preserve these" guidance next to the relevant code
-(`summarize_transcript`'s part-system computation, `_merge_glossary`).
+**Wave 4 — Whisper-side and blocking-route recovery: ✅ done**
+2.4 (summarize-from-transcript retry route) · 2.5 (glossary char budget, ended up renaming
+`_merge_glossary` to public `merge_glossary` since GET /whisper/glossary now calls it too) ·
+comment pass recording section 2's "preserve these" guidance next to the relevant code
+(`summarize_transcript`'s part-system computation, `merge_glossary`).
+
+All four waves shipped. Full suite: 1903 passed, 2 skipped (was 1865 passed, 2 skipped
+before this plan; 1890 before this final wave).

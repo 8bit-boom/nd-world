@@ -121,15 +121,22 @@
         <div id="audio-jobs-panel" class="nd-jobs-panel" style="display:none"></div>
 
         <div id="ai-recap-preview" style="display:none;margin-top:.6rem;background:var(--bg3);border:1px solid var(--neon);border-radius:4px;padding:.7rem">
-          <div style="font-size:.78rem;color:var(--neon);margin-bottom:.4rem">AI draft — review before applying <small id="ai-recap-preview-token-count" style="color:var(--text-dim)"></small></div>
+          <div id="ai-recap-preview-label" style="font-size:.78rem;color:var(--neon);margin-bottom:.4rem">AI draft — review before applying <small id="ai-recap-preview-token-count" style="color:var(--text-dim)"></small></div>
           <div id="ai-recap-preview-text" style="font-size:.85rem;white-space:pre-wrap;max-height:220px;overflow-y:auto;margin-bottom:.5rem"></div>
           <details id="ai-recap-transcript-wrap" style="display:none;margin-bottom:.5rem">
             <summary style="cursor:pointer;font-size:.75rem;color:var(--text-dim)">Raw transcript <small id="ai-recap-transcript-token-count"></small></summary>
             <div id="ai-recap-transcript-text" style="font-size:.78rem;color:var(--text-dim);white-space:pre-wrap;max-height:160px;overflow-y:auto;margin-top:.3rem"></div>
           </details>
           <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-            <button type="button" class="ai-recap-btn" onclick="aiApplyRecap('replace')">Replace summary</button>
-            <button type="button" class="ai-recap-btn" onclick="aiApplyRecap('append')">Append to summary</button>
+            <button type="button" class="ai-recap-btn ai-recap-apply-btn" onclick="aiApplyRecap('replace')">Replace summary</button>
+            <button type="button" class="ai-recap-btn ai-recap-apply-btn" onclick="aiApplyRecap('append')">Append to summary</button>
+            <!-- Only when the transcribe step succeeded but summarize itself
+                 failed (see recap_failed in the /summarize-from-audio(/complete)
+                 response) — re-runs just the summarize step over the
+                 already-transcribed text above via /api/sessions/ai/
+                 summarize-transcript, instead of forcing a GM to re-upload
+                 and re-transcribe the whole recording to retry. -->
+            <button type="button" id="ai-recap-retry-btn" class="ai-recap-btn" style="display:none" onclick="aiRetrySummaryFromTranscript()">🔁 Retry summary from this transcript</button>
             <button type="button" class="ai-recap-btn" onclick="aiDiscardRecap()">Discard</button>
           </div>
         </div>
@@ -272,6 +279,31 @@ function _setRecapTranscriptText(text) {
   document.getElementById('ai-recap-transcript-wrap').style.display = 'block';
 }
 
+// Transcription succeeded but the summarize step itself failed (see
+// recap_failed in the /summarize-from-audio(/complete) and
+// /summarize-transcript responses) — the transcript above is still real
+// and worth keeping, but `recap` is a failure sentinel, not an applyable
+// draft. Swap the preview panel into a "retry" state instead of one that
+// would otherwise offer the sentinel text as something to paste into the
+// Summary field.
+function _showRecapFailed(errorText) {
+  document.getElementById('ai-recap-preview-label').textContent = 'Summary failed';
+  document.getElementById('ai-recap-preview-label').style.color = '#f55';
+  _setRecapPreviewText(errorText);
+  document.getElementById('ai-recap-preview').style.display = 'block';
+  document.querySelectorAll('.ai-recap-apply-btn').forEach(b => b.style.display = 'none');
+  document.getElementById('ai-recap-retry-btn').style.display = '';
+}
+
+function _showRecapDraft(text) {
+  document.getElementById('ai-recap-preview-label').textContent = 'AI draft — review before applying';
+  document.getElementById('ai-recap-preview-label').style.color = 'var(--neon)';
+  _setRecapPreviewText(text);
+  document.getElementById('ai-recap-preview').style.display = 'block';
+  document.querySelectorAll('.ai-recap-apply-btn').forEach(b => b.style.display = '');
+  document.getElementById('ai-recap-retry-btn').style.display = 'none';
+}
+
 function _recapThinkEnabled() {
   const box = document.getElementById('recap-think-checkbox');
   return box ? box.checked : true;
@@ -310,8 +342,13 @@ async function aiRunRecap(url, body) {
       status.textContent = data.empty ? 'No facts logged for this session yet.' : 'No recap produced.';
       return;
     }
-    _setRecapPreviewText(_aiRecapDraft);
-    document.getElementById('ai-recap-preview').style.display = 'block';
+    // _showRecapDraft (not a bare _setRecapPreviewText+display) so the
+    // Apply/Retry button visibility always resets here too — otherwise a
+    // GM who previously hit a summarize-from-audio failure (which hides
+    // Apply and shows Retry, see _showRecapFailed) and then ran a
+    // DIFFERENT recap action through this shared function would see that
+    // stale button state carry over into an actually-valid draft.
+    _showRecapDraft(_aiRecapDraft);
     status.textContent = '';
   } catch (e) {
     status.textContent = 'Failed: ' + e.message;
@@ -476,10 +513,16 @@ async function aiSummarizeFromAudio(file) {
       },
       onProgress: (e) => ndProgressFromUpload(bar, e, 'Transcribing & summarizing — can take a while for a long recording…'),
     });
-    _aiRecapDraft = data.recap || '';
-    _setRecapPreviewText(_aiRecapDraft);
-    if (!_aiRecapDraft) document.getElementById('ai-recap-preview-text').textContent = '(empty recap)';
-    document.getElementById('ai-recap-preview').style.display = 'block';
+    if (data.recap_failed) {
+      // The transcribe step succeeded (data.transcript is real, kept
+      // below) but summarize itself returned a failure sentinel — show a
+      // retry option instead of offering that sentinel text as a draft.
+      _aiRecapDraft = '';
+      _showRecapFailed(data.recap || '(no error detail)');
+    } else {
+      _aiRecapDraft = data.recap || '';
+      _showRecapDraft(_aiRecapDraft || '(empty recap)');
+    }
     if (data.transcript) _setRecapTranscriptText(data.transcript);
   } catch (e) {
     status.textContent = 'Failed: ' + e.message;
@@ -490,16 +533,57 @@ async function aiSummarizeFromAudio(file) {
   }
 }
 
+// Retries just the summarize step over the transcript already shown in the
+// "Raw transcript" details block — no re-upload/re-transcription needed.
+// Reachable only from the "🔁 Retry summary from this transcript" button,
+// which _showRecapFailed reveals exactly when the prior attempt's
+// transcribe step succeeded but summarize itself failed.
+async function aiRetrySummaryFromTranscript() {
+  const status = document.getElementById('ai-recap-status');
+  const transcript = document.getElementById('ai-recap-transcript-text').textContent;
+  if (!transcript) return;
+  status.textContent = '';
+  _aiRecapButtons().forEach(b => b.disabled = true);
+  try {
+    const res = await fetch('/api/sessions/ai/summarize-transcript', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        transcript,
+        extra_instructions: document.getElementById('audio-recap-instructions').value,
+        think: _recapThinkEnabled(),
+      }),
+    });
+    if (!res.ok) throw await ndApiErrorFrom(res);
+    const data = await res.json();
+    if (data.recap_failed) {
+      _aiRecapDraft = '';
+      _showRecapFailed(data.recap || '(no error detail)');
+    } else {
+      _aiRecapDraft = data.recap || '';
+      _showRecapDraft(_aiRecapDraft || '(empty recap)');
+    }
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  } finally {
+    _aiRecapButtons().forEach(b => b.disabled = false);
+  }
+}
+
 const sessionAudioJobs = ndAudioJobs(document.getElementById('audio-jobs-panel'), {
   createUrl: '/api/sessions/ai/audio-jobs',
   chunkUrl: '/api/sessions/ai/audio-jobs/chunk',
   completeUrl: '/api/sessions/ai/audio-jobs/complete',
   listUrl: '/api/sessions/ai/audio-jobs',
   onUse: (job) => {
+    // A background job's own failure/retry story already lives on the
+    // Background Jobs page (auto-retry + one-click "Retry without
+    // Thinking", see app/templates/background_jobs.html) — this callback
+    // only fires from "Use this" on a job the GM picked to bring over, so
+    // _showRecapDraft (not _showRecapFailed) is always the right state
+    // here; it still resets any stale Apply/Retry visibility left over
+    // from a prior audio-upload failure on THIS page.
     _aiRecapDraft = job.recap || '';
-    _setRecapPreviewText(_aiRecapDraft);
-    if (!_aiRecapDraft) document.getElementById('ai-recap-preview-text').textContent = '(empty recap)';
-    document.getElementById('ai-recap-preview').style.display = 'block';
+    _showRecapDraft(_aiRecapDraft || '(empty recap)');
     if (job.transcript) _setRecapTranscriptText(job.transcript);
   },
 });

@@ -1293,6 +1293,16 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
         )
 
     _log.info("summarize_transcript: chunking into %d part(s) (%d chars total)", len(chunks), len(transcript))
+    # `system` (part_system, computed once above) is reused byte-for-byte
+    # for every chunk's generate_chat call below — this already maximizes
+    # Ollama's KV-prefix cache reuse across the whole map-reduce loop (each
+    # call's prompt shares an identical prefix with the last, so only the
+    # new chunk's own tokens need prefilling) and ollama_job_semaphore
+    # holds the entire loop, so nothing else interleaves to evict that
+    # cached prefix between chunks. Do NOT add per-part variation (e.g.
+    # "this is part 3 of 7") to this system prompt — it would defeat that
+    # reuse for a token-visibility gain the model doesn't need (chunk order
+    # is already implicit in how the part summaries get joined).
     system = part_system
 
     start = 0

@@ -663,7 +663,11 @@ async def api_summarize_from_audio(
         )
     instructions = _combine_recap_instructions(_recap_instructions_for_world(world), extra_instructions)
     recap = await _ai_module.summarize_transcript(transcript, model=_recap_model(""), extra_instructions=instructions, think=think)
-    return {"transcript": transcript, "recap": recap}
+    # Server-side detection (not client string-matching, see is_failure_
+    # sentinel) so the client knows to offer "Retry summary from this
+    # transcript" (.../summarize-transcript, keeping the transcript already
+    # in hand) instead of treating the sentinel text as an applyable draft.
+    return {"transcript": transcript, "recap": recap, "recap_failed": _ai_module.is_failure_sentinel(recap)}
 
 
 @router.post("/api/sessions/ai/summarize-from-audio/chunk")
@@ -715,7 +719,34 @@ async def api_summarize_from_audio_complete(
         )
     instructions = _combine_recap_instructions(_recap_instructions_for_world(world), extra_instructions)
     recap = await _ai_module.summarize_transcript(transcript, model=_recap_model(""), extra_instructions=instructions, think=think)
-    return {"transcript": transcript, "recap": recap}
+    return {"transcript": transcript, "recap": recap, "recap_failed": _ai_module.is_failure_sentinel(recap)}
+
+
+@router.post("/api/sessions/ai/summarize-transcript")
+async def api_summarize_transcript_only(
+    request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Re-run just the summarize step over an ALREADY-transcribed transcript
+    — the retry path for when .../summarize-from-audio(/complete) transcribed
+    fine but the summarize call itself failed (see is_failure_sentinel).
+    Without this, the only way to retry was re-uploading and re-transcribing
+    the whole recording from scratch, redoing potentially hours of Whisper
+    compute to redo a step that already succeeded. Session-independent, same
+    as summarize-from-audio itself (world comes from the active_world
+    cookie, not a session id) — nothing here needs a GameSession row to
+    exist. GM-only by architecture (no _is_player_safe entry), matching
+    every other AI-assist route on this page."""
+    world, _ = get_world_ctx(request, db, active_world)
+    body = await request.json()
+    transcript = str(body.get("transcript", "")).strip()
+    if not transcript:
+        raise HTTPException(400, "No transcript provided")
+    extra_instructions = str(body.get("extra_instructions", "")).strip()
+    instructions = _combine_recap_instructions(_recap_instructions_for_world(world), extra_instructions)
+    recap = await _ai_module.summarize_transcript(
+        transcript, model=_recap_model(""), extra_instructions=instructions, think=_think_from_body(body),
+    )
+    return {"transcript": transcript, "recap": recap, "recap_failed": _ai_module.is_failure_sentinel(recap)}
 
 
 # ── Durable background transcription jobs — an opt-in alternative to the
