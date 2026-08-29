@@ -739,6 +739,135 @@ async function dlmStartDownload() {
   }
 }
 
+// ── SwarmUI LoRA downloads ──────────────────────────────────────────────────
+// Same backend as the model downloader above (download_swarmui_model already
+// accepts any subfolder — "LoRA" is one of its own suggestions) with the
+// subfolder fixed and its own "already downloaded" list filtered to just
+// LoRA entries, so LoRAs get a discoverable section instead of requiring a
+// GM to know to type "LoRA" into the generic model downloader's field.
+
+let _dlrDownloading = false;
+
+async function dlrLoadDownloaded() {
+  const list = document.getElementById('dlr-list');
+  if (!list) return;
+  try {
+    const d = await fetch('/api/ai/imagegen/models/downloaded').then(r => r.json());
+    const models = (d.models || []).filter(m => m.subfolder === 'LoRA');
+    if (!models.length) {
+      list.textContent = 'Nothing downloaded yet.';
+      return;
+    }
+    list.innerHTML = '';
+    models.forEach((m) => {
+      const row = document.createElement('div');
+      row.className = 'nd-job-row';
+      const label = document.createElement('span');
+      label.className = 'nd-job-label';
+      label.textContent = `${m.filename} (${(m.bytes / 1e9).toFixed(2)} GB)`;
+      row.appendChild(label);
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'nd-job-use-btn';
+      delBtn.textContent = '🗑';
+      delBtn.title = 'Delete this file';
+      delBtn.onclick = async () => {
+        delBtn.disabled = true;
+        let refreshed = false;
+        try {
+          const params = new URLSearchParams({ subfolder: 'LoRA', filename: m.filename });
+          const res = await fetch('/api/ai/imagegen/models/downloaded?' + params, { method: 'DELETE' });
+          if (!res.ok) throw await ndApiErrorFrom(res);
+          const data = await res.json().catch(() => ({}));
+          refreshed = !!data.model_list_refreshed;
+        } catch (e) {
+          alert('Could not delete: ' + e.message);
+          delBtn.disabled = false;
+          return;
+        }
+        await dlrLoadDownloaded();
+        await dlmLoadDownloaded();
+        igLoadLoras();
+        if (!refreshed) {
+          const status = document.getElementById('dlr-status');
+          if (status) status.textContent = 'Deleted — restart SwarmUI if it still shows up in the LoRA picker';
+        }
+      };
+      row.appendChild(delBtn);
+      list.appendChild(row);
+    });
+  } catch (e) {
+    list.textContent = 'Could not load — is nd-world reachable?';
+  }
+}
+
+async function dlrStartDownload() {
+  if (_dlrDownloading) return;
+  const urlInput = document.getElementById('dlr-url');
+  const url = urlInput.value.trim();
+  if (!url) { alert('Paste a download URL first.'); return; }
+  _dlrDownloading = true;
+  const btn = document.getElementById('dlr-download-btn');
+  const progWrap = document.getElementById('dlr-progress');
+  const bar = document.getElementById('dlr-progress-bar');
+  const status = document.getElementById('dlr-status');
+  btn.disabled = true;
+  progWrap.style.display = 'block';
+  bar.style.width = '0%';
+  status.textContent = 'Starting download…';
+  try {
+    const res = await fetch('/api/ai/imagegen/models/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url,
+        subfolder: 'LoRA',
+        filename: document.getElementById('dlr-filename').value.trim(),
+      }),
+    });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n'); buf = parts.pop();
+      for (const p of parts) {
+        if (!p.startsWith('data: ')) continue;
+        const raw = p.slice(6);
+        if (raw === '[DONE]') break;
+        try {
+          const obj = JSON.parse(raw);
+          if (obj.error) throw new Error(obj.error);
+          if (obj.total && obj.completed) {
+            const pct = obj.total ? Math.round(obj.completed / obj.total * 100) : 0;
+            bar.style.width = pct + '%';
+            status.textContent = `Downloading… ${pct}% (${(obj.completed / 1e9).toFixed(2)} / ${(obj.total / 1e9).toFixed(2)} GB)`;
+          } else if (obj.status === 'done') {
+            bar.style.width = '100%';
+            status.textContent = obj.model_list_refreshed
+              ? `✓ Downloaded ${obj.filename} — now available in the LoRA picker`
+              : `✓ Downloaded ${obj.filename} — restart SwarmUI if it doesn't show up in the LoRA picker`;
+            urlInput.value = '';
+            document.getElementById('dlr-filename').value = '';
+            igLoadLoras();
+          }
+        } catch (pe) {
+          if (pe.message && !pe.message.includes('JSON')) throw pe;
+        }
+      }
+    }
+  } catch (e) {
+    status.textContent = '✗ Failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    _dlrDownloading = false;
+    await dlrLoadDownloaded();
+    await dlmLoadDownloaded();
+  }
+}
+
 // ── Samplers / Schedulers dynamic loading ─────────────────────────────────────
 
 async function igLoadSamplersSchedulers() {

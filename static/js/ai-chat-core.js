@@ -1550,7 +1550,7 @@ function switchTab(tab) {
   if (tab === 'models')  { mpLoad(); wpLoadStatus(); }
   if (tab === 'whisper') { wtLoadStatus(); wlLoadLanguage(); wgLoadGlossary(); wdLoadDenoise(); riLoadInstructions(); }
   if (tab === 'starred') igLoadStarred();
-  if (tab === 'image')   dlmLoadDownloaded();
+  if (tab === 'image')   { dlmLoadDownloaded(); dlrLoadDownloaded(); }
 }
 
 // Restore the auto-compact checkbox's state — same per-browser localStorage

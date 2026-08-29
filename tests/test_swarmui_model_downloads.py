@@ -680,3 +680,31 @@ def test_ai_chat_image_js_defines_check_and_update_flow():
     assert "/api/ai/imagegen/update" in js
     body = js.split("async function igUpdateAndRestartSwarmUI()", 1)[1][:600]
     assert "confirm(" in body
+
+
+def test_image_gen_tab_ships_the_lora_download_section(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    page = client.get("/ai").text
+    assert 'id="dlr-url"' in page
+    assert 'onclick="dlrStartDownload()"' in page
+    assert 'id="dlr-list"' in page
+    # No subfolder field — unlike the generic downloader, LoRA is fixed.
+    assert 'id="dlr-subfolder"' not in page
+
+
+def test_ai_chat_image_js_lora_download_hits_same_route_with_fixed_subfolder():
+    js = open("static/js/ai-chat-image.js").read()
+    assert "async function dlrStartDownload()" in js
+    body = js.split("async function dlrStartDownload()", 1)[1].split("// ── Samplers", 1)[0]
+    assert "/api/ai/imagegen/models/download" in body
+    assert "subfolder: 'LoRA'" in body
+    assert "igLoadLoras()" in body
+
+
+def test_ai_chat_image_js_lora_download_list_filters_to_lora_subfolder():
+    js = open("static/js/ai-chat-image.js").read()
+    assert "async function dlrLoadDownloaded()" in js
+    body = js.split("async function dlrLoadDownloaded()", 1)[1][:800]
+    assert "/api/ai/imagegen/models/downloaded" in body
+    assert "m.subfolder === 'LoRA'" in body
