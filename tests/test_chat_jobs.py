@@ -414,6 +414,65 @@ def test_job_create_requires_gm(client, seed):
     assert r.status_code == 403
 
 
+# ── item 3.4: context sizing for backgrounded chat jobs ─────────────────────
+# app/routers/ai.py imports this same module object as `_chat_jobs` —
+# patching chat_jobs.create_job here reaches it too.
+
+def _patch_capturing_create_job(monkeypatch):
+    captured = {}
+    orig_create_job = chat_jobs.create_job
+
+    def capturing_create_job(world_id, messages, system, model, options, **kwargs):
+        captured["options"] = options
+        return orig_create_job(world_id, messages, system, model, options, **kwargs)
+    monkeypatch.setattr(chat_jobs, "create_job", capturing_create_job)
+    return captured
+
+
+def test_job_create_sizes_num_ctx_for_a_long_history(client, seed, monkeypatch):
+    captured = _patch_capturing_create_job(monkeypatch)
+
+    async def fake_generate_chat(messages, system="", model="", options=None):
+        return "a reply"
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    long_history = [{"role": "user", "content": "word " * 5000}]
+    r = client.post("/api/ai/chat/jobs", json={"messages": long_history})
+    assert r.status_code == 200, r.text
+    assert captured["options"]["num_ctx"] > ai_module._DEFAULT_ASSUMED_CTX_TOKENS
+
+
+def test_job_create_short_message_has_no_num_ctx_override(client, seed, monkeypatch):
+    captured = _patch_capturing_create_job(monkeypatch)
+
+    async def fake_generate_chat(messages, system="", model="", options=None):
+        return "a reply"
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/chat/jobs", json=_body())
+    assert r.status_code == 200, r.text
+    assert "num_ctx" not in captured["options"]
+
+
+def test_job_create_explicit_num_ctx_wins_over_the_auto_sized_one(client, seed, monkeypatch):
+    captured = _patch_capturing_create_job(monkeypatch)
+
+    async def fake_generate_chat(messages, system="", model="", options=None):
+        return "a reply"
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    long_history = [{"role": "user", "content": "word " * 5000}]
+    r = client.post("/api/ai/chat/jobs", json={"messages": long_history, "options": {"num_ctx": 4096}})
+    assert r.status_code == 200, r.text
+    assert captured["options"]["num_ctx"] == 4096
+
+
 def test_job_list_scoped_to_active_world(client, seed, monkeypatch):
     async def fake_generate_chat(messages, system="", model="", options=None):
         return "reply"

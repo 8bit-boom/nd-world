@@ -478,6 +478,35 @@ def test_context_sized_options_never_mutates_instance_wide_overrides():
     assert ai_module.effective_ollama_options() == before
 
 
+# ── MAX_AUTO_NUM_CTX: ceiling on every auto-sized num_ctx ───────────────────
+# See docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 2 item 3.3 — a
+# pathological paste (e.g. a multi-megabyte transcript) would otherwise
+# compute a six-figure num_ctx that Ollama tries to allocate real KV-cache
+# memory for.
+
+def test_max_auto_num_ctx_is_a_sane_positive_int():
+    assert isinstance(ai_module.MAX_AUTO_NUM_CTX, int)
+    assert ai_module.MAX_AUTO_NUM_CTX >= 8192
+
+
+def test_context_sized_options_clamps_to_the_ceiling():
+    huge_text = "word " * 200_000  # ~1MB / ~250k tokens, well past the default 32768 ceiling
+    result = ai_module.context_sized_options(huge_text)
+    assert result["num_ctx"] == ai_module.MAX_AUTO_NUM_CTX
+
+
+def test_context_sized_options_unaffected_below_the_ceiling():
+    text = "word " * 5000
+    result = ai_module.context_sized_options(text)
+    assert result["num_ctx"] < ai_module.MAX_AUTO_NUM_CTX
+
+
+def test_expanded_thinking_options_clamps_to_the_ceiling(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_ctx": ai_module.MAX_AUTO_NUM_CTX * 10})
+    result = ai_module.expanded_thinking_options()
+    assert result["num_ctx"] == ai_module.MAX_AUTO_NUM_CTX
+
+
 # ── summarize_transcript's chunked, append-only orchestration ──────────────
 
 @pytest.mark.asyncio

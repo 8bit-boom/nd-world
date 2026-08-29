@@ -107,6 +107,31 @@ def _combine_recap_instructions(world_instructions: str, job_instructions: str) 
     return "\n\n".join(parts)
 
 
+def _reject_if_too_long_to_condense(recap: str, extra_instructions: str) -> None:
+    """See docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 2 item 3.3:
+    app.ai.context_sized_options (what condense_call_options builds on)
+    clamps its auto-sized num_ctx to app.ai.MAX_AUTO_NUM_CTX — necessary so
+    a pathological paste can't make this module try to allocate a
+    six-figure num_ctx worth of KV cache, but clamping alone would
+    reintroduce the exact silent-truncation "model responds with garbage"
+    failure condense_call_options exists to prevent, for input that
+    genuinely exceeds the ceiling. condense_recap is always a single
+    unchunked call with nothing else protecting it (unlike summarize_
+    transcript's own chunking, which stays unaffected by this — each of
+    its calls is already bounded well under the ceiling). Refuse outright
+    instead, pointing the GM at Summarize rather than truncating."""
+    text = recap + extra_instructions
+    chars_per_token = _ai_module._chars_per_token_estimate(text)
+    tokens = -(-len(text) // chars_per_token)  # ceil division, same convention context_sized_options uses
+    ceiling = _ai_module.MAX_AUTO_NUM_CTX - _ai_module._CONTEXT_FIT_RESERVED_TOKENS
+    if tokens > ceiling:
+        raise HTTPException(
+            400,
+            f"This text is too long to condense in one call (≈{tokens} tokens > the "
+            f"{ceiling}-token ceiling) — use Summarize, which splits long input into parts",
+        )
+
+
 def _recap_model(model: str) -> str:
     """Falls back to the "recap" surface default (Models tab) instead of
     letting an unspecified model fall straight through to resolve_model's
@@ -598,6 +623,7 @@ async def api_condense_recap(request: Request):
     min_tokens, max_tokens = _condense_token_bounds(body)
     model = _recap_model(str(body.get("model", "")).strip())
     extra_instructions = str(body.get("extra_instructions", "")).strip()
+    _reject_if_too_long_to_condense(recap, extra_instructions)
     # See app.ai.condense_call_options' own docstring: sizes num_ctx to fit
     # recap + extra_instructions + the requested output length whenever
     # fit_context was explicitly asked for, OR whenever the plain (non-fit)
@@ -635,13 +661,15 @@ async def api_condense_job_create(
     if not recap:
         raise HTTPException(400, "No recap provided")
     min_tokens, max_tokens = _condense_token_bounds(body)
+    extra_instructions = str(body.get("extra_instructions", "")).strip()
+    _reject_if_too_long_to_condense(recap, extra_instructions)
     use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
     game_session_id = body.get("game_session_id")
     gs_id = int(game_session_id) if game_session_id else None
     job_id = _audio_jobs.create_condense_job(
         world_id=world.id, text=recap, model=str(body.get("model", "")).strip(),
         think=_think_from_body(body), fit_context=bool(body.get("fit_context")),
-        extra_instructions=str(body.get("extra_instructions", "")).strip(),
+        extra_instructions=extra_instructions,
         min_tokens=min_tokens, max_tokens=max_tokens,
         use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
         game_session_id=gs_id, created_by_user_id=_current_user_id(request),
@@ -970,6 +998,36 @@ async def api_summarize_live_transcript(session_id: int, request: Request, db: S
         think=_think_from_body(body),
     )
     return {"transcript": gs.live_transcript, "recap": recap}
+
+
+@router.post("/api/sessions/{session_id}/ai/summarize-live-transcript-job")
+async def api_summarize_live_transcript_job(session_id: int, request: Request, db: Session = Depends(get_db)):
+    """Same as the blocking .../summarize-live-transcript above but as a
+    durable background job — see create_text_recap_job's own docstring for
+    why: summarizing a multi-hour live transcript inline in one HTTP
+    request is exactly the reverse-proxy-timeout trap background jobs
+    exist to avoid, and the blocking route gets none of session_recap's
+    checkpointing/RAG/Part-1-retry-ladder protection. Returns the job id
+    immediately; the client picks the result up through the same
+    sessionAudioJobs panel/poll loop every other session-scoped job already
+    uses (purpose="session_recap" is already in _SESSION_JOB_PURPOSES). The
+    blocking route stays as-is for a short live transcript, where a job's
+    extra round-trip isn't worth it."""
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    if not gs:
+        raise HTTPException(404)
+    if not (gs.live_transcript or "").strip():
+        raise HTTPException(400, "No live transcript recorded for this session yet.")
+    raw = await request.body()
+    body = json.loads(raw) if raw else {}
+    use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
+    job_id = _audio_jobs.create_text_recap_job(
+        world_id=gs.world_id, text=gs.live_transcript, model=str(body.get("model", "")).strip(),
+        think=_think_from_body(body), extra_instructions=str(body.get("extra_instructions", "")).strip(),
+        game_session_id=session_id, created_by_user_id=_current_user_id(request),
+        use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
+    )
+    return {"job_id": job_id}
 
 
 @router.post("/api/sessions/{session_id}/ai/summarize-from-facts")

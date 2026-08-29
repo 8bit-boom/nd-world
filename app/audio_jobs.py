@@ -235,6 +235,52 @@ def create_condense_job(
     return job_id
 
 
+def create_text_recap_job(
+    world_id: int, text: str, *, model: str = "", think: bool = True,
+    extra_instructions: str = "", game_session_id: Optional[int] = None,
+    created_by_user_id: Optional[int] = None,
+    use_rag: bool = False, rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
+) -> int:
+    """Summarize `text` (a Live Recording session's accumulated
+    GameSession.live_transcript) as a durable background job — sibling of
+    create_condense_job above, same "text already in hand, no transcribe
+    phase" shape, but seeded as purpose="session_recap" so _run_job's
+    session_recap branch (map-reduce chunking, the Part 1 retry ladder, RAG)
+    applies instead of condense_recap's single-call path. Motivated by
+    POST /api/sessions/{id}/ai/summarize-live-transcript running a full
+    summarize_transcript call inline in one HTTP request — exactly the
+    reverse-proxy-timeout trap that motivated background jobs for audio
+    uploads in the first place, and getting none of session_recap's
+    checkpointing/RAG/retry-ladder protection a multi-hour live transcript
+    deserves as much as an uploaded recording does.
+
+    `text` is stored directly into job.transcript at creation, same as
+    create_condense_job's own `text` param — _run_job's existing "already
+    has a transcript, no audio_path" carve-out skips straight to
+    summarizing, so this needed no _run_job changes at all."""
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=world_id, purpose="session_recap", filename="Live Transcript", status="pending",
+            game_session_id=game_session_id, created_by_user_id=created_by_user_id,
+            model=model or None, think=think,
+            extra_instructions=extra_instructions.strip() or None,
+            use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
+            transcript=text, audio_path="", delete_after=False,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    task = asyncio.create_task(_run_job(job_id))
+    _running_tasks[job_id] = task
+    task.add_done_callback(lambda t, jid=job_id: _forget_task(jid, t))
+    return job_id
+
+
 # Kinds worth hinting Whisper toward — proper nouns a session's spoken
 # audio is likely to actually contain. Excludes "note" (free text with no
 # guarantee its title is a clean proper noun) and "event"/"item"/"feat"

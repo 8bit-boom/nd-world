@@ -165,6 +165,80 @@ def test_ai_stream_thinking_widening_does_not_override_an_explicit_num_predict(c
     assert captured["options"]["num_predict"] == 200
 
 
+# ── Interactive context sizing (docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md
+# Part 2, item 3.4) — the one AI surface previously left with no num_ctx
+# sizing at all: system + lore pair + full history + attachments could
+# silently overflow the configured/default context.
+
+def test_ai_stream_sizes_num_ctx_for_a_long_history(client, seed, monkeypatch):
+    captured = {}
+
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+        captured["options"] = options
+        yield "ok"
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    long_history = [{"role": "user", "content": "word " * 5000}]
+    r = client.post("/api/ai/stream", json={"messages": long_history})
+    assert r.status_code == 200
+    assert captured["options"]["num_ctx"] > ai_module._DEFAULT_ASSUMED_CTX_TOKENS
+
+
+def test_ai_stream_short_message_has_no_num_ctx_override(client, seed, monkeypatch):
+    captured = {}
+
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+        captured["options"] = options
+        yield "ok"
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/stream", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200
+    assert (captured["options"] or {}).get("num_ctx") is None
+
+
+def test_ai_stream_explicit_num_ctx_wins_over_the_auto_sized_one(client, seed, monkeypatch):
+    """A preset/caller that already set num_ctx keeps its exact value, even
+    for a message long enough that auto-sizing would otherwise kick in."""
+    captured = {}
+
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+        captured["options"] = options
+        yield "ok"
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    long_history = [{"role": "user", "content": "word " * 5000}]
+    r = client.post("/api/ai/stream", json={"messages": long_history, "options": {"num_ctx": 4096}})
+    assert r.status_code == 200
+    assert captured["options"]["num_ctx"] == 4096
+
+
+def test_ai_stream_num_ctx_clamped_to_the_max_auto_ceiling(client, seed, monkeypatch):
+    captured = {}
+
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+        captured["options"] = options
+        yield "ok"
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    huge_history = [{"role": "user", "content": "word " * 200000}]
+    r = client.post("/api/ai/stream", json={"messages": huge_history})
+    assert r.status_code == 200
+    assert captured["options"]["num_ctx"] == ai_module.MAX_AUTO_NUM_CTX
+
+
 def test_ai_stream_player_denied_by_default(client, seed, monkeypatch):
     _patch_ai(monkeypatch)
     login(client, seed.player_a.email, PLAYER_PASSWORD)

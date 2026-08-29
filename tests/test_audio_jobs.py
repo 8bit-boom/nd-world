@@ -635,6 +635,75 @@ async def test_create_condense_job_auto_widens_ctx_for_a_long_input_without_fit_
     assert captured["options"]["num_ctx"] > ai_module._DEFAULT_ASSUMED_CTX_TOKENS
 
 
+# ── purpose="session_recap" seeded directly (create_text_recap_job) ────────
+# docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 2 item 3.2: a sibling of
+# create_condense_job for the Live Recording panel's "Summarize in
+# Background" button — same "text already in hand, no transcribe phase"
+# shape, but seeded as purpose="session_recap" so _run_job's session_recap
+# branch (map-reduce chunking, RAG, the Part 1 retry ladder) applies
+# instead of condense_recap's single-call path.
+
+@pytest.mark.asyncio
+async def test_create_text_recap_job_runs_to_completion(client, seed):
+    job_id = audio_jobs.create_text_recap_job(world_id=seed.world_a.id, text="A raw live transcript.")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.purpose == "session_recap"
+    assert job.filename == "Live Transcript"
+    assert job.transcript == "A raw live transcript."  # the input, unchanged
+    assert job.recap == "The party met Elena at the bazaar."  # from the file's autouse _fake_ai fixture
+    assert job.audio_path == ""
+
+
+@pytest.mark.asyncio
+async def test_create_text_recap_job_never_transcribes(client, seed, monkeypatch):
+    async def should_not_be_called(*a, **k):
+        raise AssertionError("transcribe_audio must not be called for a text-seeded recap job")
+    monkeypatch.setattr(ai_module, "transcribe_audio", should_not_be_called)
+
+    job_id = audio_jobs.create_text_recap_job(world_id=seed.world_a.id, text="Already-transcribed text.")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+
+
+@pytest.mark.asyncio
+async def test_create_text_recap_job_uses_the_full_session_recap_engine(client, seed, monkeypatch):
+    """The whole point of seeding purpose="session_recap" instead of
+    "condense": it gets summarize_transcript's chunking/RAG/retry-ladder
+    machinery, not condense_recap's single-call path."""
+    captured = {}
+
+    async def fake_summarize(transcript, model="", extra_instructions="", think=True, expanded_thinking=False, **kwargs):
+        captured["called"] = True
+        captured["extra_instructions"] = extra_instructions
+        return "a woven recap"
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    job_id = audio_jobs.create_text_recap_job(
+        world_id=seed.world_a.id, text="Raw transcript text.", extra_instructions="focus on combat",
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["called"] is True
+    assert "focus on combat" in captured["extra_instructions"]
+    assert job.recap == "a woven recap"
+
+
+@pytest.mark.asyncio
+async def test_create_text_recap_job_defaults_think_true(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_summarize(transcript, model="", extra_instructions="", think=True, **kwargs):
+        captured["think"] = think
+        return "a recap"
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    job_id = audio_jobs.create_text_recap_job(world_id=seed.world_a.id, text="text")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["think"] is True
+
+
 # ── RAG (use_rag/rag_entity_limit/rag_notes_limit) ──────────────────────────
 
 @pytest.mark.asyncio

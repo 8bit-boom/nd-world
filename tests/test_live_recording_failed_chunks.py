@@ -68,3 +68,16 @@ def test_status_settles_to_a_final_message_once_idle(client, seed):
 def test_backlog_is_shown_while_still_recording(client, seed):
     page = _get_page(client, seed)
     assert "chunk(s) waiting for Whisper" in page
+
+
+def test_summarize_in_background_button_is_wired(client, seed):
+    """docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 2 item 3.2: the
+    Live Recording panel's "Summarize in Background" button must call the
+    job-create route (not the blocking one) and refresh the shared jobs
+    panel afterward."""
+    page = _get_page(client, seed)
+    assert 'onclick="aiStartLiveTranscriptJob()"' in page
+    assert "async function aiStartLiveTranscriptJob()" in page
+    body = page.split("async function aiStartLiveTranscriptJob()", 1)[1][:1200]
+    assert "/ai/summarize-live-transcript-job" in body
+    assert "sessionAudioJobs.refreshList()" in body

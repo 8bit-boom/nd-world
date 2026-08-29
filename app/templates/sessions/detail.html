@@ -193,6 +193,8 @@
     <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem">
       <button type="button" id="live-record-btn" class="ai-recap-btn" onclick="toggleLiveRecording()">🔴 Start Recording</button>
       <button type="button" class="ai-recap-btn" onclick="summarizeLiveTranscript()">✨ Summarize transcript</button>
+      <button type="button" class="ai-recap-btn" onclick="aiStartLiveTranscriptJob()"
+              title="Process in the background instead — keeps running even if you close this tab, with the same checkpointing/RAG/retry protection a long uploaded recording gets. Best for a multi-hour transcript, where summarizing inline in one request risks timing out.">🔒 Summarize in Background</button>
       <button type="button" class="ai-recap-btn" onclick="clearLiveTranscript()">🗑 Clear transcript</button>
       <a id="live-transcript-download-link" class="ai-recap-btn" href="{{ ('/sessions/' + gsession.id|string + '/transcript.md')|wq }}" style="display:none;text-decoration:none">⬇ Download .md</a>
       <span id="live-record-status" style="font-size:.78rem;color:var(--text-dim)"></span>
@@ -708,6 +710,21 @@ const LIVE_CHUNK_SECONDS = 60;
 let _liveRecording = false;
 let _liveCurrentRecorder = null;
 let _liveChunkTimer = null;
+// Acquired ONCE in toggleLiveRecording's Start branch and reused by every
+// ~60s segment's ndMicRecorder (see its own comment in base.html for why:
+// re-acquiring the mic every segment cost an audible gap, a flickering mic
+// indicator, and could silently kill the recording on mobile Safari).
+// Released in liveStopMicStream, called once the final segment's onStop
+// fires (not immediately on Stop — the in-flight segment still needs the
+// stream alive to finish flushing its last chunk).
+let _liveMicStream = null;
+
+function liveStopMicStream() {
+  if (_liveMicStream) {
+    _liveMicStream.getTracks().forEach(t => t.stop());
+    _liveMicStream = null;
+  }
+}
 let _liveQueue = [];
 let _liveQueueBusy = false;
 // Chunks that failed all 3 upload attempts — kept (not discarded) so the GM
@@ -791,17 +808,29 @@ async function liveProcessQueue() {
 }
 
 function liveStartSegment() {
+  // Segments stay separate MediaRecorder instances producing complete
+  // standalone containers (each is transcribed independently server-side)
+  // — deliberately NOT switched to a single long-running recorder with
+  // timeslice chunks, whose interior chunks lack container headers Whisper
+  // needs. Only the underlying mic STREAM is now shared across segments —
+  // see _liveMicStream's own comment.
   _liveCurrentRecorder = ndMicRecorder(
     (blob, mimeType) => {
       _liveQueue.push(new File([blob], ndMicFilename(mimeType), { type: mimeType }));
       liveProcessQueue();
-      if (_liveRecording) liveStartSegment();  // immediately pick up the next segment, no gap
+      if (_liveRecording) {
+        liveStartSegment();  // immediately pick up the next segment, no gap
+      } else {
+        liveStopMicStream();  // that was the final segment — release the mic now
+      }
     },
     (err) => {
       _liveRecording = false;
+      liveStopMicStream();
       document.getElementById('live-record-btn').textContent = '🔴 Start Recording';
       document.getElementById('live-record-status').textContent = 'Mic error: ' + err.message;
     },
+    _liveMicStream,
   );
   _liveCurrentRecorder.start().then(started => {
     if (!started) { _liveRecording = false; return; }
@@ -830,16 +859,35 @@ document.addEventListener('visibilitychange', () => {
   if (_liveRecording && document.visibilityState === 'visible') liveAcquireWakeLock();
 });
 
-function toggleLiveRecording() {
+async function toggleLiveRecording() {
   const btn = document.getElementById('live-record-btn');
   const status = document.getElementById('live-record-status');
   if (_liveRecording) {
     _liveRecording = false;
     clearTimeout(_liveChunkTimer);
-    if (_liveCurrentRecorder) _liveCurrentRecorder.stop();
+    if (_liveCurrentRecorder) {
+      _liveCurrentRecorder.stop();  // its onStop (liveStartSegment) releases the mic once the last chunk is captured
+    } else {
+      liveStopMicStream();
+    }
     liveReleaseWakeLock();
     btn.textContent = '🔴 Start Recording';
     status.textContent = 'Stopped — finishing the last chunk…';
+    return;
+  }
+  if (!navigator.mediaDevices || !window.MediaRecorder) {
+    status.textContent = 'Microphone recording is not supported in this browser';
+    return;
+  }
+  try {
+    // Acquired ONCE here for the whole recording — see _liveMicStream's
+    // own comment for why, and ndMicRecorder's own comment (base.html) for
+    // how each segment reuses it instead of re-acquiring.
+    _liveMicStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (e) {
+    status.textContent = 'Mic error: ' + e.message;
     return;
   }
   _liveRecording = true;
@@ -858,6 +906,32 @@ async function clearLiveTranscript() {
 
 function summarizeLiveTranscript() {
   aiRunRecap(`/api/sessions/${SESSION_ID}/ai/summarize-live-transcript`, {});
+}
+
+// Same durable-background-job treatment Condense already gets
+// (aiStartCondenseJob above) — keeps running after this tab closes, with
+// session_recap's own checkpointing/RAG/retry-ladder protection, instead
+// of the blocking route's single inline request. Reuses the audio panel's
+// own model picker, same as Condense does.
+async function aiStartLiveTranscriptJob() {
+  const status = document.getElementById('live-record-status');
+  const modelSel = document.getElementById('audio-bgjob-model');
+  status.textContent = 'Starting…';
+  try {
+    const res = await fetch(`/api/sessions/${SESSION_ID}/ai/summarize-live-transcript-job`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        think: _recapThinkEnabled(),
+        model: modelSel ? modelSel.value : '',
+        ..._recapRagOptions(),
+      }),
+    });
+    if (!res.ok) throw await ndApiErrorFrom(res);
+    status.textContent = 'Summarizing in the background — see Background Jobs below for the result.';
+    await sessionAudioJobs.refreshList();
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  }
 }
 
 window.addEventListener('beforeunload', (e) => {

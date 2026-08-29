@@ -947,6 +947,17 @@ async def condense_recap(
 # own response.
 _CONTEXT_FIT_RESERVED_TOKENS = 512
 _CONTEXT_FIT_FLOOR_TOKENS = 1024
+# Ceiling for every AUTO-SIZED num_ctx this module computes (context_sized_
+# options, expanded_thinking_options — anything that derives num_ctx from
+# input length rather than a GM's own explicit setting). Without this, a
+# pathological paste (e.g. a multi-megabyte transcript dropped into a
+# Condense/Summarize field) computes a six-figure num_ctx that Ollama will
+# try to allocate real KV-cache memory for. A GM's own explicit Settings >
+# System num_ctx is NOT clamped here — only what this module derives on its
+# own. Env-tunable (same idiom as THINKING_HEADROOM_TOKENS) for an install
+# with the VRAM to genuinely want more; floored at 8192 so lowering it can't
+# accidentally make every auto-sized call smaller than a normal request.
+MAX_AUTO_NUM_CTX = max(8192, int(os.getenv("MAX_AUTO_NUM_CTX", "32768")))
 
 # Generous assumed budget for a thinking-enabled model's hidden reasoning,
 # on top of the visible answer's own max_tokens target — see condense_recap's
@@ -1046,7 +1057,7 @@ def expanded_thinking_options() -> dict:
     configured_predict = opts.get("num_predict") or 0
     return {
         "num_predict": max(configured_predict, 0) + _THINKING_EXPANDED_HEADROOM_TOKENS,
-        "num_ctx": base_ctx + (_THINKING_EXPANDED_HEADROOM_TOKENS - _THINKING_HEADROOM_TOKENS),
+        "num_ctx": min(MAX_AUTO_NUM_CTX, base_ctx + (_THINKING_EXPANDED_HEADROOM_TOKENS - _THINKING_HEADROOM_TOKENS)),
     }
 
 
@@ -1073,10 +1084,19 @@ def context_sized_options(text: str, reserve_tokens: int = _CONTEXT_FIT_RESERVED
     set_ollama_generation_overrides' own state, so the very next call keeps
     using the GM's configured/default context size — there's nothing to
     "set back to normal" because the instance-wide setting was never
-    touched in the first place."""
+    touched in the first place.
+
+    Clamped to MAX_AUTO_NUM_CTX — an unbounded paste would otherwise
+    compute a num_ctx Ollama tries to allocate real KV-cache memory for.
+    Clamping alone reintroduces the silent-truncation risk this function
+    exists to prevent for a caller whose actual input exceeds the ceiling
+    (Ollama truncates the prompt instead of erroring) — see
+    docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 2 item 3.3: the
+    condense entry points refuse oversized input outright instead of
+    relying on this clamp alone."""
     chars_per_token = _chars_per_token_estimate(text)
     input_tokens = -(-len(text) // chars_per_token)  # ceil division
-    return {"num_ctx": max(_CONTEXT_FIT_FLOOR_TOKENS, input_tokens + reserve_tokens)}
+    return {"num_ctx": min(MAX_AUTO_NUM_CTX, max(_CONTEXT_FIT_FLOOR_TOKENS, input_tokens + reserve_tokens))}
 
 
 def _ctx_override_if_needed(text: str, reserve_tokens: int) -> dict:

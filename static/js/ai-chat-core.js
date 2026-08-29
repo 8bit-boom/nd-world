@@ -901,17 +901,49 @@ function unpinEntity(id) {
   renderCtxPanel();
 }
 
+// A pinned entity's full body goes into every single send (unlike the
+// keyword-searched RAG context, which is naturally size-bounded) — three
+// long write-ups could otherwise dwarf the retrieved context and (see
+// docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 2 item 3.5) inflate the
+// interactive context-sizing item 3.4 added every single turn.
+const PINNED_ENTITY_BODY_CHAR_CAP = 4000;
+const PINNED_ENTITIES_TOTAL_CHAR_CAP = 12000;
+
 async function _pinnedEntitiesContext() {
   if (!_pinnedEntities.size) return '';
   const parts = await Promise.all([..._pinnedEntities.values()].map(async (e) => {
     try {
       const d = await fetch('/api/entity/' + e.id + '/preview').then(r => r.json());
-      return `### ${d.name}${d.kind ? ' (' + d.kind + ')' : ''}\n${d.body || d.summary || ''}`;
+      let body = d.body || d.summary || '';
+      if (body.length > PINNED_ENTITY_BODY_CHAR_CAP) {
+        body = body.slice(0, PINNED_ENTITY_BODY_CHAR_CAP) + '…[truncated — open the entity for the rest]';
+      }
+      return `### ${d.name}${d.kind ? ' (' + d.kind + ')' : ''}\n${body}`;
     } catch (err) {
       return '';
     }
   }));
-  return parts.filter(Boolean).join('\n\n');
+  // Combined-budget cap, keeping insertion order — once a pinned entity
+  // would push the total over PINNED_ENTITIES_TOTAL_CHAR_CAP, it (and
+  // every pinned entity after it) is dropped with a visible notice rather
+  // than silently missing from the model's context.
+  const kept = [];
+  let usedChars = 0;
+  let droppedCount = 0;
+  for (const part of parts) {
+    if (!part) continue;
+    if (usedChars + part.length > PINNED_ENTITIES_TOTAL_CHAR_CAP) {
+      droppedCount++;
+      continue;
+    }
+    kept.push(part);
+    usedChars += part.length;
+  }
+  let result = kept.join('\n\n');
+  if (droppedCount) {
+    result += `\n\n…[${droppedCount} more pinned entit${droppedCount === 1 ? 'y' : 'ies'} omitted — over the context budget]`;
+  }
+  return result;
 }
 
 function _getCtxLimit() {

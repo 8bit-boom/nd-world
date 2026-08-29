@@ -3,11 +3,26 @@ summarize-from-facts on /sessions) and the player-facing session log
 (/session-log), whose whole point is that it NEVER exposes the GM's raw
 GameSession.summary — only an AI recap synthesized fresh from Facts already
 marked visible_to_players for that session."""
+import time
+
 from app import ai as ai_module
 from app.database import SessionLocal
 from app.models import Fact, GameSession
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+
+
+def _poll_until_terminal(client, url, timeout=5.0):
+    deadline = time.time() + timeout
+    data = None
+    while time.time() < deadline:
+        r = client.get(url)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        if data["status"] in ("done", "error"):
+            return data
+        time.sleep(0.02)
+    raise AssertionError(f"job never reached a terminal status, last seen: {data}")
 
 
 def _make_session(world, title="Session 1", num=1):
@@ -139,6 +154,42 @@ def test_condense_recap_fit_context_false_by_default(client, seed, monkeypatch):
     r = client.post("/api/sessions/ai/condense-recap", json={"recap": "short recap"})
     assert r.status_code == 200
     assert captured["options"] is None
+
+
+def test_condense_recap_rejects_input_past_the_max_auto_ctx_ceiling(client, seed, monkeypatch):
+    """docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 2 item 3.3:
+    clamping context_sized_options' num_ctx to MAX_AUTO_NUM_CTX alone would
+    silently truncate input this far over the ceiling and risk garbage
+    output — condense_recap is a single unchunked call with nothing else
+    protecting it, so this must 400 instead."""
+    async def should_not_be_called(recap, model="", options=None, think=True, **kwargs):
+        raise AssertionError("condense_recap must not be called for oversized input")
+    monkeypatch.setattr(ai_module, "condense_recap", should_not_be_called)
+
+    _login_gm_in(client, seed, seed.world_a)
+    huge_recap = "word " * 40000  # ~200k chars, well past the default ~32k-token ceiling
+    r = client.post("/api/sessions/ai/condense-recap", json={"recap": huge_recap})
+    assert r.status_code == 400
+    assert "too long to condense" in r.json()["detail"]
+    assert "Summarize" in r.json()["detail"]
+
+
+def test_condense_recap_short_input_is_unaffected_by_the_ceiling(client, seed, monkeypatch):
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
+        return "Short version."
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post("/api/sessions/ai/condense-recap", json={"recap": "a perfectly normal recap"})
+    assert r.status_code == 200
+
+
+def test_condense_job_create_rejects_input_past_the_max_auto_ctx_ceiling(client, seed):
+    _login_gm_in(client, seed, seed.world_a)
+    huge_recap = "word " * 40000
+    r = client.post("/api/sessions/ai/condense-job", json={"recap": huge_recap})
+    assert r.status_code == 400
+    assert "too long to condense" in r.json()["detail"]
 
 
 def test_summarize_from_facts_gm(client, seed, monkeypatch):
@@ -668,6 +719,110 @@ def test_summarize_live_transcript_empty_rejected(client, seed):
     _login_gm_in(client, seed, seed.world_a)
     r = client.post(f"/api/sessions/{session_id}/ai/summarize-live-transcript")
     assert r.status_code == 400
+
+
+# ── Live transcript as a background job (docs/DYNAMIC_THINKING_AND_
+# PIPELINE_PLAN.md Part 2 item 3.2) ─────────────────────────────────────────
+
+def test_summarize_live_transcript_job_creates_a_session_recap_job(client, seed):
+    session_id = _make_session(seed.world_a)
+    db = SessionLocal()
+    try:
+        db.get(GameSession, session_id).live_transcript = "raw messy asr text about the tavern"
+        db.commit()
+    finally:
+        db.close()
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(f"/api/sessions/{session_id}/ai/summarize-live-transcript-job")
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+
+    db = SessionLocal()
+    try:
+        from app.models import AudioJob
+        job = db.get(AudioJob, job_id)
+        assert job.purpose == "session_recap"
+        assert job.filename == "Live Transcript"
+        assert job.transcript == "raw messy asr text about the tavern"
+        assert job.game_session_id == session_id
+        assert job.world_id == seed.world_a.id
+    finally:
+        db.close()
+
+
+def test_summarize_live_transcript_job_empty_rejected(client, seed):
+    session_id = _make_session(seed.world_a)
+    db = SessionLocal()
+    try:
+        db.get(GameSession, session_id).live_transcript = ""
+        db.commit()
+    finally:
+        db.close()
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(f"/api/sessions/{session_id}/ai/summarize-live-transcript-job")
+    assert r.status_code == 400
+
+
+def test_summarize_live_transcript_job_requires_existing_session(client, seed):
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post("/api/sessions/999999/ai/summarize-live-transcript-job")
+    assert r.status_code == 404
+
+
+def test_summarize_live_transcript_job_threads_think_and_model(client, seed):
+    session_id = _make_session(seed.world_a)
+    db = SessionLocal()
+    try:
+        db.get(GameSession, session_id).live_transcript = "raw text"
+        db.commit()
+    finally:
+        db.close()
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(
+        f"/api/sessions/{session_id}/ai/summarize-live-transcript-job",
+        json={"think": False, "model": "llama3.1", "extra_instructions": "keep it brief"},
+    )
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+
+    db = SessionLocal()
+    try:
+        from app.models import AudioJob
+        job = db.get(AudioJob, job_id)
+        assert job.think is False
+        assert job.model == "llama3.1"
+        assert job.extra_instructions == "keep it brief"
+    finally:
+        db.close()
+
+
+def test_summarize_live_transcript_job_polled_via_the_shared_session_jobs_route(client, seed, monkeypatch):
+    """The new job appears in the same list/status routes every other
+    session-scoped job (session_recap/condense) already uses — no new
+    polling endpoint needed since purpose="session_recap" is already in
+    _SESSION_JOB_PURPOSES."""
+    async def fake_summarize(transcript, model="", extra_instructions="", **kwargs):
+        return "a woven recap"
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    session_id = _make_session(seed.world_a)
+    db = SessionLocal()
+    try:
+        db.get(GameSession, session_id).live_transcript = "raw text"
+        db.commit()
+    finally:
+        db.close()
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(f"/api/sessions/{session_id}/ai/summarize-live-transcript-job")
+    job_id = r.json()["job_id"]
+
+    data = _poll_until_terminal(client, f"/api/sessions/ai/audio-jobs/{job_id}")
+    assert data["status"] == "done"
+    assert data["recap"] == "a woven recap"
 
 
 # ── Player-facing session log ────────────────────────────────────────────────

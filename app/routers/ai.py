@@ -818,6 +818,19 @@ async def ai_stream(
     # a preset/caller that did keeps its exact value.
     if body.think and "num_predict" not in options:
         options = {**options, **_ai._thinking_num_predict_override(True)}
+    # See docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 2 item 3.4 — this
+    # was the one AI surface with NO num_ctx sizing at all: system + lore +
+    # full history + attachments could silently overflow the configured/
+    # default context, with Ollama truncating whatever doesn't fit (and
+    # since 2.1's lore-injection reorder, that's model-visible history, not
+    # the lore itself). Only steps in when the caller didn't already set
+    # num_ctx explicitly (a preset keeps its exact value); the extra
+    # thinking headroom only applies when num_predict actually got widened
+    # above, same reasoning app.ai.expand_recap_notes' own gate uses.
+    if "num_ctx" not in options:
+        total_text = body.system + "".join((m.get("content") or "") for m in msgs)
+        reserve = _ai._CONTEXT_FIT_RESERVED_TOKENS + (_ai._THINKING_HEADROOM_TOKENS if "num_predict" in options else 0)
+        options = {**options, **_ai._ctx_override_if_needed(total_text, reserve)}
     _log.info("stream requested model=%r surface=%r msgs=%d", requested, body.surface, len(body.messages))
 
     async def _chat(model: str):
@@ -1940,9 +1953,18 @@ async def api_chat_job_create(body: ChatBody, request: Request, db=Depends(get_d
         raise HTTPException(404)
     msgs = _build_ollama_messages(body.messages)
     user = getattr(request.state, "user", None)
+    options = _clamp_options(body.options)
+    # Same context-sizing item 3.4 gives the interactive /stream route — a
+    # backgrounded chat job builds its messages the same way and deserves
+    # the same protection against silently overflowing the configured/
+    # default context. No Thinking on this path (chat jobs have no think
+    # param), so no extra headroom to account for.
+    if "num_ctx" not in options:
+        total_text = body.system + "".join((m.get("content") or "") for m in msgs)
+        options = {**options, **_ai._ctx_override_if_needed(total_text, _ai._CONTEXT_FIT_RESERVED_TOKENS)}
     job_id = _chat_jobs.create_job(
         world_id=world.id, messages=msgs, system=body.system, model=body.model,
-        options=_clamp_options(body.options), created_by_user_id=user.id if user else None,
+        options=options, created_by_user_id=user.id if user else None,
     )
     return {"job_id": job_id}
 

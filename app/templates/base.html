@@ -326,29 +326,44 @@ function ndAccentFromHex(hexInput) {
 // removed by this (or by any realtime noise suppressor); that needs to be
 // handled upstream (lower the music, a closer/directional mic) rather than
 // fixed after the fact here.
-function ndMicRecorder(onStop, onError) {
+// `existingStream`, if given (see the Live Recording panel in sessions/
+// detail.html), is an already-acquired MediaStream this recorder should
+// use instead of calling getUserMedia itself — ownership of that stream
+// stays with the caller, so onstop here does NOT stop its tracks; the
+// caller stops them once, when it's actually done with the whole
+// recording, not once per short segment. Without this, re-acquiring the
+// mic via getUserMedia on every ~60s segment costs an audible gap of
+// latency, flickers the browser's mic indicator, and — on browsers that
+// re-prompt or fail re-acquisition after backgrounding (mobile Safari in
+// particular) — can silently kill the recording between segments. The
+// one-shot 🎤 Record button still calls this with no third argument and
+// keeps its existing self-contained (acquire-then-release) behavior.
+function ndMicRecorder(onStop, onError, existingStream) {
   var mediaRecorder = null;
   var chunks = [];
-  var stream = null;
+  var stream = existingStream || null;
+  var ownsStream = !existingStream;
 
   async function start() {
     if (!navigator.mediaDevices || !window.MediaRecorder) {
       if (onError) onError(new Error('Microphone recording is not supported in this browser'));
       return false;
     }
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
-    } catch (e) {
-      if (onError) onError(e);
-      return false;
+    if (!stream) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        });
+      } catch (e) {
+        if (onError) onError(e);
+        return false;
+      }
     }
     chunks = [];
     mediaRecorder = new MediaRecorder(stream);
     mediaRecorder.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
     mediaRecorder.onstop = function () {
-      stream.getTracks().forEach(function (t) { t.stop(); });
+      if (ownsStream) stream.getTracks().forEach(function (t) { t.stop(); });
       var mimeType = mediaRecorder.mimeType || 'audio/webm';
       onStop(new Blob(chunks, { type: mimeType }), mimeType);
     };
