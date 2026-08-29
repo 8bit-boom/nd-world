@@ -54,3 +54,29 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest
             ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Same image, built with the optional DeepFilterNet speech-enhancement
+      # dependencies baked in (see Dockerfile's INSTALL_DENOISE arg) — a
+      # separate tag rather than the default, since torch/torchaudio/
+      # deepfilternet add hundreds of MB and a Rust compile step that most
+      # deployments don't need. Lets a deployment that DOES want denoise
+      # (e.g. one built with `docker compose build --build-arg
+      # INSTALL_DENOISE=true`, bypassing the registry and Watchtower
+      # entirely) instead track this tag directly and get automatic
+      # updates. Shares the same cache scope as the step above — every
+      # layer up to the INSTALL_DENOISE conditional RUN is identical
+      # between the two variants, so only the denoise-specific layers and
+      # the final app-code layers actually rebuild here.
+      - name: Build and push (denoise variant)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: INSTALL_DENOISE=true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:latest-denoise
+            ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}:${{ github.sha }}-denoise
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
