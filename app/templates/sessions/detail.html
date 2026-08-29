@@ -149,8 +149,14 @@
           this session (once saved below), regardless of whether keyword search would have found them —
           the most reliable way to keep names consistent in the recap.
         </div>
-        <input type="text" id="npc-search-input" placeholder="Search entities…" autocomplete="off"
-               style="width:100%;margin-bottom:.4rem;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px;box-sizing:border-box"/>
+        <div style="display:flex;gap:.4rem;margin-bottom:.4rem">
+          <input type="text" id="npc-search-input" placeholder="Search entities…" autocomplete="off"
+                 style="flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px;box-sizing:border-box"/>
+          <button type="button" class="ai-recap-btn" onclick="checkMentionedEntities()"
+                  title="Scan the Summary field above for entity names that appear in it (exact match, case-insensitive) and check them here">
+            🔍 Check all mentioned
+          </button>
+        </div>
         <div id="npc-picker-tree" style="max-height:220px;overflow-y:auto;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.5rem"></div>
       </div>
       {% endif %}
@@ -404,6 +410,33 @@ ndEntityPicker(
     emptyText: 'No eligible entities in this world yet.',
   },
 );
+
+// QoL 3.4 — deterministic exact-name-match scan of the Summary field
+// against every candidate's name, offered as a one-click "check all
+// mentioned" shortcut. Reads .entity-picker-row's own lowercased
+// dataset.name (already computed by entity-picker.js) rather than
+// re-deriving it from NPC_CANDIDATES, so it can't drift from what's
+// actually rendered. Deliberately dumb (whole-word substring match, no
+// AI) — the value here is speed and 100% predictability for names that
+// did get typed verbatim, not fuzzy recall.
+function checkMentionedEntities() {
+  const text = (document.getElementById('summary-field').value || '').toLowerCase();
+  if (!text.trim()) { alert('Summary is empty — nothing to scan.'); return; }
+  let matched = 0;
+  document.querySelectorAll('#npc-picker-tree .entity-picker-row').forEach((row) => {
+    const cb = row.querySelector('input[type=checkbox]');
+    const name = row.dataset.name;
+    if (!cb || !name || cb.checked) return;
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp('\\b' + escaped + '\\b', 'i').test(text)) {
+      cb.checked = true;
+      matched++;
+    }
+  });
+  alert(matched
+    ? `✓ Checked ${matched} mentioned entit${matched === 1 ? 'y' : 'ies'}.`
+    : 'No new exact name matches found in the summary.');
+}
 {% endif %}
 
 function aiApplyRecap(mode) {
