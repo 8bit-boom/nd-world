@@ -25,7 +25,11 @@ function ndAudioJobs(panelEl, opts) {
     interrupted: "⏸ Interrupted",
   };
   const IN_PROGRESS = new Set(["pending", "transcribing", "summarizing"]);
-  const FINISHED = new Set(["done", "error", "cancelled"]);
+  // "interrupted" is deliberately in neither set — it's not still running
+  // (IN_PROGRESS) but it's also not a dead end (FINISHED normally means
+  // "safe to just delete"): the whole point of an interrupted job is that
+  // it can be resumed. It gets its own Resume button below instead.
+  const FINISHED = new Set(["done", "error", "cancelled", "interrupted"]);
 
   function statusLabel(job) {
     if (!IN_PROGRESS.has(job.status)) {
@@ -71,6 +75,18 @@ function ndAudioJobs(panelEl, opts) {
         btn.onclick = () => opts.onUse(job);
         row.appendChild(btn);
       }
+      if (job.status === "interrupted") {
+        // Previously this status had no button and no further polling at
+        // all here — a job interrupted (e.g. by a server restart) just
+        // sat frozen on the panel forever, even though the exact same job
+        // is resumable from the Background Jobs page.
+        const resumeBtn = document.createElement("button");
+        resumeBtn.type = "button";
+        resumeBtn.className = "nd-job-use-btn";
+        resumeBtn.textContent = "▶ Resume";
+        resumeBtn.onclick = () => resumeJob(job.id, resumeBtn);
+        row.appendChild(resumeBtn);
+      }
       if (FINISHED.has(job.status)) {
         const delBtn = document.createElement("button");
         delBtn.type = "button";
@@ -101,6 +117,29 @@ function ndAudioJobs(panelEl, opts) {
     if (jobs.some((j) => IN_PROGRESS.has(j.status))) {
       pollTimer = setTimeout(refreshList, pollMs);
     }
+  }
+
+  // Same unified resume route the Background Jobs page's own "▶ Resume"
+  // button posts to (app/routers/audio_jobs.py) — starts the job running
+  // again server-side, then refreshList() picks the now-"transcribing"/
+  // "summarizing" status back up and (since that's back in IN_PROGRESS)
+  // resumes polling on its own.
+  async function resumeJob(jobId, btn) {
+    btn.disabled = true;
+    btn.textContent = "Resuming…";
+    try {
+      const res = await fetch(`/api/audio-jobs/${jobId}/resume`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || `HTTP ${res.status}`);
+      }
+    } catch (e) {
+      alert("Failed to resume: " + e.message);
+      btn.disabled = false;
+      btn.textContent = "▶ Resume";
+      return;
+    }
+    await refreshList();
   }
 
   // Every AudioJob (whichever purpose-scoped panel started it) shares the

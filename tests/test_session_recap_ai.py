@@ -42,7 +42,7 @@ def _login_gm_in(client, seed, world):
 def test_expand_notes(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_expand(notes, model="", think=True):
+    async def fake_expand(notes, model="", think=True, extra_instructions=""):
         assert notes == "went to the tavern, met Elyra"
         captured["think"] = think
         return "The party visited the tavern and met Elyra."
@@ -58,7 +58,7 @@ def test_expand_notes(client, seed, monkeypatch):
 def test_expand_notes_think_off(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_expand(notes, model="", think=True):
+    async def fake_expand(notes, model="", think=True, extra_instructions=""):
         captured["think"] = think
         return "recap"
     monkeypatch.setattr(ai_module, "expand_recap_notes", fake_expand)
@@ -535,6 +535,43 @@ def test_live_transcript_append_accumulates_across_chunks(client, seed, monkeypa
         assert gs.live_transcript == "The party entered the tavern. They met a stranger."
     finally:
         db.close()
+
+
+def test_live_transcript_append_prioritizes_this_sessions_featured_entities_in_the_glossary(client, seed, monkeypatch):
+    """docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 2 item 2.7: this
+    route is the one place a game_session_id is naturally on hand for
+    _glossary_for_world's new prioritization — confirm it's actually
+    threaded through, not just added to the function signature and never
+    wired up."""
+    import json
+    from app.models import Entity
+
+    session_id = _make_session(seed.world_a)
+    db = SessionLocal()
+    try:
+        aaric = Entity(world_id=seed.world_a.id, kind="character", name="Aaric Alderman")
+        zora = Entity(world_id=seed.world_a.id, kind="character", name="Zora Zeal")
+        db.add_all([aaric, zora])
+        db.commit()
+        db.refresh(zora)
+        gs = db.get(GameSession, session_id)
+        gs.npcs_json = json.dumps([{"entity_id": zora.id, "name": "Zora Zeal", "kind": "entity"}])
+        db.commit()
+    finally:
+        db.close()
+
+    captured = {}
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        captured["glossary"] = glossary
+        return "some transcript"
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = _append_chunk(client, session_id)
+    assert r.status_code == 200
+    glossary = captured["glossary"]
+    assert glossary.index("Zora Zeal") < glossary.index("Aaric Alderman")
 
 
 def test_live_transcript_append_silent_chunk_appends_nothing(client, seed, monkeypatch):

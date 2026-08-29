@@ -763,7 +763,7 @@ _EXPAND_NOTES_SYSTEM = (
 )
 
 
-async def expand_recap_notes(notes: str, model: str = "", think: bool = True) -> str:
+async def expand_recap_notes(notes: str, model: str = "", think: bool = True, extra_instructions: str = "") -> str:
     """Expand terse GM notes into a polished narrative session recap. Unlike
     parse_facts_from_recap, this doesn't need JSON-schema-constrained output
     (free-text prose, not discrete structured facts) so it just wraps
@@ -776,10 +776,30 @@ async def expand_recap_notes(notes: str, model: str = "", think: bool = True) ->
     "Thinking" checkbox on the Sessions page controls; the checkbox is
     checked by default, so the common case is this default applying
     unchanged. See _thinking_num_predict_override's own docstring for why
-    a GM-configured num_predict cap is widened when think=True."""
+    a GM-configured num_predict cap is widened when think=True.
+
+    `extra_instructions` is a GM's steering (e.g. World.recap_instructions
+    — "write in Spanish"), same _with_instructions convention every other
+    recap function in this module uses — added since this was previously
+    the one member of the recap-assist family that ignored it, so a GM's
+    standing instruction silently didn't apply to Expand notes.
+
+    Also sizes num_ctx via _ctx_override_if_needed when a huge notes paste
+    (unbounded free text) would otherwise silently truncate at the
+    configured/default context — this used to pass no num_ctx override at
+    all, unlike condense_recap/summarize_transcript. The extra reserve only
+    applies when num_predict was ACTUALLY widened above (i.e. a configured
+    num_predict exists to widen) — gating on bare `think` instead would
+    make this fire on nearly every thinking call regardless of input
+    length, since the headroom alone already exceeds the unconfigured
+    assumed default context."""
+    system = _with_instructions(_EXPAND_NOTES_SYSTEM, extra_instructions)
+    opts = dict(_thinking_num_predict_override(think))
+    reserve = _CONTEXT_FIT_RESERVED_TOKENS + (_THINKING_HEADROOM_TOKENS if "num_predict" in opts else 0)
+    opts.update(_ctx_override_if_needed(system + notes, reserve))
     return await generate_chat(
-        [{"role": "user", "content": notes}], system=_EXPAND_NOTES_SYSTEM, model=model,
-        options=_thinking_num_predict_override(think) or None, think=think,
+        [{"role": "user", "content": notes}], system=system, model=model,
+        options=opts or None, think=think,
     )
 
 
@@ -798,14 +818,25 @@ async def summarize_session_from_facts(facts: list[str], model: str = "", extra_
     is a GM's steering (e.g. World.recap_instructions — "write in Spanish"),
     same as summarize_transcript's own parameter of the same name. `think`
     defaults to True — see expand_recap_notes's docstring for why this
-    family of functions differs from generate_chat's own plain default."""
+    family of functions differs from generate_chat's own plain default.
+
+    Also sizes num_ctx via _ctx_override_if_needed — a fact-heavy session
+    (the player session-log route sends every fact, uncapped) could
+    otherwise silently truncate at the configured/default context; this
+    used to pass no num_ctx override at all, unlike condense_recap/
+    summarize_transcript. See expand_recap_notes's own docstring for why
+    the extra reserve is gated on num_predict actually having been widened,
+    not on bare `think`."""
     if not facts:
         return ""
     bullet_list = "\n".join(f"- {f}" for f in facts)
     system = _with_instructions(_SUMMARIZE_FACTS_SYSTEM, extra_instructions)
+    opts = dict(_thinking_num_predict_override(think))
+    reserve = _CONTEXT_FIT_RESERVED_TOKENS + (_THINKING_HEADROOM_TOKENS if "num_predict" in opts else 0)
+    opts.update(_ctx_override_if_needed(system + bullet_list, reserve))
     return await generate_chat(
         [{"role": "user", "content": bullet_list}], system=system, model=model,
-        options=_thinking_num_predict_override(think) or None, think=think,
+        options=opts or None, think=think,
     )
 
 
@@ -1046,6 +1077,21 @@ def context_sized_options(text: str, reserve_tokens: int = _CONTEXT_FIT_RESERVED
     chars_per_token = _chars_per_token_estimate(text)
     input_tokens = -(-len(text) // chars_per_token)  # ceil division
     return {"num_ctx": max(_CONTEXT_FIT_FLOOR_TOKENS, input_tokens + reserve_tokens)}
+
+
+def _ctx_override_if_needed(text: str, reserve_tokens: int) -> dict:
+    """Like condense_call_options' own "only step in when actually needed"
+    behavior, but for the two recap-family callers (summarize_session_from_
+    facts, expand_recap_notes) that previously passed NO num_ctx override at
+    all — a fact-heavy session (the player session-log route sends every
+    fact, uncapped) or a huge notes paste could silently truncate at the
+    configured/default context, the exact garbage-output failure condense_
+    call_options' own docstring documents for condense_recap. Returns {}
+    (no override — the GM's configured/default context keeps applying
+    unchanged) unless the computed requirement genuinely exceeds it."""
+    needed = context_sized_options(text, reserve_tokens=reserve_tokens)["num_ctx"]
+    baseline = effective_ollama_options().get("num_ctx") or _DEFAULT_ASSUMED_CTX_TOKENS
+    return {"num_ctx": needed} if needed > baseline else {}
 
 
 _SUMMARIZE_TRANSCRIPT_SYSTEM = (

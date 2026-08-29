@@ -311,6 +311,100 @@ def test_glossary_for_world_merges_entity_names(client, seed):
     assert "Gareth Ashfall" in merged
 
 
+# ── _glossary_for_world: game_session_id prioritizes "Entities Featured" ───
+#
+# entity_glossary_terms lists names alphabetically by kind/name — on a big
+# world the NPCs actually spoken aloud this session can lose the
+# ~600-char merge_glossary budget to alphabetically-earlier entities that
+# never came up at all. game_session_id feeds the GM's own "Entities
+# Featured" picks (app.audio_jobs._session_featured_picks) to the front of
+# the entity-name list before that alphabetical list, without changing
+# merge_glossary's own "GM-typed text always first, never trimmed" rule.
+
+def _make_session_with_picks(world_id, picks):
+    from app.models import GameSession as _GameSession
+    import json as _json
+    db = SessionLocal()
+    try:
+        gs = _GameSession(world_id=world_id, title="Session 1", session_num=1, npcs_json=_json.dumps(picks))
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        return gs.id
+    finally:
+        db.close()
+
+
+def test_glossary_for_world_puts_featured_entity_ahead_of_alphabetically_earlier_ones(client, seed):
+    """"Aaric" would sort before "Zora" in entity_glossary_terms' plain
+    alphabetical order — but Zora is the one the GM featured this session,
+    so it must appear first in the merged glossary."""
+    world_id = seed.world_a.id
+    _make_entity(world_id, "character", "Aaric Alderman")
+    zora_id = _make_entity(world_id, "character", "Zora Zeal")
+    gs_id = _make_session_with_picks(world_id, [{"entity_id": zora_id, "name": "Zora Zeal", "kind": "entity"}])
+    merged = audio_jobs._glossary_for_world(world_id, gs_id)
+    assert merged.index("Zora Zeal") < merged.index("Aaric Alderman")
+
+
+def test_glossary_for_world_featured_entity_survives_the_char_budget_others_dont(client, seed, monkeypatch):
+    """The real motivating case: enough entities to blow past merge_
+    glossary's char budget on alphabetical order alone — without the
+    top-priority treatment, an alphabetically-late featured entity gets
+    silently dropped even though the GM explicitly flagged it as relevant
+    this session."""
+    world_id = seed.world_a.id
+    monkeypatch.setattr(audio_jobs, "_GLOSSARY_ENTITY_CHAR_BUDGET", 60)
+    # Alphabetically first (included under the plain, unprioritized order)
+    _make_entity(world_id, "character", "Aaron Longname Applegate")
+    _make_entity(world_id, "character", "Bertrand Longname Blackwood")
+    # Alphabetically last — would be dropped by the 60-char budget on its own
+    featured_id = _make_entity(world_id, "character", "Zephyrine Longname Zenith")
+    gs_id = _make_session_with_picks(world_id, [{"entity_id": featured_id, "name": "Zephyrine Longname Zenith", "kind": "entity"}])
+
+    unprioritized = audio_jobs._glossary_for_world(world_id)
+    assert "Zephyrine Longname Zenith" not in unprioritized  # confirms the budget really is this tight
+
+    prioritized = audio_jobs._glossary_for_world(world_id, gs_id)
+    assert "Zephyrine Longname Zenith" in prioritized
+
+
+def test_glossary_for_world_includes_featured_player_characters(client, seed):
+    from app.models import PlayerCharacter as _PlayerCharacter
+    world_id = seed.world_a.id
+    db = SessionLocal()
+    try:
+        pc = _PlayerCharacter(world_id=world_id, name="Boric Stonehand")
+        db.add(pc)
+        db.commit()
+        db.refresh(pc)
+        pc_id = pc.id
+    finally:
+        db.close()
+    gs_id = _make_session_with_picks(world_id, [{"entity_id": pc_id, "name": "Boric Stonehand", "kind": "player_character"}])
+    merged = audio_jobs._glossary_for_world(world_id, gs_id)
+    assert "Boric Stonehand" in merged
+
+
+def test_glossary_for_world_no_game_session_id_falls_back_to_plain_order(client, seed):
+    """Backward-compatible default: an omitted game_session_id (every
+    caller except the live-transcript-append route) behaves exactly as
+    before this feature — no game session, no reordering."""
+    world_id = seed.world_a.id
+    _make_entity(world_id, "character", "Aaric Alderman")
+    without_session = audio_jobs._glossary_for_world(world_id)
+    without_session_arg = audio_jobs._glossary_for_world(world_id, None)
+    assert without_session == without_session_arg
+
+
+def test_glossary_for_world_unknown_game_session_id_is_a_noop(client, seed):
+    world_id = seed.world_a.id
+    _make_entity(world_id, "character", "Gareth Ashfall")
+    plain = audio_jobs._glossary_for_world(world_id)
+    with_bogus_session = audio_jobs._glossary_for_world(world_id, 999999)
+    assert plain == with_bogus_session
+
+
 @pytest.mark.asyncio
 async def test_background_job_glossary_includes_entity_names_even_with_no_gm_glossary(client, seed, tmp_path, monkeypatch):
     """End-to-end through the job engine: an entity name reaches

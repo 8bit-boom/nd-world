@@ -202,6 +202,42 @@ def test_world_context_smart_includes_body_excerpt(client, seed):
     assert "Undermarket" in r.json()["context"]
 
 
+def test_world_context_smart_tops_up_entities_for_a_foreign_language_query(client, seed):
+    """Mirrors app.audio_jobs._build_rag_context's own non-English top-up
+    (see test_build_rag_context_tops_up_entities_for_a_foreign_language_
+    query in test_audio_jobs.py) — the same gap existed one surface over on
+    AI Chat's RAG (docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 2, item
+    2.3): a Russian-language chat question against English-named entities
+    had no literal keyword overlap for find_relevant_entities to match, so
+    it silently came back with no characters/places at all."""
+    _make_entity(
+        seed.world_a.id, name="Gareth Ashfall", kind="character", summary="A blacksmith.",
+        body="Gareth Ashfall runs the forge near the eastern gate.",
+    )
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    russian_query = "Партия встретила Гарета возле восточных ворот"
+    r = client.post("/api/ai/world-context-smart", json={"query": russian_query, "limit": 10, "notes_limit": 0})
+    assert r.status_code == 200
+    data = r.json()
+    assert "Gareth Ashfall" in data["context"]
+    assert any(e["name"] == "Gareth Ashfall" for e in data["entities"])
+
+
+def test_world_context_smart_no_topup_leak_when_search_already_fills_the_limit(client, seed):
+    _make_entity(seed.world_a.id, name="Gareth Ashfall", kind="character", body="A blacksmith.")
+    _make_entity(seed.world_a.id, name="Completely Unrelated Entity", kind="location", body="Nothing to do with Gareth.")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/world-context-smart", json={
+        "query": "Gareth Ashfall the blacksmith", "limit": 1, "notes_limit": 0,
+    })
+    assert r.status_code == 200
+    data = r.json()
+    assert "Gareth Ashfall" in data["context"]
+    assert "Completely Unrelated Entity" not in data["context"]
+
+
 # ── AI 1.11 — guaranteed-recent-notes top-up ordered by recency ────────────
 
 def _make_note_with_updated_at(world_id, name, updated_at):

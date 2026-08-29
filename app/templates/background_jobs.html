@@ -57,6 +57,15 @@ let _bgPollTimer = null;
 const _bgExpanded = new Set();
 const _bgBars = {};
 let BG_MODELS = [];
+// bgRefresh wipes and rebuilds the whole job list every 3s while anything
+// is in progress (see bgRefresh below) — without this, that rebuild
+// destroyed whatever a GM had typed into a retry row's model/instructions/
+// Thinking controls, and reset any expanded result box's scroll position,
+// mid-edit. Keyed by bgKey(job), plus a ':recap'/':transcript'/':result'
+// suffix for scroll state (a job can have more than one expanded box).
+// Re-applied after each render, falling back to the job-derived defaults
+// when a key has no saved state yet.
+const _bgFormState = new Map();
 
 async function bgLoadModels() {
   try {
@@ -244,6 +253,8 @@ function bgRenderJob(job) {
     actions.appendChild(toggleBtn);
   }
   if (job.job_type === 'audio' && job.purpose === 'session_recap' && job.transcript && !IN_PROGRESS.has(job.status)) {
+    const formKey = bgKey(job);
+    const savedForm = _bgFormState.get(formKey);
     const retryWrap = document.createElement('span');
     retryWrap.style.cssText = 'display:inline-flex;gap:.3rem;align-items:center';
 
@@ -258,16 +269,26 @@ function bgRenderJob(job) {
       const opt = document.createElement('option');
       opt.value = m.id;
       opt.textContent = m.label || m.id;
-      if (job.model && m.id === job.model) opt.selected = true;
       sel.appendChild(opt);
     });
+    sel.value = savedForm && savedForm.model !== undefined ? savedForm.model : (job.model || '');
+    sel.onchange = () => {
+      const st = _bgFormState.get(formKey) || {};
+      st.model = sel.value;
+      _bgFormState.set(formKey, st);
+    };
 
     const instructionsInput = document.createElement('input');
     instructionsInput.type = 'text';
     instructionsInput.placeholder = 'Extra instructions (optional)…';
     instructionsInput.title = 'One-off notes for this summary, e.g. "focus on combat" — added to (not replacing) the world\'s standing recap instructions';
-    instructionsInput.value = job.extra_instructions || '';
+    instructionsInput.value = savedForm && savedForm.instructions !== undefined ? savedForm.instructions : (job.extra_instructions || '');
     instructionsInput.style.cssText = 'font-size:.75rem;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:.2rem .4rem;width:180px';
+    instructionsInput.oninput = () => {
+      const st = _bgFormState.get(formKey) || {};
+      st.instructions = instructionsInput.value;
+      _bgFormState.set(formKey, st);
+    };
 
     const thinkLabel = document.createElement('label');
     thinkLabel.style.cssText = 'display:inline-flex;align-items:center;gap:.25rem;font-size:.75rem;color:var(--text-dim);cursor:pointer';
@@ -278,8 +299,14 @@ function bgRenderJob(job) {
     // sentinel (see is_thinking_starved_sentinel) — re-running with
     // Thinking on would very likely just fail the same way again, so the
     // manual retry path defaults sensibly too, not just the dedicated
-    // button below.
-    thinkCheckbox.checked = job.thinking_starved ? false : job.think !== false;
+    // button below. A GM's own edit (saved in _bgFormState) wins once made.
+    thinkCheckbox.checked = savedForm && savedForm.think !== undefined
+      ? savedForm.think : (job.thinking_starved ? false : job.think !== false);
+    thinkCheckbox.onchange = () => {
+      const st = _bgFormState.get(formKey) || {};
+      st.think = thinkCheckbox.checked;
+      _bgFormState.set(formKey, st);
+    };
     thinkLabel.append(thinkCheckbox, document.createTextNode('🧠 Thinking'));
 
     const retryBtn = document.createElement('button');
@@ -339,6 +366,20 @@ function bgRenderJob(job) {
     return label;
   };
 
+  // Tags a result box so bgRefresh can restore its scroll position from
+  // _bgFormState AFTER the card is attached to the live DOM (setting
+  // scrollTop on a still-detached element has no scrollable layout to
+  // apply against yet), and wires it to keep saving as the GM scrolls —
+  // so a mid-refresh rebuild doesn't snap an expanded box back to the top.
+  const bgTrackScroll = (box, scrollKey) => {
+    box.dataset.bgScrollKey = scrollKey;
+    box.addEventListener('scroll', () => {
+      const st = _bgFormState.get(scrollKey) || {};
+      st.scroll = box.scrollTop;
+      _bgFormState.set(scrollKey, st);
+    });
+  };
+
   if (_bgExpanded.has(bgKey(job)) && job.status === 'done') {
     if (job.job_type === 'audio' && job.recap) {
       card.appendChild(bgResultLabel(`Recap (${ndTokenLabel(job.recap)})`, `/api/audio-jobs/${job.id}/recap.md`));
@@ -347,6 +388,7 @@ function bgRenderJob(job) {
       recapBox.style.display = 'block';
       recapBox.textContent = job.recap;
       card.appendChild(recapBox);
+      bgTrackScroll(recapBox, bgKey(job) + ':recap');
     }
     if (job.job_type === 'audio' && job.transcript) {
       card.appendChild(bgResultLabel(`Transcript (${ndTokenLabel(job.transcript)})`, `/api/audio-jobs/${job.id}/transcript.md`));
@@ -355,6 +397,7 @@ function bgRenderJob(job) {
       tBox.style.display = 'block';
       tBox.textContent = job.transcript;
       card.appendChild(tBox);
+      bgTrackScroll(tBox, bgKey(job) + ':transcript');
     }
     if (job.job_type === 'chat' && job.result) {
       const label = document.createElement('div');
@@ -366,6 +409,7 @@ function bgRenderJob(job) {
       box.style.display = 'block';
       box.textContent = job.result;
       card.appendChild(box);
+      bgTrackScroll(box, bgKey(job) + ':result');
     }
     if (job.job_type === 'image' && job.urls && job.urls.length) {
       const label = document.createElement('div');
@@ -512,7 +556,17 @@ async function bgRefresh() {
   const list = document.getElementById('bg-jobs-list');
   list.innerHTML = '';
   document.getElementById('bg-jobs-empty').style.display = jobs.length ? 'none' : 'block';
-  jobs.forEach((job) => list.appendChild(bgRenderJob(job)));
+  jobs.forEach((job) => {
+    const card = bgRenderJob(job);
+    list.appendChild(card);
+    // Restore expanded-box scroll position now that the card is actually
+    // in the live DOM (see bgTrackScroll's own comment for why this can't
+    // happen while the card is still detached).
+    card.querySelectorAll('[data-bg-scroll-key]').forEach((box) => {
+      const saved = _bgFormState.get(box.dataset.bgScrollKey);
+      if (saved && saved.scroll != null) box.scrollTop = saved.scroll;
+    });
+  });
 
   if (_bgPollTimer) { clearTimeout(_bgPollTimer); _bgPollTimer = null; }
   if (jobs.some((j) => IN_PROGRESS.has(j.status))) {

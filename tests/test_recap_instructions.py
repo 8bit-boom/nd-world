@@ -506,3 +506,67 @@ def test_summarize_from_facts_applies_world_recap_instructions(client, seed, mon
     r = client.post(f"/api/sessions/{session_id}/ai/summarize-from-facts")
     assert r.status_code == 200, r.text
     assert "Write in French" in captured["extra_instructions"]
+
+
+def test_expand_notes_applies_world_recap_instructions(client, seed, monkeypatch):
+    """Regression test for docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part
+    2 item 2.1 — previously the one recap-family route that ignored the
+    world's standing recap_instructions entirely."""
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.recap_instructions = "Write in French"
+        db.commit()
+    finally:
+        db.close()
+
+    captured = {}
+
+    async def fake_expand(notes, model="", think=True, extra_instructions=""):
+        captured["extra_instructions"] = extra_instructions
+        return "des notes développées"
+    monkeypatch.setattr(ai_module, "expand_recap_notes", fake_expand)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/expand-notes", json={"notes": "went to the tavern"})
+    assert r.status_code == 200, r.text
+    assert "Write in French" in captured["extra_instructions"]
+
+
+def test_expand_notes_scoped_per_world(client, seed, monkeypatch):
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.recap_instructions = "Write in French"
+        db.commit()
+    finally:
+        db.close()
+
+    captured = {}
+
+    async def fake_expand(notes, model="", think=True, extra_instructions=""):
+        captured["extra_instructions"] = extra_instructions
+        return "expanded notes"
+    monkeypatch.setattr(ai_module, "expand_recap_notes", fake_expand)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_b.slug)
+    r = client.post("/api/sessions/ai/expand-notes", json={"notes": "went to the tavern"})
+    assert r.status_code == 200, r.text
+    assert captured["extra_instructions"] == ""
+
+
+@pytest.mark.asyncio
+async def test_expand_recap_notes_extra_instructions_reach_the_system_prompt(monkeypatch):
+    """Function-level test for app.ai.expand_recap_notes's own new
+    extra_instructions param."""
+    seen = {}
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen["system"] = system
+        return "expanded"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    await ai_module.expand_recap_notes("terse notes", extra_instructions="focus on combat", think=False)
+    assert "focus on combat" in seen["system"]

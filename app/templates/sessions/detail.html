@@ -710,6 +710,12 @@ let _liveCurrentRecorder = null;
 let _liveChunkTimer = null;
 let _liveQueue = [];
 let _liveQueueBusy = false;
+// Chunks that failed all 3 upload attempts — kept (not discarded) so the GM
+// can retry them instead of silently losing ~1min of transcript. Retried
+// chunks append at the current end of the queue, so the transcript may gain
+// them out of chronological order relative to whatever was recorded after
+// the failure — better a late paragraph than permanent silence.
+let _liveFailedChunks = [];
 
 function liveSetTranscriptDisplay(text) {
   const el = document.getElementById('live-transcript-text');
@@ -721,11 +727,44 @@ function liveSetTranscriptDisplay(text) {
   if (downloadLink) downloadLink.style.display = text && text.trim() ? '' : 'none';
 }
 
+// The single source of truth for #live-record-status once nothing is
+// actively uploading — call after every state change (queue drained, Stop
+// pressed with nothing in flight, a retry resolves) so the status line
+// never gets stuck showing a transient message ("Stopped — finishing the
+// last chunk…") forever once there's nothing left to finish.
+function liveRefreshStatus() {
+  const status = document.getElementById('live-record-status');
+  if (_liveFailedChunks.length) {
+    status.textContent = '';
+    status.append(`⚠ ${_liveFailedChunks.length} chunk(s) failed to upload — `);
+    const retryBtn = document.createElement('button');
+    retryBtn.type = 'button';
+    retryBtn.className = 'bg-job-btn';
+    retryBtn.textContent = 'Retry';
+    retryBtn.onclick = liveRetryFailedChunks;
+    status.appendChild(retryBtn);
+    return;
+  }
+  status.textContent = _liveRecording ? 'Recording…' : 'Stopped — transcript saved.';
+}
+
+function liveRetryFailedChunks() {
+  const chunks = _liveFailedChunks;
+  _liveFailedChunks = [];
+  _liveQueue.push(...chunks);
+  liveProcessQueue();
+}
+
 async function liveProcessQueue() {
   if (_liveQueueBusy) return;
   _liveQueueBusy = true;
   const status = document.getElementById('live-record-status');
   while (_liveQueue.length) {
+    if (_liveRecording && _liveQueue.length > 1) {
+      // A slower-than-realtime Whisper backend was previously invisible
+      // here until chunks started timing out — surface the backlog.
+      status.textContent = `Recording… (${_liveQueue.length} chunk(s) waiting for Whisper)`;
+    }
     const file = _liveQueue[0];
     let uploaded = false;
     for (let attempt = 1; attempt <= 3 && !uploaded; attempt++) {
@@ -739,7 +778,7 @@ async function liveProcessQueue() {
         uploaded = true;
       } catch (e) {
         if (attempt >= 3) {
-          status.textContent = '⚠ Lost a ~1min chunk after 3 failed upload attempts: ' + e.message;
+          _liveFailedChunks.push(file);
         } else {
           await new Promise(r => setTimeout(r, 1500 * attempt));
         }
@@ -748,7 +787,7 @@ async function liveProcessQueue() {
     _liveQueue.shift();
   }
   _liveQueueBusy = false;
-  if (_liveRecording) status.textContent = 'Recording…';
+  liveRefreshStatus();
 }
 
 function liveStartSegment() {

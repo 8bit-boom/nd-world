@@ -73,13 +73,15 @@ async def _transcribe_chunk(file: UploadFile, max_bytes: int = MAX_LIVE_CHUNK_BY
         tmp_path.unlink(missing_ok=True)
 
 
-def _glossary_for_world(world) -> str:
+def _glossary_for_world(world, game_session_id: int | None = None) -> str:
     """Delegates to audio_jobs' own _glossary_for_world (world_id, not the
     World object this takes) rather than keeping a second copy of the
     entity-name merge logic — see its own docstring for what "glossary"
     actually includes beyond whatever the GM typed into World.
-    whisper_glossary."""
-    return _audio_jobs._glossary_for_world(world.id) if world else ""
+    whisper_glossary, and for what game_session_id does (feeds that
+    session's "Entities Featured" picks to the front of the entity-name
+    list)."""
+    return _audio_jobs._glossary_for_world(world.id, game_session_id) if world else ""
 
 
 def _language_for_world(world) -> str:
@@ -562,15 +564,29 @@ def _rag_options_from_body(body: dict) -> tuple[bool, Optional[int], Optional[in
 
 
 @router.post("/api/sessions/ai/expand-notes")
-async def api_expand_recap_notes(request: Request):
+async def api_expand_recap_notes(
+    request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
     """Expand terse GM notes (whatever's currently in the Summary textarea)
     into a polished narrative recap. Session-independent — works on the New
-    Session form too, before anything has been saved."""
+    Session form too, before anything has been saved.
+
+    Resolves the "recap" model surface and the world's standing
+    recap_instructions the same way every sibling route below does (e.g.
+    api_condense_recap) — previously this was the one recap-family member
+    that used neither: it always ran the single-instance-wide default
+    model and ignored a GM's "always write in Spanish"-style standing
+    instruction."""
+    world, _ = get_world_ctx(request, db, active_world)
     body = await request.json()
     notes = str(body.get("notes", "")).strip()
     if not notes:
         raise HTTPException(400, "No notes provided")
-    return {"recap": await _ai_module.expand_recap_notes(notes, think=_think_from_body(body))}
+    recap = await _ai_module.expand_recap_notes(
+        notes, model=_recap_model(""), think=_think_from_body(body),
+        extra_instructions=_recap_instructions_for_world(world),
+    )
+    return {"recap": recap}
 
 
 @router.post("/api/sessions/ai/condense-recap")
@@ -911,7 +927,7 @@ async def api_live_transcript_append(session_id: int, file: UploadFile = File(..
         raise HTTPException(404)
     world = db.get(World, gs.world_id)
     try:
-        chunk_text = (await _transcribe_chunk(file, glossary=_glossary_for_world(world), language=_language_for_world(world), denoise=_denoise_for_world(world))).strip()
+        chunk_text = (await _transcribe_chunk(file, glossary=_glossary_for_world(world, gs.id), language=_language_for_world(world), denoise=_denoise_for_world(world))).strip()
     except _ai_module.WhisperError as exc:
         raise HTTPException(400, str(exc)) from exc
     if chunk_text:

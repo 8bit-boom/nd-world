@@ -59,24 +59,28 @@ def test_ranks_a_name_match_above_a_body_only_match(client, seed):
 
 def test_index_stays_in_sync_after_update(client, seed):
     """The entity_fts_au trigger must fire on an ORM-issued UPDATE, not
-    just on raw SQL."""
+    just on raw SQL. Checks find_relevant_entities directly rather than
+    through the world-context-smart route — that route's response also
+    includes a non-English-query top-up (see docs/DYNAMIC_THINKING_AND_
+    PIPELINE_PLAN.md Part 2 item 2.3) that guarantees SOME entities back
+    once the world has more than the search alone found, which would make
+    a route-level "not in" assertion here a false negative unrelated to
+    FTS sync at all."""
     eid = _make_entity(seed.world_a.id, name="Blank Entity", kind="character", body="Nothing notable.")
-    login(client, seed.gm.email, GM_PASSWORD)
-    client.cookies.set("active_world", seed.world_a.slug)
-
-    r1 = client.post("/api/ai/world-context-smart", json={"query": "moonflower", "limit": 10, "notes_limit": 0})
-    assert eid not in {e["id"] for e in r1.json()["entities"]}
 
     db = SessionLocal()
     try:
+        before = find_relevant_entities(db, seed.world_a.id, "moonflower", limit=10)
+        assert eid not in {e.id for e in before}
+
         e = db.get(Entity, eid)
         e.body = "Grows moonflower petals in a hidden garden."
         db.commit()
+
+        after = find_relevant_entities(db, seed.world_a.id, "moonflower", limit=10)
+        assert eid in {e.id for e in after}
     finally:
         db.close()
-
-    r2 = client.post("/api/ai/world-context-smart", json={"query": "moonflower", "limit": 10, "notes_limit": 0})
-    assert eid in {e["id"] for e in r2.json()["entities"]}
 
 
 def test_index_stays_in_sync_after_delete(client, seed):

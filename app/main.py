@@ -2459,6 +2459,21 @@ def ai_world_context_smart(
     entities = _retrieval.find_relevant_entities(db, world.id, body.query, limit=body.limit)
     notes = [e for e in entities if e.kind == "note"]
     non_notes = [e for e in entities if e.kind != "note"]
+    # A query in a different language/script than the World's entity names
+    # (e.g. a Russian chat question against English-named characters) has
+    # no literal text overlap for find_relevant_entities' keyword search to
+    # match, so it comes back empty even though there ARE relevant entities
+    # to reference — the same gap app.audio_jobs._build_rag_context's own
+    # top-up already closes for the job/transcript RAG path (see its
+    # docstring); without this here too, a non-English chat question would
+    # silently get a context with notes but no characters/places at all.
+    if body.limit > 0 and len(non_notes) < body.limit:
+        seen_ids = {e.id for e in entities}
+        topup_q = db.query(Entity).filter(Entity.world_id == world.id, Entity.kind != "note")
+        if seen_ids:
+            topup_q = topup_q.filter(~Entity.id.in_(seen_ids))
+        topup = topup_q.order_by(Entity.kind, Entity.name).limit(body.limit - len(non_notes)).all()
+        non_notes = non_notes + topup
     # Also search notes separately if notes_limit > 0
     if body.notes_limit > 0:
         note_entities = (

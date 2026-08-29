@@ -330,14 +330,47 @@ def merge_glossary(gm_glossary: str, entity_terms: list[str]) -> tuple[str, int,
     return merged, len(included), dropped
 
 
-def _glossary_for_world(world_id: int) -> str:
+def _glossary_for_world(world_id: int, game_session_id: int | None = None) -> str:
+    """`game_session_id`, if given, feeds names from the GM's "Entities
+    Featured" picks for that session (see _session_featured_picks) to the
+    FRONT of the entity-name list, ahead of entity_glossary_terms' own
+    alphabetical-by-kind list — on a big world, the NPCs actually spoken
+    aloud this session could otherwise lose merge_glossary's
+    _GLOSSARY_ENTITY_CHAR_BUDGET to alphabetically-earlier entities that
+    never came up at all. GM-typed text (World.whisper_glossary) still
+    always comes first and is never trimmed — see merge_glossary's own
+    docstring; this only affects the ORDER of the entity names appended
+    after it, not whether they're included."""
     db = SessionLocal()
     try:
         w = db.get(World, world_id)
         gm_glossary = (w.whisper_glossary or "").strip() if w else ""
+        featured_names = []
+        if game_session_id:
+            pinned_entity_ids, pinned_pc_ids = _session_featured_picks(game_session_id)
+            if pinned_entity_ids:
+                rows = (
+                    db.query(Entity.name)
+                    .filter(Entity.world_id == world_id, Entity.id.in_(pinned_entity_ids))
+                    .order_by(Entity.kind, Entity.name)
+                    .all()
+                )
+                featured_names.extend(r[0] for r in rows if r[0])
+            if pinned_pc_ids:
+                pc_rows = (
+                    db.query(PlayerCharacter.name)
+                    .filter(PlayerCharacter.world_id == world_id, PlayerCharacter.id.in_(pinned_pc_ids))
+                    .order_by(PlayerCharacter.name)
+                    .all()
+                )
+                featured_names.extend(r[0] for r in pc_rows if r[0])
     finally:
         db.close()
-    return merge_glossary(gm_glossary, entity_glossary_terms(world_id))[0]
+    entity_terms = entity_glossary_terms(world_id)
+    if featured_names:
+        featured_lower = {n.lower() for n in featured_names}
+        entity_terms = featured_names + [t for t in entity_terms if t.lower() not in featured_lower]
+    return merge_glossary(gm_glossary, entity_terms)[0]
 
 
 def _whisper_language_for_world(world_id: int) -> str:
@@ -650,7 +683,7 @@ async def _run_job(job_id: int) -> None:
         skip_transcribe = bool(existing_transcript) and not (checkpoint and checkpoint.get("phase") == "transcribe")
         if not skip_transcribe:
             _set(status="transcribing", run_started_at=datetime.utcnow(), finished_at=None)
-            glossary = _glossary_for_world(world_id) if world_id else ""
+            glossary = _glossary_for_world(world_id, game_session_id) if world_id else ""
             language = _whisper_language_for_world(world_id) if world_id else ""
             denoise = _denoise_for_world(world_id) if world_id else False
             transcribe_resume = checkpoint if checkpoint and checkpoint.get("phase") == "transcribe" else None

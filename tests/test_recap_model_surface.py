@@ -156,6 +156,25 @@ async def test_job_with_no_default_set_falls_through_to_empty(client, seed, tmp_
 
 # ── app/routers/sessions.py's direct (non-job) call sites ──────────────────
 
+def test_expand_notes_falls_back_to_recap_surface_default(client, seed, monkeypatch):
+    """Expand-notes previously used no model surface at all — it always ran
+    the single instance-wide default model, unlike every sibling recap
+    route (see docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 2, item
+    2.1)."""
+    captured = {}
+
+    async def fake_expand(notes, model="", think=True, extra_instructions=""):
+        captured["model"] = model
+        return "Expanded notes."
+    monkeypatch.setattr(ai_module, "expand_recap_notes", fake_expand)
+
+    ai_module.set_default("recap", "recap-default-model")
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post("/api/sessions/ai/expand-notes", json={"notes": "went to the tavern"})
+    assert r.status_code == 200
+    assert captured["model"] == "recap-default-model"
+
+
 def test_condense_recap_falls_back_to_recap_surface_default(client, seed, monkeypatch):
     captured = {}
 

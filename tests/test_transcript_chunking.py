@@ -348,7 +348,14 @@ async def test_expand_recap_notes_widens_configured_num_predict_when_thinking(mo
 
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
     await ai_module.expand_recap_notes("terse notes")
-    assert seen_options == [{"num_predict": 512 + ai_module._THINKING_HEADROOM_TOKENS}]
+    assert seen_options[0]["num_predict"] == 512 + ai_module._THINKING_HEADROOM_TOKENS
+    # num_ctx now appears too (see _ctx_override_if_needed, item 2.2 of
+    # docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md): once num_predict is
+    # widened by a full _THINKING_HEADROOM_TOKENS, that alone already
+    # exceeds the unconfigured 4096-token assumed default, so the context
+    # window genuinely needs matching room to hold the widened output —
+    # not just a "long input" concern.
+    assert "num_ctx" in seen_options[0]
 
 
 @pytest.mark.asyncio
@@ -362,7 +369,55 @@ async def test_summarize_session_from_facts_widens_configured_num_predict_when_t
 
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
     await ai_module.summarize_session_from_facts(["fact one", "fact two"])
-    assert seen_options == [{"num_predict": 512 + ai_module._THINKING_HEADROOM_TOKENS}]
+    assert seen_options[0]["num_predict"] == 512 + ai_module._THINKING_HEADROOM_TOKENS
+    assert "num_ctx" in seen_options[0]  # see the sibling expand_recap_notes test's comment above
+
+
+@pytest.mark.asyncio
+async def test_expand_recap_notes_no_ctx_override_when_unconfigured_and_short(monkeypatch):
+    """No configured num_predict and no long input means nothing needs
+    protecting — options stay exactly as _thinking_num_predict_override's
+    own no-op case, matching pre-2.2 behavior for the common case."""
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
+    seen_options = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen_options.append(options)
+        return "expanded notes"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    await ai_module.expand_recap_notes("terse notes")
+    assert seen_options == [None]
+
+
+@pytest.mark.asyncio
+async def test_expand_recap_notes_sizes_num_ctx_for_a_huge_notes_paste(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
+    seen_options = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen_options.append(options)
+        return "expanded notes"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    huge_notes = "word " * 20000
+    await ai_module.expand_recap_notes(huge_notes, think=False)
+    assert seen_options[0]["num_ctx"] > ai_module._DEFAULT_ASSUMED_CTX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_from_facts_sizes_num_ctx_for_many_facts(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
+    seen_options = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen_options.append(options)
+        return "a recap"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    many_facts = [f"fact number {i} with some descriptive detail attached" for i in range(400)]
+    await ai_module.summarize_session_from_facts(many_facts, think=False)
+    assert seen_options[0]["num_ctx"] > ai_module._DEFAULT_ASSUMED_CTX_TOKENS
 
 
 # ── _chars_per_token_estimate ───────────────────────────────────────────────
