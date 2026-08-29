@@ -126,6 +126,85 @@ def _heal_table(conn, table, columns, foreign_keys=None, indexes=None, unique_in
             conn.execute(text(f"CREATE UNIQUE INDEX IF NOT EXISTS ix_{table}_{col} ON {table} ({col})"))
 
 
+def _render_default(default) -> str | None:
+    """Literal SQL DEFAULT for a Column's default= — used by
+    _columns_from_model to turn a model declaration into the same kind of
+    "TEXT DEFAULT '[]'" string _heal_table's callers hand-type today.
+    A CallableColumnDefault (default=datetime.utcnow) has no fixed SQL
+    literal, so it heals with no DEFAULT clause at all — same as every
+    created_at/updated_at column already hand-typed in this file."""
+    if default is None or not default.is_scalar:
+        return None
+    v = default.arg
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, str):
+        return "'" + v.replace("'", "''") + "'"
+    return None
+
+
+def _columns_from_model(table_name: str):
+    """Derive _heal_table's `columns` argument — [(name, add_column_sql,
+    nullable), ...], excluding the primary key — straight from the
+    SQLAlchemy model instead of hand-typing it a second time in this file.
+    Single source of truth with models.py: a column added to a model here
+    is automatically covered by _heal_table_from_model with no separate
+    edit to _migrate() needed."""
+    table = Base.metadata.tables[table_name]
+    out = []
+    for col in table.columns:
+        if col.primary_key:
+            continue
+        defn = col.type.compile(dialect=engine.dialect)
+        default_sql = _render_default(col.default)
+        if default_sql is not None:
+            defn += f" DEFAULT {default_sql}"
+        out.append((col.name, defn, col.nullable))
+    return out
+
+
+def _foreign_keys_from_model(table_name: str):
+    """Derive _heal_table's `foreign_keys` argument from the model's own
+    ForeignKey() declarations."""
+    table = Base.metadata.tables[table_name]
+    return [(fk.parent.name, fk.column.table.name, fk.column.name) for fk in table.foreign_keys]
+
+
+def _indexes_from_model(table_name: str):
+    """-> (indexes, unique_indexes), each a plain column-name list, derived
+    from the model's index=True/unique=True declarations. _heal_table only
+    knows how to rebuild single-column indexes (same as every hand-typed
+    call already in this file), and the primary key's own index is created
+    implicitly by `id INTEGER PRIMARY KEY` — both are excluded here."""
+    table = Base.metadata.tables[table_name]
+    pk_cols = {c.name for c in table.primary_key.columns}
+    indexes, unique_indexes = [], []
+    for ix in table.indexes:
+        cols = [c.name for c in ix.columns]
+        if len(cols) != 1 or cols[0] in pk_cols:
+            continue
+        (unique_indexes if ix.unique else indexes).append(cols[0])
+    return indexes, unique_indexes
+
+
+def _heal_table_from_model(conn, table_name: str):
+    """_heal_table, with every argument derived from Base.metadata instead
+    of hand-typed — see _columns_from_model/_foreign_keys_from_model/
+    _indexes_from_model. Use this for any table whose migration heal is
+    "match the model, nothing fancier" (most of them); tables with genuine
+    non-schema logic (a NOT-NULL-constraint rebuild driven by pre-existing
+    data, a one-time data cleanup, a boolean-to-string column translation)
+    keep their bespoke code in _migrate() rather than going through this."""
+    indexes, unique_indexes = _indexes_from_model(table_name)
+    _heal_table(
+        conn, table_name, _columns_from_model(table_name),
+        foreign_keys=_foreign_keys_from_model(table_name) or None,
+        indexes=indexes or None, unique_indexes=unique_indexes or None,
+    )
+
+
 def _f(id, label, type="text", section="", default_value=""):
     return {"id": id, "label": label, "type": type, "section": section, "default_value": default_value}
 
@@ -769,205 +848,23 @@ def _migrate():
         # Other campaign-management tables shipped in the same batch as
         # random_tables turned out to have the same class of issue on some
         # installs (missing columns / stray NOT NULL constraints — see
-        # random_tables above for why). Self-heal all of them the same way.
-        _heal_table(conn, "combat_sessions", [
-            ("world_id",         "INTEGER", False),
-            ("name",             "VARCHAR(256)", False),
-            ("combatants_json",  "TEXT DEFAULT '[]'", True),
-            ("round_num",        "INTEGER DEFAULT 1", True),
-            ("active_idx",       "INTEGER DEFAULT 0", True),
-            ("game_session_id",  "INTEGER", True),
-            ("created_at",       "DATETIME", True),
-            ("updated_at",       "DATETIME", True),
-        ], foreign_keys=[
-            ("world_id", "worlds", "id"),
-            ("game_session_id", "game_sessions", "id"),
-        ], indexes=["world_id", "game_session_id"])
-        _heal_table(conn, "parties", [
-            ("world_id",                "INTEGER", False),
-            ("name",                    "VARCHAR(256)", False),
-            ("member_pc_ids_json",      "TEXT DEFAULT '[]'", True),
-            ("member_entity_ids_json",  "TEXT DEFAULT '[]'", True),
-            ("loot_json",               "TEXT DEFAULT '[]'", True),
-            ("notes",                   "TEXT DEFAULT ''", True),
-            ("location_json",           "TEXT DEFAULT '{}'", True),
-            ("created_at",              "DATETIME", True),
-            ("updated_at",              "DATETIME", True),
-        ], foreign_keys=[("world_id", "worlds", "id")], indexes=["world_id"])
-        _heal_table(conn, "quests", [
-            ("world_id",              "INTEGER", False),
-            ("title",                 "VARCHAR(256)", False),
-            ("status",                "VARCHAR(32) DEFAULT 'active'", True),
-            ("category",              "VARCHAR(32) DEFAULT 'main'", True),
-            ("summary",               "VARCHAR(512) DEFAULT ''", True),
-            ("body",                  "TEXT DEFAULT ''", True),
-            ("linked_entities_json",  "TEXT DEFAULT '[]'", True),
-            ("parent_id",             "INTEGER", True),
-            ("assigned_party_id",     "INTEGER", True),
-            ("visible_to_players",    "BOOLEAN DEFAULT 1", True),
-            ("created_at",            "DATETIME", True),
-            ("updated_at",            "DATETIME", True),
-        ], foreign_keys=[
-            ("world_id", "worlds", "id"),
-            ("parent_id", "quests", "id"),
-            ("assigned_party_id", "parties", "id"),
-        ], indexes=["world_id", "parent_id", "assigned_party_id"])
-        _heal_table(conn, "game_sessions", [
-            ("world_id",      "INTEGER", False),
-            ("title",         "VARCHAR(256)", False),
-            ("session_num",   "INTEGER DEFAULT 1", True),
-            ("session_date",  "VARCHAR(32)", True),
-            ("summary",       "TEXT DEFAULT ''", True),
-            ("prep_json",     "TEXT DEFAULT '[]'", True),
-            ("npcs_json",     "TEXT DEFAULT '[]'", True),
-            ("loot_json",     "TEXT DEFAULT '[]'", True),
-            ("xp_awarded",    "INTEGER DEFAULT 0", True),
-            ("party_id",      "INTEGER", True),
-            ("live_transcript", "TEXT DEFAULT ''", True),
-            ("created_at",    "DATETIME", True),
-            ("updated_at",    "DATETIME", True),
-        ], foreign_keys=[
-            ("world_id", "worlds", "id"),
-            ("party_id", "parties", "id"),
-        ], indexes=["world_id", "party_id"])
-        _heal_table(conn, "world_calendars", [
-            ("world_id",     "INTEGER", False),
-            ("config_json",  "TEXT DEFAULT '{}'", True),
-            ("updated_at",   "DATETIME", True),
-        ], foreign_keys=[("world_id", "worlds", "id")], unique_indexes=["world_id"])
-        _heal_table(conn, "calendar_events", [
-            ("world_id",    "INTEGER", False),
-            ("day",         "INTEGER", False),
-            ("title",       "VARCHAR(256)", False),
-            ("notes",       "TEXT DEFAULT ''", True),
-            ("entity_id",   "INTEGER", True),
-            ("color",       "VARCHAR(16) DEFAULT '#4488ff'", True),
-            ("created_at",  "DATETIME", True),
-        ], foreign_keys=[
-            ("world_id", "worlds", "id"),
-            ("entity_id", "entities", "id"),
-        ], indexes=["world_id", "entity_id"])
-        _heal_table(conn, "image_albums", [
-            ("world_id",          "INTEGER", False),
-            ("name",              "VARCHAR(120)", False),
-            ("image_urls_json",   "TEXT DEFAULT '[]'", True),
-            ("parent_id",         "INTEGER", True),
-            ("created_at",        "DATETIME", True),
-        ], foreign_keys=[
-            ("world_id", "worlds", "id"),
-            ("parent_id", "image_albums", "id"),
-        ], indexes=["world_id", "parent_id"])
-        # audio_jobs: new since this table shipped, so most installs already
-        # have rows here — model heals in via ALTER TABLE ADD COLUMN like
-        # everything else in this function, not create_all() (which never
-        # alters an existing table).
-        _heal_table(conn, "audio_jobs", [
-            ("world_id",            "INTEGER", False),
-            ("created_by_user_id",  "INTEGER", True),
-            ("purpose",             "VARCHAR(32)", False),
-            ("game_session_id",     "INTEGER", True),
-            ("filename",            "VARCHAR(256) DEFAULT ''", True),
-            ("status",              "VARCHAR(32) DEFAULT 'pending'", True),
-            ("error",               "TEXT DEFAULT ''", True),
-            ("transcript",          "TEXT DEFAULT ''", True),
-            ("recap",               "TEXT DEFAULT ''", True),
-            ("attachment_url",      "VARCHAR(512) DEFAULT ''", True),
-            ("model",               "VARCHAR(128)", True),
-            ("extra_instructions",  "TEXT", True),
-            ("chunk_current",       "INTEGER", True),
-            ("chunk_total",         "INTEGER", True),
-            ("run_started_at",      "DATETIME", True),
-            ("finished_at",         "DATETIME", True),
-            ("created_at",          "DATETIME", True),
-            ("updated_at",          "DATETIME", True),
-            # Job-survival columns (see app/job_shutdown.py) — let a resume
-            # after a server restart find the working audio again and
-            # continue from the last completed chunk instead of starting
-            # the whole job over.
-            ("audio_path",          "VARCHAR(1024) DEFAULT ''", True),
-            ("delete_after",        "BOOLEAN DEFAULT 1", True),
-            ("checkpoint_json",     "TEXT DEFAULT ''", True),
-            ("resumed_count",       "INTEGER DEFAULT 0", True),
-            # NULL heals to "treated as True" (see AudioJob.think's own
-            # docstring) — an existing pre-migration job never had a
-            # "Thinking" checkbox to begin with, so there's no prior choice
-            # to preserve either way.
-            ("think",               "BOOLEAN", True),
-            ("fit_context",         "BOOLEAN DEFAULT 0", True),
-            ("min_tokens",          "INTEGER", True),
-            ("max_tokens",          "INTEGER", True),
-            # RAG opt-in (see app.audio_jobs._build_rag_context) — off by
-            # default, same as fit_context above; NULL limits mean "use the
-            # module's own defaults" (see AudioJob.use_rag's own docstring).
-            ("use_rag",             "BOOLEAN DEFAULT 0", True),
-            ("rag_entity_limit",    "INTEGER", True),
-            ("rag_notes_limit",     "INTEGER", True),
-        ], foreign_keys=[
-            ("world_id", "worlds", "id"),
-            ("created_by_user_id", "users", "id"),
-            ("game_session_id", "game_sessions", "id"),
-        ], indexes=["world_id", "game_session_id"])
-        _heal_table(conn, "image_jobs", [
-            ("world_id",            "INTEGER", False),
-            ("created_by_user_id",  "INTEGER", True),
-            ("prompt",              "TEXT DEFAULT ''", True),
-            ("params_json",         "TEXT DEFAULT '{}'", True),
-            ("status",              "VARCHAR(32) DEFAULT 'pending'", True),
-            ("error",               "TEXT DEFAULT ''", True),
-            ("result_urls_json",    "TEXT DEFAULT '[]'", True),
-            ("created_at",          "DATETIME", True),
-            ("updated_at",          "DATETIME", True),
-            # See app/job_shutdown.py — caps how many times a boot can
-            # auto-restart this job after an interrupted server restart.
-            ("resumed_count",       "INTEGER DEFAULT 0", True),
-        ], foreign_keys=[
-            ("world_id", "worlds", "id"),
-            ("created_by_user_id", "users", "id"),
-        ], indexes=["world_id"])
-        _heal_table(conn, "chat_jobs", [
-            ("world_id",            "INTEGER", False),
-            ("created_by_user_id",  "INTEGER", True),
-            ("prompt",              "TEXT DEFAULT ''", True),
-            ("messages_json",       "TEXT DEFAULT '[]'", True),
-            ("system",              "TEXT DEFAULT ''", True),
-            ("model",               "VARCHAR(128)", True),
-            ("options_json",        "TEXT DEFAULT '{}'", True),
-            ("status",              "VARCHAR(32) DEFAULT 'pending'", True),
-            ("error",               "TEXT DEFAULT ''", True),
-            ("result",              "TEXT DEFAULT ''", True),
-            ("created_at",          "DATETIME", True),
-            ("updated_at",          "DATETIME", True),
-            # See app/job_shutdown.py — caps how many times a boot can
-            # auto-restart this job after an interrupted server restart.
-            ("resumed_count",       "INTEGER DEFAULT 0", True),
-        ], foreign_keys=[
-            ("world_id", "worlds", "id"),
-            ("created_by_user_id", "users", "id"),
-        ], indexes=["world_id"])
-        _heal_table(conn, "chat_sessions", [
-            ("world_id",       "INTEGER", False),
-            ("user_id",        "INTEGER", True),
-            ("surface",        "VARCHAR(32) DEFAULT 'chat'", True),
-            ("title",          "VARCHAR(256) DEFAULT ''", True),
-            ("messages_json",  "TEXT DEFAULT '[]'", True),
-            ("created_at",     "DATETIME", True),
-            ("updated_at",     "DATETIME", True),
-        ], foreign_keys=[
-            ("world_id", "worlds", "id"),
-            ("user_id", "users", "id"),
-        ], indexes=["world_id"])
-        _heal_table(conn, "prompt_presets", [
-            ("world_id",    "INTEGER", False),
-            ("scope",       "VARCHAR(16)", False),
-            ("label",       "VARCHAR(128)", False),
-            ("icon",        "VARCHAR(8) DEFAULT ''", True),
-            ("text",        "TEXT DEFAULT ''", True),
-            ("negative",    "TEXT DEFAULT ''", True),
-            ("sort_order",  "INTEGER DEFAULT 0", True),
-            ("created_at",  "DATETIME", True),
-        ], foreign_keys=[
-            ("world_id", "worlds", "id"),
-        ], indexes=["world_id"])
+        # random_tables above for why). Self-heal all of them the same way,
+        # via _heal_table_from_model — each one's column/FK/index list is
+        # just what its model already declares, so hand-typing them a
+        # second time here was pure duplication (and a drift risk: a column
+        # added to the model without a matching edit here would silently
+        # never heal on an existing install). audio_jobs specifically: new
+        # since this table shipped, so most installs already have rows here
+        # — it heals in via ALTER TABLE ADD COLUMN like everything else in
+        # this function, not create_all() (which never alters an existing
+        # table).
+        for _table in (
+            "combat_sessions", "parties", "quests", "game_sessions",
+            "world_calendars", "calendar_events", "image_albums",
+            "audio_jobs", "image_jobs", "chat_jobs", "chat_sessions",
+            "prompt_presets",
+        ):
+            _heal_table_from_model(conn, _table)
 
 def _seed():
     db = SessionLocal()

@@ -809,6 +809,104 @@ def test_heals_pre_two_step_auth_schema(tmp_path, monkeypatch):
         db.close()
 
 
+def test_columns_foreign_keys_indexes_derived_from_model():
+    """_heal_table_from_model (Speed 4.8) replaced twelve tables' worth of
+    hand-typed _heal_table(conn, table, [...columns...], foreign_keys=...,
+    indexes=...) calls in _migrate() with introspection straight off
+    Base.metadata, so a column/FK/index added to a model is automatically
+    covered with no separate edit to _migrate() needed. Pin the exact shape
+    of that introspection against "quests" (multiple FKs including one
+    self-referential, a plain index, a boolean default, string defaults)
+    so a future SQLAlchemy upgrade or refactor can't silently change what
+    gets healed without a test noticing."""
+    columns = dict((name, (defn, nullable)) for name, defn, nullable in
+                   database_module._columns_from_model("quests"))
+    assert columns["world_id"] == ("INTEGER", False)
+    assert columns["title"] == ("VARCHAR(256)", False)
+    assert columns["status"] == ("VARCHAR(32) DEFAULT 'active'", True)
+    assert columns["visible_to_players"] == ("BOOLEAN DEFAULT 1", True)
+    assert columns["linked_entities_json"] == ("TEXT DEFAULT '[]'", True)
+    # created_at/updated_at have a Python-side callable default
+    # (datetime.utcnow) — no SQL literal for that, so no DEFAULT clause,
+    # same as every hand-typed created_at/updated_at column already in
+    # _migrate() before this refactor.
+    assert columns["created_at"] == ("DATETIME", True)
+    assert "id" not in columns  # primary key is never in _heal_table's columns list
+
+    fks = set(database_module._foreign_keys_from_model("quests"))
+    assert fks == {
+        ("world_id", "worlds", "id"),
+        ("parent_id", "quests", "id"),
+        ("assigned_party_id", "parties", "id"),
+    }
+
+    indexes, unique_indexes = database_module._indexes_from_model("quests")
+    assert set(indexes) == {"world_id", "parent_id", "assigned_party_id"}
+    assert unique_indexes == []
+
+    # world_calendars.world_id is unique=True + index=True on the model —
+    # must come back as a unique index, not a plain one, or a healed
+    # install could end up with two calendar rows for the same world.
+    wc_indexes, wc_unique = database_module._indexes_from_model("world_calendars")
+    assert wc_indexes == []
+    assert wc_unique == ["world_id"]
+
+
+def test_heal_table_from_model_rebuilds_stray_not_null_and_preserves_data(tmp_path, monkeypatch):
+    """Exercises _heal_table_from_model's rebuild path (not just plain ADD
+    COLUMN) through the generic route: a `quests` table missing several
+    columns AND with `visible_to_players` incorrectly created NOT NULL
+    (the model marks it nullable) must be rebuilt — preserving existing
+    row data, the world_id/parent_id foreign keys, and their indexes —
+    exactly like the hand-typed random_tables/game_sessions cases this
+    function's callers used to cover one at a time."""
+    from app.models import Quest
+
+    db_path = tmp_path / "stray_notnull_quests.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    Base.metadata.create_all(bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE quests"))
+        conn.execute(text(
+            "CREATE TABLE quests (id INTEGER PRIMARY KEY, world_id INTEGER NOT NULL, "
+            "title VARCHAR(256) NOT NULL, visible_to_players BOOLEAN NOT NULL)"
+        ))
+        world = conn.execute(text(
+            "INSERT INTO worlds (name, slug) VALUES ('World', 'world') RETURNING id"
+        )).scalar()
+        conn.execute(text(
+            "INSERT INTO quests (world_id, title, visible_to_players) VALUES (:w, 'Old Quest', 1)"
+        ), {"w": world})
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        info = conn.execute(text("PRAGMA table_info(quests)")).fetchall()
+        cols = {r[1]: r[3] for r in info}  # name -> notnull flag
+        fk_list = conn.execute(text("PRAGMA foreign_key_list(quests)")).fetchall()
+        idx_list = conn.execute(text("PRAGMA index_list(quests)")).fetchall()
+
+    assert "status" in cols and "linked_entities_json" in cols  # missing columns added
+    assert cols["visible_to_players"] == 0  # NOT NULL constraint lifted by the rebuild
+    ref_tables = {row[2] for row in fk_list}
+    assert ref_tables == {"worlds", "quests", "parties"}
+    assert len(idx_list) >= 3  # world_id/parent_id/assigned_party_id all recreated
+
+    db = SessionLocal()
+    try:
+        q = db.query(Quest).filter(Quest.title == "Old Quest").one()
+        assert q.visible_to_players  # existing row data survived the rebuild
+    finally:
+        db.close()
+
+    engine.dispose()
+
+
 def test_sqlite_wal_mode_and_busy_timeout_enabled(client):
     """Regression test for a production incident: SQLite's default
     rollback-journal mode blocks every reader behind any in-flight writer,
