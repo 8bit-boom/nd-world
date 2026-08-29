@@ -704,8 +704,12 @@ async def expand_recap_notes(notes: str, model: str = "", think: bool = True) ->
     False) — this is one of the session-recap-assist functions a GM's
     "Thinking" checkbox on the Sessions page controls; the checkbox is
     checked by default, so the common case is this default applying
-    unchanged."""
-    return await generate_chat([{"role": "user", "content": notes}], system=_EXPAND_NOTES_SYSTEM, model=model, think=think)
+    unchanged. See _thinking_num_predict_override's own docstring for why
+    a GM-configured num_predict cap is widened when think=True."""
+    return await generate_chat(
+        [{"role": "user", "content": notes}], system=_EXPAND_NOTES_SYSTEM, model=model,
+        options=_thinking_num_predict_override(think) or None, think=think,
+    )
 
 
 _SUMMARIZE_FACTS_SYSTEM = (
@@ -728,7 +732,10 @@ async def summarize_session_from_facts(facts: list[str], model: str = "", extra_
         return ""
     bullet_list = "\n".join(f"- {f}" for f in facts)
     system = _with_instructions(_SUMMARIZE_FACTS_SYSTEM, extra_instructions)
-    return await generate_chat([{"role": "user", "content": bullet_list}], system=system, model=model, think=think)
+    return await generate_chat(
+        [{"role": "user", "content": bullet_list}], system=system, model=model,
+        options=_thinking_num_predict_override(think) or None, think=think,
+    )
 
 
 _CONDENSE_RECAP_SYSTEM = (
@@ -823,6 +830,29 @@ _CONTEXT_FIT_FLOOR_TOKENS = 1024
 _THINKING_HEADROOM_TOKENS = 4096
 
 
+def _thinking_num_predict_override(think: bool) -> dict:
+    """If the GM has configured a bounded num_predict (Settings > System >
+    "Max output tokens"), it's a hard Ollama-enforced cap on the TOTAL
+    tokens generated for a call — hidden thinking tokens and the visible
+    answer share that one budget. A cap sized for a normal visible answer
+    can starve a reasoning model's thinking before it ever writes visible
+    text, surfacing as generate_chat's own "empty response ... hidden
+    thinking output but no final answer" failure — this is exactly the
+    risk condense_recap's own docstring describes, but nothing previously
+    widened num_predict to protect against it. Adds _THINKING_HEADROOM_TOKENS
+    on top of the GM's configured value for this one call only (never
+    mutates the saved setting), same "extra room for thinking, layered on
+    top of not instead of" reasoning condense_call_options already uses for
+    num_ctx. A no-op when num_predict is unset (Ollama's own default, -1 =
+    unlimited) or think=False (nothing sharing the budget to protect)."""
+    if not think:
+        return {}
+    configured = effective_ollama_options().get("num_predict")
+    if not configured or configured < 0:
+        return {}
+    return {"num_predict": configured + _THINKING_HEADROOM_TOKENS}
+
+
 def context_sized_options(text: str, reserve_tokens: int = _CONTEXT_FIT_RESERVED_TOKENS) -> dict:
     """A one-off num_ctx override sized to comfortably fit `text` for a
     single AI call, instead of relying on whatever num_ctx the GM has
@@ -904,18 +934,34 @@ def _chars_per_token_estimate(text: str) -> int:
     return _CHARS_PER_TOKEN_ESTIMATE
 
 
-def _transcript_chunk_char_budget(transcript: str = "", system: str = "") -> int:
+def _transcript_chunk_char_budget(transcript: str = "", system: str = "", think: bool = True) -> int:
     """`transcript` (a sample of it) drives the chars-per-token estimate;
     `system` is the system prompt that will accompany each chunk — the GM's
     World.recap_instructions is free text with no length limit, so a long
     standing instruction could itself eat meaningfully into the context
     window that _CHUNK_RESERVED_TOKENS budgets for. Both are optional and
     default to the same fixed English/no-system-prompt assumption this
-    function used before they were accounted for."""
+    function used before they were accounted for.
+
+    `think` (default True, matching summarize_transcript's own default)
+    reserves an extra _THINKING_HEADROOM_TOKENS on top of
+    _CHUNK_RESERVED_TOKENS — the same constant/reasoning
+    condense_call_options already uses for condense_recap. Without this, a
+    reasoning-capable model can burn _CHUNK_RESERVED_TOKENS' worth (or
+    more) of hidden thinking tokens before writing any visible text for a
+    chunk, hit the context ceiling mid-reasoning, and return generate_chat's
+    own "empty response ... hidden thinking output but no final answer"
+    failure for that chunk — observed in production on a real session
+    recap job. Reserving more headroom shrinks each chunk (a long
+    transcript needs a few more chunks/AI calls), which is the same
+    tradeoff this module's other budgets already choose deliberately: a
+    little over-chunking is cheap, silently losing a chunk's summary to a
+    starved thinking budget is not."""
     ctx_tokens = effective_ollama_options().get("num_ctx") or _DEFAULT_ASSUMED_CTX_TOKENS
     chars_per_token = _chars_per_token_estimate(transcript)
     system_tokens = (len(system) // _CHARS_PER_TOKEN_ESTIMATE) if system else 0
-    input_tokens = max(500, ctx_tokens - _CHUNK_RESERVED_TOKENS - system_tokens)
+    reserved = _CHUNK_RESERVED_TOKENS + system_tokens + (_THINKING_HEADROOM_TOKENS if think else 0)
+    input_tokens = max(500, ctx_tokens - reserved)
     return input_tokens * chars_per_token
 
 
@@ -1119,7 +1165,11 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
     `think` defaults to True (unlike generate_chat's own plain default of
     False) and is forwarded to every generate_chat call this makes,
     chunked or not — see expand_recap_notes's docstring for why this
-    family of functions differs from generate_chat's own default.
+    family of functions differs from generate_chat's own default. It also
+    widens both output-budget knobs the chunked path relies on to fit a
+    reasoning model's hidden thinking alongside the visible answer — see
+    _transcript_chunk_char_budget's and _thinking_num_predict_override's
+    own docstrings.
 
     `world_context`, if given, is RAG-retrieved World lore/Notes text (see
     app.audio_jobs._build_rag_context) prepended ahead of everything else —
@@ -1133,11 +1183,19 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
     # world_context (RAG lore/notes) can be too — both must be included
     # here so chunk sizing accounts for the system prompt's real length.
     part_system = _with_world_context(_with_instructions(_SUMMARIZE_TRANSCRIPT_PART_SYSTEM, extra_instructions), world_context)
-    chunk_chars = _transcript_chunk_char_budget(transcript, part_system)
+    chunk_chars = _transcript_chunk_char_budget(transcript, part_system, think)
+    # See _thinking_num_predict_override's own docstring — widens a
+    # GM-configured num_predict cap so hidden thinking tokens don't compete
+    # with the visible recap for the same hard budget. Computed once since
+    # `think` doesn't change across this call's chunked/unchunked branches.
+    predict_override = _thinking_num_predict_override(think) or None
     chunks = _split_transcript_into_chunks(transcript, chunk_chars)
     if len(chunks) <= 1:
         system = _with_world_context(_with_instructions(_SUMMARIZE_TRANSCRIPT_SYSTEM, extra_instructions), world_context)
-        return await generate_chat([{"role": "user", "content": transcript}], system=system, model=model, think=think)
+        return await generate_chat(
+            [{"role": "user", "content": transcript}], system=system, model=model,
+            options=predict_override, think=think,
+        )
 
     _log.info("summarize_transcript: chunking into %d part(s) (%d chars total)", len(chunks), len(transcript))
     system = part_system
@@ -1162,7 +1220,10 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
             raise JobInterrupted(f"stopped before summarizing part {i + 1} of {len(chunks)}")
         if on_progress:
             on_progress(i + 1, len(chunks))
-        part = await generate_chat([{"role": "user", "content": chunk}], system=system, model=model, think=think)
+        part = await generate_chat(
+            [{"role": "user", "content": chunk}], system=system, model=model,
+            options=predict_override, think=think,
+        )
         if is_failure_sentinel(part):
             return part  # propagate the failure rather than weaving an error string into the recap
         part = part.strip()

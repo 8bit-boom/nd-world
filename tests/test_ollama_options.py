@@ -344,7 +344,7 @@ async def test_summarize_transcript_world_context_reaches_unchunked_system(monke
 async def test_summarize_transcript_world_context_reaches_chunked_part_system(monkeypatch):
     calls = []
     monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda transcript, system: 50)
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda transcript, system, think=True: 50)
     long_transcript = "word " * 500
     await ai_module.summarize_transcript(long_transcript, world_context="- [place] The Rusty Anchor: a tavern")
     assert len(calls) > 1  # actually chunked, given the tiny forced budget

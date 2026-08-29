@@ -92,14 +92,23 @@ def test_split_each_chunk_within_budget_or_is_a_forced_single_run():
 def test_chunk_budget_uses_default_when_num_ctx_unset(monkeypatch):
     monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
     budget = ai_module._transcript_chunk_char_budget()
-    expected = (ai_module._DEFAULT_ASSUMED_CTX_TOKENS - ai_module._CHUNK_RESERVED_TOKENS) * ai_module._CHARS_PER_TOKEN_ESTIMATE
+    # think=True is the default (see summarize_transcript's own default),
+    # so the default assumed ctx (4096) minus the thinking headroom (4096)
+    # goes negative and the 500-token floor applies — see
+    # test_chunk_budget_reserves_thinking_headroom_by_default below for the
+    # behavior this exercises directly.
+    expected = max(
+        500, ai_module._DEFAULT_ASSUMED_CTX_TOKENS - ai_module._CHUNK_RESERVED_TOKENS - ai_module._THINKING_HEADROOM_TOKENS,
+    ) * ai_module._CHARS_PER_TOKEN_ESTIMATE
     assert budget == expected
 
 
 def test_chunk_budget_respects_configured_num_ctx(monkeypatch):
     monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_ctx": 8192})
     budget = ai_module._transcript_chunk_char_budget()
-    expected = (8192 - ai_module._CHUNK_RESERVED_TOKENS) * ai_module._CHARS_PER_TOKEN_ESTIMATE
+    expected = max(
+        500, 8192 - ai_module._CHUNK_RESERVED_TOKENS - ai_module._THINKING_HEADROOM_TOKENS,
+    ) * ai_module._CHARS_PER_TOKEN_ESTIMATE
     assert budget == expected
 
 
@@ -115,6 +124,135 @@ def test_chunk_budget_shrinks_for_a_long_system_prompt(monkeypatch):
     long_system = "x" * 4000  # a GM's recap_instructions is unbounded free text
     with_system = ai_module._transcript_chunk_char_budget("", long_system)
     assert with_system < without_system
+
+
+# ── _transcript_chunk_char_budget: thinking headroom (Speed 4.9-ish fix) ────
+#
+# A real production Session Recap job (see git history for this test's
+# commit) failed: the model (Gemma, "Thinking" on — the default for this
+# whole recap-assist family, see expand_recap_notes's docstring) burned its
+# entire per-chunk output budget on hidden reasoning tokens and returned no
+# visible recap text for that chunk — generate_chat's own "empty response
+# ... hidden thinking output but no final answer" sentinel (see
+# test_long_transcript_propagates_an_empty_response_part_failure above).
+# Reserving _THINKING_HEADROOM_TOKENS extra per chunk when think=True (the
+# same constant/reasoning condense_call_options already uses for
+# condense_recap) shrinks each chunk to leave room for a reasoning model's
+# hidden thinking without hitting the context ceiling mid-reasoning.
+
+def test_chunk_budget_reserves_thinking_headroom_by_default(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_ctx": 16384})
+    with_thinking = ai_module._transcript_chunk_char_budget()  # think=True is the default
+    without_thinking = ai_module._transcript_chunk_char_budget("", "", think=False)
+    assert with_thinking < without_thinking
+    expected_without = (16384 - ai_module._CHUNK_RESERVED_TOKENS) * ai_module._CHARS_PER_TOKEN_ESTIMATE
+    expected_with = (16384 - ai_module._CHUNK_RESERVED_TOKENS - ai_module._THINKING_HEADROOM_TOKENS) * ai_module._CHARS_PER_TOKEN_ESTIMATE
+    assert without_thinking == expected_without
+    assert with_thinking == expected_with
+
+
+def test_chunk_budget_no_thinking_headroom_when_think_false(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_ctx": 8192})
+    budget = ai_module._transcript_chunk_char_budget("", "", think=False)
+    expected = (8192 - ai_module._CHUNK_RESERVED_TOKENS) * ai_module._CHARS_PER_TOKEN_ESTIMATE
+    assert budget == expected
+
+
+# ── _thinking_num_predict_override ──────────────────────────────────────────
+#
+# The other half of the same output-budget fix: num_predict (unlike num_ctx)
+# is a hard Ollama-enforced cap shared by hidden thinking AND the visible
+# answer. If a GM has configured a bounded "Max output tokens" in Settings >
+# System, that cap alone can starve thinking before any visible text is
+# written — the exact same failure class the chunk-budget headroom above
+# protects against, just from the other knob.
+
+def test_thinking_num_predict_override_noop_when_unset(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
+    assert ai_module._thinking_num_predict_override(think=True) == {}
+
+
+def test_thinking_num_predict_override_noop_when_think_false(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_predict": 512})
+    assert ai_module._thinking_num_predict_override(think=False) == {}
+
+
+def test_thinking_num_predict_override_noop_when_unlimited(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_predict": -1})
+    assert ai_module._thinking_num_predict_override(think=True) == {}
+
+
+def test_thinking_num_predict_override_widens_a_bounded_configured_cap(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_predict": 512})
+    result = ai_module._thinking_num_predict_override(think=True)
+    assert result == {"num_predict": 512 + ai_module._THINKING_HEADROOM_TOKENS}
+
+
+@pytest.mark.asyncio
+async def test_summarize_transcript_widens_configured_num_predict_when_thinking(monkeypatch):
+    """Regression test for the production failure this whole section
+    exists to fix: a GM-configured num_predict cap must be widened for the
+    (default) think=True call, both for a short unchunked transcript and
+    for every chunk of a long one — not just the num_ctx side."""
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_predict": 512})
+    seen_options = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen_options.append(options)
+        return "a recap"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    await ai_module.summarize_transcript("a short transcript")
+    assert seen_options == [{"num_predict": 512 + ai_module._THINKING_HEADROOM_TOKENS}]
+
+    seen_options.clear()
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
+    long_transcript = ("The party explored the ruins. " * 30).strip()
+    await ai_module.summarize_transcript(long_transcript)
+    assert len(seen_options) > 1
+    assert all(o == {"num_predict": 512 + ai_module._THINKING_HEADROOM_TOKENS} for o in seen_options)
+
+
+@pytest.mark.asyncio
+async def test_summarize_transcript_no_num_predict_override_when_unconfigured(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
+    seen_options = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen_options.append(options)
+        return "a recap"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    await ai_module.summarize_transcript("a short transcript")
+    assert seen_options == [None]
+
+
+@pytest.mark.asyncio
+async def test_expand_recap_notes_widens_configured_num_predict_when_thinking(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_predict": 512})
+    seen_options = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen_options.append(options)
+        return "expanded notes"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    await ai_module.expand_recap_notes("terse notes")
+    assert seen_options == [{"num_predict": 512 + ai_module._THINKING_HEADROOM_TOKENS}]
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_from_facts_widens_configured_num_predict_when_thinking(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_predict": 512})
+    seen_options = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen_options.append(options)
+        return "a recap"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    await ai_module.summarize_session_from_facts(["fact one", "fact two"])
+    assert seen_options == [{"num_predict": 512 + ai_module._THINKING_HEADROOM_TOKENS}]
 
 
 # ── _chars_per_token_estimate ───────────────────────────────────────────────
@@ -181,7 +319,7 @@ def test_context_sized_options_never_mutates_instance_wide_overrides():
 async def test_short_transcript_uses_a_single_call(monkeypatch):
     calls = []
 
-    async def fake_generate_chat(messages, system="", model="", think=True):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         calls.append({"messages": messages, "system": system})
         return "A short recap."
 
@@ -197,7 +335,7 @@ async def test_long_transcript_summarizes_each_part_and_joins_them(monkeypatch):
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
     calls = []
 
-    async def fake_generate_chat(messages, system="", model="", think=True):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         calls.append({"content": messages[0]["content"], "system": system})
         return f"Summary of part {len(calls)}."
 
@@ -222,7 +360,7 @@ async def test_part_summaries_receive_only_their_own_chunk_never_the_whole_trans
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
     seen_lengths = []
 
-    async def fake_generate_chat(messages, system="", model="", think=True):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         seen_lengths.append(len(messages[0]["content"]))
         return "part summary"
 
@@ -243,7 +381,7 @@ async def test_recap_instructions_applied_to_every_part_call(monkeypatch):
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
     systems_seen = []
 
-    async def fake_generate_chat(messages, system="", model="", think=True):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         systems_seen.append(system)
         return "part summary"
 
@@ -265,7 +403,7 @@ async def test_on_progress_called_once_per_part_before_each_call(monkeypatch):
     "summarizing" instead of a bare placeholder."""
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
 
-    async def fake_generate_chat(messages, system="", model="", think=True):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         return "part summary"
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
 
@@ -281,7 +419,7 @@ async def test_on_progress_called_once_per_part_before_each_call(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_progress_not_called_for_a_short_unchunked_transcript(monkeypatch):
-    async def fake_generate_chat(messages, system="", model="", think=True):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         return "A short recap."
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
 
@@ -294,7 +432,7 @@ async def test_on_progress_not_called_for_a_short_unchunked_transcript(monkeypat
 async def test_long_transcript_propagates_a_part_summary_failure(monkeypatch):
     call_count = {"n": 0}
 
-    async def fake_generate_chat(messages, system="", model="", think=True):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         call_count["n"] += 1
         if call_count["n"] == 2:
             return "[AI unavailable: ConnectionError: Failed to connect to Ollama.]"
@@ -322,7 +460,7 @@ async def test_long_transcript_propagates_an_empty_response_part_failure(monkeyp
     real paragraph, with the job still ending up "done"."""
     call_count = {"n": 0}
 
-    async def fake_generate_chat(messages, system="", model="", think=True):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         call_count["n"] += 1
         if call_count["n"] == 2:
             return "[empty response from gemma4:26b (done_reason=length) — try a different model]"
@@ -345,7 +483,7 @@ async def test_long_transcript_aborts_on_a_whitespace_only_part(monkeypatch):
     recap where a whole chunk's events should be."""
     call_count = {"n": 0}
 
-    async def fake_generate_chat(messages, system="", model="", think=True):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         call_count["n"] += 1
         if call_count["n"] == 2:
             return "   \n  "
@@ -387,7 +525,7 @@ async def test_summarize_calls_on_checkpoint_after_every_part(monkeypatch):
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
     calls = []
 
-    async def fake_generate_chat(messages, system="", model="", think=True):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         calls.append(messages[0]["content"])
         return f"Summary {len(calls)}."
 
@@ -405,7 +543,7 @@ async def test_summarize_calls_on_checkpoint_after_every_part(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_summarize_on_checkpoint_not_called_for_a_short_unchunked_transcript(monkeypatch):
-    async def fake_generate_chat(messages, system="", model="", think=True):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         return "one short summary"
 
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
@@ -422,7 +560,7 @@ async def test_summarize_resumes_from_a_matching_checkpoint_and_skips_done_parts
     assert len(chunks) > 1
     seen_chunks = []
 
-    async def fake_generate_chat(messages, system="", model="", think=True):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         seen_chunks.append(messages[0]["content"])
         return f"Summary of {chunks.index(messages[0]['content']) if messages[0]['content'] in chunks else '?'}."
 
@@ -442,7 +580,7 @@ async def test_summarize_discards_a_checkpoint_with_a_different_chunk_budget(mon
     chunks = ai_module._split_transcript_into_chunks(_LONG_TRANSCRIPT, 50)
     seen_chunks = []
 
-    async def fake_generate_chat(messages, system="", model="", think=True):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         seen_chunks.append(messages[0]["content"])
         return "a summary"
 
@@ -459,7 +597,7 @@ async def test_summarize_discards_a_checkpoint_with_a_different_chunk_budget(mon
 async def test_summarize_raises_job_interrupted_at_the_next_part_boundary_when_should_stop(monkeypatch):
     monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
 
-    async def fake_generate_chat(messages, system="", model="", think=True):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
         return "a summary"
 
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
