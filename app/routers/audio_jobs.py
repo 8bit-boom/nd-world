@@ -16,6 +16,7 @@ from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
+from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
 from ..database import get_db
 from ..deps import get_world_ctx, paginate
@@ -58,6 +59,21 @@ def _job_to_dict(job: AudioJob) -> dict:
         # Whether the ▶ Resume button should show — see app.audio_jobs.
         # start_resume_job for the full contract this mirrors.
         "resumable": job.status == "interrupted",
+        # True when _run_job's auto-retry (see its own docstring) already
+        # fell back to think=False for this job after a starved first
+        # attempt — job.think above already reflects that (flipped to
+        # False), this is just so the UI can explain WHY.
+        "think_fallback": bool(job.think_fallback),
+        # True when job.error is exactly the thinking-starved sentinel —
+        # server-side detection so the client never has to duplicate
+        # sentinel-text knowledge (see is_thinking_starved_sentinel's own
+        # docstring). Powers the Background Jobs page's one-click "Retry
+        # without Thinking" action on a failed row. A job the auto-retry
+        # already fell back on (think_fallback True) failing AGAIN with
+        # this same error means even think=False starved — vanishingly
+        # rare (see _run_job's docstring) but still surfaced accurately
+        # rather than hidden.
+        "thinking_starved": _ai_module.is_thinking_starved_sentinel(job.error or ""),
     }
 
 

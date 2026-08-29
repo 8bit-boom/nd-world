@@ -871,6 +871,15 @@ class AudioJob(Base):
     # are. NULL (the pre-migration default) is treated as True — see
     # app.audio_jobs.create_job's docstring.
     think = Column(Boolean, nullable=True)
+    # Set when this job's summarize/condense phase failed on its first
+    # attempt because thinking burned the whole output budget (see
+    # app.ai.is_thinking_starved_sentinel), and _run_job auto-retried once
+    # with think=False — which also flips `think` above to False, so the
+    # Retry-summary UI's Thinking checkbox reflects what actually produced
+    # the recap. False (not just falsy/unset) for every job that never hit
+    # this path, so a template can render a note without an `is not True`
+    # check. See app.audio_jobs._run_job's own docstring for the retry.
+    think_fallback = Column(Boolean, default=False)
     # purpose="condense" only: whether the job's num_ctx was sized to fit
     # the whole input text for this one call (see app.ai.
     # context_sized_options) rather than using the GM's configured/default

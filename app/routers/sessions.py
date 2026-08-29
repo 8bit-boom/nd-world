@@ -980,7 +980,18 @@ def session_log_detail(session_id: int, request: Request, db: Session = Depends(
     })
 
 
-_SESSION_LOG_RECAP_CACHE_TTL = 20.0
+# 30 minutes, not a short poll-interval TTL like most caches in this
+# codebase — this page's only real content input (Fact rows) already has
+# EXACT invalidation via clear_session_log_recap_cache (routers.facts on
+# every create/edit/delete, and routers.ai's recap-instructions save for
+# the other input this recap bakes in), so a long TTL costs nothing in
+# practice: a browsed session-log page was re-running a full
+# summarize_session_from_facts call (think=True by default — paying
+# thinking tokens too) on every visit within the old 20s window, for
+# identical input almost all of the time. Residual staleness is bounded to
+# switching the "recap" model surface default mid-window, which is rare
+# and self-corrects on the next Fact edit or TTL expiry either way.
+_SESSION_LOG_RECAP_CACHE_TTL = 1800.0
 # Keyed by (session_id, is_gm) — Fact visibility for this route is purely
 # GM/non-GM (no per-player entity_player_access-style individual sharing),
 # so every non-GM caller for a given session legitimately gets the same

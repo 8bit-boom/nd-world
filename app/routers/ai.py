@@ -1157,6 +1157,14 @@ def api_recap_instructions_save(body: RecapInstructionsBody, request: Request, d
         raise HTTPException(404)
     world.recap_instructions = body.instructions.strip()
     db.commit()
+    # The session-log recap cache (app.routers.sessions) has a long TTL
+    # since exact fact-edit invalidation already covers its main content
+    # input — but recap_instructions is baked into the same generated
+    # text and isn't fact data, so a save here would otherwise sit stale
+    # for up to that TTL. Local import: avoids a module-level dependency
+    # between the two routers for one narrow cross-cutting call.
+    from .sessions import clear_session_log_recap_cache
+    clear_session_log_recap_cache()
     return {"ok": True, "instructions": world.recap_instructions}
 
 
@@ -1977,6 +1985,10 @@ async def ai_test_chat(model: str = ""):
         [{"role": "user", "content": "Say only the word OK."}],
         system="",
         model=resolved,
+        # A one-word-expected health check has no business generating more
+        # than a few tokens — caps a chatty model's reply the same way
+        # benchmark_model caps its own fixed probe (app/ai.py).
+        options={"num_predict": 16},
     )
     return {"requested": model, "resolved": resolved, "note": note, "result": result}
 

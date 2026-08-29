@@ -186,6 +186,38 @@ def test_session_log_recap_cache_invalidated_by_new_fact(client, seed, monkeypat
     assert len(calls) == 2
 
 
+def test_session_log_recap_cache_invalidated_by_recap_instructions_save(client, seed, monkeypatch):
+    """The recap this route caches bakes in World.recap_instructions (see
+    api_session_log_recap's own summarize_session_from_facts call), not
+    just Fact content — a GM editing that steering text via
+    POST /api/ai/recap-instructions must also bust the cache, or the long
+    TTL (raised from 20s so a browsed page doesn't re-run a full,
+    thinking-enabled summarize on every visit) would leave a stale recap
+    up for up to 30 minutes."""
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", visible=True)
+
+    calls = []
+
+    async def fake_summarize(facts, model="", extra_instructions=""):
+        calls.append(extra_instructions)
+        return "recap #" + str(len(calls))
+    from app import ai as ai_module
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap")
+    assert r1.json() == {"recap": "recap #1"}
+
+    r_save = client.post("/api/ai/recap-instructions", json={"instructions": "write in French"})
+    assert r_save.status_code == 200
+
+    r2 = client.post(f"/api/session-log/{session_id}/recap")
+    assert r2.json() == {"recap": "recap #2"}
+    assert len(calls) == 2
+    assert "write in French" in calls[1]
+
+
 def test_session_log_recap_cache_invalidated_by_fact_delete(client, seed, monkeypatch):
     session_id = _make_session(seed.world_a)
     fact_id = _add_fact(seed.world_a, session_id, "A fact", visible=True)

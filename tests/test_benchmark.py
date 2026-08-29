@@ -75,6 +75,19 @@ async def test_benchmark_model_blank_uses_effective_default(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_benchmark_model_caps_num_predict(monkeypatch):
+    """A chatty model shouldn't be free to generate paragraphs for what's
+    meant to be a fixed, short timing probe — wastes tokens and skews the
+    eval_count-based tok/s comparison across models."""
+    resp = _FakeChatResponse(eval_count=10, eval_duration=1_000_000_000)
+    fake = _FakeClient(resp)
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+
+    await ai_module.benchmark_model("llama3:latest")
+    assert fake.calls[0]["options"]["num_predict"] == 128
+
+
+@pytest.mark.asyncio
 async def test_benchmark_model_raises_value_error_on_ollama_failure(monkeypatch):
     class _FailingClient:
         async def chat(self, **kwargs):
@@ -113,3 +126,22 @@ def test_benchmark_route_surfaces_failure_as_error_status(client, seed, monkeypa
     r = client.post("/api/ai/benchmark", json={"model": "llama3"})
     assert r.status_code != 200
     assert "refused" in r.json()["detail"]
+
+
+# ── GET /api/ai/test-chat ────────────────────────────────────────────────────
+
+def test_test_chat_route_caps_num_predict(client, seed, monkeypatch):
+    """A "Say only the word OK." health check has no business generating
+    more than a few tokens — same reasoning as benchmark_model's own cap
+    above, just for this route's fixed probe."""
+    calls = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None):
+        calls.append(options)
+        return "OK"
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get("/api/ai/test-chat", params={"model": "llama3"})
+    assert r.status_code == 200
+    assert calls[0] == {"num_predict": 16}

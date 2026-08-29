@@ -165,6 +165,205 @@ async def test_create_job_attachment_purpose_has_no_recap_and_keeps_file(client,
     assert audio.exists()  # delete_after=False
 
 
+# ── Auto-retry with think=False after a thinking-starved first attempt ─────
+#
+# A real production Session Recap job failed: the model burned its whole
+# output budget on hidden thinking and returned generate_chat's own
+# "[empty response ... hidden thinking output ...]" sentinel. Since a
+# failed job has already produced nothing, retrying once with Thinking off
+# automatically (see _run_job's own docstring) is a one-sided win — these
+# tests exercise that retry loop directly.
+
+_THINKING_STARVED_SENTINEL = (
+    '[empty response from gemma4:26b — it produced 7781 character(s) of hidden '
+    '"thinking" output but no final answer (usually means it ran out of output '
+    'budget mid-reasoning). Try a shorter prompt, a higher response-length limit, '
+    'or a non-reasoning model.]'
+)
+
+
+@pytest.mark.asyncio
+async def test_session_recap_job_auto_retries_with_think_false_after_starved_first_attempt(client, seed, tmp_path, monkeypatch):
+    calls = []
+
+    async def fake_summarize(transcript, model="", extra_instructions="", think=True, **kwargs):
+        calls.append(think)
+        return _THINKING_STARVED_SENTINEL if think else "A recap written without thinking."
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True, think=True,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.recap == "A recap written without thinking."
+    assert calls == [True, False]
+
+    db = SessionLocal()
+    try:
+        db.expire_all()
+        fresh = db.get(AudioJob, job_id)
+        assert fresh.think is False  # flipped so Retry-summary's checkbox reflects reality
+        assert fresh.think_fallback is True
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_session_recap_job_with_think_already_false_never_retries(client, seed, tmp_path, monkeypatch):
+    """A job the GM explicitly ran with Thinking off has nothing to fall
+    back from — a starved-shaped result there (a model ignoring think=False
+    entirely) must fail normally, not loop."""
+    calls = []
+
+    async def always_starved(transcript, model="", extra_instructions="", think=True, **kwargs):
+        calls.append(think)
+        return _THINKING_STARVED_SENTINEL
+    monkeypatch.setattr(ai_module, "summarize_transcript", always_starved)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True, think=False,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "error"
+    assert job.error == _THINKING_STARVED_SENTINEL
+    assert calls == [False]
+
+
+@pytest.mark.asyncio
+async def test_session_recap_job_non_starved_failure_does_not_retry(client, seed, tmp_path, monkeypatch):
+    """Only the specific thinking-starved sentinel triggers a retry — any
+    other failure (a connection error, here) must fail on the first
+    attempt, exactly like before this feature existed."""
+    calls = []
+
+    async def connection_error(transcript, model="", extra_instructions="", think=True, **kwargs):
+        calls.append(think)
+        return "[AI unavailable: ConnectionError: refused]"
+    monkeypatch.setattr(ai_module, "summarize_transcript", connection_error)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True, think=True,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "error"
+    assert job.error == "[AI unavailable: ConnectionError: refused]"
+    assert calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_condense_job_auto_retries_with_think_false_after_starved_first_attempt(client, seed, monkeypatch):
+    calls = []
+
+    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
+        calls.append(think)
+        return _THINKING_STARVED_SENTINEL if think else "Condensed without thinking."
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    job_id = audio_jobs.create_condense_job(world_id=seed.world_a.id, text="A long existing recap.", think=True)
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.recap == "Condensed without thinking."
+    assert calls == [True, False]
+
+    db = SessionLocal()
+    try:
+        db.expire_all()
+        fresh = db.get(AudioJob, job_id)
+        assert fresh.think is False
+        assert fresh.think_fallback is True
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_condense_job_with_think_already_false_never_retries(client, seed, monkeypatch):
+    calls = []
+
+    async def always_starved(recap, model="", options=None, think=True, **kwargs):
+        calls.append(think)
+        return _THINKING_STARVED_SENTINEL
+    monkeypatch.setattr(ai_module, "condense_recap", always_starved)
+
+    job_id = audio_jobs.create_condense_job(world_id=seed.world_a.id, text="A long existing recap.", think=False)
+    job = await _await_terminal(job_id)
+    assert job.status == "error"
+    assert job.error == _THINKING_STARVED_SENTINEL
+    assert calls == [False]
+
+
+def test_job_status_route_reports_thinking_starved_and_think_fallback(client, seed):
+    """_job_to_dict's server-side detection (see is_thinking_starved_sentinel)
+    is what powers the Background Jobs page's one-click "Retry without
+    Thinking" button and the pre-unchecked Thinking checkbox — the client
+    never has to duplicate sentinel-text knowledge."""
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+            status="error", error=_THINKING_STARVED_SENTINEL, think=False, think_fallback=True,
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["thinking_starved"] is True
+    assert data["think_fallback"] is True
+    assert data["think"] is False
+
+
+def test_job_status_route_thinking_starved_false_for_other_failures(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+            status="error", error="[AI unavailable: ConnectionError: refused]",
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["thinking_starved"] is False
+    assert data["think_fallback"] is False
+
+
+def test_background_jobs_page_wires_the_retry_without_thinking_button(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    page_html = client.get("/background-jobs").text
+    assert "🧠✕ Retry without Thinking" in page_html
+    assert "job.status === 'error' && job.thinking_starved" in page_html
+    assert "job.thinking_starved ? false : job.think !== false" in page_html
+    # Reuses bgResummarize rather than a new endpoint — with its own
+    # resetLabel so a failed retry doesn't relabel this button back to
+    # "🔁 Retry summary".
+    assert "resetLabel = '🔁 Retry summary'" in page_html
+    assert "noThinkBtn, '🧠✕ Retry without Thinking'" in page_html
+
+
 # ── purpose="condense" (create_condense_job) ────────────────────────────────
 
 @pytest.mark.asyncio

@@ -256,7 +256,12 @@ function bgRenderJob(job) {
     thinkLabel.title = "Uses the model's thinking/reasoning mode for this re-summarize pass — usually better quality, but slower.";
     const thinkCheckbox = document.createElement('input');
     thinkCheckbox.type = 'checkbox';
-    thinkCheckbox.checked = job.think !== false;
+    // Pre-unchecked when THIS failure is exactly the thinking-starved
+    // sentinel (see is_thinking_starved_sentinel) — re-running with
+    // Thinking on would very likely just fail the same way again, so the
+    // manual retry path defaults sensibly too, not just the dedicated
+    // button below.
+    thinkCheckbox.checked = job.thinking_starved ? false : job.think !== false;
     thinkLabel.append(thinkCheckbox, document.createTextNode('🧠 Thinking'));
 
     const retryBtn = document.createElement('button');
@@ -267,6 +272,24 @@ function bgRenderJob(job) {
 
     retryWrap.append(sel, instructionsInput, thinkLabel, retryBtn);
     actions.appendChild(retryWrap);
+
+    // A one-click alternative to manually unchecking Thinking above —
+    // shown only when THIS job's error is exactly the thinking-starved
+    // sentinel (server-detected, see is_thinking_starved_sentinel; _run_job
+    // already auto-retries once on its own, so a GM only sees this for a
+    // job that started with Thinking off from the start, or the rare case
+    // where even the automatic think=False retry starved too).
+    if (job.status === 'error' && job.thinking_starved) {
+      const noThinkBtn = document.createElement('button');
+      noThinkBtn.type = 'button';
+      noThinkBtn.className = 'bg-job-btn';
+      noThinkBtn.textContent = '🧠✕ Retry without Thinking';
+      noThinkBtn.title = 'This job failed because Thinking used up the whole output budget — retry with the same model/instructions and Thinking off.';
+      noThinkBtn.onclick = () => bgResummarize(
+        job.id, job.model || '', job.extra_instructions || '', false, noThinkBtn, '🧠✕ Retry without Thinking',
+      );
+      actions.appendChild(noThinkBtn);
+    }
 
     const factsBtn = document.createElement('button');
     factsBtn.type = 'button';
@@ -407,12 +430,15 @@ async function bgResumeJob(jobId, btn) {
   bgRefresh();
 }
 
-async function bgResummarize(jobId, model, extraInstructions, think, btn) {
+async function bgResummarize(jobId, model, extraInstructions, think, btn, resetLabel = '🔁 Retry summary') {
   // Only starts the job here — it now runs as a background task (a long
   // transcript's map-reduce summarize can take several minutes, too long
   // for this request/response to sit open through a reverse proxy without
   // risking its own timeout), so this just kicks it off and hands over to
   // the regular poll loop, same as bgCancelJob/bgDeleteJob above.
+  // `resetLabel` restores the CALLING button's own text on failure — the
+  // "Retry without Thinking" button below reuses this same function, and
+  // must not get reset back to the plain "🔁 Retry summary" wording.
   btn.disabled = true;
   btn.textContent = 'Starting…';
   try {
@@ -429,7 +455,7 @@ async function bgResummarize(jobId, model, extraInstructions, think, btn) {
   } catch (e) {
     alert('Failed to re-summarize: ' + e.message);
     btn.disabled = false;
-    btn.textContent = '🔁 Retry summary';
+    btn.textContent = resetLabel;
   }
   bgRefresh();
 }

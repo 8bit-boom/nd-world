@@ -334,7 +334,12 @@ async def benchmark_model(model: str) -> dict:
         resp = await _client().chat(
             model=m,
             messages=[{"role": "user", "content": _BENCHMARK_PROMPT}],
-            **_chat_kwargs(),
+            # Fixed, small cap (overriding whatever num_predict a GM has
+            # configured instance-wide) — without it a chatty model can
+            # generate paragraphs for what's meant to be a two-sentence
+            # timing probe, wasting tokens and making the eval_count-based
+            # tokens_per_sec comparison across models less apples-to-apples.
+            **_chat_kwargs({"num_predict": 128}),
         )
     except _ollama.ResponseError as exc:
         raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
@@ -440,9 +445,13 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
         thinking = getattr(resp.message, "thinking", None)
         done_reason = getattr(resp, "done_reason", None)
         eval_count = getattr(resp, "eval_count", None)
+        # thinking_chars (not just had_thinking's bool) is what a GM/admin
+        # actually needs to calibrate _THINKING_HEADROOM_TOKENS from logs
+        # across repeated failures — see that constant's own comment.
         _log.warning(
-            "generate_chat model=%s returned empty content (done_reason=%r, eval_count=%r, had_thinking=%r)",
-            m, done_reason, eval_count, bool(thinking),
+            "generate_chat model=%s returned empty content (done_reason=%r, eval_count=%r, "
+            "had_thinking=%r, thinking_chars=%d)",
+            m, done_reason, eval_count, bool(thinking), len(thinking or ""),
         )
         if thinking:
             return (
@@ -471,6 +480,22 @@ def is_failure_sentinel(result: str) -> bool:
     first family let a genuine failure get woven into a recap as if it
     were prose, with the job still marked "done"."""
     return result.startswith("[AI ") or result.startswith("[empty response")
+
+
+def is_thinking_starved_sentinel(result: str) -> bool:
+    """True only for the specific empty-response sentinel generate_chat
+    returns when a thinking-enabled model burned its whole output budget
+    on hidden reasoning and never wrote a visible answer (the "hidden
+    \"thinking\" output but no final answer" branch above) — narrower than
+    is_failure_sentinel, which also matches every OTHER failure (a
+    connection error, a plain "no done_reason reported" empty response,
+    and summarize_transcript's own whitespace-only-part sentinel, none of
+    which start with "[empty response" AND contain this exact phrase).
+    Kept here rather than duplicated in app.audio_jobs/the UI so the job
+    engine's auto-retry (see _run_job) and the Background Jobs page's
+    one-click "Retry without Thinking" button both key off the identical
+    check the sentinel text itself defines."""
+    return result.startswith("[empty response") and 'hidden "thinking"' in result
 
 
 async def stream_chat(messages: list[dict], system: str = "", model: str = "", options: dict = None) -> AsyncGenerator[str, None]:
@@ -788,6 +813,17 @@ async def condense_recap(
     widen num_ctx to match, giving thinking generous room instead of a
     hard cap.
 
+    With think=True, a GM-configured instance-wide num_predict (Settings >
+    System > "Max output tokens") still reaches Ollama unwidened via
+    _chat_kwargs' own options merge — unlike max_tokens above, this
+    function never asked for that one to be capped at all, so leaving it
+    alone would repeat the exact failure this whole family already guards
+    against elsewhere (see _thinking_num_predict_override's docstring).
+    _thinking_num_predict_override(think) is applied unconditionally below
+    to close that gap; it's already a no-op for think=False or an unset/
+    unlimited configured value, so it never interferes with the max_tokens
+    branch above.
+
     `world_context`, if given, is RAG-retrieved World lore/Notes text
     (see app.audio_jobs._build_rag_context) prepended ahead of everything
     else — see _with_world_context's own docstring."""
@@ -806,6 +842,7 @@ async def condense_recap(
     opts = dict(options) if options else {}
     if max_tokens and not think:
         opts["num_predict"] = max_tokens
+    opts.update(_thinking_num_predict_override(think))
     return await generate_chat(
         [{"role": "user", "content": recap}], system=system, model=model,
         options=opts or None, think=think,
@@ -827,7 +864,24 @@ _CONTEXT_FIT_FLOOR_TOKENS = 1024
 # own docstring for why max_tokens can't safely double as num_predict's hard
 # cap once think=True, and condense_call_options' docstring for why num_ctx
 # needs matching headroom.
-_THINKING_HEADROOM_TOKENS = 4096
+#
+# Deliberately NOT raised as a blanket default, and deliberately not a
+# Settings field or a per-model adaptive value — bigger headroom means
+# SMALLER transcript chunks in _transcript_chunk_char_budget (more AI calls
+# per session recap), and under the common unconfigured
+# _DEFAULT_ASSUMED_CTX_TOKENS (4096) the chunk budget already sits on its
+# 500-token floor at this value; doubling it wouldn't shrink chunks further
+# there but WOULD at any larger configured num_ctx (e.g. 8192 collapses from
+# ~2900 usable input tokens per chunk to the same 500-token floor — roughly
+# 6x more calls for the same transcript). 4096 already comfortably covers
+# the thinking length observed in the production failure that motivated
+# this whole mechanism (7781 chars ≈ 1,945-3,890 tokens depending on
+# script — see _chars_per_token_estimate). Env-tunable (same idiom as
+# WHISPER_JOB_CONCURRENCY above) as an escape hatch for an install that
+# genuinely needs more, without changing the shipped default for everyone
+# — check generate_chat's own "thinking_chars=" log line (see its
+# _log.warning call) across a few failures before raising this.
+_THINKING_HEADROOM_TOKENS = max(0, int(os.getenv("THINKING_HEADROOM_TOKENS", "4096")))
 
 
 def _thinking_num_predict_override(think: bool) -> dict:
@@ -987,17 +1041,20 @@ def condense_call_options(
     generate_chat's own failure sentinels — is_failure_sentinel has no way
     to catch it.
 
-    `think`, together with `max_tokens`, widens the reserve by
-    _THINKING_HEADROOM_TOKENS: condense_recap stops treating max_tokens as
-    a hard num_predict cap once think=True (see its own docstring for why
-    — hidden reasoning tokens would otherwise compete with the visible
-    answer for that same budget), so num_ctx needs generous matching
-    headroom instead, or a long reasoning-plus-answer generation could
-    still hit the SAME kind of context-overflow corruption this function
-    exists to prevent — just from an uncapped generation instead of an
-    oversized prompt. No widening when max_tokens isn't set at all:
-    condense_recap never touches num_predict in that case either way, so
-    there's nothing extra to make room for here.
+    `think`, together with `max_tokens` OR a GM-configured instance-wide
+    num_predict (Settings > System > "Max output tokens"), widens the
+    reserve by _THINKING_HEADROOM_TOKENS: condense_recap stops treating
+    max_tokens as a hard num_predict cap once think=True (see its own
+    docstring for why — hidden reasoning tokens would otherwise compete
+    with the visible answer for that same budget) and ALSO widens a
+    configured num_predict the same way (via _thinking_num_predict_
+    override), so num_ctx needs generous matching headroom in either case,
+    or a long reasoning-plus-answer generation could still hit the SAME
+    kind of context-overflow corruption this function exists to prevent —
+    just from an uncapped generation instead of an oversized prompt. No
+    widening when neither is set: condense_recap never touches num_predict
+    in that case either way, so there's nothing extra to make room for
+    here.
 
     `force_fit=True` (the "Condense (fit context)" button) always returns
     the computed size — a deliberate override even of a GM's own larger
@@ -1012,7 +1069,12 @@ def condense_call_options(
     gets the protection."""
     chars_per_token = _chars_per_token_estimate(transcript)
     extra_chars = len(extra_instructions or "") + len(world_context or "")
-    thinking_headroom = _THINKING_HEADROOM_TOKENS if (think and max_tokens) else 0
+    num_predict_configured = effective_ollama_options().get("num_predict")
+    thinking_headroom = (
+        _THINKING_HEADROOM_TOKENS
+        if think and (max_tokens or (num_predict_configured and num_predict_configured > 0))
+        else 0
+    )
     reserve = (
         max(_CONTEXT_FIT_RESERVED_TOKENS, (max_tokens or 0) + 256)
         + extra_chars // chars_per_token + thinking_headroom

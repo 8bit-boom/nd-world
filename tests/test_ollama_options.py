@@ -161,6 +161,47 @@ async def test_condense_recap_max_tokens_is_prompt_only_when_thinking(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_condense_recap_widens_a_configured_num_predict_when_thinking(monkeypatch):
+    """The gap test_condense_recap_max_tokens_is_prompt_only_when_thinking
+    doesn't cover: with think=True and NO max_tokens at all, a GM-configured
+    instance-wide num_predict (Settings > System > "Max output tokens")
+    used to reach Ollama completely unwidened — the exact failure class
+    this whole recap-assist family already guards against everywhere else
+    (see _thinking_num_predict_override)."""
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    ai_module.set_ollama_generation_overrides({"num_predict": 512})
+    await ai_module.condense_recap("a recap", think=True)
+    assert calls[0]["options"]["num_predict"] == 512 + ai_module._THINKING_HEADROOM_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_widened_num_predict_wins_over_max_tokens_when_thinking(monkeypatch):
+    """max_tokens never sets a hard cap when think=True (see
+    test_condense_recap_max_tokens_is_prompt_only_when_thinking) — a
+    configured num_predict must still be the one thing widened, not 150."""
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    ai_module.set_ollama_generation_overrides({"num_predict": 512})
+    await ai_module.condense_recap("a recap", max_tokens=150, think=True)
+    assert calls[0]["options"]["num_predict"] == 512 + ai_module._THINKING_HEADROOM_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_max_tokens_hard_cap_unaffected_when_not_thinking(monkeypatch):
+    """think=False is unchanged by this fix: max_tokens still wins outright
+    as the literal num_predict value, ignoring any configured instance-wide
+    cap — same contract test_condense_recap_max_tokens_sets_num_predict_
+    when_not_thinking already pins, just with a configured override present
+    too, to prove the new widening never fires for think=False."""
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    ai_module.set_ollama_generation_overrides({"num_predict": 512})
+    await ai_module.condense_recap("a recap", max_tokens=150, think=False)
+    assert calls[0]["options"]["num_predict"] == 150
+
+
+@pytest.mark.asyncio
 async def test_condense_recap_max_tokens_layers_onto_existing_options(monkeypatch):
     calls = []
     monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
@@ -282,10 +323,26 @@ def test_condense_call_options_widens_further_for_thinking_plus_max_tokens():
 
 
 def test_condense_call_options_no_thinking_headroom_without_max_tokens():
-    """condense_recap never touches num_predict when max_tokens isn't set,
-    thinking or not — nothing extra to make room for, so a short recap
-    with thinking on but no max_tokens still returns None."""
+    """Nothing extra to make room for when neither max_tokens NOR a
+    configured num_predict is set — thinking or not, a short recap still
+    returns None."""
     assert ai_module.condense_call_options("short recap", think=True) is None
+
+
+def test_condense_call_options_widens_for_thinking_plus_configured_num_predict():
+    """A GM-configured instance-wide num_predict (not just an explicit
+    max_tokens argument) now also gets widened by condense_recap when
+    think=True (see test_condense_recap_widens_a_configured_num_predict_
+    when_thinking) — condense_call_options' num_ctx headroom must widen to
+    match, or that wider generation could overflow the context window."""
+    long_transcript = "word " * 20000
+    ai_module.set_ollama_generation_overrides({"num_predict": 512})
+    try:
+        without_thinking = ai_module.condense_call_options(long_transcript, think=False)
+        with_thinking = ai_module.condense_call_options(long_transcript, think=True)
+        assert with_thinking["num_ctx"] > without_thinking["num_ctx"]
+    finally:
+        ai_module.set_ollama_generation_overrides({})
 
 
 # ── RAG world_context wiring (condense_recap/summarize_transcript) ─────────

@@ -158,6 +158,14 @@ def test_chunk_budget_no_thinking_headroom_when_think_false(monkeypatch):
     assert budget == expected
 
 
+def test_thinking_headroom_tokens_is_a_non_negative_int():
+    """Env-tunable (THINKING_HEADROOM_TOKENS) as an escape hatch for an
+    install that genuinely needs more room than the shipped default — see
+    the constant's own comment for why the default itself isn't raised."""
+    assert isinstance(ai_module._THINKING_HEADROOM_TOKENS, int)
+    assert ai_module._THINKING_HEADROOM_TOKENS >= 0
+
+
 # ── _thinking_num_predict_override ──────────────────────────────────────────
 #
 # The other half of the same output-budget fix: num_predict (unlike num_ctx)
@@ -505,6 +513,36 @@ def test_is_failure_sentinel_recognizes_both_families():
     assert ai_module.is_failure_sentinel("[empty response from x (done_reason=length) — try again]")
     assert not ai_module.is_failure_sentinel("A real recap paragraph.")
     assert not ai_module.is_failure_sentinel("")
+
+
+def test_is_thinking_starved_sentinel_matches_only_the_real_production_message():
+    """The real, full-shaped sentinel generate_chat emits when a thinking
+    model burns its whole output budget — the exact text from the
+    production failure this whole feature exists to auto-recover from."""
+    real_message = (
+        '[empty response from gemma4:26b — it produced 7781 character(s) of hidden '
+        '"thinking" output but no final answer (usually means it ran out of output '
+        'budget mid-reasoning). Try a shorter prompt, a higher response-length limit, '
+        'or a non-reasoning model.]'
+    )
+    assert ai_module.is_thinking_starved_sentinel(real_message)
+
+
+def test_is_thinking_starved_sentinel_rejects_other_sentinels_and_prose():
+    assert not ai_module.is_thinking_starved_sentinel("[AI error: Ollama 404: model not found]")
+    assert not ai_module.is_thinking_starved_sentinel("[AI unavailable: ConnectionError: x]")
+    # The non-thinking empty-response variant (no thinking at all, just a
+    # bare done_reason) — starts with the same prefix but must not match.
+    assert not ai_module.is_thinking_starved_sentinel(
+        "[empty response from x (done_reason=length) — try a different model, or check the Ollama server logs]"
+    )
+    # summarize_transcript's own whitespace-only-part sentinel also starts
+    # with "[empty response" but is a completely different failure mode.
+    assert not ai_module.is_thinking_starved_sentinel(
+        "[empty response from part 2 of 3 — the model returned no usable text for this part]"
+    )
+    assert not ai_module.is_thinking_starved_sentinel("A real recap paragraph.")
+    assert not ai_module.is_thinking_starved_sentinel("")
 
 
 # ── summarize_transcript: checkpoint/resume (see app/job_shutdown.py) ──────

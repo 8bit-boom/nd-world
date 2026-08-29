@@ -666,6 +666,21 @@ async def _run_job(job_id: int) -> None:
                 pinned_entity_ids=pinned_entity_ids, pinned_pc_ids=pinned_pc_ids,
             )
 
+        # Both branches below attempt think=True (if that's what the job was
+        # started/resumed with) and, ONLY if that attempt fails with
+        # generate_chat's own thinking-starved sentinel (hidden reasoning
+        # burned the whole output budget, no visible answer — the real
+        # production failure this retry exists for), retry exactly once
+        # more with think=False. A job already started with think=False has
+        # nothing to fall back from, so it gets a single attempt like
+        # before. The fallback can never itself loop: its own attempt_think
+        # is False, so is_thinking_starved_sentinel's result is never even
+        # consulted for it — a model that ignores think=False and starves
+        # anyway just fails normally, same as any other failure sentinel.
+        # Both calls stay inside the existing ollama_job_semaphore span so a
+        # retry never interleaves with another job's calls.
+        attempt_think_values = [True, False] if think else [False]
+
         if purpose == "condense":
             # No chunking/checkpoint support — condense_recap is always a
             # single call (that's the whole point of fit_context: size
@@ -680,25 +695,31 @@ async def _run_job(job_id: int) -> None:
             instructions = _combined_recap_instructions(
                 _recap_instructions_for_world(world_id) if world_id else "", extra_instructions,
             )
-            # See condense_call_options' own docstring: sizes num_ctx to
-            # actually fit transcript + instructions + world_context + the
-            # requested output length whenever fit_context was explicitly
-            # asked for, OR whenever the plain (non-fit) call would
-            # otherwise risk silently overflowing the GM's configured/
-            # assumed context — the failure mode for the latter isn't a
-            # clean error, it's the model responding with garbage.
-            options = _ai_module.condense_call_options(
-                transcript, extra_instructions=instructions, world_context=world_context,
-                max_tokens=max_tokens, think=think, force_fit=fit_context,
-            )
-            # See ai.ollama_job_semaphore's own docstring — held for the
-            # whole call, same reasoning as the transcribe semaphore above.
-            async with _ai_module.ollama_job_semaphore:
-                recap = await _ai_module.condense_recap(
-                    transcript, model=model, options=options, think=think,
-                    extra_instructions=instructions, min_tokens=min_tokens, max_tokens=max_tokens,
-                    world_context=world_context,
+            for attempt_think in attempt_think_values:
+                # See condense_call_options' own docstring: sizes num_ctx to
+                # actually fit transcript + instructions + world_context +
+                # the requested output length whenever fit_context was
+                # explicitly asked for, OR whenever the plain (non-fit) call
+                # would otherwise risk silently overflowing the GM's
+                # configured/assumed context — the failure mode for the
+                # latter isn't a clean error, it's the model responding
+                # with garbage. Recomputed per attempt since think differs.
+                options = _ai_module.condense_call_options(
+                    transcript, extra_instructions=instructions, world_context=world_context,
+                    max_tokens=max_tokens, think=attempt_think, force_fit=fit_context,
                 )
+                # See ai.ollama_job_semaphore's own docstring — held for the
+                # whole call, same reasoning as the transcribe semaphore above.
+                async with _ai_module.ollama_job_semaphore:
+                    recap = await _ai_module.condense_recap(
+                        transcript, model=model, options=options, think=attempt_think,
+                        extra_instructions=instructions, min_tokens=min_tokens, max_tokens=max_tokens,
+                        world_context=world_context,
+                    )
+                if not (attempt_think and _ai_module.is_thinking_starved_sentinel(recap)):
+                    break
+                _log.warning("condense job %s: thinking starved output budget, retrying with think=False", job_id)
+                _set(think=False, think_fallback=True)
             if _looks_like_failure(recap):
                 _set(status="error", error=recap, finished_at=datetime.utcnow())
             else:
@@ -709,13 +730,29 @@ async def _run_job(job_id: int) -> None:
                 _recap_instructions_for_world(world_id) if world_id else "", extra_instructions,
             )
             summarize_resume = checkpoint if checkpoint and checkpoint.get("phase") == "summarize" else None
-            async with _ai_module.ollama_job_semaphore:
-                recap = await _ai_module.summarize_transcript(
-                    transcript, model=model, extra_instructions=instructions,
-                    on_progress=_on_progress, on_checkpoint=_checkpoint,
-                    should_stop=_job_shutdown.stopping, resume=summarize_resume, think=think,
-                    world_context=world_context,
-                )
+            for attempt_idx, attempt_think in enumerate(attempt_think_values):
+                # Only the FIRST attempt (whatever its think value) may
+                # resume a prior checkpoint — the fallback retry starts
+                # fresh: a think flip changes chunk_chars (see
+                # _transcript_chunk_char_budget's own headroom), so reusing
+                # the old checkpoint would either mismatch and get
+                # discarded by summarize_transcript's own validation anyway,
+                # or (only when both sides happen to hit the same context
+                # floor) partially resume into a differently-thought-out
+                # chunk boundary — simplest and safest is to just not offer
+                # it on the retry.
+                resume_for_attempt = summarize_resume if attempt_idx == 0 else None
+                async with _ai_module.ollama_job_semaphore:
+                    recap = await _ai_module.summarize_transcript(
+                        transcript, model=model, extra_instructions=instructions,
+                        on_progress=_on_progress, on_checkpoint=_checkpoint,
+                        should_stop=_job_shutdown.stopping, resume=resume_for_attempt, think=attempt_think,
+                        world_context=world_context,
+                    )
+                if not (attempt_think and _ai_module.is_thinking_starved_sentinel(recap)):
+                    break
+                _log.warning("session_recap job %s: thinking starved output budget, retrying with think=False", job_id)
+                _set(think=False, think_fallback=True)
             if _looks_like_failure(recap):
                 _set(status="error", error=recap, chunk_current=None, chunk_total=None,
                      finished_at=datetime.utcnow(), checkpoint_json="")
