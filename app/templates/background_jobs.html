@@ -164,6 +164,24 @@ function bgRenderJob(job) {
     card.appendChild(note);
   }
 
+  // Dim notes explaining what the auto-retry ladder (see app.audio_jobs.
+  // _run_job's attempt_plans) actually did for this job — job.think_fallback
+  // and job.expanded_thinking are independent flags (a job can climb to the
+  // expanded budget and succeed WITHOUT ever needing to flip think off), so
+  // both are checked and can both render.
+  if (job.job_type === 'audio' && job.status === 'done' && job.expanded_thinking) {
+    const note = document.createElement('div');
+    note.className = 'bg-job-note-text';
+    note.textContent = '🧠 Thinking needed a larger token budget — this run automatically retried with an expanded limit (slower, no action needed).';
+    card.appendChild(note);
+  }
+  if (job.job_type === 'audio' && job.status === 'done' && job.think_fallback) {
+    const note = document.createElement('div');
+    note.className = 'bg-job-note-text';
+    note.textContent = '🧠✕ Thinking ran out of output budget even with an expanded limit — this recap was written with Thinking off.';
+    card.appendChild(note);
+  }
+
   if (job.job_type === 'audio' && job.status === 'done' && (job.transcript || job.recap)) {
     const sizes = [];
     if (job.transcript) sizes.push(`Transcript: ${ndTokenLabel(job.transcript)}`);

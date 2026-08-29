@@ -227,7 +227,7 @@
       <div class="form-group">
         <label for="ollama-num-predict">Max output tokens (num_predict, -1 = unlimited)</label>
         <input id="ollama-num-predict" type="number" step="1" min="-2" name="ollama_num_predict" value="{{ settings.ollama_num_predict if settings.ollama_num_predict is not none else '' }}" placeholder="model default">
-        <small style="color:var(--text-dim)">Session Recap and Condense actions temporarily widen this cap (by 4096 tokens by default) when 🧠 Thinking is on, so hidden reasoning can't use up this whole budget before the visible answer gets written.</small>
+        <small style="color:var(--text-dim)">Session Recap and Condense actions temporarily widen this cap (by 4096 tokens by default) when 🧠 Thinking is on, so hidden reasoning can't use up this whole budget before the visible answer gets written. If even that runs out, a background run automatically retries with a much larger expanded limit (THINKING_EXPANDED_HEADROOM_TOKENS, default 12288) before falling back to Thinking off.</small>
       </div>
       <div class="form-group">
         <label for="ollama-num-ctx">Context length (num_ctx, tokens)</label>

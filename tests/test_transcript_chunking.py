@@ -126,6 +126,31 @@ def test_chunk_budget_shrinks_for_a_long_system_prompt(monkeypatch):
     assert with_system < without_system
 
 
+def test_chunk_budget_estimates_a_dense_script_system_prompt_correctly(monkeypatch):
+    """Real bug (see docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 1): the
+    system-prompt token estimate used a fixed 4 chars/token even for a
+    mostly-Cyrillic system prompt (extra_instructions/RAG world_context can
+    both be in the GM's own language), while the transcript side already
+    correctly used the tighter 2 chars/token estimate for non-ASCII text —
+    undercounting system tokens by ~2x and over-reserving, squeezing
+    generation room exactly on the non-English sessions this app documents
+    supporting. A mostly-Cyrillic system prompt must now reserve MORE
+    tokens (matching len // 2, not len // 4) than an equal-length ASCII one,
+    which means a SMALLER usable budget for the transcript itself."""
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_ctx": 8192})
+    cyrillic_system = ("Партия вошла в подземелье и обнаружила древний алтарь. " * 40)[:4000]
+    ascii_system = "x" * len(cyrillic_system)
+    cyrillic_budget = ai_module._transcript_chunk_char_budget("", cyrillic_system, think=False)
+    ascii_budget = ai_module._transcript_chunk_char_budget("", ascii_system, think=False)
+    assert cyrillic_budget < ascii_budget
+    # transcript="" here, so the final chars-per-token multiplier stays the
+    # default _CHARS_PER_TOKEN_ESTIMATE regardless of the system prompt's
+    # script — only system_tokens (part of `reserved`) is affected by it.
+    expected_cyrillic_reserved = ai_module._CHUNK_RESERVED_TOKENS + len(cyrillic_system) // 2
+    expected_input_tokens = max(500, 8192 - expected_cyrillic_reserved)
+    assert cyrillic_budget == expected_input_tokens * ai_module._CHARS_PER_TOKEN_ESTIMATE
+
+
 # ── _transcript_chunk_char_budget: thinking headroom (Speed 4.9-ish fix) ────
 #
 # A real production Session Recap job (see git history for this test's
@@ -194,6 +219,83 @@ def test_thinking_num_predict_override_widens_a_bounded_configured_cap(monkeypat
     monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_predict": 512})
     result = ai_module._thinking_num_predict_override(think=True)
     assert result == {"num_predict": 512 + ai_module._THINKING_HEADROOM_TOKENS}
+
+
+# ── expanded_thinking_options: the retry ladder's recovery rung ────────────
+#
+# See docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 1 — the normal
+# _THINKING_HEADROOM_TOKENS widening above still wasn't enough for a real
+# production job. This is the much larger explicit budget the retry ladder
+# in app.audio_jobs._run_job climbs to when the normal attempt starves.
+
+def test_expanded_thinking_options_with_nothing_configured(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
+    result = ai_module.expanded_thinking_options()
+    assert result["num_predict"] == ai_module._THINKING_EXPANDED_HEADROOM_TOKENS
+    assert result["num_ctx"] == ai_module._DEFAULT_ASSUMED_CTX_TOKENS + (
+        ai_module._THINKING_EXPANDED_HEADROOM_TOKENS - ai_module._THINKING_HEADROOM_TOKENS
+    )
+
+
+def test_expanded_thinking_options_widens_configured_values(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_predict": 512, "num_ctx": 8192})
+    result = ai_module.expanded_thinking_options()
+    assert result["num_predict"] == 512 + ai_module._THINKING_EXPANDED_HEADROOM_TOKENS
+    assert result["num_ctx"] == 8192 + (ai_module._THINKING_EXPANDED_HEADROOM_TOKENS - ai_module._THINKING_HEADROOM_TOKENS)
+
+
+def test_expanded_thinking_options_num_ctx_delta_is_smaller_than_full_expanded_value():
+    """Deliberate: the num_ctx delta is (EXPANDED - NORMAL), not the full
+    expanded headroom — so summarize_transcript's chunk_chars (computed
+    against the NORMAL headroom only, unaffected by this function) stays
+    identical between a normal attempt and an expanded retry, letting the
+    retry resume a checkpoint the normal attempt already wrote."""
+    delta = ai_module._THINKING_EXPANDED_HEADROOM_TOKENS - ai_module._THINKING_HEADROOM_TOKENS
+    assert delta < ai_module._THINKING_EXPANDED_HEADROOM_TOKENS
+
+
+def test_thinking_expanded_headroom_tokens_is_at_least_the_normal_headroom():
+    assert ai_module._THINKING_EXPANDED_HEADROOM_TOKENS >= ai_module._THINKING_HEADROOM_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_summarize_transcript_expanded_thinking_uses_the_expanded_budget(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_predict": 512, "num_ctx": 8192})
+    seen_options = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen_options.append(options)
+        return "a recap"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    await ai_module.summarize_transcript("a short transcript", expanded_thinking=True)
+    assert seen_options == [ai_module.expanded_thinking_options()]
+    assert seen_options[0]["num_predict"] == 512 + ai_module._THINKING_EXPANDED_HEADROOM_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_summarize_transcript_expanded_thinking_keeps_chunk_chars_identical(monkeypatch):
+    """The whole point of the num_ctx delta trick in expanded_thinking_
+    options: an expanded retry must chunk the transcript EXACTLY the same
+    way a normal attempt did, so a checkpoint from the normal attempt is
+    still valid to resume under the expanded one."""
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_ctx": 4096})
+    long_transcript = ("The party explored the ruins. " * 200).strip()
+
+    chunks_seen = {}
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        chunks_seen.setdefault("count", 0)
+        chunks_seen["count"] += 1
+        return "part summary"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    await ai_module.summarize_transcript(long_transcript, expanded_thinking=False)
+    normal_count = chunks_seen["count"]
+
+    chunks_seen["count"] = 0
+    await ai_module.summarize_transcript(long_transcript, expanded_thinking=True)
+    assert chunks_seen["count"] == normal_count
 
 
 @pytest.mark.asyncio

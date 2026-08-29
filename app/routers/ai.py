@@ -809,6 +809,15 @@ async def ai_stream(
     msgs = _build_ollama_messages(body.messages)
     requested = body.model or _ai.get_defaults().get(body.surface, "")
     options = _clamp_options(body.options)
+    # A thinking-enabled Ask AI request otherwise reaches Ollama with the
+    # GM's configured num_predict completely un-widened — every other
+    # think=True caller in this app (the recap family) widens it via
+    # app.ai._thinking_num_predict_override; this is the one surface that
+    # didn't (see docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 1). Only
+    # applied when the caller didn't already set num_predict explicitly —
+    # a preset/caller that did keeps its exact value.
+    if body.think and "num_predict" not in options:
+        options = {**options, **_ai._thinking_num_predict_override(True)}
     _log.info("stream requested model=%r surface=%r msgs=%d", requested, body.surface, len(body.messages))
 
     async def _chat(model: str):

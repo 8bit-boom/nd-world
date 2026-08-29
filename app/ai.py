@@ -821,7 +821,7 @@ _CONDENSE_RECAP_SYSTEM = (
 async def condense_recap(
     recap: str, model: str = "", options: dict = None, think: bool = True,
     extra_instructions: str = "", min_tokens: int | None = None, max_tokens: int | None = None,
-    world_context: str = "",
+    world_context: str = "", expanded_thinking: bool = False,
 ) -> str:
     """Condense an existing recap into a tighter 'previously on...' summary.
     `options` (see generate_chat) is an optional per-call override — the
@@ -872,7 +872,16 @@ async def condense_recap(
 
     `world_context`, if given, is RAG-retrieved World lore/Notes text
     (see app.audio_jobs._build_rag_context) prepended ahead of everything
-    else — see _with_world_context's own docstring."""
+    else — see _with_world_context's own docstring.
+
+    `expanded_thinking` (default False) is the retry-ladder's recovery rung
+    (see app.audio_jobs._run_job and docs/DYNAMIC_THINKING_AND_PIPELINE_
+    PLAN.md Part 1): when True, num_predict is set from
+    expanded_thinking_options() instead of _thinking_num_predict_override's
+    normal headroom, overriding max_tokens' own num_predict branch above
+    too — the expanded rung only ever runs because a prior attempt already
+    starved, so the usual "max_tokens caps num_predict when think=False"
+    behavior is deliberately bypassed here in favor of guaranteed room."""
     system = _with_world_context(_with_instructions(_CONDENSE_RECAP_SYSTEM, extra_instructions), world_context)
     chars_per_token = _chars_per_token_estimate(recap)
     length_notes = []
@@ -888,7 +897,10 @@ async def condense_recap(
     opts = dict(options) if options else {}
     if max_tokens and not think:
         opts["num_predict"] = max_tokens
-    opts.update(_thinking_num_predict_override(think))
+    if expanded_thinking:
+        opts["num_predict"] = expanded_thinking_options()["num_predict"]
+    else:
+        opts.update(_thinking_num_predict_override(think))
     return await generate_chat(
         [{"role": "user", "content": recap}], system=system, model=model,
         options=opts or None, think=think,
@@ -929,6 +941,24 @@ _CONTEXT_FIT_FLOOR_TOKENS = 1024
 # _log.warning call) across a few failures before raising this.
 _THINKING_HEADROOM_TOKENS = max(0, int(os.getenv("THINKING_HEADROOM_TOKENS", "4096")))
 
+# The recovery rung for when _THINKING_HEADROOM_TOKENS above still wasn't
+# enough — see docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 1 for the
+# production failure that motivated this (a model that ignored think=False
+# and starved again, on a fallback attempt whose budget was smaller than
+# the one that had just failed). 12288 ≈ 3x the normal headroom — 3-6x the
+# worst observed failure. Env-tunable, same idiom as THINKING_HEADROOM_TOKENS
+# above; deliberately not a Settings field (an escape hatch for a rare
+# recovery rung, not a knob meant to be tuned per run). This rung costs
+# real VRAM/RAM: widening num_ctx by the same delta adds roughly 8k tokens
+# of KV cache (~1.5-2.5 GB at f16 on a ~26B model) for that one call —
+# Ollama offloads to system RAM if VRAM is short rather than failing, so
+# the rung runs slower instead of erroring, which is the accepted price of
+# a last-resort recovery path.
+_THINKING_EXPANDED_HEADROOM_TOKENS = max(
+    _THINKING_HEADROOM_TOKENS,
+    int(os.getenv("THINKING_EXPANDED_HEADROOM_TOKENS", "12288")),
+)
+
 
 def _thinking_num_predict_override(think: bool) -> dict:
     """If the GM has configured a bounded num_predict (Settings > System >
@@ -951,6 +981,42 @@ def _thinking_num_predict_override(think: bool) -> dict:
     if not configured or configured < 0:
         return {}
     return {"num_predict": configured + _THINKING_HEADROOM_TOKENS}
+
+
+def expanded_thinking_options() -> dict:
+    """Options for a retry after is_thinking_starved_sentinel already fired
+    once at the normal headroom (_thinking_num_predict_override) — public
+    since both app.audio_jobs's retry ladder and app.routers.ai call it,
+    same promotion reasoning as merge_glossary.
+
+    Uses a large EXPLICIT num_predict rather than Ollama's -1 ("generate
+    until natural stop or context exhausted"): -1's behavior once context
+    actually runs out is Ollama-version-dependent (older versions
+    context-shift and keep going, newer ones stop with
+    done_reason="length"), which is exactly the kind of version-dependent
+    behavior this codebase avoids relying on. An explicit cap gives the
+    same effective headroom with a guaranteed stop, so a recovery attempt
+    can never "hang with no signal" longer than the cap allows.
+
+    Also returns an explicitly enlarged num_ctx, sized off whatever num_ctx
+    is actually configured (or _DEFAULT_ASSUMED_CTX_TOKENS if not) — both
+    num_predict AND num_ctx can independently starve a thinking model (see
+    docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 1), so a real recovery
+    rung has to widen both knobs, not just the output cap.
+
+    The num_ctx delta is (EXPANDED - NORMAL), not the full expanded value —
+    deliberate, so that on summarize_transcript's chunked path, chunk_chars
+    (computed against the NORMAL headroom, unaffected by this function)
+    stays byte-identical between a normal attempt and an expanded retry,
+    letting an expanded retry resume a checkpoint the normal attempt already
+    wrote instead of redoing already-summarized parts."""
+    opts = effective_ollama_options()
+    base_ctx = opts.get("num_ctx") or _DEFAULT_ASSUMED_CTX_TOKENS
+    configured_predict = opts.get("num_predict") or 0
+    return {
+        "num_predict": max(configured_predict, 0) + _THINKING_EXPANDED_HEADROOM_TOKENS,
+        "num_ctx": base_ctx + (_THINKING_EXPANDED_HEADROOM_TOKENS - _THINKING_HEADROOM_TOKENS),
+    }
 
 
 def context_sized_options(text: str, reserve_tokens: int = _CONTEXT_FIT_RESERVED_TOKENS) -> dict:
@@ -1059,7 +1125,7 @@ def _transcript_chunk_char_budget(transcript: str = "", system: str = "", think:
     starved thinking budget is not."""
     ctx_tokens = effective_ollama_options().get("num_ctx") or _DEFAULT_ASSUMED_CTX_TOKENS
     chars_per_token = _chars_per_token_estimate(transcript)
-    system_tokens = (len(system) // _CHARS_PER_TOKEN_ESTIMATE) if system else 0
+    system_tokens = (len(system) // _chars_per_token_estimate(system)) if system else 0
     reserved = _CHUNK_RESERVED_TOKENS + system_tokens + (_THINKING_HEADROOM_TOKENS if think else 0)
     input_tokens = max(500, ctx_tokens - reserved)
     return input_tokens * chars_per_token
@@ -1068,6 +1134,7 @@ def _transcript_chunk_char_budget(transcript: str = "", system: str = "", think:
 def condense_call_options(
     transcript: str, extra_instructions: str = "", world_context: str = "",
     max_tokens: int | None = None, think: bool = True, force_fit: bool = False,
+    expanded: bool = False,
 ) -> dict | None:
     """The `options` a Condense call (job-based or the blocking route)
     should pass to condense_recap, so a long input — further lengthened by
@@ -1112,21 +1179,32 @@ def condense_call_options(
     reasoning _transcript_chunk_char_budget already uses — so an ordinary
     short recap keeps using the GM's configured/default context unchanged
     (returns None, same as always), and only a genuinely oversized call
-    gets the protection."""
+    gets the protection.
+
+    `expanded=True` is the retry-ladder's recovery rung (see
+    app.audio_jobs._run_job and docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md
+    Part 1): reserves _THINKING_EXPANDED_HEADROOM_TOKENS unconditionally
+    (bypassing the think/max_tokens gate above — the expanded rung only
+    ever runs because something already starved) and, like force_fit,
+    always returns the computed num_ctx even if it doesn't exceed the
+    baseline, since the whole point is guaranteeing extra room this time."""
     chars_per_token = _chars_per_token_estimate(transcript)
     extra_chars = len(extra_instructions or "") + len(world_context or "")
     num_predict_configured = effective_ollama_options().get("num_predict")
-    thinking_headroom = (
-        _THINKING_HEADROOM_TOKENS
-        if think and (max_tokens or (num_predict_configured and num_predict_configured > 0))
-        else 0
-    )
+    if expanded:
+        thinking_headroom = _THINKING_EXPANDED_HEADROOM_TOKENS
+    else:
+        thinking_headroom = (
+            _THINKING_HEADROOM_TOKENS
+            if think and (max_tokens or (num_predict_configured and num_predict_configured > 0))
+            else 0
+        )
     reserve = (
         max(_CONTEXT_FIT_RESERVED_TOKENS, (max_tokens or 0) + 256)
         + extra_chars // chars_per_token + thinking_headroom
     )
     needed = context_sized_options(transcript, reserve_tokens=reserve)["num_ctx"]
-    if force_fit:
+    if force_fit or expanded:
         return {"num_ctx": needed}
     baseline = effective_ollama_options().get("num_ctx") or _DEFAULT_ASSUMED_CTX_TOKENS
     return {"num_ctx": needed} if needed > baseline else None
@@ -1216,7 +1294,8 @@ def _with_world_context(system: str, world_context: str) -> str:
 
 async def summarize_transcript(transcript: str, model: str = "", extra_instructions: str = "", on_progress=None,
                                 on_checkpoint=None, should_stop=None, resume: dict | None = None,
-                                think: bool = True, world_context: str = "") -> str:
+                                think: bool = True, world_context: str = "",
+                                expanded_thinking: bool = False) -> str:
     """Turn a raw Whisper transcript (see transcribe_audio) of a session
     recording into a narrative recap. Transcripts that fit in one context
     window go through a single generate_chat call, same as before.
@@ -1281,7 +1360,18 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
 
     `world_context`, if given, is RAG-retrieved World lore/Notes text (see
     app.audio_jobs._build_rag_context) prepended ahead of everything else —
-    see _with_world_context's own docstring."""
+    see _with_world_context's own docstring.
+
+    `expanded_thinking` (default False) is the retry-ladder's recovery rung
+    (see app.audio_jobs._run_job and docs/DYNAMIC_THINKING_AND_PIPELINE_
+    PLAN.md Part 1): when True, every generate_chat call below uses
+    expanded_thinking_options() instead of _thinking_num_predict_override's
+    normal headroom. Deliberately does NOT affect chunk_chars below — chunk
+    sizing stays computed against the NORMAL headroom regardless, so a
+    checkpoint written by a normal (non-expanded) attempt has the identical
+    chunk_total/chunk_chars an expanded retry needs to resume it, and
+    already-summarized parts are never redone just because thinking starved
+    on a later part."""
     transcript = (transcript or "").strip()
     if not transcript:
         return ""
@@ -1296,7 +1386,9 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
     # GM-configured num_predict cap so hidden thinking tokens don't compete
     # with the visible recap for the same hard budget. Computed once since
     # `think` doesn't change across this call's chunked/unchunked branches.
-    predict_override = _thinking_num_predict_override(think) or None
+    # expanded_thinking replaces this with a much larger explicit budget
+    # instead — see this function's own docstring.
+    predict_override = expanded_thinking_options() if expanded_thinking else (_thinking_num_predict_override(think) or None)
     chunks = _split_transcript_into_chunks(transcript, chunk_chars)
     if len(chunks) <= 1:
         system = _with_world_context(_with_instructions(_SUMMARIZE_TRANSCRIPT_SYSTEM, extra_instructions), world_context)

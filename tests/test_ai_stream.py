@@ -95,6 +95,76 @@ def test_ai_stream_think_defaults_to_false(client, seed, monkeypatch):
     assert captured["think"] is False
 
 
+# ── Interactive thinking widening (docs/DYNAMIC_THINKING_AND_PIPELINE_
+# PLAN.md Part 1, item 1.4) — a thinking Ask AI request previously reached
+# Ollama with the GM's configured num_predict completely un-widened, unlike
+# every other think=True caller in this app.
+
+def test_ai_stream_widens_num_predict_when_thinking(client, seed, monkeypatch):
+    captured = {}
+
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+        captured["options"] = options
+        yield "ok"
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
+    ai_module.set_ollama_generation_overrides({"num_predict": 512})
+    try:
+        login(client, seed.gm.email, GM_PASSWORD)
+        client.cookies.set("active_world", seed.world_a.slug)
+        r = client.post("/api/ai/stream", json={
+            "messages": [{"role": "user", "content": "hi"}], "think": True,
+        })
+        assert r.status_code == 200
+        assert captured["options"]["num_predict"] == 512 + ai_module._THINKING_HEADROOM_TOKENS
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+def test_ai_stream_no_widening_when_not_thinking(client, seed, monkeypatch):
+    captured = {}
+
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+        captured["options"] = options
+        yield "ok"
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
+    ai_module.set_ollama_generation_overrides({"num_predict": 512})
+    try:
+        login(client, seed.gm.email, GM_PASSWORD)
+        client.cookies.set("active_world", seed.world_a.slug)
+        r = client.post("/api/ai/stream", json={
+            "messages": [{"role": "user", "content": "hi"}], "think": False,
+        })
+        assert r.status_code == 200
+        assert "num_predict" not in captured["options"]
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+def test_ai_stream_thinking_widening_does_not_override_an_explicit_num_predict(client, seed, monkeypatch):
+    """A preset/caller that already set num_predict keeps its exact value —
+    the widening only fills a gap, it never overrides an explicit choice."""
+    captured = {}
+
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+        captured["options"] = options
+        yield "ok"
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/stream", json={
+        "messages": [{"role": "user", "content": "hi"}], "think": True,
+        "options": {"num_predict": 200},
+    })
+    assert r.status_code == 200
+    assert captured["options"]["num_predict"] == 200
+
+
 def test_ai_stream_player_denied_by_default(client, seed, monkeypatch):
     _patch_ai(monkeypatch)
     login(client, seed.player_a.email, PLAYER_PASSWORD)

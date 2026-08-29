@@ -228,6 +228,33 @@ async def test_condense_recap_no_length_notes_when_neither_bound_given(monkeypat
     assert "Length target" not in system
 
 
+# ── condense_recap: expanded_thinking (the retry ladder's recovery rung) ───
+# See docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 1.
+
+@pytest.mark.asyncio
+async def test_condense_recap_expanded_thinking_uses_the_expanded_budget(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    ai_module.set_ollama_generation_overrides({"num_predict": 512})
+    try:
+        await ai_module.condense_recap("a recap", think=True, expanded_thinking=True)
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+    assert calls[0]["options"]["num_predict"] == 512 + ai_module._THINKING_EXPANDED_HEADROOM_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_expanded_thinking_overrides_max_tokens_num_predict(monkeypatch):
+    """The expanded rung only ever runs because a prior attempt already
+    starved — max_tokens' own think=False num_predict branch must not win
+    over the guaranteed-larger expanded budget."""
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", max_tokens=150, think=False, expanded_thinking=True)
+    assert calls[0]["options"]["num_predict"] == ai_module.expanded_thinking_options()["num_predict"]
+    assert calls[0]["options"]["num_predict"] != 150
+
+
 def test_context_sized_options_reserve_tokens_widens_num_ctx():
     text = "word " * 2000
     default_reserve = ai_module.context_sized_options(text)
@@ -327,6 +354,28 @@ def test_condense_call_options_no_thinking_headroom_without_max_tokens():
     configured num_predict is set — thinking or not, a short recap still
     returns None."""
     assert ai_module.condense_call_options("short recap", think=True) is None
+
+
+def test_condense_call_options_expanded_always_returns_a_value_even_for_a_short_recap():
+    """Like force_fit — the expanded rung only ever runs because something
+    already starved, so it always returns computed room even when the
+    computed requirement wouldn't otherwise exceed the baseline."""
+    options = ai_module.condense_call_options("short recap", expanded=True)
+    assert options is not None
+
+
+def test_condense_call_options_expanded_reserves_more_than_normal_thinking_headroom():
+    long_transcript = "word " * 20000
+    normal = ai_module.condense_call_options(long_transcript, think=True, max_tokens=500)
+    expanded = ai_module.condense_call_options(long_transcript, think=True, max_tokens=500, expanded=True)
+    assert expanded["num_ctx"] > normal["num_ctx"]
+
+
+def test_condense_call_options_expanded_bypasses_the_think_max_tokens_gate():
+    """Unlike the normal path (test_condense_call_options_no_thinking_
+    headroom_without_max_tokens), expanded=True reserves headroom
+    unconditionally — no max_tokens/configured num_predict needed."""
+    assert ai_module.condense_call_options("short recap", think=True, expanded=True) is not None
 
 
 def test_condense_call_options_widens_for_thinking_plus_configured_num_predict():

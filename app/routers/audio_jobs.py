@@ -64,6 +64,11 @@ def _job_to_dict(job: AudioJob) -> dict:
         # attempt — job.think above already reflects that (flipped to
         # False), this is just so the UI can explain WHY.
         "think_fallback": bool(job.think_fallback),
+        # True once the auto-retry ladder ever climbed into an EXPANDED
+        # budget rung for this job — see AudioJob.expanded_thinking's own
+        # docstring. Can be True with think_fallback False (the expanded
+        # rung alone was enough, no think flip needed).
+        "expanded_thinking": bool(job.expanded_thinking),
         # True when job.error is exactly the thinking-starved sentinel —
         # server-side detection so the client never has to duplicate
         # sentinel-text knowledge (see is_thinking_starved_sentinel's own

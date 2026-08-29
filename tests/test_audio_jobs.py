@@ -183,11 +183,49 @@ _THINKING_STARVED_SENTINEL = (
 
 
 @pytest.mark.asyncio
-async def test_session_recap_job_auto_retries_with_think_false_after_starved_first_attempt(client, seed, tmp_path, monkeypatch):
+async def test_session_recap_job_climbs_to_expanded_before_flipping_think(client, seed, tmp_path, monkeypatch):
+    """The ladder's middle rung (same think, expanded budget — see
+    app.audio_jobs._run_job's attempt_plans and
+    docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 1) must be tried BEFORE
+    flipping think off — a model that just needed more room, not a
+    different mode, should get the recap it actually asked for."""
     calls = []
 
-    async def fake_summarize(transcript, model="", extra_instructions="", think=True, **kwargs):
-        calls.append(think)
+    async def fake_summarize(transcript, model="", extra_instructions="", think=True, expanded_thinking=False, **kwargs):
+        calls.append((think, expanded_thinking))
+        if think and not expanded_thinking:
+            return _THINKING_STARVED_SENTINEL
+        return "A recap written with the expanded budget."
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True, think=True,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.recap == "A recap written with the expanded budget."
+    assert calls == [(True, False), (True, True)]
+
+    db = SessionLocal()
+    try:
+        db.expire_all()
+        fresh = db.get(AudioJob, job_id)
+        assert fresh.think is True  # never flipped — the expanded rung alone was enough
+        assert fresh.think_fallback is False
+        assert fresh.expanded_thinking is True
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_session_recap_job_climbs_all_the_way_to_think_false_when_expanded_also_starves(client, seed, tmp_path, monkeypatch):
+    calls = []
+
+    async def fake_summarize(transcript, model="", extra_instructions="", think=True, expanded_thinking=False, **kwargs):
+        calls.append((think, expanded_thinking))
         return _THINKING_STARVED_SENTINEL if think else "A recap written without thinking."
     monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
 
@@ -200,7 +238,7 @@ async def test_session_recap_job_auto_retries_with_think_false_after_starved_fir
     job = await _await_terminal(job_id)
     assert job.status == "done", job.error
     assert job.recap == "A recap written without thinking."
-    assert calls == [True, False]
+    assert calls == [(True, False), (True, True), (False, True)]
 
     db = SessionLocal()
     try:
@@ -208,19 +246,23 @@ async def test_session_recap_job_auto_retries_with_think_false_after_starved_fir
         fresh = db.get(AudioJob, job_id)
         assert fresh.think is False  # flipped so Retry-summary's checkbox reflects reality
         assert fresh.think_fallback is True
+        assert fresh.expanded_thinking is True
     finally:
         db.close()
 
 
 @pytest.mark.asyncio
-async def test_session_recap_job_with_think_already_false_never_retries(client, seed, tmp_path, monkeypatch):
-    """A job the GM explicitly ran with Thinking off has nothing to fall
-    back from — a starved-shaped result there (a model ignoring think=False
-    entirely) must fail normally, not loop."""
+async def test_session_recap_job_with_think_already_false_climbs_to_expanded_but_never_flips_think(client, seed, tmp_path, monkeypatch):
+    """A job the GM explicitly ran with Thinking off still gets one expanded
+    retry (a model can starve on think=False alone — an unset num_predict
+    is then bounded only by num_ctx, or a model can ignore think=False
+    outright), but its think value never flips against the GM's explicit
+    choice, and think_fallback (which specifically means "we flipped think
+    off for you") stays False."""
     calls = []
 
-    async def always_starved(transcript, model="", extra_instructions="", think=True, **kwargs):
-        calls.append(think)
+    async def always_starved(transcript, model="", extra_instructions="", think=True, expanded_thinking=False, **kwargs):
+        calls.append((think, expanded_thinking))
         return _THINKING_STARVED_SENTINEL
     monkeypatch.setattr(ai_module, "summarize_transcript", always_starved)
 
@@ -233,7 +275,56 @@ async def test_session_recap_job_with_think_already_false_never_retries(client, 
     job = await _await_terminal(job_id)
     assert job.status == "error"
     assert job.error == _THINKING_STARVED_SENTINEL
-    assert calls == [False]
+    assert calls == [(False, False), (False, True)]
+
+    db = SessionLocal()
+    try:
+        db.expire_all()
+        fresh = db.get(AudioJob, job_id)
+        assert fresh.think is False
+        assert fresh.think_fallback is False
+        assert fresh.expanded_thinking is True
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_session_recap_ladder_resumes_the_checkpoint_when_think_stays_the_same(client, seed, tmp_path, monkeypatch):
+    """Rung 1 (think=True, normal) starves after checkpointing partial
+    progress — rung 2 (think=True, expanded) must resume from exactly that
+    checkpoint (chunk_chars is unaffected by expanded_thinking, so it's
+    still valid) instead of redoing the parts already summarized. Rung 3
+    (think=False) flips think, so it must NOT receive that checkpoint —
+    see _run_job's own resume_for_attempt rule."""
+    seen_resumes = []
+
+    async def fake_summarize(transcript, model="", extra_instructions="", think=True, expanded_thinking=False,
+                              resume=None, on_checkpoint=None, **kwargs):
+        seen_resumes.append((think, expanded_thinking, resume))
+        if think and not expanded_thinking:
+            on_checkpoint({"phase": "summarize", "parts_done": 1, "chunk_total": 2,
+                           "chunk_chars": 50, "text": "part summary 0"})
+            return _THINKING_STARVED_SENTINEL
+        if think and expanded_thinking:
+            return _THINKING_STARVED_SENTINEL
+        return "A recap written without thinking."
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True, think=True,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.recap == "A recap written without thinking."
+
+    assert seen_resumes[0] == (True, False, None)  # rung 1: nothing to resume yet
+    assert seen_resumes[1][0:2] == (True, True)
+    assert seen_resumes[1][2] == {"phase": "summarize", "parts_done": 1, "chunk_total": 2,
+                                   "chunk_chars": 50, "text": "part summary 0"}  # rung 2 resumes rung 1's checkpoint
+    assert seen_resumes[2] == (False, True, None)  # rung 3 flips think — starts fresh
 
 
 @pytest.mark.asyncio
@@ -261,11 +352,39 @@ async def test_session_recap_job_non_starved_failure_does_not_retry(client, seed
 
 
 @pytest.mark.asyncio
-async def test_condense_job_auto_retries_with_think_false_after_starved_first_attempt(client, seed, monkeypatch):
+async def test_condense_job_climbs_to_expanded_before_flipping_think(client, seed, monkeypatch):
     calls = []
 
-    async def fake_condense(recap, model="", options=None, think=True, **kwargs):
-        calls.append(think)
+    async def fake_condense(recap, model="", options=None, think=True, expanded_thinking=False, **kwargs):
+        calls.append((think, expanded_thinking))
+        if think and not expanded_thinking:
+            return _THINKING_STARVED_SENTINEL
+        return "Condensed with the expanded budget."
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    job_id = audio_jobs.create_condense_job(world_id=seed.world_a.id, text="A long existing recap.", think=True)
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.recap == "Condensed with the expanded budget."
+    assert calls == [(True, False), (True, True)]
+
+    db = SessionLocal()
+    try:
+        db.expire_all()
+        fresh = db.get(AudioJob, job_id)
+        assert fresh.think is True
+        assert fresh.think_fallback is False
+        assert fresh.expanded_thinking is True
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_condense_job_climbs_all_the_way_to_think_false_when_expanded_also_starves(client, seed, monkeypatch):
+    calls = []
+
+    async def fake_condense(recap, model="", options=None, think=True, expanded_thinking=False, **kwargs):
+        calls.append((think, expanded_thinking))
         return _THINKING_STARVED_SENTINEL if think else "Condensed without thinking."
     monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
 
@@ -273,7 +392,7 @@ async def test_condense_job_auto_retries_with_think_false_after_starved_first_at
     job = await _await_terminal(job_id)
     assert job.status == "done", job.error
     assert job.recap == "Condensed without thinking."
-    assert calls == [True, False]
+    assert calls == [(True, False), (True, True), (False, True)]
 
     db = SessionLocal()
     try:
@@ -281,16 +400,17 @@ async def test_condense_job_auto_retries_with_think_false_after_starved_first_at
         fresh = db.get(AudioJob, job_id)
         assert fresh.think is False
         assert fresh.think_fallback is True
+        assert fresh.expanded_thinking is True
     finally:
         db.close()
 
 
 @pytest.mark.asyncio
-async def test_condense_job_with_think_already_false_never_retries(client, seed, monkeypatch):
+async def test_condense_job_with_think_already_false_climbs_to_expanded_but_never_flips_think(client, seed, monkeypatch):
     calls = []
 
-    async def always_starved(recap, model="", options=None, think=True, **kwargs):
-        calls.append(think)
+    async def always_starved(recap, model="", options=None, think=True, expanded_thinking=False, **kwargs):
+        calls.append((think, expanded_thinking))
         return _THINKING_STARVED_SENTINEL
     monkeypatch.setattr(ai_module, "condense_recap", always_starved)
 
@@ -298,7 +418,17 @@ async def test_condense_job_with_think_already_false_never_retries(client, seed,
     job = await _await_terminal(job_id)
     assert job.status == "error"
     assert job.error == _THINKING_STARVED_SENTINEL
-    assert calls == [False]
+    assert calls == [(False, False), (False, True)]
+
+    db = SessionLocal()
+    try:
+        db.expire_all()
+        fresh = db.get(AudioJob, job_id)
+        assert fresh.think is False
+        assert fresh.think_fallback is False
+        assert fresh.expanded_thinking is True
+    finally:
+        db.close()
 
 
 def test_job_status_route_reports_thinking_starved_and_think_fallback(client, seed):
@@ -326,6 +456,32 @@ def test_job_status_route_reports_thinking_starved_and_think_fallback(client, se
     assert data["thinking_starved"] is True
     assert data["think_fallback"] is True
     assert data["think"] is False
+
+
+def test_job_status_route_reports_expanded_thinking(client, seed):
+    """expanded_thinking is independent of think_fallback — a job can climb
+    to the expanded budget and succeed WITHOUT ever needing to flip think
+    off (see test_session_recap_job_climbs_to_expanded_before_flipping_
+    think)."""
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+            status="done", recap="a recap", think=True, expanded_thinking=True,
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["expanded_thinking"] is True
+    assert data["think_fallback"] is False
 
 
 def test_job_status_route_thinking_starved_false_for_other_failures(client, seed):
@@ -362,6 +518,20 @@ def test_background_jobs_page_wires_the_retry_without_thinking_button(client, se
     # "🔁 Retry summary".
     assert "resetLabel = '🔁 Retry summary'" in page_html
     assert "noThinkBtn, '🧠✕ Retry without Thinking'" in page_html
+
+
+def test_background_jobs_page_wires_the_ladder_notes(client, seed):
+    """job.expanded_thinking and job.think_fallback are independent flags
+    (see docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 1 item 1.3) — a
+    done audio job's card must be able to render either note, and both if
+    both are set."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    page_html = client.get("/background-jobs").text
+    assert "job.expanded_thinking" in page_html
+    assert "automatically retried with an expanded limit" in page_html
+    assert "even with an expanded limit" in page_html
+    assert "this recap was written with Thinking off" in page_html
 
 
 # ── purpose="condense" (create_condense_job) ────────────────────────────────

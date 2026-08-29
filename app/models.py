@@ -880,6 +880,14 @@ class AudioJob(Base):
     # this path, so a template can render a note without an `is not True`
     # check. See app.audio_jobs._run_job's own docstring for the retry.
     think_fallback = Column(Boolean, default=False)
+    # Set when the auto-retry ladder above ever had to climb into an
+    # EXPANDED budget rung (see app.ai.expanded_thinking_options and
+    # app.audio_jobs._run_job's attempt_plans) — i.e. even the normal
+    # thinking headroom wasn't enough. Distinct from think_fallback: this
+    # can be True while think_fallback stays False (the expanded rung
+    # succeeded without ever needing to flip think off). False for every
+    # job that never climbed the ladder at all.
+    expanded_thinking = Column(Boolean, default=False)
     # purpose="condense" only: whether the job's num_ctx was sized to fit
     # the whole input text for this one call (see app.ai.
     # context_sized_options) rather than using the GM's configured/default

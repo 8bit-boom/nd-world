@@ -706,20 +706,29 @@ async def _run_job(job_id: int) -> None:
                 pinned_entity_ids=pinned_entity_ids, pinned_pc_ids=pinned_pc_ids,
             )
 
-        # Both branches below attempt think=True (if that's what the job was
-        # started/resumed with) and, ONLY if that attempt fails with
+        # Each rung below only ever runs because the previous one hit
         # generate_chat's own thinking-starved sentinel (hidden reasoning
-        # burned the whole output budget, no visible answer — the real
-        # production failure this retry exists for), retry exactly once
-        # more with think=False. A job already started with think=False has
-        # nothing to fall back from, so it gets a single attempt like
-        # before. The fallback can never itself loop: its own attempt_think
-        # is False, so is_thinking_starved_sentinel's result is never even
-        # consulted for it — a model that ignores think=False and starves
-        # anyway just fails normally, same as any other failure sentinel.
-        # Both calls stay inside the existing ollama_job_semaphore span so a
-        # retry never interleaves with another job's calls.
-        attempt_think_values = [True, False] if think else [False]
+        # burned the whole output budget, no visible answer) — any other
+        # failure breaks out of the loop immediately into the normal error
+        # handling further down. See
+        # docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 1 for why this is
+        # a climbing ladder rather than a single think=False fallback: a
+        # model that ignores think=False and starves anyway must not retry
+        # into a budget SMALLER than the attempt that just failed — the
+        # bug that motivated this ladder. A think=True job climbs
+        # (normal budget) -> (expanded budget, same think) -> (expanded
+        # budget, think=False) — the think-flip is saved for last so the
+        # "still-thinking" attempts get every chance first. A think=False
+        # job climbs (normal) -> (expanded) only — its think value never
+        # flips against the GM's explicit choice, but it still gets one
+        # expanded retry since a model can starve on think=False too (an
+        # unset num_predict is then bounded only by num_ctx, or a model can
+        # simply ignore think=False outright — the same failure mode the
+        # sentinel exists to catch). All rungs stay inside the existing
+        # ollama_job_semaphore span so a retry never interleaves with
+        # another job's calls.
+        attempt_plans = ([(True, False), (True, True), (False, True)]
+                          if think else [(False, False), (False, True)])
 
         if purpose == "condense":
             # No chunking/checkpoint support — condense_recap is always a
@@ -735,7 +744,7 @@ async def _run_job(job_id: int) -> None:
             instructions = _combined_recap_instructions(
                 _recap_instructions_for_world(world_id) if world_id else "", extra_instructions,
             )
-            for attempt_think in attempt_think_values:
+            for attempt_idx, (attempt_think, attempt_expanded) in enumerate(attempt_plans):
                 # See condense_call_options' own docstring: sizes num_ctx to
                 # actually fit transcript + instructions + world_context +
                 # the requested output length whenever fit_context was
@@ -743,10 +752,11 @@ async def _run_job(job_id: int) -> None:
                 # would otherwise risk silently overflowing the GM's
                 # configured/assumed context — the failure mode for the
                 # latter isn't a clean error, it's the model responding
-                # with garbage. Recomputed per attempt since think differs.
+                # with garbage. Recomputed per rung since think/expanded differ.
                 options = _ai_module.condense_call_options(
                     transcript, extra_instructions=instructions, world_context=world_context,
                     max_tokens=max_tokens, think=attempt_think, force_fit=fit_context,
+                    expanded=attempt_expanded,
                 )
                 # See ai.ollama_job_semaphore's own docstring — held for the
                 # whole call, same reasoning as the transcribe semaphore above.
@@ -754,12 +764,21 @@ async def _run_job(job_id: int) -> None:
                     recap = await _ai_module.condense_recap(
                         transcript, model=model, options=options, think=attempt_think,
                         extra_instructions=instructions, min_tokens=min_tokens, max_tokens=max_tokens,
-                        world_context=world_context,
+                        world_context=world_context, expanded_thinking=attempt_expanded,
                     )
-                if not (attempt_think and _ai_module.is_thinking_starved_sentinel(recap)):
+                if not _ai_module.is_thinking_starved_sentinel(recap):
                     break
-                _log.warning("condense job %s: thinking starved output budget, retrying with think=False", job_id)
-                _set(think=False, think_fallback=True)
+                if attempt_idx == len(attempt_plans) - 1:
+                    break  # ladder exhausted — _looks_like_failure below reports it
+                next_think, next_expanded = attempt_plans[attempt_idx + 1]
+                _log.warning(
+                    "condense job %s: thinking starved (think=%s expanded=%s) — climbing to (think=%s expanded=%s)",
+                    job_id, attempt_think, attempt_expanded, next_think, next_expanded,
+                )
+                if next_think != attempt_think:
+                    _set(think=False, think_fallback=True, expanded_thinking=next_expanded)
+                else:
+                    _set(expanded_thinking=next_expanded)
             if _looks_like_failure(recap):
                 _set(status="error", error=recap, finished_at=datetime.utcnow())
             else:
@@ -770,29 +789,43 @@ async def _run_job(job_id: int) -> None:
                 _recap_instructions_for_world(world_id) if world_id else "", extra_instructions,
             )
             summarize_resume = checkpoint if checkpoint and checkpoint.get("phase") == "summarize" else None
-            for attempt_idx, attempt_think in enumerate(attempt_think_values):
-                # Only the FIRST attempt (whatever its think value) may
-                # resume a prior checkpoint — the fallback retry starts
-                # fresh: a think flip changes chunk_chars (see
-                # _transcript_chunk_char_budget's own headroom), so reusing
-                # the old checkpoint would either mismatch and get
-                # discarded by summarize_transcript's own validation anyway,
-                # or (only when both sides happen to hit the same context
-                # floor) partially resume into a differently-thought-out
-                # chunk boundary — simplest and safest is to just not offer
-                # it on the retry.
-                resume_for_attempt = summarize_resume if attempt_idx == 0 else None
+            # Tracks the freshest summarize-phase checkpoint across rungs —
+            # seeded from a checkpoint already on the row (resuming after a
+            # restart), then kept current as this run's own rungs write new
+            # ones, so a rung that starves partway through several chunks
+            # doesn't force the next rung to redo the ones it already
+            # finished. chunk_chars only depends on `think` (never on
+            # expanded_thinking — see summarize_transcript's own docstring),
+            # so a checkpoint is resumable by any rung whose think value
+            # matches the one it was written under.
+            latest_checkpoint = {"state": summarize_resume}
+
+            def _summarize_checkpoint(state):
+                latest_checkpoint["state"] = state
+                _checkpoint(state)
+
+            for attempt_idx, (attempt_think, attempt_expanded) in enumerate(attempt_plans):
+                resume_for_attempt = latest_checkpoint["state"] if attempt_think == think else None
                 async with _ai_module.ollama_job_semaphore:
                     recap = await _ai_module.summarize_transcript(
                         transcript, model=model, extra_instructions=instructions,
-                        on_progress=_on_progress, on_checkpoint=_checkpoint,
+                        on_progress=_on_progress, on_checkpoint=_summarize_checkpoint,
                         should_stop=_job_shutdown.stopping, resume=resume_for_attempt, think=attempt_think,
-                        world_context=world_context,
+                        world_context=world_context, expanded_thinking=attempt_expanded,
                     )
-                if not (attempt_think and _ai_module.is_thinking_starved_sentinel(recap)):
+                if not _ai_module.is_thinking_starved_sentinel(recap):
                     break
-                _log.warning("session_recap job %s: thinking starved output budget, retrying with think=False", job_id)
-                _set(think=False, think_fallback=True)
+                if attempt_idx == len(attempt_plans) - 1:
+                    break  # ladder exhausted — _looks_like_failure below reports it
+                next_think, next_expanded = attempt_plans[attempt_idx + 1]
+                _log.warning(
+                    "session_recap job %s: thinking starved (think=%s expanded=%s) — climbing to (think=%s expanded=%s)",
+                    job_id, attempt_think, attempt_expanded, next_think, next_expanded,
+                )
+                if next_think != attempt_think:
+                    _set(think=False, think_fallback=True, expanded_thinking=next_expanded)
+                else:
+                    _set(expanded_thinking=next_expanded)
             if _looks_like_failure(recap):
                 _set(status="error", error=recap, chunk_current=None, chunk_total=None,
                      finished_at=datetime.utcnow(), checkpoint_json="")

@@ -54,7 +54,7 @@
           {% endif %}
           {% endif %}
           <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
-                 title="Uses the model's 'thinking'/reasoning mode for every AI action on this panel (Expand/Condense/Summarize from Facts, and Summarize/Process in Background below) — usually better quality, but slower and can leave a small/tight-context model with no room left to answer.">
+                 title="Uses the model's 'thinking'/reasoning mode for every AI action on this panel (Expand/Condense/Summarize from Facts, and Summarize/Process in Background below) — usually better quality, but slower and can leave a small/tight-context model with no room left to answer. If thinking runs out of room, background runs retry automatically with a bigger budget.">
             <input type="checkbox" id="recap-think-checkbox" checked> 🧠 Thinking
           </label>
           <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
