@@ -107,7 +107,13 @@
           </div>
           {% if c.description %}<div class="audio-clip-desc">{{ c.description }}</div>{% endif %}
         </div>
-        <audio controls preload="none" src="{{ c.file_url }}" style="width:100%;max-width:360px"></audio>
+        <div id="audio-slot-{{ c.id }}" class="audio-player-slot" style="display:flex;align-items:center;gap:.4rem;flex-wrap:wrap">
+          <audio id="audio-el-{{ c.id }}" controls preload="none" src="{{ c.file_url }}" style="width:100%;max-width:360px"></audio>
+          <button type="button" class="btn-cancel" id="audio-loop-btn-{{ c.id }}" title="Loop this clip"
+                  style="font-size:.75rem;padding:.25rem .5rem" onclick="audioToggleLoop({{ c.id }}, this)">🔁 Loop</button>
+          <button type="button" class="btn-cancel" title="Pop out into a floating mini-player" data-clip-name="{{ c.name }}"
+                  style="font-size:.75rem;padding:.25rem .5rem" onclick="audioPopOut({{ c.id }}, this.dataset.clipName)">⇱ Pop out</button>
+        </div>
         {% if can_edit %}
         <div class="audio-clip-actions">
           <button type="button" class="btn-cancel" style="font-size:.75rem;padding:.25rem .6rem" onclick="audioToggleEdit({{ c.id }})">✏ Edit</button>
@@ -148,6 +154,17 @@
   </div>
 </div>
 
+<!-- Floating mini-player: a clip's own <audio> element is physically moved
+     in here on "Pop out" (not duplicated — the same DOM node keeps playing
+     with no interruption) so it stays visible/controllable while scrolling
+     the rest of the page, then moved back to its original spot in the list
+     on "Return". -->
+<div id="audio-mini-player" style="display:none">
+  <div id="audio-mini-player-name"></div>
+  <div id="audio-mini-player-slot"></div>
+  <button type="button" class="btn-cancel" style="font-size:.75rem;padding:.25rem .6rem" onclick="audioMiniPlayerReturn()">↩ Return</button>
+</div>
+
 <style>
 .audio-album-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:.7rem; }
 .audio-album-card { display:block; background:var(--bg3); border:1px solid var(--border); border-radius:5px; padding:.7rem .6rem; text-decoration:none; color:var(--text); text-align:center; }
@@ -164,6 +181,16 @@
 .audio-clip-desc { font-size:.78rem; color:var(--text-dim); margin-top:.15rem; }
 .audio-clip-actions { display:flex; gap:.4rem; flex-shrink:0; }
 .audio-clip-edit-form { flex-basis:100%; margin-top:.5rem; padding-top:.6rem; border-top:1px solid var(--border); }
+.audio-loop-btn-active { border-color:var(--neon) !important; color:var(--neon) !important; }
+
+#audio-mini-player {
+  position:fixed; bottom:1rem; right:1rem; z-index:500;
+  background:var(--bg2); border:1px solid var(--neon); border-radius:6px;
+  padding:.6rem .8rem; box-shadow:0 4px 16px rgba(0,0,0,.4);
+  display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; max-width:420px;
+}
+#audio-mini-player-name { font-size:.82rem; font-weight:600; color:var(--neon); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:160px; }
+#audio-mini-player-slot audio { max-width:220px; }
 </style>
 <script src="/static/js/file-dropzone.js"></script>
 <script>
@@ -305,6 +332,41 @@ async function audioUploadChunked(file, opts) {
   if (opts.name) fd.append('name', opts.name);
   const res = await fetch('/audio/upload/complete', { method: 'POST', body: fd });
   if (!res.ok) throw await audioUploadErrorFrom(res);
+}
+
+// ── Soundboard: loop toggle + pop-out mini-player ────────────────────────────
+
+function audioToggleLoop(id, btn) {
+  const audio = document.getElementById('audio-el-' + id);
+  if (!audio) return;
+  audio.loop = !audio.loop;
+  btn.classList.toggle('audio-loop-btn-active', audio.loop);
+}
+
+// Only one clip lives in the floating mini-player at a time. Popping a clip
+// out MOVES its actual <audio> element (not a copy) into the mini-player
+// container, so whatever was already playing keeps playing uninterrupted —
+// and moving it back on "Return" does the same in reverse.
+let _audioPoppedId = null;
+
+function audioPopOut(id, name) {
+  if (_audioPoppedId !== null && _audioPoppedId !== id) audioMiniPlayerReturn();
+  const audio = document.getElementById('audio-el-' + id);
+  const slot = document.getElementById('audio-mini-player-slot');
+  if (!audio || !slot) return;
+  slot.appendChild(audio);
+  document.getElementById('audio-mini-player-name').textContent = name;
+  document.getElementById('audio-mini-player').style.display = 'flex';
+  _audioPoppedId = id;
+}
+
+function audioMiniPlayerReturn() {
+  if (_audioPoppedId === null) return;
+  const audio = document.getElementById('audio-el-' + _audioPoppedId);
+  const origSlot = document.getElementById('audio-slot-' + _audioPoppedId);
+  if (audio && origSlot) origSlot.insertBefore(audio, origSlot.firstChild);
+  document.getElementById('audio-mini-player').style.display = 'none';
+  _audioPoppedId = null;
 }
 </script>
 {% endblock %}
