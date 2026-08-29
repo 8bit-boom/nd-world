@@ -616,6 +616,10 @@ async def api_expand_recap_notes(
 
 @router.post("/api/sessions/ai/condense-recap")
 async def api_condense_recap(request: Request):
+    """Blocking condense — kept for API compatibility only. Every UI caller
+    switched to the job-based api_condense_job_create below once Condense
+    became a background job; this route has no RAG option and shouldn't
+    gain one — extend the job route instead if condense ever needs it."""
     body = await request.json()
     recap = str(body.get("recap", "")).strip()
     if not recap:
@@ -1105,7 +1109,7 @@ _SESSION_LOG_RECAP_CACHE_TTL = 1800.0
 # clear_session_log_recap_cache) — same "just clear it" pattern
 # app.main._spotlight_cache already uses, rather than tracking exactly
 # which session_id(s) a fact_edit reassignment touched.
-_session_log_recap_cache: dict[tuple, dict] = {}
+_session_log_recap_cache: dict[tuple, tuple[float, dict]] = {}
 
 
 def clear_session_log_recap_cache() -> None:

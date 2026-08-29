@@ -133,8 +133,9 @@
     <div class="ai-attach-list" id="ai-attach-list"></div>
     <div id="ai-jobs-panel" class="nd-jobs-panel" style="display:none;margin:0 1.2rem"></div>
     <div id="chat-jobs-panel" class="nd-jobs-panel" style="display:none;margin:0 1.2rem"></div>
-    <div style="padding:.25rem 1.2rem 0;font-size:.72rem;color:var(--text-dim);display:flex;justify-content:space-between;align-items:center">
+    <div style="padding:.25rem 1.2rem 0;font-size:.72rem;color:var(--text-dim);display:flex;justify-content:space-between;align-items:center;gap:.5rem">
       <span>Model: <span id="active-model-label" style="color:var(--neon)">—</span></span>
+      <span id="ctx-usage" style="color:var(--text-dim)" title="Estimated size of the last message sent, including RAG lore and chat history"></span>
       <span id="gen-stats" style="color:var(--text-dim)"></span>
     </div>
     <div class="ai-input-bar">

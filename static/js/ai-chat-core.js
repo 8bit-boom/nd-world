@@ -839,6 +839,40 @@ function _setCtxStatus(color, text) {
   });
 }
 
+// Chat context-usage indicator (plan item 4.2). History is unbounded by
+// design — trimming it loses the GM's own memory of the conversation — so
+// this gives visibility instead: after each send, show roughly how much
+// was sent and flag red once it's in the neighborhood of the model's own
+// context window, which is when a long chat actually starts forgetting
+// its early turns or slowing down. `_ctxNumCtx` is fetched once and
+// cached for the page's lifetime — it only changes if a GM edits Settings,
+// which already requires a reload of everything else too.
+let _ctxNumCtx = null;
+async function _getCtxNumCtx() {
+  if (_ctxNumCtx != null) return _ctxNumCtx;
+  try {
+    const r = await fetch('/api/ai/context-info');
+    const d = await r.json();
+    _ctxNumCtx = d.num_ctx || 4096;
+  } catch (_) {
+    _ctxNumCtx = 4096;
+  }
+  return _ctxNumCtx;
+}
+
+async function _updateCtxUsage(messages, system) {
+  const el = document.getElementById('ctx-usage');
+  if (!el) return;
+  const allText = (system || '') + '\n' + messages.map((m) => m.content || '').join('\n');
+  const tokens = ndEstimateTokens(allText);
+  const numCtx = await _getCtxNumCtx();
+  el.textContent = `≈${tokens.toLocaleString()} tokens sent`;
+  el.style.color = tokens > numCtx ? '#f55' : 'var(--text-dim)';
+  el.title = tokens > numCtx
+    ? `Over the model's ~${numCtx.toLocaleString()}-token context — earliest turns may be getting dropped or the reply may get slower/worse`
+    : `Estimated size of what was sent, out of a ~${numCtx.toLocaleString()}-token context`;
+}
+
 // ── RAG transparency + pinning ───────────────────────────────────────────────
 // What actually got retrieved for the last message (see sendMessage's
 // world-context-smart call), and which entities/notes the GM has pinned to
@@ -1043,6 +1077,7 @@ async function sendMessage() {
 
   try {
     const { messages: messagesWithCtx, system: presetSystem } = await buildChatMessagesWithContext();
+    _updateCtxUsage(messagesWithCtx, presetSystem);
 
     const res = await fetch('/api/ai/stream', {
       method: 'POST',

@@ -1330,6 +1330,18 @@ async def ai_status():
     return await _ai.status()
 
 
+@router.get("/context-info")
+async def api_context_info():
+    """Backs the chat context-usage indicator (plan item 4.2) — the GM's
+    configured num_ctx if one is set, else the same
+    `_DEFAULT_ASSUMED_CTX_TOKENS` fallback the recap-chunking budget already
+    assumes, so the two stay consistent about "how big is the model's
+    context window" without a real answer from Ollama (which doesn't expose
+    the actually-loaded window size)."""
+    num_ctx = _ai.effective_ollama_options().get("num_ctx") or _ai._DEFAULT_ASSUMED_CTX_TOKENS
+    return {"num_ctx": num_ctx}
+
+
 # ── Image generation routes ───────────────────────────────────────────────────
 
 @router.get("/imagegen/status")

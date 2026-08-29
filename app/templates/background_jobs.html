@@ -10,6 +10,7 @@
 
 <div id="bg-jobs-list"></div>
 <p id="bg-jobs-empty" style="color:var(--text-dim);text-align:center;padding:2rem;display:none">No background jobs yet.</p>
+<p id="bg-jobs-pagenote" style="color:var(--text-dim);font-size:.8rem;text-align:center;margin:.5rem 0 0;display:none"></p>
 
 <style>
 .bg-job-card { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:1rem; margin-bottom:.75rem; }
@@ -523,17 +524,25 @@ async function bgResummarize(jobId, model, extraInstructions, think, btn, resetL
 }
 
 async function bgFetchJobs(jobType, url, unwrap) {
+  // Returns { list, total_pages } — total_pages is only meaningful for the
+  // unwrap=true (audio) case, which is the only endpoint that actually
+  // paginates server-side; chat/image just hard-cap at 20 with no page
+  // metadata, so total_pages stays 1 for those and bgRefresh instead flags
+  // them by list length below.
   try {
     const res = await fetch(url);
-    if (!res.ok) return [];
+    if (!res.ok) return { list: [], total_pages: 1 };
     const data = await res.json();
     const list = unwrap ? (data.jobs || []) : (data || []);
     // Tag every job with which engine/table/endpoint it came from — the
     // rest of this file (bgRenderJob, bgCancelJob/bgDeleteJob, the size/
     // result blocks) all branch on this instead of guessing from shape.
-    return list.map((j) => ({ ...j, job_type: jobType }));
+    return {
+      list: list.map((j) => ({ ...j, job_type: jobType })),
+      total_pages: unwrap ? (data.total_pages || 1) : 1,
+    };
   } catch (e) {
-    return [];  // transient — next poll retries
+    return { list: [], total_pages: 1 };  // transient — next poll retries
   }
 }
 
@@ -545,17 +554,31 @@ async function bgRefresh() {
   // image jobs. Chat jobs are GM-only at the API level too (_require_gm
   // in routers/ai.py) — fine here since this whole page is already
   // GM-gated (audio_jobs.background_jobs_page).
-  const [audioJobs, chatJobs, imageJobs] = await Promise.all([
+  const [audio, chat, image] = await Promise.all([
     bgFetchJobs('audio', '/api/audio-jobs', true),
     bgFetchJobs('chat', '/api/ai/chat/jobs', false),
     bgFetchJobs('image', '/api/ai/imagegen/jobs', false),
   ]);
-  const jobs = [...audioJobs, ...chatJobs, ...imageJobs]
+  const jobs = [...audio.list, ...chat.list, ...image.list]
     .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
 
   const list = document.getElementById('bg-jobs-list');
   list.innerHTML = '';
   document.getElementById('bg-jobs-empty').style.display = jobs.length ? 'none' : 'block';
+
+  // Every list here is truncated one way or another — audio is a real
+  // server-paginated page 1, chat/image are a flat `.limit(20)` with no
+  // page metadata at all. Say so rather than silently rendering a partial
+  // timeline as if it were everything.
+  const pageNotes = [];
+  if (audio.total_pages > 1) {
+    pageNotes.push(`Showing the latest ${audio.list.length} audio jobs — older ones exist.`);
+  }
+  if (chat.list.length >= 20) pageNotes.push('Chat jobs are capped at the latest 20.');
+  if (image.list.length >= 20) pageNotes.push('Image jobs are capped at the latest 20.');
+  const pageNote = document.getElementById('bg-jobs-pagenote');
+  pageNote.textContent = pageNotes.join(' ');
+  pageNote.style.display = pageNotes.length ? 'block' : 'none';
   jobs.forEach((job) => {
     const card = bgRenderJob(job);
     list.appendChild(card);
