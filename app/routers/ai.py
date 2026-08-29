@@ -1385,14 +1385,32 @@ async def api_imagegen_status():
 @router.post("/imagegen/restart")
 async def api_imagegen_restart():
     """Restarts the SwarmUI process via its own Admin API
-    (app.ai.swarmui_restart) — a GM's recovery button for a stuck/stale
-    model list (see swarmui_refresh_after_local_change's own best-effort
-    refresh trick, which doesn't always work — the download flow already
-    falls back to telling the GM "restart SwarmUI" in exactly that case)
-    without needing shell/Docker access to the SwarmUI container. GM-only
-    by the same default-deny as every other /imagegen/* route here (not in
-    _is_player_safe)."""
-    return {"ok": await _ai.swarmui_restart()}
+    (app.ai.swarmui_restart(update_server=False)) — a GM's recovery button
+    for a stuck/stale model list (see swarmui_refresh_after_local_change's
+    own best-effort refresh trick, which doesn't always work — the download
+    flow already falls back to telling the GM "restart SwarmUI" in exactly
+    that case) without needing shell/Docker access to the SwarmUI
+    container. GM-only by the same default-deny as every other
+    /imagegen/* route here (not in _is_player_safe)."""
+    return await _ai.swarmui_restart()
+
+
+@router.get("/imagegen/updates")
+async def api_imagegen_updates():
+    """Read-only check for a pending SwarmUI/extension/backend update via
+    SwarmUI's own Admin API (app.ai.swarmui_check_for_updates) — answers
+    "does SwarmUI update?" from inside the app itself instead of a GM
+    having to SSH in and run `git log`."""
+    return {"updates": await _ai.swarmui_check_for_updates()}
+
+
+@router.post("/imagegen/update")
+async def api_imagegen_update():
+    """Pulls a pending SwarmUI core update and restarts
+    (app.ai.swarmui_restart(update_server=True)) — the "⬆ Update &
+    Restart" counterpart to the plain restart button above, for once
+    /imagegen/updates has reported something to actually pull."""
+    return await _ai.swarmui_restart(update_server=True)
 
 
 class SwarmuiModelDownloadBody(BaseModel):

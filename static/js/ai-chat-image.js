@@ -539,6 +539,72 @@ async function igRestartSwarmUI() {
   }
 }
 
+// "Check for Updates" / "Update & Restart" — SwarmUI has its own built-in
+// self-updater (git-pull + restart) reachable via /API/CheckForUpdates and
+// /API/UpdateAndRestart, independent of nd-world's own Watchtower-driven
+// Docker image updates. Read-only check first (never changes anything on
+// its own); the Update & Restart button only appears once a server update
+// is actually reported, so it's never offered to pull nothing.
+let _igCheckingSwarmuiUpdates = false;
+async function igCheckSwarmUIUpdates() {
+  if (_igCheckingSwarmuiUpdates) return;
+  _igCheckingSwarmuiUpdates = true;
+  const btn = document.getElementById('ig-check-updates-btn');
+  const status = document.getElementById('ig-check-updates-status');
+  const updateBtn = document.getElementById('ig-update-restart-btn');
+  btn.disabled = true;
+  updateBtn.style.display = 'none';
+  status.textContent = 'Checking…';
+  try {
+    const res = await fetch('/api/ai/imagegen/updates');
+    const data = await res.json().catch(() => ({}));
+    const u = data.updates || {};
+    if (!res.ok || !u.server) {
+      status.textContent = '✗ Could not check — is SwarmUI configured and reachable?';
+    } else {
+      const serverCount = u.server.count || 0;
+      const extCount = Object.values(u.extensions || {}).reduce((n, e) => n + (e.count || 0), 0);
+      const backendCount = Object.values(u.backends || {}).reduce((n, e) => n + (e.count || 0), 0);
+      if (!serverCount && !extCount && !backendCount) {
+        status.textContent = '✓ Up to date.';
+      } else {
+        status.textContent = `${serverCount} server, ${extCount} extension, ${backendCount} backend update(s) available.`;
+        if (serverCount) updateBtn.style.display = 'inline-block';
+      }
+    }
+  } catch (e) {
+    status.textContent = '✗ Failed: ' + (e.message || e);
+  } finally {
+    btn.disabled = false;
+    _igCheckingSwarmuiUpdates = false;
+  }
+}
+
+async function igUpdateAndRestartSwarmUI() {
+  if (_igRestartingSwarmui) return;
+  if (!confirm('Update and restart SwarmUI now? Any in-progress image generation will be interrupted.')) return;
+  _igRestartingSwarmui = true;
+  const btn = document.getElementById('ig-update-restart-btn');
+  const status = document.getElementById('ig-check-updates-status');
+  btn.disabled = true;
+  status.textContent = 'Updating…';
+  try {
+    const res = await fetch('/api/ai/imagegen/update', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      status.textContent = '✗ Update failed — ' + (data.result || 'is SwarmUI configured and reachable?');
+    } else {
+      status.textContent = '✓ ' + (data.result || 'Update applied — restarting.') + ' Give it a moment, then reload this tab.';
+      btn.style.display = 'none';
+    }
+  } catch (e) {
+    status.textContent = '✗ Failed: ' + (e.message || e);
+  } finally {
+    btn.disabled = false;
+    _igRestartingSwarmui = false;
+  }
+}
+
 async function dlmLoadDownloaded() {
   const list = document.getElementById('dlm-list');
   const suggestions = document.getElementById('dlm-subfolder-suggestions');

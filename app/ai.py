@@ -1722,31 +1722,77 @@ async def swarmui_refresh_after_local_change() -> bool:
         return False
 
 
-async def swarmui_restart() -> bool:
-    """Best-effort: ask SwarmUI to restart its own process via its Admin API
-    (/API/UpdateAndRestart — every update flag left False, so this is a
-    plain restart, not an update) instead of nd-world needing Docker
-    control over a sibling container to do it. Same "don't give this app
-    docker.sock access, SwarmUI's own API already covers it" reasoning as
-    swarmui_refresh_after_local_change's settings-toggle trick above — a
-    restart is the reliable fallback for exactly the case that trick
-    doesn't cover (see its own docstring: "SwarmUI has no dedicated
-    'rescan now' route," so a stubborn stale model list sometimes needs a
-    real restart to pick up a freshly downloaded model). Never raises;
-    returns False if not configured for SwarmUI, unreachable, or the
-    calling session lacks the `restart` permission."""
+async def swarmui_check_for_updates() -> dict:
+    """Best-effort: ask SwarmUI's Admin API (/API/CheckForUpdates) whether
+    it has a pending update to itself, any extension, or any backend —
+    read-only, changes nothing. Returns SwarmUI's own response shape
+    verbatim: {"server": {"count": N, "preview": [...]}, "extensions":
+    {name: {"count":, "preview":}, ...}, "backends": {...}}. Returns {} if
+    not configured for SwarmUI, unreachable, or the calling session lacks
+    the `restart` permission CheckForUpdates itself requires — the caller
+    (api_imagegen_updates) treats an empty dict as "couldn't check", not
+    "nothing to update"."""
     t, u = _get_type(), _get_url()
     if t != "swarmui" or not u:
-        return False
+        return {}
     try:
-        async with _httpx.AsyncClient(timeout=10) as c:
+        async with _httpx.AsyncClient(timeout=15) as c:
+            sid = await _swarmui_session(u, c)
+            r = await c.post(f"{u}/API/CheckForUpdates", json={"session_id": sid})
+            data = r.json()
+            return data if isinstance(data, dict) and "server" in data else {}
+    except Exception:
+        return {}
+
+
+async def swarmui_restart(update_server: bool = False) -> dict:
+    """Ask SwarmUI to restart its own process via its Admin API
+    (/API/UpdateAndRestart) instead of nd-world needing Docker control over
+    a sibling container to do it — same "don't give this app docker.sock
+    access, SwarmUI's own API already covers it" reasoning as
+    swarmui_refresh_after_local_change's settings-toggle trick above.
+
+    `update_server=False` (the default — the plain "🔄 Restart SwarmUI"
+    button) sets force=True: UpdateAndRestart's own `force` parameter means
+    "rebuild/restart regardless of detected changes," and WITHOUT it a
+    restart request with nothing new to pull just reports back
+    success=False ("No changes found.") instead of actually restarting —
+    exactly the wrong behavior for a "just restart it" button, which is
+    usually clicked precisely when nothing changed but the model list is
+    stuck anyway (see this function's own reason for existing: the
+    fallback for when swarmui_refresh_after_local_change's rescan trick
+    doesn't pan out).
+
+    `update_server=True` (the "⬆ Update & Restart" button, used once
+    swarmui_check_for_updates reports a pending server update) instead
+    sets doUpdateServer=True and leaves force off — a real update is
+    already "detected changes," so UpdateAndRestart pulls it and restarts
+    on its own without needing to be forced.
+
+    NOTE on parameter names: SwarmUI's actual C# signature is
+    UpdateAndRestart(session, raw, doUpdateServer=false, aggressive=false,
+    force=false) — earlier code here used updateExtensions/updateBackends,
+    which aren't real parameters of that method at all and would have
+    silently done nothing (or failed with "No changes found" every time,
+    since force was never set). Fixed to match the real signature.
+
+    Never raises; returns {"ok": False} if not configured for SwarmUI,
+    unreachable, or the calling session lacks the `restart` permission.
+    On success: {"ok": True, "result": <SwarmUI's own status message>}."""
+    t, u = _get_type(), _get_url()
+    if t != "swarmui" or not u:
+        return {"ok": False}
+    try:
+        async with _httpx.AsyncClient(timeout=15) as c:
             sid = await _swarmui_session(u, c)
             r = await c.post(f"{u}/API/UpdateAndRestart", json={
-                "session_id": sid, "updateExtensions": False, "updateBackends": False, "force": False,
+                "session_id": sid, "raw": {}, "doUpdateServer": update_server,
+                "aggressive": False, "force": not update_server,
             })
-            return bool(r.json().get("success"))
+            data = r.json()
+            return {"ok": bool(data.get("success")), "result": data.get("result", "")}
     except Exception:
-        return False
+        return {"ok": False}
 
 
 # ── Audio transcription (whisper.cpp server) ────────────────────────────────
