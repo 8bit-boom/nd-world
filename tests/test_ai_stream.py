@@ -37,7 +37,7 @@ async def _fake_resolve_model(requested):
     return requested or "fake-model", None
 
 
-async def _fake_stream_chat(messages, system="", model="", options=None):
+async def _fake_stream_chat(messages, system="", model="", options=None, think=False):
     for tok in ["Hello", " world"]:
         yield tok
 
@@ -55,6 +55,44 @@ def test_ai_stream_gm_always_allowed(client, seed, monkeypatch):
     assert r.status_code == 200
     assert "Hello" in r.text
     assert "[DONE]" in r.text
+
+
+def test_ai_stream_forwards_think_to_stream_chat(client, seed, monkeypatch):
+    """The entity detail page's Ask AI panel is the one surface with a
+    Thinking checkbox (epSend sends `think` in its POST body) — confirm
+    ChatBody.think actually reaches stream_chat's `think` kwarg instead of
+    being silently dropped somewhere in ai_stream's plumbing."""
+    captured = {}
+
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+        captured["think"] = think
+        yield "ok"
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/stream", json={
+        "messages": [{"role": "user", "content": "hi"}], "think": True,
+    })
+    assert r.status_code == 200
+    assert captured["think"] is True
+
+
+def test_ai_stream_think_defaults_to_false(client, seed, monkeypatch):
+    captured = {}
+
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+        captured["think"] = think
+        yield "ok"
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/stream", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200
+    assert captured["think"] is False
 
 
 def test_ai_stream_player_denied_by_default(client, seed, monkeypatch):

@@ -212,9 +212,13 @@
   <details class="ai-panel" id="ep-panel" data-dropzone>
     <summary>🤖 Ask AI about {{ entity.name }}</summary>
     <div class="ai-panel-body">
-      <div class="ep-mode-row" style="display:flex;gap:.4rem;margin-bottom:.5rem">
+      <div class="ep-mode-row" style="display:flex;align-items:center;gap:.4rem;margin-bottom:.5rem">
         <button type="button" id="ep-mode-ask" class="ep-mode-btn ep-mode-active" onclick="epSetMode('ask')">💬 Ask about {{ entity.name }}</button>
         <button type="button" id="ep-mode-roleplay" class="ep-mode-btn" onclick="epSetMode('roleplay')" title="Chat AS this entity, in character">🎭 Talk as {{ entity.name }}</button>
+        <label style="display:inline-flex;align-items:center;gap:.25rem;font-size:.75rem;color:var(--text-dim);cursor:pointer;margin-left:auto"
+               title="Uses the model's 'thinking'/reasoning mode for this reply — usually better quality, but slower and can leave a small/tight-context model with no room left to answer.">
+          <input type="checkbox" id="ep-think-checkbox">🧠 Thinking
+        </label>
       </div>
       <input type="file" id="ep-attach-input" multiple accept="image/*,audio/*,.txt,.md,.markdown,.pdf" style="display:none"
              onchange="epAttachments.addFiles(this.files); this.value='';"/>
@@ -416,7 +420,7 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
       const res = await fetch('/api/ai/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages, system: epMode === 'roleplay' ? EP_SYSTEM_ROLEPLAY : EP_SYSTEM_ASK, surface: 'ask_ai' })
+        body: JSON.stringify({ messages, system: epMode === 'roleplay' ? EP_SYSTEM_ROLEPLAY : EP_SYSTEM_ASK, surface: 'ask_ai', think: document.getElementById('ep-think-checkbox').checked })
       });
       if (!res.ok) throw new Error('Server error ' + res.status);
       bubble.parentElement.classList.remove('ai-thinking');

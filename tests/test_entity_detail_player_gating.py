@@ -93,3 +93,15 @@ def test_gm_always_sees_ask_ai_panel(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get(f"/entity/{eid}")
     assert 'id="ep-panel"' in r.text
+
+
+def test_ask_ai_panel_has_thinking_checkbox_wired_into_send(client, seed):
+    """The Ask AI panel's Thinking checkbox (default unchecked) must both
+    render and be read by epSend() into the /api/ai/stream POST body —
+    otherwise the checkbox would be decorative."""
+    eid = _add_entity(seed.world_a.id, name="Some NPC", visible_to_players=True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/entity/{eid}")
+    assert '<input type="checkbox" id="ep-think-checkbox">' in r.text  # unchecked by default
+    assert "think: document.getElementById('ep-think-checkbox').checked" in r.text

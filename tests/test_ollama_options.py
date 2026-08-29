@@ -470,6 +470,19 @@ async def test_stream_chat_passes_options(monkeypatch):
     assert tokens == ["hi"]
     assert calls[0]["options"] == {"top_p": 0.9}
     assert "keep_alive" not in calls[0]
+    assert calls[0]["think"] is False  # default — see stream_chat's own docstring
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_think_true_reaches_the_client(monkeypatch):
+    """The entity detail page's Ask AI panel is the one caller that ever
+    passes think=True (via its Thinking checkbox) — confirm it actually
+    reaches the ollama client call, not just gets accepted and dropped."""
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    tokens = [tok async for tok in ai_module.stream_chat([{"role": "user", "content": "hi"}], think=True)]
+    assert tokens == ["hi"]
+    assert calls[0]["think"] is True
 
 
 # ── stream_chat: empty-stream diagnostic ────────────────────────────────────

@@ -178,6 +178,13 @@ class ChatBody(BaseModel):
     # defaults. Always passed through _clamp_options() before reaching
     # app.ai — never trust a client-supplied options dict directly.
     options: dict = {}
+    # Defaults False, same as stream_chat's own plain default — most
+    # callers of this shared route (AI Chat's World Chat/Image tabs, "Talk
+    # to this NPC") have no Thinking toggle and never send this. The
+    # entity detail page's "Ask AI" panel does (see epSend's Thinking
+    # checkbox), letting a GM opt into slower/deeper reasoning per-request
+    # on that one surface.
+    think: bool = False
 
 
 # Same fields/ranges Settings > System validates (app/main.py's
@@ -805,7 +812,7 @@ async def ai_stream(
     _log.info("stream requested model=%r surface=%r msgs=%d", requested, body.surface, len(body.messages))
 
     async def _chat(model: str):
-        async for token in _ai.stream_chat(msgs, body.system, model, options):
+        async for token in _ai.stream_chat(msgs, body.system, model, options, think=body.think):
             yield token
 
     async def _gen():

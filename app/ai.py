@@ -508,34 +508,47 @@ def is_thinking_starved_sentinel(result: str) -> bool:
     return result.startswith("[empty response") and 'hidden "thinking"' in result
 
 
-async def stream_chat(messages: list[dict], system: str = "", model: str = "", options: dict = None) -> AsyncGenerator[str, None]:
+async def stream_chat(
+    messages: list[dict], system: str = "", model: str = "", options: dict = None, think: bool = False,
+) -> AsyncGenerator[str, None]:
+    """`think` defaults to False, same as generate_chat's own plain
+    default — most interactive surfaces (AI Chat's World Chat/Image tabs,
+    the Chronicler, "Talk to this NPC") have no Thinking toggle at all and
+    never pass it. The entity detail page's "Ask AI" panel is the one
+    caller that does (see app.routers.ai's ChatBody.think and epSend's own
+    Thinking checkbox), letting a GM opt into slower/deeper reasoning for
+    that one surface per-request."""
     m = model or effective_ollama_model()
-    _log.info("stream_chat model=%s msgs=%d", m, len(messages))
+    _log.info("stream_chat model=%s msgs=%d think=%r", m, len(messages), think)
     full = [{"role": "system", "content": system}] if system else []
     full.extend(messages)
     yielded_any = False
     thinking_chars = 0
     done_reason = None
     try:
-        async for chunk in await _client().chat(model=m, messages=full, stream=True, **_chat_kwargs(options)):
+        async for chunk in await _client().chat(model=m, messages=full, stream=True, **_chat_kwargs(options, think)):
             token = chunk.message.content
             if token:
                 yielded_any = True
                 yield token
-            # think isn't forwarded to _chat_kwargs here (every stream_chat
-            # caller is an interactive surface with no Thinking toggle — see
-            # is_thinking_starved_sentinel's docstring for the full survey),
-            # so this is purely for the same "model ignores think=False"
-            # case generate_chat's own diagnostic exists for.
+            # Tracked regardless of whether `think` was requested — even
+            # with think=False a model can still ignore that and burn its
+            # budget on hidden reasoning (the case generate_chat's own
+            # diagnostic exists for); with think=True this is simply the
+            # expected/intended reasoning trace, tracked the same way so
+            # the same starvation diagnostic below still fires if even a
+            # deliberately-thinking model runs out of room before writing
+            # a visible answer.
             thinking_chars += len(getattr(chunk.message, "thinking", None) or "")
             done_reason = getattr(chunk, "done_reason", None) or done_reason
         if not yielded_any:
             # Same empty-response case generate_chat handles (see its own
-            # comment) — a model that ignores think=False can burn its
-            # whole budget on hidden reasoning here too, but on the
-            # streaming path that used to come back as a completely silent
-            # reply with nothing for the caller to show at all, instead of
-            # generate_chat's own explanatory sentinel.
+            # comment) — whether from a deliberate think=True request or a
+            # model that ignores think=False, hidden reasoning can burn the
+            # whole output budget here too; on the streaming path that used
+            # to come back as a completely silent reply with nothing for
+            # the caller to show at all, instead of generate_chat's own
+            # explanatory sentinel.
             _log.warning(
                 "stream_chat model=%s yielded no content (done_reason=%r, thinking_chars=%d)",
                 m, done_reason, thinking_chars,
