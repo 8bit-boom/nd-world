@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}{{ doc.name }} — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div style="max-width:1200px;margin:0 auto;padding:0 1rem">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:.8rem;flex-wrap:wrap;margin-bottom:.6rem">
+    <div>
+      <a href="{{ ('/pages/albums/' + doc.album_id|string)|wq if doc.album_id else '/pages'|wq }}"
+         style="font-size:.8rem;color:var(--text-dim);text-decoration:none">← Pages</a>
+      <h1 style="margin:.2rem 0 0;font-size:1.3rem">📄 {{ doc.name }}</h1>
+      {% if doc.description %}<p style="color:var(--text-dim);font-size:.85rem;margin:.2rem 0 0">{{ doc.description }}</p>{% endif %}
+    </div>
+    <a class="btn-save" style="text-decoration:none;white-space:nowrap" href="{{ doc.file_url }}" target="_blank" rel="noopener">↗ Open in new tab</a>
+  </div>
+
+  {# Sandboxed by design: this document is GM-uploaded raw HTML that can
+     carry its own <script>, and it's served from this app's own origin
+     (see main.py's serve_upload, which also sets a matching
+     Content-Security-Policy: sandbox header on the response itself as a
+     second layer independent of how it's embedded). allow-scripts
+     WITHOUT allow-same-origin means any script inside runs in a unique,
+     opaque origin — it can execute, but it can never read this app's
+     cookies/session or make credentialed same-origin requests. Do not
+     add the same-origin token here: combined with allow-scripts, that
+     specific pairing is the documented iframe-sandbox escape (a
+     sandboxed document can use script to strip its own remaining
+     restrictions once it has same-origin access). allow-popups lets an
+     interactive page (e.g. a date/link picker) open a new tab without
+     being silently blocked. #}
+  <iframe src="{{ doc.file_url }}" sandbox="allow-scripts allow-popups"
+          referrerpolicy="no-referrer"
+          style="width:100%;height:80vh;border:1px solid var(--border);border-radius:6px;background:#fff"></iframe>
+</div>
+{% endblock %}

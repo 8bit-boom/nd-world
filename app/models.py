@@ -737,6 +737,41 @@ class VideoClip(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class PageAlbum(Base):
+    """A GM-created folder for organizing PageDocs into albums and nested
+    sub-albums — same self-referential parent_id tree as AudioAlbum/
+    VideoAlbum. NULL parent_id means top-level. See app/routers/pages.py."""
+    __tablename__ = "page_albums"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    parent_id = Column(Integer, ForeignKey("page_albums.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PageDoc(Base):
+    """A GM-uploaded standalone .html document (a styled calendar, a
+    handout, a reference page with its own embedded CSS/fonts) for the
+    /pages library — see app/routers/pages.py. Same ownership/visibility
+    shape as AudioClip/VideoClip: each row owns exactly one file, deleting
+    the row deletes the file, visible_to_players defaults True. Rendered
+    via a sandboxed <iframe> — see main.py's serve_upload for the
+    CSP/X-Frame-Options this relies on, since unlike audio/video an HTML
+    document can carry its own <script>. album_id is NULL for a top-level
+    (unfiled) page."""
+    __tablename__ = "page_docs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    name = Column(String(256), nullable=False)
+    description = Column(String(512), default="")
+    file_url = Column(String(512), nullable=False)  # "/uploads/pages/<file>"
+    visible_to_players = Column(Boolean, default=True)
+    album_id = Column(Integer, ForeignKey("page_albums.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class GameSession(Base):
     """A per-session prep/recap log: prep checklist, NPCs featured, loot
     given, XP awarded. Named GameSession (not Session) to avoid colliding

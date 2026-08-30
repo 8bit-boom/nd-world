@@ -34,7 +34,7 @@ from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html
 from .templating import templates
 from .uploads import copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -62,6 +62,7 @@ from .routers.gallery import router as gallery_router
 from .routers.audio import router as audio_router
 from .routers.audio_jobs import router as audio_jobs_router
 from .routers.video import router as video_router, _delete_clip_file as _delete_video_clip_file
+from .routers.pages import router as pages_router, _delete_doc_file as _delete_page_doc_file
 from .routers.nav_menus_admin import router as nav_menus_admin_router
 from . import gallery as _gallery_module
 from . import mcp_server
@@ -135,6 +136,7 @@ app.include_router(gallery_router)
 app.include_router(audio_router)
 app.include_router(audio_jobs_router)
 app.include_router(video_router)
+app.include_router(pages_router)
 app.include_router(nav_menus_admin_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
@@ -357,13 +359,17 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if method != "GET":
         return False
-    if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log", "/audio", "/video"):
+    if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log", "/audio", "/video", "/pages"):
         return True
     if path.startswith("/kind/") or path.startswith("/uploads/"):
         return True
     if re.match(r"^/audio/albums/\d+$", path):
         return True
     if re.match(r"^/video/albums/\d+$", path):
+        return True
+    if re.match(r"^/pages/albums/\d+$", path):
+        return True
+    if re.match(r"^/pages/\d+$", path):
         return True
     if re.match(r"^/entity/\d+(/download\.md)?$", path):
         return True
@@ -635,6 +641,23 @@ def serve_upload(filepath: str):
     # that change still exist on disk — force them to download instead of render.
     if path.suffix.lower() == ".svg":
         headers["Content-Disposition"] = f'attachment; filename="{path.name}"'
+    # Pages library (app/routers/pages.py) uploads whole standalone .html
+    # files by design — unlike SVG, forcing a download would defeat the
+    # entire feature (it exists to be READ in-app). Instead, sandbox the
+    # response itself: the CSP `sandbox` directive strips the document of
+    # same-origin privileges (no access to this app's cookies/session,
+    # no top-level navigation, no form submission out) regardless of how
+    # it's loaded — a bare visit to this URL or an embed elsewhere, not
+    # just the app's own iframe (see pages_library.html's matching
+    # sandbox="allow-scripts allow-popups" — deliberately NOT
+    # allow-same-origin, which combined with allow-scripts would let the
+    # document remove its own sandbox restrictions from inside). A page
+    # with embedded <script> (an interactive calendar widget, a dice
+    # roller) still runs — just isolated in a unique opaque origin that
+    # can't reach this app's own session either way.
+    elif path.suffix.lower() in (".html", ".htm"):
+        headers["Content-Security-Policy"] = "sandbox allow-scripts allow-popups"
+        headers["X-Frame-Options"] = "SAMEORIGIN"
     # Every upload gets a uuid-prefixed, content-unique filename (see
     # unique_upload_filename in app/uploads.py) EXCEPT map images, which are
     # saved under stable slug-based names and overwritten in place on
@@ -645,7 +668,12 @@ def serve_upload(filepath: str):
     # re-validate per view for every grid/gallery/thumbnail on the site.
     if not filepath.startswith("maps/"):
         headers["Cache-Control"] = "public, max-age=31536000, immutable"
-    return FileResponse(path, headers=headers)
+    # Explicit charset for uploaded HTML — mimetypes.guess_type would infer
+    # "text/html" either way, but not the charset, and a mis-guessed
+    # encoding on user-uploaded content is the kind of thing that only
+    # shows up as mangled text days later.
+    media_type = "text/html; charset=utf-8" if path.suffix.lower() in (".html", ".htm") else None
+    return FileResponse(path, headers=headers, media_type=media_type)
 
 # ── Worlds management ─────────────────────────────────────────────────────────
 
@@ -767,7 +795,7 @@ _WORLD_DELETE_MODELS = (
     Entity, PlayerCharacter, Schematic, WorldMembership, InviteCode, PrivateNote,
     InvestBoard, RandomTable, CombatSession, Party, Quest, GameSession,
     WorldCalendar, CalendarEvent, ImageAlbum, AudioClip, AudioAlbum,
-    VideoClip, VideoAlbum, Fact, ChatSession, PromptPreset,
+    VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset,
     AudioJob, ImageJob, ChatJob, EntityTemplate, SheetTemplate,
 )
 
@@ -814,6 +842,12 @@ def world_delete(world_id: int, db: Session = Depends(get_db)):
     # delete helper rather than duplicating its containment/extension logic.
     for clip in db.query(VideoClip).filter(VideoClip.world_id == world_id).all():
         _delete_video_clip_file(clip)
+
+    # Same ownership shape as AudioClip/VideoClip — each PageDoc row owns
+    # exactly one file — reuses pages.py's own delete helper rather than
+    # duplicating its containment/extension logic.
+    for doc in db.query(PageDoc).filter(PageDoc.world_id == world_id).all():
+        _delete_page_doc_file(doc)
 
     for slug, _data in list(_iter_world_maps(world_id)):
         jf = _MAPS_DIR / f"{slug}.json"
