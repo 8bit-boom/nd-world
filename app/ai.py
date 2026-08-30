@@ -128,16 +128,40 @@ def effective_ollama_keep_alive(model: str = "") -> str:
 _model_capabilities_cache: dict[str, list[str]] = {}
 
 
+def _known_model_thinks(model: str) -> bool:
+    """True if `model` appears in KNOWN_MODELS with "thinking": True.
+
+    Used as a fallback by _model_supports_thinking when Ollama's own
+    /api/show doesn't tag the model with the "thinking" capability — which
+    is the normal case for any model pulled as a raw GGUF via the
+    hf.co/{user}/{repo}:{filename} tag (including the Unsloth IQ4_NL
+    quantisation). Official ollama.com library models carry the tag in
+    their Modelfile; raw GGUFs don't, so without this fallback
+    _chat_kwargs would silently downgrade think=True to False for them
+    even though the model is fully capable of thinking mode."""
+    return any(m.get("id") == model and m.get("thinking") for m in KNOWN_MODELS)
+
+
 async def _model_supports_thinking(model: str) -> bool:
-    """Whether Ollama has `model` tagged with the "thinking" capability
-    (GET-equivalent /api/show). A model pulled as a raw GGUF — including
-    via this app's own Hugging Face search/upload features — doesn't
-    reliably carry this tag the way an official ollama.com library model's
+    """Whether `model` supports thinking mode — checked via Ollama's
+    /api/show capabilities tag first, then by KNOWN_MODELS' own
+    "thinking": True flag as a fallback for raw-GGUF models that Ollama
+    won't tag automatically.
+
+    A model pulled as a raw GGUF — including via this app's own Hugging
+    Face search/upload features — doesn't reliably carry the "thinking"
+    capability tag the way an official ollama.com library model's
     Modelfile does, and Ollama's /api/chat rejects think=True outright
-    ("&lt;model&gt; does not support thinking", HTTP 400) for anything not
+    ("<model> does not support thinking", HTTP 400) for anything not
     tagged, rather than silently ignoring the request. See _chat_kwargs
     below for where this gates a requested think=True back down to False
     instead of letting that 400 reach the user as a raw error.
+
+    The KNOWN_MODELS fallback is authoritative for models we've
+    explicitly listed as thinking-capable (e.g. the Unsloth IQ4_NL
+    quantisation) — "thinking": True in that list means we've confirmed
+    the model handles thinking tokens correctly even though Ollama's own
+    tag won't be set.
 
     Cached per-model for the life of the process — capabilities are static
     for an already-pulled model, and a restart (e.g. after a Watchtower
@@ -146,12 +170,14 @@ async def _model_supports_thinking(model: str) -> bool:
     path never pays for the extra /api/show round trip at all."""
     if model in _model_capabilities_cache:
         return "thinking" in _model_capabilities_cache[model]
+    caps: list[str] = []
     try:
         resp = await _client().show(model)
         caps = list(resp.capabilities or [])
     except Exception:
-        return False  # fail closed (no thinking) — the real chat call right
-        # after this will surface any genuine connectivity problem itself
+        pass  # fail soft — check KNOWN_MODELS below before giving up
+    if "thinking" not in caps and _known_model_thinks(model):
+        caps = list(caps) + ["thinking"]
     _model_capabilities_cache[model] = caps
     return "thinking" in caps
 
@@ -519,7 +545,7 @@ async def resolve_model(requested: str) -> tuple[str, str | None]:
         al = a.lower()
         if tl == al or tl in al or al in tl:
             _log.info("resolve_model %r → %r", target, a)
-            return a, f"Using {a} (closest match to requested "{target}")"
+            return a, f"Using {a} (closest match to requested \"{target}\")"
     _log.warning("resolve_model no match for %r among %d available", target, len(available))
     return target, None
 
@@ -1144,4 +1170,344 @@ async def condense_recap(
     (_chars_per_token_estimate) — Ollama has no native minimum-output-
     length option, so min_tokens is prompt guidance only, honored on a
     best-effort basis like any other free-text instruction. max_tokens
-    ALSO sets options["num_predict"], a real
+    ALSO sets options["num_predict"], a real hard cap on the Ollama side
+    (not just guidance) — a GM wanting a very short condensed version
+    still gets one even if the model would otherwise keep writing.
+
+    `world_context` is optional extra world info (e.g. party roster,
+    setting one-liner) prepended to the recap before sending — same
+    pattern the session-log summarize route already uses, forwarded here
+    so a GM's condensed recap can reference "the party" without the model
+    having to guess who that is.
+
+    `expanded_thinking` enables Ollama's extended reasoning budget for
+    this call (think=True already enables reasoning tokens; expanded_thinking
+    additionally sets options["thinking"] = {"type": "enabled",
+    "budget_tokens": <large>} to lift the default per-call cap the model
+    would otherwise apply). Only meaningful when think=True and the model
+    actually supports thinking — ignored otherwise."""
+    system = _with_instructions(_CONDENSE_RECAP_SYSTEM, extra_instructions)
+    if world_context:
+        system = f"{system}\n\nWorld context:\n{world_context}"
+    merged = dict(options or {})
+    pred_override = _thinking_num_predict_override(think)
+    for k, v in pred_override.items():
+        merged.setdefault(k, v)
+    if max_tokens is not None:
+        merged["num_predict"] = max_tokens
+    if expanded_thinking and think:
+        merged.setdefault("thinking", {"type": "enabled", "budget_tokens": 8192})
+    length_instruction = _length_instruction(min_tokens, max_tokens)
+    if length_instruction:
+        system = f"{system}\n\n{length_instruction}"
+    return await generate_chat(
+        [{"role": "user", "content": recap}], system=system, model=model,
+        options=merged or None, think=think,
+    )
+
+
+# ── Transcript → recap pipeline ───────────────────────────────────────────────
+
+# How many transcript CHARACTERS to feed per summarize chunk — a deliberate
+# chars (not tokens) budget so the logic doesn't need a tokenizer. At ~4
+# chars/token this is ~1 500 tokens of transcript, leaving generous room
+# for the system prompt + output inside a typical 4 096-token context. The
+# final merge call gets all the per-chunk summaries concatenated, which is
+# much shorter than the original transcript. Env-tunable in case a GM's
+# model has a larger context and they want fewer round trips.
+_CHUNK_SIZE = int(os.getenv("TRANSCRIPT_CHUNK_SIZE", str(6_000)))
+
+# How many output tokens to reserve for each chunk's summary response —
+# the Ollama num_predict cap for per-chunk calls only. 512 tokens (~2 048
+# chars) per chunk is enough for a paragraph-level summary without
+# truncating mid-sentence on anything except pathologically long chunks,
+# and it keeps the per-call wall time predictable. The final merge call
+# doesn't set num_predict at all — it gets the instance-wide default,
+# which is typically larger and appropriate for a full session summary.
+_CHUNK_SUMMARY_MAX_TOKENS = int(os.getenv("TRANSCRIPT_CHUNK_SUMMARY_MAX_TOKENS", "512"))
+
+_CHUNK_SYSTEM = (
+    "You are a scribe for a tabletop RPG campaign. Below is part of a transcript from a "
+    "session recording. Summarize what happened in this segment in a few sentences — the "
+    "key events, decisions, and NPC interactions. Keep it terse; it will be merged with "
+    "summaries of adjacent segments. Respond with the summary only, no preamble."
+)
+
+_MERGE_SYSTEM = (
+    "You are a scribe for a tabletop RPG campaign. Below are short summaries of consecutive "
+    "segments of a session recording. Weave them into a single, cohesive session recap in "
+    "flowing prose — a few paragraphs, past tense, third person. Preserve all key events, "
+    "decisions, and NPC interactions. Don't invent details. Respond with the recap only, "
+    "no preamble."
+)
+
+
+def _with_instructions(system: str, extra: str) -> str:
+    """Append `extra` to `system` when non-blank — a one-liner used by every
+    recap function that forwards a GM's standing recap_instructions (or a
+    per-call steering string) to the model. The separator is a blank line
+    so the extra block reads as a separate paragraph rather than run-on
+    prose at the end of the fixed system prompt."""
+    extra = (extra or "").strip()
+    return f"{system}\n\n{extra}" if extra else system
+
+
+# Coarse chars-per-token estimate used throughout this module for sizing
+# num_ctx overrides — not a real tokenizer, just a conservative approximation
+# (English prose is ~4 chars/token; we use 3.5 to bias slightly toward
+# over-allocating context rather than silently truncating). Never used for
+# billing or exact measurements, only for "is this input likely to fit in
+# the configured context window" heuristics.
+_CHARS_PER_TOKEN = 3.5
+
+
+def _chars_per_token_estimate(text: str) -> int:
+    """Coarse token count for `text` using the module-level estimate."""
+    return max(1, int(len(text) / _CHARS_PER_TOKEN))
+
+
+# Tokens reserved for the model's own output when sizing num_ctx — added on
+# top of the estimated input token count so the context window comfortably
+# fits both prompt AND response without truncating either. 1 024 is generous
+# for a short summary but still well within any modern model's context, and
+# erring toward over-allocation is cheap (a slightly larger context window)
+# while under-allocation silently drops the end of the input.
+_CONTEXT_FIT_RESERVED_TOKENS = 1_024
+
+# Extra tokens reserved for thinking/reasoning output when think=True — added
+# to _CONTEXT_FIT_RESERVED_TOKENS so _ctx_override_if_needed sizes the window
+# wide enough for both visible output AND the model's hidden reasoning trace.
+# QwQ-32B at default settings uses ~4 000–8 000 reasoning tokens on a
+# moderately complex prompt; 8 192 is a conservative upper bound that still
+# leaves headroom for the visible answer. The value is intentionally generous
+# — a context window that's 8 K tokens too wide costs almost nothing (a few
+# extra MB of KV cache), while one that's too narrow silently truncates the
+# reasoning and can produce empty or garbled output (the starvation case
+# generate_chat's diagnostic was added for).
+_THINKING_HEADROOM_TOKENS = 8_192
+
+# Automatic num_ctx sizing caps — the upper bound prevents pathologically
+# large context requests (e.g. a 200K-token transcript paste) from OOM-ing
+# Ollama, while the lower bound ensures the override is always at least as
+# large as a sane default. Only applied when _ctx_override_if_needed
+# actually fires (i.e. the estimated token count would exceed the current
+# effective num_ctx), so normal-sized inputs never touch these.
+_MIN_AUTO_NUM_CTX = 4_096
+_MAX_AUTO_NUM_CTX = 32_768
+
+
+def _ctx_override_if_needed(text: str, reserved: int = _CONTEXT_FIT_RESERVED_TOKENS) -> dict:
+    """Return {"num_ctx": N} if the estimated token count of `text` plus
+    `reserved` output tokens would exceed the currently configured num_ctx
+    — giving this call a larger context window without touching the
+    instance-wide default that every other call falls back to. Returns {}
+    when the current effective num_ctx is already large enough, so callers
+    can unconditionally merge the result into their options dict and only
+    pay for the override when it's actually needed.
+
+    Capped at _MAX_AUTO_NUM_CTX to prevent an arbitrarily large input from
+    requesting a context size that OOMs the Ollama backend — a transcript
+    that truly exceeds 32 K tokens should go through the chunked
+    summarize_transcript pipeline instead of a single generate_chat call."""
+    needed = _chars_per_token_estimate(text) + reserved
+    current = effective_ollama_options().get("num_ctx") or 0
+    if current and needed <= current:
+        return {}
+    clamped = max(_MIN_AUTO_NUM_CTX, min(needed, _MAX_AUTO_NUM_CTX))
+    if current and clamped <= current:
+        return {}
+    return {"num_ctx": clamped}
+
+
+def _thinking_num_predict_override(think: bool) -> dict:
+    """When think=True, widen a GM-configured num_predict cap by
+    _THINKING_HEADROOM_TOKENS so the model has room for both its hidden
+    reasoning trace AND its visible answer — without this, a tight cap
+    (e.g. 512 tokens for a short recap) eats the whole budget on reasoning
+    and returns empty content (the starvation case). Returns {} when
+    think=False or when no num_predict is configured instance-wide (the
+    model's own default applies in that case, which is already sized for
+    thinking by its Modelfile)."""
+    if not think:
+        return {}
+    cap = effective_ollama_options().get("num_predict")
+    if not cap:
+        return {}
+    return {"num_predict": int(cap) + _THINKING_HEADROOM_TOKENS}
+
+
+def _length_instruction(min_tokens: int | None, max_tokens: int | None) -> str:
+    """A natural-language length target appended to the system prompt when
+    the caller supplies min_tokens or max_tokens — Ollama has no native
+    minimum-output-length option, so min is prompt guidance only. max also
+    sets options["num_predict"] (done by the caller), so both the guidance
+    AND the hard cap apply for max. Returns "" when neither is set."""
+    if min_tokens is None and max_tokens is None:
+        return ""
+    min_chars = int(min_tokens * _CHARS_PER_TOKEN) if min_tokens is not None else None
+    max_chars = int(max_tokens * _CHARS_PER_TOKEN) if max_tokens is not None else None
+    if min_chars is not None and max_chars is not None:
+        return (
+            f"Aim for roughly {min_chars}–{max_chars} characters "
+            f"({min_tokens}–{max_tokens} tokens) in your response."
+        )
+    if min_chars is not None:
+        return f"Write at least {min_chars} characters ({min_tokens} tokens) in your response."
+    return f"Keep your response under {max_chars} characters ({max_tokens} tokens)."
+
+
+async def transcribe_audio(audio_path: Path) -> str:
+    """Send `audio_path` to the optional whisper.cpp server for
+    transcription — returns the transcript text, or "" on any failure
+    (server not configured, file unreadable, timeout, HTTP error). The
+    caller (summarize_transcript below, and app/audio_jobs.py's
+    transcribe_audio wrapper) treats "" as "Whisper isn't configured or
+    failed" and handles it accordingly rather than raising here.
+
+    Whisper's /inference endpoint expects multipart/form-data with the
+    audio file as "file" — confirmed against the whisper.cpp server's own
+    README. The timeout is WHISPER_TIMEOUT_SECONDS (default 8 hours) not
+    httpx's default 5 seconds, since CPU-only whisper.cpp can run well
+    under realtime speed on large files."""
+    url = effective_whisper_url()
+    if not url:
+        return ""
+    try:
+        async with _httpx.AsyncClient(timeout=WHISPER_TIMEOUT_SECONDS) as c:
+            with audio_path.open("rb") as f:
+                r = await c.post(
+                    f"{url}/inference",
+                    files={"file": (audio_path.name, f, "audio/mpeg")},
+                    data={"response_format": "text"},
+                )
+            if r.status_code >= 400:
+                _log.warning("transcribe_audio HTTP %d: %s", r.status_code, r.text[:200])
+                return ""
+            return r.text.strip()
+    except Exception as exc:
+        _log.warning("transcribe_audio failed: %s: %s", type(exc).__name__, exc)
+        return ""
+
+
+async def summarize_transcript(
+    transcript: str,
+    model: str = "",
+    extra_instructions: str = "",
+    think: bool = True,
+    job_interrupted: asyncio.Event | None = None,
+) -> str:
+    """Chunk a long transcript and summarize it into a session recap.
+
+    Splits `transcript` into _CHUNK_SIZE-character pieces, summarizes each
+    separately (so even a multi-hour session fits in a small context
+    window), then merges the per-chunk summaries into a single cohesive
+    recap. The final merge call gets all chunk summaries concatenated,
+    which is much shorter than the original.
+
+    `think` defaults to True — see expand_recap_notes's docstring.
+
+    `job_interrupted` is an asyncio.Event set by app/job_shutdown.py when
+    the job is cancelled (e.g. the GM navigates away or the server is
+    shutting down). Checked between chunks and before the merge call so a
+    cancellation is acted on promptly rather than waiting for the current
+    chunk to finish. Raises JobInterrupted (a subclass of Exception, not
+    BaseException) when set, which the job engine in audio_jobs.py catches
+    and marks the job as interrupted rather than failed."""
+    chunks = [transcript[i:i + _CHUNK_SIZE] for i in range(0, len(transcript), _CHUNK_SIZE)]
+    summaries: list[str] = []
+    system = _with_instructions(_CHUNK_SYSTEM, extra_instructions)
+    for i, chunk in enumerate(chunks):
+        if job_interrupted and job_interrupted.is_set():
+            raise JobInterrupted(f"interrupted before chunk {i + 1}/{len(chunks)}")
+        summary = await generate_chat(
+            [{"role": "user", "content": chunk}],
+            system=system,
+            model=model,
+            options={"num_predict": _CHUNK_SUMMARY_MAX_TOKENS},
+            think=False,  # per-chunk calls always think=False — small summaries,
+            # not deep reasoning; the merge call below is where think applies.
+        )
+        if is_failure_sentinel(summary):
+            _log.warning("summarize_transcript chunk %d/%d failed: %s", i + 1, len(chunks), summary[:120])
+            summaries.append(f"[chunk {i + 1} failed: {summary}]")
+            continue
+        # Treat a whitespace-only summary (rare but possible with a very
+        # short or silent audio segment) the same as a failure — weaving a
+        # blank string into the merge prompt produces a gap in the final
+        # recap that's indistinguishable from a real empty segment, while a
+        # clearly-labelled placeholder at least tells the GM something went
+        # wrong with that segment rather than leaving a silent hole.
+        if not summary.strip():
+            summaries.append(f"[chunk {i + 1}: no content]")
+            continue
+        summaries.append(summary)
+    if job_interrupted and job_interrupted.is_set():
+        raise JobInterrupted("interrupted before merge")
+    merged_text = "\n\n".join(f"Segment {i + 1}:\n{s}" for i, s in enumerate(summaries))
+    merge_system = _with_instructions(_MERGE_SYSTEM, extra_instructions)
+    opts = dict(_thinking_num_predict_override(think))
+    reserve = _CONTEXT_FIT_RESERVED_TOKENS + (_THINKING_HEADROOM_TOKENS if "num_predict" in opts else 0)
+    opts.update(_ctx_override_if_needed(merge_system + merged_text, reserve))
+    return await generate_chat(
+        [{"role": "user", "content": merged_text}],
+        system=merge_system,
+        model=model,
+        options=opts or None,
+        think=think,
+    )
+
+
+async def imagegen_models() -> list[str]:
+    """Model checkpoint names available in SwarmUI/ComfyUI — used by the
+    Models tab's image-model picker. Returns [] on any failure (SwarmUI not
+    configured, unreachable, or the endpoint shape changed) rather than
+    raising, same as installed_models_detail() above."""
+    from .imaging import IMAGEGEN_URL  # avoid circular import at module level
+    if not IMAGEGEN_URL:
+        return []
+    try:
+        async with _httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(f"{IMAGEGEN_URL}/API/ListModels", params={"path": "", "depth": "2"})
+            if r.status_code >= 400:
+                return []
+            data = r.json()
+    except Exception:
+        return []
+    files = data.get("files") or []
+    return [f.get("name", "") for f in files if isinstance(f, dict) and f.get("name")]
+
+
+async def download_swarmui_model(url: str, dest_dir: Path) -> AsyncGenerator[dict, None]:
+    """Stream a model file from `url` into `dest_dir`, yielding
+    {"total": N, "completed": M} progress dicts followed by
+    {"status": "done", "path": str(dest)} on success or
+    {"error": "..."} on failure.
+
+    This is a direct HTTP download into the SwarmUI models volume (via
+    SWARMUI_MODELS_DIR) rather than going through SwarmUI's own API —
+    SwarmUI has no download-from-URL endpoint, so we replicate the same
+    "drop a .safetensors/.gguf file into the right subdirectory and
+    refresh" workflow a GM would do manually. SwarmUI picks up new files
+    on its next model refresh (triggered client-side after this completes).
+
+    `dest_dir` is whatever subdirectory the caller resolved from the
+    model type (e.g. SWARMUI_MODELS_DIR / "Stable-Diffusion") — we don't
+    second-guess it here, just stream the bytes."""
+    try:
+        filename = Path(urlparse(url).path).name or "model"
+        dest = dest_dir / filename
+        async with _httpx.AsyncClient(timeout=None, follow_redirects=True) as c:
+            async with c.stream("GET", url) as r:
+                if r.status_code >= 400:
+                    yield {"error": f"HTTP {r.status_code}"}
+                    return
+                total = int(r.headers.get("content-length", 0))
+                completed = 0
+                with dest.open("wb") as f:
+                    async for chunk in r.aiter_bytes(65_536):
+                        f.write(chunk)
+                        completed += len(chunk)
+                        yield {"total": total, "completed": completed}
+        yield {"status": "done", "path": str(dest)}
+    except Exception as exc:
+        yield {"error": f"{type(exc).__name__}: {exc}"}
