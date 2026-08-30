@@ -34,10 +34,16 @@ class _FakeResp:
 
 class _FakeChatClient:
     """Records every kwargs dict passed to .chat() so tests can assert
-    options=/keep_alive= were (or weren't) included."""
+    options=/keep_alive= were (or weren't) included. show_capabilities
+    controls what .show() reports — used by _chat_kwargs' own think=True →
+    False downgrade for a model untagged as thinking-capable (see
+    app.ai._model_supports_thinking). Defaults to thinking-capable so
+    existing think=True tests don't need to know this plumbing exists."""
 
-    def __init__(self, calls):
+    def __init__(self, calls, show_capabilities=("thinking",)):
         self._calls = calls
+        self._show_capabilities = list(show_capabilities)
+        self.show_calls = 0
 
     async def chat(self, **kwargs):
         self._calls.append(kwargs)
@@ -49,12 +55,18 @@ class _FakeChatClient:
             return _FakeResp('{"facts": []}')
         return _FakeResp("hi")
 
+    async def show(self, model):
+        self.show_calls += 1
+        return types.SimpleNamespace(capabilities=self._show_capabilities)
+
 
 @pytest.fixture(autouse=True)
 def _reset_ollama_overrides():
     ai_module.set_ollama_generation_overrides({})
+    ai_module._model_capabilities_cache.clear()
     yield
     ai_module.set_ollama_generation_overrides({})
+    ai_module._model_capabilities_cache.clear()
 
 
 # ── app.ai override plumbing ────────────────────────────────────────────────
@@ -532,6 +544,63 @@ async def test_stream_chat_think_true_reaches_the_client(monkeypatch):
     tokens = [tok async for tok in ai_module.stream_chat([{"role": "user", "content": "hi"}], think=True)]
     assert tokens == ["hi"]
     assert calls[0]["think"] is True
+
+
+# ── _chat_kwargs: downgrade think=True for a non-thinking-capable model ────
+#
+# Regression coverage for "Ollama 400: ... does not support thinking" —
+# reported live against a model pulled straight from Hugging Face (this
+# app's own hf.co search/upload feature), which doesn't reliably carry the
+# "thinking" capability tag Ollama's /api/chat requires before it'll accept
+# think=True at all. See _model_supports_thinking's own docstring.
+
+@pytest.mark.asyncio
+async def test_chat_kwargs_downgrades_think_true_for_non_thinking_model(monkeypatch):
+    calls = []
+    fake = _FakeChatClient(calls, show_capabilities=[])  # no "thinking" tag
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    tokens = [tok async for tok in ai_module.stream_chat(
+        [{"role": "user", "content": "hi"}], think=True, model="hf.co/unsloth/gemma-4-26B-A4B-it-GGUF",
+    )]
+    assert tokens == ["hi"]
+    assert calls[0]["think"] is False
+
+
+@pytest.mark.asyncio
+async def test_chat_kwargs_keeps_think_true_for_thinking_capable_model(monkeypatch):
+    calls = []
+    fake = _FakeChatClient(calls, show_capabilities=["completion", "thinking"])
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    kwargs = await ai_module._chat_kwargs(think=True, model="deepseek-r1")
+    assert kwargs["think"] is True
+
+
+@pytest.mark.asyncio
+async def test_model_supports_thinking_result_is_cached(monkeypatch):
+    fake = _FakeChatClient([], show_capabilities=["thinking"])
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    assert await ai_module._model_supports_thinking("some-model") is True
+    assert await ai_module._model_supports_thinking("some-model") is True
+    assert fake.show_calls == 1  # second call hit the cache, not .show() again
+
+
+@pytest.mark.asyncio
+async def test_model_supports_thinking_fails_closed_on_show_error(monkeypatch):
+    class _BrokenShowClient:
+        async def show(self, model):
+            raise RuntimeError("connection refused")
+    monkeypatch.setattr(ai_module, "_client", lambda: _BrokenShowClient())
+    assert await ai_module._model_supports_thinking("unreachable-model") is False
+
+
+@pytest.mark.asyncio
+async def test_chat_kwargs_never_calls_show_when_think_is_false(monkeypatch):
+    """The common case (think=False, the vast majority of calls) must not
+    pay for an extra /api/show round trip at all."""
+    fake = _FakeChatClient([], show_capabilities=[])
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    await ai_module._chat_kwargs(think=False, model="whatever")
+    assert fake.show_calls == 0
 
 
 # ── stream_chat: empty-stream diagnostic ────────────────────────────────────

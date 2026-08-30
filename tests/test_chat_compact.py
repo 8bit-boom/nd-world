@@ -27,7 +27,11 @@ class _FakeResp:
 
 class _FakeChatClient:
     """Records every kwargs dict passed to .chat() — same helper shape as
-    test_ollama_options.py's own _FakeChatClient."""
+    test_ollama_options.py's own _FakeChatClient. .show() reports
+    "thinking" support unconditionally so condense_chat_history's own
+    think=True default (see _chat_kwargs' capability-gated downgrade)
+    reaches the client the way these tests expect — capability gating
+    itself is covered separately in test_ollama_options.py."""
 
     def __init__(self, calls, reply="A tight summary."):
         self._calls = calls
@@ -36,6 +40,9 @@ class _FakeChatClient:
     async def chat(self, **kwargs):
         self._calls.append(kwargs)
         return _FakeResp(self._reply)
+
+    async def show(self, model):
+        return types.SimpleNamespace(capabilities=["thinking"])
 
 
 def _set_world(world_id, **kw):
@@ -52,8 +59,10 @@ def _set_world(world_id, **kw):
 @pytest.fixture(autouse=True)
 def _reset_ollama_overrides():
     ai_module.set_ollama_generation_overrides({})
+    ai_module._model_capabilities_cache.clear()
     yield
     ai_module.set_ollama_generation_overrides({})
+    ai_module._model_capabilities_cache.clear()
 
 
 # ── app.ai.condense_chat_history (unit) ─────────────────────────────────────

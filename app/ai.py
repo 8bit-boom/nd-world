@@ -125,7 +125,38 @@ def effective_ollama_keep_alive(model: str = "") -> str:
     return _ollama_keep_alive_override
 
 
-def _chat_kwargs(extra_options: dict = None, think: bool = False, model: str = "") -> dict:
+_model_capabilities_cache: dict[str, list[str]] = {}
+
+
+async def _model_supports_thinking(model: str) -> bool:
+    """Whether Ollama has `model` tagged with the "thinking" capability
+    (GET-equivalent /api/show). A model pulled as a raw GGUF — including
+    via this app's own Hugging Face search/upload features — doesn't
+    reliably carry this tag the way an official ollama.com library model's
+    Modelfile does, and Ollama's /api/chat rejects think=True outright
+    ("<model> does not support thinking", HTTP 400) for anything not
+    tagged, rather than silently ignoring the request. See _chat_kwargs
+    below for where this gates a requested think=True back down to False
+    instead of letting that 400 reach the user as a raw error.
+
+    Cached per-model for the life of the process — capabilities are static
+    for an already-pulled model, and a restart (e.g. after a Watchtower
+    deploy) naturally clears this if a model is ever replaced. Only called
+    when think is actually truthy (see below), so the common think=False
+    path never pays for the extra /api/show round trip at all."""
+    if model in _model_capabilities_cache:
+        return "thinking" in _model_capabilities_cache[model]
+    try:
+        resp = await _client().show(model)
+        caps = list(resp.capabilities or [])
+    except Exception:
+        return False  # fail closed (no thinking) — the real chat call right
+        # after this will surface any genuine connectivity problem itself
+    _model_capabilities_cache[model] = caps
+    return "thinking" in caps
+
+
+async def _chat_kwargs(extra_options: dict = None, think: bool = False, model: str = "") -> dict:
     """Extra kwargs (options=, keep_alive=, think=) to splat into every
     .chat() call below — built fresh each call so a runtime settings change
     (no server restart needed) takes effect on the very next request.
@@ -152,7 +183,12 @@ def _chat_kwargs(extra_options: dict = None, think: bool = False, model: str = "
     summarize_session_from_facts) defaults ITS OWN think to True instead —
     see their docstrings — and is the only thing that ever passes
     think=True down to here; a GM's "Thinking" checkbox on those pages
-    controls it per call."""
+    controls it per call.
+
+    A requested think=True is downgraded to False when `model` isn't
+    actually tagged as thinking-capable — see _model_supports_thinking."""
+    if think and model and not await _model_supports_thinking(model):
+        think = False
     kwargs = {"think": think}
     opts = {**effective_ollama_options(model), **(extra_options or {})}
     if opts:
@@ -503,7 +539,7 @@ async def benchmark_model(model: str) -> dict:
             # generate paragraphs for what's meant to be a two-sentence
             # timing probe, wasting tokens and making the eval_count-based
             # tokens_per_sec comparison across models less apples-to-apples.
-            **_chat_kwargs({"num_predict": 128}, model=m),
+            **(await _chat_kwargs({"num_predict": 128}, model=m)),
         )
     except _ollama.ResponseError as exc:
         raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
@@ -612,7 +648,7 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
         full.append({"role": "system", "content": system})
     full.extend(messages)
     try:
-        resp = await _client().chat(model=m, messages=full, **_chat_kwargs(options, think, m))
+        resp = await _client().chat(model=m, messages=full, **(await _chat_kwargs(options, think, m)))
         content = resp.message.content
         if content:
             return content
@@ -690,7 +726,8 @@ async def stream_chat(
     thinking_chars = 0
     done_reason = None
     try:
-        async for chunk in await _client().chat(model=m, messages=full, stream=True, **_chat_kwargs(options, think, m)):
+        chat_kwargs = await _chat_kwargs(options, think, m)
+        async for chunk in await _client().chat(model=m, messages=full, stream=True, **chat_kwargs):
             token = chunk.message.content
             if token:
                 yielded_any = True
@@ -780,7 +817,7 @@ async def parse_facts_from_recap(raw_text: str, model: str = "") -> list[dict]:
                 {"role": "user", "content": raw_text},
             ],
             format=_RECAP_FACTS_SCHEMA,
-            **_chat_kwargs(model=m),
+            **(await _chat_kwargs(model=m)),
         )
     except _ollama.ResponseError as exc:
         raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
@@ -842,7 +879,7 @@ async def parse_entity_from_text(raw_text: str, kinds: list[str], model: str = "
                 {"role": "user", "content": raw_text},
             ],
             format=_entity_from_text_schema(kinds),
-            **_chat_kwargs(model=m),
+            **(await _chat_kwargs(model=m)),
         )
     except _ollama.ResponseError as exc:
         raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
@@ -900,7 +937,7 @@ async def generate_session_prep(context_text: str, model: str = "") -> list[str]
                 {"role": "user", "content": context_text},
             ],
             format=_SESSION_PREP_SCHEMA,
-            **_chat_kwargs(model=m),
+            **(await _chat_kwargs(model=m)),
         )
     except _ollama.ResponseError as exc:
         raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
