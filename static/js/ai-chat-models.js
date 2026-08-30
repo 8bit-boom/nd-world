@@ -596,11 +596,28 @@ async function mpUploadModel() {
           lbl.textContent = `Uploading… ${percent}%`;
         } else {
           bar.style.width = '100%';
-          lbl.textContent = 'Importing into Ollama… (this can take a while for a large model)';
+          lbl.textContent = 'Handing off to Ollama…';
         }
       },
     });
     if (data.error) throw new Error(data.error);
+    if (!data.import_id) throw new Error('Server did not start the import');
+    // The actual "push blob to Ollama + register" step runs as a server-side
+    // background task (see _start_local_gguf_import in app/routers/ai.py) —
+    // for a real multi-GB model that can take minutes, far longer than a
+    // Cloudflare-tunneled request can stay open waiting for one response, so
+    // we poll for progress instead of trusting the upload response itself.
+    lbl.textContent = 'Importing into Ollama… (this can take a while for a large model)';
+    let result = null;
+    while (true) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const res = await fetch(`/api/ai/ollama/upload/status/${data.import_id}`);
+      if (!res.ok) throw new Error(`Lost track of the import (HTTP ${res.status})`);
+      result = await res.json();
+      if (result.detail) lbl.textContent = result.detail;
+      if (result.status === 'done' || result.error) break;
+    }
+    if (result.error) throw new Error(result.error);
     lbl.textContent = `✓ ${modelName} imported`;
     inp.value = '';
     document.getElementById('mp-upload-filename').textContent = '';

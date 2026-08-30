@@ -14,12 +14,31 @@ ollama.com/library "Pull & Add" box:
   for the template this mirrors).
 """
 import io
+import time
 
 import pytest
 
 from app import ai as ai_module
+from app.routers import ai as ai_router
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+
+
+def _poll_until_terminal(client, import_id, timeout=5.0):
+    """The push-to-Ollama step runs as a detached background task (see
+    _start_local_gguf_import in app/routers/ai.py) so it isn't done yet by
+    the time the upload route responds — poll the status route the same
+    way _poll_until_terminal in tests/test_audio_jobs.py polls a job."""
+    deadline = time.time() + timeout
+    data = None
+    while time.time() < deadline:
+        r = client.get(f"/api/ai/ollama/upload/status/{import_id}")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        if data.get("status") == "done" or "error" in data:
+            return data
+        time.sleep(0.02)
+    raise AssertionError(f"import never reached a terminal status, last seen: {data}")
 
 
 class _FakeGetResponse:
@@ -279,7 +298,11 @@ def test_upload_direct_success(client, seed, monkeypatch):
     r = client.post("/api/ai/ollama/upload/direct", data={"model_name": "my-model"},
                      files={"file": ("m.gguf", io.BytesIO(b"fake gguf"), "application/octet-stream")})
     assert r.status_code == 200
-    assert r.json() == {"status": "done", "model": "my-model"}
+    body = r.json()
+    assert body["status"] == "queued"
+    assert body["import_id"]
+    result = _poll_until_terminal(client, body["import_id"])
+    assert result == {"status": "done", "model": "my-model"}
 
 
 def test_upload_chunk_and_complete_gm_only(client, seed):
@@ -308,7 +331,10 @@ def test_upload_chunk_and_complete_success(client, seed, monkeypatch):
         "upload_id": upload_id, "filename": "m.gguf", "total_chunks": "2", "model_name": "my-model",
     })
     assert r2.status_code == 200
-    assert r2.json() == {"status": "done", "model": "my-model"}
+    body = r2.json()
+    assert body["status"] == "queued"
+    result = _poll_until_terminal(client, body["import_id"])
+    assert result == {"status": "done", "model": "my-model"}
 
 
 def test_upload_complete_rejects_non_gguf(client, seed):
@@ -340,7 +366,44 @@ def test_upload_direct_cleans_up_temp_file_on_success(client, seed, monkeypatch,
     r = client.post("/api/ai/ollama/upload/direct", data={"model_name": "my-model"},
                      files={"file": ("m.gguf", io.BytesIO(b"fake gguf"), "application/octet-stream")})
     assert r.status_code == 200
+    _poll_until_terminal(client, r.json()["import_id"])
     assert not captured["path"].exists()
+
+
+def test_upload_status_unknown_import_id_404(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get("/api/ai/ollama/upload/status/" + "0" * 32)
+    assert r.status_code == 404
+
+
+def test_upload_status_reports_error_and_is_consumed_once(client, seed, monkeypatch):
+    _fake_import(monkeypatch, {"error": "Ollama 500: boom"})
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/ollama/upload/direct", data={"model_name": "my-model"},
+                     files={"file": ("m.gguf", io.BytesIO(b"fake gguf"), "application/octet-stream")})
+    import_id = r.json()["import_id"]
+    result = _poll_until_terminal(client, import_id)
+    assert result == {"error": "Ollama 500: boom"}
+    # A terminal status is popped once served — see api_ollama_upload_status's
+    # own docstring — so a stray repeat poll after the client has already
+    # seen the final result 404s instead of silently returning stale state.
+    assert client.get(f"/api/ai/ollama/upload/status/{import_id}").status_code == 404
+
+
+def test_upload_status_route_is_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    assert client.get("/api/ai/ollama/upload/status/" + "0" * 32).status_code == 403
+
+
+def test_prune_model_imports_drops_only_stale_entries():
+    ai_router._model_imports.clear()
+    now = time.time()
+    ai_router._model_imports["stale"] = {"status": "queued", "_ts": now - ai_router._MODEL_IMPORT_MAX_AGE - 1}
+    ai_router._model_imports["fresh"] = {"status": "queued", "_ts": now}
+    ai_router._prune_model_imports()
+    assert "stale" not in ai_router._model_imports
+    assert "fresh" in ai_router._model_imports
+    ai_router._model_imports.clear()
 
 
 # ── JS/template source assertions ────────────────────────────────────────
@@ -371,9 +434,16 @@ def test_js_hf_search_reuses_existing_pull_flow():
 def test_js_upload_uses_shared_chunked_upload_helper():
     js = open("static/js/ai-chat-models.js").read()
     assert "async function mpUploadModel()" in js
-    body = js.split("async function mpUploadModel()", 1)[1][:1200]
+    body = js.split("async function mpUploadModel()", 1)[1][:2200]
     assert "ndChunkedUpload(file" in body
     assert "directUrl: '/api/ai/ollama/upload/direct'" in body
     assert "chunkUrl: '/api/ai/ollama/upload/chunk'" in body
     assert "completeUrl: '/api/ai/ollama/upload/complete'" in body
     assert "model_name: modelName" in body
+    # The upload response itself only queues the Ollama push (see
+    # _start_local_gguf_import in app/routers/ai.py) — a real multi-GB
+    # model can take minutes to push, longer than a Cloudflare-tunneled
+    # request can stay open, so the client polls for the real result
+    # instead of trusting ndChunkedUpload's own response as final.
+    assert "/api/ai/ollama/upload/status/" in body
+    assert "data.import_id" in body

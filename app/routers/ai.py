@@ -5,7 +5,9 @@ import csv as _csv
 import logging
 import os as _os
 import ollama as _ollama
+import time as _time
 import urllib.request as _urllib
+import uuid as _uuid
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse as _SR
 from pydantic import BaseModel
@@ -1143,26 +1145,56 @@ def _model_upload_chunks_root() -> _Path:
     return _uploads_root() / _MODEL_UPLOAD_SUBDIR / "_chunks"
 
 
-async def _finish_local_gguf_import(dest: _Path, model_name: str) -> dict:
-    """Drive app.ai.import_local_gguf_model to completion and collapse its
-    progress-generator yields into one final JSON-able result — used by
-    both upload routes below. Not streamed to the client as SSE: unlike
-    /pull above, ndChunkedUpload (static/js/chunked-upload.js) is a plain
-    XHR-based helper that expects one plain JSON response from directUrl/
-    completeUrl, not an event stream — the real-time part of this whole
-    flow is the file transfer itself, which ndChunkedUpload already reports
-    byte-accurate upload progress for on its own; the "push blob to Ollama
-    + register" phase that follows has no useful sub-progress anyway (see
-    import_local_gguf_model's own docstring), so it just renders as
-    ndChunkedUpload's existing indeterminate "processing" phase client-side
-    while this awaits the result."""
+# In-memory registry for the "push to Ollama + register" phase — see
+# _start_local_gguf_import below for why this can't just be awaited inline
+# in the upload routes. Keyed by a random import_id; each value is one of
+# the progress dicts import_local_gguf_model yields. Small and short-lived
+# (a GM triggers a handful of these at most), so a plain process-lifetime
+# dict is enough — no DB table needed, matching e.g. _spotlight_cache in
+# main.py for the same kind of transient, single-process state. Entries
+# carry their own "_ts" so a stale one (tab closed before ever polling to
+# completion) doesn't linger forever.
+_model_imports: dict[str, dict] = {}
+_MODEL_IMPORT_MAX_AGE = 6 * 3600  # prune anything a client hasn't polled away after this long
+
+
+def _prune_model_imports() -> None:
+    cutoff = _time.time() - _MODEL_IMPORT_MAX_AGE
+    for stale_id in [k for k, v in _model_imports.items() if v.get("_ts", 0) < cutoff]:
+        _model_imports.pop(stale_id, None)
+
+
+async def _run_local_gguf_import(import_id: str, dest: _Path, model_name: str) -> None:
+    """Background task body: drive app.ai.import_local_gguf_model to
+    completion, writing each progress dict into _model_imports as it comes
+    so GET /ollama/upload/status/{import_id} can report live state."""
     try:
-        result = {"error": "No progress reported"}
         async for progress in _ai.import_local_gguf_model(dest, model_name):
-            result = progress
-        return result
+            _model_imports[import_id] = {**progress, "_ts": _time.time()}
     finally:
         dest.unlink(missing_ok=True)
+
+
+def _start_local_gguf_import(dest: _Path, model_name: str) -> dict:
+    """Kick off the "push blob to Ollama + register" phase as a detached
+    background task and return immediately with an import_id to poll.
+
+    This used to be awaited inline and returned as the upload route's own
+    response, but that blocks the HTTP response for as long as create_blob
+    takes to stream the whole file to Ollama — for a real multi-GB model
+    that's easily minutes, and every request routed through Cloudflare
+    (tunnel or not — see docs/DEPLOYMENT.md's "Upload size limit" section
+    for the same underlying constraint) gets killed if the origin doesn't
+    start responding within Cloudflare's ~100s edge timeout. The browser
+    then sees a dead connection with no usable error, which is
+    indistinguishable from "nothing happened" — exactly the reported bug.
+    Returning near-instantly and polling instead means the slow part never
+    sits inside a single request/response cycle."""
+    _prune_model_imports()
+    import_id = _uuid.uuid4().hex
+    _model_imports[import_id] = {"status": "queued", "_ts": _time.time()}
+    _asyncio.create_task(_run_local_gguf_import(import_id, dest, model_name))
+    return {"import_id": import_id, "status": "queued"}
 
 
 @router.post("/ollama/upload/direct")
@@ -1177,7 +1209,7 @@ async def api_ollama_upload_direct(file: UploadFile = File(...), model_name: str
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / unique_upload_filename(file.filename, ext)
     copy_upload_bounded(file, dest, max_bytes=_MAX_MODEL_UPLOAD_BYTES)
-    return await _finish_local_gguf_import(dest, model_name)
+    return _start_local_gguf_import(dest, model_name)
 
 
 @router.post("/ollama/upload/chunk")
@@ -1193,8 +1225,10 @@ async def api_ollama_upload_complete(
     upload_id: str = Form(...), filename: str = Form(...), total_chunks: int = Form(...),
     model_name: str = Form(...),
 ):
-    """Reassemble the parts uploaded via .../chunk above, then push the
-    result into Ollama as `model_name` (see _finish_local_gguf_import)."""
+    """Reassemble the parts uploaded via .../chunk above, then kick off the
+    push into Ollama as `model_name` as a background task (see
+    _start_local_gguf_import) — the reassembly itself is local disk I/O
+    and stays fast even for a multi-GB file, so it's fine to await here."""
     ext = _Path(filename or "").suffix.lower()
     if ext != ".gguf":
         raise HTTPException(400, "Only .gguf files are supported")
@@ -1204,7 +1238,22 @@ async def api_ollama_upload_complete(
     reassemble_upload_chunks(
         _model_upload_chunks_root(), upload_id, total_chunks, dest, max_bytes=_MAX_MODEL_UPLOAD_BYTES,
     )
-    return await _finish_local_gguf_import(dest, model_name)
+    return _start_local_gguf_import(dest, model_name)
+
+
+@router.get("/ollama/upload/status/{import_id}")
+async def api_ollama_upload_status(import_id: str):
+    """Polled by mpUploadModel (static/js/ai-chat-models.js) after
+    ndChunkedUpload resolves — see _start_local_gguf_import for why the
+    actual Ollama push isn't in that response already. Popped from the
+    registry once a terminal state (done/error) has been served once, so a
+    completed import doesn't sit in memory indefinitely."""
+    progress = _model_imports.get(import_id)
+    if progress is None:
+        raise HTTPException(404, "Unknown import_id")
+    if progress.get("status") == "done" or "error" in progress:
+        _model_imports.pop(import_id, None)
+    return {k: v for k, v in progress.items() if k != "_ts"}
 
 
 @router.get("/whisper/model-status")
