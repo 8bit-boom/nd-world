@@ -17,7 +17,7 @@ import pytest
 from app.database import SessionLocal
 from app.main import _MAPS_DIR
 from app.models import (
-    AudioJob, Base, ChatJob, ChatSession, CombatSession, Entity, EntityNote, Fact,
+    AudioJob, Base, CalendarDayIcon, ChatJob, ChatSession, CombatSession, Entity, EntityNote, Fact,
     GameSession, ImageAlbum, ImageJob, InvestBoard, InviteCode,
     MapOverlay, Party, PlayerCharacter, PrivateNote, PromptPreset, Quest, RandomTable,
     Schematic, VideoAlbum, VideoClip, WorldCalendar, WorldMembership,
@@ -138,6 +138,32 @@ def test_world_delete_cleans_up_video_clip_and_poster_files(client, seed):
     db = SessionLocal()
     try:
         assert db.query(VideoClip).filter(VideoClip.world_id == world_id).count() == 0
+    finally:
+        db.close()
+
+
+def test_world_delete_cleans_up_calendar_icon_files(client, seed):
+    from app.main import UPLOADS_DIR
+    world_id = seed.world_a.id
+    icon_dir = UPLOADS_DIR / "calendar_icons"
+    icon_dir.mkdir(parents=True, exist_ok=True)
+    (icon_dir / "cascade-icon.png").write_bytes(b"fake-png")
+
+    db = SessionLocal()
+    try:
+        db.add(CalendarDayIcon(world_id=world_id, day=5, image_url="/uploads/calendar_icons/cascade-icon.png"))
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(f"/worlds/{world_id}/delete", follow_redirects=False)
+    assert r.status_code == 303
+
+    assert not (icon_dir / "cascade-icon.png").exists()
+    db = SessionLocal()
+    try:
+        assert db.query(CalendarDayIcon).filter(CalendarDayIcon.world_id == world_id).count() == 0
     finally:
         db.close()
 

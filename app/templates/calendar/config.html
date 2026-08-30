@@ -12,6 +12,10 @@
       <label>Current Day <small>(absolute day count from campaign start)</small></label>
       <input type="number" name="current_day" value="{{ config.current_day or 1 }}" min="1"/>
     </div>
+    <div class="form-group">
+      <label>Days per Week <small>(how many days the month grid wraps at)</small></label>
+      <input type="number" name="days_per_week" value="{{ config.days_per_week or 7 }}" min="1" max="60"/>
+    </div>
 
     <div class="form-group">
       <label>Months</label>

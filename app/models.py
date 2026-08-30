@@ -1160,6 +1160,22 @@ class CalendarEvent(Base):
     entity = relationship("Entity")
 
 
+class CalendarDayIcon(Base):
+    """A small uploaded image pinned to one calendar day — used like an
+    emoji sticker (a holiday marker, a weather icon, an in-world symbol)
+    but backed by a real uploaded image rather than a Unicode character.
+    Several can be pinned to the same day, unlike a portrait/single image
+    field elsewhere in this app."""
+    __tablename__ = "calendar_day_icons"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    day = Column(Integer, nullable=False, index=True)
+    image_url = Column(String(512), nullable=False)
+    label = Column(String(120), default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class Schematic(Base):
     __tablename__ = "schematics"
 

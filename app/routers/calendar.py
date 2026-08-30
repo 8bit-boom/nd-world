@@ -1,13 +1,17 @@
 import json
+import os
+from pathlib import Path
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
+from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from ..database import get_db
+from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx
-from ..models import CalendarEvent, Entity, World, WorldCalendar
+from ..imaging import convert_image
+from ..models import CalendarDayIcon, CalendarEvent, Entity, World, WorldCalendar
 from ..templating import templates
+from ..uploads import copy_upload_bounded, unique_upload_filename
 
 router = APIRouter()
 
@@ -17,10 +21,49 @@ DEFAULT_MONTHS = [
         "Amberfall", "Duskmere", "Stormtide", "Coldreach", "Deepwinter", "Yearsend",
     ]
 ]
+DEFAULT_DAYS_PER_WEEK = 7
+# 1..60 — a week of 1 degenerates to "every day starts a new row" (still
+# renders fine), and 60 is generous headroom past any real-world calendar
+# convention while still keeping the week-row grid a sane width.
+_MIN_DAYS_PER_WEEK, _MAX_DAYS_PER_WEEK = 1, 60
+
+# Icon uploads are small "sticker" images, same size/format contract as a
+# portrait or entity art image elsewhere in this app (see main.py's own
+# ALLOWED_EXTS) — duplicated locally rather than imported from main.py,
+# since main.py imports this router and the reverse would be circular (same
+# rationale as pages.py's/video.py's own local _UPLOADS_DIR copy).
+_ICON_ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"}
+_UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+_ICON_SUBDIR = "calendar_icons"
+_MAX_ICONS_PER_DAY = 24
 
 
 def _default_config() -> dict:
-    return {"era_name": "Year 1", "current_day": 1, "months": DEFAULT_MONTHS}
+    return {"era_name": "Year 1", "current_day": 1, "months": DEFAULT_MONTHS, "days_per_week": DEFAULT_DAYS_PER_WEEK}
+
+
+def _days_per_week(config: dict) -> int:
+    try:
+        dpw = int(config.get("days_per_week", DEFAULT_DAYS_PER_WEEK))
+    except (TypeError, ValueError):
+        return DEFAULT_DAYS_PER_WEEK
+    return max(_MIN_DAYS_PER_WEEK, min(_MAX_DAYS_PER_WEEK, dpw)) or DEFAULT_DAYS_PER_WEEK
+
+
+def _delete_icon_file(icon: CalendarDayIcon) -> None:
+    """Each CalendarDayIcon row owns exactly one file under its own
+    dedicated subdir (never a shared/flat portrait-style path), so — like
+    AudioClip/VideoClip/PageDoc elsewhere — it's always safe to delete on
+    row removal without risking another row's file."""
+    root = _UPLOADS_DIR.resolve()
+    if not icon.image_url or not icon.image_url.startswith("/uploads/"):
+        return
+    try:
+        path = (root / icon.image_url[len("/uploads/"):]).resolve()
+    except (OSError, RuntimeError):
+        return
+    if path.is_relative_to(root) and path.is_file():
+        path.unlink()
 
 
 def _get_or_create_calendar(db: Session, world_id: int) -> WorldCalendar:
@@ -90,8 +133,24 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
             {"id": e.id, "title": e.title, "notes": e.notes, "color": e.color, "entity_id": e.entity_id}
         )
 
+    icons = db.query(CalendarDayIcon).filter(
+        CalendarDayIcon.world_id == world_id, CalendarDayIcon.day >= month_start, CalendarDayIcon.day <= month_end
+    ).order_by(CalendarDayIcon.created_at).all()
+    icons_by_day: dict = {}
+    for ic in icons:
+        icons_by_day.setdefault(ic.day, []).append({"id": ic.id, "image_url": ic.image_url, "label": ic.label})
+
     days = [{"day_num": month_start + i, "dom": i + 1, "is_current": (month_start + i) == current_day,
-             "events": events_by_day.get(month_start + i, [])} for i in range(month["days"])]
+             "events": events_by_day.get(month_start + i, []),
+             "icons": icons_by_day.get(month_start + i, [])} for i in range(month["days"])]
+
+    # Weeks run continuously across the whole calendar (day 1 always starts
+    # week-column 0), not reset per month — a month's first day lands
+    # wherever that ongoing week cycle puts it, same as a real calendar
+    # where e.g. March 1st doesn't have to fall on a Sunday. lead_pad blank
+    # cells shift it into the right column of the week grid below.
+    days_per_week = _days_per_week(config)
+    lead_pad = (month_start - 1) % days_per_week
 
     prev_month = month_idx - 1
     prev_year = year if prev_month >= 0 else year - 1
@@ -106,6 +165,7 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
         "request": request, "world": world, "worlds": worlds,
         "config": config, "months": months, "month": month, "month_idx": month_idx, "year": year,
         "days": days, "era_name": config.get("era_name", "Year"),
+        "days_per_week": days_per_week, "lead_pad": range(lead_pad),
         "current_day": current_day, "cur_year": cur_year, "cur_month_idx": cur_month_idx, "cur_dom": cur_dom,
         "prev_month": prev_month, "prev_year": prev_year, "next_month": next_month, "next_year": next_year,
         "entities": entities,
@@ -132,6 +192,7 @@ async def calendar_config_save(request: Request, db: Session = Depends(get_db), 
     config = json.loads(cal.config_json or "{}") or _default_config()
     config["era_name"] = str(form.get("era_name", "")).strip() or "Year"
     config["current_day"] = max(1, int(form.get("current_day") or 1))
+    config["days_per_week"] = _days_per_week({"days_per_week": form.get("days_per_week")})
     raw_months = str(form.get("months_json", "[]") or "[]")
     try:
         months = json.loads(raw_months)
@@ -185,3 +246,48 @@ async def calendar_advance(request: Request, db: Session = Depends(get_db), acti
     db.commit()
     year, month_idx, dom = _resolve_date(config, config["current_day"])
     return {"current_day": config["current_day"], "year": year, "month_idx": month_idx, "dom": dom}
+
+
+@router.post("/api/calendar/days/{day}/icons")
+async def calendar_day_icon_add(
+    day: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
+    file: UploadFile = File(...), label: str = Form(""),
+):
+    """Pin a small uploaded image to a calendar day — several can stack on
+    the same day, rendered like emoji stickers on the month grid (see
+    _ICON_ALLOWED_EXTS/day.icons in calendar/month.html)."""
+    world, _ = get_world_ctx(request, db, active_world)
+    world_id = world.id if world else 1
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in _ICON_ALLOWED_EXTS:
+        raise HTTPException(400, "Unsupported image type")
+    existing = db.query(CalendarDayIcon).filter(
+        CalendarDayIcon.world_id == world_id, CalendarDayIcon.day == day
+    ).count()
+    if existing >= _MAX_ICONS_PER_DAY:
+        raise HTTPException(400, f"Max {_MAX_ICONS_PER_DAY} icons per day")
+    target_dir = _UPLOADS_DIR / _ICON_SUBDIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / unique_upload_filename(file.filename, ext)
+    copy_upload_bounded(file, dest)
+    settings = get_app_settings(db)
+    dest = convert_image(dest, static_format=settings.static_format, animated_format=settings.animated_format)
+    icon = CalendarDayIcon(
+        world_id=world_id, day=day, image_url=f"/uploads/{_ICON_SUBDIR}/{dest.name}",
+        label=str(label or "").strip()[:120],
+    )
+    db.add(icon)
+    db.commit()
+    db.refresh(icon)
+    return {"id": icon.id, "day": icon.day, "image_url": icon.image_url, "label": icon.label}
+
+
+@router.post("/api/calendar/icons/{icon_id}/delete")
+def calendar_day_icon_delete(icon_id: int, db: Session = Depends(get_db)):
+    icon = db.query(CalendarDayIcon).filter(CalendarDayIcon.id == icon_id).first()
+    if not icon:
+        raise HTTPException(404)
+    _delete_icon_file(icon)
+    db.delete(icon)
+    db.commit()
+    return {"ok": True}

@@ -34,7 +34,7 @@ from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html
 from .templating import templates
 from .uploads import copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -46,7 +46,7 @@ from .routers.combat import _candidates as _combat_candidates
 from .routers.parties import router as parties_router
 from .routers.quests import router as quests_router
 from .routers.sessions import router as sessions_router
-from .routers.calendar import router as calendar_router
+from .routers.calendar import router as calendar_router, _delete_icon_file as _delete_calendar_icon_file
 from .routers.importer import router as importer_router
 from .routers.races import router as races_router
 from .routers.professions import router as professions_router
@@ -794,7 +794,7 @@ def world_create(
 _WORLD_DELETE_MODELS = (
     Entity, PlayerCharacter, Schematic, WorldMembership, InviteCode, PrivateNote,
     InvestBoard, RandomTable, CombatSession, Party, Quest, GameSession,
-    WorldCalendar, CalendarEvent, ImageAlbum, AudioClip, AudioAlbum,
+    WorldCalendar, CalendarEvent, CalendarDayIcon, ImageAlbum, AudioClip, AudioAlbum,
     VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset,
     AudioJob, ImageJob, ChatJob, EntityTemplate, SheetTemplate,
 )
@@ -848,6 +848,12 @@ def world_delete(world_id: int, db: Session = Depends(get_db)):
     # duplicating its containment/extension logic.
     for doc in db.query(PageDoc).filter(PageDoc.world_id == world_id).all():
         _delete_page_doc_file(doc)
+
+    # Same ownership shape as AudioClip/VideoClip/PageDoc — each
+    # CalendarDayIcon row owns exactly one file — reuses calendar.py's own
+    # delete helper rather than duplicating its containment/extension logic.
+    for icon in db.query(CalendarDayIcon).filter(CalendarDayIcon.world_id == world_id).all():
+        _delete_calendar_icon_file(icon)
 
     for slug, _data in list(_iter_world_maps(world_id)):
         jf = _MAPS_DIR / f"{slug}.json"

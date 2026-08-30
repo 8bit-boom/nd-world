@@ -27,10 +27,20 @@
     <a href="{{ ('/calendar?year=' + next_year|string + '&month=' + next_month|string)|wq }}" style="color:var(--text-dim);text-decoration:none;font-size:.85rem">{{ months[next_month].name }} →</a>
   </div>
 
-  <div class="cal-grid">
+  <div class="cal-grid" style="grid-template-columns:repeat({{ days_per_week }}, 1fr)">
+    {% for _ in lead_pad %}
+    <div class="cal-cell cal-cell-pad"></div>
+    {% endfor %}
     {% for d in days %}
     <div class="cal-cell {% if d.is_current %}today{% endif %}" data-day="{{ d.day_num }}">
       <div class="cal-daynum">{{ d.dom }}</div>
+      {% if d.icons %}
+      <div class="cal-icons">
+        {% for ic in d.icons %}
+        <img class="cal-icon" src="{{ ic.image_url }}" title="{{ ic.label }}" alt="{{ ic.label }}"/>
+        {% endfor %}
+      </div>
+      {% endif %}
       {% for e in d.events %}
       <div class="cal-event" style="background:{{ e.color }}22;border-left:3px solid {{ e.color }}" title="{{ e.title }}{% if e.notes %} — {{ e.notes }}{% endif %}">{{ e.title }}</div>
       {% endfor %}
@@ -42,12 +52,15 @@
 </div>
 
 <style>
-.cal-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(90px,1fr)); gap:.4rem; }
+.cal-grid { display:grid; gap:.4rem; }
 .cal-cell { background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.4rem; min-height:60px; cursor:pointer; display:flex; flex-direction:column; gap:.2rem; }
 .cal-cell:hover { border-color:var(--neon); }
 .cal-cell.today { border-color:var(--neon); box-shadow:0 0 0 1px var(--neon); }
+.cal-cell-pad { background:transparent; border-color:transparent; cursor:default; }
 .cal-daynum { font-size:.8rem; color:var(--text-dim); }
 .cal-cell.today .cal-daynum { color:var(--neon); font-weight:bold; }
+.cal-icons { display:flex; flex-wrap:wrap; gap:.15rem; }
+.cal-icon { width:18px; height:18px; object-fit:cover; border-radius:3px; }
 .cal-event { font-size:.68rem; padding:.1rem .3rem; border-radius:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 </style>
 
@@ -65,6 +78,12 @@ function openDayPanel(dayNum) {
   panel.style.display = 'block';
   panel.innerHTML = `
     <h3 style="color:var(--neon);font-size:.9rem;margin:0 0 .6rem">Day ${dayNum}</h3>
+    <div id="day-icons" style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.5rem"></div>
+    <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin-bottom:.9rem">
+      <input type="file" id="icon-file" accept="image/*" style="font-size:.78rem;color:var(--text-dim);max-width:180px"/>
+      <input id="icon-label" placeholder="Label (optional)" style="flex:1;min-width:100px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
+      <button type="button" id="icon-add-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem .9rem;font-size:.82rem;border-radius:3px;cursor:pointer">+ Add Icon</button>
+    </div>
     <div id="day-events" style="display:flex;flex-direction:column;gap:.3rem;margin-bottom:.75rem"></div>
     <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
       <input id="ev-title" placeholder="Event title" style="flex:1;min-width:120px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
@@ -76,8 +95,42 @@ function openDayPanel(dayNum) {
       <button type="button" id="ev-add-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem .9rem;font-size:.82rem;border-radius:3px;cursor:pointer">+ Add Event</button>
     </div>
   `;
+  renderDayIcons(dayNum);
   renderDayEvents(dayNum);
+  document.getElementById('icon-add-btn').addEventListener('click', () => addIcon(dayNum));
   document.getElementById('ev-add-btn').addEventListener('click', () => addEvent(dayNum));
+}
+
+function renderDayIcons(dayNum) {
+  const dayData = DAYS_DATA.find(d => d.day_num === dayNum);
+  const icons = dayData ? dayData.icons : [];
+  const container = document.getElementById('day-icons');
+  container.innerHTML = icons.length ? '' : '<p style="color:var(--text-dim);font-size:.8rem;font-style:italic;margin:0">No icons yet.</p>';
+  icons.forEach(ic => {
+    const chip = document.createElement('div');
+    chip.style.cssText = 'display:flex;align-items:center;gap:.3rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.2rem .4rem';
+    chip.innerHTML = `<img src="${ic.image_url}" alt="${esc(ic.label)}" style="width:24px;height:24px;object-fit:cover;border-radius:3px"/>
+      <span style="font-size:.76rem;color:var(--text-dim);max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ic.label)}</span>
+      <button type="button" style="background:none;border:none;color:#c44;cursor:pointer;font-size:.9rem;line-height:1">✕</button>`;
+    chip.querySelector('button').addEventListener('click', async () => {
+      await fetch('/api/calendar/icons/' + ic.id + '/delete', { method: 'POST' });
+      window.location.reload();
+    });
+    container.appendChild(chip);
+  });
+}
+
+async function addIcon(dayNum) {
+  const fileInput = document.getElementById('icon-file');
+  const file = fileInput.files[0];
+  if (!file) return;
+  const label = document.getElementById('icon-label').value.trim();
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('label', label);
+  const res = await fetch('/api/calendar/days/' + dayNum + '/icons', { method: 'POST', body: fd });
+  if (!res.ok) { alert('Could not add icon: ' + (await res.text())); return; }
+  window.location.reload();
 }
 
 function renderDayEvents(dayNum) {
