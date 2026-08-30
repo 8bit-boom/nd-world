@@ -593,6 +593,60 @@ async def test_model_supports_thinking_fails_closed_on_show_error(monkeypatch):
     assert await ai_module._model_supports_thinking("unreachable-model") is False
 
 
+# ── KNOWN_MODELS thinking fallback ───────────────────────────────────────
+#
+# A model pulled as a raw GGUF via hf.co/{user}/{repo}:{filename} never
+# gets Ollama's own "thinking" capability tag in /api/show the way an
+# official ollama.com library model's Modelfile does — including the
+# Unsloth IQ4_NL quantisation registered below — so relying on /api/show
+# alone silently downgrades think=True to False for a model that's fully
+# capable of it. _known_model_thinks/KNOWN_MODELS' own "thinking": True
+# flag is the fallback for exactly that case.
+
+_KNOWN_THINKING_GGUF_ID = "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:gemma-4-26B-A4B-it-UD-IQ4_NL.gguf"
+
+
+def test_gemma_iq4nl_gguf_is_registered_as_a_known_thinking_model():
+    assert ai_module._known_model_thinks(_KNOWN_THINKING_GGUF_ID) is True
+
+
+def test_known_model_thinks_false_for_unlisted_model():
+    assert ai_module._known_model_thinks("some-random-model:latest") is False
+
+
+@pytest.mark.asyncio
+async def test_model_supports_thinking_falls_back_to_known_models_when_show_lacks_tag(monkeypatch):
+    """Ollama's own /api/show succeeds but doesn't report "thinking" for
+    this GGUF (the normal case) — KNOWN_MODELS' flag should still win."""
+    fake = _FakeChatClient([], show_capabilities=["completion"])
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    assert await ai_module._model_supports_thinking(_KNOWN_THINKING_GGUF_ID) is True
+
+
+@pytest.mark.asyncio
+async def test_model_supports_thinking_falls_back_to_known_models_when_show_fails(monkeypatch):
+    class _BrokenShowClient:
+        async def show(self, model):
+            raise RuntimeError("connection refused")
+    monkeypatch.setattr(ai_module, "_client", lambda: _BrokenShowClient())
+    assert await ai_module._model_supports_thinking(_KNOWN_THINKING_GGUF_ID) is True
+
+
+@pytest.mark.asyncio
+async def test_chat_kwargs_keeps_think_true_for_the_registered_gemma_gguf(monkeypatch):
+    """End-to-end regression test for the reported bug: chatting with the
+    Unsloth IQ4_NL GGUF and Thinking enabled must not get silently
+    downgraded, even though Ollama itself never tags this model."""
+    calls = []
+    fake = _FakeChatClient(calls, show_capabilities=[])  # Ollama doesn't tag it
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    tokens = [tok async for tok in ai_module.stream_chat(
+        [{"role": "user", "content": "hi"}], think=True, model=_KNOWN_THINKING_GGUF_ID,
+    )]
+    assert tokens == ["hi"]
+    assert calls[0]["think"] is True
+
+
 @pytest.mark.asyncio
 async def test_chat_kwargs_never_calls_show_when_think_is_false(monkeypatch):
     """The common case (think=False, the vast majority of calls) must not

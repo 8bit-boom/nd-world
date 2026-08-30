@@ -128,16 +128,39 @@ def effective_ollama_keep_alive(model: str = "") -> str:
 _model_capabilities_cache: dict[str, list[str]] = {}
 
 
+def _known_model_thinks(model: str) -> bool:
+    """True if `model` appears in KNOWN_MODELS with "thinking": True.
+
+    Used as a fallback by _model_supports_thinking when Ollama's own
+    /api/show doesn't tag the model with the "thinking" capability — which
+    is the normal case for any model pulled as a raw GGUF via the
+    hf.co/{user}/{repo}:{filename} tag (including the Unsloth IQ4_NL
+    quantisation below). Official ollama.com library models carry the tag
+    in their Modelfile; raw GGUFs don't, so without this fallback
+    _chat_kwargs would silently downgrade think=True to False for them
+    even though the model is fully capable of thinking mode."""
+    return any(m.get("id") == model and m.get("thinking") for m in KNOWN_MODELS)
+
+
 async def _model_supports_thinking(model: str) -> bool:
-    """Whether Ollama has `model` tagged with the "thinking" capability
-    (GET-equivalent /api/show). A model pulled as a raw GGUF — including
-    via this app's own Hugging Face search/upload features — doesn't
-    reliably carry this tag the way an official ollama.com library model's
+    """Whether `model` supports thinking mode — checked via Ollama's
+    /api/show capabilities tag first, then by KNOWN_MODELS' own
+    "thinking": True flag as a fallback for raw-GGUF models that Ollama
+    won't tag automatically.
+
+    A model pulled as a raw GGUF — including via this app's own Hugging
+    Face search/upload features — doesn't reliably carry the "thinking"
+    capability tag the way an official ollama.com library model's
     Modelfile does, and Ollama's /api/chat rejects think=True outright
     ("<model> does not support thinking", HTTP 400) for anything not
     tagged, rather than silently ignoring the request. See _chat_kwargs
     below for where this gates a requested think=True back down to False
     instead of letting that 400 reach the user as a raw error.
+
+    The KNOWN_MODELS fallback is authoritative for models we've explicitly
+    listed as thinking-capable (e.g. the Unsloth IQ4_NL quantisation) —
+    "thinking": True in that list means we've confirmed the model handles
+    thinking tokens correctly even though Ollama's own tag won't be set.
 
     Cached per-model for the life of the process — capabilities are static
     for an already-pulled model, and a restart (e.g. after a Watchtower
@@ -146,12 +169,14 @@ async def _model_supports_thinking(model: str) -> bool:
     path never pays for the extra /api/show round trip at all."""
     if model in _model_capabilities_cache:
         return "thinking" in _model_capabilities_cache[model]
+    caps: list[str] = []
     try:
         resp = await _client().show(model)
         caps = list(resp.capabilities or [])
     except Exception:
-        return False  # fail closed (no thinking) — the real chat call right
-        # after this will surface any genuine connectivity problem itself
+        pass  # fail soft — check KNOWN_MODELS below before giving up
+    if "thinking" not in caps and _known_model_thinks(model):
+        caps = list(caps) + ["thinking"]
     _model_capabilities_cache[model] = caps
     return "thinking" in caps
 
@@ -206,6 +231,11 @@ KNOWN_MODELS = [
     {
         "id": "hf.co/noctrex/gemma-4-26B-A4B-it-MXFP4_MOE-GGUF:gemma-4-26B-A4B-it-MXFP4_MOE.gguf",
         "label": "Gemma 4 26B MXFP4",
+    },
+    {
+        "id": "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:gemma-4-26B-A4B-it-UD-IQ4_NL.gguf",
+        "label": "Gemma 4 26B IQ4_NL (Unsloth)",
+        "thinking": True,
     },
 ]
 
