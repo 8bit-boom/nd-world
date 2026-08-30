@@ -420,6 +420,9 @@
         <span class="nd-job-label">
           <strong>{{ m }}</strong>{% if o.thinking %} 🧠{% endif %}
           — {{ o.options.keys() | list | join(', ') if o.options else '' }}{% if o.keep_alive %}{{ ', ' if o.options else '' }}keep_alive={{ o.keep_alive }}{% endif %}{% if o.thinking %}{{ ', ' if (o.options or o.keep_alive) else '' }}thinking-capable{% endif %}
+          {% if o.thinking and m in ollama_thinking_failures %}
+          <span style="color:#e8a33d" title="Ollama rejected a real think=true request for this model despite the checkbox — the override may be wrong, or the model needs to be re-registered with Ollama so it carries the capability tag itself.">⚠ thinking failed last time</span>
+          {% endif %}
         </span>
         <form method="post" action="/settings/system/model-override/delete" style="display:inline;margin:0" onsubmit="return confirm('Remove the override for {{ m }}?')">
           <input type="hidden" name="model" value="{{ m }}">

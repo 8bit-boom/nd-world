@@ -42,7 +42,7 @@
       </div>
       {% endif %}
       {% for e in d.events %}
-      <div class="cal-event" style="background:{{ e.color }}22;border-left:3px solid {{ e.color }}" title="{{ e.title }}{% if e.notes %} — {{ e.notes }}{% endif %}">{{ e.title }}</div>
+      <div class="cal-event" style="background:{{ e.color }}22;border-left:3px solid {{ e.color }}" title="{{ e.title }}{% if e.notes %} — {{ e.notes }}{% endif %}{% if e.entity_label %} · {{ e.entity_label }}{% endif %}{% if e.session_label %} · {{ e.session_label }}{% endif %}{% if e.character_label %} · {{ e.character_label }}{% endif %}{% if e.party_label %} · {{ e.party_label }}{% endif %}">{{ e.title }}</div>
       {% endfor %}
     </div>
     {% endfor %}
@@ -66,6 +66,9 @@
 
 <script>
 const ENTITIES = {{ entities | tojson }};
+const SESSIONS = {{ sessions | tojson }};
+const CHARACTERS = {{ characters | tojson }};
+const PARTIES = {{ parties | tojson }};
 const DAYS_DATA = {{ days | tojson }};
 function esc(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
@@ -87,9 +90,21 @@ function openDayPanel(dayNum) {
     <div id="day-events" style="display:flex;flex-direction:column;gap:.3rem;margin-bottom:.75rem"></div>
     <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
       <input id="ev-title" placeholder="Event title" style="flex:1;min-width:120px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
-      <select id="ev-entity" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
+      <select id="ev-entity" title="Link an entity (character, location, creature, item, etc.)" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
         <option value="">— no linked entity —</option>
         ${ENTITIES.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('')}
+      </select>
+      <select id="ev-session" title="Link a game session" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
+        <option value="">— no linked session —</option>
+        ${SESSIONS.map(s => `<option value="${s.id}">${esc(s.label)}</option>`).join('')}
+      </select>
+      <select id="ev-character" title="Link a player character" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
+        <option value="">— no linked character —</option>
+        ${CHARACTERS.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}
+      </select>
+      <select id="ev-party" title="Link a party" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
+        <option value="">— no linked party —</option>
+        ${PARTIES.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}
       </select>
       <input id="ev-color" type="color" value="#4488ff" style="width:40px;background:var(--bg3);border:1px solid var(--border);border-radius:3px"/>
       <button type="button" id="ev-add-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem .9rem;font-size:.82rem;border-radius:3px;cursor:pointer">+ Add Event</button>
@@ -141,7 +156,13 @@ function renderDayEvents(dayNum) {
   evs.forEach(e => {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:.5rem;font-size:.82rem;background:var(--bg3);border-left:3px solid ' + e.color + ';padding:.3rem .5rem;border-radius:3px';
-    row.innerHTML = `<span style="flex:1">${esc(e.title)}${e.notes ? ' — <span style=\"color:var(--text-dim)\">'+esc(e.notes)+'</span>' : ''}</span>
+    const links = [];
+    if (e.entity_label) links.push(`<a href="/entity/${e.entity_id}" style="color:var(--neon);text-decoration:none">🔗 ${esc(e.entity_label)}</a>`);
+    if (e.session_label) links.push(`<a href="/sessions/${e.session_id}" style="color:var(--neon);text-decoration:none">🎲 ${esc(e.session_label)}</a>`);
+    if (e.character_label) links.push(`<span style="color:var(--text-dim)">🧑 ${esc(e.character_label)}</span>`);
+    if (e.party_label) links.push(`<span style="color:var(--text-dim)">👥 ${esc(e.party_label)}</span>`);
+    const linksHtml = links.length ? `<div style="display:flex;gap:.5rem;flex-wrap:wrap;font-size:.76rem;margin-top:.15rem">${links.join('')}</div>` : '';
+    row.innerHTML = `<span style="flex:1">${esc(e.title)}${e.notes ? ' — <span style=\"color:var(--text-dim)\">'+esc(e.notes)+'</span>' : ''}${linksHtml}</span>
       <button type="button" style="background:none;border:none;color:#c44;cursor:pointer">✕</button>`;
     row.querySelector('button').addEventListener('click', async () => {
       await fetch('/api/calendar/events/' + e.id + '/delete', { method: 'POST' });
@@ -155,10 +176,13 @@ async function addEvent(dayNum) {
   const title = document.getElementById('ev-title').value.trim();
   if (!title) return;
   const entity_id = document.getElementById('ev-entity').value || null;
+  const session_id = document.getElementById('ev-session').value || null;
+  const character_id = document.getElementById('ev-character').value || null;
+  const party_id = document.getElementById('ev-party').value || null;
   const color = document.getElementById('ev-color').value;
   await fetch('/api/calendar/events', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ day: dayNum, title, entity_id, color }),
+    body: JSON.stringify({ day: dayNum, title, entity_id, session_id, character_id, party_id, color }),
   });
   window.location.reload();
 }

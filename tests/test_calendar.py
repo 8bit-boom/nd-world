@@ -19,7 +19,7 @@ import io
 import json
 
 from app.database import SessionLocal
-from app.models import CalendarDayIcon, WorldCalendar
+from app.models import CalendarDayIcon, CalendarEvent, Entity, GameSession, Party, PlayerCharacter, WorldCalendar
 from app.routers.calendar import _days_per_week, DEFAULT_DAYS_PER_WEEK
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
@@ -222,6 +222,120 @@ def test_calendar_icon_delete_removes_row_and_file(client, seed):
 def test_calendar_icon_delete_unknown_id_404s(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     assert client.post("/api/calendar/icons/999999/delete").status_code == 404
+
+
+# ── CalendarEvent: linking to entity/session/character/party ────────────
+
+def test_calendar_event_add_is_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post("/api/calendar/events", json={"day": 1, "title": "Ambush"})
+    assert r.status_code == 403
+
+
+def test_calendar_event_add_plain(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/calendar/events", json={"day": 5, "title": "Founding Day"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["day"] == 5
+    assert body["title"] == "Founding Day"
+
+
+def test_calendar_event_add_links_entity_session_character_party(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    db = SessionLocal()
+    try:
+        entity = Entity(world_id=seed.world_a.id, kind="location", name="Neon Market")
+        session = GameSession(world_id=seed.world_a.id, title="The Heist", session_num=3)
+        character = PlayerCharacter(world_id=seed.world_a.id, name="Ryn Cutter")
+        party = Party(world_id=seed.world_a.id, name="The Wire Runners")
+        db.add_all([entity, session, character, party])
+        db.commit()
+        for obj in (entity, session, character, party):
+            db.refresh(obj)
+        entity_id, session_id, character_id, party_id = entity.id, session.id, character.id, party.id
+    finally:
+        db.close()
+
+    r = client.post("/api/calendar/events", json={
+        "day": 10, "title": "Big Score",
+        "entity_id": entity_id, "session_id": session_id,
+        "character_id": character_id, "party_id": party_id,
+    })
+    assert r.status_code == 200
+    event_id = r.json()["id"]
+
+    db = SessionLocal()
+    try:
+        ev = db.get(CalendarEvent, event_id)
+        assert ev.entity_id == entity_id
+        assert ev.session_id == session_id
+        assert ev.character_id == character_id
+        assert ev.party_id == party_id
+    finally:
+        db.close()
+
+    page = client.get("/calendar?year=1&month=0").text
+    assert "Neon Market" in page
+    assert "#3 The Heist" in page
+    assert "Ryn Cutter" in page
+    assert "The Wire Runners" in page
+
+
+def test_calendar_event_add_without_links_leaves_them_null(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/calendar/events", json={"day": 2, "title": "Quiet Day"})
+    event_id = r.json()["id"]
+    db = SessionLocal()
+    try:
+        ev = db.get(CalendarEvent, event_id)
+        assert ev.entity_id is None
+        assert ev.session_id is None
+        assert ev.character_id is None
+        assert ev.party_id is None
+    finally:
+        db.close()
+
+
+def test_calendar_view_offers_sessions_characters_parties_as_link_options(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    db = SessionLocal()
+    try:
+        db.add_all([
+            GameSession(world_id=seed.world_a.id, title="Prologue", session_num=1),
+            PlayerCharacter(world_id=seed.world_a.id, name="Vex"),
+            Party(world_id=seed.world_a.id, name="Chrome Fangs"),
+        ])
+        db.commit()
+    finally:
+        db.close()
+    page = client.get("/calendar").text
+    assert "#1 Prologue" in page
+    assert "Vex" in page
+    assert "Chrome Fangs" in page
+
+
+def test_calendar_event_delete(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/calendar/events", json={"day": 1, "title": "Temp"})
+    event_id = r.json()["id"]
+    r2 = client.post(f"/api/calendar/events/{event_id}/delete")
+    assert r2.status_code == 200
+    db = SessionLocal()
+    try:
+        assert db.get(CalendarEvent, event_id) is None
+    finally:
+        db.close()
+
+
+def test_calendar_event_delete_unknown_id_404s(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    assert client.post("/api/calendar/events/999999/delete").status_code == 404
 
 
 def test_calendar_icons_are_world_scoped(client, seed):

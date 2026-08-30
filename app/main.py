@@ -2712,6 +2712,7 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "ollama_server_spec": _tuning.SERVER_ENV_SPEC,
         "ollama_form_prefix": _tuning.FORM_PREFIX,
         "ollama_model_overrides": ollama_model_overrides,
+        "ollama_thinking_failures": _ai_module._model_thinking_failures,
     }
 
 @app.get("/settings", response_class=HTMLResponse)

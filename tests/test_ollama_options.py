@@ -18,6 +18,7 @@ import json
 import os
 import types
 
+import ollama
 import pytest
 
 from app import ai as ai_module
@@ -64,9 +65,11 @@ class _FakeChatClient:
 def _reset_ollama_overrides():
     ai_module.set_ollama_generation_overrides({})
     ai_module._model_capabilities_cache.clear()
+    ai_module._model_thinking_failures.clear()
     yield
     ai_module.set_ollama_generation_overrides({})
     ai_module._model_capabilities_cache.clear()
+    ai_module._model_thinking_failures.clear()
 
 
 # ── app.ai override plumbing ────────────────────────────────────────────────
@@ -1411,3 +1414,109 @@ def test_set_ollama_generation_overrides_clears_capabilities_cache():
     ai_module._model_capabilities_cache["some-model"] = []  # cached as "not thinking"
     ai_module.set_ollama_generation_overrides({})
     assert "some-model" not in ai_module._model_capabilities_cache
+
+
+# ── _model_thinking_failures: warn when a "supports thinking" model ────────
+# ── actually fails at Ollama's own runtime check ────────────────────────────
+#
+# The override checkbox (or KNOWN_MODELS) is a GM's/this codebase's claim,
+# not a guarantee — Ollama itself is still the final word once a real
+# think=true request goes out. If the GM was wrong (or the model was
+# re-pulled and Ollama's real behavior changed), the actual chat call gets
+# the exact "<model> does not support thinking" 400 this whole feature
+# exists to avoid — this tracks that so Settings > System can show a
+# warning next to the model instead of it only ever showing up as a raw
+# chat error the GM has to go dig up.
+
+class _RejectsThinkingClient:
+    """Raises Ollama's real "does not support thinking" ResponseError
+    whenever think=true is actually sent — simulates a GM's override (or
+    KNOWN_MODELS entry) being wrong about a model's real capability."""
+
+    def __init__(self, model_name="my-model"):
+        self._model_name = model_name
+
+    async def show(self, model):
+        return types.SimpleNamespace(capabilities=[])  # Ollama itself never tagged it
+
+    async def chat(self, **kwargs):
+        if kwargs.get("think"):
+            raise ollama.ResponseError(
+                f'"{self._model_name}" does not support thinking', 400,
+            )
+        if kwargs.get("stream"):
+            async def _gen():
+                yield _FakeResp("hi")
+            return _gen()
+        return _FakeResp("hi")
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_records_thinking_failure_on_rejection(monkeypatch):
+    fake = _RejectsThinkingClient("my-model")
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        result = await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="my-model")
+        assert "does not support thinking" in result
+        assert "my-model" in ai_module._model_thinking_failures
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_records_thinking_failure_on_rejection(monkeypatch):
+    fake = _RejectsThinkingClient("my-model")
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        tokens = [tok async for tok in ai_module.stream_chat(
+            [{"role": "user", "content": "hi"}], think=True, model="my-model",
+        )]
+        assert "does not support thinking" in tokens[0]
+        assert "my-model" in ai_module._model_thinking_failures
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_thinking_failure_not_recorded_when_think_was_false(monkeypatch):
+    """A model rejecting thinking is only meaningful if we actually asked
+    for it — an unrelated error on a plain think=false call proves
+    nothing about the model's thinking capability."""
+    class _AlwaysFailsClient:
+        async def chat(self, **kwargs):
+            raise ollama.ResponseError("some unrelated error", 500)
+    monkeypatch.setattr(ai_module, "_client", lambda: _AlwaysFailsClient())
+    await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=False, model="my-model")
+    assert "my-model" not in ai_module._model_thinking_failures
+
+
+@pytest.mark.asyncio
+async def test_thinking_failure_cleared_by_a_later_successful_think_call(monkeypatch):
+    """Once a GM actually fixes the model (or it was transient), a real
+    successful think=true call clears the earlier warning."""
+    ai_module._model_thinking_failures.add("my-model")
+    fake = _FakeChatClient([], show_capabilities=["thinking"])
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    result = await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="my-model")
+    assert result == "hi"
+    assert "my-model" not in ai_module._model_thinking_failures
+
+
+def test_settings_page_shows_thinking_failure_warning(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/settings/system/model-override", data={"model": "my-model", "thinking": "1"})
+    ai_module._model_thinking_failures.add("my-model")
+    try:
+        page = client.get("/settings?tab=system").text
+        assert "thinking failed last time" in page
+    finally:
+        ai_module._model_thinking_failures.discard("my-model")
+
+
+def test_settings_page_hides_thinking_failure_warning_for_unaffected_models(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/settings/system/model-override", data={"model": "my-model", "thinking": "1"})
+    page = client.get("/settings?tab=system").text
+    assert "thinking failed last time" not in page

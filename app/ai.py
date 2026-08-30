@@ -133,6 +133,35 @@ def effective_ollama_keep_alive(model: str = "") -> str:
 
 _model_capabilities_cache: dict[str, list[str]] = {}
 
+# Models where the LAST actual think=true request to Ollama came back with
+# "does not support thinking" — meaning some fallback (KNOWN_MODELS, or a
+# GM's own per-model override checkbox — see _known_model_thinks/
+# _model_override_thinks) told _model_supports_thinking to trust the model,
+# but Ollama's real runtime behavior disagreed. Surfaced as a warning next
+# to that model's per-model override in Settings > System (see main.py's
+# _settings_context) so a GM who ticked the box for a model that turns out
+# not to actually think can see their override didn't work, instead of only
+# finding out from a raw chat error buried in the conversation. In-memory
+# only, same as _model_capabilities_cache — a GM rediscovers this quickly
+# enough on next real use that persisting it isn't worth a schema change.
+_model_thinking_failures: set[str] = set()
+
+
+def _record_thinking_result(model: str, think: bool, failed: bool) -> None:
+    """Called from generate_chat/stream_chat's own try/except — see their
+    call sites for exactly when. Only meaningful when `think` was actually
+    requested; a plain think=False call proves nothing about whether the
+    model can think, so it's a no-op either way."""
+    if not think:
+        return
+    if failed:
+        _model_thinking_failures.add(model)
+    else:
+        # A successful think=true call proves the model genuinely handles
+        # it — clear any earlier failure (a GM fixed it, e.g. by properly
+        # registering the model with Ollama, or it was transient).
+        _model_thinking_failures.discard(model)
+
 
 def _known_model_thinks(model: str) -> bool:
     """True if `model` appears in KNOWN_MODELS with "thinking": True.
@@ -703,6 +732,7 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
     full.extend(messages)
     try:
         resp = await _client().chat(model=m, messages=full, **(await _chat_kwargs(options, think, m)))
+        _record_thinking_result(m, think, failed=False)
         content = resp.message.content
         if content:
             return content
@@ -728,6 +758,8 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
         return _empty_response_message(m, len(thinking or ""), done_reason)
     except _ollama.ResponseError as exc:
         _log.error("generate_chat Ollama error: %s %s", exc.status_code, exc.error)
+        if think and "does not support thinking" in (exc.error or ""):
+            _record_thinking_result(m, think, failed=True)
         return f"[AI error: Ollama {exc.status_code}: {exc.error}]"
     except Exception as exc:
         _log.error("generate_chat unavailable: %s: %s", type(exc).__name__, exc)
@@ -796,6 +828,7 @@ async def stream_chat(
             # a visible answer.
             thinking_chars += len(getattr(chunk.message, "thinking", None) or "")
             done_reason = getattr(chunk, "done_reason", None) or done_reason
+        _record_thinking_result(m, think, failed=False)
         if not yielded_any:
             # Same empty-response case generate_chat handles (see its own
             # comment) — whether from a deliberate think=True request or a
@@ -811,6 +844,8 @@ async def stream_chat(
             yield _empty_response_message(m, thinking_chars, done_reason)
     except _ollama.ResponseError as exc:
         _log.error("stream_chat Ollama error: %s %s", exc.status_code, exc.error)
+        if think and "does not support thinking" in (exc.error or ""):
+            _record_thinking_result(m, think, failed=True)
         yield f"[AI error: Ollama {exc.status_code}: {exc.error}]"
     except Exception as exc:
         _log.error("stream_chat unavailable: %s: %s", type(exc).__name__, exc)

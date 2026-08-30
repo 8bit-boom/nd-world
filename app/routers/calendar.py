@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx
 from ..imaging import convert_image
-from ..models import CalendarDayIcon, CalendarEvent, Entity, World, WorldCalendar
+from ..models import CalendarDayIcon, CalendarEvent, Entity, GameSession, Party, PlayerCharacter, World, WorldCalendar
 from ..templating import templates
 from ..uploads import copy_upload_bounded, unique_upload_filename
 
@@ -129,9 +129,14 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
     ).order_by(CalendarEvent.day).all()
     events_by_day: dict = {}
     for e in events:
-        events_by_day.setdefault(e.day, []).append(
-            {"id": e.id, "title": e.title, "notes": e.notes, "color": e.color, "entity_id": e.entity_id}
-        )
+        events_by_day.setdefault(e.day, []).append({
+            "id": e.id, "title": e.title, "notes": e.notes, "color": e.color,
+            "entity_id": e.entity_id, "entity_label": (e.entity.name if e.entity else None),
+            "session_id": e.session_id,
+            "session_label": (f"#{e.session.session_num} {e.session.title}" if e.session else None),
+            "character_id": e.character_id, "character_label": (e.character.name if e.character else None),
+            "party_id": e.party_id, "party_label": (e.party.name if e.party else None),
+        })
 
     icons = db.query(CalendarDayIcon).filter(
         CalendarDayIcon.world_id == world_id, CalendarDayIcon.day >= month_start, CalendarDayIcon.day <= month_end
@@ -160,6 +165,19 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
     next_month = next_month if next_month < len(months) else 0
 
     entities = [{"id": e.id, "name": e.name} for e in db.query(Entity).filter(Entity.world_id == world_id).order_by(Entity.name).all()]
+    sessions = [
+        {"id": s.id, "label": f"#{s.session_num} {s.title}"}
+        for s in db.query(GameSession).filter(GameSession.world_id == world_id)
+        .order_by(GameSession.session_num.desc()).all()
+    ]
+    characters = [
+        {"id": c.id, "name": c.name}
+        for c in db.query(PlayerCharacter).filter(PlayerCharacter.world_id == world_id).order_by(PlayerCharacter.name).all()
+    ]
+    parties = [
+        {"id": p.id, "name": p.name}
+        for p in db.query(Party).filter(Party.world_id == world_id).order_by(Party.name).all()
+    ]
 
     return templates.TemplateResponse("calendar/month.html", {
         "request": request, "world": world, "worlds": worlds,
@@ -168,7 +186,7 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
         "days_per_week": days_per_week, "lead_pad": range(lead_pad),
         "current_day": current_day, "cur_year": cur_year, "cur_month_idx": cur_month_idx, "cur_dom": cur_dom,
         "prev_month": prev_month, "prev_year": prev_year, "next_month": next_month, "next_year": next_year,
-        "entities": entities,
+        "entities": entities, "sessions": sessions, "characters": characters, "parties": parties,
     })
 
 
@@ -215,6 +233,9 @@ async def calendar_event_add(request: Request, db: Session = Depends(get_db), ac
         title=str(body.get("title", "")).strip() or "Event",
         notes=str(body.get("notes", "")),
         entity_id=int(body["entity_id"]) if body.get("entity_id") else None,
+        session_id=int(body["session_id"]) if body.get("session_id") else None,
+        character_id=int(body["character_id"]) if body.get("character_id") else None,
+        party_id=int(body["party_id"]) if body.get("party_id") else None,
         color=str(body.get("color", "#4488ff")),
     )
     db.add(ev)

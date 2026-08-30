@@ -1145,7 +1145,14 @@ class WorldCalendar(Base):
 
 class CalendarEvent(Base):
     """A single pinned event on a world's calendar, optionally linked to a
-    lore Entity (e.g. an NPC's birthday, a holiday tied to a location)."""
+    lore Entity (covers characters/NPCs, locations, creatures, items, and
+    other events — see KINDS in constants.py; e.g. an NPC's birthday, a
+    holiday tied to a location), a GameSession (marking the in-world day a
+    real session's events took place on — session_date on GameSession
+    itself is the real-world date it was played, a separate axis from
+    this), a PlayerCharacter, or a Party. All four link columns are
+    independent and optional — an event can carry any combination (or
+    none), same as the original entity_id."""
     __tablename__ = "calendar_events"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -1154,10 +1161,16 @@ class CalendarEvent(Base):
     title = Column(String(256), nullable=False)
     notes = Column(Text, default="")
     entity_id = Column(Integer, ForeignKey("entities.id"), nullable=True, index=True)
+    session_id = Column(Integer, ForeignKey("game_sessions.id"), nullable=True, index=True)
+    character_id = Column(Integer, ForeignKey("player_characters.id"), nullable=True, index=True)
+    party_id = Column(Integer, ForeignKey("parties.id"), nullable=True, index=True)
     color = Column(String(16), default="#4488ff")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     entity = relationship("Entity")
+    session = relationship("GameSession")
+    character = relationship("PlayerCharacter")
+    party = relationship("Party")
 
 
 class CalendarDayIcon(Base):
