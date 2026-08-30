@@ -85,7 +85,8 @@ async def test_search_parses_results(monkeypatch):
     url, params = client.calls[0]
     assert url.endswith("/models")
     assert params["search"] == "llama"
-    assert params["filter"] == "gguf"
+    assert "filter" not in params
+    assert params["sort"] == "downloads"
 
 
 @pytest.mark.asyncio

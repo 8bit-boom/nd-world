@@ -344,8 +344,22 @@ async def search_huggingface_models(query: str, limit: int = 20) -> list[dict]:
         return []
     try:
         async with _httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
+            # NOT sending filter="gguf" here (an earlier version did) —
+            # that's HF's tag-filter mechanism, and it's not verified
+            # whether "gguf" is really a registered tag value there; a
+            # filter that matches nothing silently returns zero results
+            # rather than erroring, which is indistinguishable from "search
+            # is broken" from the GM's side. search/sort/direction/limit
+            # match huggingface_hub's own documented list_models() params
+            # against this exact endpoint, so those stay. Whether a given
+            # result repo actually HAS a .gguf file is checked for real
+            # by list_huggingface_gguf_files() once a GM picks one, so
+            # this being permissive just means a few non-GGUF repos might
+            # show up in results (obvious once expanded — "No .gguf files
+            # found in this repo") rather than the search silently
+            # dropping real matches.
             r = await c.get(f"{_HF_API_BASE}/models", params={
-                "search": query, "filter": "gguf", "sort": "downloads",
+                "search": query, "sort": "downloads",
                 "direction": "-1", "limit": max(1, min(limit, 50)),
             })
             if r.status_code >= 400:
