@@ -103,6 +103,12 @@ def set_ollama_generation_overrides(options: dict, keep_alive: str = "", model_o
     _ollama_options_override = dict(options) if options else {}
     _ollama_keep_alive_override = keep_alive or ""
     _ollama_model_overrides = dict(model_overrides) if model_overrides else {}
+    # A GM may have just ticked (or unticked) a model's "thinking" checkbox
+    # (see _model_override_thinks below) — drop any cached capability so the
+    # next call re-checks instead of keeping a stale answer until restart,
+    # same "takes effect on the very next request" promise every other
+    # setting on this page already makes.
+    _model_capabilities_cache.clear()
 
 
 def effective_ollama_options(model: str = "") -> dict:
@@ -131,22 +137,36 @@ _model_capabilities_cache: dict[str, list[str]] = {}
 def _known_model_thinks(model: str) -> bool:
     """True if `model` appears in KNOWN_MODELS with "thinking": True.
 
-    Used as a fallback by _model_supports_thinking when Ollama's own
-    /api/show doesn't tag the model with the "thinking" capability — which
-    is the normal case for any model pulled as a raw GGUF via the
-    hf.co/{user}/{repo}:{filename} tag (including the Unsloth IQ4_NL
-    quantisation below). Official ollama.com library models carry the tag
-    in their Modelfile; raw GGUFs don't, so without this fallback
-    _chat_kwargs would silently downgrade think=True to False for them
-    even though the model is fully capable of thinking mode."""
+    A curated, code-level fallback for models we ship pre-registered
+    (currently just the Unsloth IQ4_NL quantisation) — see
+    _model_override_thinks just below for the GM-editable equivalent that
+    covers everything else without needing a code change."""
     return any(m.get("id") == model and m.get("thinking") for m in KNOWN_MODELS)
+
+
+def _model_override_thinks(model: str) -> bool:
+    """True if a GM has ticked "This model supports thinking" for `model`
+    in Settings > System's per-model overrides (Settings.html's pmo-thinking
+    checkbox, saved into AppSettings.ollama_model_overrides_json).
+
+    This is the general-purpose escape hatch _known_model_thinks can't be:
+    KNOWN_MODELS is a short, curated, code-level list that needs a commit
+    and a deploy to extend, but any model a GM pulls via the Hugging Face
+    search/upload feature or uploads straight from their PC is, by
+    definition, something this codebase has never seen before and can't
+    have pre-registered. Ollama's own /api/show won't tag a raw GGUF as
+    thinking-capable either way (see _model_supports_thinking) — so
+    without this, thinking mode would only ever work for the one model
+    KNOWN_MODELS happens to list. A GM who knows their own model's
+    behavior can just tick the box instead of waiting on a code change."""
+    return bool(_ollama_model_overrides.get(model, {}).get("thinking"))
 
 
 async def _model_supports_thinking(model: str) -> bool:
     """Whether `model` supports thinking mode — checked via Ollama's
-    /api/show capabilities tag first, then by KNOWN_MODELS' own
-    "thinking": True flag as a fallback for raw-GGUF models that Ollama
-    won't tag automatically.
+    /api/show capabilities tag first, then by KNOWN_MODELS' and the
+    per-model override's own "thinking": True flags as fallbacks for
+    models Ollama won't tag automatically.
 
     A model pulled as a raw GGUF — including via this app's own Hugging
     Face search/upload features — doesn't reliably carry the "thinking"
@@ -157,16 +177,20 @@ async def _model_supports_thinking(model: str) -> bool:
     below for where this gates a requested think=True back down to False
     instead of letting that 400 reach the user as a raw error.
 
-    The KNOWN_MODELS fallback is authoritative for models we've explicitly
-    listed as thinking-capable (e.g. the Unsloth IQ4_NL quantisation) —
-    "thinking": True in that list means we've confirmed the model handles
-    thinking tokens correctly even though Ollama's own tag won't be set.
+    Both fallbacks are authoritative when set — KNOWN_MODELS for the
+    handful of models this codebase ships pre-registered (e.g. the
+    Unsloth IQ4_NL quantisation), the per-model override for anything a
+    GM has confirmed themselves (see _model_override_thinks) — either one
+    means we trust the model handles thinking tokens correctly even
+    though Ollama's own tag won't be set.
 
     Cached per-model for the life of the process — capabilities are static
     for an already-pulled model, and a restart (e.g. after a Watchtower
-    deploy) naturally clears this if a model is ever replaced. Only called
-    when think is actually truthy (see below), so the common think=False
-    path never pays for the extra /api/show round trip at all."""
+    deploy), or a settings save (see set_ollama_generation_overrides),
+    naturally clears this if a model is ever replaced or an override
+    changes. Only called when think is actually truthy (see below), so
+    the common think=False path never pays for the extra /api/show round
+    trip at all."""
     if model in _model_capabilities_cache:
         return "thinking" in _model_capabilities_cache[model]
     caps: list[str] = []
@@ -174,8 +198,8 @@ async def _model_supports_thinking(model: str) -> bool:
         resp = await _client().show(model)
         caps = list(resp.capabilities or [])
     except Exception:
-        pass  # fail soft — check KNOWN_MODELS below before giving up
-    if "thinking" not in caps and _known_model_thinks(model):
+        pass  # fail soft — check the fallbacks below before giving up
+    if "thinking" not in caps and (_known_model_thinks(model) or _model_override_thinks(model)):
         caps = list(caps) + ["thinking"]
     _model_capabilities_cache[model] = caps
     return "thinking" in caps

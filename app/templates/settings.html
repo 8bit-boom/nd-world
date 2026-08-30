@@ -418,8 +418,8 @@
       {% for m, o in ollama_model_overrides.items() %}
       <div class="nd-job-row" style="align-items:center">
         <span class="nd-job-label">
-          <strong>{{ m }}</strong>
-          — {{ o.options.keys() | list | join(', ') if o.options else '' }}{% if o.keep_alive %}{{ ', ' if o.options else '' }}keep_alive={{ o.keep_alive }}{% endif %}
+          <strong>{{ m }}</strong>{% if o.thinking %} 🧠{% endif %}
+          — {{ o.options.keys() | list | join(', ') if o.options else '' }}{% if o.keep_alive %}{{ ', ' if o.options else '' }}keep_alive={{ o.keep_alive }}{% endif %}{% if o.thinking %}{{ ', ' if (o.options or o.keep_alive) else '' }}thinking-capable{% endif %}
         </span>
         <form method="post" action="/settings/system/model-override/delete" style="display:inline;margin:0" onsubmit="return confirm('Remove the override for {{ m }}?')">
           <input type="hidden" name="model" value="{{ m }}">
@@ -469,6 +469,19 @@
       <div class="form-group">
         <label for="pmo-keep-alive">Keep-alive (how long to keep the model loaded, e.g. 5m, 1h, -1, 0)</label>
         <input id="pmo-keep-alive" name="keep_alive" placeholder="instance default">
+      </div>
+      <div class="form-group" style="flex-direction:row;align-items:center;gap:.5rem">
+        <input type="checkbox" id="pmo-thinking" name="thinking" value="1" style="width:auto">
+        <label for="pmo-thinking" style="margin:0">
+          🧠 This model supports thinking mode
+          <small style="display:block;color:var(--text-dim);font-weight:normal">
+            Tick this for a model you know can think but that Ollama itself won't tag as
+            thinking-capable — this is the normal case for a raw .gguf pulled via Hugging Face
+            search or uploaded from your PC (Ollama's own tag only comes from an official
+            library model's Modelfile). Without this, the Thinking checkbox on chat/recap pages
+            silently does nothing for that model instead of erroring.
+          </small>
+        </label>
       </div>
       <div class="form-actions">
         <button type="submit" class="btn-primary">Save override</button>

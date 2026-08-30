@@ -1284,3 +1284,130 @@ def test_settings_page_model_override_field_is_a_dropdown_not_free_text():
     assert '<input id="pmo-model"' not in page
     assert "function populatePmoModelSelect(models)" in page
     assert "populatePmoModelSelect(data.models || [])" in page
+
+
+# ── Per-model override: "this model supports thinking" checkbox ────────────
+#
+# The general-purpose fix for "I need thinking to work for a model that
+# isn't in KNOWN_MODELS" — a GM ticks a box for any model (one pulled via
+# the Hugging Face search feature, one uploaded straight from their PC,
+# anything) instead of needing a code change + redeploy for every new
+# thinking-capable model that shows up. See app.ai._model_override_thinks.
+
+def test_model_override_save_with_thinking_checkbox(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/settings/system/model-override", data={
+        "model": "hf.co/some-org/some-model-GGUF:Q4_K_M.gguf", "thinking": "1",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        overrides = json.loads(settings.ollama_model_overrides_json)
+        assert overrides["hf.co/some-org/some-model-GGUF:Q4_K_M.gguf"] == {
+            "options": {}, "keep_alive": "", "thinking": True,
+        }
+    finally:
+        db.close()
+
+
+def test_model_override_thinking_checkbox_alone_is_not_treated_as_blank(client, seed):
+    """Ticking only the thinking box (no options, no keep_alive) must still
+    create/keep the override entry — it isn't "nothing set"."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/settings/system/model-override", data={"model": "some-model", "thinking": "1"})
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        assert json.loads(settings.ollama_model_overrides_json)["some-model"]["thinking"] is True
+    finally:
+        db.close()
+
+
+def test_model_override_unticking_thinking_removes_it(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/settings/system/model-override", data={"model": "some-model", "thinking": "1", "temperature": "0.5"})
+    # Re-save with thinking left unticked (the box just isn't sent at all,
+    # matching how an unchecked HTML checkbox submits) but temperature kept.
+    client.post("/settings/system/model-override", data={"model": "some-model", "temperature": "0.5"})
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        entry = json.loads(settings.ollama_model_overrides_json)["some-model"]
+        assert "thinking" not in entry
+        assert entry["options"] == {"temperature": 0.5}
+    finally:
+        db.close()
+
+
+def test_settings_page_ships_thinking_checkbox_in_model_override_form():
+    page = open("app/templates/settings.html").read()
+    assert 'id="pmo-thinking" name="thinking"' in page
+    assert "This model supports thinking mode" in page
+
+
+def test_settings_page_shows_thinking_indicator_for_flagged_models(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/settings/system/model-override", data={"model": "gemma4:26b", "thinking": "1"})
+    page = client.get("/settings?tab=system").text
+    assert "thinking-capable" in page
+
+
+def test_model_override_thinks_true_when_flagged():
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        assert ai_module._model_override_thinks("my-model") is True
+        assert ai_module._model_override_thinks("other-model") is False
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_model_supports_thinking_falls_back_to_model_override_when_show_lacks_tag(monkeypatch):
+    fake = _FakeChatClient([], show_capabilities=["completion"])
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-uploaded-model": {"thinking": True}})
+    try:
+        assert await ai_module._model_supports_thinking("my-uploaded-model") is True
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_model_supports_thinking_falls_back_to_model_override_when_show_fails(monkeypatch):
+    class _BrokenShowClient:
+        async def show(self, model):
+            raise RuntimeError("connection refused")
+    monkeypatch.setattr(ai_module, "_client", lambda: _BrokenShowClient())
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-uploaded-model": {"thinking": True}})
+    try:
+        assert await ai_module._model_supports_thinking("my-uploaded-model") is True
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_chat_kwargs_keeps_think_true_for_a_gm_flagged_model(monkeypatch):
+    """End-to-end: a GM-uploaded model with no KNOWN_MODELS entry at all,
+    flagged thinking-capable purely via the Settings UI."""
+    calls = []
+    fake = _FakeChatClient(calls, show_capabilities=[])
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-custom-upload": {"thinking": True}})
+    try:
+        tokens = [tok async for tok in ai_module.stream_chat(
+            [{"role": "user", "content": "hi"}], think=True, model="my-custom-upload",
+        )]
+        assert tokens == ["hi"]
+        assert calls[0]["think"] is True
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+def test_set_ollama_generation_overrides_clears_capabilities_cache():
+    """A GM ticking the thinking box must take effect on the very next
+    request, not require a restart — same promise every other setting on
+    this page makes."""
+    ai_module._model_capabilities_cache["some-model"] = []  # cached as "not thinking"
+    ai_module.set_ollama_generation_overrides({})
+    assert "some-model" not in ai_module._model_capabilities_cache

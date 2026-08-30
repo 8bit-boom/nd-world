@@ -2962,6 +2962,7 @@ def settings_model_override_save(
     seed: str = Form(""),
     num_gpu: str = Form(""),
     keep_alive: str = Form(""),
+    thinking: str = Form(""),
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
@@ -2985,14 +2986,21 @@ def settings_model_override_save(
         if val is not None:
             options[field] = val
     keep_alive = keep_alive.strip()[:32]
+    thinks = bool(thinking)
 
     settings = get_app_settings(db)
     try:
         overrides = json.loads(settings.ollama_model_overrides_json or "{}")
     except Exception:
         overrides = {}
-    if options or keep_alive:
-        overrides[model] = {"options": options, "keep_alive": keep_alive}
+    if options or keep_alive or thinks:
+        entry = {"options": options, "keep_alive": keep_alive}
+        # Only stored when checked — see app.ai._model_override_thinks,
+        # which treats an absent/falsy key the same as "not confirmed", so
+        # there's no need for an explicit False here.
+        if thinks:
+            entry["thinking"] = True
+        overrides[model] = entry
     else:
         # Nothing actually set for this model — same as never having added
         # an override, so don't leave a phantom empty entry behind.
