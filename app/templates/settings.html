@@ -432,7 +432,7 @@
     <form method="post" action="/settings/system/model-override" class="entity-form">
       <div class="form-group">
         <label for="pmo-model">Model</label>
-        <input id="pmo-model" name="model" placeholder="e.g. gemma4:26b" required>
+        <select id="pmo-model" name="model" required><option value="">— loading downloaded models —</option></select>
       </div>
       <div class="form-group">
         <label for="pmo-temperature">Temperature (0–2)</label>
@@ -612,6 +612,22 @@ function ndCopyRestartCmd() {
     if (models.some(m => m.model === PREFERRED_MODEL)) modelSelect.value = PREFERRED_MODEL;
   }
 
+  // Per-model overrides' own "Model" field (below) reuses this same
+  // installed-models list — one fetch, two dropdowns — rather than a
+  // free-text field a GM could typo against a model that isn't even
+  // downloaded.
+  const pmoModelSelect = document.getElementById('pmo-model');
+  function populatePmoModelSelect(models) {
+    if (!pmoModelSelect) return;
+    if (!models.length) {
+      pmoModelSelect.innerHTML = '<option value="">— no models detected —</option>';
+      return;
+    }
+    pmoModelSelect.innerHTML = '<option value="">— choose a model —</option>' + models.map(m =>
+      `<option value="${esc(m.model)}">${esc(m.model)}${m.parameter_size ? ' (' + esc(m.parameter_size) + ')' : ''}</option>`
+    ).join('');
+  }
+
   function renderRecommendation() {
     const model = modelSelect.value;
     const entry = currentModels.find(m => m.model === model);
@@ -667,9 +683,11 @@ function ndCopyRestartCmd() {
     }).then(data => {
       renderSummary(data.hardware || {});
       populateModelSelect(data.models || []);
+      populatePmoModelSelect(data.models || []);
       renderRecommendation();
     }).catch(err => {
       summaryEl.textContent = '⚠ Couldn\'t load hardware info: ' + err.message;
+      if (pmoModelSelect) pmoModelSelect.innerHTML = '<option value="">— couldn\'t load models —</option>';
     });
   };
 

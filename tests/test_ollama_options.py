@@ -1147,3 +1147,17 @@ def test_settings_page_ships_per_model_override_form(client, seed):
     assert 'action="/settings/system/model-override/delete"' in page
     assert "gemma4:26b" in page
     assert "temperature" in page
+
+
+def test_settings_page_model_override_field_is_a_dropdown_not_free_text():
+    """The "Model" field must be a <select> populated from installed
+    models, not a free-text <input> a GM could typo against a model that
+    isn't even downloaded — see populatePmoModelSelect in settings.html."""
+    page = open("app/templates/settings.html").read()
+    assert '<select id="pmo-model" name="model" required>' in page
+    assert 'id="pmo-model" name="model"' in page
+    # Populated from the same installed-models fetch the hardware panel
+    # already makes — no free-text <input id="pmo-model" left over.
+    assert '<input id="pmo-model"' not in page
+    assert "function populatePmoModelSelect(models)" in page
+    assert "populatePmoModelSelect(data.models || [])" in page
