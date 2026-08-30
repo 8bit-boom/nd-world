@@ -1109,6 +1109,104 @@ async def ai_pull(body: PullBody):
     )
 
 
+@router.get("/ollama/hf-search")
+async def api_ollama_hf_search(q: str = ""):
+    """Search Hugging Face for GGUF models a GM can pull straight into
+    Ollama — see app.ai.search_huggingface_models's own docstring for why
+    this is just a discovery step, not a separate download mechanism
+    (the actual pull still goes through the existing POST /pull above,
+    with model_id="hf.co/{repo}:{filename}")."""
+    return {"results": await _ai.search_huggingface_models(q)}
+
+
+@router.get("/ollama/hf-files")
+async def api_ollama_hf_files(repo: str = ""):
+    """The .gguf files (with size) in a specific HF repo a GM picked from
+    the search results above — a second call since HF's search response
+    itself doesn't include a file listing."""
+    return {"files": await _ai.list_huggingface_gguf_files(repo)}
+
+
+# ── Upload a local .gguf file straight into Ollama ───────────────────────
+# Same chunked-upload shape every other large-file upload on this app uses
+# (app.uploads.save_upload_chunk/reassemble_upload_chunks — see e.g. the
+# session audio-jobs pair in app/routers/sessions.py) since a multi-GB
+# model file will always exceed a reverse proxy/CDN's own per-request body
+# cap (Cloudflare's free tier is a fixed 100 MB — see docs/DEPLOYMENT.md).
+# Env-overridable like MAX_UPLOAD_BYTES/MAX_AUDIO_UPLOAD_BYTES — defaults
+# generously since even a heavily-quantized large model can run tens of GB.
+_MAX_MODEL_UPLOAD_BYTES = int(_os.environ.get("MAX_MODEL_UPLOAD_BYTES", str(80 * 1024 * 1024 * 1024)))
+_MODEL_UPLOAD_SUBDIR = "ollama_models"
+
+
+def _model_upload_chunks_root() -> _Path:
+    return _uploads_root() / _MODEL_UPLOAD_SUBDIR / "_chunks"
+
+
+async def _finish_local_gguf_import(dest: _Path, model_name: str) -> dict:
+    """Drive app.ai.import_local_gguf_model to completion and collapse its
+    progress-generator yields into one final JSON-able result — used by
+    both upload routes below. Not streamed to the client as SSE: unlike
+    /pull above, ndChunkedUpload (static/js/chunked-upload.js) is a plain
+    XHR-based helper that expects one plain JSON response from directUrl/
+    completeUrl, not an event stream — the real-time part of this whole
+    flow is the file transfer itself, which ndChunkedUpload already reports
+    byte-accurate upload progress for on its own; the "push blob to Ollama
+    + register" phase that follows has no useful sub-progress anyway (see
+    import_local_gguf_model's own docstring), so it just renders as
+    ndChunkedUpload's existing indeterminate "processing" phase client-side
+    while this awaits the result."""
+    try:
+        result = {"error": "No progress reported"}
+        async for progress in _ai.import_local_gguf_model(dest, model_name):
+            result = progress
+        return result
+    finally:
+        dest.unlink(missing_ok=True)
+
+
+@router.post("/ollama/upload/direct")
+async def api_ollama_upload_direct(file: UploadFile = File(...), model_name: str = Form(...)):
+    """ndChunkedUpload's directUrl — used for a .gguf small enough to fit
+    under the chunking threshold (100 MB), which in practice is rare for a
+    real model but still a valid path ndChunkedUpload always supports."""
+    ext = _Path(file.filename or "").suffix.lower()
+    if ext != ".gguf":
+        raise HTTPException(400, "Only .gguf files are supported")
+    dest_dir = _model_upload_chunks_root().parent
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / unique_upload_filename(file.filename, ext)
+    copy_upload_bounded(file, dest, max_bytes=_MAX_MODEL_UPLOAD_BYTES)
+    return await _finish_local_gguf_import(dest, model_name)
+
+
+@router.post("/ollama/upload/chunk")
+async def api_ollama_upload_chunk(
+    file: UploadFile = File(...), upload_id: str = Form(...), chunk_index: int = Form(...),
+):
+    save_upload_chunk(_model_upload_chunks_root(), upload_id, chunk_index, file, max_bytes=_MAX_MODEL_UPLOAD_BYTES)
+    return {"ok": True}
+
+
+@router.post("/ollama/upload/complete")
+async def api_ollama_upload_complete(
+    upload_id: str = Form(...), filename: str = Form(...), total_chunks: int = Form(...),
+    model_name: str = Form(...),
+):
+    """Reassemble the parts uploaded via .../chunk above, then push the
+    result into Ollama as `model_name` (see _finish_local_gguf_import)."""
+    ext = _Path(filename or "").suffix.lower()
+    if ext != ".gguf":
+        raise HTTPException(400, "Only .gguf files are supported")
+    dest_dir = _model_upload_chunks_root().parent
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / unique_upload_filename(filename, ext)
+    reassemble_upload_chunks(
+        _model_upload_chunks_root(), upload_id, total_chunks, dest, max_bytes=_MAX_MODEL_UPLOAD_BYTES,
+    )
+    return await _finish_local_gguf_import(dest, model_name)
+
+
 @router.get("/whisper/model-status")
 async def api_whisper_model_status():
     return _ai.whisper_model_status()

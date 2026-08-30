@@ -318,6 +318,133 @@ async def installed_models_detail() -> list[dict]:
     return out
 
 
+# ── Hugging Face model search + pull, and local GGUF import ─────────────────
+# Ollama's own /api/pull (see app.routers.ai's existing POST /pull route,
+# already wired to the client-side Models tab) understands a model id of the
+# form "hf.co/{user}/{repo}:{filename}" natively — pulling a GGUF straight
+# from a Hugging Face repo, no separate download step of our own needed. One
+# of KNOWN_MODELS above already uses this exact form
+# ("hf.co/noctrex/gemma-4-26B-A4B-it-MXFP4_MOE-GGUF:gemma-4-26B-A4B-it-MXFP4_MOE.gguf"),
+# confirmed working — the two functions below just help a GM discover a
+# repo/filename to plug into that same tag, they don't reimplement the pull.
+
+_HF_API_BASE = "https://huggingface.co/api"
+
+
+async def search_huggingface_models(query: str, limit: int = 20) -> list[dict]:
+    """Search Hugging Face's public Hub API for GGUF-tagged models (the only
+    format Ollama's hf.co pull mechanism understands) — a read-only,
+    unauthenticated call to HF's own /api/models. Returns [] on any failure
+    (network, malformed response, HF unreachable from this host) rather
+    than raising, same as installed_models_detail()/imagegen_models() above
+    — a GM without outbound internet from this specific deployment just
+    sees an empty result instead of a 500."""
+    query = (query or "").strip()
+    if not query:
+        return []
+    try:
+        async with _httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
+            r = await c.get(f"{_HF_API_BASE}/models", params={
+                "search": query, "filter": "gguf", "sort": "downloads",
+                "direction": "-1", "limit": max(1, min(limit, 50)),
+            })
+            if r.status_code >= 400:
+                return []
+            data = r.json()
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for m in data:
+        if not isinstance(m, dict):
+            continue
+        repo_id = m.get("id") or m.get("modelId") or ""
+        if not repo_id:
+            continue
+        out.append({
+            "id": repo_id,
+            "downloads": m.get("downloads") or 0,
+            "likes": m.get("likes") or 0,
+        })
+    return out
+
+
+async def list_huggingface_gguf_files(repo_id: str) -> list[dict]:
+    """The .gguf files actually in `repo_id`, with size — a second call per
+    repo (HF's search results above don't include a file listing), used
+    once a GM picks a search result so they can see which quantizations
+    exist and roughly how big each one is before pulling a possibly
+    multi-GB file. Uses HF's tree API (the plain /api/models/{id} endpoint
+    doesn't include file sizes). Returns [] on any failure, same reasoning
+    as search_huggingface_models above."""
+    repo_id = (repo_id or "").strip().strip("/")
+    if not repo_id or "/" not in repo_id:
+        return []
+    try:
+        async with _httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
+            r = await c.get(f"{_HF_API_BASE}/models/{repo_id}/tree/main")
+            if r.status_code >= 400:
+                return []
+            data = r.json()
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path", "")
+        if path.lower().endswith(".gguf"):
+            out.append({"filename": path, "size_bytes": entry.get("size")})
+    return out
+
+
+async def import_local_gguf_model(path: Path, model_name: str) -> AsyncGenerator[dict, None]:
+    """Push a GGUF file already on local disk (an upload just reassembled
+    by app.uploads' chunked-upload pair — see app.routers.ai's /ollama/
+    upload/complete) into Ollama as a new named model.
+
+    Ollama's own API for this is two calls (verified against the installed
+    ollama==0.6.2 client's actual source, not guessed — its AsyncClient.
+    create_blob reads `path` from local disk and streams it in 32KB chunks
+    over HTTP to POST /api/blobs/{sha256-digest}, then .create(model=...,
+    files={filename: digest}) posts to /api/create referencing that
+    digest): create_blob() only needs `path` readable by wherever THIS code
+    runs (nd-world's own container) — the file does NOT need to live on a
+    volume shared with the "ollama" Compose service the way SWARMUI_MODELS_DIR/
+    WHISPER_MODELS_DIR do, since the blob is pushed over the network, not
+    read off a shared disk.
+
+    Yields the same {"total":,"completed":}/{"status":"done",...}/
+    {"error":} shape download_swarmui_model already uses (so the client-side
+    JS can reuse identical progress-bar parsing), except create_blob has no
+    byte-level progress callback of its own — the "pushing to Ollama" phase
+    is reported as a single indeterminate step rather than granular bytes,
+    since by this point the file is already fully on local disk and the
+    only remaining unknown-duration work is the blob upload + registration."""
+    model_name = (model_name or "").strip()
+    if not model_name:
+        yield {"error": "No model name given"}
+        return
+    if not path.is_file():
+        yield {"error": "Uploaded file is missing"}
+        return
+    try:
+        client = _client()
+        yield {"status": "uploading", "detail": "Pushing file to Ollama…"}
+        digest = await client.create_blob(str(path))
+        yield {"status": "creating", "detail": "Registering model…"}
+        await client.create(model=model_name, files={path.name: digest})
+        yield {"status": "done", "model": model_name}
+    except _ollama.ResponseError as exc:
+        yield {"error": f"Ollama {exc.status_code}: {exc.error}"}
+    except Exception as exc:
+        _log.warning("import_local_gguf_model failed: %s: %s", type(exc).__name__, exc)
+        yield {"error": f"{type(exc).__name__}: {exc}"}
+
+
 async def resolve_model(requested: str) -> tuple[str, str | None]:
     """Resolve a possibly-short model id (e.g. "llama3") against what's
     actually available (e.g. "llama3:latest"). Returns (model, note) —

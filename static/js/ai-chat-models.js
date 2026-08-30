@@ -468,3 +468,149 @@ function mpQuickPull(modelId) {
 
 function mpRefresh() { mpLoad(); loadModels(); }
 
+// ── Search Hugging Face ──────────────────────────────────────────────────
+// Discovery only — picking a result just fills in the same "Model ID"
+// field the Pull & Add box above uses (model_id="hf.co/{repo}:{filename}",
+// the exact form Ollama's own /api/pull already understands, see
+// app.ai.search_huggingface_models's docstring) and reuses mpQuickPull's
+// existing pull flow, so no separate download mechanism exists here.
+
+function mpFmtBytes(n) {
+  if (!n && n !== 0) return '';
+  return n >= 1e9 ? (n / 1e9).toFixed(1) + ' GB' : (n / 1e6).toFixed(0) + ' MB';
+}
+
+async function mpHfSearch() {
+  const q = (document.getElementById('mp-hf-query').value || '').trim();
+  const resultsEl = document.getElementById('mp-hf-results');
+  if (!q) { resultsEl.innerHTML = ''; return; }
+  resultsEl.innerHTML = '<div style="color:var(--text-dim);font-size:.8rem">⏳ Searching…</div>';
+  try {
+    const res = await fetch('/api/ai/ollama/hf-search?q=' + encodeURIComponent(q));
+    const data = await res.json();
+    const models = data.results || [];
+    if (!models.length) {
+      resultsEl.innerHTML = '<div style="color:var(--text-dim);font-size:.8rem">No GGUF models found.</div>';
+      return;
+    }
+    resultsEl.innerHTML = '';
+    models.forEach((m) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'border:1px solid var(--border);border-radius:4px;padding:.5rem .65rem';
+      row.innerHTML =
+        `<div style="display:flex;justify-content:space-between;align-items:center;gap:.5rem">` +
+        `<span style="font-size:.82rem;word-break:break-all">${mpEsc(m.id)}</span>` +
+        `<span style="font-size:.7rem;color:var(--text-dim);white-space:nowrap">⬇ ${m.downloads || 0} · ♥ ${m.likes || 0}</span>` +
+        `</div><div class="mp-hf-files" style="margin-top:.4rem;font-size:.76rem;color:var(--text-dim)">Click to see available files…</div>`;
+      row.style.cursor = 'pointer';
+      row.onclick = () => mpHfShowFiles(m.id, row.querySelector('.mp-hf-files'));
+      resultsEl.appendChild(row);
+    });
+  } catch (e) {
+    resultsEl.innerHTML = '<div style="color:#f66;font-size:.8rem">Search failed: ' + mpEsc(e.message) + '</div>';
+  }
+}
+
+function mpEsc(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+let _mpHfFilesLoading = false;
+async function mpHfShowFiles(repoId, containerEl) {
+  if (_mpHfFilesLoading || containerEl.dataset.loaded) return;
+  _mpHfFilesLoading = true;
+  containerEl.textContent = '⏳ Loading files…';
+  try {
+    const res = await fetch('/api/ai/ollama/hf-files?repo=' + encodeURIComponent(repoId));
+    const data = await res.json();
+    const files = data.files || [];
+    containerEl.dataset.loaded = '1';
+    if (!files.length) {
+      containerEl.textContent = 'No .gguf files found in this repo.';
+      return;
+    }
+    containerEl.innerHTML = '';
+    containerEl.style.display = 'flex';
+    containerEl.style.flexWrap = 'wrap';
+    containerEl.style.gap = '.3rem';
+    files.forEach((f) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ig-preset-btn';
+      btn.textContent = f.filename + (f.size_bytes ? ` (${mpFmtBytes(f.size_bytes)})` : '');
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        mpQuickPull(`hf.co/${repoId}:${f.filename}`);
+      };
+      containerEl.appendChild(btn);
+    });
+  } catch (e) {
+    containerEl.textContent = 'Could not load files: ' + e.message;
+  } finally {
+    _mpHfFilesLoading = false;
+  }
+}
+
+// ── Upload a local .gguf file ────────────────────────────────────────────
+
+function mpUploadFileChosen() {
+  const inp = document.getElementById('mp-upload-file');
+  const f = inp.files[0];
+  const label = document.getElementById('mp-upload-filename');
+  const nameField = document.getElementById('mp-upload-name');
+  const btn = document.getElementById('mp-upload-btn');
+  if (!f) { label.textContent = ''; btn.disabled = true; return; }
+  label.textContent = `${f.name} (${mpFmtBytes(f.size)})`;
+  if (!nameField.value.trim()) {
+    nameField.value = f.name.replace(/\.gguf$/i, '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
+  }
+  btn.disabled = false;
+}
+
+let _mpUploading = false;
+async function mpUploadModel() {
+  if (_mpUploading) return;
+  const inp = document.getElementById('mp-upload-file');
+  const file = inp.files[0];
+  const modelName = (document.getElementById('mp-upload-name').value || '').trim();
+  if (!file) return;
+  if (!modelName) { alert('Give the model a name first.'); return; }
+  _mpUploading = true;
+  const btn = document.getElementById('mp-upload-btn');
+  const prog = document.getElementById('mp-upload-progress');
+  const bar = document.getElementById('mp-upload-bar');
+  const lbl = document.getElementById('mp-upload-label');
+  btn.disabled = true;
+  prog.style.display = 'block';
+  bar.style.width = '0%';
+  lbl.textContent = 'Starting upload…';
+  try {
+    const data = await ndChunkedUpload(file, {
+      directUrl: '/api/ai/ollama/upload/direct',
+      chunkUrl: '/api/ai/ollama/upload/chunk',
+      completeUrl: '/api/ai/ollama/upload/complete',
+      extraFields: { model_name: modelName },
+      onProgress: ({ phase, percent }) => {
+        if (phase === 'upload') {
+          bar.style.width = percent + '%';
+          lbl.textContent = `Uploading… ${percent}%`;
+        } else {
+          bar.style.width = '100%';
+          lbl.textContent = 'Importing into Ollama… (this can take a while for a large model)';
+        }
+      },
+    });
+    if (data.error) throw new Error(data.error);
+    lbl.textContent = `✓ ${modelName} imported`;
+    inp.value = '';
+    document.getElementById('mp-upload-filename').textContent = '';
+    document.getElementById('mp-upload-name').value = '';
+    setTimeout(() => { prog.style.display = 'none'; mpLoad(); loadModels(); }, 1500);
+  } catch (e) {
+    lbl.textContent = '✗ Failed: ' + e.message;
+    btn.disabled = false;
+  } finally {
+    _mpUploading = false;
+  }
+}
+

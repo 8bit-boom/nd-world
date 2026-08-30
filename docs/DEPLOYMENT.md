@@ -148,8 +148,9 @@ uploads) rejected with a page that says **"413 Payload Too Large" /
 cloudflare** at the bottom hit that edge limit before it ever reached
 nd-world — it's not something `.env` or nd-world's own settings can raise.
 nd-world's own per-upload caps sit *below* whatever Cloudflare allows
-through (see `MAX_UPLOAD_BYTES`, `MAX_AUDIO_UPLOAD_BYTES`, and
-`MAX_AI_ATTACHMENT_BYTES` in `.env.example`), so raise the relevant one if
+through (see `MAX_UPLOAD_BYTES`, `MAX_AUDIO_UPLOAD_BYTES`,
+`MAX_AI_ATTACHMENT_BYTES`, and `MAX_MODEL_UPLOAD_BYTES` in `.env.example`),
+so raise the relevant one if
 you need bigger files end to end. Every audio upload path is the exception:
 the Audio Library (`/audio`), a voice-memo attachment on the AI Chat compose
 bar / an entity's Ask AI panel / the Whisper Test tab, and a Session's audio

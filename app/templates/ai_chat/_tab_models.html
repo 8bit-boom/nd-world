@@ -86,6 +86,48 @@
     </div>
   </div>
 
+  <!-- Search Hugging Face -->
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-bottom:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">🔎 Search Hugging Face</div>
+    <div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.55rem">
+      Finds GGUF-format models on Hugging Face — the only format Ollama can pull directly. Pick a file
+      and it downloads the same way as Pull &amp; Add above.
+    </div>
+    <div style="display:flex;gap:.5rem">
+      <input id="mp-hf-query" type="text" placeholder="Search Hugging Face models…"
+             style="flex:1;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:.85rem;padding:.38rem .55rem"
+             onkeydown="if(event.key==='Enter')mpHfSearch()">
+      <button class="ig-btn" onclick="mpHfSearch()">Search</button>
+    </div>
+    <div id="mp-hf-results" style="margin-top:.6rem;display:flex;flex-direction:column;gap:.4rem"></div>
+  </div>
+
+  <!-- Upload a local .gguf -->
+  <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-bottom:1rem">
+    <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">⬆ Upload from your PC</div>
+    <div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.55rem">
+      Already have a .gguf file downloaded? Upload it straight into Ollama — no size limit beyond disk
+      space, large files upload in parts automatically.
+    </div>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+      <input id="mp-upload-name" type="text" placeholder="Model name — e.g. my-custom-model"
+             style="flex:1;min-width:180px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:.85rem;padding:.38rem .55rem">
+      <label class="ig-btn" style="display:inline-block;cursor:pointer;white-space:nowrap">
+        Choose .gguf file…
+        <input type="file" id="mp-upload-file" accept=".gguf" style="display:none" onchange="mpUploadFileChosen()">
+      </label>
+    </div>
+    <div id="mp-upload-filename" style="font-size:.72rem;color:var(--text-dim);margin-top:.3rem"></div>
+    <button class="ig-btn" id="mp-upload-btn" onclick="mpUploadModel()" disabled
+            style="margin-top:.5rem;border-color:var(--neon);color:var(--neon)">⬆ Upload &amp; Import</button>
+    <div id="mp-upload-progress" style="display:none;margin-top:.65rem">
+      <div style="font-size:.78rem;color:var(--neon);margin-bottom:.25rem" id="mp-upload-label">Starting…</div>
+      <div style="height:5px;background:var(--bg3);border-radius:3px;overflow:hidden">
+        <div id="mp-upload-bar" style="height:100%;width:0%;background:var(--neon);border-radius:3px;transition:width .2s"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- Quick-pick popular models -->
   <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2)">
     <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">Popular Models</div>
