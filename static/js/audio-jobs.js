@@ -72,7 +72,20 @@ function ndAudioJobs(panelEl, opts) {
         btn.type = "button";
         btn.className = "nd-job-use-btn";
         btn.textContent = "Use this";
-        btn.onclick = () => opts.onUse(job);
+        // data-action/data-job-id + the single delegated listener below,
+        // NOT btn.onclick here — this button is torn down and recreated by
+        // panelEl.innerHTML="" on every poll (every pollMs while any job
+        // is in progress), so a handler bound directly to it can lose a
+        // tap that lands between touchstart and click on a slower/mobile
+        // device: the element it started on gets removed from the DOM
+        // before the click event ever fires, and the tap silently does
+        // nothing — reported in practice from a session page with an
+        // active Condense job keeping the poll loop running. Delegating
+        // to panelEl (never itself replaced, only its children) means the
+        // click is still caught regardless of how many re-renders happened
+        // in between.
+        btn.dataset.action = "use";
+        btn.dataset.jobId = job.id;
         row.appendChild(btn);
       }
       if (job.status === "interrupted") {
@@ -84,7 +97,8 @@ function ndAudioJobs(panelEl, opts) {
         resumeBtn.type = "button";
         resumeBtn.className = "nd-job-use-btn";
         resumeBtn.textContent = "▶ Resume";
-        resumeBtn.onclick = () => resumeJob(job.id, resumeBtn);
+        resumeBtn.dataset.action = "resume";
+        resumeBtn.dataset.jobId = job.id;
         row.appendChild(resumeBtn);
       }
       if (FINISHED.has(job.status)) {
@@ -93,7 +107,8 @@ function ndAudioJobs(panelEl, opts) {
         delBtn.className = "nd-job-use-btn";
         delBtn.textContent = "🗑";
         delBtn.title = "Delete this job";
-        delBtn.onclick = () => deleteJob(job.id, delBtn);
+        delBtn.dataset.action = "delete";
+        delBtn.dataset.jobId = job.id;
         row.appendChild(delBtn);
       }
       panelEl.appendChild(row);
@@ -194,6 +209,25 @@ function ndAudioJobs(panelEl, opts) {
     await refreshList();
     return data.job_id;
   }
+
+  // ONE listener on panelEl itself (never replaced — render() only ever
+  // clears/rebuilds its CHILDREN), so it survives every re-render instead
+  // of being lost with whatever button element a tap happened to land on
+  // — see the "Use this" button's own comment above for the race this
+  // fixes. Registered once, here, not inside render().
+  panelEl.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-action]");
+    if (!btn || !panelEl.contains(btn)) return;
+    const jobId = btn.dataset.jobId;
+    const job = jobs.find((j) => String(j.id) === jobId);
+    if (btn.dataset.action === "use") {
+      if (job) opts.onUse(job);
+    } else if (btn.dataset.action === "resume") {
+      resumeJob(jobId, btn);
+    } else if (btn.dataset.action === "delete") {
+      deleteJob(jobId, btn);
+    }
+  });
 
   refreshList();
 

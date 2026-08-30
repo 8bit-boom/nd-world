@@ -278,15 +278,35 @@ liveSetTranscriptDisplay({{ (gsession.live_transcript or '')|tojson }});
 
 function _aiRecapButtons() { return document.querySelectorAll('.ai-recap-btn'); }
 
+// Null-safe getElementById wrappers — a background job's "Use this" can
+// fire long after this page loaded (this panel keeps polling/re-rendering
+// for as long as ANY job is in progress, see audio-jobs.js' render()), so
+// an element genuinely missing (a stale page, a browser extension mutating
+// the DOM, a future template change that drops one of these ids) must not
+// throw and abort the whole draft-loading flow — every OTHER element here
+// still needs to update even if one is unexpectedly absent. Previously each
+// call site did a bare document.getElementById(...).property, which threw
+// "Cannot read properties of null" the moment any single element was
+// missing — the exact failure this app's own onUse try/catch (below)
+// caught and reported in practice.
+function _setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+function _setStyle(id, prop, value) {
+  const el = document.getElementById(id);
+  if (el) el.style[prop] = value;
+}
+
 function _setRecapPreviewText(text) {
-  document.getElementById('ai-recap-preview-text').textContent = text;
-  document.getElementById('ai-recap-preview-token-count').textContent = text ? `(${ndTokenLabel(text)})` : '';
+  _setText('ai-recap-preview-text', text);
+  _setText('ai-recap-preview-token-count', text ? `(${ndTokenLabel(text)})` : '');
 }
 
 function _setRecapTranscriptText(text) {
-  document.getElementById('ai-recap-transcript-text').textContent = text;
-  document.getElementById('ai-recap-transcript-token-count').textContent = text ? `(${ndTokenLabel(text)})` : '';
-  document.getElementById('ai-recap-transcript-wrap').style.display = 'block';
+  _setText('ai-recap-transcript-text', text);
+  _setText('ai-recap-transcript-token-count', text ? `(${ndTokenLabel(text)})` : '');
+  _setStyle('ai-recap-transcript-wrap', 'display', 'block');
 }
 
 // Transcription succeeded but the summarize step itself failed (see
@@ -297,21 +317,21 @@ function _setRecapTranscriptText(text) {
 // would otherwise offer the sentinel text as something to paste into the
 // Summary field.
 function _showRecapFailed(errorText) {
-  document.getElementById('ai-recap-preview-label').textContent = 'Summary failed';
-  document.getElementById('ai-recap-preview-label').style.color = '#f55';
+  _setText('ai-recap-preview-label', 'Summary failed');
+  _setStyle('ai-recap-preview-label', 'color', '#f55');
   _setRecapPreviewText(errorText);
-  document.getElementById('ai-recap-preview').style.display = 'block';
+  _setStyle('ai-recap-preview', 'display', 'block');
   document.querySelectorAll('.ai-recap-apply-btn').forEach(b => b.style.display = 'none');
-  document.getElementById('ai-recap-retry-btn').style.display = '';
+  _setStyle('ai-recap-retry-btn', 'display', '');
 }
 
 function _showRecapDraft(text) {
-  document.getElementById('ai-recap-preview-label').textContent = 'AI draft — review before applying';
-  document.getElementById('ai-recap-preview-label').style.color = 'var(--neon)';
+  _setText('ai-recap-preview-label', 'AI draft — review before applying');
+  _setStyle('ai-recap-preview-label', 'color', 'var(--neon)');
   _setRecapPreviewText(text);
-  document.getElementById('ai-recap-preview').style.display = 'block';
+  _setStyle('ai-recap-preview', 'display', 'block');
   document.querySelectorAll('.ai-recap-apply-btn').forEach(b => b.style.display = '');
-  document.getElementById('ai-recap-retry-btn').style.display = 'none';
+  _setStyle('ai-recap-retry-btn', 'display', 'none');
 }
 
 function _recapThinkEnabled() {

@@ -974,6 +974,30 @@ def test_download_md_404_for_unknown_session(client, seed):
     assert r2.status_code == 404
 
 
+def test_recap_draft_element_lookups_are_null_safe(client, seed):
+    """_showRecapDraft/_showRecapFailed/_setRecapPreviewText/
+    _setRecapTranscriptText previously called document.getElementById(id)
+    .textContent/.style directly — if any single id was ever unexpectedly
+    missing from the DOM this threw "Cannot read properties of null" and
+    aborted the WHOLE function, so a "Use this" tap looked like a total
+    no-op (see test_use_this_background_job_button_surfaces_errors_
+    instead_of_silent_no_op, which is exactly how this was diagnosed in
+    practice). Every one of those call sites must now go through the
+    null-safe _setText/_setStyle helpers instead."""
+    session_id = _make_session(seed.world_a)
+    _login_gm_in(client, seed, seed.world_a)
+    page = client.get(f"/sessions/{session_id}").text
+    assert "function _setText(id, text)" in page
+    assert "function _setStyle(id, prop, value)" in page
+    setup_body = page.split("function _setText(id, text)", 1)[1][:400]
+    assert "if (el) el.textContent = text;" in setup_body
+    # No leftover unguarded document.getElementById(...).textContent/.style
+    # inside the four draft-rendering functions specifically.
+    for fn in ("_setRecapPreviewText", "_setRecapTranscriptText", "_showRecapFailed", "_showRecapDraft"):
+        body = page.split(f"function {fn}(", 1)[1].split("\n}\n", 1)[0]
+        assert "document.getElementById(" not in body, f"{fn} still has an unguarded getElementById"
+
+
 def test_use_this_background_job_button_surfaces_errors_instead_of_silent_no_op(client, seed):
     """The "Use this" button on a finished Background Job (audio-jobs.js'
     onUse callback) previously had no error handling — any exception while
