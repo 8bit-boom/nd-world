@@ -593,9 +593,20 @@ const sessionAudioJobs = ndAudioJobs(document.getElementById('audio-jobs-panel')
     // _showRecapDraft (not _showRecapFailed) is always the right state
     // here; it still resets any stale Apply/Retry visibility left over
     // from a prior audio-upload failure on THIS page.
-    _aiRecapDraft = job.recap || '';
-    _showRecapDraft(_aiRecapDraft || '(empty recap)');
-    if (job.transcript) _setRecapTranscriptText(job.transcript);
+    //
+    // Wrapped in try/catch so a genuinely unexpected failure (e.g. a huge
+    // job.recap/job.transcript from a long map-reduce summarize tripping
+    // something downstream) surfaces as visible text on the page instead
+    // of a silent no-op — this handler previously had no error handling
+    // at all, so any exception here just looked like "Use this" did
+    // nothing, with no way to tell why short of opening devtools.
+    try {
+      _aiRecapDraft = job.recap || '';
+      _showRecapDraft(_aiRecapDraft || '(empty recap)');
+      if (job.transcript) _setRecapTranscriptText(job.transcript);
+    } catch (e) {
+      document.getElementById('ai-recap-status').textContent = 'Could not load this job: ' + e.message;
+    }
   },
 });
 

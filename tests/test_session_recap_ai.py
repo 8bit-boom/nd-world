@@ -972,3 +972,20 @@ def test_download_md_404_for_unknown_session(client, seed):
     assert r.status_code == 404
     r2 = client.get("/sessions/999999/transcript.md")
     assert r2.status_code == 404
+
+
+def test_use_this_background_job_button_surfaces_errors_instead_of_silent_no_op(client, seed):
+    """The "Use this" button on a finished Background Job (audio-jobs.js'
+    onUse callback) previously had no error handling — any exception while
+    loading the job's recap/transcript into the draft-review panel looked
+    like nothing happened, with no way to tell why without devtools. It
+    must now be wrapped so a failure surfaces as text in #ai-recap-status
+    instead of failing silently."""
+    session_id = _make_session(seed.world_a)
+    _login_gm_in(client, seed, seed.world_a)
+    page = client.get(f"/sessions/{session_id}").text
+    assert "onUse: (job) => {" in page
+    body = page.split("onUse: (job) => {", 1)[1].split("},", 1)[0]
+    assert "try {" in body
+    assert "catch (e)" in body
+    assert "ai-recap-status" in body
