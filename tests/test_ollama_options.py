@@ -1431,15 +1431,21 @@ def test_set_ollama_generation_overrides_clears_capabilities_cache():
 class _RejectsThinkingClient:
     """Raises Ollama's real "does not support thinking" ResponseError
     whenever think=true is actually sent — simulates a GM's override (or
-    KNOWN_MODELS entry) being wrong about a model's real capability."""
+    KNOWN_MODELS entry) being wrong about a model's real capability.
+    Records every .chat() call's kwargs so tests can assert generate_chat/
+    stream_chat's internal think=False retry actually happened (and that a
+    poisoned capability cache skips straight to think=False on the NEXT
+    call, without a second failing round-trip)."""
 
     def __init__(self, model_name="my-model"):
         self._model_name = model_name
+        self.calls: list[dict] = []
 
     async def show(self, model):
         return types.SimpleNamespace(capabilities=[])  # Ollama itself never tagged it
 
     async def chat(self, **kwargs):
+        self.calls.append(kwargs)
         if kwargs.get("think"):
             raise ollama.ResponseError(
                 f'"{self._model_name}" does not support thinking', 400,
@@ -1453,19 +1459,28 @@ class _RejectsThinkingClient:
 
 @pytest.mark.asyncio
 async def test_generate_chat_records_thinking_failure_on_rejection(monkeypatch):
+    """The rejection is recovered from internally now (see Wave 1's
+    think=False retry in generate_chat) — the caller gets real output, not
+    the old sentinel string. The Settings warning badge still fires
+    (_model_thinking_failures), and exactly two Ollama calls happen: the
+    failing think=True probe, then a clean think=False retry."""
     fake = _RejectsThinkingClient("my-model")
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
     ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
     try:
         result = await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="my-model")
-        assert "does not support thinking" in result
+        assert result == "hi"
         assert "my-model" in ai_module._model_thinking_failures
+        assert len(fake.calls) == 2
+        assert fake.calls[0]["think"] is True
+        assert not fake.calls[1]["think"]
     finally:
         ai_module.set_ollama_generation_overrides({})
 
 
 @pytest.mark.asyncio
 async def test_stream_chat_records_thinking_failure_on_rejection(monkeypatch):
+    """Same recovery as generate_chat, on the streaming path."""
     fake = _RejectsThinkingClient("my-model")
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
     ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
@@ -1473,10 +1488,75 @@ async def test_stream_chat_records_thinking_failure_on_rejection(monkeypatch):
         tokens = [tok async for tok in ai_module.stream_chat(
             [{"role": "user", "content": "hi"}], think=True, model="my-model",
         )]
-        assert "does not support thinking" in tokens[0]
+        assert tokens == ["hi"]
         assert "my-model" in ai_module._model_thinking_failures
+        assert len(fake.calls) == 2
+        assert fake.calls[0]["think"] is True
+        assert not fake.calls[1]["think"]
     finally:
         ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_skips_straight_to_think_false_after_poisoned(monkeypatch):
+    """Once a model's capability cache is poisoned by a confirmed
+    rejection, a LATER think=True request must not repeat the failing
+    round-trip — _model_supports_thinking's cache short-circuits before
+    ever consulting the (still-True) override, so only one clean
+    think=False call happens."""
+    fake = _RejectsThinkingClient("my-model")
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="my-model")
+        assert len(fake.calls) == 2  # the failing probe + the recovery retry
+
+        result = await ai_module.generate_chat([{"role": "user", "content": "hi again"}], think=True, model="my-model")
+        assert result == "hi"
+        assert len(fake.calls) == 3  # no second 400 — went straight to think=False
+        assert not fake.calls[2]["think"]
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_settings_save_re_arms_thinking_probe_after_rejection(monkeypatch):
+    """A Settings save already clears _model_capabilities_cache (see
+    set_ollama_generation_overrides) — confirm that un-poisons a
+    previously-rejected model too, so a GM who fixes the model (or just
+    wants to re-probe it) gets a fresh real think=true attempt."""
+    fake = _RejectsThinkingClient("my-model")
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="my-model")
+        assert len(fake.calls) == 2
+
+        ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+        await ai_module.generate_chat([{"role": "user", "content": "hi again"}], think=True, model="my-model")
+        assert len(fake.calls) == 4  # a fresh think=True probe (fails again) + retry
+        assert fake.calls[2]["think"] is True
+        assert not fake.calls[3]["think"]
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_poisoned_model_not_wrongly_cleared_by_downgraded_call(monkeypatch):
+    """Regression guard: once a model is in _model_thinking_failures, a
+    caller that still passes think=True gets silently downgraded to
+    think=False by _chat_kwargs (the poisoned cache) — that successful
+    call must NOT clear the failure set, since think=true was never
+    actually sent. Only a genuinely successful think=true call may clear
+    it (see test_thinking_failure_cleared_by_a_later_successful_think_call
+    below, which uses a real capability so the downgrade never happens)."""
+    ai_module._model_thinking_failures.add("my-model")
+    ai_module._model_capabilities_cache["my-model"] = []  # poisoned: no "thinking" tag
+    fake = _FakeChatClient([], show_capabilities=[])
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    result = await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="my-model")
+    assert result == "hi"
+    assert "my-model" in ai_module._model_thinking_failures
 
 
 @pytest.mark.asyncio

@@ -64,6 +64,13 @@ def _job_to_dict(job: AudioJob) -> dict:
         # attempt — job.think above already reflects that (flipped to
         # False), this is just so the UI can explain WHY.
         "think_fallback": bool(job.think_fallback),
+        # True when this job's model flatly doesn't support Ollama's
+        # thinking API (a "does not support thinking" 400, recovered
+        # internally by app.ai.generate_chat/stream_chat — see
+        # AudioJob.think_rejected's own docstring) — distinct from
+        # think_fallback's budget-starvation case; the GM-facing guidance
+        # differs (untick the override vs. give it more headroom).
+        "think_rejected": bool(job.think_rejected),
         # True once the auto-retry ladder ever climbed into an EXPANDED
         # budget rung for this job — see AudioJob.expanded_thinking's own
         # docstring. Can be True with think_fallback False (the expanded

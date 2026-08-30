@@ -30,8 +30,14 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:26b")
 # case a beefier host can genuinely run more than one at a time.
 WHISPER_JOB_CONCURRENCY = max(1, int(os.getenv("WHISPER_JOB_CONCURRENCY", "1")))
 OLLAMA_JOB_CONCURRENCY = max(1, int(os.getenv("OLLAMA_JOB_CONCURRENCY", "1")))
+# Unlike Whisper/Ollama above, SwarmUI/ComfyUI queue generations internally
+# on their own end — this exists to keep app.image_jobs' queued jobs from
+# racing a concurrent direct /api/ai/imagegen/generate call (or each
+# other) at the httpx-client/timeout layer, not to protect the GPU itself.
+IMAGEGEN_JOB_CONCURRENCY = max(1, int(os.getenv("IMAGEGEN_JOB_CONCURRENCY", "1")))
 whisper_job_semaphore = asyncio.Semaphore(WHISPER_JOB_CONCURRENCY)
 ollama_job_semaphore = asyncio.Semaphore(OLLAMA_JOB_CONCURRENCY)
+imagegen_job_semaphore = asyncio.Semaphore(IMAGEGEN_JOB_CONCURRENCY)
 
 # Optional whisper.cpp server (see the "whisper" Compose profile) for
 # transcribing an audio chat attachment into text — blank like IMAGEGEN_URL
@@ -144,18 +150,53 @@ _model_capabilities_cache: dict[str, list[str]] = {}
 # finding out from a raw chat error buried in the conversation. In-memory
 # only, same as _model_capabilities_cache — a GM rediscovers this quickly
 # enough on next real use that persisting it isn't worth a schema change.
+#
+# A confirmed rejection ALSO poisons _model_capabilities_cache (strips the
+# "thinking" tag) so _model_supports_thinking stops sending think=true for
+# this model at all — see _record_thinking_result below. That's the active
+# gate (short-circuits every further call, including each chunk of a
+# chunked summarize); this set stays purely advisory. Both share the same
+# GM-visible reset points — set_ollama_generation_overrides clears the
+# capability cache on every Settings save, and a restart clears both — so
+# a GM who fixes the model (or just wants to re-probe it) gets a fresh
+# real think=true attempt next time, whose success clears this set again.
 _model_thinking_failures: set[str] = set()
 
 
+def model_rejected_thinking(model: str = "") -> bool:
+    """True if `model` (default: effective_ollama_model()) is the subject
+    of a currently-live thinking rejection — same resolution as
+    generate_chat/stream_chat's own `m`, so a caller outside this module
+    (audio_jobs.py, to decide whether to label a job's result) can ask the
+    identical question those functions already answered internally."""
+    return (model or effective_ollama_model()) in _model_thinking_failures
+
+
 def _record_thinking_result(model: str, think: bool, failed: bool) -> None:
-    """Called from generate_chat/stream_chat's own try/except — see their
-    call sites for exactly when. Only meaningful when `think` was actually
-    requested; a plain think=False call proves nothing about whether the
-    model can think, so it's a no-op either way."""
+    """Called from generate_chat/stream_chat's own try/except with the
+    EFFECTIVE think value actually sent to Ollama (after _chat_kwargs may
+    have downgraded it) — see their call sites for exactly when. Only
+    meaningful when thinking was actually requested; a plain think=False
+    call proves nothing about whether the model can think, so it's a
+    no-op either way. Using the effective value (not the caller's
+    requested one) matters once a rejection has poisoned the capability
+    cache below: a later think=True *request* against that poisoned model
+    gets silently downgraded to think=False by _chat_kwargs, and a
+    request that was never actually sent as think=true must not be
+    treated as a successful thinking call that clears the failure."""
     if not think:
         return
     if failed:
         _model_thinking_failures.add(model)
+        # Stop sending think=true to this model at all until a Settings
+        # save or restart clears the cache (see _model_supports_thinking,
+        # which consults this cache before ever trying KNOWN_MODELS/the
+        # override) — otherwise every further call (each chunk of a
+        # chunked summarize, for instance) repeats the same failing
+        # round-trip to Ollama.
+        _model_capabilities_cache[model] = [
+            c for c in _model_capabilities_cache.get(model, []) if c != "thinking"
+        ]
     else:
         # A successful think=true call proves the model genuinely handles
         # it — clear any earlier failure (a GM fixed it, e.g. by properly
@@ -731,8 +772,14 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
         full.append({"role": "system", "content": system})
     full.extend(messages)
     try:
-        resp = await _client().chat(model=m, messages=full, **(await _chat_kwargs(options, think, m)))
-        _record_thinking_result(m, think, failed=False)
+        chat_kwargs = await _chat_kwargs(options, think, m)
+        effective_think = chat_kwargs["think"]
+        resp = await _client().chat(model=m, messages=full, **chat_kwargs)
+        # The EFFECTIVE think (post _chat_kwargs downgrade), not the
+        # caller's requested one — see _record_thinking_result's own
+        # docstring for why that distinction matters once a rejection has
+        # poisoned this model's capability cache.
+        _record_thinking_result(m, effective_think, failed=False)
         content = resp.message.content
         if content:
             return content
@@ -760,6 +807,16 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
         _log.error("generate_chat Ollama error: %s %s", exc.status_code, exc.error)
         if think and "does not support thinking" in (exc.error or ""):
             _record_thinking_result(m, think, failed=True)
+            # Ollama flatly refused think=true for this model — not a
+            # transient error, so retrying the identical call would just
+            # 400 again. Recover instead of hard-failing the caller (a
+            # background job, or an interactive chat reply): redo the
+            # exact same request with think=False. Safe to recurse — a
+            # think=False request can never re-enter this branch, and no
+            # partial content was produced yet (this was an upfront
+            # rejection, not a mid-stream failure).
+            _log.warning("generate_chat model=%s: does not support thinking — retrying with think=False", m)
+            return await generate_chat(messages, system=system, model=m, options=options, think=False)
         return f"[AI error: Ollama {exc.status_code}: {exc.error}]"
     except Exception as exc:
         _log.error("generate_chat unavailable: %s: %s", type(exc).__name__, exc)
@@ -828,7 +885,10 @@ async def stream_chat(
             # a visible answer.
             thinking_chars += len(getattr(chunk.message, "thinking", None) or "")
             done_reason = getattr(chunk, "done_reason", None) or done_reason
-        _record_thinking_result(m, think, failed=False)
+        # The EFFECTIVE think (post _chat_kwargs downgrade), not the
+        # caller's requested one — see generate_chat's identical call and
+        # _record_thinking_result's own docstring for why.
+        _record_thinking_result(m, chat_kwargs["think"], failed=False)
         if not yielded_any:
             # Same empty-response case generate_chat handles (see its own
             # comment) — whether from a deliberate think=True request or a
@@ -844,8 +904,17 @@ async def stream_chat(
             yield _empty_response_message(m, thinking_chars, done_reason)
     except _ollama.ResponseError as exc:
         _log.error("stream_chat Ollama error: %s %s", exc.status_code, exc.error)
-        if think and "does not support thinking" in (exc.error or ""):
+        if think and "does not support thinking" in (exc.error or "") and not yielded_any:
             _record_thinking_result(m, think, failed=True)
+            # Same recovery as generate_chat — an upfront rejection means
+            # no tokens have been yielded yet (guarded above defensively:
+            # if some content is already out the door, don't restart the
+            # stream and risk duplicating it), so redo the identical
+            # request with think=False instead of surfacing the sentinel.
+            _log.warning("stream_chat model=%s: does not support thinking — retrying with think=False", m)
+            async for token in stream_chat(messages, system=system, model=m, options=options, think=False):
+                yield token
+            return
         yield f"[AI error: Ollama {exc.status_code}: {exc.error}]"
     except Exception as exc:
         _log.error("stream_chat unavailable: %s: %s", type(exc).__name__, exc)
@@ -1926,23 +1995,13 @@ async def debug_info() -> dict:
 _IMAGEGEN_TYPE = os.environ.get("IMAGEGEN_TYPE", "").lower()   # "swarmui" or "comfyui"
 _IMAGEGEN_URL  = os.environ.get("IMAGEGEN_URL", "").rstrip("/")
 
-# Runtime overrides (set by /admin/imagegen/install without needing a restart)
-_imagegen_type_override: str = ""
-_imagegen_url_override:  str = ""
-
 
 def _get_type() -> str:
-    return _imagegen_type_override or _IMAGEGEN_TYPE
+    return _IMAGEGEN_TYPE
 
 
 def _get_url() -> str:
-    return (_imagegen_url_override or _IMAGEGEN_URL).rstrip("/")
-
-
-def set_imagegen_override(itype: str, url: str) -> None:
-    global _imagegen_type_override, _imagegen_url_override
-    _imagegen_type_override = itype.lower()
-    _imagegen_url_override  = url.rstrip("/")
+    return _IMAGEGEN_URL
 
 _COMFYUI_WORKFLOW = {
     "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "{model}"}},
@@ -3167,136 +3226,192 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                             ipadapter_image: str = "",
                             ipadapter_strength: float = 0.6,
                             ipadapter_model: str = "") -> list[str]:
-    import copy, random, asyncio, base64 as _b64, uuid as _uuid
+    import copy, random, asyncio, base64 as _b64, binascii as _binascii, uuid as _uuid
     t, u = _get_type(), _get_url()
+    if not t or not u:
+        raise ValueError("Image generation is not configured — set IMAGEGEN_TYPE/IMAGEGEN_URL (see docker-compose.yml).")
     ai_img_dir = Path(uploads_dir) / "ai-images"
     ai_img_dir.mkdir(parents=True, exist_ok=True)
 
     urls: list[str] = []
+    # Used in every error message below so a GM sees which backend failed
+    # and why, matching the bar generate_chat's own Ollama errors already
+    # set (see its ResponseError handling) — a bare "connection refused"
+    # or a stray dict-key KeyError previously reached the GM instead.
+    backend_label = "SwarmUI" if t == "swarmui" else "ComfyUI"
 
-    async with _httpx.AsyncClient(timeout=600) as c:
-        if t == "swarmui":
-            sr = await c.post(f"{u}/API/GetNewSession", json={})
-            session_id = sr.json().get("session_id", "ndworld")
-            model_name = model.rsplit(".", 1)[0] if model.endswith((".safetensors", ".ckpt", ".bin")) else model
-            payload: dict = {
-                "session_id": session_id,
-                "images": max(1, min(batch_size, 8)),
-                "prompt": prompt,
-                "negativeprompt": negative,
-                "model": model_name,
-                "width": width,
-                "height": height,
-                "steps": steps,
-                "cfgscale": cfg,
-                "seed": seed if seed >= 0 else -1,
-                "sampler": sampler or "euler",
-                "scheduler": scheduler or "normal",
-                "donotsave": False,
-            }
-            if loras:
-                payload["loras"] = loras
-                payload["loraweights"] = lora_weights or "1"
-            if vae:
-                payload["vae"] = vae
-            if clip_skip > 0:
-                payload["clipstop"] = -clip_skip
-            if init_image:
-                payload["initimage"] = init_image
-                payload["initimagecreativity"] = init_strength
-            if upscale_model:
-                payload["upscalemodel"] = upscale_model
-                payload["upscalemultiplier"] = upscale_factor
-            if controlnet_image:
-                payload["controlnetimage"] = controlnet_image
-                payload["controlnetstrength"] = controlnet_strength
-                if controlnet_preprocessor:
-                    payload["controlnetpreprocessor"] = controlnet_preprocessor
-                if controlnet_model:
-                    payload["controlnetmodel"] = controlnet_model
-            if hiresfix and hireswidth > 0:
-                payload["hireswidth"] = hireswidth
-                payload["hiresheight"] = hiresheight
-                payload["hiresdenoisestrength"] = hiresdenoisestrength
-                if hiressteps > 0:
-                    payload["hiressteps"] = hiressteps
-            if refiner_model:
-                payload["refinermodel"] = refiner_model
-                payload["refinercontrolpercentage"] = refiner_control
-            if seamless_x:
-                payload["seamlessx"] = True
-            if seamless_y:
-                payload["seamlessy"] = True
-            if variation_seed >= 0 and variation_strength > 0:
-                payload["variationseed"] = variation_seed
-                payload["variationseedstrength"] = variation_strength
-            if freeu_enabled:
-                payload["freeu_b1"] = freeu_b1
-                payload["freeu_b2"] = freeu_b2
-                payload["freeu_s1"] = freeu_s1
-                payload["freeu_s2"] = freeu_s2
-            if dynthresh_enabled:
-                payload["dynamicthresh_enabled"] = True
-                payload["dynamicthresh_mimic_scale"] = dynthresh_mimic_scale
-                payload["dynamicthresh_threshold_percentile"] = dynthresh_percentile
-            if cfg_rescale > 0:
-                payload["cfgrescale"] = cfg_rescale
-            if ipadapter_image:
-                payload["ipadapterimage"] = ipadapter_image
-                payload["ipadapterstrength"] = ipadapter_strength
-                if ipadapter_model:
-                    payload["ipadaptermodel"] = ipadapter_model
+    try:
+        async with _httpx.AsyncClient(timeout=600) as c:
+            if t == "swarmui":
+                sr = await c.post(f"{u}/API/GetNewSession", json={})
+                session_id = sr.json().get("session_id", "ndworld")
+                model_name = model.rsplit(".", 1)[0] if model.endswith((".safetensors", ".ckpt", ".bin")) else model
+                payload: dict = {
+                    "session_id": session_id,
+                    "images": max(1, min(batch_size, 8)),
+                    "prompt": prompt,
+                    "negativeprompt": negative,
+                    "model": model_name,
+                    "width": width,
+                    "height": height,
+                    "steps": steps,
+                    "cfgscale": cfg,
+                    "seed": seed if seed >= 0 else -1,
+                    "sampler": sampler or "euler",
+                    "scheduler": scheduler or "normal",
+                    "donotsave": False,
+                }
+                if loras:
+                    payload["loras"] = loras
+                    payload["loraweights"] = lora_weights or "1"
+                if vae:
+                    payload["vae"] = vae
+                if clip_skip > 0:
+                    payload["clipstop"] = -clip_skip
+                if init_image:
+                    payload["initimage"] = init_image
+                    payload["initimagecreativity"] = init_strength
+                if upscale_model:
+                    payload["upscalemodel"] = upscale_model
+                    payload["upscalemultiplier"] = upscale_factor
+                if controlnet_image:
+                    payload["controlnetimage"] = controlnet_image
+                    payload["controlnetstrength"] = controlnet_strength
+                    if controlnet_preprocessor:
+                        payload["controlnetpreprocessor"] = controlnet_preprocessor
+                    if controlnet_model:
+                        payload["controlnetmodel"] = controlnet_model
+                if hiresfix and hireswidth > 0:
+                    payload["hireswidth"] = hireswidth
+                    payload["hiresheight"] = hiresheight
+                    payload["hiresdenoisestrength"] = hiresdenoisestrength
+                    if hiressteps > 0:
+                        payload["hiressteps"] = hiressteps
+                if refiner_model:
+                    payload["refinermodel"] = refiner_model
+                    payload["refinercontrolpercentage"] = refiner_control
+                if seamless_x:
+                    payload["seamlessx"] = True
+                if seamless_y:
+                    payload["seamlessy"] = True
+                if variation_seed >= 0 and variation_strength > 0:
+                    payload["variationseed"] = variation_seed
+                    payload["variationseedstrength"] = variation_strength
+                if freeu_enabled:
+                    payload["freeu_b1"] = freeu_b1
+                    payload["freeu_b2"] = freeu_b2
+                    payload["freeu_s1"] = freeu_s1
+                    payload["freeu_s2"] = freeu_s2
+                if dynthresh_enabled:
+                    payload["dynamicthresh_enabled"] = True
+                    payload["dynamicthresh_mimic_scale"] = dynthresh_mimic_scale
+                    payload["dynamicthresh_threshold_percentile"] = dynthresh_percentile
+                if cfg_rescale > 0:
+                    payload["cfgrescale"] = cfg_rescale
+                if ipadapter_image:
+                    payload["ipadapterimage"] = ipadapter_image
+                    payload["ipadapterstrength"] = ipadapter_strength
+                    if ipadapter_model:
+                        payload["ipadaptermodel"] = ipadapter_model
 
-            gr = await c.post(f"{u}/API/GenerateText2Image", json=payload)
-            _log.info("SwarmUI generate status=%s body=%.400s", gr.status_code, gr.text)
-            data = gr.json()
-            images = data.get("images") or []
-            if not images:
-                err = data.get("error") or data.get("errorid") or data.get("message") or str(data)
-                raise ValueError(f"SwarmUI returned no image: {err}")
-            for img_raw in images:
-                if img_raw.startswith("data:"):
-                    img_raw = img_raw.split(",", 1)[1]
-                fname = str(_uuid.uuid4()) + ".png"
-                out_path = ai_img_dir / fname
-                out_path.write_bytes(_b64.b64decode(img_raw))
-                make_thumbnail(out_path)  # best-effort — the Image tab's history/starred grids fall back to this full PNG if it fails
-                urls.append(f"/uploads/ai-images/{fname}")
+                gr = await c.post(f"{u}/API/GenerateText2Image", json=payload)
+                _log.info("SwarmUI generate status=%s body=%.400s", gr.status_code, gr.text)
+                if gr.status_code >= 400:
+                    raise ValueError(f"SwarmUI returned HTTP {gr.status_code}: {gr.text[:300]}")
+                try:
+                    data = gr.json()
+                except ValueError as exc:
+                    raise ValueError(f"SwarmUI returned an unreadable response: {gr.text[:300]}") from exc
+                images = data.get("images") or []
+                if not images:
+                    err = data.get("error") or data.get("errorid") or data.get("message") or str(data)
+                    raise ValueError(f"SwarmUI returned no image: {err}")
+                for img_raw in images:
+                    if img_raw.startswith("data:"):
+                        img_bytes = _b64.b64decode(img_raw.split(",", 1)[1])
+                    else:
+                        # Depending on SwarmUI version/config, a non-data-URL
+                        # entry is either raw base64 or a saved-file path
+                        # (e.g. "View/local/raw/2024-.../x.png") — try
+                        # base64 first, fall back to fetching the path as
+                        # bytes if it isn't valid base64 at all.
+                        try:
+                            img_bytes = _b64.b64decode(img_raw, validate=True)
+                        except (_binascii.Error, ValueError):
+                            ir = await c.get(f"{u}/{img_raw.lstrip('/')}")
+                            if ir.status_code >= 400:
+                                raise ValueError(
+                                    f"SwarmUI returned no image: could not fetch {img_raw!r} (HTTP {ir.status_code})"
+                                )
+                            img_bytes = ir.content
+                    fname = str(_uuid.uuid4()) + ".png"
+                    out_path = ai_img_dir / fname
+                    out_path.write_bytes(img_bytes)
+                    make_thumbnail(out_path)  # best-effort — the Image tab's history/starred grids fall back to this full PNG if it fails
+                    urls.append(f"/uploads/ai-images/{fname}")
 
-        else:  # comfyui
-            wf = copy.deepcopy(_COMFYUI_WORKFLOW)
-            wf["1"]["inputs"]["ckpt_name"] = model
-            wf["2"]["inputs"]["text"] = prompt
-            wf["3"]["inputs"]["text"] = negative
-            wf["4"]["inputs"].update({"width": width, "height": height, "batch_size": max(1, min(batch_size, 8))})
-            wf["5"]["inputs"].update({
-                "steps": steps, "cfg": cfg,
-                "seed": seed if seed >= 0 else random.randint(0, 2**32),
-                "sampler_name": sampler or "euler",
-                "scheduler": scheduler or "normal",
-            })
-            if upscale_model:
-                wf["8"] = {"class_type": "UpscaleModelLoader", "inputs": {"model_name": upscale_model}}
-                wf["9"] = {"class_type": "ImageUpscaleWithModel", "inputs": {"upscale_model": ["8", 0], "image": ["6", 0]}}
-                wf["7"]["inputs"]["images"] = ["9", 0]
-            pr = await c.post(f"{u}/prompt", json={"prompt": wf})
-            pid = pr.json()["prompt_id"]
-            for _ in range(120):
-                await asyncio.sleep(1)
-                hr = await c.get(f"{u}/history/{pid}")
-                hist = hr.json().get(pid, {})
-                if hist.get("outputs"):
-                    imgs = list(hist["outputs"].values())[0].get("images", [])
-                    for img_info in imgs:
-                        ir = await c.get(f"{u}/view",
-                                         params={"filename": img_info["filename"],
-                                                 "subfolder": img_info.get("subfolder", ""),
-                                                 "type": "output"})
-                        fname = str(_uuid.uuid4()) + ".png"
-                        out_path = ai_img_dir / fname
-                        out_path.write_bytes(ir.content)
-                        make_thumbnail(out_path)
-                        urls.append(f"/uploads/ai-images/{fname}")
-                    break
+            else:  # comfyui
+                wf = copy.deepcopy(_COMFYUI_WORKFLOW)
+                wf["1"]["inputs"]["ckpt_name"] = model
+                wf["2"]["inputs"]["text"] = prompt
+                wf["3"]["inputs"]["text"] = negative
+                wf["4"]["inputs"].update({"width": width, "height": height, "batch_size": max(1, min(batch_size, 8))})
+                wf["5"]["inputs"].update({
+                    "steps": steps, "cfg": cfg,
+                    "seed": seed if seed >= 0 else random.randint(0, 2**32),
+                    "sampler_name": sampler or "euler",
+                    "scheduler": scheduler or "normal",
+                })
+                if upscale_model:
+                    wf["8"] = {"class_type": "UpscaleModelLoader", "inputs": {"model_name": upscale_model}}
+                    wf["9"] = {"class_type": "ImageUpscaleWithModel", "inputs": {"upscale_model": ["8", 0], "image": ["6", 0]}}
+                    wf["7"]["inputs"]["images"] = ["9", 0]
+                pr = await c.post(f"{u}/prompt", json={"prompt": wf})
+                try:
+                    pr_body = pr.json()
+                except ValueError:
+                    pr_body = {}
+                if pr.status_code >= 400 or not pr_body.get("prompt_id"):
+                    err = pr_body.get("error") or pr_body.get("node_errors") or pr.text[:300]
+                    raise ValueError(f"ComfyUI rejected the workflow (HTTP {pr.status_code}): {err}")
+                pid = pr_body["prompt_id"]
+                # Matches the 600s client timeout above — the previous 120s
+                # cap could expire (and silently return zero images) well
+                # before a large batch/upscale genuinely finished.
+                for _ in range(580):
+                    await asyncio.sleep(1)
+                    hr = await c.get(f"{u}/history/{pid}")
+                    hist = hr.json().get(pid, {})
+                    status = hist.get("status") or {}
+                    if status.get("status_str") == "error":
+                        raise ValueError(f"ComfyUI generation failed: {status.get('messages') or status}")
+                    if hist.get("outputs"):
+                        imgs = list(hist["outputs"].values())[0].get("images", [])
+                        for img_info in imgs:
+                            ir = await c.get(f"{u}/view",
+                                             params={"filename": img_info["filename"],
+                                                     "subfolder": img_info.get("subfolder", ""),
+                                                     "type": "output"})
+                            fname = str(_uuid.uuid4()) + ".png"
+                            out_path = ai_img_dir / fname
+                            out_path.write_bytes(ir.content)
+                            make_thumbnail(out_path)
+                            urls.append(f"/uploads/ai-images/{fname}")
+                        break
+                else:
+                    raise ValueError("ComfyUI generation timed out waiting for a result.")
+    except _httpx.HTTPError as exc:
+        # Covers connection-refused/timeout/DNS-failure/etc — httpx.HTTPError
+        # is the base class for all of those (see httpx's own hierarchy).
+        # Anything ABOVE this except clause (a deliberate ValueError raised
+        # for a bad/error response body) is a real backend reply, not a
+        # transport failure, and passes through unchanged.
+        raise ValueError(f"{backend_label} unreachable at {u}: {exc}") from exc
 
+    if not urls:
+        # Safety net: should be unreachable given the raises above, but an
+        # empty success (HTTP 200, no error field, zero images/outputs)
+        # must never silently look like it worked — see this app's own
+        # "200-with-error-body" precedent this guards against reintroducing.
+        raise ValueError(f"{backend_label} returned no images.")
     return urls

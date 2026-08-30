@@ -23,8 +23,9 @@ import pytest
 from app import ai as ai_module
 from app import audio_jobs
 from app import chat_jobs
+from app import image_jobs
 from app.database import SessionLocal
-from app.models import AudioJob, ChatJob
+from app.models import AudioJob, ChatJob, ImageJob
 
 from .conftest import GM_PASSWORD, login
 
@@ -67,6 +68,22 @@ async def _await_chat_terminal(job_id, timeout=5.0):
                 return job
             await asyncio.sleep(0.01)
         raise AssertionError(f"chat job never reached a terminal status, last seen status={job.status!r}")
+    finally:
+        db.close()
+
+
+async def _await_image_terminal(job_id, timeout=5.0):
+    deadline = time.time() + timeout
+    db = SessionLocal()
+    try:
+        job = None
+        while time.time() < deadline:
+            db.expire_all()
+            job = db.get(ImageJob, job_id)
+            if job.status in ("done", "error"):
+                return job
+            await asyncio.sleep(0.01)
+        raise AssertionError(f"image job never reached a terminal status, last seen status={job.status!r}")
     finally:
         db.close()
 
@@ -165,6 +182,32 @@ async def test_two_chat_jobs_never_generate_concurrently(client, seed, monkeypat
 
     job1 = await _await_chat_terminal(job_id_1)
     job2 = await _await_chat_terminal(job_id_2)
+    assert job1.status == "done", job1.error
+    assert job2.status == "done", job2.error
+    assert tracker.peak == 1
+
+
+@pytest.mark.asyncio
+async def test_two_image_jobs_never_generate_concurrently(client, seed, monkeypatch):
+    """app.ai.imagegen_job_semaphore — added alongside the SwarmUI/ComfyUI
+    error-surfacing fixes so a queued image job can't race a concurrent
+    direct-generate call (or another queued job) at the httpx-client/
+    timeout layer, same reasoning as whisper_job_semaphore/
+    ollama_job_semaphore above."""
+    tracker = _ConcurrencyTracker()
+
+    async def slow_imagegen_generate(**kwargs):
+        await tracker.enter()
+        tracker.exit()
+        return ["/uploads/ai-images/x.png"]
+    monkeypatch.setattr(ai_module, "imagegen_generate", slow_imagegen_generate)
+
+    params = {"prompt": "a neon dragon", "uploads_dir": "/tmp"}
+    job_id_1 = image_jobs.create_job(world_id=seed.world_a.id, prompt="a neon dragon", params=params)
+    job_id_2 = image_jobs.create_job(world_id=seed.world_a.id, prompt="a neon dragon", params=params)
+
+    job1 = await _await_image_terminal(job_id_1)
+    job2 = await _await_image_terminal(job_id_2)
     assert job1.status == "done", job1.error
     assert job2.status == "done", job2.error
     assert tracker.peak == 1

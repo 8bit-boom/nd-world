@@ -860,6 +860,15 @@ async def _run_job(job_id: int) -> None:
                     _set(expanded_thinking=next_expanded)
             if _looks_like_failure(recap):
                 _set(status="error", error=recap, finished_at=datetime.utcnow())
+            elif think and _ai_module.model_rejected_thinking(model):
+                # generate_chat/stream_chat already recovered internally
+                # (see app.ai) rather than failing this job — the ladder
+                # above never saw it, since it only climbs on
+                # is_thinking_starved_sentinel. Label the result so the
+                # Retry-summary UI's Thinking checkbox reflects what
+                # actually produced the recap, same reasoning as
+                # think_fallback just above.
+                _set(status="done", recap=recap, think=False, think_rejected=True, finished_at=datetime.utcnow())
             else:
                 _set(status="done", recap=recap, finished_at=datetime.utcnow())
         elif purpose == "session_recap":
@@ -908,6 +917,10 @@ async def _run_job(job_id: int) -> None:
             if _looks_like_failure(recap):
                 _set(status="error", error=recap, chunk_current=None, chunk_total=None,
                      finished_at=datetime.utcnow(), checkpoint_json="")
+            elif think and _ai_module.model_rejected_thinking(model):
+                # See the identical check in the condense branch above.
+                _set(status="done", recap=recap, think=False, think_rejected=True, chunk_current=None,
+                     chunk_total=None, finished_at=datetime.utcnow(), checkpoint_json="")
             else:
                 _set(status="done", recap=recap, chunk_current=None, chunk_total=None,
                      finished_at=datetime.utcnow(), checkpoint_json="")

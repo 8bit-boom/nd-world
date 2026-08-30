@@ -132,6 +132,7 @@ def client():
     # reasoning as _llm_cooldowns above.
     ai_module.whisper_job_semaphore = asyncio.Semaphore(ai_module.WHISPER_JOB_CONCURRENCY)
     ai_module.ollama_job_semaphore = asyncio.Semaphore(ai_module.OLLAMA_JOB_CONCURRENCY)
+    ai_module.imagegen_job_semaphore = asyncio.Semaphore(ai_module.IMAGEGEN_JOB_CONCURRENCY)
     with TestClient(app) as c:
         yield c
 

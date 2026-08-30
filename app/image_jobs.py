@@ -95,7 +95,13 @@ async def _run_job(job_id: int, params: dict) -> None:
     try:
         _set(status="generating")
         call_params = {**params, "uploads_dir": Path(params["uploads_dir"])}
-        urls = await _ai_module.imagegen_generate(**call_params)
+        # See ai.imagegen_job_semaphore's own docstring — held for the
+        # whole call, same reasoning as ai.whisper_job_semaphore/
+        # ollama_job_semaphore in app.audio_jobs, so a queued job here
+        # never races a concurrent direct-generate call or another queued
+        # job at the httpx-client/timeout layer.
+        async with _ai_module.imagegen_job_semaphore:
+            urls = await _ai_module.imagegen_generate(**call_params)
         _set(status="done", result_urls_json=json.dumps(urls))
     except asyncio.CancelledError:
         # A server shutdown calls Task.cancel() too (via job_shutdown.drain)

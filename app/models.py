@@ -915,6 +915,16 @@ class AudioJob(Base):
     # this path, so a template can render a note without an `is not True`
     # check. See app.audio_jobs._run_job's own docstring for the retry.
     think_fallback = Column(Boolean, default=False)
+    # Set when this job's model outright doesn't support thinking mode —
+    # Ollama rejected think=true with "does not support thinking" (see
+    # app.ai.generate_chat/stream_chat's own internal think=False retry,
+    # and app.ai.model_rejected_thinking) rather than the budget-starvation
+    # case think_fallback above covers. Also flips `think` to False, same
+    # reasoning as think_fallback. Distinct from think_fallback because the
+    # two need different GM-facing guidance: this one means "this model
+    # can't do it, full stop" (untick its Settings > System override), not
+    # "give it a bigger budget." False for every job that never hit this.
+    think_rejected = Column(Boolean, default=False)
     # Set when the auto-retry ladder above ever had to climb into an
     # EXPANDED budget rung (see app.ai.expanded_thinking_options and
     # app.audio_jobs._run_job's attempt_plans) — i.e. even the normal

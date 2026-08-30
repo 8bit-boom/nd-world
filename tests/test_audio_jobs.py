@@ -32,6 +32,10 @@ from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 # need the REAL map-reduce chunking logic (not _fake_ai's flat fake) can
 # restore it for just that one test.
 _REAL_SUMMARIZE_TRANSCRIPT = ai_module.summarize_transcript
+# Same idea, for the think-rejection-recovery tests below — those need the
+# REAL condense_recap -> generate_chat call chain (so app.ai's own internal
+# think=False retry actually runs), not _fake_ai's flat fake.
+_REAL_CONDENSE_RECAP = ai_module.condense_recap
 
 
 def _make_entity(world_id, **kwargs):
@@ -482,6 +486,112 @@ def test_job_status_route_reports_expanded_thinking(client, seed):
     data = r.json()
     assert data["expanded_thinking"] is True
     assert data["think_fallback"] is False
+
+
+def test_job_status_route_reports_think_rejected(client, seed):
+    """Distinct from think_fallback (budget starvation) — see
+    AudioJob.think_rejected's own docstring."""
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=seed.world_a.id, purpose="condense", filename="clip.mp3",
+            status="done", recap="a recap", think=False, think_rejected=True,
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["think_rejected"] is True
+    assert data["think_fallback"] is False
+    assert data["think"] is False
+
+
+class _RejectsThinkingClient:
+    """Ollama's real "does not support thinking" 400 whenever think=true is
+    actually sent — same fake shape as tests/test_ollama_options.py's own
+    (not imported from there to keep the two test files independent)."""
+
+    def __init__(self, reply="A tidy recap."):
+        self._reply = reply
+        self.calls = []
+
+    async def show(self, model):
+        import types
+        return types.SimpleNamespace(capabilities=[])
+
+    async def chat(self, **kwargs):
+        import ollama
+        self.calls.append(kwargs)
+        if kwargs.get("think"):
+            raise ollama.ResponseError('"model-x" does not support thinking', 400)
+        import types
+        return types.SimpleNamespace(message=types.SimpleNamespace(content=self._reply))
+
+
+@pytest.mark.asyncio
+async def test_condense_job_recovers_from_thinking_rejection(client, seed, monkeypatch):
+    """End-to-end: a real condense_recap -> generate_chat call chain (not
+    _fake_ai's flat fake) against a fake Ollama client that rejects
+    think=true — the job must land "done" with the real recap (app.ai's own
+    internal think=False retry recovers it, see Wave 1), not "error" with
+    the raw Ollama 400, and be labeled think_rejected so the GM knows why.
+    The ladder above never sees this at all — is_thinking_starved_sentinel
+    doesn't match a rejection, so this exercises a path the ladder tests
+    above don't cover."""
+    monkeypatch.setattr(ai_module, "condense_recap", _REAL_CONDENSE_RECAP)
+    fake = _RejectsThinkingClient()
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"model-x": {"thinking": True}})
+    try:
+        job_id = audio_jobs.create_condense_job(
+            world_id=seed.world_a.id, text="A long existing recap.", model="model-x", think=True,
+        )
+        job = await _await_terminal(job_id)
+        assert job.status == "done", job.error
+        assert job.recap == "A tidy recap."
+        assert job.think_rejected is True
+        assert job.think is False
+        assert job.think_fallback is False
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+        ai_module._model_thinking_failures.discard("model-x")
+
+
+@pytest.mark.asyncio
+async def test_session_recap_job_recovers_from_thinking_rejection(client, seed, tmp_path, monkeypatch):
+    """Same recovery, on the session_recap (chunked summarize_transcript)
+    path rather than condense's single-call path."""
+    monkeypatch.setattr(ai_module, "summarize_transcript", _REAL_SUMMARIZE_TRANSCRIPT)
+    fake = _RejectsThinkingClient("The party explored the ruins.")
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+
+    async def fake_transcribe(*args, **kwargs):
+        return "A short transcript."
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"model-x": {"thinking": True}})
+    try:
+        audio = tmp_path / "clip.mp3"
+        audio.write_bytes(b"fake audio bytes")
+        job_id = audio_jobs.create_job(
+            world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+            audio_path=audio, delete_after=True, model="model-x", think=True,
+        )
+        job = await _await_terminal(job_id)
+        assert job.status == "done", job.error
+        assert job.recap == "The party explored the ruins."
+        assert job.think_rejected is True
+        assert job.think is False
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+        ai_module._model_thinking_failures.discard("model-x")
 
 
 def test_job_status_route_thinking_starved_false_for_other_failures(client, seed):

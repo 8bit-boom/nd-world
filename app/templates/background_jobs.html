@@ -191,6 +191,17 @@ function bgRenderJob(job) {
     note.textContent = '🧠✕ Thinking ran out of output budget even with an expanded limit — this recap was written with Thinking off.';
     card.appendChild(note);
   }
+  // Distinct from think_fallback above: this model doesn't support
+  // thinking mode at all (Ollama rejected think=true outright), rather
+  // than starving on the budget — see AudioJob.think_rejected's own
+  // docstring. The fix here is different too (untick the model's
+  // "supports thinking" override in Settings, not raise a budget).
+  if (job.job_type === 'audio' && job.status === 'done' && job.think_rejected) {
+    const note = document.createElement('div');
+    note.className = 'bg-job-note-text';
+    note.textContent = "🧠✕ This model doesn't support thinking mode (Ollama rejected it) — this recap was written with Thinking off. Untick its \"supports thinking\" override in Settings → System, or re-register the model with Ollama if you believe it should support it.";
+    card.appendChild(note);
+  }
 
   if (job.job_type === 'audio' && job.status === 'done' && (job.transcript || job.recap)) {
     const sizes = [];
