@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from collections.abc import AsyncGenerator
 import ollama as _ollama
 import httpx as _httpx
+import websockets as _websockets
 
 from .imaging import make_thumbnail
 from .job_shutdown import JobInterrupted
@@ -2003,6 +2004,27 @@ def _get_type() -> str:
 def _get_url() -> str:
     return _IMAGEGEN_URL
 
+
+# Live progress for whatever SwarmUI generation is currently in flight —
+# updated in place by _swarmui_generate_via_ws (below) as it consumes
+# gen_progress events over SwarmUI's GenerateText2ImageWS websocket, read
+# by imagegen_progress() for the GET /api/ai/imagegen/progress route the
+# UI polls. SwarmUI's plain HTTP /API/GetCurrentStatus (the route this
+# used to poll) never actually returns step/total/preview fields at all —
+# only waiting_gens/loading_models/waiting_backends/live_gens/
+# backend_status — so this was always reporting fabricated zeros; real
+# per-step progress only exists on the websocket path. Module-level,
+# single-flight: this app only ever runs one image generation at a time
+# (see imagegen_job_semaphore / the direct-generate route not being
+# separately locked against it), so there's no need to key this by
+# request/session.
+_imagegen_progress_state: dict = {"active": False, "percent": 0.0, "current_percent": 0.0, "preview": ""}
+
+
+def _reset_imagegen_progress() -> None:
+    _imagegen_progress_state.update({"active": False, "percent": 0.0, "current_percent": 0.0, "preview": ""})
+
+
 _COMFYUI_WORKFLOW = {
     "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "{model}"}},
     "2": {"class_type": "CLIPTextEncode",         "inputs": {"text": "{prompt}",   "clip": ["1", 1]}},
@@ -3043,20 +3065,16 @@ async def imagegen_refiners() -> list:
 
 
 async def imagegen_progress() -> dict:
-    t, u = _get_type(), _get_url()
-    if t != "swarmui":
-        return {"step": 0, "total": 0, "preview": ""}
-    try:
-        async with _httpx.AsyncClient(timeout=5) as c:
-            r = await c.post(f"{u}/API/GetCurrentStatus", json={"session_id": "ndworld"})
-            data = r.json()
-            return {
-                "step": data.get("current_step", 0),
-                "total": data.get("total_steps", 0),
-                "preview": data.get("preview", ""),
-            }
-    except Exception:
-        return {"step": 0, "total": 0, "preview": ""}
+    """Live progress for the SwarmUI generation currently in flight, if
+    any — see _imagegen_progress_state's own docstring for why this reads
+    in-memory state updated by the websocket path instead of polling
+    SwarmUI itself (its plain HTTP status route has no per-step progress
+    fields to poll in the first place). ComfyUI has no equivalent live
+    signal at all — the UI already falls back to an indeterminate/
+    elapsed-time display for that backend (see ai-chat-image.js)."""
+    if _get_type() != "swarmui":
+        return {"active": False, "percent": 0.0, "current_percent": 0.0, "preview": ""}
+    return dict(_imagegen_progress_state)
 
 
 # ── SwarmUI model downloads ─────────────────────────────────────────────────
@@ -3183,6 +3201,75 @@ def delete_downloaded_swarmui_model(subfolder: str, filename: str) -> bool:
         return False
     path.unlink()
     return True
+
+
+async def _try_swarmui_ws_generate(u: str, payload: dict, save_image) -> list[str] | None:
+    """Best-effort: generate via SwarmUI's GenerateText2ImageWS websocket
+    instead of the plain HTTP /API/GenerateText2Image call, so
+    _imagegen_progress_state gets real per-step updates as SwarmUI's own
+    `gen_progress` events arrive (see that state's own docstring for why
+    the plain HTTP status route can't provide this at all).
+
+    Returns the saved image URLs on success, or None if the websocket
+    path failed for ANY reason — connect failure (older SwarmUI without
+    this route, wrong scheme, network hiccup), a protocol/JSON error, or
+    a `gen_progress`/`image` message shape this code doesn't recognize.
+    The caller (imagegen_generate) falls back to the existing, already
+    battle-tested plain HTTP call in that case — so a mismatch between
+    this code's assumptions about SwarmUI's websocket wire format (which,
+    same as the caveat on the fields below, could not be independently
+    verified against a live SwarmUI instance while writing this) can only
+    ever cost the live progress display, never break generation itself.
+
+    `save_image(img_raw) -> url` is the same per-image decode/save/
+    thumbnail helper imagegen_generate's own HTTP path uses — SwarmUI
+    returns individual images in the same string shapes (data URL / raw
+    base64 / a saved-file path) on both the HTTP and websocket paths.
+
+    NOTE on `gen_progress` field names/scale (overall_percent/
+    current_percent as 0-1 fractions, converted to 0-100 here) — this
+    could not be confirmed against a live SwarmUI instance or its docs
+    from this environment. If the progress bar this feeds ends up showing
+    an obviously-wrong number (frozen at some fixed value, jumping straight
+    to 100%, etc.) against a real SwarmUI install, that's this mapping
+    being wrong, not a sign anything else here is broken — the generation
+    itself always still completes via the HTTP fallback path regardless."""
+    ws_url = u.replace("https://", "wss://").replace("http://", "ws://") + "/API/GenerateText2ImageWS"
+    urls: list[str] = []
+    _imagegen_progress_state.update({"active": True, "percent": 0.0, "current_percent": 0.0, "preview": ""})
+    try:
+        # Short open_timeout — an older SwarmUI without this route, or a
+        # reverse proxy in front of it that doesn't pass through websocket
+        # upgrades, must fail fast into the HTTP fallback rather than
+        # adding the default ~10s connect timeout to every generation.
+        async with _websockets.connect(ws_url, open_timeout=4) as ws:
+            await ws.send(_json.dumps(payload))
+            async for raw in ws:
+                msg = _json.loads(raw)
+                if msg.get("error"):
+                    raise ValueError(str(msg["error"]))
+                gp = msg.get("gen_progress")
+                if gp:
+                    _imagegen_progress_state.update({
+                        "active": True,
+                        "percent": float(gp.get("overall_percent") or 0) * 100,
+                        "current_percent": float(gp.get("current_percent") or 0) * 100,
+                        "preview": gp.get("preview") or _imagegen_progress_state.get("preview", ""),
+                    })
+                img_raw = msg.get("image")
+                if img_raw:
+                    urls.append(await save_image(img_raw))
+        if not urls:
+            raise ValueError("websocket closed with no image")
+        return urls
+    except Exception as exc:
+        _log.info(
+            "SwarmUI websocket generate unavailable/failed, falling back to plain HTTP: %s: %s",
+            type(exc).__name__, exc,
+        )
+        return None
+    finally:
+        _reset_imagegen_progress()
 
 
 async def imagegen_generate(prompt: str, negative: str, model: str,
@@ -3314,19 +3401,12 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                     if ipadapter_model:
                         payload["ipadaptermodel"] = ipadapter_model
 
-                gr = await c.post(f"{u}/API/GenerateText2Image", json=payload)
-                _log.info("SwarmUI generate status=%s body=%.400s", gr.status_code, gr.text)
-                if gr.status_code >= 400:
-                    raise ValueError(f"SwarmUI returned HTTP {gr.status_code}: {gr.text[:300]}")
-                try:
-                    data = gr.json()
-                except ValueError as exc:
-                    raise ValueError(f"SwarmUI returned an unreadable response: {gr.text[:300]}") from exc
-                images = data.get("images") or []
-                if not images:
-                    err = data.get("error") or data.get("errorid") or data.get("message") or str(data)
-                    raise ValueError(f"SwarmUI returned no image: {err}")
-                for img_raw in images:
+                async def _save_swarmui_image(img_raw: str) -> str:
+                    """Decode/save one SwarmUI image entry to ai_img_dir
+                    and return its /uploads/ai-images/<file> URL — shared
+                    by this HTTP path and _try_swarmui_ws_generate above,
+                    since SwarmUI returns images in the same string shapes
+                    (data URL / raw base64 / a saved-file path) on both."""
                     if img_raw.startswith("data:"):
                         img_bytes = _b64.b64decode(img_raw.split(",", 1)[1])
                     else:
@@ -3348,7 +3428,30 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                     out_path = ai_img_dir / fname
                     out_path.write_bytes(img_bytes)
                     make_thumbnail(out_path)  # best-effort — the Image tab's history/starred grids fall back to this full PNG if it fails
-                    urls.append(f"/uploads/ai-images/{fname}")
+                    return f"/uploads/ai-images/{fname}"
+
+                # Try the websocket path first for live per-step progress —
+                # see _try_swarmui_ws_generate's own docstring for exactly
+                # what makes it fall back (returning None) to the plain
+                # HTTP call below instead of raising.
+                ws_urls = await _try_swarmui_ws_generate(u, payload, _save_swarmui_image)
+                if ws_urls is not None:
+                    urls.extend(ws_urls)
+                else:
+                    gr = await c.post(f"{u}/API/GenerateText2Image", json=payload)
+                    _log.info("SwarmUI generate status=%s body=%.400s", gr.status_code, gr.text)
+                    if gr.status_code >= 400:
+                        raise ValueError(f"SwarmUI returned HTTP {gr.status_code}: {gr.text[:300]}")
+                    try:
+                        data = gr.json()
+                    except ValueError as exc:
+                        raise ValueError(f"SwarmUI returned an unreadable response: {gr.text[:300]}") from exc
+                    images = data.get("images") or []
+                    if not images:
+                        err = data.get("error") or data.get("errorid") or data.get("message") or str(data)
+                        raise ValueError(f"SwarmUI returned no image: {err}")
+                    for img_raw in images:
+                        urls.append(await _save_swarmui_image(img_raw))
 
             else:  # comfyui
                 wf = copy.deepcopy(_COMFYUI_WORKFLOW)

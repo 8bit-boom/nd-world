@@ -289,9 +289,11 @@ async function igGenerate() {
     if (pb) pb.style.width = '0%';
     const thumb = document.getElementById('ig-preview-thumb');
     if (thumb) { thumb.style.display = 'none'; thumb.src = ''; }
-    // ComfyUI's /imagegen/progress always reports 0/0 (unlike SwarmUI) — a
-    // bar frozen at 0% reads as broken, so show an indeterminate "working"
-    // state instead of a real percentage nothing will ever move.
+    // ComfyUI's /imagegen/progress always reports inactive/0% (it has no
+    // live-progress signal at all, unlike SwarmUI's websocket path — see
+    // app.ai._try_swarmui_ws_generate) — a bar frozen at 0% reads as
+    // broken, so show an indeterminate "working" state instead of a real
+    // percentage nothing will ever move.
     if (track) track.style.display = _igIsComfyUI ? 'none' : 'block';
     document.getElementById('ig-progress-text').textContent = _igIsComfyUI ? 'Generating… (ComfyUI reports no progress)' : '';
   }
@@ -376,14 +378,16 @@ async function igLoadJobs() {
   // status, not scoped to a job id — but since generation only ever runs
   // one at a time against the backend GPU in practice, it's a real,
   // measurable percentage for whichever job is actively "generating".
-  // Always 0/0 on ComfyUI (see _igIsComfyUI's other use above), so skip the
-  // fetch there and fall back to elapsed time like everything else with no
-  // progress signal of its own.
+  // Only meaningful when SwarmUI's live-progress websocket path actually
+  // connected (see app.ai._try_swarmui_ws_generate) — falls back to
+  // elapsed time like everything else with no progress signal of its own
+  // otherwise, same as ComfyUI (see _igIsComfyUI's other use above), which
+  // has no live-progress signal at all.
   let progress = null;
   if (!_igIsComfyUI && _igJobs.some(j => j.status === 'generating')) {
     try {
       const d = await fetch('/api/ai/imagegen/progress').then(r => r.json());
-      if (d.total > 0) progress = d;
+      if (d.active) progress = d;
     } catch (e) { /* fall back to elapsed time below */ }
   }
   _igRenderJobs(progress);
@@ -413,7 +417,7 @@ function _igRenderJobs(progress) {
     let igStatusText = _IG_JOB_STATUS_LABEL[job.status] || job.status;
     if (job.status === 'generating') {
       igStatusText = progress
-        ? `Generating… step ${progress.step}/${progress.total} (${Math.round(progress.step / progress.total * 100)}%)`
+        ? `Generating… ${Math.round(progress.percent || 0)}%`
         : ndElapsedLabel(igStatusText, job.created_at);
     }
     label.textContent = `${shortPrompt || 'image'} — ${igStatusText}`;
@@ -1019,12 +1023,12 @@ function igUpdateVariationStrength() {
 async function igPollProgress() {
   try {
     const d = await fetch('/api/ai/imagegen/progress').then(r => r.json());
-    const step = d.step || 0, total = d.total || 0;
     const bar = document.getElementById('ig-progress-bar');
     const txt = document.getElementById('ig-progress-text');
-    if (total > 0) {
-      if (bar) bar.style.width = Math.round(step / total * 100) + '%';
-      if (txt) txt.textContent = `Step ${step} / ${total}`;
+    if (d.active) {
+      const pct = Math.round(d.percent || 0);
+      if (bar) bar.style.width = pct + '%';
+      if (txt) txt.textContent = `${pct}%`;
     }
     if (d.preview) {
       const thumb = document.getElementById('ig-preview-thumb');

@@ -14,6 +14,7 @@ ComfyUI's own missing-prompt_id / generation-error / poll-timeout cases.
 """
 import asyncio
 import base64
+import json
 
 import httpx as _real_httpx
 import pytest
@@ -102,6 +103,36 @@ def _instant_sleep(monkeypatch):
     async def _fast_sleep(_seconds):
         return None
     monkeypatch.setattr(asyncio, "sleep", _fast_sleep)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_websocket_by_default(monkeypatch):
+    """The SwarmUI branch now tries a websocket connect before falling
+    back to plain HTTP (see _try_swarmui_ws_generate) — every test in this
+    file that doesn't care about that path needs it to fail INSTANTLY
+    (not attempt a real connection to a fake host, which could hang or
+    hit this sandbox's own network egress restrictions) so the existing
+    HTTP-path assertions below aren't slowed down or made flaky. Tests
+    that DO want to exercise the websocket path override this with their
+    own monkeypatch.setattr call, which — same monkeypatch fixture
+    instance, later in the same test — wins over this autouse one."""
+    class _InstantFailConnect:
+        def __call__(self, *a, **kw):
+            return self
+
+        async def __aenter__(self):
+            raise ConnectionRefusedError("no real SwarmUI in tests")
+
+        async def __aexit__(self, *a):
+            return False
+    monkeypatch.setattr(ai_module._websockets, "connect", _InstantFailConnect())
+
+
+@pytest.fixture(autouse=True)
+def _reset_imagegen_progress():
+    ai_module._reset_imagegen_progress()
+    yield
+    ai_module._reset_imagegen_progress()
 
 
 def _gen_kwargs(tmp_path, **overrides):
@@ -311,3 +342,155 @@ async def test_comfyui_outputs_with_no_images_raises_not_silent_empty(tmp_path, 
     })
     with pytest.raises(ValueError, match="returned no images"):
         await ai_module.imagegen_generate(**_gen_kwargs(tmp_path))
+
+
+# ── SwarmUI websocket progress path ────────────────────────────────────────
+
+class _FakeWSConnectCtx:
+    """Fakes websockets.connect(...)'s async-context-manager-returning-an-
+    async-iterable-with-.send() shape. `messages` are pre-serialized JSON
+    strings, yielded in order via `async for` (matching real websockets'
+    own iteration protocol); `raise_on_enter`, if set, simulates a
+    connect-time failure (e.g. an older SwarmUI without this route)."""
+
+    def __init__(self, messages=None, raise_on_enter=None):
+        self._messages = messages or []
+        self._raise_on_enter = raise_on_enter
+        self.sent = []
+
+    def __call__(self, *a, **kw):
+        return self
+
+    async def __aenter__(self):
+        if self._raise_on_enter:
+            raise self._raise_on_enter
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def send(self, data):
+        self.sent.append(data)
+
+    def __aiter__(self):
+        return self._gen()
+
+    async def _gen(self):
+        for m in self._messages:
+            yield m
+
+
+@pytest.mark.asyncio
+async def test_swarmui_ws_path_used_when_available_reports_progress_and_saves_image(tmp_path, monkeypatch):
+    """Happy path: the websocket connects, streams a gen_progress event
+    then an image, and the plain HTTP /API/GenerateText2Image call is
+    never made at all."""
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    b64 = base64.b64encode(_PNG_BYTES).decode()
+
+    progress_snapshots = []
+
+    class _TrackingWS(_FakeWSConnectCtx):
+        def _gen(self):
+            async def _inner():
+                yield json.dumps({"gen_progress": {"overall_percent": 0.5, "current_percent": 0.9}})
+                progress_snapshots.append(dict(ai_module._imagegen_progress_state))
+                yield json.dumps({"image": f"data:image/png;base64,{b64}"})
+            return _inner()
+
+    ws = _TrackingWS()
+    monkeypatch.setattr(ai_module._websockets, "connect", ws)
+    fake_http = _patch_httpx(monkeypatch, post_map={
+        "/API/GetNewSession": _FakeResponse(200, {"session_id": "s1"}),
+    })
+
+    urls = await ai_module.imagegen_generate(**_gen_kwargs(tmp_path))
+    assert len(urls) == 1
+    saved = tmp_path / "ai-images" / urls[0].split("/")[-1]
+    assert saved.read_bytes() == _PNG_BYTES
+
+    assert progress_snapshots[0]["active"] is True
+    assert progress_snapshots[0]["percent"] == 50.0
+    assert progress_snapshots[0]["current_percent"] == 90.0
+    # Reset back to idle once generation finished — no stale "in progress"
+    # state left behind for the next poll of GET /imagegen/progress.
+    assert ai_module._imagegen_progress_state["active"] is False
+
+    assert not any(url.endswith("/API/GenerateText2Image") for url, _ in fake_http.post_calls)
+    assert ws.sent  # the payload was actually sent over the websocket
+
+
+@pytest.mark.asyncio
+async def test_swarmui_falls_back_to_http_when_websocket_connect_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    b64 = base64.b64encode(_PNG_BYTES).decode()
+    ws = _FakeWSConnectCtx(raise_on_enter=ConnectionRefusedError("older SwarmUI, no WS route"))
+    monkeypatch.setattr(ai_module._websockets, "connect", ws)
+    fake_http = _patch_httpx(monkeypatch, post_map={
+        "/API/GetNewSession": _FakeResponse(200, {"session_id": "s1"}),
+        "/API/GenerateText2Image": _FakeResponse(200, {"images": [f"data:image/png;base64,{b64}"]}),
+    })
+
+    urls = await ai_module.imagegen_generate(**_gen_kwargs(tmp_path))
+    assert len(urls) == 1
+    assert any(url.endswith("/API/GenerateText2Image") for url, _ in fake_http.post_calls)
+    # Falling back must never leave "active" progress state stuck on.
+    assert ai_module._imagegen_progress_state["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_swarmui_falls_back_to_http_when_websocket_closes_with_no_image(tmp_path, monkeypatch):
+    """The websocket connects and streams progress but never sends an
+    `image` message before closing (an unrecognized/changed message
+    shape) — must fall back to plain HTTP rather than reporting success
+    with zero images."""
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    b64 = base64.b64encode(_PNG_BYTES).decode()
+    ws = _FakeWSConnectCtx(messages=[json.dumps({"gen_progress": {"overall_percent": 0.2}})])
+    monkeypatch.setattr(ai_module._websockets, "connect", ws)
+    _patch_httpx(monkeypatch, post_map={
+        "/API/GetNewSession": _FakeResponse(200, {"session_id": "s1"}),
+        "/API/GenerateText2Image": _FakeResponse(200, {"images": [f"data:image/png;base64,{b64}"]}),
+    })
+
+    urls = await ai_module.imagegen_generate(**_gen_kwargs(tmp_path))
+    assert len(urls) == 1  # recovered via the HTTP fallback
+
+
+@pytest.mark.asyncio
+async def test_swarmui_ws_error_message_falls_back_to_http(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    b64 = base64.b64encode(_PNG_BYTES).decode()
+    ws = _FakeWSConnectCtx(messages=[json.dumps({"error": "model not loaded"})])
+    monkeypatch.setattr(ai_module._websockets, "connect", ws)
+    _patch_httpx(monkeypatch, post_map={
+        "/API/GetNewSession": _FakeResponse(200, {"session_id": "s1"}),
+        "/API/GenerateText2Image": _FakeResponse(200, {"images": [f"data:image/png;base64,{b64}"]}),
+    })
+
+    urls = await ai_module.imagegen_generate(**_gen_kwargs(tmp_path))
+    assert len(urls) == 1
+
+
+# ── imagegen_progress() ─────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_imagegen_progress_reflects_live_state_for_swarmui(monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    ai_module._imagegen_progress_state.update({
+        "active": True, "percent": 42.0, "current_percent": 80.0, "preview": "data:x",
+    })
+    result = await ai_module.imagegen_progress()
+    assert result == {"active": True, "percent": 42.0, "current_percent": 80.0, "preview": "data:x"}
+
+
+@pytest.mark.asyncio
+async def test_imagegen_progress_idle_for_non_swarmui_backend(monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "comfyui")
+    ai_module._imagegen_progress_state.update({"active": True, "percent": 42.0})
+    result = await ai_module.imagegen_progress()
+    assert result == {"active": False, "percent": 0.0, "current_percent": 0.0, "preview": ""}

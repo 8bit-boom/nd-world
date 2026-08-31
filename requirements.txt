@@ -7,6 +7,7 @@ python-multipart==0.0.18
 itsdangerous==2.2.0
 aiofiles==24.1.0
 httpx==0.28.1
+websockets==17.0.1
 ollama==0.6.2
 Pillow==12.3.0
 pyotp==2.10.0
