@@ -114,8 +114,11 @@ def set_ollama_generation_overrides(options: dict, keep_alive: str = "", model_o
     # (see _model_override_thinks below) — drop any cached capability so the
     # next call re-checks instead of keeping a stale answer until restart,
     # same "takes effect on the very next request" promise every other
-    # setting on this page already makes.
+    # setting on this page already makes. The prompt-token fallback set
+    # clears with it: an unticked override must stop the <|think|> injection
+    # immediately, and a re-ticked one gets a fresh real think=true probe.
     _model_capabilities_cache.clear()
+    _prompt_token_thinking_models.clear()
 
 
 def effective_ollama_options(model: str = "") -> dict:
@@ -164,6 +167,41 @@ _model_capabilities_cache: dict[str, list[str]] = {}
 _model_thinking_failures: set[str] = set()
 
 
+# Models where a think=true rejection already happened AND nd-world's own
+# records (KNOWN_MODELS, or a GM's per-model override checkbox) still say the
+# model thinks — meaning the rejection is Ollama's missing capability tag on
+# hf.co-imported GGUFs (ollama#16936: the import path never reports
+# "thinking", so /api/chat 400s an explicit think=true) rather than a model
+# that genuinely can't reason. Future think=True requests for these are sent
+# as think=False with the gemma-4-style <|think|> prompt token prepended to
+# the system message instead (see _messages_with_prompt_think_token) — the
+# chat template's documented manual trigger, which the model honors even
+# though Ollama won't gate it via the API flag. In-memory, cleared on every
+# Settings save (same reset point as the capability cache) and on restart;
+# a successful real think=true call (e.g. after Ollama was updated to tag
+# the model) also retires it.
+_prompt_token_thinking_models: set[str] = set()
+
+# Gemma 4's documented manual thinking trigger — the chat template injects
+# this token at the start of the system turn when thinking is enabled, and
+# it works just as well supplied as literal system-message text, which is
+# what makes the fallback above possible for untagged imports.
+_PROMPT_THINK_TOKEN = "<|think|>"
+
+
+def _messages_with_prompt_think_token(full: list[dict]) -> list[dict]:
+    """Return `full` (generate_chat/stream_chat's [system?]+messages list)
+    as a copy with the <|think|> trigger prepended to the first system
+    message's content — inserting a system message if none was passed — so
+    the model reasons even though Ollama refused the think=true flag."""
+    out = list(full)
+    if out and out[0].get("role") == "system":
+        out[0] = {**out[0], "content": _PROMPT_THINK_TOKEN + (out[0].get("content") or "")}
+    else:
+        out.insert(0, {"role": "system", "content": _PROMPT_THINK_TOKEN})
+    return out
+
+
 def model_rejected_thinking(model: str = "") -> bool:
     """True if `model` (default: effective_ollama_model()) is the subject
     of a currently-live thinking rejection — same resolution as
@@ -201,8 +239,11 @@ def _record_thinking_result(model: str, think: bool, failed: bool) -> None:
     else:
         # A successful think=true call proves the model genuinely handles
         # it — clear any earlier failure (a GM fixed it, e.g. by properly
-        # registering the model with Ollama, or it was transient).
+        # registering the model with Ollama, or it was transient). That
+        # also retires the prompt-token fallback: if Ollama now accepts
+        # think=true, the API flag is the cleaner mechanism again.
         _model_thinking_failures.discard(model)
+        _prompt_token_thinking_models.discard(model)
 
 
 def _known_model_thinks(model: str) -> bool:
@@ -775,6 +816,12 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
     try:
         chat_kwargs = await _chat_kwargs(options, think, m)
         effective_think = chat_kwargs["think"]
+        if think and not effective_think and m in _prompt_token_thinking_models:
+            # This model already rejected think=true once, but nd-world's
+            # own records still vouch for its thinking — the downgrade
+            # above would silently drop to instruct mode, so re-enable
+            # reasoning via the chat-template's own trigger instead.
+            full = _messages_with_prompt_think_token(full)
         resp = await _client().chat(model=m, messages=full, **chat_kwargs)
         # The EFFECTIVE think (post _chat_kwargs downgrade), not the
         # caller's requested one — see _record_thinking_result's own
@@ -816,8 +863,23 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
             # think=False request can never re-enter this branch, and no
             # partial content was produced yet (this was an upfront
             # rejection, not a mid-stream failure).
-            _log.warning("generate_chat model=%s: does not support thinking — retrying with think=False", m)
-            return await generate_chat(messages, system=system, model=m, options=options, think=False)
+            #
+            # But when nd-world's OWN records vouch for this model's
+            # thinking (KNOWN_MODELS, or a GM's override checkbox), the
+            # rejection is almost certainly ollama#16936 — hf.co-imported
+            # GGUFs never get the capability tag — so falling back to
+            # plain instruct mode would silently lose the reasoning the
+            # GM asked for. Switch those to the chat template's manual
+            # trigger (<|think|> system-prompt token) instead, and keep
+            # using it for future calls (see _prompt_token_thinking_models).
+            retry_full = full
+            if _known_model_thinks(m) or _model_override_thinks(m):
+                _prompt_token_thinking_models.add(m)
+                retry_full = _messages_with_prompt_think_token(full)
+                _log.warning("generate_chat model=%s: does not support thinking — retrying with the %s system-prompt token", m, _PROMPT_THINK_TOKEN)
+            else:
+                _log.warning("generate_chat model=%s: does not support thinking — retrying with think=False", m)
+            return await generate_chat(retry_full, system="", model=m, options=options, think=False)
         return f"[AI error: Ollama {exc.status_code}: {exc.error}]"
     except Exception as exc:
         _log.error("generate_chat unavailable: %s: %s", type(exc).__name__, exc)
@@ -871,6 +933,11 @@ async def stream_chat(
     done_reason = None
     try:
         chat_kwargs = await _chat_kwargs(options, think, m)
+        if think and not chat_kwargs["think"] and m in _prompt_token_thinking_models:
+            # Same prompt-token fallback as generate_chat: a poisoned
+            # capability cache downgraded think to False, but this model's
+            # reasoning is still wanted and still available via the token.
+            full = _messages_with_prompt_think_token(full)
         async for chunk in await _client().chat(model=m, messages=full, stream=True, **chat_kwargs):
             token = chunk.message.content
             if token:
@@ -912,8 +979,19 @@ async def stream_chat(
             # if some content is already out the door, don't restart the
             # stream and risk duplicating it), so redo the identical
             # request with think=False instead of surfacing the sentinel.
-            _log.warning("stream_chat model=%s: does not support thinking — retrying with think=False", m)
-            async for token in stream_chat(messages, system=system, model=m, options=options, think=False):
+            # And the same prompt-token fallback as generate_chat when
+            # nd-world's own records vouch for the model (ollama#16936
+            # imports): the retry re-enables reasoning via the template's
+            # <|think|> system-prompt token rather than dropping to
+            # instruct mode.
+            retry_full = full
+            if _known_model_thinks(m) or _model_override_thinks(m):
+                _prompt_token_thinking_models.add(m)
+                retry_full = _messages_with_prompt_think_token(full)
+                _log.warning("stream_chat model=%s: does not support thinking — retrying with the %s system-prompt token", m, _PROMPT_THINK_TOKEN)
+            else:
+                _log.warning("stream_chat model=%s: does not support thinking — retrying with think=False", m)
+            async for token in stream_chat(retry_full, system="", model=m, options=options, think=False):
                 yield token
             return
         yield f"[AI error: Ollama {exc.status_code}: {exc.error}]"

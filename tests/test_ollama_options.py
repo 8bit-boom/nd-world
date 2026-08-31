@@ -66,10 +66,12 @@ def _reset_ollama_overrides():
     ai_module.set_ollama_generation_overrides({})
     ai_module._model_capabilities_cache.clear()
     ai_module._model_thinking_failures.clear()
+    ai_module._prompt_token_thinking_models.clear()
     yield
     ai_module.set_ollama_generation_overrides({})
     ai_module._model_capabilities_cache.clear()
     ai_module._model_thinking_failures.clear()
+    ai_module._prompt_token_thinking_models.clear()
 
 
 # ── app.ai override plumbing ────────────────────────────────────────────────
@@ -1463,7 +1465,10 @@ async def test_generate_chat_records_thinking_failure_on_rejection(monkeypatch):
     think=False retry in generate_chat) — the caller gets real output, not
     the old sentinel string. The Settings warning badge still fires
     (_model_thinking_failures), and exactly two Ollama calls happen: the
-    failing think=True probe, then a clean think=False retry."""
+    failing think=True probe, then a think=False retry. Because this test's
+    GM override vouches for the model, that retry carries the <|think|>
+    prompt token (ollama#16936 fallback) rather than dropping to plain
+    instruct mode — see the dedicated section below."""
     fake = _RejectsThinkingClient("my-model")
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
     ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
@@ -1474,6 +1479,11 @@ async def test_generate_chat_records_thinking_failure_on_rejection(monkeypatch):
         assert len(fake.calls) == 2
         assert fake.calls[0]["think"] is True
         assert not fake.calls[1]["think"]
+        # The vouched-model retry re-enables reasoning via the token — this
+        # call passes no system=, so the helper inserts a fresh system
+        # message at index 0 to carry it.
+        assert fake.calls[1]["messages"][0]["role"] == "system"
+        assert fake.calls[1]["messages"][0]["content"].startswith("<|think|>")
     finally:
         ai_module.set_ollama_generation_overrides({})
 
@@ -1493,6 +1503,9 @@ async def test_stream_chat_records_thinking_failure_on_rejection(monkeypatch):
         assert len(fake.calls) == 2
         assert fake.calls[0]["think"] is True
         assert not fake.calls[1]["think"]
+        # Same vouched-model <|think|> token retry as generate_chat above.
+        assert fake.calls[1]["messages"][0]["role"] == "system"
+        assert fake.calls[1]["messages"][0]["content"].startswith("<|think|>")
     finally:
         ai_module.set_ollama_generation_overrides({})
 
@@ -1503,7 +1516,9 @@ async def test_generate_chat_skips_straight_to_think_false_after_poisoned(monkey
     rejection, a LATER think=True request must not repeat the failing
     round-trip — _model_supports_thinking's cache short-circuits before
     ever consulting the (still-True) override, so only one clean
-    think=False call happens."""
+    think=False call happens (carrying the <|think|> token now that the
+    fallback is armed for this vouched model — see the dedicated section
+    below)."""
     fake = _RejectsThinkingClient("my-model")
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
     ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
@@ -1582,6 +1597,187 @@ async def test_thinking_failure_cleared_by_a_later_successful_think_call(monkeyp
     result = await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="my-model")
     assert result == "hi"
     assert "my-model" not in ai_module._model_thinking_failures
+
+
+# ── <|think|> prompt-token fallback for vouched models (ollama#16936) ───────
+#
+# The rejection-recovery above falls back to plain think=False — silently
+# dropping the reasoning a GM explicitly asked for. But when nd-world ITSELF
+# vouches for the model's thinking (KNOWN_MODELS, or the per-model override
+# checkbox those tests above use), the rejection is almost certainly not "the
+# GM was wrong" but Ollama's missing capability tag on hf.co-imported GGUFs
+# (ollama#16936: the import path never reports "thinking", so /api/chat 400s
+# an explicit think=true). Gemma 4 still reasons perfectly when the template's
+# own <|think|> token is supplied as literal system-message text, so for
+# exactly those vouched models the retry (and every later think=True request,
+# until a Settings save re-arms the real probe) sends think=False WITH the
+# token prepended to the system message — reasoning still reaches the UI
+# instead of being quietly lost. Unvouched models keep the plain think=False
+# fallback: nobody claims they can think, so there's no token to send.
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_think_rejection_uses_prompt_token_for_vouched_model(monkeypatch):
+    """The override vouches, Ollama rejects the real think=true probe — the
+    retry must re-enable reasoning via the <|think|> token, not silently
+    drop to instruct mode. The advisory failure badge still fires, and a
+    system= IS passed here so the token gets PREPENDED to it (the
+    insert-a-fresh-system-message branch is covered by the helper unit test
+    and the two extended rejection tests above, which pass no system=)."""
+    fake = _RejectsThinkingClient("my-model")
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        result = await ai_module.generate_chat(
+            [{"role": "user", "content": "hi"}], system="You are a scribe.", think=True, model="my-model",
+        )
+        assert result == "hi"
+        assert "my-model" in ai_module._model_thinking_failures  # still advisory-recorded
+        assert "my-model" in ai_module._prompt_token_thinking_models  # fallback armed for next time
+        assert len(fake.calls) == 2
+        assert fake.calls[0]["think"] is True
+        assert not any("<|think|>" in (msg.get("content") or "") for msg in fake.calls[0]["messages"])
+        assert not fake.calls[1]["think"]
+        assert fake.calls[1]["messages"][0]["role"] == "system"
+        assert fake.calls[1]["messages"][0]["content"].startswith("<|think|>You are a scribe.")
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_think_rejection_uses_prompt_token_for_vouched_model(monkeypatch):
+    """Same prompt-token retry on the streaming path."""
+    fake = _RejectsThinkingClient("my-model")
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        tokens = [tok async for tok in ai_module.stream_chat(
+            [{"role": "user", "content": "hi"}], system="You are a scribe.", think=True, model="my-model",
+        )]
+        assert tokens == ["hi"]
+        assert "my-model" in ai_module._model_thinking_failures
+        assert "my-model" in ai_module._prompt_token_thinking_models
+        assert len(fake.calls) == 2
+        assert fake.calls[0]["think"] is True
+        assert not any("<|think|>" in (msg.get("content") or "") for msg in fake.calls[0]["messages"])
+        assert not fake.calls[1]["think"]
+        assert fake.calls[1]["messages"][0]["role"] == "system"
+        assert fake.calls[1]["messages"][0]["content"].startswith("<|think|>You are a scribe.")
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_poisoned_vouched_model_skips_straight_to_prompt_token(monkeypatch):
+    """The fallback is sticky: once armed, a SECOND think=True request makes
+    no repeated failing think=true round-trip — the poisoned capability
+    cache downgrades the flag AND the pre-call injection adds the token, so
+    exactly one (non-failing) call goes out."""
+    fake = _RejectsThinkingClient("my-model")
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="my-model")
+        assert len(fake.calls) == 2  # the failing probe + the token retry
+
+        result = await ai_module.generate_chat([{"role": "user", "content": "hi again"}], think=True, model="my-model")
+        assert result == "hi"
+        assert len(fake.calls) == 3  # no second 400 — one think=False call, token included
+        assert not fake.calls[2]["think"]
+        assert fake.calls[2]["messages"][0]["role"] == "system"
+        assert fake.calls[2]["messages"][0]["content"].startswith("<|think|>")
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_unvouched_model_rejection_still_falls_back_to_plain_think_false(monkeypatch):
+    """Nobody vouches for this model (no override, no KNOWN_MODELS entry) —
+    the token fallback must NOT engage; the retry stays a plain think=False
+    call. The capability cache is pre-seeded as thinking-capable (same
+    direct-seeding convention as the poisoned-model test above) so the
+    first call actually attempts the real think=true probe despite .show()
+    reporting no tag."""
+    fake = _RejectsThinkingClient("stray-model")
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module._model_capabilities_cache["stray-model"] = ["thinking"]
+    try:
+        result = await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="stray-model")
+        assert result == "hi"
+        assert "stray-model" in ai_module._model_thinking_failures
+        assert "stray-model" not in ai_module._prompt_token_thinking_models
+        assert len(fake.calls) == 2
+        assert fake.calls[0]["think"] is True
+        assert not fake.calls[1]["think"]
+        assert not any("<|think|>" in (msg.get("content") or "") for msg in fake.calls[1]["messages"])
+    finally:
+        ai_module._model_capabilities_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_settings_save_re_arms_real_think_probe_after_prompt_token_fallback(monkeypatch):
+    """The fallback is armed, but a Settings save clears it along with the
+    capability cache — the next think=True request must attempt a REAL
+    think=true again (which Ollama rejects here, exercising the full
+    rejection → token-retry cycle a second time)."""
+    fake = _RejectsThinkingClient("my-model")
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="my-model")
+        assert len(fake.calls) == 2
+        assert "my-model" in ai_module._prompt_token_thinking_models
+
+        ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+        assert "my-model" not in ai_module._prompt_token_thinking_models
+
+        result = await ai_module.generate_chat([{"role": "user", "content": "hi again"}], think=True, model="my-model")
+        assert result == "hi"
+        assert len(fake.calls) == 4  # a fresh think=True probe (rejected again) + token retry
+        assert fake.calls[2]["think"] is True
+        assert not fake.calls[3]["think"]
+        assert fake.calls[3]["messages"][0]["content"].startswith("<|think|>")
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_successful_think_true_retires_prompt_token_fallback(monkeypatch):
+    """If Ollama later DOES accept think=true (an update tagged the model,
+    or the GM re-registered it properly), the successful probe retires the
+    token fallback — the API flag is the cleaner mechanism, so no token is
+    injected on that call or any later one."""
+    calls = []
+    fake = _FakeChatClient(calls, show_capabilities=["thinking"])
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module._prompt_token_thinking_models.add("my-model")
+    try:
+        result = await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="my-model")
+        assert result == "hi"
+        # think=true was actually sent (no downgrade → no injection either)
+        assert calls[0]["think"] is True
+        assert not any("<|think|>" in (msg.get("content") or "") for msg in calls[0]["messages"])
+        assert "my-model" not in ai_module._prompt_token_thinking_models
+    finally:
+        ai_module._prompt_token_thinking_models.discard("my-model")
+
+
+def test_messages_with_prompt_think_token_prepends_and_inserts():
+    """The helper is pure: it returns a NEW list (and a new dict for the
+    mutated system message) without touching the caller's originals —
+    generate_chat/stream_chat reuse their `full` list in later branches
+    (e.g. the rejection retry), so an in-place mutation would compound."""
+    src = [{"role": "system", "content": "You are..."}, {"role": "user", "content": "hi"}]
+    out = ai_module._messages_with_prompt_think_token(src)
+    assert out[0]["content"] == "<|think|>You are..."
+    assert out[0] is not src[0]
+    assert src == [{"role": "system", "content": "You are..."}, {"role": "user", "content": "hi"}]
+
+    src_no_system = [{"role": "user", "content": "hi"}]
+    out_no_system = ai_module._messages_with_prompt_think_token(src_no_system)
+    assert out_no_system[0] == {"role": "system", "content": "<|think|>"}
+    assert out_no_system[1] == {"role": "user", "content": "hi"}
+    assert src_no_system == [{"role": "user", "content": "hi"}]
 
 
 def test_settings_page_shows_thinking_failure_warning(client, seed):
