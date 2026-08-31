@@ -53,6 +53,13 @@ def _job_to_dict(job: AudioJob) -> dict:
         # Retry-summary row's checkbox pre-checks correctly for every job.
         "think": job.think if job.think is not None else True,
         "fit_context": bool(job.fit_context),
+        # purpose="condense" only: the strictness this job was created with
+        # ("guideline"|"firm"|"strict") — NULL (a pre-migration row, or one
+        # created before the setting existed) reads as "guideline", the
+        # default it was created under. Exposed so the jobs UI can explain
+        # which enforcement level produced the recap; see AudioJob.
+        # condense_strictness and app.audio_jobs._run_job.
+        "strictness": job.condense_strictness or "guideline",
         "use_rag": bool(job.use_rag),
         "rag_entity_limit": job.rag_entity_limit,
         "rag_notes_limit": job.rag_notes_limit,

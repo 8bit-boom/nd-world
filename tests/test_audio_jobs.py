@@ -820,6 +820,139 @@ async def test_create_condense_job_auto_widens_ctx_for_a_long_input_without_fit_
     assert captured["options"]["num_ctx"] > ai_module._DEFAULT_ASSUMED_CTX_TOKENS
 
 
+# ── purpose="condense": strictness setting ──────────────────────────────────
+# create_condense_job persists condense_strictness ("guideline"|"firm"|
+# "strict"); in "strict" mode _run_job additionally estimates the finished
+# recap's tokens with the same estimator the status labels use and re-runs
+# condense_recap ONCE when the result lands outside the requested range.
+
+@pytest.mark.asyncio
+async def test_create_condense_job_persists_strictness_round_trip(client, seed):
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text="A long existing recap.", strictness="strict",
+    )
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.condense_strictness == "strict"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_create_condense_job_defaults_strictness_to_guideline(client, seed):
+    job_id = audio_jobs.create_condense_job(world_id=seed.world_a.id, text="A long existing recap.")
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.condense_strictness == "guideline"
+    finally:
+        db.close()
+
+
+def test_create_condense_job_rejects_invalid_strictness(seed):
+    with pytest.raises(ValueError):
+        audio_jobs.create_condense_job(world_id=seed.world_a.id, text="text", strictness="bogus")
+
+
+@pytest.mark.asyncio
+async def test_condense_job_strict_mode_retries_a_too_short_recap_once(client, seed, monkeypatch):
+    """strict + a min_tokens target: the first (too short) draft must be
+    re-run exactly once with a violation note in the extra instructions,
+    and the in-band second draft wins. The drafts' sizes are chosen against
+    the same chars-per-token estimator _run_job checks with (ASCII ~4
+    chars/token): ~3 tokens first (far below 50), then exactly ~50."""
+    calls = []
+
+    async def fake_condense(recap, model="", options=None, think=True, extra_instructions="",
+                            min_tokens=None, max_tokens=None, strictness="guideline", **kwargs):
+        calls.append({
+            "extra_instructions": extra_instructions, "min_tokens": min_tokens,
+            "max_tokens": max_tokens, "strictness": strictness,
+        })
+        if len(calls) == 1:
+            return "Too short."
+        return "x" * 200
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text="A long existing recap.", min_tokens=50, strictness="strict",
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.recap == "x" * 200
+    assert len(calls) == 2  # one strict violation → exactly one retry, no more
+    assert "previous draft" in calls[1]["extra_instructions"]
+    assert calls[1]["min_tokens"] == 50
+    assert calls[1]["strictness"] == "strict"
+    assert job.condense_strictness == "strict"
+
+
+@pytest.mark.asyncio
+async def test_condense_job_strict_mode_in_band_first_attempt_makes_one_call(client, seed, monkeypatch):
+    """The strict check must only fire on an actual violation — a first
+    draft already inside the requested range costs exactly one AI call."""
+    calls = []
+
+    async def fake_condense(recap, **kwargs):
+        calls.append(kwargs)
+        return "y" * 400  # ~100 tokens against a 50-token minimum — in band
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text="A long existing recap.", min_tokens=50, strictness="strict",
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.recap == "y" * 400
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("strictness", ["guideline", "firm"])
+@pytest.mark.asyncio
+async def test_condense_job_only_strict_retries_an_out_of_band_recap(client, seed, monkeypatch, strictness):
+    """guideline/firm stop at prompt wording even when the result blatantly
+    misses the target — the out-of-band retry is the "strict" tier's whole
+    distinguishing feature, so it must never leak into the other two."""
+    calls = []
+
+    async def fake_condense(recap, **kwargs):
+        calls.append(kwargs)
+        return "Too short."  # ~3 tokens against a 50-token minimum
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text="A long existing recap.", min_tokens=50, strictness=strictness,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.recap == "Too short."
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_condense_job_strict_retry_failure_keeps_the_first_recap(client, seed, monkeypatch):
+    """A retry that itself lands on a failure sentinel is discarded — the
+    first draft was a usable answer, and reporting the failure text (or the
+    starved sentinel) as a "done" recap would be strictly worse."""
+    calls = []
+
+    async def fake_condense(recap, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return "Too short."
+        return "[AI error: connection refused]"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text="A long existing recap.", min_tokens=50, strictness="strict",
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.recap == "Too short."
+    assert len(calls) == 2
+
+
 # ── purpose="session_recap" seeded directly (create_text_recap_job) ────────
 # docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 2 item 3.2: a sibling of
 # create_condense_job for the Live Recording panel's "Summarize in
@@ -2422,6 +2555,81 @@ def test_condense_job_passes_min_max_tokens_and_extra_instructions(client, seed,
     assert captured["max_tokens"] == 100
 
 
+def test_condense_job_route_persists_strictness(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/condense-job", json={"recap": "text", "strictness": "firm"})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    data = _poll_until_terminal(client, f"/api/sessions/ai/audio-jobs/{job_id}")
+    assert data["status"] == "done", data
+    # The unified Background Jobs status route exposes the strictness the
+    # job was created with (the session-scoped poll shape above is
+    # deliberately lean and doesn't carry per-condense settings).
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    assert r.json()["strictness"] == "firm"
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.condense_strictness == "firm"
+    finally:
+        db.close()
+
+
+def test_condense_job_route_defaults_strictness_to_guideline(client, seed):
+    """No strictness field in the body (today's UI payloads before the
+    setting existed) must read as "guideline" everywhere — the row AND the
+    unified status route, which normalizes NULL for pre-migration rows."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/condense-job", json={"recap": "text"})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    data = _poll_until_terminal(client, f"/api/sessions/ai/audio-jobs/{job_id}")
+    assert data["status"] == "done", data
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    assert r.json()["strictness"] == "guideline"
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.condense_strictness == "guideline"
+    finally:
+        db.close()
+
+
+def test_condense_job_route_rejects_bogus_strictness(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/condense-job", json={"recap": "text", "strictness": "bogus"})
+    assert r.status_code == 400
+    assert "strictness" in r.json()["detail"]
+
+
+def test_job_status_route_condense_strictness_null_reads_as_guideline(client, seed):
+    """A pre-migration row (column NULL) must report "guideline" through the
+    unified status route too — same NULL-reads-as-default convention
+    _run_job itself applies."""
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="condense", filename="old.mp3",
+                       status="done", condense_strictness=None)
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    assert r.json()["strictness"] == "guideline"
+
+
 @pytest.mark.parametrize("body", [
     {"recap": "text", "min_tokens": "not a number"},
     {"recap": "text", "max_tokens": "not a number"},
@@ -2520,10 +2728,14 @@ def test_audio_job_create_route_rag_off_by_default(client, seed, tmp_path):
 def test_condense_recap_route_passes_min_max_tokens_and_extra_instructions(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_condense(recap, model="", options=None, think=True, extra_instructions="", min_tokens=None, max_tokens=None):
+    # strictness needs a default here (not **kwargs) so the test also pins
+    # that a body WITHOUT the field forwards "guideline" to condense_recap,
+    # not None/something else.
+    async def fake_condense(recap, model="", options=None, think=True, extra_instructions="", min_tokens=None, max_tokens=None, strictness="guideline"):
         captured["extra_instructions"] = extra_instructions
         captured["min_tokens"] = min_tokens
         captured["max_tokens"] = max_tokens
+        captured["strictness"] = strictness
         return "condensed"
     monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
 
@@ -2536,6 +2748,7 @@ def test_condense_recap_route_passes_min_max_tokens_and_extra_instructions(clien
     assert captured["extra_instructions"] == "focus on combat"
     assert captured["min_tokens"] == 20
     assert captured["max_tokens"] == 100
+    assert captured["strictness"] == "guideline"
 
 
 def test_condense_recap_route_rejects_min_greater_than_max(client, seed):

@@ -245,6 +245,77 @@ async def test_condense_recap_no_length_notes_when_neither_bound_given(monkeypat
     assert "Length target" not in system
 
 
+# ── condense_recap: strictness (guideline vs firm/strict length wording) ────
+# "guideline" is the original best-effort wording (pinned here so a reword
+# can't silently drift); "firm"/"strict" reword the same targets as
+# mandatory requirements and mark the GM's extra instructions binding.
+
+@pytest.mark.asyncio
+async def test_condense_recap_guideline_keeps_the_original_soft_wording(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", min_tokens=80, max_tokens=200, strictness="guideline")
+    system = calls[0]["messages"][0]["content"]
+    assert "don't cut it any shorter" in system
+    assert "no more than ~200 tokens" in system
+    # The mandatory phrasing must not leak into the soft default.
+    assert "MUST be at least" not in system
+    assert "REQUIRED" not in system
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_firm_strictness_makes_min_max_requirements(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", min_tokens=80, max_tokens=200, strictness="firm")
+    system = calls[0]["messages"][0]["content"]
+    assert "MUST be at least ~80 tokens" in system
+    assert "stay at or below ~200 tokens" in system
+    # The soft wording must be fully replaced, not appended alongside.
+    assert "don't cut it any shorter" not in system
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_firm_marks_extra_instructions_binding(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", extra_instructions="focus on combat", strictness="firm")
+    system = calls[0]["messages"][0]["content"]
+    assert "Treat the extra instructions below as binding requirements, not suggestions." in system
+    assert "focus on combat" in system
+    # The compliance line sits before the instructions it binds — its
+    # "below" is only true in that order.
+    assert system.index("binding requirements") < system.index("focus on combat")
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_guideline_never_marks_instructions_binding(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", extra_instructions="focus on combat")
+    system = calls[0]["messages"][0]["content"]
+    assert "binding requirements" not in system
+    assert "focus on combat" in system
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_no_binding_line_when_no_extra_instructions(monkeypatch):
+    """The compliance sentence only makes sense when there ARE instructions
+    below it — with none, firm/strict must not append a dangling reference."""
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", min_tokens=80, strictness="strict")
+    system = calls[0]["messages"][0]["content"]
+    assert "binding requirements" not in system
+    assert "MUST be at least ~80 tokens" in system
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_rejects_an_unknown_strictness():
+    with pytest.raises(ValueError):
+        await ai_module.condense_recap("a recap", strictness="bogus")
+
+
 # ── condense_recap: expanded_thinking (the retry ladder's recovery rung) ───
 # See docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 1.
 

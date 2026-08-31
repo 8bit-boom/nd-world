@@ -983,6 +983,16 @@ class AudioJob(Base):
     # separate column needed for that.
     min_tokens = Column(Integer, nullable=True)
     max_tokens = Column(Integer, nullable=True)
+    # purpose="condense" only: persisted condense strictness
+    # ("guideline"|"firm"|"strict") steering how hard min/max/
+    # extra-instructions are enforced in the prompt and whether a strict
+    # out-of-band auto-retry runs (see app.audio_jobs._run_job) —
+    # "guideline" is today's best-effort behavior. Persisted (not just a
+    # call-time argument) so a resume/redo reuses the same strictness the
+    # GM originally set, same as min_tokens/max_tokens above. Existing
+    # installs get the column via database._migrate's _heal_table_from_model
+    # pass, same as every other late-added audio_jobs column.
+    condense_strictness = Column(String, default="guideline")
     # purpose="condense"/"session_recap" only: opt this run into RAG —
     # retrieving relevant World entities/notes and prepending them to the
     # summarize/condense system prompt for accuracy (spelling names,

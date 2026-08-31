@@ -565,6 +565,22 @@ def _condense_token_bounds(body: dict) -> tuple[Optional[int], Optional[int]]:
     return bounds["min_tokens"], bounds["max_tokens"]
 
 
+def _condense_strictness(body: dict) -> str:
+    """Parse+validate Condense's optional strictness setting — same
+    "blank means default" convention _condense_token_bounds uses. Missing/
+    blank reads as "guideline" (today's best-effort wording); anything
+    else that isn't one of the three known values raises HTTPException(400)
+    so a typo'd request fails fast instead of silently downgrading to the
+    soft default the GM didn't ask for."""
+    raw = body.get("strictness")
+    if raw in (None, ""):
+        return "guideline"
+    strictness = str(raw).strip()
+    if strictness not in ("guideline", "firm", "strict"):
+        raise HTTPException(400, "strictness must be guideline, firm, or strict")
+    return strictness
+
+
 def _rag_options_from_body(body: dict) -> tuple[bool, Optional[int], Optional[int]]:
     """Parse+validate Condense/Summarize's optional RAG opt-in from a JSON
     request body — same "blank means unset" convention _condense_token_bounds
@@ -625,6 +641,7 @@ async def api_condense_recap(request: Request):
     if not recap:
         raise HTTPException(400, "No recap provided")
     min_tokens, max_tokens = _condense_token_bounds(body)
+    strictness = _condense_strictness(body)
     model = _recap_model(str(body.get("model", "")).strip())
     extra_instructions = str(body.get("extra_instructions", "")).strip()
     _reject_if_too_long_to_condense(recap, extra_instructions)
@@ -642,6 +659,7 @@ async def api_condense_recap(request: Request):
     recap_result = await _ai_module.condense_recap(
         recap, model=model, options=options, think=think,
         extra_instructions=extra_instructions, min_tokens=min_tokens, max_tokens=max_tokens,
+        strictness=strictness,
     )
     return {"recap": recap_result}
 
@@ -665,6 +683,7 @@ async def api_condense_job_create(
     if not recap:
         raise HTTPException(400, "No recap provided")
     min_tokens, max_tokens = _condense_token_bounds(body)
+    strictness = _condense_strictness(body)
     extra_instructions = str(body.get("extra_instructions", "")).strip()
     _reject_if_too_long_to_condense(recap, extra_instructions)
     use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
@@ -675,6 +694,7 @@ async def api_condense_job_create(
         think=_think_from_body(body), fit_context=bool(body.get("fit_context")),
         extra_instructions=extra_instructions,
         min_tokens=min_tokens, max_tokens=max_tokens,
+        strictness=strictness,
         use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
         game_session_id=gs_id, created_by_user_id=_current_user_id(request),
     )

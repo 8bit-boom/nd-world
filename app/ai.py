@@ -1370,6 +1370,7 @@ async def condense_recap(
     recap: str, model: str = "", options: dict = None, think: bool = True,
     extra_instructions: str = "", min_tokens: int | None = None, max_tokens: int | None = None,
     world_context: str = "", expanded_thinking: bool = False,
+    strictness: str = "guideline",
 ) -> str:
     """Condense an existing recap into a tighter 'previously on...' summary.
     `options` (see generate_chat) is an optional per-call override — the
@@ -1429,19 +1430,70 @@ async def condense_recap(
     normal headroom, overriding max_tokens' own num_predict branch above
     too — the expanded rung only ever runs because a prior attempt already
     starved, so the usual "max_tokens caps num_predict when think=False"
-    behavior is deliberately bypassed here in favor of guaranteed room."""
-    system = _with_world_context(_with_instructions(_CONDENSE_RECAP_SYSTEM, extra_instructions), world_context)
+    behavior is deliberately bypassed here in favor of guaranteed room.
+
+    `strictness` (default "guideline") picks how hard the length targets
+    (and the GM's extra instructions) are phrased: "guideline" is the
+    original soft "at least ~X tokens ... don't cut it any shorter"
+    guidance, worded as a suggestion the model may weigh against its own
+    sense of a good summary; "firm"/"strict" reword the same targets as
+    mandatory requirements ("MUST be at least...", "REQUIRED: stay at or
+    below...") and — when extra_instructions is present — add an explicit
+    "these are binding, not suggestions" compliance line, since a model
+    that's been told a length is mandatory will otherwise still treat a
+    softer instruction ("keep it tight") as license to undershoot.
+    "firm" and "strict" build the SAME prompt here; the difference is
+    purely out-of-band: the job runner (_run_job) estimates the finished
+    recap's tokens and auto-retries once when a "strict" job's result
+    lands outside the requested range — see app.audio_jobs._run_job.
+    Anything else raises ValueError, so a typo'd caller fails fast
+    instead of silently degrading to best-effort."""
+    if strictness not in ("guideline", "firm", "strict"):
+        raise ValueError(f"strictness must be guideline, firm, or strict, got {strictness!r}")
+    # "firm"/"strict" upgrade the GM's own extra instructions from
+    # suggestions to requirements. The compliance line sits between the
+    # base system prompt and _with_instructions' GM block so its "below"
+    # is literally true — the instructions it binds are the very next
+    # thing the model reads.
+    if strictness in ("firm", "strict") and (extra_instructions or "").strip():
+        base_system = (
+            _CONDENSE_RECAP_SYSTEM
+            + "\n\nTreat the extra instructions below as binding requirements, not suggestions."
+        )
+    else:
+        base_system = _CONDENSE_RECAP_SYSTEM
+    system = _with_world_context(_with_instructions(base_system, extra_instructions), world_context)
     chars_per_token = _chars_per_token_estimate(recap)
     length_notes = []
     if min_tokens:
-        length_notes.append(
-            f"at least ~{min_tokens} tokens (~{min_tokens * chars_per_token} characters) — "
-            "don't cut it any shorter than that even if you could say it in fewer words"
-        )
+        if strictness == "guideline":
+            length_notes.append(
+                f"at least ~{min_tokens} tokens (~{min_tokens * chars_per_token} characters) — "
+                "don't cut it any shorter than that even if you could say it in fewer words"
+            )
+        else:
+            length_notes.append(
+                f"REQUIRED: the condensed recap MUST be at least ~{min_tokens} tokens "
+                f"(~{min_tokens * chars_per_token} characters) — a shorter output is a failed "
+                "request; expand with specific detail (scene beats, names, consequences) from "
+                "the recap to reach it"
+            )
     if max_tokens:
-        length_notes.append(f"no more than ~{max_tokens} tokens (~{max_tokens * chars_per_token} characters)")
+        if strictness == "guideline":
+            length_notes.append(f"no more than ~{max_tokens} tokens (~{max_tokens * chars_per_token} characters)")
+        else:
+            length_notes.append(
+                f"REQUIRED: stay at or below ~{max_tokens} tokens (~{max_tokens * chars_per_token} "
+                "characters); trim detail rather than exceeding it"
+            )
     if length_notes:
-        system += "\n\nLength target for the condensed recap: " + " and ".join(length_notes) + "."
+        # "guideline" keeps its original soft "Length target" heading; a
+        # mandatory wording under a "target" header would read as
+        # self-contradicting, so firm/strict get the stronger noun too.
+        if strictness == "guideline":
+            system += "\n\nLength target for the condensed recap: " + " and ".join(length_notes) + "."
+        else:
+            system += "\n\nLength requirements for the condensed recap: " + " and ".join(length_notes) + "."
     opts = dict(options) if options else {}
     if max_tokens and not think:
         opts["num_predict"] = max_tokens

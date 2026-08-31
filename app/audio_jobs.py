@@ -184,6 +184,7 @@ def create_job(
 def create_condense_job(
     world_id: int, text: str, model: str = "", think: bool = True, fit_context: bool = False,
     extra_instructions: str = "", min_tokens: Optional[int] = None, max_tokens: Optional[int] = None,
+    strictness: str = "guideline",
     game_session_id: Optional[int] = None, created_by_user_id: Optional[int] = None,
     use_rag: bool = False, rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
 ) -> int:
@@ -207,18 +208,29 @@ def create_condense_job(
     `extra_instructions`/`min_tokens`/`max_tokens` are condense_recap's own
     steering/length-target params (see its docstring) — persisted on the
     row like every other condense setting so a resume/redo uses the same
-    values the GM originally set.
+    values the GM originally set. `strictness` ("guideline"|"firm"|
+    "strict") rides along the same way: it decides whether those targets
+    are phrased as soft guidance or binding requirements, and — for
+    "strict" only — whether _run_job estimates the finished recap's token
+    count and auto-retries once when it lands outside the requested range.
+    Validated here (not just inside condense_recap) so a bogus value fails
+    at job creation — where the route maps it to a clean HTTP 400 — rather
+    than surfacing mid-run as a job error the GM can't connect to the
+    setting that caused it.
 
     `use_rag`/`rag_entity_limit`/`rag_notes_limit` — same RAG opt-in
     create_job's own docstring describes, see _build_rag_context."""
     db = SessionLocal()
     try:
+        if strictness not in ("guideline", "firm", "strict"):
+            raise ValueError(f"strictness must be guideline, firm, or strict, got {strictness!r}")
         job = AudioJob(
             world_id=world_id, purpose="condense", filename="Condense", status="pending",
             game_session_id=game_session_id, created_by_user_id=created_by_user_id,
             model=model or None, think=think, fit_context=fit_context,
             extra_instructions=extra_instructions.strip() or None,
             min_tokens=min_tokens, max_tokens=max_tokens,
+            condense_strictness=strictness,
             use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
             transcript=text, audio_path="", delete_after=False,
         )
@@ -670,6 +682,10 @@ async def _run_job(job_id: int) -> None:
         fit_context = bool(job.fit_context)
         min_tokens = job.min_tokens
         max_tokens = job.max_tokens
+        # NULL (a pre-migration row, or one created before strictness
+        # existed) reads as the "guideline" default — same convention
+        # _run_job applies to job.think above.
+        strictness = job.condense_strictness or "guideline"
         use_rag = bool(job.use_rag)
         rag_entity_limit = job.rag_entity_limit
         rag_notes_limit = job.rag_notes_limit
@@ -844,6 +860,7 @@ async def _run_job(job_id: int) -> None:
                         transcript, model=model, options=options, think=attempt_think,
                         extra_instructions=instructions, min_tokens=min_tokens, max_tokens=max_tokens,
                         world_context=world_context, expanded_thinking=attempt_expanded,
+                        strictness=strictness,
                     )
                 if not _ai_module.is_thinking_starved_sentinel(recap):
                     break
@@ -858,6 +875,65 @@ async def _run_job(job_id: int) -> None:
                     _set(think=False, think_fallback=True, expanded_thinking=next_expanded)
                 else:
                     _set(expanded_thinking=next_expanded)
+            # Strict mode's out-of-band length check. Everything above steers
+            # the model via prompt wording alone — a prompt instruction,
+            # however firmly worded, is still just a request, so "strict"
+            # closes the loop by MEASURING the finished recap with the same
+            # coarse chars-per-token estimator the Background Jobs /
+            # session page labels use (_chars_per_token_estimate — keeps
+            # this check consistent with the "Transcript: ~N tokens ·
+            # Recap: ~M tokens" numbers the GM can already see, so the
+            # verdict never disagrees with the displayed sizes) and
+            # re-running ONCE when the result lands outside the requested
+            # range. The 15% tolerance band exists because those estimates
+            # are approximate (±15% easily swallows several hundred real
+            # tokens on a long recap) — a 1400-token draft against a 1500
+            # minimum is inside the noise, and punishing it with a
+            # full-priced re-run buys nothing. Only one retry: a strict
+            # re-run doubles the job's AI cost, and past a single
+            # correction pass the model has already shown where its length
+            # instincts sit — editing the result by hand is cheaper for the
+            # GM than an unbounded loop of nudges. A retry that itself
+            # fails/starves is discarded in favor of the first recap,
+            # which was at least a usable answer. The retry reuses the
+            # WINNING rung's options/think/expanded (the loop variables
+            # still hold them — the loop only ever breaks on the rung that
+            # produced the recap being checked), so the re-run is
+            # apples-to-apples with the attempt that just missed the range
+            # rather than resetting to the job's base thinking settings.
+            if (
+                strictness == "strict" and (min_tokens or max_tokens)
+                and not _looks_like_failure(recap)
+                and not _ai_module.is_thinking_starved_sentinel(recap)
+            ):
+                est_tokens = -(-len(recap) // _ai_module._chars_per_token_estimate(recap))
+                below = min_tokens and est_tokens < min_tokens * 0.85
+                above = max_tokens and est_tokens > max_tokens * 1.15
+                if below or above:
+                    if below:
+                        violation_note = (
+                            f"Your previous draft was ~{est_tokens} tokens; the requirement is at least "
+                            f"~{min_tokens} tokens. Expand it with more specific detail from the recap."
+                        )
+                    else:
+                        violation_note = (
+                            f"Your previous draft was ~{est_tokens} tokens; the requirement is at most "
+                            f"~{max_tokens} tokens. Trim it to fit."
+                        )
+                    _log.warning(
+                        "condense job %s: strict length check failed (estimated ~%s tokens vs min=%s max=%s) — one strict retry",
+                        job_id, est_tokens, min_tokens, max_tokens,
+                    )
+                    async with _ai_module.ollama_job_semaphore:
+                        retry_recap = await _ai_module.condense_recap(
+                            transcript, model=model, options=options, think=attempt_think,
+                            extra_instructions=_combined_recap_instructions(instructions, violation_note),
+                            min_tokens=min_tokens, max_tokens=max_tokens,
+                            world_context=world_context, expanded_thinking=attempt_expanded,
+                            strictness=strictness,
+                        )
+                    if not _looks_like_failure(retry_recap) and not _ai_module.is_thinking_starved_sentinel(retry_recap):
+                        recap = retry_recap
             if _looks_like_failure(recap):
                 _set(status="error", error=recap, finished_at=datetime.utcnow())
             elif think and _ai_module.model_rejected_thinking(model):
