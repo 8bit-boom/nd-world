@@ -2166,6 +2166,89 @@ async def swarmui_restart(update_server: bool = False) -> dict:
         return {"ok": False}
 
 
+async def swarmui_backends() -> list:
+    """Best-effort: ask SwarmUI's Admin API (/API/ListBackends) which
+    generation backends it has and what each is currently doing —
+    status, and (with full_data=True) the model presently loaded on it —
+    the SwarmUI-side counterpart to this app's own Ollama "VRAM cockpit"
+    (Models tab residency view). Read-only, changes nothing.
+
+    NOTE: the exact request/response shape here (full_data=True as the
+    param name, and reading each entry's status/current_model/id fields)
+    is this codebase's best understanding of SwarmUI's Admin API, NOT
+    independently verified against a live instance or SwarmUI's own docs
+    in this environment (network access to external docs is restricted
+    here) — same caveat as swarmui_check_for_updates and swarmui_restart
+    above already carry for their own endpoints, which WERE verified this
+    way historically. If this comes back empty against a real SwarmUI
+    install, that's this endpoint/shape guess being wrong, not a sign the
+    rest of the SwarmUI integration is broken.
+
+    Returns SwarmUI's own backend list verbatim (a list of dicts), or []
+    if not configured for SwarmUI, unreachable, the calling session lacks
+    the permission this needs, or the response isn't in the expected
+    shape — the caller (api_imagegen_backends) treats an empty list as
+    "nothing to show," not "zero backends configured"."""
+    t, u = _get_type(), _get_url()
+    if t != "swarmui" or not u:
+        return []
+    try:
+        async with _httpx.AsyncClient(timeout=10) as c:
+            sid = await _swarmui_session(u, c)
+            r = await c.post(f"{u}/API/ListBackends", json={"session_id": sid, "full_data": True})
+            data = r.json()
+            return list(data.values()) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    except Exception:
+        return []
+
+
+async def swarmui_resource_info() -> dict:
+    """Best-effort: ask SwarmUI's Admin API (/API/GetServerResourceInfo)
+    for host-level resource usage (CPU/RAM, and per-GPU VRAM/utilization/
+    temperature where SwarmUI can read it) — same "not independently
+    verified against a live instance" caveat as swarmui_backends above.
+    Returns SwarmUI's own response shape verbatim, or {} if not
+    configured for SwarmUI, unreachable, or the session lacks
+    permission."""
+    t, u = _get_type(), _get_url()
+    if t != "swarmui" or not u:
+        return {}
+    try:
+        async with _httpx.AsyncClient(timeout=10) as c:
+            sid = await _swarmui_session(u, c)
+            r = await c.post(f"{u}/API/GetServerResourceInfo", json={"session_id": sid})
+            data = r.json()
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+async def swarmui_free_memory() -> dict:
+    """Ask SwarmUI to unload models and free backend VRAM/system RAM
+    (/API/FreeBackendMemory) — the SwarmUI-side counterpart to this app's
+    Ollama "unload" button. `backend="all"`/`system_ram=True` frees
+    everything rather than targeting one backend id, matching the
+    single "Free VRAM" button this backs rather than a per-backend
+    control. Same "not independently verified against a live instance"
+    caveat as swarmui_backends/swarmui_resource_info above.
+
+    Never raises; returns {"ok": False} if not configured for SwarmUI,
+    unreachable, or the session lacks permission."""
+    t, u = _get_type(), _get_url()
+    if t != "swarmui" or not u:
+        return {"ok": False}
+    try:
+        async with _httpx.AsyncClient(timeout=15) as c:
+            sid = await _swarmui_session(u, c)
+            r = await c.post(f"{u}/API/FreeBackendMemory", json={
+                "session_id": sid, "backend": "all", "system_ram": True,
+            })
+            data = r.json()
+            return {"ok": "error" not in data if isinstance(data, dict) else False}
+    except Exception:
+        return {"ok": False}
+
+
 # ── Audio transcription (whisper.cpp server) ────────────────────────────────
 # See app/routers/ai.py's /attachments/upload — an uploaded audio attachment
 # is transcribed here (regardless of its original format; the server itself

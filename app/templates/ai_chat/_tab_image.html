@@ -34,6 +34,19 @@
         <span id="ig-check-updates-status" style="font-size:.72rem;color:var(--text-dim)"></span>
       </div>
 
+      <!-- Backend/VRAM status — SwarmUI only (see igLoadBackendStatus); the
+           whole block stays hidden on ComfyUI or when the read fails, same
+           couldn't-check-vs-nothing-to-report convention the check-updates
+           status line above already uses. -->
+      <div id="ig-backend-status" style="display:none;font-size:.76rem;color:var(--text-dim);background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:.5rem .6rem;margin-top:.4rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.3rem">
+          <strong style="color:var(--text)">SwarmUI Backends</strong>
+          <button type="button" id="ig-free-vram-btn" class="ig-btn" onclick="igFreeSwarmUIMemory()"
+                  title="Unload SwarmUI's loaded models and free VRAM/RAM — same idea as the Ollama Models tab's own unload button">🧹 Free VRAM</button>
+        </div>
+        <div id="ig-backend-list"></div>
+      </div>
+
       <!-- Download models -->
       <details class="ig-collapsible">
         <summary>⬇ Download Models</summary>

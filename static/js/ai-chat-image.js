@@ -96,6 +96,7 @@ function igClearCN() {
     igLoadSourcesPanel();
     igLoadStarred();
     igLoadJobs();
+    if (!_igIsComfyUI) igLoadBackendStatus();
     // Init auto-resize on prompt textareas
     const promptEl = document.getElementById('ig-prompt');
     const negEl = document.getElementById('ig-negative');
@@ -519,6 +520,69 @@ async function igReloadModels() {
 // below). Not a docker-restart — no Docker access needed, SwarmUI's own API
 // already exposes this.
 let _igRestartingSwarmui = false;
+// Backend/VRAM status card — SwarmUI only (see the ComfyUI guard at both
+// call sites). Empty backends means "couldn't read" (not configured,
+// unreachable, or no permission — see app.ai.swarmui_backends' own
+// docstring), same convention as the check-updates status line above, so
+// the card just stays hidden rather than showing a misleading "0 backends".
+async function igLoadBackendStatus() {
+  const wrap = document.getElementById('ig-backend-status');
+  const list = document.getElementById('ig-backend-list');
+  if (!wrap || !list) return;
+  try {
+    const data = await fetch('/api/ai/imagegen/backends').then(r => r.json());
+    const backends = data.backends || [];
+    if (!backends.length) { wrap.style.display = 'none'; return; }
+    list.innerHTML = '';
+    backends.forEach(b => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;justify-content:space-between;gap:.5rem;padding:.15rem 0';
+      const label = b.title || b.id || 'backend';
+      const model = b.current_model || b.model || '';
+      const status = b.status || (b.enabled === false ? 'disabled' : '');
+      const left = document.createElement('span');
+      left.textContent = model ? `${label} — ${model}` : label;
+      const right = document.createElement('span');
+      right.style.color = 'var(--text-dim)';
+      right.textContent = status;
+      row.appendChild(left); row.appendChild(right);
+      list.appendChild(row);
+    });
+    const res = data.resources || {};
+    const gpus = res.gpus || res.GPUs || [];
+    if (Array.isArray(gpus) && gpus.length) {
+      gpus.forEach(g => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;justify-content:space-between;gap:.5rem;padding:.15rem 0;border-top:1px solid var(--border);margin-top:.2rem';
+        const usedMb = g.used_memory ?? g.vram_used ?? null;
+        const totalMb = g.total_memory ?? g.vram_total ?? null;
+        const left = document.createElement('span'); left.textContent = g.name || g.id || 'GPU';
+        const right = document.createElement('span'); right.style.color = 'var(--text-dim)';
+        right.textContent = (usedMb != null && totalMb) ? `${Math.round(usedMb / 1024)} / ${Math.round(totalMb / 1024)} GB VRAM` : '';
+        row.appendChild(left); row.appendChild(right);
+        list.appendChild(row);
+      });
+    }
+    wrap.style.display = 'block';
+  } catch (e) { wrap.style.display = 'none'; }
+}
+
+async function igFreeSwarmUIMemory() {
+  if (!confirm('Unload SwarmUI\'s loaded models and free VRAM/RAM now? Any in-progress generation will be interrupted.')) return;
+  const btn = document.getElementById('ig-free-vram-btn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/ai/imagegen/free-memory', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) { alert('Could not free VRAM — is SwarmUI configured and reachable?'); }
+    await igLoadBackendStatus();
+  } catch (e) {
+    alert('Failed: ' + (e.message || e));
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function igRestartSwarmUI() {
   if (_igRestartingSwarmui) return;
   if (!confirm('Restart SwarmUI now? Any in-progress image generation will be interrupted.')) return;

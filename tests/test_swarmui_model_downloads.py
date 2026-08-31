@@ -708,3 +708,128 @@ def test_ai_chat_image_js_lora_download_list_filters_to_lora_subfolder():
     body = js.split("async function dlrLoadDownloaded()", 1)[1][:800]
     assert "/api/ai/imagegen/models/downloaded" in body
     assert "m.subfolder === 'LoRA'" in body
+
+
+# ── swarmui_backends() / swarmui_resource_info() / GET /imagegen/backends ──
+
+@pytest.mark.asyncio
+async def test_swarmui_backends_returns_list_from_dict_shape(monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    _patch_httpx(monkeypatch, post_map={
+        "/API/GetNewSession": {"session_id": "sess1"},
+        "/API/ListBackends": {"0": {"id": 0, "status": "running", "current_model": "model-a"}},
+    })
+    result = await ai_module.swarmui_backends()
+    assert result == [{"id": 0, "status": "running", "current_model": "model-a"}]
+
+
+@pytest.mark.asyncio
+async def test_swarmui_backends_empty_when_not_configured(monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "")
+    _patch_httpx(monkeypatch)
+    assert await ai_module.swarmui_backends() == []
+
+
+@pytest.mark.asyncio
+async def test_swarmui_backends_empty_on_unreachable(monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+
+    def _raise(**kw):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(ai_module._httpx, "AsyncClient", _raise)
+    assert await ai_module.swarmui_backends() == []
+
+
+@pytest.mark.asyncio
+async def test_swarmui_resource_info_returns_dict_verbatim(monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    payload = {"gpus": [{"name": "GPU 0", "used_memory": 4096, "total_memory": 24576}]}
+    _patch_httpx(monkeypatch, post_map={
+        "/API/GetNewSession": {"session_id": "sess1"},
+        "/API/GetServerResourceInfo": payload,
+    })
+    assert await ai_module.swarmui_resource_info() == payload
+
+
+def test_backends_route_requires_gm(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    assert client.get("/api/ai/imagegen/backends").status_code == 403
+
+
+def test_backends_route_returns_backends_and_resources(client, seed, monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    _patch_httpx(monkeypatch, post_map={
+        "/API/GetNewSession": {"session_id": "sess1"},
+        "/API/ListBackends": [{"id": 0, "status": "running"}],
+        "/API/GetServerResourceInfo": {"gpus": []},
+    })
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get("/api/ai/imagegen/backends")
+    assert r.status_code == 200
+    assert r.json() == {"backends": [{"id": 0, "status": "running"}], "resources": {"gpus": []}}
+
+
+# ── swarmui_free_memory() / POST /imagegen/free-memory ──────────────────────
+
+@pytest.mark.asyncio
+async def test_swarmui_free_memory_ok_true_on_success(monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    post_calls = []
+    _patch_httpx(monkeypatch, post_map={
+        "/API/GetNewSession": {"session_id": "sess1"},
+        "/API/FreeBackendMemory": {},
+    }, post_calls=post_calls)
+    assert await ai_module.swarmui_free_memory() == {"ok": True}
+    body = [c for c in post_calls if c[0].endswith("/API/FreeBackendMemory")][0][1]
+    assert body["backend"] == "all"
+    assert body["system_ram"] is True
+
+
+@pytest.mark.asyncio
+async def test_swarmui_free_memory_ok_false_when_not_configured(monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "")
+    _patch_httpx(monkeypatch)
+    assert await ai_module.swarmui_free_memory() == {"ok": False}
+
+
+def test_free_memory_route_requires_gm(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    assert client.post("/api/ai/imagegen/free-memory").status_code == 403
+
+
+def test_free_memory_route_returns_ok_true_on_success(client, seed, monkeypatch):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    _patch_httpx(monkeypatch, post_map={
+        "/API/GetNewSession": {"session_id": "sess1"},
+        "/API/FreeBackendMemory": {},
+    })
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/imagegen/free-memory")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+
+def test_image_gen_tab_ships_the_backend_status_card(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    page = client.get("/ai").text
+    assert 'id="ig-backend-status"' in page
+    assert 'id="ig-free-vram-btn"' in page
+
+
+def test_ai_chat_image_js_defines_backend_status_and_free_memory_flow():
+    js = open("static/js/ai-chat-image.js").read()
+    assert "async function igLoadBackendStatus()" in js
+    assert "/api/ai/imagegen/backends" in js
+    assert "async function igFreeSwarmUIMemory()" in js
+    assert "/api/ai/imagegen/free-memory" in js
+    body = js.split("async function igFreeSwarmUIMemory()", 1)[1][:400]
+    assert "confirm(" in body

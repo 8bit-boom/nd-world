@@ -1560,6 +1560,28 @@ async def api_imagegen_update():
     return await _ai.swarmui_restart(update_server=True)
 
 
+@router.get("/imagegen/backends")
+async def api_imagegen_backends():
+    """Read-only backend/VRAM status card — the SwarmUI-side counterpart
+    to the Ollama Models tab's residency view (app.ai.swarmui_backends +
+    swarmui_resource_info). Empty backends/resources means "couldn't
+    read" (not configured, unreachable, or no permission), same
+    couldn't-check-vs-nothing-to-report convention as /imagegen/updates
+    above — the UI card just doesn't render in that case rather than
+    showing a misleading "0 backends configured"."""
+    backends, resources = await _asyncio.gather(_ai.swarmui_backends(), _ai.swarmui_resource_info())
+    return {"backends": backends, "resources": resources}
+
+
+@router.post("/imagegen/free-memory")
+async def api_imagegen_free_memory():
+    """Frees SwarmUI's loaded models/VRAM via its own Admin API
+    (app.ai.swarmui_free_memory) — the "Free VRAM" button next to the
+    backend status card, same idea as the Ollama Models tab's own unload
+    button."""
+    return await _ai.swarmui_free_memory()
+
+
 class SwarmuiModelDownloadBody(BaseModel):
     url: str
     # Free text, not an enum — see app.ai.SWARMUI_MODEL_FOLDER_SUGGESTIONS'
