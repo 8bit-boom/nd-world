@@ -68,7 +68,7 @@ before a change is done**; every new HTTP route needs a row in
 | Test-in-Docker harness | ✅ done | `docker/test/Dockerfile` (+ its own `.dockerignore`) — pytest layered on the production image |
 | Full suite green in container | ✅ done | 2261 passed / 4 skipped / 0 failed; fixes on the way: `DiceRoll` added to `_WORLD_DELETE_MODELS`, closed-loop straggler guard in `job_shutdown.drain()`, deploy files COPY'd into the test image, CRLF-normalized toolbar-JS test, faked AI in the attachment-scoping tests (their hung real-transcribe jobs used to poison the next test's DB) |
 | Commit + push `improvements/phase-1` | ✅ done | `.env`/`.venv/` added to `.gitignore` first; `tests/_data/` was already ignored |
-| CI green on GitHub | ⬜ | Verify Actions run on the pushed branch |
+| CI green on GitHub | ✅ done | `tests` workflow green on both `improvements/phase-1` and `main` (plus the repo's docker-publish + Dependabot runs) |
 
 ## Phase 2 — table experience + hardening
 
