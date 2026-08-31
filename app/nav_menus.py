@@ -58,6 +58,7 @@ STATIC_CATALOG = [
     {"id": "editor", "label": "Content Editor", "icon": "🛠", "href": "/editor", "exact": True, "gm_only": True},
 
     {"id": "chronicler", "label": "Chronicler", "icon": "📜", "href": "/chronicler", "exact": True, "gm_only": False},
+    {"id": "dice", "label": "Dice", "icon": "🎲", "href": "/dice", "exact": True, "gm_only": False},
     {"id": "session_log", "label": "Session Log", "icon": "📓", "href": "/session-log", "gm_only": False},
     {"id": "rules", "label": "Rules", "icon": "📖", "href": "/rules", "exact": True, "gm_only": False},
     {"id": "characters", "label": "Player Characters", "icon": "🎲", "href": "/characters", "gm_only": False},

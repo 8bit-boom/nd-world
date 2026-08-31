@@ -204,7 +204,9 @@ def test_status_reports_restart_commands(tmp_path, monkeypatch):
     assert "truenas-compose.yml" in status["restart_command_truenas"]
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root can write through a chmod 0o555 directory")
+# os.geteuid() doesn't exist on Windows (the suite's original target was the
+# Linux Docker container) — there, and for any non-root Unix user, the test runs.
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root can write through a chmod 0o555 directory")
 def test_status_reports_unwritable_dir(tmp_path, monkeypatch):
     target = tmp_path / "readonly"
     target.mkdir()

@@ -1,0 +1,30 @@
+# Build-context excludes for docker/test/Dockerfile only (selected INSTEST of
+# the root .dockerignore, which excludes tests/ and docs/ for the production
+# image — the test image needs both). Keep heavy/secret paths out of the
+# context like the root one does.
+.git/
+.github/
+.venv/
+.env
+.env.example
+ai-models/
+lore/
+scripts/
+docker/
+# docker-compose.yml / truenas-compose.yml stay IN the context — the test
+# Dockerfile COPYs them so tests/test_job_shutdown.py's deployment-config
+# guards can read them (they are excluded in the root .dockerignore, which
+# this file replaces for the test build).
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/_data/
+NeonDragonsEditor/
+README.md
+AGENTS.md
+IMPROVEMENT_PLAN.md
+LICENSE
+LICENSE-CONTENT.md
+import_chronicles.py
+import_lore.py
+install-comfyui-manager.sh

@@ -34,7 +34,7 @@ from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html
 from .templating import templates
 from .uploads import copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -64,6 +64,8 @@ from .routers.audio_jobs import router as audio_jobs_router
 from .routers.video import router as video_router, _delete_clip_file as _delete_video_clip_file
 from .routers.pages import router as pages_router, _delete_doc_file as _delete_page_doc_file
 from .routers.nav_menus_admin import router as nav_menus_admin_router
+from .routers.dice import router as dice_router
+from .routers.backups import router as backups_router
 from . import gallery as _gallery_module
 from . import mcp_server
 from . import ai as _ai_module
@@ -72,6 +74,7 @@ from . import ollama_tuning as _tuning
 from . import chat_jobs as _chat_jobs
 from . import image_jobs as _image_jobs
 from . import job_shutdown as _job_shutdown
+from . import backups as _backups
 from . import auth as _auth
 from .constants import KINDS, SUBTYPES, KIND_ICONS
 
@@ -138,6 +141,8 @@ app.include_router(audio_jobs_router)
 app.include_router(video_router)
 app.include_router(pages_router)
 app.include_router(nav_menus_admin_router)
+app.include_router(dice_router)
+app.include_router(backups_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 
@@ -251,6 +256,9 @@ def _startup_tasks():
     _audio_jobs.resume_interrupted_jobs()
     _image_jobs.resume_interrupted_jobs()
     _chat_jobs.resume_interrupted_jobs()
+    # Optional scheduled DB snapshots — no-op unless ND_BACKUP_DIR is set,
+    # so the test suite (which never sets it) never grows a thread.
+    _backups.start()
 
 
 async def _shutdown_tasks():
@@ -265,6 +273,7 @@ async def _shutdown_tasks():
     _audio_jobs.mark_stragglers_interrupted()
     _image_jobs.mark_stragglers_interrupted()
     _chat_jobs.mark_stragglers_interrupted()
+    _backups.stop()
 
 
 
@@ -356,6 +365,13 @@ def _is_player_safe(method: str, path: str) -> bool:
     if re.match(r"^/api/ai/attachments/audio-jobs/\d+$", path):
         return True
     if re.match(r"^/api/session-log/\d+/recap$", path):
+        return True
+    if path in ("/dice", "/api/dice/roll", "/api/dice/history"):
+        # The shared dice roller: every member of the active world may roll
+        # and read the roll log — world membership (get_world_ctx inside
+        # app/routers/dice.py) is the only gate, matching how a real table
+        # shares dice. GET and POST both included, deliberately before the
+        # GET-only section below.
         return True
     if method != "GET":
         return False
@@ -796,7 +812,7 @@ _WORLD_DELETE_MODELS = (
     InvestBoard, RandomTable, CombatSession, Party, Quest, GameSession,
     WorldCalendar, CalendarEvent, CalendarDayIcon, ImageAlbum, AudioClip, AudioAlbum,
     VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset,
-    AudioJob, ImageJob, ChatJob, EntityTemplate, SheetTemplate,
+    AudioJob, ImageJob, ChatJob, EntityTemplate, SheetTemplate, DiceRoll,
 )
 
 

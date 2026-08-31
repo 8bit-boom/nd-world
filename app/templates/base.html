@@ -16,7 +16,8 @@
   {% if request.state.user and request.state.user.is_gm %}
   <script src="/static/js/nd-logger.js"></script>
   {% endif %}
-  <link rel="stylesheet" href="/static/style.css?v=20"/>
+  <link rel="stylesheet" href="/static/style.css?v={{ asset_v('style.css') }}"/>
+  <script src="/static/js/command-palette.js" defer></script>
   {% if world %}
   {% if world_theme.google_fonts_url %}<link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="stylesheet" href="{{ world_theme.google_fonts_url }}">{% endif %}

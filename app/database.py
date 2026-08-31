@@ -419,6 +419,11 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA busy_timeout=30000")
+    # SQLite's default synchronous=FULL fsyncs the WAL on every commit; NORMAL
+    # (the recommended pairing with WAL) only checkpoints periodically — still
+    # durable across an app crash, which is the failure mode that matters for
+    # a self-hosted single-writer app, and meaningfully faster on slow disks.
+    cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.close()
 
 
@@ -485,6 +490,11 @@ def _migrate():
         # ADD COLUMN checks above it doesn't need a PRAGMA table_info
         # existence check first.
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_entities_world_id_kind ON entities (world_id, kind)"))
+        # Folder browsing filters on (world_id, folder) across every kind at
+        # once — the (world_id, kind) composite above can't serve it, and
+        # folder has only a single-column index (usable, but this resolves
+        # both filters as one index scan like the kind composite does).
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_entities_world_folder ON entities (world_id, folder)"))
 
         note_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(entity_notes)")).fetchall()]
         if note_cols and "content_is_html" not in note_cols:

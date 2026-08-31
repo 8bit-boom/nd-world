@@ -368,6 +368,28 @@ class EntityNote(Base):
     entity = relationship("Entity", backref="notes")
 
 
+class DiceRoll(Base):
+    """One shared dice roll — the table's roll log. World-scoped so players
+    only ever see rolls made in worlds they belong to; every member of the
+    world can roll and read (players included — see _is_player_safe), with
+    the roller's display name denormalized onto the row so the log stays
+    readable even if the account is later deleted."""
+    __tablename__ = "dice_rolls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    user_name = Column(String(120), nullable=False, default="")
+    notation = Column(String(120), nullable=False)
+    # JSON array of per-term results, e.g. [{"term":"2d6","rolls":[3,5],"sum":8},{"term":"+1","sum":1}]
+    breakdown = Column(Text, nullable=False, default="[]")
+    total = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # The roll-log page reads "newest 50 in this world" on every visit.
+    __table_args__ = (Index("ix_dice_rolls_world_created", "world_id", "created_at"),)
+
+
 class PlayerCharacter(Base):
     __tablename__ = "player_characters"
 

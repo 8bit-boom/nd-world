@@ -62,9 +62,10 @@ tools that require GM access still check `is_gm` at call time.)
 - [docs/API_REFERENCE.md](docs/API_REFERENCE.md) catalogs every HTTP route
   and MCP tool (method, path, auth tier, one-line purpose) — check it before
   assuming an endpoint doesn't exist, and add a row there for any new route.
-- `static/style.css` is loaded with a cache-busting `?v=N` query string in
-  `app/templates/base.html` — bump `N` any time you change that file, or
-  browsers will keep serving a stale cached copy.
+- `static/style.css` is cache-busted via `?v={{ asset_v('style.css') }}` (a
+  content hash — see `app/templating.py`), so any edit to the file changes the
+  URL automatically. Reference static assets through `asset_v()` in templates
+  rather than a hardcoded version number.
 - This is a small, single-tenant, self-hosted app — don't introduce rate
   limiting, multi-tenancy, or other enterprise-scale abstractions that
   weren't asked for.
