@@ -511,6 +511,34 @@ def test_job_status_route_reports_think_rejected(client, seed):
     assert data["think_rejected"] is True
     assert data["think_fallback"] is False
     assert data["think"] is False
+    assert data["think_token_fallback"] is False
+
+
+def test_job_status_route_reports_think_token_fallback(client, seed):
+    """The vouched-model flavor of a rejection: reasoning ran via the
+    <|think|> prompt token, so think stays true and the flag is exposed
+    for the Background Jobs page's informational (not corrective) note —
+    see AudioJob.think_token_fallback's own docstring."""
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=seed.world_a.id, purpose="condense", filename="clip.mp3",
+            status="done", recap="a recap", think=True, think_rejected=True, think_token_fallback=True,
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["think_rejected"] is True
+    assert data["think_token_fallback"] is True
+    assert data["think"] is True
 
 
 class _RejectsThinkingClient:
@@ -540,11 +568,14 @@ async def test_condense_job_recovers_from_thinking_rejection(client, seed, monke
     """End-to-end: a real condense_recap -> generate_chat call chain (not
     _fake_ai's flat fake) against a fake Ollama client that rejects
     think=true — the job must land "done" with the real recap (app.ai's own
-    internal think=False retry recovers it, see Wave 1), not "error" with
-    the raw Ollama 400, and be labeled think_rejected so the GM knows why.
-    The ladder above never sees this at all — is_thinking_starved_sentinel
-    doesn't match a rejection, so this exercises a path the ladder tests
-    above don't cover."""
+    internal recovery recovers it), not "error" with the raw Ollama 400,
+    and be labeled think_rejected so the GM knows why. model-x here is
+    VOUCHED (a GM override ticked its thinking checkbox), so under the
+    <|think|> prompt-token fallback the retry still carried reasoning:
+    think stays True and think_token_fallback is set alongside
+    think_rejected. The ladder above never sees this at all —
+    is_thinking_starved_sentinel doesn't match a rejection, so this
+    exercises a path the ladder tests above don't cover."""
     monkeypatch.setattr(ai_module, "condense_recap", _REAL_CONDENSE_RECAP)
     fake = _RejectsThinkingClient()
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
@@ -557,17 +588,54 @@ async def test_condense_job_recovers_from_thinking_rejection(client, seed, monke
         assert job.status == "done", job.error
         assert job.recap == "A tidy recap."
         assert job.think_rejected is True
-        assert job.think is False
+        assert job.think_token_fallback is True
+        assert job.think is True
         assert job.think_fallback is False
+        # The recovery's retry carried the <|think|> token, not a plain
+        # think=False downgrade — the vouch (the override) routed it there.
+        assert fake.calls[0]["think"] is True
+        assert fake.calls[1]["think"] is False
+        assert fake.calls[1]["messages"][0]["content"].startswith("<|think|>")
     finally:
         ai_module.set_ollama_generation_overrides({})
         ai_module._model_thinking_failures.discard("model-x")
+        ai_module._prompt_token_thinking_models.discard("model-x")
+
+
+@pytest.mark.asyncio
+async def test_condense_job_unvouched_rejection_flips_think_off(client, seed, monkeypatch):
+    """The OTHER flavor: nobody vouched for this model (no override, not in
+    KNOWN_MODELS — the capability cache is pre-seeded so think=true still
+    reaches Ollama and gets rejected). There's no prompt-token workaround
+    for a model nd-world doesn't trust to handle it, so the old labeling
+    applies verbatim: think flips to False, think_rejected set,
+    think_token_fallback NOT set."""
+    monkeypatch.setattr(ai_module, "condense_recap", _REAL_CONDENSE_RECAP)
+    fake = _RejectsThinkingClient()
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module._model_capabilities_cache["stray-model"] = ["thinking"]
+    try:
+        job_id = audio_jobs.create_condense_job(
+            world_id=seed.world_a.id, text="A long existing recap.", model="stray-model", think=True,
+        )
+        job = await _await_terminal(job_id)
+        assert job.status == "done", job.error
+        assert job.recap == "A tidy recap."
+        assert job.think_rejected is True
+        assert job.think_token_fallback is False
+        assert job.think is False
+        assert not any(str(m.get("content", "")).startswith("<|think|>") for m in fake.calls[1]["messages"])
+    finally:
+        ai_module._model_capabilities_cache.clear()
+        ai_module._model_thinking_failures.discard("stray-model")
+        ai_module._prompt_token_thinking_models.discard("stray-model")
 
 
 @pytest.mark.asyncio
 async def test_session_recap_job_recovers_from_thinking_rejection(client, seed, tmp_path, monkeypatch):
     """Same recovery, on the session_recap (chunked summarize_transcript)
-    path rather than condense's single-call path."""
+    path rather than condense's single-call path — vouched model, so the
+    <|think|> token flavor: think stays True, think_token_fallback set."""
     monkeypatch.setattr(ai_module, "summarize_transcript", _REAL_SUMMARIZE_TRANSCRIPT)
     fake = _RejectsThinkingClient("The party explored the ruins.")
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
@@ -588,10 +656,12 @@ async def test_session_recap_job_recovers_from_thinking_rejection(client, seed, 
         assert job.status == "done", job.error
         assert job.recap == "The party explored the ruins."
         assert job.think_rejected is True
-        assert job.think is False
+        assert job.think_token_fallback is True
+        assert job.think is True
     finally:
         ai_module.set_ollama_generation_overrides({})
         ai_module._model_thinking_failures.discard("model-x")
+        ai_module._prompt_token_thinking_models.discard("model-x")
 
 
 def test_job_status_route_thinking_starved_false_for_other_failures(client, seed):
@@ -634,7 +704,10 @@ def test_background_jobs_page_wires_the_ladder_notes(client, seed):
     """job.expanded_thinking and job.think_fallback are independent flags
     (see docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 1 item 1.3) — a
     done audio job's card must be able to render either note, and both if
-    both are set."""
+    both are set. The think_rejected note now comes in two flavors, split
+    by think_token_fallback: the <|think|> prompt-token workaround's
+    informational note (reasoning still ran) must not carry the plain
+    rejection's "untick the override" guidance."""
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     page_html = client.get("/background-jobs").text
@@ -642,6 +715,8 @@ def test_background_jobs_page_wires_the_ladder_notes(client, seed):
     assert "automatically retried with an expanded limit" in page_html
     assert "even with an expanded limit" in page_html
     assert "this recap was written with Thinking off" in page_html
+    assert "job.think_rejected && job.think_token_fallback" in page_html
+    assert "reasoning still ran, via the <|think|> prompt token" in page_html
 
 
 # ── purpose="condense" (create_condense_job) ────────────────────────────────

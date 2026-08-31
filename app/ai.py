@@ -211,6 +211,20 @@ def model_rejected_thinking(model: str = "") -> bool:
     return (model or effective_ollama_model()) in _model_thinking_failures
 
 
+def model_thinks_via_prompt_token(model: str = "") -> bool:
+    """True if `model` (default: effective_ollama_model()) is currently on
+    the <|think|> prompt-token fallback — Ollama rejected its think=true
+    (see model_rejected_thinking above) but nd-world's own records vouch
+    for the model's thinking, so every think=True request to it is being
+    served reasoning via the chat-template token instead (see
+    _prompt_token_thinking_models). Lets callers that LABEL results based
+    on model_rejected_thinking (audio_jobs.py's job rows) distinguish
+    "reasoning genuinely didn't run" from "reasoning ran, just not through
+    the API flag" — the GM-facing guidance differs in exactly one way:
+    only the first case should tell the GM to untick the override."""
+    return (model or effective_ollama_model()) in _prompt_token_thinking_models
+
+
 def _record_thinking_result(model: str, think: bool, failed: bool) -> None:
     """Called from generate_chat/stream_chat's own try/except with the
     EFFECTIVE think value actually sent to Ollama (after _chat_kwargs may

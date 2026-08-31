@@ -196,7 +196,18 @@ function bgRenderJob(job) {
   // than starving on the budget — see AudioJob.think_rejected's own
   // docstring. The fix here is different too (untick the model's
   // "supports thinking" override in Settings, not raise a budget).
-  if (job.job_type === 'audio' && job.status === 'done' && job.think_rejected) {
+  // EXCEPT when think_token_fallback is set: the rejection was only
+  // Ollama's missing capability tag on an hf.co-imported GGUF
+  // (ollama#16936), and reasoning DID run — delivered via the <|think|>
+  // prompt token instead of the API flag. That case is informational
+  // (nothing to fix; the override is exactly what powers the workaround),
+  // so it must NOT tell the GM to untick anything.
+  if (job.job_type === 'audio' && job.status === 'done' && job.think_rejected && job.think_token_fallback) {
+    const note = document.createElement('div');
+    note.className = 'bg-job-note-text';
+    note.textContent = "🧠 Ollama rejected the think parameter for this model (a missing capability tag, common on hf.co-imported GGUFs) — reasoning still ran, via the <|think|> prompt token.";
+    card.appendChild(note);
+  } else if (job.job_type === 'audio' && job.status === 'done' && job.think_rejected) {
     const note = document.createElement('div');
     note.className = 'bg-job-note-text';
     note.textContent = "🧠✕ This model doesn't support thinking mode (Ollama rejected it) — this recap was written with Thinking off. Untick its \"supports thinking\" override in Settings → System, or re-register the model with Ollama if you believe it should support it.";

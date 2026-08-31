@@ -71,6 +71,11 @@ def _job_to_dict(job: AudioJob) -> dict:
         # think_fallback's budget-starvation case; the GM-facing guidance
         # differs (untick the override vs. give it more headroom).
         "think_rejected": bool(job.think_rejected),
+        # True when that rejection was worked around with the <|think|>
+        # prompt token for a vouched model (ollama#16936) — reasoning DID
+        # run, so think stays true and the UI note is informational rather
+        # than "untick the override". See AudioJob.think_token_fallback.
+        "think_token_fallback": bool(job.think_token_fallback),
         # True once the auto-retry ladder ever climbed into an EXPANDED
         # budget rung for this job — see AudioJob.expanded_thinking's own
         # docstring. Can be True with think_fallback False (the expanded

@@ -947,6 +947,18 @@ class AudioJob(Base):
     # can't do it, full stop" (untick its Settings > System override), not
     # "give it a bigger budget." False for every job that never hit this.
     think_rejected = Column(Boolean, default=False)
+    # Set alongside think_rejected when the rejection was Ollama's missing
+    # capability tag on an hf.co-imported GGUF (ollama#16936) that nd-world
+    # worked around by sending the <|think|> prompt token instead (see
+    # app.ai.model_thinks_via_prompt_token). The recap in that case WAS
+    # produced with reasoning, so `think` deliberately stays True (unlike a
+    # bare think_rejected, which flips it to False) and the Background Jobs
+    # note differs: informational "reasoning ran via the token", not
+    # "written with Thinking off / untick the override". False for every
+    # job that never hit this. Existing installs get the column via
+    # database._migrate's _heal_table_from_model pass, same as every other
+    # late-added audio_jobs column.
+    think_token_fallback = Column(Boolean, default=False)
     # Set when the auto-retry ladder above ever had to climb into an
     # EXPANDED budget rung (see app.ai.expanded_thinking_options and
     # app.audio_jobs._run_job's attempt_plans) — i.e. even the normal
