@@ -19,7 +19,7 @@ from ..imaging import convert_image, make_thumbnail
 from ..models import ImageAlbum, World
 from ..templating import templates, thumb_url
 from ..uploads import (
-    MAX_UPLOAD_BYTES, copy_upload_bounded, reassemble_upload_chunks, save_upload_chunk,
+    MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, reassemble_upload_chunks, save_upload_chunk,
     unique_upload_filename,
 )
 
@@ -53,6 +53,19 @@ _ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"}
 # lowered MAX_UPLOAD_BYTES from silently shrinking this too — the two knobs
 # are independent.
 _MAX_GALLERY_UPLOAD_BYTES = max(MAX_UPLOAD_BYTES, int(os.environ.get("MAX_GALLERY_UPLOAD_BYTES", str(500 * 1024 * 1024))))
+
+
+def _effective_gallery_upload_bytes(db: Session) -> int:
+    """This request's album-upload cap: the GM's saved
+    AppSettings.max_gallery_upload_mb (Settings > System's "Upload limits" —
+    applies to new uploads immediately, no restart) or the _MAX_GALLERY_UPLOAD_BYTES
+    env default when left blank. Computed per request rather than at import so
+    a settings save takes effect without a process restart; see
+    effective_upload_bytes (app/uploads.py)."""
+    settings = get_app_settings(db)
+    return effective_upload_bytes(getattr(settings, "max_gallery_upload_mb", None), _MAX_GALLERY_UPLOAD_BYTES)
+
+
 # Per-part cap for the chunked path — one ~80 MB part from
 # chunked-upload.js plus headroom for multipart overhead. A single part can
 # never legitimately exceed the whole file's own cap (also enforced at
@@ -86,7 +99,7 @@ def _upload_album_image(file: Optional[UploadFile], db: Session) -> Optional[str
     target_dir = _UPLOADS_DIR / "gallery"
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / unique_upload_filename(file.filename, ext)
-    copy_upload_bounded(file, dest, max_bytes=_MAX_GALLERY_UPLOAD_BYTES)
+    copy_upload_bounded(file, dest, max_bytes=_effective_gallery_upload_bytes(db))
     return _finalize_album_image(dest, db)
 
 
@@ -534,7 +547,13 @@ async def album_upload_chunk(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
-    save_upload_chunk(_gallery_chunks_root(), upload_id, chunk_index, file, max_bytes=_GALLERY_CHUNK_MAX_BYTES)
+    # A lowered Settings limit applies per part too: min() keeps a saved
+    # total cap below the 128 MB default from letting one /chunk request
+    # write bytes reassembly would only reject afterward.
+    save_upload_chunk(
+        _gallery_chunks_root(), upload_id, chunk_index, file,
+        max_bytes=min(_GALLERY_CHUNK_MAX_BYTES, _effective_gallery_upload_bytes(db)),
+    )
     return {"ok": True}
 
 
@@ -563,7 +582,7 @@ async def album_upload_chunk_complete(
     dest = target_dir / unique_upload_filename(filename, ext)
     reassemble_upload_chunks(
         _gallery_chunks_root(), upload_id, total_chunks, dest,
-        max_bytes=_MAX_GALLERY_UPLOAD_BYTES,
+        max_bytes=_effective_gallery_upload_bytes(db),
     )
     current = _load_urls(album)
     if len(current) >= _MAX_IMAGES_PER_ALBUM:

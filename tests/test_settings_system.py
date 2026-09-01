@@ -4,6 +4,8 @@ round-trip, URL validation, and that blank fields fall back to the env-var
 defaults while non-blank ones take effect live (no restart) via app.ai's
 effective_ollama_*() overrides and imagestudio()'s rendered iframe URL.
 """
+import pytest
+
 from app import ai as ai_module
 from app.database import SessionLocal
 from app.models import AppSettings
@@ -248,3 +250,106 @@ def test_editor_is_gm_only(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/editor")
     assert r.status_code == 403
+
+
+# ── Upload limits (Settings > System's "Upload limits" section) ────────────
+# Each field is a whole-MB value stored on its AppSettings column; blank
+# saves as NULL, meaning that limit's MAX_* env default keeps applying (see
+# AppSettings.max_upload_mb's comment in models.py). Enforcement itself is
+# covered in test_video.py / test_gallery.py / test_ai_attachments.py.
+
+def test_upload_limits_roundtrip(client, seed, tmp_path, monkeypatch):
+    import app.ollama_tuning as tuning_module
+    monkeypatch.setattr(tuning_module, "OLLAMA_CONFIG_DIR", tmp_path)
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/settings/system", data={
+        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+        "max_video_mb": "4096",
+        "max_audio_mb": "50",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        assert settings.max_video_mb == 4096
+        assert settings.max_audio_mb == 50
+        # Fields left blank persist as NULL ("use the env default"), not 0.
+        assert settings.max_upload_mb is None
+        assert settings.max_gallery_upload_mb is None
+        assert settings.max_ai_attachment_mb is None
+    finally:
+        db.close()
+
+    # A saved value renders as the input's value; unset fields stay blank
+    # with the env default as the placeholder (same convention as every
+    # other System field).
+    page = client.get("/settings?tab=system")
+    assert 'name="max_video_mb"' in page.text
+    assert 'value="4096"' in page.text
+    assert 'placeholder="2048 (env default)"' in page.text
+
+
+def test_upload_limits_blank_clears_a_previously_saved_value(client, seed, tmp_path, monkeypatch):
+    import app.ollama_tuning as tuning_module
+    monkeypatch.setattr(tuning_module, "OLLAMA_CONFIG_DIR", tmp_path)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/settings/system", data={
+        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+        "max_video_mb": "4096",
+    }, follow_redirects=False)
+    # Re-save with the field blank — must clear back to NULL (env default
+    # applies again), not silently keep the old override.
+    client.post("/settings/system", data={
+        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+    }, follow_redirects=False)
+
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        assert settings.max_video_mb is None
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("max_upload_mb", "bogus"),
+    ("max_gallery_upload_mb", "not-a-number"),
+    ("max_video_mb", "bogus"),
+    ("max_video_mb", "1.5"),   # whole MB only
+    ("max_video_mb", "-5"),    # below 1
+    ("max_video_mb", "0"),     # below 1
+    ("max_audio_mb", "-1"),
+    ("max_ai_attachment_mb", "0"),
+])
+def test_upload_limits_invalid_rejected(client, seed, field, value):
+    """Same 400-and-persist-nothing rejection convention the Ollama tuning
+    fields use — a typo'd limit is a mistake, not something to clamp."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/settings/system", data={
+        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+        field: value,
+    })
+    assert r.status_code == 400
+
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        assert not settings or getattr(settings, field) is None
+    finally:
+        db.close()
+
+
+def test_upload_limits_inputs_render_with_env_default_placeholders(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    page = client.get("/settings?tab=system")
+    for name in ("max_upload_mb", "max_gallery_upload_mb", "max_video_mb",
+                 "max_audio_mb", "max_ai_attachment_mb"):
+        assert f'name="{name}"' in page.text
+    # Placeholders show each limit's env default while nothing is saved.
+    # MAX_UPLOAD_BYTES is 1 MiB in the test env (conftest) — the placeholder
+    # must reflect that, not the production 20 MB default.
+    assert 'placeholder="1 (env default)"' in page.text    # general
+    assert 'placeholder="500 (env default)"' in page.text  # gallery
+    assert 'placeholder="2048 (env default)"' in page.text # video
+    assert 'placeholder="1024 (env default)"' in page.text # audio + AI attachments

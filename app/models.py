@@ -1374,6 +1374,44 @@ class AppSettings(Base):
     # ids can't be columns. A model with no entry here just uses the plain
     # instance-wide fields above, unchanged.
     ollama_model_overrides_json = Column(Text, default="{}")
+    # ── Upload size limits (Settings > System's "Upload limits" section) ──
+    # Stored in MB — the unit every limit label in the UI already uses — as
+    # nullable Integer columns. NULL (the state on any existing install the
+    # migration adds the columns to, and any blank form field) means "use
+    # the MAX_UPLOAD_BYTES / MAX_GALLERY_UPLOAD_BYTES / MAX_VIDEO_UPLOAD_BYTES
+    # / MAX_AUDIO_UPLOAD_BYTES environment default", so a GM raising a limit
+    # here never has to touch docker-compose, and an env-var deployment keeps
+    # working unchanged. The effective bytes value is (value * 1 MB), computed
+    # per request by effective_upload_bytes() (app/uploads.py) plus each
+    # enforcement site's own _effective_*_bytes() helper — so a saved value
+    # applies to new uploads immediately, no restart. One column per
+    # enforcement site (not one global knob) because the limits exist for
+    # different reasons at different magnitudes — a 20 MB portrait cap and a
+    # 2 GB video cap shouldn't move together.
+    # General copy_upload_bounded/read_upload_bounded default
+    # (app/uploads.py MAX_UPLOAD_BYTES): portraits, maps, schematic
+    # embeds, calendar icons, home background, bulk import — the
+    # small-file cap that keeps unbounded uploads from filling /data.
+    max_upload_mb = Column(Integer, nullable=True)
+    # Gallery album image uploads (app/routers/gallery.py
+    # _MAX_GALLERY_UPLOAD_BYTES, env MAX_GALLERY_UPLOAD_BYTES, 500 MB) —
+    # big animated art legitimately exceeds the general cap.
+    max_gallery_upload_mb = Column(Integer, nullable=True)
+    # /video clips (app/routers/video.py _MAX_VIDEO_BYTES, env
+    # MAX_VIDEO_UPLOAD_BYTES, 2048 MB) — shown on the video page's
+    # "Up to N MB each" hint.
+    max_video_mb = Column(Integer, nullable=True)
+    # /audio clips (app/routers/audio.py _MAX_AUDIO_BYTES, env
+    # MAX_AUDIO_UPLOAD_BYTES, 1024 MB) — shown on the audio page's
+    # "Up to N MB each" hint.
+    max_audio_mb = Column(Integer, nullable=True)
+    # AI chat/Ask AI voice-memo attachments (app/routers/ai.py
+    # _MAX_ATTACHMENT_AUDIO_BYTES, same env var as the audio library but
+    # a separate enforcement site — image/document attachments keep their
+    # own _MAX_ATTACHMENT_BYTES/MAX_AI_ATTACHMENT_BYTES env cap, which
+    # deliberately isn't a column: a smaller voice-memo limit shouldn't
+    # silently change what a dropped PDF may weigh).
+    max_ai_attachment_mb = Column(Integer, nullable=True)
     # Hover-a-link-for-N-seconds entity preview popup (base.html's global
     # mouseover handler + GET /api/entity/{id}/preview) — instance-wide like
     # everything else on this row, editable from Settings > Options.

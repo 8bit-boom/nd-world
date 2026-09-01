@@ -33,7 +33,7 @@ from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE
 from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html
 from .templating import templates
-from .uploads import copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES
+from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
@@ -62,6 +62,15 @@ from .routers.gallery import router as gallery_router
 from .routers.audio import router as audio_router
 from .routers.audio_jobs import router as audio_jobs_router
 from .routers.video import router as video_router, _delete_clip_file as _delete_video_clip_file
+# Module references (not just `router`) for the upload-limit routers — their
+# MAX_* env-default constants feed Settings > System's "Upload limits"
+# placeholders, imported rather than re-declared so the form can never drift
+# from the limit actually enforced when nothing is saved (see
+# _UPLOAD_LIMIT_FIELDS).
+from .routers import ai as _ai_router_module
+from .routers import audio as _audio_router_module
+from .routers import gallery as _gallery_router_module
+from .routers import video as _video_router_module
 from .routers.pages import router as pages_router, _delete_doc_file as _delete_page_doc_file
 from .routers.nav_menus_admin import router as nav_menus_admin_router
 from .routers.dice import router as dice_router
@@ -485,6 +494,17 @@ def _rules_toc(html: str):
     html = re.sub(r'<h([23])>(.*?)</h\1>', _repl, html, flags=re.DOTALL)
     return html, toc
 
+def _effective_general_upload_bytes(db: Session) -> int:
+    """The general upload cap for this request: the GM's saved
+    AppSettings.max_upload_mb (Settings > System's "Upload limits" — applies
+    to new uploads immediately, no restart) or the MAX_UPLOAD_BYTES env
+    default when left blank. Used by every copy_upload_bounded call site
+    without a category-specific limit of its own (portraits, maps,
+    schematics); see effective_upload_bytes (app/uploads.py)."""
+    settings = get_app_settings(db)
+    return effective_upload_bytes(getattr(settings, "max_upload_mb", None), MAX_UPLOAD_BYTES)
+
+
 def save_upload(file: UploadFile, subdir: str = "", db: Optional[Session] = None):
     if not file or not file.filename:
         return None
@@ -495,9 +515,15 @@ def save_upload(file: UploadFile, subdir: str = "", db: Optional[Session] = None
     target_dir = UPLOADS_DIR / subdir if subdir else UPLOADS_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / filename
-    copy_upload_bounded(file, dest)
     if db is not None:
         settings = get_app_settings(db)
+        copy_upload_bounded(file, dest, max_bytes=effective_upload_bytes(
+            getattr(settings, "max_upload_mb", None), MAX_UPLOAD_BYTES))
+    else:
+        # No session from this caller — same env-default fallback
+        # copy_upload_bounded itself applies when max_bytes is None.
+        copy_upload_bounded(file, dest)
+    if db is not None:
         dest = convert_image(dest, static_format=settings.static_format,
                               animated_format=settings.animated_format)
     else:
@@ -1519,7 +1545,8 @@ async def map_new(
         if ext in ALLOWED_EXTS:
             maps_upload_dir = UPLOADS_DIR / "maps"
             maps_upload_dir.mkdir(parents=True, exist_ok=True)
-            copy_upload_bounded(image_file, maps_upload_dir / (slug + ext))
+            copy_upload_bounded(image_file, maps_upload_dir / (slug + ext),
+                                max_bytes=_effective_general_upload_bytes(db))
     return RedirectResponse(f"/maps/{slug}", status_code=303)
 
 @app.post("/maps/{slug}/rename")
@@ -1598,7 +1625,7 @@ async def map_upload_image(slug: str, request: Request, file: UploadFile = File(
         if old.exists():
             old.unlink()
     dest = maps_upload_dir / (slug + ext)
-    copy_upload_bounded(file, dest)
+    copy_upload_bounded(file, dest, max_bytes=_effective_general_upload_bytes(db))
     return RedirectResponse("/maps", status_code=303)
 
 def _world_parties_payload(db: Session, world_id: int):
@@ -2361,7 +2388,7 @@ async def schematic_upload_image(slug: str, file: UploadFile = File(...), db: Se
         old = sch_dir / (slug + old_ext)
         if old.exists(): old.unlink()
     dest = sch_dir / (slug + ext)
-    copy_upload_bounded(file, dest)
+    copy_upload_bounded(file, dest, max_bytes=_effective_general_upload_bytes(db))
     s.image_url = f"/uploads/schematics/{slug}{ext}"
     db.commit()
     return RedirectResponse(f"/maps/schematic/{slug}", status_code=303)
@@ -2392,7 +2419,7 @@ async def schematic_embed_image(slug: str, file: UploadFile = File(...), db: Ses
     embeds_dir = UPLOADS_DIR / "schematics" / "embeds"
     embeds_dir.mkdir(parents=True, exist_ok=True)
     fname = unique_upload_filename(file.filename, ext)
-    copy_upload_bounded(file, embeds_dir / fname)
+    copy_upload_bounded(file, embeds_dir / fname, max_bytes=_effective_general_upload_bytes(db))
     return {"url": f"/uploads/schematics/embeds/{fname}"}
 
 @app.post("/maps/schematic/{slug}/rename")
@@ -2676,6 +2703,22 @@ def content_editor(request: Request, db: Session = Depends(get_db), active_world
         "editor_url": editor_url,
     })
 
+# The five Settings > System "Upload limits" fields — each pairs its
+# AppSettings column name with the module-level MAX_* env-default constant it
+# falls back to when blank (see AppSettings.max_upload_mb's comment in
+# models.py and effective_upload_bytes in app/uploads.py). The defaults are
+# imported from each limit's enforcement-site router rather than re-declared
+# here, so the placeholder shown in the form can never drift from the value
+# actually enforced when nothing is saved.
+_UPLOAD_LIMIT_FIELDS = (
+    ("max_upload_mb", "General uploads (images, maps, schematics)", MAX_UPLOAD_BYTES),
+    ("max_gallery_upload_mb", "Gallery albums", _gallery_router_module._MAX_GALLERY_UPLOAD_BYTES),
+    ("max_video_mb", "Video clips", _video_router_module._MAX_VIDEO_BYTES),
+    ("max_audio_mb", "Audio library", _audio_router_module._MAX_AUDIO_BYTES),
+    ("max_ai_attachment_mb", "AI voice-memo attachments", _ai_router_module._MAX_ATTACHMENT_AUDIO_BYTES),
+)
+
+
 def _settings_context(request: Request, db: Session, active_world: str, tab: str, system_error: str = None):
     world, worlds = get_world_ctx(request, db, active_world)
     settings = get_app_settings(db)
@@ -2716,6 +2759,18 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "env_android_emulator_url": ANDROID_EMULATOR_URL,
         "env_editor_external_url": EDITOR_EXTERNAL_URL,
         "env_whisper_url": _ai_module.WHISPER_URL,
+        # Settings > System's "Upload limits" — per field: the saved value
+        # (None when unset, matching this page's existing "leave a field
+        # blank to fall back to its env default" convention — so merely
+        # re-saving this form never materializes the env defaults as
+        # explicit overrides) and the env default in MB for the placeholder.
+        # See _UPLOAD_LIMIT_FIELDS above.
+        "upload_limit_fields": [
+            {"name": name, "label": label,
+             "value": getattr(settings, name, None),
+             "env_default_mb": default_bytes // (1024 * 1024)}
+            for name, label, default_bytes in _UPLOAD_LIMIT_FIELDS
+        ],
         "system_error": system_error,
         "vis_entities": vis_entities,
         "world_players": world_players,
@@ -2786,6 +2841,11 @@ def settings_system_save(
     android_emulator_url: str = Form(""),
     editor_external_url: str = Form(""),
     whisper_url: str = Form(""),
+    max_upload_mb: str = Form(""),
+    max_gallery_upload_mb: str = Form(""),
+    max_video_mb: str = Form(""),
+    max_audio_mb: str = Form(""),
+    max_ai_attachment_mb: str = Form(""),
     dreamlands_enabled: Optional[str] = Form(None),
     king_in_yellow_enabled: Optional[str] = Form(None),
     ollama_temperature: str = Form(""),
@@ -2880,6 +2940,29 @@ def settings_system_save(
         ("ollama_vram_override_mb", "VRAM override (MB)", ollama_vram_override_mb, int, 0, 1048576),
     ):
         val, err = _parse_optional_number(label, raw, kind, lo, hi)
+        if err:
+            return templates.TemplateResponse(
+                "settings.html",
+                _settings_context(request, db, active_world, "system", system_error=err),
+                status_code=400,
+            )
+        parsed[field] = val
+
+    # Upload size limits (Settings > System's "Upload limits") — same
+    # blank-means-unset numeric convention and the same 400-on-invalid
+    # rejection as the Ollama tuning loop above, via its parser. Blank →
+    # NULL → that limit's MAX_* env default keeps applying; a non-number
+    # or <= 0 MB entry is a mistake, not something to clamp (same
+    # "reject, don't guess" choice num_ctx=0 gets). Whole MB only — every
+    # limit label in the app already speaks MB.
+    for field, label, raw in (
+        ("max_upload_mb", "General upload limit (MB)", max_upload_mb),
+        ("max_gallery_upload_mb", "Gallery album upload limit (MB)", max_gallery_upload_mb),
+        ("max_video_mb", "Video upload limit (MB)", max_video_mb),
+        ("max_audio_mb", "Audio upload limit (MB)", max_audio_mb),
+        ("max_ai_attachment_mb", "AI voice-memo attachment limit (MB)", max_ai_attachment_mb),
+    ):
+        val, err = _parse_optional_number(label, raw, int, 1, None)
         if err:
             return templates.TemplateResponse(
                 "settings.html",

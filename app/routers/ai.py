@@ -24,6 +24,7 @@ from ..deps import get_world_ctx
 from ..models import AudioJob, ChatJob, ChatSession, ImageJob, PromptPreset
 from ..uploads import (
     copy_upload_bounded, unique_upload_filename, reassemble_upload_chunks, save_upload_chunk,
+    effective_upload_bytes,
 )
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
@@ -49,6 +50,23 @@ _MAX_ATTACHMENT_AUDIO_BYTES = int(_os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(
 # enough for a handout or a few rulebook pages, bounded so one attachment
 # can't blow the model's context window on its own.
 _MAX_ATTACHMENT_TEXT_CHARS = 12000
+
+
+def _effective_ai_attachment_bytes(db, kind: Optional[str]) -> int:
+    """This request's attachment cap. Audio (voice memos — the kind that can
+    legitimately run to a recording-length file) honors the GM's saved
+    AppSettings.max_ai_attachment_mb (Settings > System's "Upload limits" —
+    applies to new uploads immediately, no restart) over the
+    _MAX_ATTACHMENT_AUDIO_BYTES env default, resolved per request so a save
+    takes effect without a restart; see effective_upload_bytes
+    (app/uploads.py). Image/document attachments keep their own separate
+    _MAX_ATTACHMENT_BYTES env cap, deliberately NOT settings-overridable:
+    a lowered voice-memo limit shouldn't silently change what a dropped
+    PDF/portrait may weigh."""
+    if kind != "audio":
+        return _MAX_ATTACHMENT_BYTES
+    settings = get_app_settings(db)
+    return effective_upload_bytes(getattr(settings, "max_ai_attachment_mb", None), _MAX_ATTACHMENT_AUDIO_BYTES)
 
 
 def _attachment_kind(ext: str) -> Optional[str]:
@@ -628,7 +646,7 @@ async def ai_attachment_upload(
     target_dir = _uploads_root() / _ATTACH_SUBDIR
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / unique_upload_filename(file.filename, ext)
-    max_bytes = _MAX_ATTACHMENT_AUDIO_BYTES if kind == "audio" else _MAX_ATTACHMENT_BYTES
+    max_bytes = _effective_ai_attachment_bytes(db, kind)
     copy_upload_bounded(file, dest, max_bytes=max_bytes)
     world, _ = get_world_ctx(request, db, active_world)
     return await _finish_attachment_upload(dest, ext, kind, file.filename, world=world)
@@ -648,7 +666,7 @@ async def ai_attachment_upload_chunk(
     100MB with no way to raise it, see docs/DEPLOYMENT.md). See .../complete
     for reassembly; mirrors app/routers/audio.py's chunked-upload pair."""
     _require_ask_ai_access(request, db, active_world)
-    save_upload_chunk(_attach_chunks_root(), upload_id, chunk_index, file, max_bytes=_MAX_ATTACHMENT_AUDIO_BYTES)
+    save_upload_chunk(_attach_chunks_root(), upload_id, chunk_index, file, max_bytes=_effective_ai_attachment_bytes(db, "audio"))
     return {"ok": True}
 
 
@@ -676,7 +694,7 @@ async def ai_attachment_upload_complete(
     target_dir = _uploads_root() / _ATTACH_SUBDIR
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / unique_upload_filename(filename, ext)
-    max_bytes = _MAX_ATTACHMENT_AUDIO_BYTES if kind == "audio" else _MAX_ATTACHMENT_BYTES
+    max_bytes = _effective_ai_attachment_bytes(db, kind)
     reassemble_upload_chunks(_attach_chunks_root(), upload_id, total_chunks, dest, max_bytes=max_bytes)
     world, _ = get_world_ctx(request, db, active_world)
     return await _finish_attachment_upload(dest, ext, kind, filename, world=world)
@@ -729,7 +747,7 @@ async def ai_attachment_audio_job_create(
     target_dir = _uploads_root() / _ATTACH_SUBDIR
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / unique_upload_filename(file.filename, ext)
-    copy_upload_bounded(file, dest, max_bytes=_MAX_ATTACHMENT_AUDIO_BYTES)
+    copy_upload_bounded(file, dest, max_bytes=_effective_ai_attachment_bytes(db, "audio"))
     job_id = _audio_jobs.create_job(
         world_id=world.id, purpose="attachment", filename=file.filename,
         audio_path=dest, delete_after=False,
@@ -751,7 +769,7 @@ async def ai_attachment_audio_job_chunk(
     """Same chunk-receiving route as .../upload/chunk, reused since a
     background job's upload can be just as large."""
     _require_ask_ai_access(request, db, active_world)
-    save_upload_chunk(_attach_chunks_root(), upload_id, chunk_index, file, max_bytes=_MAX_ATTACHMENT_AUDIO_BYTES)
+    save_upload_chunk(_attach_chunks_root(), upload_id, chunk_index, file, max_bytes=_effective_ai_attachment_bytes(db, "audio"))
     return {"ok": True}
 
 
@@ -779,7 +797,7 @@ async def ai_attachment_audio_job_complete(
     target_dir = _uploads_root() / _ATTACH_SUBDIR
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / unique_upload_filename(filename, ext)
-    reassemble_upload_chunks(_attach_chunks_root(), upload_id, total_chunks, dest, max_bytes=_MAX_ATTACHMENT_AUDIO_BYTES)
+    reassemble_upload_chunks(_attach_chunks_root(), upload_id, total_chunks, dest, max_bytes=_effective_ai_attachment_bytes(db, "audio"))
     job_id = _audio_jobs.create_job(
         world_id=world.id, purpose="attachment", filename=filename,
         audio_path=dest, delete_after=False,

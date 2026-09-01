@@ -22,11 +22,11 @@ from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Reque
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from ..database import get_db
+from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx
 from ..models import AudioAlbum, AudioClip
 from ..templating import templates
-from ..uploads import copy_upload_bounded, unique_upload_filename
+from ..uploads import copy_upload_bounded, effective_upload_bytes, unique_upload_filename
 
 router = APIRouter()
 
@@ -49,6 +49,16 @@ _ALLOWED_EXTS = {".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus", ".web
 # takes effect end to end instead of being capped by that proxy limit first.
 # Env-overridable like MAX_UPLOAD_BYTES (app/uploads.py).
 _MAX_AUDIO_BYTES = int(os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(1024 * 1024 * 1024)))
+
+
+def _effective_audio_bytes(db: Session) -> int:
+    """This request's audio upload cap: the GM's saved AppSettings.max_audio_mb
+    (Settings > System's "Upload limits" — applies to new uploads immediately,
+    no restart) or the _MAX_AUDIO_BYTES env default when left blank. Computed
+    per request rather than at import so a settings save takes effect without
+    a process restart; see effective_upload_bytes (app/uploads.py)."""
+    settings = get_app_settings(db)
+    return effective_upload_bytes(getattr(settings, "max_audio_mb", None), _MAX_AUDIO_BYTES)
 
 # A big audio file (a whole session recording, a long ambiance loop) can
 # still be blocked by a reverse proxy/CDN's own per-request body cap even
@@ -217,7 +227,7 @@ def audio_library(request: Request, db: Session = Depends(get_db), active_world:
         "album": None, "albums": albums, "breadcrumb": [],
         "sub_album_counts": _sub_album_counts(db, album_ids),
         "clip_counts": _clip_counts(db, request, album_ids),
-        "max_audio_mb": _MAX_AUDIO_BYTES // (1024 * 1024),
+        "max_audio_mb": _effective_audio_bytes(db) // (1024 * 1024),
     })
 
 
@@ -239,7 +249,7 @@ def audio_album_detail(album_id: int, request: Request, db: Session = Depends(ge
         "album": album, "albums": albums, "breadcrumb": _breadcrumb(db, album),
         "sub_album_counts": _sub_album_counts(db, album_ids),
         "clip_counts": _clip_counts(db, request, album_ids),
-        "max_audio_mb": _MAX_AUDIO_BYTES // (1024 * 1024),
+        "max_audio_mb": _effective_audio_bytes(db) // (1024 * 1024),
     })
 
 
@@ -331,7 +341,7 @@ async def audio_upload(
     target_dir = _UPLOADS_DIR / "audio"
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / unique_upload_filename(file.filename, ext)
-    copy_upload_bounded(file, dest, max_bytes=_MAX_AUDIO_BYTES)
+    copy_upload_bounded(file, dest, max_bytes=_effective_audio_bytes(db))
 
     clip_name = name.strip()[:_MAX_NAME] or Path(file.filename).stem[:_MAX_NAME] or "Untitled clip"
     clip = AudioClip(
@@ -368,7 +378,7 @@ async def audio_upload_chunk(
     session_dir.mkdir(parents=True, exist_ok=True)
     dest = session_dir / f"{chunk_index:06d}.part"
     # A single part can never legitimately exceed the whole clip's own cap.
-    copy_upload_bounded(file, dest, max_bytes=_MAX_AUDIO_BYTES)
+    copy_upload_bounded(file, dest, max_bytes=_effective_audio_bytes(db))
     return JSONResponse({"ok": True})
 
 
@@ -413,6 +423,9 @@ async def audio_upload_complete(
     target_dir = _UPLOADS_DIR / "audio"
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / unique_upload_filename(filename, ext)
+    # Resolved per request so a Settings > System save applies without a
+    # restart — same value the direct upload and per-part paths above use.
+    max_bytes = _effective_audio_bytes(db)
     try:
         total_bytes = 0
         with dest.open("wb") as out:
@@ -423,9 +436,9 @@ async def audio_upload_complete(
                         if not buf:
                             break
                         total_bytes += len(buf)
-                        if total_bytes > _MAX_AUDIO_BYTES:
+                        if total_bytes > max_bytes:
                             raise HTTPException(
-                                413, f"File too large — limit is {_MAX_AUDIO_BYTES // (1024 * 1024)} MB"
+                                413, f"File too large — limit is {max_bytes // (1024 * 1024)} MB"
                             )
                         out.write(buf)
     except Exception:

@@ -652,6 +652,19 @@ def _migrate():
                 ("ollama_server_env_json", "TEXT DEFAULT '{}'"),
                 ("ollama_vram_override_mb", "INTEGER"),
                 ("ollama_model_overrides_json", "TEXT DEFAULT '{}'"),
+                # Upload size limits (Settings > System's "Upload limits") —
+                # deliberately NO DEFAULT clause, so existing installs' rows
+                # get NULL, which every enforcement site treats as "use the
+                # MAX_* environment default" (see AppSettings.max_upload_mb's
+                # comment in models.py). app_settings is not in the
+                # _heal_table_from_model list below (it predates that
+                # helper), so these hand-typed entries are what gets the
+                # columns onto existing installs.
+                ("max_upload_mb", "INTEGER"),
+                ("max_gallery_upload_mb", "INTEGER"),
+                ("max_video_mb", "INTEGER"),
+                ("max_audio_mb", "INTEGER"),
+                ("max_ai_attachment_mb", "INTEGER"),
             ]:
                 if col not in as_cols:
                     conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN {col} {defn}"))

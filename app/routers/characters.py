@@ -22,7 +22,7 @@ from ..database import get_db, get_app_settings
 from ..deps import get_world_ctx
 from ..imaging import convert_image, make_thumbnail
 from ..templating import templates
-from ..uploads import copy_upload_bounded, unique_upload_filename
+from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename
 from ..models import Entity, PlayerCharacter, SheetTemplate, User, World, WorldMembership
 
 router = APIRouter()
@@ -196,6 +196,19 @@ def _apply_form(pc: PlayerCharacter, data: dict):
     pc.updated_at = datetime.utcnow()
 
 
+def _effective_general_upload_bytes(db: Optional[Session]) -> int:
+    """Portrait/entity-art uploads' size cap for this request: the GM's saved
+    AppSettings.max_upload_mb (Settings > System's "Upload limits" — applies
+    to new uploads immediately, no restart) or the MAX_UPLOAD_BYTES env
+    default when left blank; db=None falls back to that same env default,
+    matching copy_upload_bounded's own max_bytes=None behavior. See
+    effective_upload_bytes (app/uploads.py)."""
+    if db is None:
+        return MAX_UPLOAD_BYTES
+    settings = get_app_settings(db)
+    return effective_upload_bytes(getattr(settings, "max_upload_mb", None), MAX_UPLOAD_BYTES)
+
+
 def _upload_portrait(file: UploadFile, db: Optional[Session] = None) -> Optional[str]:
     if not file or not file.filename:
         return None
@@ -206,7 +219,7 @@ def _upload_portrait(file: UploadFile, db: Optional[Session] = None) -> Optional
     portraits_dir.mkdir(parents=True, exist_ok=True)
     fname = unique_upload_filename(file.filename, ext)
     dest = portraits_dir / fname
-    copy_upload_bounded(file, dest)
+    copy_upload_bounded(file, dest, max_bytes=_effective_general_upload_bytes(db))
     if db is not None:
         settings = get_app_settings(db)
         dest = convert_image(dest, static_format=settings.static_format,

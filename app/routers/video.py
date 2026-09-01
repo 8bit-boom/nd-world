@@ -22,12 +22,13 @@ from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Reque
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
-from ..database import get_db
+from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx
 from ..models import VideoAlbum, VideoClip
 from ..templating import templates
 from ..uploads import (
     copy_upload_bounded,
+    effective_upload_bytes,
     reassemble_upload_chunks,
     save_upload_chunk,
     unique_upload_filename,
@@ -64,6 +65,16 @@ _ALLOWED_EXTS = _NATIVE_EXTS | _CONVERTIBLE_EXTS
 # reusing MAX_AUDIO_UPLOAD_BYTES's default so raising one doesn't silently
 # raise the other. Defaults to 2 GB; env-overridable like MAX_AUDIO_UPLOAD_BYTES.
 _MAX_VIDEO_BYTES = int(os.environ.get("MAX_VIDEO_UPLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))
+
+
+def _effective_video_bytes(db: Session) -> int:
+    """This request's video upload cap: the GM's saved AppSettings.max_video_mb
+    (Settings > System's "Upload limits" — applies to new uploads immediately,
+    no restart) or the _MAX_VIDEO_BYTES env default when left blank. Computed
+    per request rather than at import so a settings save takes effect without
+    a process restart; see effective_upload_bytes (app/uploads.py)."""
+    settings = get_app_settings(db)
+    return effective_upload_bytes(getattr(settings, "max_video_mb", None), _MAX_VIDEO_BYTES)
 
 # Same client-side-split large-file pattern as audio.py/sessions.py/ai.py —
 # see app/uploads.py's own module docstring for why (a reverse proxy/CDN's
@@ -400,7 +411,7 @@ def video_library(request: Request, db: Session = Depends(get_db), active_world:
         "album": None, "albums": albums, "breadcrumb": [],
         "sub_album_counts": _sub_album_counts(db, album_ids),
         "clip_counts": _clip_counts(db, request, album_ids),
-        "max_video_mb": _MAX_VIDEO_BYTES // (1024 * 1024),
+        "max_video_mb": _effective_video_bytes(db) // (1024 * 1024),
     })
 
 
@@ -422,7 +433,7 @@ def video_album_detail(album_id: int, request: Request, db: Session = Depends(ge
         "album": album, "albums": albums, "breadcrumb": _breadcrumb(db, album),
         "sub_album_counts": _sub_album_counts(db, album_ids),
         "clip_counts": _clip_counts(db, request, album_ids),
-        "max_video_mb": _MAX_VIDEO_BYTES // (1024 * 1024),
+        "max_video_mb": _effective_video_bytes(db) // (1024 * 1024),
     })
 
 
@@ -535,7 +546,7 @@ async def video_upload(
     target_dir = _UPLOADS_DIR / "video"
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / unique_upload_filename(file.filename, ext)
-    copy_upload_bounded(file, dest, max_bytes=_MAX_VIDEO_BYTES)
+    copy_upload_bounded(file, dest, max_bytes=_effective_video_bytes(db))
     final_path = await _finish_stored_file(dest, target_dir, world)
     poster_url = await _generate_poster(final_path, target_dir)
 
@@ -563,7 +574,7 @@ async def video_upload_chunk(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
-    save_upload_chunk(_CHUNKS_ROOT, upload_id, chunk_index, file, max_bytes=_MAX_VIDEO_BYTES)
+    save_upload_chunk(_CHUNKS_ROOT, upload_id, chunk_index, file, max_bytes=_effective_video_bytes(db))
     return JSONResponse({"ok": True})
 
 
@@ -599,7 +610,7 @@ async def video_upload_complete(
     target_dir = _UPLOADS_DIR / "video"
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / unique_upload_filename(filename, ext)
-    reassemble_upload_chunks(_CHUNKS_ROOT, upload_id, total_chunks, dest, max_bytes=_MAX_VIDEO_BYTES)
+    reassemble_upload_chunks(_CHUNKS_ROOT, upload_id, total_chunks, dest, max_bytes=_effective_video_bytes(db))
     final_path = await _finish_stored_file(dest, target_dir, world)
     poster_url = await _generate_poster(final_path, target_dir)
 

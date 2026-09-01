@@ -9,7 +9,7 @@ from PIL import Image
 
 from app.database import SessionLocal, get_app_settings
 from app.gallery import all_world_image_urls
-from app.models import Entity, EntityNote, ImageAlbum, PlayerCharacter, World
+from app.models import AppSettings, Entity, EntityNote, ImageAlbum, PlayerCharacter, World
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -37,6 +37,22 @@ def _album_urls(album_id):
     try:
         a = db.get(ImageAlbum, album_id)
         return json.loads(a.image_urls_json or "[]") if a else None
+    finally:
+        db.close()
+
+
+def _set_app_settings(**kw):
+    """Write AppSettings fields directly (the `client` fixture drops and
+    recreates every table per test, so there's nothing to reset afterward)."""
+    db = SessionLocal()
+    try:
+        s = db.query(AppSettings).first()
+        if not s:
+            s = AppSettings(id=1)
+            db.add(s)
+        for k, v in kw.items():
+            setattr(s, k, v)
+        db.commit()
     finally:
         db.close()
 
@@ -374,6 +390,24 @@ def test_album_chunked_upload_enforces_total_cap(client, seed, monkeypatch):
     })
     assert r.status_code == 413
     # Reassembly failed, so no partial file may linger in uploads/gallery.
+    assert not [p for p in (UPLOADS_DIR / "gallery").iterdir() if p.is_file()]
+
+
+def test_album_upload_settings_limit_rejects_oversized_file(client, seed):
+    """A saved AppSettings.max_gallery_upload_mb (Settings > System's
+    "Upload limits") lowers the album-upload cap below its 500 MB env
+    default — enforced on the direct route, DB-resolved per request."""
+    from app.main import UPLOADS_DIR
+
+    _set_app_settings(max_gallery_upload_mb=1)
+    album_id = _make_album(seed.world_a.id, "Capped")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    big = {"file": ("big.png", io.BytesIO(_PNG_BYTES + b"\x00" * (2 * 1024 * 1024)), "image/png")}
+    r = client.post(f"/images/albums/{album_id}/upload", files=big)
+    assert r.status_code == 413
+    assert _album_urls(album_id) == []
+    # A rejected upload leaves no orphaned bytes behind in uploads/gallery.
     assert not [p for p in (UPLOADS_DIR / "gallery").iterdir() if p.is_file()]
 
 

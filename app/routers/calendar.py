@@ -11,7 +11,7 @@ from ..deps import get_world_ctx
 from ..imaging import convert_image
 from ..models import CalendarDayIcon, CalendarEvent, Entity, GameSession, Party, PlayerCharacter, World, WorldCalendar
 from ..templating import templates
-from ..uploads import copy_upload_bounded, unique_upload_filename
+from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename
 
 router = APIRouter()
 
@@ -290,8 +290,12 @@ async def calendar_day_icon_add(
     target_dir = _UPLOADS_DIR / _ICON_SUBDIR
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / unique_upload_filename(file.filename, ext)
-    copy_upload_bounded(file, dest)
+    # One settings row feeds both the size cap (AppSettings.max_upload_mb,
+    # Settings > System's "Upload limits" — blank = MAX_UPLOAD_BYTES env
+    # default; see effective_upload_bytes in app/uploads.py) and the
+    # image-format conversion below.
     settings = get_app_settings(db)
+    copy_upload_bounded(file, dest, max_bytes=effective_upload_bytes(getattr(settings, "max_upload_mb", None), MAX_UPLOAD_BYTES))
     dest = convert_image(dest, static_format=settings.static_format, animated_format=settings.animated_format)
     icon = CalendarDayIcon(
         world_id=world_id, day=day, image_url=f"/uploads/{_ICON_SUBDIR}/{dest.name}",

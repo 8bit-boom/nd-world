@@ -197,6 +197,19 @@
         <label for="whisper-url">Whisper URL (audio attachment transcription)</label>
         <input id="whisper-url" name="whisper_url" value="{{ settings.whisper_url or '' }}" placeholder="{{ env_whisper_url or 'not set' }}">
       </div>
+      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Upload limits</h2>
+      <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
+        Per-kind upload size caps, in MB. Blank = use the built-in default. Limits
+        apply to new uploads immediately; no restart needed.
+      </p>
+      {% for f in upload_limit_fields %}
+      <div class="form-group">
+        <label for="{{ f.name | replace('_', '-') }}">{{ f.label }} (MB)</label>
+        <input id="{{ f.name | replace('_', '-') }}" type="number" step="1" min="1" name="{{ f.name }}"
+               value="{{ f.value if f.value is not none else '' }}" placeholder="{{ f.env_default_mb }} (env default)"
+               style="max-width:160px">
+      </div>
+      {% endfor %}
       <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Ollama generation tuning</h2>
       <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
         Two different things live on this page. <strong>Generation tuning</strong> below is

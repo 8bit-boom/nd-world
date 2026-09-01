@@ -13,11 +13,29 @@ from pathlib import Path
 import pytest
 
 from app.database import SessionLocal
-from app.models import VideoAlbum, VideoClip
+from app.models import AppSettings, VideoAlbum, VideoClip
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
 _MP4_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 500
+
+
+def _set_app_settings(**kw):
+    """Write AppSettings fields directly (the `client` fixture drops and
+    recreates every table per test, so there's nothing to reset afterward).
+    Used by the upload-limit tests to cover the Settings > System →
+    enforcement path end to end, without a form round-trip."""
+    db = SessionLocal()
+    try:
+        s = db.query(AppSettings).first()
+        if not s:
+            s = AppSettings(id=1)
+            db.add(s)
+        for k, v in kw.items():
+            setattr(s, k, v)
+        db.commit()
+    finally:
+        db.close()
 
 
 def _mp4_file(name="clip.mp4"):
@@ -126,6 +144,63 @@ def test_video_upload_rejects_file_over_configured_limit(client, seed, monkeypat
         assert db.query(VideoClip).filter(VideoClip.world_id == seed.world_a.id).count() == 0
     finally:
         db.close()
+
+
+def test_video_upload_settings_limit_rejects_oversized_file(client, seed):
+    """A saved AppSettings.max_video_mb (Settings > System's "Upload limits")
+    lowers the direct-upload cap below its env default — no monkeypatching,
+    no restart: the route resolves the limit from the DB per request."""
+    _set_app_settings(max_video_mb=1)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    big = {"file": ("big.mp4", io.BytesIO(_MP4_BYTES + b"\x00" * (2 * 1024 * 1024)), "video/mp4")}
+    r = client.post("/video/upload", files=big)
+    assert r.status_code == 413
+    db = SessionLocal()
+    try:
+        assert db.query(VideoClip).filter(VideoClip.world_id == seed.world_a.id).count() == 0
+    finally:
+        db.close()
+
+
+def test_video_upload_passes_effective_limit_from_settings(client, seed, monkeypatch):
+    """With max_video_mb set, the byte cap handed to copy_upload_bounded
+    comes from AppSettings (MB → bytes), not the module-level env default —
+    asserted via a spy around the real helper so no huge upload is needed."""
+    import app.routers.video as video_module
+
+    received = {}
+    real = video_module.copy_upload_bounded
+
+    def _spy(file, dest, max_bytes=None):
+        received["max_bytes"] = max_bytes
+        return real(file, dest, max_bytes=max_bytes)
+
+    monkeypatch.setattr(video_module, "copy_upload_bounded", _spy)
+    _set_app_settings(max_video_mb=4096)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/video/upload", files=_mp4_file(), follow_redirects=False)
+    assert r.status_code == 303
+    assert received["max_bytes"] == 4096 * 1024 * 1024
+
+
+def test_video_page_shows_settings_limit(client, seed):
+    _set_app_settings(max_video_mb=4096)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/video")
+    assert "Up to 4096 MB each" in r.text
+
+
+def test_video_page_falls_back_to_env_default_without_setting(client, seed):
+    """No AppSettings value → the MAX_VIDEO_UPLOAD_BYTES env default (2 GB
+    here — conftest doesn't override it) still applies and is what the page
+    advertises."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/video")
+    assert "Up to 2048 MB each" in r.text
 
 
 def test_video_upload_file_input_allows_multiple(client, seed):
