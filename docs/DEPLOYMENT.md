@@ -157,9 +157,13 @@ bar / an entity's Ask AI panel / the Whisper Test tab, and a Session's audio
 recap upload/mic recording all automatically split a file over 100 MB into
 smaller parts in the browser before upload and reassemble it on the server,
 so a long session recording or ambiance track gets through Cloudflare's
-fixed cap regardless of plan — nothing to configure for these. A large
-non-audio upload (a map image, a portrait) has no such split and is still
-subject to Cloudflare's raw cap.
+fixed cap regardless of plan — nothing to configure for these. Gallery
+album uploads (`/images`) get the same automatic treatment: the browser
+splits any album image over 100 MB into parts and reassembles it on the
+server, with the total bounded by `MAX_GALLERY_UPLOAD_BYTES` (500 MB by
+default) instead of by Cloudflare. Any other large non-audio upload (a map
+image, a portrait) has no such split and is still subject to Cloudflare's
+raw cap.
 
 ### Option 2: Port forwarding + reverse proxy (more advanced)
 

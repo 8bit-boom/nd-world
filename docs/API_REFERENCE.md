@@ -525,6 +525,8 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/images/albums/{album_id}/rename` | GM | Renames an album. |
 | POST | `/images/albums/{album_id}/delete` | GM | Deletes an album. |
 | POST | `/images/albums/{album_id}/upload` | GM | Uploads images directly into an album. |
+| POST | `/images/albums/upload/chunk` | GM | Receives one part of a large (>100 MB) album image split client-side; reassembled by `/images/albums/upload/complete`. |
+| POST | `/images/albums/upload/complete` | GM | Reassembles a chunked album image upload (converted + thumbnailed) and attaches it to the album; returns `{"url": ...}`. |
 | POST | `/images/albums/{album_id}/add` | GM | Adds existing uploaded images to an album. |
 | POST | `/images/albums/{album_id}/remove` | GM | Removes an image from an album. |
 | POST | `/images/albums/{album_id}/move` | GM | Moves an image to a different album. |

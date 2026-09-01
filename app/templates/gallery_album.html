@@ -116,6 +116,7 @@
 .gallery-img-name { padding:.3rem .4rem; font-size:.7rem; color:var(--text-dim); background:var(--bg2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 </style>
 
+<script src="/static/js/chunked-upload.js"></script>
 <script>
 async function ndSendSpotlight(url) {
   const res = await fetch('/images/spotlight', {
@@ -165,18 +166,36 @@ async function albumUploadFiles(fileList) {
   let ok = 0;
   for (let i = 0; i < files.length; i++) {
     status.textContent = `Uploading ${i + 1} of ${files.length}…`;
-    const fd = new FormData();
-    fd.append('file', files[i]);
     try {
-      const res = await fetch(`/images/albums/{{ album.id }}/upload`, { method: 'POST', body: fd });
-      if (res.ok) ok++;
-    } catch (err) {}
+      // ndChunkedUpload posts a file at/under 100 MB straight to the album's
+      // normal upload route and splits anything bigger into sub-100 MB parts
+      // (Cloudflare's fixed request-body cap) that the server reassembles —
+      // so a huge animated WebP gets through instead of dying at the edge.
+      await ndChunkedUpload(files[i], {
+        directUrl: `/images/albums/{{ album.id }}/upload`,
+        chunkUrl: '/images/albums/upload/chunk',
+        completeUrl: '/images/albums/upload/complete',
+        extraFields: { album_id: '{{ album.id }}' },
+        onProgress: (p) => {
+          status.textContent = p.phase === 'upload'
+            ? `Uploading ${i + 1} of ${files.length} — ${p.percent}%`
+            : `Processing ${i + 1} of ${files.length}…`;
+        },
+      });
+      ok++;
+    } catch (err) {
+      // ndXhrUpload rejects with the server's HTTPException detail text, so
+      // this surfaces the real reason (over the size cap, unsupported type,
+      // album full, ...) instead of the old bare "Upload failed."
+      status.textContent = `Upload failed: ${err.message}`;
+      btn.disabled = false;
+      return;
+    }
   }
   if (ok) {
     location.reload();
   } else {
     btn.disabled = false;
-    status.textContent = 'Upload failed.';
   }
 }
 

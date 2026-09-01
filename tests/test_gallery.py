@@ -5,7 +5,9 @@ image URLs, on top of the discovered set)."""
 import io
 import json
 
-from app.database import SessionLocal
+from PIL import Image
+
+from app.database import SessionLocal, get_app_settings
 from app.gallery import all_world_image_urls
 from app.models import Entity, EntityNote, ImageAlbum, PlayerCharacter, World
 
@@ -260,6 +262,178 @@ def test_album_upload_rejects_bad_extension(client, seed):
     r = client.post(f"/images/albums/{album_id}/upload",
                      files={"file": ("evil.exe", io.BytesIO(b"MZ"), "application/octet-stream")})
     assert r.status_code == 400
+
+
+# ── Chunked album uploads (ndChunkedUpload splits >100MB files client-side) ──
+# The direct upload route above stays the client's directUrl for files at or
+# under chunked-upload.js's 100 MB threshold; these cover the /chunk +
+# /complete pair that receives anything bigger (mirroring the attachment
+# upload tests' shape) plus the page wiring that drives it.
+
+_VALID_UPLOAD_ID = "0123456789abcdef0123456789abcdef"  # 32 hex, as ndChunkedUpload generates
+
+
+def _valid_png_bytes():
+    """A real (decodable) 4x4 PNG — the module-level _PNG_BYTES above is only
+    the magic header plus zero padding, which convert_image silently keeps
+    as-is; the reassembly tests below assert the stored file actually
+    decodes, so they need genuine image bytes."""
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), (200, 30, 30)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _upload_chunk(c, upload_id, chunk_index, data):
+    return c.post(
+        "/images/albums/upload/chunk",
+        files={"file": (f"part{chunk_index}.bin", io.BytesIO(data), "application/octet-stream")},
+        data={"upload_id": upload_id, "chunk_index": str(chunk_index)},
+    )
+
+
+def test_album_chunked_upload_reassembles_and_attaches(client, seed):
+    from app.main import UPLOADS_DIR
+    album_id = _make_album(seed.world_a.id, "Chunks")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    png = _valid_png_bytes()
+    r1 = _upload_chunk(client, _VALID_UPLOAD_ID, 0, png[: len(png) // 2])
+    r2 = _upload_chunk(client, _VALID_UPLOAD_ID, 1, png[len(png) // 2:])
+    assert r1.status_code == 200 and r1.json() == {"ok": True}
+    assert r2.status_code == 200 and r2.json() == {"ok": True}
+
+    r = client.post("/images/albums/upload/complete", data={
+        "upload_id": _VALID_UPLOAD_ID, "filename": "art.png",
+        "total_chunks": "2", "album_id": str(album_id),
+    })
+    assert r.status_code == 200
+    url = r.json()["url"]
+    assert url.startswith("/uploads/gallery/")
+    assert url in _album_urls(album_id)
+
+    path = UPLOADS_DIR / "gallery" / url.rsplit("/", 1)[-1]
+    assert path.exists()
+    img = Image.open(path)  # the reassembled (post-conversion) file decodes
+    img.load()
+    assert img.size == (4, 4)
+
+
+def test_album_chunked_complete_with_missing_chunk_is_400(client, seed):
+    album_id = _make_album(seed.world_a.id, "Chunks")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    # No chunk ever uploaded — complete with total_chunks=2 must reject
+    # rather than attach a truncated/empty image.
+    r = client.post("/images/albums/upload/complete", data={
+        "upload_id": _VALID_UPLOAD_ID, "filename": "art.png",
+        "total_chunks": "2", "album_id": str(album_id),
+    })
+    assert r.status_code == 400
+    assert "missing" in r.json()["detail"].lower()
+
+
+def test_album_chunk_rejects_invalid_upload_id(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = _upload_chunk(client, "not-hex-at-all", 0, b"x")
+    assert r.status_code == 400
+
+
+def test_album_chunked_complete_rejects_bad_extension(client, seed):
+    from app.main import UPLOADS_DIR
+    album_id = _make_album(seed.world_a.id, "Chunks")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = _upload_chunk(client, _VALID_UPLOAD_ID, 0, b"MZ")
+    assert r.status_code == 200
+    r = client.post("/images/albums/upload/complete", data={
+        "upload_id": _VALID_UPLOAD_ID, "filename": "evil.exe",
+        "total_chunks": "1", "album_id": str(album_id),
+    })
+    assert r.status_code == 400
+    assert r.json()["detail"] == "Unsupported file type"
+    # Checked before any image write — no file may land in uploads/gallery
+    # (only the chunk session dir from the upload above exists there).
+    assert not [p for p in (UPLOADS_DIR / "gallery").iterdir() if p.is_file()]
+
+
+def test_album_chunked_upload_enforces_total_cap(client, seed, monkeypatch):
+    from app.main import UPLOADS_DIR
+    from app.routers import gallery as gallery_router
+    album_id = _make_album(seed.world_a.id, "Chunks")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    # Two 10-byte parts total 20 bytes — over this deliberately tiny cap.
+    monkeypatch.setattr(gallery_router, "_MAX_GALLERY_UPLOAD_BYTES", 12)
+    assert _upload_chunk(client, _VALID_UPLOAD_ID, 0, b"x" * 10).status_code == 200
+    assert _upload_chunk(client, _VALID_UPLOAD_ID, 1, b"y" * 10).status_code == 200
+    r = client.post("/images/albums/upload/complete", data={
+        "upload_id": _VALID_UPLOAD_ID, "filename": "art.png",
+        "total_chunks": "2", "album_id": str(album_id),
+    })
+    assert r.status_code == 413
+    # Reassembly failed, so no partial file may linger in uploads/gallery.
+    assert not [p for p in (UPLOADS_DIR / "gallery").iterdir() if p.is_file()]
+
+
+def test_album_upload_preserves_animation(client, seed):
+    """Pins the guarantee that an animated upload survives post-processing
+    as an animation (the reported bug was a 106 MB animated WebP): the
+    stored, post-conversion file still reports 2 frames to PIL. The
+    animated format is pinned to webp here so a .webp upload keeps a
+    predictable .webp name instead of depending on the settings default."""
+    db = SessionLocal()
+    try:
+        settings = get_app_settings(db)
+        settings.animated_format = "webp"
+        db.commit()
+    finally:
+        db.close()
+
+    buf = io.BytesIO()
+    frames = [Image.new("RGB", (8, 8), color) for color in ((255, 0, 0), (0, 0, 255))]
+    frames[0].save(buf, format="WEBP", save_all=True, append_images=frames[1:], duration=100, loop=0)
+
+    album_id = _make_album(seed.world_a.id, "Animated")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/images/albums/{album_id}/upload",
+                     files={"file": ("spin.webp", io.BytesIO(buf.getvalue()), "image/webp")},
+                     follow_redirects=False)
+    assert r.status_code == 303
+    url = _album_urls(album_id)[0]
+    assert url.endswith(".webp")
+
+    from app.main import UPLOADS_DIR
+    img = Image.open(UPLOADS_DIR / "gallery" / url.rsplit("/", 1)[-1])
+    assert img.is_animated is True
+    assert img.n_frames == 2
+
+
+def test_album_page_uses_chunked_upload_helper(client, seed):
+    album_id = _make_album(seed.world_a.id, "Album")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/images/albums/{album_id}")
+    assert 'src="/static/js/chunked-upload.js"' in r.text
+    assert "ndChunkedUpload(" in r.text
+    assert "/images/albums/upload/chunk" in r.text
+    assert "/images/albums/upload/complete" in r.text
+    # Real server error detail is surfaced; the old bare message is gone.
+    assert "Upload failed: ${err.message}" in r.text
+    assert "'Upload failed.'" not in r.text
+
+
+def test_album_chunked_upload_is_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert _upload_chunk(client, _VALID_UPLOAD_ID, 0, b"x").status_code == 403
+    r = client.post("/images/albums/upload/complete", data={
+        "upload_id": _VALID_UPLOAD_ID, "filename": "a.png",
+        "total_chunks": "1", "album_id": "1",
+    })
+    assert r.status_code == 403
 
 
 # ── Full-resolution lightbox on thumbnails ──────────────────────────────────
