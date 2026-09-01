@@ -731,6 +731,22 @@ def _migrate():
             tpl_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(sheet_templates)")).fetchall()]
             if "sheet_mode" not in tpl_cols:
                 conn.execute(text("ALTER TABLE sheet_templates ADD COLUMN sheet_mode VARCHAR(16) DEFAULT 'nd'"))
+        # world_memberships table — the GM-Assistant role column (see
+        # WorldMembership.role in app/models.py). world_memberships is not in
+        # the _heal_table_from_model list below (it predates that helper),
+        # same as app_settings, so this hand-typed entry is what gets the
+        # column onto existing installs. DEFAULT 'player' matters: SQLite
+        # backfills existing rows with it, so every membership that existed
+        # before this feature stays exactly what it was — a player — instead
+        # of NULLing out (NOT NULL + DEFAULT is legal in ALTER TABLE ADD
+        # COLUMN precisely so this backfill can happen).
+        wm_exists = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='world_memberships'"
+        )).fetchone()
+        if wm_exists:
+            wm_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(world_memberships)")).fetchall()]
+            if "role" not in wm_cols:
+                conn.execute(text("ALTER TABLE world_memberships ADD COLUMN role VARCHAR(20) DEFAULT 'player' NOT NULL"))
         # worlds table — add players_see_party if missing
         w_exists = conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='worlds'"

@@ -111,6 +111,15 @@ def asset_v(name: str) -> str:
 
 
 templates.env.globals["asset_v"] = asset_v
+# Content-creation gate for templates: True for a GM, and for a non-GM whose
+# active-world membership is role="assistant" (request.state.is_assistant,
+# computed by auth_gate on every non-GM request — see deps.can_edit_content).
+# CONTENT templates use `{% if can_edit(request) %}` for create/edit/delete
+# controls; world-ADMINISTRATION controls (Settings, world management,
+# exports/backups, model overrides) keep their `request.state.user.is_gm`
+# checks. The middleware guarantees request.state.is_assistant always exists,
+# so this never needs a getattr dance in templates.
+templates.env.globals["can_edit"] = deps.can_edit_content
 # Last-resort default for the (nonexistent today) case of a template
 # rendered outside any request — real renders get the per-world merged
 # values from the context processor above.

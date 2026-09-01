@@ -21,7 +21,10 @@
       {% if (request.state.user and request.state.user.is_gm) or world.players_can_download_entities %}
       <a href="/entity/{{ entity.id }}/download.md" class="btn-edit" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim)">⬇ Download .md</a>
       {% endif %}
-      {% if request.state.user and request.state.user.is_gm %}
+      {# Edit/duplicate/delete are content controls — a GM-Assistant gets
+         them too (can_edit), unlike the download link above, which stays on
+         the GM/players_can_download_entities axis. #}
+      {% if can_edit(request) %}
       <a href="{{ ('/entity/' + entity.id|string + '/edit')|wq }}" class="btn-edit">Edit</a>
       <form action="/entity/{{ entity.id }}/duplicate" method="post" style="display:inline">
         <button class="btn-edit" type="submit" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim)" title="Clone this entity, including custom fields — not its notes or player-access grants">⧉ Duplicate</button>
@@ -110,7 +113,7 @@
         {% endif %}
         <div class="en-note-footer">
           <span class="en-note-date">{{ n.created_at.strftime('%Y-%m-%d %H:%M') if n.created_at else '' }}</span>
-          {% if request.state.user and request.state.user.is_gm %}
+          {% if can_edit(request) %}
           <span class="en-note-vis">{% if n.visible_to_players %}👁 visible to players{% else %}🔒 GM only{% endif %}</span>
           <form action="/entity/{{ entity.id }}/notes/{{ n.id }}/toggle" method="post" class="en-inline-form">
             <button type="submit" class="en-btn">{% if n.visible_to_players %}Hide from players{% else %}Un-hide{% endif %}</button>
@@ -127,7 +130,7 @@
     <p class="empty-small">No notes yet.</p>
     {% endif %}
 
-    {% if request.state.user and request.state.user.is_gm %}
+    {% if can_edit(request) %}
     <form action="/entity/{{ entity.id }}/notes/new" method="post" class="en-add-form">
       <textarea name="content" rows="2" placeholder="Add a note about this entity…" required data-fmt></textarea>
       <div class="en-add-row">

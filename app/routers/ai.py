@@ -20,7 +20,7 @@ from .. import image_jobs as _image_jobs
 from .. import ollama_tuning as _tuning
 from ..constants import KINDS
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, can_edit_content
 from ..models import AudioJob, ChatJob, ChatSession, ImageJob, PromptPreset
 from ..uploads import (
     copy_upload_bounded, unique_upload_filename, reassemble_upload_chunks, save_upload_chunk,
@@ -123,6 +123,16 @@ def _require_gm(request: Request) -> None:
     so its saved-conversation history stays GM-only too."""
     user = getattr(request.state, "user", None)
     if not (user and user.is_gm):
+        raise HTTPException(403)
+
+
+def _require_can_edit(request: Request) -> None:
+    """Content-drafting endpoints a GM-Assistant (WorldMembership.role ==
+    "assistant") may call too — same tier the auth_gate's _is_assistant_safe
+    already enforced on the way in. Only the drafters use this; every other
+    gate in this router (chat history, presets, models, Whisper, imagegen)
+    stays _require_gm, because model/system management is administration."""
+    if not can_edit_content(request):
         raise HTTPException(403)
 
 
@@ -387,8 +397,10 @@ async def api_entity_from_text(
     """Draft a world entity from a passage of text (an AI Chat reply) —
     returns the draft without writing anything; the client reviews/edits it,
     then POSTs the confirmed shape to /api/import/execute (kind=entity_single)
-    to actually create it. GM-only, matching the /ai page itself."""
-    _require_gm(request)
+    to actually create it. Content drafting, so a GM-Assistant may call it
+    too (can_edit tier) even though the /ai page it was built for stays
+    GM-only."""
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")

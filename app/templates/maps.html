@@ -1,10 +1,17 @@
 {% extends "base.html" %}
 {% block title %}Maps — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
+{# _can_edit = content management (new/upload/rename/delete + the schematic
+   editor links) — GM-Assistants get these, the routes are in
+   _is_assistant_safe. _is_gm stays ONLY on the 🖼 Gallery picker bits below:
+   the handler passes gallery_images to GMs exclusively, since that list
+   includes images used on GM-only/hidden entities (see maps_page in
+   app/main.py) and assistants see player visibility. #}
+{% set _can_edit = can_edit(request) %}
 {% set _is_gm = request.state.user and request.state.user.is_gm %}
 <div class="list-header">
   <h1>🗺 MAPS</h1>
-  {% if _is_gm %}
+  {% if _can_edit %}
   <a href="{{ '/maps/new'|wq }}" class="btn-new">+ New Map</a>
   {% endif %}
 </div>
@@ -27,7 +34,7 @@
         {{ m.width }}×{{ m.height }}
         {% if m.markers %} · {{ m.markers }} marker{{ 's' if m.markers != 1 }}{% endif %}
       </div>
-      {% if _is_gm %}
+      {% if _can_edit %}
       <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
         <form action="/maps/{{ m.slug }}/upload" method="post" enctype="multipart/form-data" class="map-upload-form">
           <label class="map-upload-label" title="Upload map image">
@@ -35,8 +42,10 @@
             <input type="file" name="file" accept="image/*" onchange="this.form.submit()" style="display:none"/>
           </label>
         </form>
+        {% if _is_gm %}
         <button type="button" class="btn-gallery-pick" style="padding:.25rem .55rem;font-size:.75rem"
                 onclick="ndMapGalleryPick(this)">🖼 Gallery</button>
+        {% endif %}
       </div>
       <div style="display:flex;gap:.4rem;margin-top:.4rem">
         <form action="/maps/{{ m.slug }}/rename" method="post" style="display:inline">
@@ -59,18 +68,18 @@
 <!-- Schematics -->
 <div class="list-header" style="margin-top:2.5rem">
   <h2>📐 SCHEMATICS</h2>
-  {% if _is_gm %}
+  {% if _can_edit %}
   <a href="{{ '/maps/schematic/new'|wq }}" class="btn-new">+ New Schematic</a>
   {% endif %}
 </div>
 
 <div class="maps-grid">
   {% for s in schematics %}
-  {# The full editor at /maps/schematic/{slug} is GM-only; players get the
-     read-only /view route instead. HTML-type schematics have no player-safe
-     view at all, so their card is shown without a link for non-GMs rather
-     than sending players into a 403. #}
-  {% set _s_href = ('/maps/schematic/' + s.slug) if _is_gm else (None if s.is_html else '/maps/schematic/' + s.slug + '/view') %}
+  {# The full editor at /maps/schematic/{slug} is GM/Assistant-only; players
+     get the read-only /view route instead. HTML-type schematics have no
+     player-safe view at all, so their card is shown without a link for
+     non-editors rather than sending players into a 403. #}
+  {% set _s_href = ('/maps/schematic/' + s.slug) if _can_edit else (None if s.is_html else '/maps/schematic/' + s.slug + '/view') %}
   <div class="map-card">
     <div class="map-img-wrap">
       {% if s.image_url %}
@@ -93,7 +102,7 @@
       <div class="map-meta" style="margin-top:.3rem">
         {% if s.is_html %}<span class="pill">HTML</span>{% else %}<span class="pill">Leaflet</span>{% endif %}
       </div>
-      {% if _is_gm %}
+      {% if _can_edit %}
       {% if not s.is_html %}
       <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
         <form action="/maps/schematic/{{ s.slug }}/upload" method="post" enctype="multipart/form-data" class="map-upload-form">
@@ -102,8 +111,10 @@
             <input type="file" name="file" accept="image/*" onchange="this.form.submit()" style="display:none"/>
           </label>
         </form>
+        {% if _is_gm %}
         <button type="button" class="btn-gallery-pick" style="padding:.25rem .55rem;font-size:.75rem"
                 onclick="ndMapGalleryPick(this)">🖼 Gallery</button>
+        {% endif %}
       </div>
       {% endif %}
       <div style="display:flex;gap:.4rem;margin-top:.4rem">

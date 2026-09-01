@@ -266,6 +266,15 @@ class WorldMembership(Base):
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     joined_at = Column(DateTime, default=datetime.utcnow)
+    # "player" (default — join a world, see what players see) or "assistant"
+    # (a trusted table helper: player visibility — existing visibility filters
+    # stay keyed on is_gm — but may create/edit world CONTENT; the route-level
+    # half of that promise lives in _is_assistant_safe in app/main.py).
+    # server_default matters alongside the Python default: it's what makes a
+    # fresh create_all() schema carry DEFAULT 'player' in the DDL itself,
+    # matching the ALTER TABLE _migrate() issues for existing installs (so a
+    # row written by anything that skips the ORM still lands as a player).
+    role = Column(String(20), default="player", nullable=False, server_default="player")
 
     world = relationship("World")
     user = relationship("User")

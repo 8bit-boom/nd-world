@@ -811,6 +811,63 @@ def test_heals_pre_two_step_auth_schema(tmp_path, monkeypatch):
         db.close()
 
 
+def test_heals_pre_role_world_memberships_schema(tmp_path, monkeypatch):
+    """A world_memberships table predating role (the GM-Assistant feature —
+    see WorldMembership.role in app/models.py) must ALTER TABLE the column
+    in with DEFAULT 'player': world_memberships is not in the
+    _heal_table_from_model list, so this hand-typed _migrate() entry is all
+    that gets the column onto existing installs, and the DEFAULT clause is
+    what backfills every pre-existing membership as a plain player instead
+    of NULL (which would trip the NOT NULL constraint) or crashing."""
+    from app.models import WorldMembership
+
+    db_path = tmp_path / "pre_role_world_memberships.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE worlds (id INTEGER PRIMARY KEY, name VARCHAR(256) NOT NULL, "
+            "slug VARCHAR(64) UNIQUE NOT NULL, description VARCHAR(512), accent VARCHAR(16), "
+            "players_see_party BOOLEAN, created_at DATETIME)"
+        ))
+        conn.execute(text(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR(256) UNIQUE NOT NULL, "
+            "password_hash VARCHAR(256) NOT NULL, display_name VARCHAR(256), "
+            "is_gm BOOLEAN, created_at DATETIME)"
+        ))
+        conn.execute(text(
+            "CREATE TABLE world_memberships (id INTEGER PRIMARY KEY, world_id INTEGER NOT NULL, "
+            "user_id INTEGER NOT NULL, joined_at DATETIME)"
+        ))
+        conn.execute(text("INSERT INTO worlds (id, name, slug) VALUES (1, 'World', 'world')"))
+        conn.execute(text(
+            "INSERT INTO users (id, email, password_hash, display_name, is_gm) "
+            "VALUES (1, 'pre-existing@test.local', 'x', 'Pre-existing', 0)"
+        ))
+        conn.execute(text("INSERT INTO world_memberships (world_id, user_id) VALUES (1, 1)"))
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        cols = {r[1] for r in conn.execute(text("PRAGMA table_info(world_memberships)")).fetchall()}
+    assert "role" in cols
+
+    db = SessionLocal()
+    try:
+        m = db.query(WorldMembership).filter(WorldMembership.user_id == 1).first()
+        # The pre-existing row was backfilled as a plain player — an upgrade
+        # must never silently promote anyone to assistant.
+        assert m.role == "player"
+    finally:
+        db.close()
+
+    engine.dispose()
+
+
 def test_columns_foreign_keys_indexes_derived_from_model():
     """_heal_table_from_model (Speed 4.8) replaced twelve tables' worth of
     hand-typed _heal_table(conn, table, [...columns...], foreign_keys=...,

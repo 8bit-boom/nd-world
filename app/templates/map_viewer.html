@@ -10,7 +10,12 @@
     <span id="map-title">{{ map_data.name }}</span>
     <div class="tb-spacer"></div>
     <button id="btn-toggle-kanka" class="tb-btn active" onclick="toggleLayer('kanka')" title="Toggle imported pins">📍 Pins</button>
-    {% if is_gm %}
+    {# Overlay editing (markers/regions/pins + save) is map CONTENT — a
+       GM-Assistant gets the toolbar via can_edit (POST /api/maps/{slug}/
+       overlay is in _is_assistant_safe). The JS-side IS_GM flag below stays
+       narrower on purpose: it only gates links into genuinely GM-only pages
+       (the party detail page), which an assistant would 403 on. #}
+    {% if can_edit(request) %}
     <button id="btn-edit" class="tb-btn" onclick="toggleEdit()">✏ Edit</button>
     <div id="edit-tools" style="display:none">
       <button id="btn-add-m" class="tb-btn" onclick="setTool('marker')">+ Marker</button>
@@ -169,6 +174,11 @@ const ENAME_MAP = JSON.parse({{ ename_map | tojson }});
 const SCHEMATICS = JSON.parse({{ schematics_json | tojson }});
 const WORLD_PARTIES = JSON.parse({{ world_parties_json | tojson }});
 const IS_GM = {{ is_gm | tojson }};
+// Content-creation flag (GM or GM-Assistant) — drives the marker popup's
+// schematic link, since an assistant may open the schematic editor too
+// (GET /maps/schematic/{slug} is in _is_assistant_safe). IS_GM above keeps
+// gating only the party-detail page link, which stays GM-only.
+const CAN_EDIT = {{ can_edit(request) | tojson }};
 const WORLD_SLUG = {{ (world.slug if world else '') | tojson }};
 let customMarkers = JSON.parse({{ overlay.custom_markers_json | tojson }});
 let customRegions = JSON.parse({{ overlay.custom_regions_json | tojson }});
@@ -263,7 +273,7 @@ function renderCustomMarkers() {
       .addTo(customMarkersLayer);
     const note = m.note ? `<div class="pop-desc">${esc(m.note)}</div>` : '';
     const schem = SCHEMATICS.find(s => s.slug === m.link_schematic);
-    const link = (schem && IS_GM) ? `<br><a href="/maps/schematic/${schem.slug}?w=${encodeURIComponent(WORLD_SLUG)}">🔗 Open ${esc(schem.name)} →</a>` : '';
+    const link = (schem && CAN_EDIT) ? `<br><a href="/maps/schematic/${schem.slug}?w=${encodeURIComponent(WORLD_SLUG)}">🔗 Open ${esc(schem.name)} →</a>` : '';
     lm.bindPopup(`<div class="map-popup"><b>${esc(m.label || '?')}</b>${note}${link}</div>`);
     lm.bindTooltip(esc(m.label || ''), {direction:'right', opacity:.9});
     lm.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removeCustomMarker(i); } else if (editMode && (tool === 'marker' || tool === 'move')) { L.DomEvent.stop(e); editCustomMarker(i); } });
@@ -296,8 +306,12 @@ function renderPartyPins() {
   partyPins.forEach(p => {
     const ll = L.latLng(p.lat, p.lng);
     const pm = L.marker(ll, {icon: makePartyIcon(), draggable}).addTo(partyPinsLayer);
-    const gmActions = IS_GM ? `<a href="/parties/${p.id}?w=${encodeURIComponent(WORLD_SLUG)}">Open Party →</a><br><a href="#" onclick="removePartyPin(${p.id});return false;">Remove from map</a>` : '';
-    pm.bindPopup(`<div class="map-popup"><b>🧑‍🤝‍🧑 ${esc(p.name)}</b><div class="pop-desc">${p.member_count} member${p.member_count===1?'':'s'}</div>${gmActions}</div>`);
+    // "Open Party" needs the GM-only parties page; "Remove from map" only
+    // saves the overlay, so any content editor (GM-Assistant included) gets it.
+    const gmActions = IS_GM ? `<a href="/parties/${p.id}?w=${encodeURIComponent(WORLD_SLUG)}">Open Party →</a><br>` : '';
+    const editActions = CAN_EDIT ? `<a href="#" onclick="removePartyPin(${p.id});return false;">Remove from map</a>` : '';
+    const partyActions = (gmActions + editActions) ? `${gmActions}${editActions}<br>` : '';
+    pm.bindPopup(`<div class="map-popup"><b>🧑‍🤝‍🧑 ${esc(p.name)}</b><div class="pop-desc">${p.member_count} member${p.member_count===1?'':'s'}</div>${partyActions}</div>`);
     pm.bindTooltip(esc(p.name), {direction:'right', opacity:.9});
     pm.on('click', e => { if (editMode && tool === 'delete') { L.DomEvent.stop(e); removePartyPin(p.id); } });
     // Same Move-tool drag treatment custom markers/regions already have —

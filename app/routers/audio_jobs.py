@@ -5,7 +5,8 @@ purpose-scoped create/chunk/complete/list routes (app/routers/sessions.py,
 app/routers/ai.py) since the upload mechanics and per-purpose result shape
 differ, but status/cancel is identical for every job once it exists, so
 that part lives here once instead of being duplicated a third time. Powers
-the standalone "Background Jobs" page (GM-only) where a GM can see
+the standalone "Background Jobs" page (GM + GM-Assistant) where
+they can see
 everything in flight across the whole world and cancel one, separate from
 the smaller inline panels embedded on each originating page.
 """
@@ -19,7 +20,7 @@ from sqlalchemy.orm import Session
 from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
 from ..database import get_db
-from ..deps import get_world_ctx, paginate
+from ..deps import get_world_ctx, paginate, can_edit_content
 from ..models import AudioJob
 from ..templating import templates
 
@@ -28,9 +29,13 @@ router = APIRouter()
 PURPOSE_LABELS = {"session_recap": "Session Recap", "attachment": "Voice Attachment", "condense": "Condense"}
 
 
-def _require_gm(request: Request) -> None:
-    user = getattr(request.state, "user", None)
-    if not (user and user.is_gm):
+def _require_can_edit(request: Request) -> None:
+    """A GM, or a GM-Assistant (WorldMembership.role == "assistant") — the
+    Background Jobs page and API are content tooling (assistants upload
+    session recordings and watch/cancel/retry the resulting jobs, and the
+    auth_gate's _is_assistant_safe already allows every route here for
+    them), so this replaces the old GM-only gate wholesale."""
+    if not can_edit_content(request):
         raise HTTPException(403)
 
 
@@ -103,7 +108,7 @@ def _job_to_dict(job: AudioJob) -> dict:
 
 @router.get("/background-jobs", response_class=HTMLResponse)
 def background_jobs_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_gm(request)
+    _require_can_edit(request)
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -117,7 +122,7 @@ def api_audio_job_list(
     request: Request, page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     """Every job for the active world, any purpose, most recent first."""
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -128,7 +133,7 @@ def api_audio_job_list(
 
 @router.get("/api/audio-jobs/{job_id}")
 def api_audio_job_status(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -149,7 +154,7 @@ def _audio_job_download_filename(job: AudioJob, suffix: str) -> str:
 
 @router.get("/api/audio-jobs/{job_id}/transcript.md")
 def api_audio_job_download_transcript(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -166,7 +171,7 @@ def api_audio_job_download_transcript(job_id: int, request: Request, db: Session
 
 @router.get("/api/audio-jobs/{job_id}/recap.md")
 def api_audio_job_download_recap(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -183,7 +188,7 @@ def api_audio_job_download_recap(job_id: int, request: Request, db: Session = De
 
 @router.post("/api/audio-jobs/{job_id}/cancel")
 def api_audio_job_cancel(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -199,7 +204,7 @@ def api_audio_job_cancel(job_id: int, request: Request, db: Session = Depends(ge
 
 @router.delete("/api/audio-jobs/{job_id}")
 def api_audio_job_delete(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -229,7 +234,7 @@ async def api_audio_job_resummarize(
     be a routine way to trip the reverse proxy's own timeout). The caller
     polls the regular job list/status routes for the result, same as any
     other in-flight job on this page."""
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -252,7 +257,7 @@ async def api_audio_job_resume(job_id: int, request: Request, db: Session = Depe
     another automatic retry, so a job that hit job_shutdown.
     MAX_AUTO_RESUMES and gave up automatically can still be resumed by
     hand without immediately re-hitting that same cap."""
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)

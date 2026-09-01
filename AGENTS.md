@@ -59,6 +59,14 @@ tools that require GM access still check `is_gm` at call time.)
   an *existing* table does.
 - Auth is GM-only by default: `_is_player_safe()` in `app/main.py` is an
   allowlist — a new route stays GM-only unless deliberately added there.
+  GM-Assistants (a `WorldMembership.role == "assistant"` in the active world,
+  set from the world's Members table) additionally get the routes in
+  `_is_assistant_safe()` right below it — content creation/editing (entities,
+  sessions, calendar, tables, boards, maps, pages, gallery, audio/video,
+  imports) — while administration (Settings, `/worlds/*`, invites/members,
+  backups, export, AI model/system management) stays GM-only for them too,
+  and new routes default GM-only for them as well. Assistants always see what
+  players see: visibility filters stay keyed on `is_gm`.
 - [docs/API_REFERENCE.md](docs/API_REFERENCE.md) catalogs every HTTP route
   and MCP tool (method, path, auth tier, one-line purpose) — check it before
   assuming an endpoint doesn't exist, and add a row there for any new route.

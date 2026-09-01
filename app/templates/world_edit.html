@@ -98,6 +98,7 @@
       <thead><tr>
         <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Name</th>
         <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Email</th>
+        <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Role</th>
         <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Joined</th>
         <th></th>
       </tr></thead>
@@ -106,6 +107,19 @@
         <tr style="border-top:1px solid var(--border)">
           <td style="padding:.4rem .3rem">{{ u.display_name }}</td>
           <td style="padding:.4rem .3rem;color:var(--text-dim)">{{ u.email }}</td>
+          <td style="padding:.4rem .3rem">
+            {# GM-Assistant (WorldMembership.role == "assistant"): player
+               visibility, but may create/edit world content — see
+               _is_assistant_safe in app/main.py. Same inline form style as
+               the Remove form on the right. #}
+            <form method="post" action="/worlds/{{ edit_world.id }}/members/{{ u.id }}/role" style="display:inline-flex;gap:.3rem;align-items:center">
+              <select name="role" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);font-family:var(--font);font-size:.78rem;border-radius:4px;padding:.15rem .3rem">
+                <option value="player" {% if (membership.role or 'player') == 'player' %}selected{% endif %}>Player</option>
+                <option value="assistant" {% if membership.role == 'assistant' %}selected{% endif %}>GM-Assistant</option>
+              </select>
+              <button type="submit" title="Save role" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.2rem .5rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.78rem">✓</button>
+            </form>
+          </td>
           <td style="padding:.4rem .3rem;color:var(--text-dim)">{{ membership.joined_at.strftime('%Y-%m-%d') if membership.joined_at else '' }}</td>
           <td style="padding:.4rem .3rem;white-space:nowrap">
             <a href="/worlds/{{ edit_world.id }}/notes/{{ u.id }}"

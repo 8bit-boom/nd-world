@@ -99,6 +99,11 @@
     {% endif %}
     {% if request.state.user and request.state.user.is_gm %}
     <a href="{{ '/settings'|wq }}" draggable="true" data-ql-ref="/settings"     class="nav-kind {% if request.url.path == '/settings' %}active{% endif %}">⚙ Settings</a>
+    {% endif %}
+    {% if can_edit(request) %}
+    {# Content creation, not administration — a GM-Assistant gets this too
+       (the /new route is in _is_assistant_safe), unlike the Settings link
+       above which stays GM-only. #}
     {% set _current_kind = request.url.path[6:] if request.url.path.startswith('/kind/') else 'character' %}
     <a href="{{ ('/new?kind=' + _current_kind)|wq }}" class="btn-new" title="New {{ _current_kind }}">+ New</a>
     {% endif %}
@@ -119,7 +124,7 @@
     {% endif %}
   </div>
 </nav>
-{% if world and world.spotlight_image_url and request.state.user and request.state.user.is_gm %}
+{% if world and world.spotlight_image_url and can_edit(request) %}
 <div class="spotlight-banner">
   📤 Showing players: <strong>{{ world.spotlight_label or 'an image' }}</strong>
   <button type="button" onclick="ndSpotlightClear()">Stop</button>

@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, can_edit_content
 from ..models import AudioAlbum, AudioClip
 from ..templating import templates
 from ..uploads import copy_upload_bounded, effective_upload_bytes, unique_upload_filename
@@ -100,8 +100,16 @@ def _is_gm(request: Request) -> bool:
     return bool(user and user.is_gm)
 
 
-def _require_gm(request: Request) -> None:
-    if not _is_gm(request):
+def _require_can_edit(request: Request) -> None:
+    """The write-side gate for clip/album content: a GM, or a GM-Assistant
+    (WorldMembership.role == "assistant") — same tier the auth_gate's
+    _is_assistant_safe already enforced on the way in; this re-check keeps
+    each handler safe on its own (every route in this router is content
+    write-side, so this replaces the old GM-only gate wholesale). Deliberately
+    NOT used by the visibility filters below (_visible_clips_query/
+    _clip_counts): an assistant SEES what a player sees, per the role's whole
+    premise."""
+    if not can_edit_content(request):
         raise HTTPException(403)
 
 
@@ -197,7 +205,7 @@ def api_audio_clips(request: Request, db: Session = Depends(get_db), active_worl
     album the way the /audio page itself does. GM-only (not in
     _is_player_safe, unlike /audio itself) since this is Session-page
     tooling, not the read-only player-facing soundboard."""
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -213,7 +221,6 @@ def audio_library(request: Request, db: Session = Depends(get_db), active_world:
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
-    is_gm = _is_gm(request)
     albums = (
         db.query(AudioAlbum)
         .filter(AudioAlbum.world_id == world.id, AudioAlbum.parent_id.is_(None))
@@ -223,7 +230,7 @@ def audio_library(request: Request, db: Session = Depends(get_db), active_world:
     album_ids = [a.id for a in albums]
     return templates.TemplateResponse("audio_library.html", {
         "request": request, "world": world, "worlds": worlds,
-        "clips": clips, "can_edit": is_gm,
+        "clips": clips,
         "album": None, "albums": albums, "breadcrumb": [],
         "sub_album_counts": _sub_album_counts(db, album_ids),
         "clip_counts": _clip_counts(db, request, album_ids),
@@ -237,7 +244,6 @@ def audio_album_detail(album_id: int, request: Request, db: Session = Depends(ge
     if not world:
         raise HTTPException(404)
     album = _album_or_404(db, world.id, album_id)
-    is_gm = _is_gm(request)
     albums = (
         db.query(AudioAlbum).filter(AudioAlbum.parent_id == album.id).order_by(AudioAlbum.name).all()
     )
@@ -245,7 +251,7 @@ def audio_album_detail(album_id: int, request: Request, db: Session = Depends(ge
     album_ids = [a.id for a in albums]
     return templates.TemplateResponse("audio_library.html", {
         "request": request, "world": world, "worlds": worlds,
-        "clips": clips, "can_edit": is_gm,
+        "clips": clips,
         "album": album, "albums": albums, "breadcrumb": _breadcrumb(db, album),
         "sub_album_counts": _sub_album_counts(db, album_ids),
         "clip_counts": _clip_counts(db, request, album_ids),
@@ -255,7 +261,7 @@ def audio_album_detail(album_id: int, request: Request, db: Session = Depends(ge
 
 @router.post("/audio/albums/new")
 async def audio_album_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -277,7 +283,7 @@ async def audio_album_create(request: Request, db: Session = Depends(get_db), ac
 
 @router.post("/audio/albums/{album_id}/rename")
 async def audio_album_rename(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -292,7 +298,7 @@ async def audio_album_rename(album_id: int, request: Request, db: Session = Depe
 
 @router.post("/audio/albums/{album_id}/delete")
 def audio_album_delete(album_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -321,7 +327,7 @@ async def audio_upload(
     album_id: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -363,7 +369,7 @@ async def audio_upload_chunk(
     """Receive one part of a large audio file (see the _CHUNK_ID_RE block
     above) and stash it on disk under its upload_id; /audio/upload/complete
     reassembles all parts once every one has arrived."""
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -394,7 +400,7 @@ async def audio_upload_complete(
     and create the AudioClip — same validation and result shape as the
     single-request /audio/upload, just fed from disk instead of the request
     body directly."""
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -464,7 +470,7 @@ async def audio_edit(
     visible_to_players: Optional[str] = Form(None), album_id: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -485,7 +491,7 @@ async def audio_edit(
 def audio_delete(
     clip_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)

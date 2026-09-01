@@ -29,7 +29,7 @@ from . import deps
 from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
 from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache
-from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE
+from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content
 from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html
 from .templating import templates
@@ -411,6 +411,177 @@ def _is_player_safe(method: str, path: str) -> bool:
     return False
 
 
+# ── GM-Assistant allowlist ─────────────────────────────────────────────────────
+# POLICY: a GM-Assistant (a WorldMembership with role="assistant" in the
+# ACTIVE world — checked per-request by _is_assistant_member below) may
+# create/edit/delete world CONTENT — entities and their notes, sessions and
+# the session-recording tooling, the calendar, random tables, investigation
+# boards, maps and schematics, pages, gallery albums, audio/video clips, and
+# the bulk-content import tools — everything a GM does to fill the world, on
+# top of seeing exactly what a player sees (visibility filters stay keyed on
+# is_gm; an assistant never sees hidden rows a player wouldn't).
+# World ADMINISTRATION stays GM-only: Settings, world create/edit/delete and
+# everything under /worlds/*, memberships/invites, backups, export, AI model
+# management and system info (/settings/system, /api/ai model/preset/whisper
+# routes), imagegen backends, MCP (which keeps its own is_gm checks). Like
+# _is_player_safe above, this list must be extended DELIBERATELY: any route
+# not matched here is GM-only for an assistant too, so new routes stay safe
+# by default.
+def _is_assistant_safe(method: str, path: str) -> bool:
+    # Entities — every POST under /entity/* is content mutation (edit,
+    # duplicate, delete, link/unlink, notes add/import/toggle/delete); the
+    # only GET that isn't already player-safe is the edit form itself.
+    # /entity/{id} and /entity/{id}/download.md reads stay on the player
+    # tier (download is gated by the world's players_can_download_entities
+    # toggle for non-GMs).
+    if path.startswith("/entity/") and (method == "POST" or re.match(r"^/entity/\d+/edit$", path)):
+        return True
+    if path in ("/new",) and method in ("GET", "POST"):
+        # New-entity form + create (kind via query param / form field).
+        return True
+    if path == "/api/upload-image" and method == "POST":
+        # Rich-text toolbar image upload on entity body/notes fields.
+        return True
+    if method == "POST" and re.match(r"^/api/entity/\d+/image$", path):
+        # Image Studio's "Set as portrait" — entity content.
+        return True
+    if method == "POST" and re.match(r"^/kind/[^/]+/bulk-delete$", path):
+        # The list pages' bulk-action bar.
+        return True
+    if path == "/api/entities/bulk-folder" and method == "POST":
+        # Folder organization is content curation — unlike bulk-visibility
+        # (Settings > Visibility tab), which stays GM-only: what players can
+        # see is the GM's call, made per-world in Settings.
+        return True
+    if path == "/folders/rename" and method == "POST":
+        # Entity-folder organization in the /kind list pages.
+        return True
+    # Sessions & session-recording tooling — all content (prep lists, XP/loot
+    # logging, recaps, transcripts, the AI recap assistants). /session-log*
+    # reads and /api/session-log/{id}/recap are already player-safe.
+    if path == "/sessions" or path.startswith("/sessions/"):
+        return True
+    if path.startswith("/api/sessions/"):
+        return True
+    # Calendar — in-world dates/events are content.
+    if path == "/calendar" or path.startswith("/calendar/") or path.startswith("/api/calendar/"):
+        return True
+    # Random tables — including the tables area's own JSON export/import pair
+    # (a content round-trip, not the world-level /export* surface, which
+    # stays GM-only).
+    if path == "/tables" or path.startswith("/tables/") or path.startswith("/api/tables/"):
+        return True
+    # Investigation boards — layout/content editing and the two generators.
+    if path == "/boards" or path.startswith("/boards/") or path == "/api/orgs/graph":
+        return True
+    # Maps + schematics. Player reads are already player-safe; what's added
+    # here is creation (new/upload), the GM editor canvas, and every
+    # management POST (rename/delete/overlay/grid/elements/embed-image/combat
+    # links). Deliberately segment-anchored like _is_player_safe so a plain
+    # map named "schematic-x" can't slip into these prefixes.
+    if path in ("/maps/new",) and method in ("GET", "POST"):
+        return True
+    if method == "POST" and re.match(r"^/maps/[^/]+/(rename|delete|upload)$", path):
+        return True
+    if method == "POST" and re.match(r"^/api/maps/[^/]+/overlay$", path):
+        return True
+    if path == "/maps/schematic/new" and method in ("GET", "POST"):
+        return True
+    if method == "GET" and re.match(r"^/maps/schematic/[^/]+$", path):
+        # The GM schematic editor canvas itself — editing is its purpose.
+        return True
+    if method == "POST" and path.startswith("/maps/schematic/"):
+        return True
+    # Gallery (images) — albums, uploads, spotlight broadcast; content end to
+    # end per the plan (unlike Audio/Video/Pages it has no player tier, so
+    # every route here is new for an assistant).
+    if path == "/images" or path.startswith("/images/") or path == "/api/gallery/browse":
+        return True
+    # Pages — upload/edit/delete and album management; reads are player-safe.
+    if method == "POST" and (path in ("/pages/upload", "/pages/upload/chunk", "/pages/upload/complete")
+                             or path.startswith("/pages/albums/")
+                             or re.match(r"^/pages/\d+/(edit|delete)$", path)):
+        return True
+    # Audio library — clip upload (incl. the chunked pair) and album/clip
+    # management; GETs and the read-only player view are already player-safe.
+    if method == "POST" and (path.startswith("/audio/albums/")
+                             or path in ("/audio/upload", "/audio/upload/chunk", "/audio/upload/complete")
+                             or re.match(r"^/audio/\d+/(edit|delete)$", path)):
+        return True
+    if path == "/api/audio/clips" and method == "GET":
+        # Session-page "choose from Audio Library" picker JSON.
+        return True
+    # Video library — same shape as audio. /video/settings (AV1 conversion
+    # preferences — a world upload-policy setting) stays GM-only.
+    if method == "POST" and (path.startswith("/video/albums/")
+                             or path in ("/video/upload", "/video/upload/chunk", "/video/upload/complete")
+                             or re.match(r"^/video/\d+/(edit|delete)$", path)):
+        return True
+    # Background jobs — the unified view over every durable transcription job
+    # (session recordings above all): assistants upload session recordings
+    # and watch/cancel/retry their jobs like the GM does.
+    if path == "/background-jobs" and method == "GET":
+        return True
+    if path == "/api/audio-jobs" and method == "GET":
+        return True
+    if path.startswith("/api/audio-jobs/"):
+        return True
+    # Bulk-content import tools — the /import page and every /api/import*
+    # endpoint (JSON bulk import, image matching, AVIF/WebP re-encode).
+    # Deliberately NOT /worlds/{id}/import (world administration, and
+    # /worlds/* is excluded wholesale below) nor anything under /export*.
+    if path == "/import" and method == "GET":
+        return True
+    if method == "POST" and (path == "/api/import" or path.startswith("/api/import/")):
+        return True
+    # AI content-generation endpoints only — the entity editor's smart-draft
+    # button and the world-context RAG lookups it (and the note saver) rely
+    # on, plus the standalone entity/npc/location/quest drafters. Everything
+    # else under /api/ai — the /ai chat page surface, model/preset/whisper
+    # management, imagegen, chat history — stays GM-only.
+    if method == "POST" and path in (
+        "/api/ai/generate/entity-smart",
+        "/api/ai/generate/entity",
+        "/api/ai/generate/npc",
+        "/api/ai/generate/location",
+        "/api/ai/generate/quest",
+        "/api/ai/entity-from-text",
+        "/api/ai/save-note",
+        "/api/ai/world-context-smart",
+    ):
+        return True
+    if path == "/api/ai/world-context" and method == "GET":
+        return True
+    return False
+
+
+def _is_assistant_member(db, request: Request, user) -> bool:
+    """Does this non-GM user hold role="assistant" in their ACTIVE world?
+
+    Resolves the active world exactly like get_world_ctx does — ?w=<slug>
+    query param over the active_world cookie, falling back to the first
+    world the user is a member of when the cookie is absent or stale — then
+    checks that world's WorldMembership row. Missing world/membership →
+    False. Only called for non-GM requests (GMs are can_edit everywhere
+    already); runs one indexed query over the user's own memberships, the
+    same query get_world_ctx would run downstream anyway, so the per-request
+    cost is one extra SQLite-local lookup."""
+    active = resolve_world_slug(request, request.cookies.get(DEFAULT_WORLD_COOKIE))
+    rows = (
+        db.query(WorldMembership, World.slug)
+        .join(World, World.id == WorldMembership.world_id)
+        .filter(WorldMembership.user_id == user.id)
+        .order_by(World.id)
+        .all()
+    )
+    if not rows:
+        return False
+    membership = next((m for m, slug in rows if slug == active), None)
+    if membership is None:
+        membership = rows[0][0]  # same first-accessible-world fallback as get_world_ctx
+    return membership.role == "assistant"
+
+
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
     path = request.url.path
@@ -437,6 +608,18 @@ async def auth_gate(request: Request, call_next):
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.id == user_id).first()
+        # Assistant flag for the GM-Assistant role (WorldMembership.role ==
+        # "assistant"): computed for EVERY non-GM request, not just ones that
+        # fail the player-safe check, because templates consult can_edit(request)
+        # (request.state.is_assistant underneath) to decide whether to render
+        # content-creation controls on player-visible pages too (the entity
+        # detail page's note form, the "+ New" nav button, ...). Tradeoff,
+        # accepted deliberately: this is one extra membership query on every
+        # non-GM request — SQLite-local and the same query get_world_ctx runs
+        # downstream on most pages anyway. GMs skip it (they can already edit
+        # everything); a user who turns out to be logged-out/session-stale
+        # wastes the lookup, which is the rare path.
+        is_assistant = bool(user and not user.is_gm and _is_assistant_member(db, request, user))
     finally:
         db.close()
     if not user:
@@ -452,17 +635,22 @@ async def auth_gate(request: Request, call_next):
             return JSONResponse({"detail": "Session expired — please log in again."}, status_code=401)
         return RedirectResponse(f"/login?next={quote(path)}", status_code=303)
 
-    if not user.is_gm and not _is_player_safe(request.method, path):
-        if path.startswith("/api/"):
-            return JSONResponse({"detail": "GM access required"}, status_code=403)
-        return HTMLResponse(
-            "<body style='background:#0a0a0f;color:#c8d0e0;font-family:monospace;padding:2rem'>"
-            "<h1 style='color:#ff2d78'>403 — GM access required</h1>"
-            "<p><a href='/' style='color:#00f0ff'>&larr; Back</a></p></body>",
-            status_code=403,
-        )
-
     request.state.user = user
+    # Always present so templates can read it unconditionally (a GM renders
+    # the same controls via can_edit()'s is_gm half — always False here).
+    request.state.is_assistant = is_assistant
+
+    if not user.is_gm and not _is_player_safe(request.method, path):
+        if not (is_assistant and _is_assistant_safe(request.method, path)):
+            if path.startswith("/api/"):
+                return JSONResponse({"detail": "GM access required"}, status_code=403)
+            return HTMLResponse(
+                "<body style='background:#0a0a0f;color:#c8d0e0;font-family:monospace;padding:2rem'>"
+                "<h1 style='color:#ff2d78'>403 — GM access required</h1>"
+                "<p><a href='/' style='color:#00f0ff'>&larr; Back</a></p></body>",
+                status_code=403,
+            )
+
     return await call_next(request)
 
 
@@ -1060,6 +1248,28 @@ def member_remove(world_id: int, user_id: int, db: Session = Depends(get_db)):
     if m:
         db.delete(m)
         db.commit()
+    return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
+
+
+@app.post("/worlds/{world_id}/members/{user_id}/role")
+def member_set_role(
+    world_id: int, user_id: int, role: str = Form(...), db: Session = Depends(get_db)
+):
+    """Promote/demote a member between "player" and "assistant" (see
+    WorldMembership.role in app/models.py). GM-only — it's not in
+    _is_player_safe or _is_assistant_safe, so the auth_gate already turned
+    any non-GM away before we get here (an assistant managing their own
+    role would defeat the whole tier). Unknown roles are a 400 rather than
+    a silent no-op so a template typo can't quietly reset someone."""
+    if role not in ("player", "assistant"):
+        raise HTTPException(400, "Role must be 'player' or 'assistant'")
+    m = db.query(WorldMembership).filter(
+        WorldMembership.world_id == world_id, WorldMembership.user_id == user_id
+    ).first()
+    if not m:
+        raise HTTPException(404)
+    m.role = role
+    db.commit()
     return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
 
 
@@ -1763,7 +1973,7 @@ def rules_page(request: Request, db: Session = Depends(get_db), active_world: st
     is_custom = bool(world and (world.rules_md or "").strip())
     return templates.TemplateResponse("rules.html", {
         "request": request, "world": world, "worlds": worlds, "content": content, "toc": toc,
-        "is_custom_rules": is_custom, "can_edit": bool(user and user.is_gm),
+        "is_custom_rules": is_custom, "can_edit_rules": bool(user and user.is_gm),
     })
 
 
@@ -3817,10 +4027,11 @@ def api_entity_set_image(
     """Sets an entity's portrait directly from a URL — Image Studio's
     "Set as portrait"/"Attach" actions on a generated image, without
     round-tripping through the full entity edit form (which requires every
-    other field). GM-only, world-scoped like every other entity-mutating
+    other field). Content editing (an entity's portrait), so GM-Assistants
+    pass too — matching the middleware tier the rest of the entity-editing
+    routes sit behind; world-scoped like every other entity-mutating
     route (see delete() above for the same ownership-check shape)."""
-    user = getattr(request.state, "user", None)
-    if not (user and user.is_gm):
+    if not can_edit_content(request):
         raise HTTPException(403)
     entity = db.get(Entity, entity_id)
     if not entity:
