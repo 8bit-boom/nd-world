@@ -63,7 +63,11 @@ def test_live_recording_acquires_the_stream_once_on_start(client, seed):
 
 def test_live_recording_passes_the_shared_stream_into_every_segment(client, seed):
     page = _get_page(client, seed)
-    segment_body = page.split("function liveStartSegment()", 1)[1][:1200]
+    # The window is generous because liveStartSegment's onStop callback grew
+    # when segments started carrying their raw-audio archive identity
+    # (ndRecordingId/ndSegmentIndex) — the ndMicRecorder argument list this
+    # test pins sits below that.
+    segment_body = page.split("function liveStartSegment()", 1)[1][:1800]
     assert "_liveMicStream," in segment_body  # passed as ndMicRecorder's 3rd arg
 
 
@@ -73,7 +77,7 @@ def test_live_recording_only_releases_the_mic_after_the_final_segment(client, se
     once there's no next segment to start, not synchronously when Stop is
     clicked."""
     page = _get_page(client, seed)
-    segment_body = page.split("function liveStartSegment()", 1)[1][:1200]
+    segment_body = page.split("function liveStartSegment()", 1)[1][:1800]
     assert "liveStopMicStream();  // that was the final segment" in segment_body
 
 

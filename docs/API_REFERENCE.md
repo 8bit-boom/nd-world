@@ -318,8 +318,10 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/sessions/ai/audio-jobs/from-clip` | GM / Assistant | Starts a session audio job from an existing Audio Library clip (no re-upload). |
 | GET | `/sessions/{session_id}/summary.md` | GM / Assistant | Downloads the session's summary/recap as a Markdown file. |
 | GET | `/sessions/{session_id}/transcript.md` | GM / Assistant | Downloads the session's transcript as a Markdown file. |
-| POST | `/api/sessions/{session_id}/live-transcript/append` | GM / Assistant | Transcribes one ~1-minute chunk of a live session recording via Whisper and appends it to the session's running live transcript. |
+| POST | `/api/sessions/{session_id}/live-transcript/append` | GM / Assistant | Transcribes one chunk of a live session recording via Whisper and appends it to the session's running live transcript. When the client sends `save_audio`/`recording_id`/`segment_index` ("Save raw audio" checkbox), also keeps the raw segment on disk for re-transcription/download. |
 | POST | `/api/sessions/{session_id}/live-transcript/clear` | GM / Assistant | Clears the accumulated live transcript. |
+| GET | `/api/sessions/{session_id}/live-audio` | GM / Assistant | Lists the raw audio segments saved by a live recording (paths, count, total bytes). |
+| GET | `/api/sessions/{session_id}/live-audio/download` | GM / Assistant | Downloads the whole saved raw recording as one file (ffmpeg concat of the segments in order). 400 if nothing was saved or ffmpeg fails. |
 | POST | `/api/sessions/{session_id}/ai/summarize-live-transcript` | GM / Assistant | AI: summarizes the accumulated live transcript into a recap. |
 | POST | `/api/sessions/{session_id}/ai/summarize-live-transcript-job` | GM / Assistant | Durable background-job variant of the live-transcript summary above. |
 | POST | `/api/sessions/{session_id}/ai/summarize-from-facts` | GM / Assistant | AI: weaves this session's logged `Fact` rows (all of them, secret or not) into a narrative recap. |

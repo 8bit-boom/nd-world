@@ -830,6 +830,20 @@ class GameSession(Base):
     # writes/applies an AI draft into — this is the messy raw material that
     # feeds it, via summarize_transcript.
     live_transcript = Column(Text, default="")
+    # JSON array of the raw segment files saved alongside a live recording
+    # (opt-in via the recording panel's "Save raw audio" checkbox): relative
+    # paths under the uploads dir, "live/<session_id>/<recording_id>/<6-digit
+    # segment index><ext>", in recording order — see /live-transcript/append
+    # in routers/sessions.py, which writes one entry per uploaded segment.
+    # Kept at all because Whisper hallucination loops / boundary duplicates
+    # (the known failure modes of chunked transcription) make a transcript
+    # unrecoverable once the audio is gone — with the audio on disk a bad
+    # transcript can be re-transcribed later with better settings, and the
+    # whole recording reassembled for download. Empty/NULL = nothing saved
+    # (the default, and every upload made with "Save raw audio" unchecked).
+    # game_sessions IS in database._migrate's _heal_table_from_model list,
+    # so existing installs get this column automatically on next boot.
+    live_audio_files_json = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

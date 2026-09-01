@@ -5,6 +5,8 @@ GameSession.summary — only an AI recap synthesized fresh from Facts already
 marked visible_to_players for that session."""
 import time
 
+import pytest
+
 from app import ai as ai_module
 from app.database import SessionLocal
 from app.models import Fact, GameSession
@@ -685,6 +687,264 @@ def test_live_transcript_clear(client, seed):
         assert db.get(GameSession, session_id).live_transcript == ""
     finally:
         db.close()
+
+
+# ── Live recording raw-audio archive (opt-in "Save raw audio") ──────────────
+#
+# The append route's second job: when the browser tags a segment with
+# save_audio/recording_id/segment_index, keep the raw audio on disk (uploads/
+# live/<sid>/<rid>/<6-digit index><ext>) and track the ordered list in
+# GameSession.live_audio_files_json, so a bad transcript (Whisper hallucination
+# loops, boundary duplicates) stays recoverable and the recording downloadable.
+
+_RID = "ab" * 16  # a valid 32-hex recording id (uploads.CHUNK_ID_RE shape)
+
+
+def _append_segment(client, session_id, idx, data=b"segment-bytes", rid=_RID, save_audio="1", filename="chunk.webm"):
+    import io
+    form = {"segment_index": str(idx)}
+    if rid is not None:
+        form["recording_id"] = rid
+    if save_audio is not None:
+        form["save_audio"] = save_audio
+    return client.post(
+        f"/api/sessions/{session_id}/live-transcript/append",
+        data=form,
+        files={"file": (filename, io.BytesIO(data), "audio/webm")},
+    )
+
+
+def test_live_append_saves_raw_audio_segments_in_order(client, seed, monkeypatch):
+    import json
+    from app.routers.sessions import _live_audio_root
+    session_id = _make_session(seed.world_a)
+    texts = iter(["first segment text.", "second segment text."])
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        return next(texts)
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r0 = _append_segment(client, session_id, 0, data=b"one")
+    assert r0.status_code == 200
+    r1 = _append_segment(client, session_id, 1, data=b"two")
+    assert r1.status_code == 200
+
+    seg0 = _live_audio_root(session_id) / _RID / "000000.webm"
+    seg1 = _live_audio_root(session_id) / _RID / "000001.webm"
+    assert seg0.read_bytes() == b"one"
+    assert seg1.read_bytes() == b"two"
+
+    db = SessionLocal()
+    try:
+        files = json.loads(db.get(GameSession, session_id).live_audio_files_json)
+    finally:
+        db.close()
+    assert files == [
+        f"live/{session_id}/{_RID}/000000.webm",
+        f"live/{session_id}/{_RID}/000001.webm",
+    ]
+
+
+def test_live_append_retry_same_index_overwrites_without_duplicating(client, seed, monkeypatch):
+    """The client retries a failed upload with the SAME segment_index — the
+    server must overwrite that segment's file, not grow the archive list (or
+    the disk) by one duplicate per retry."""
+    import json
+    from app.routers.sessions import _live_audio_root
+    session_id = _make_session(seed.world_a)
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        return "transcribed"
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    _login_gm_in(client, seed, seed.world_a)
+    assert _append_segment(client, session_id, 0, data=b"zero").status_code == 200
+    assert _append_segment(client, session_id, 1, data=b"v1").status_code == 200
+    r = _append_segment(client, session_id, 1, data=b"v2")  # retry of the same segment
+    assert r.status_code == 200
+
+    assert (_live_audio_root(session_id) / _RID / "000001.webm").read_bytes() == b"v2"
+    db = SessionLocal()
+    try:
+        files = json.loads(db.get(GameSession, session_id).live_audio_files_json)
+    finally:
+        db.close()
+    assert len(files) == 2  # index-1 retry did not add a third entry
+
+
+def test_live_append_without_save_audio_stores_nothing(client, seed, monkeypatch):
+    from app.routers.sessions import _live_audio_root
+    session_id = _make_session(seed.world_a)
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        return "transcribed"
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    _login_gm_in(client, seed, seed.world_a)
+    # Old-client shape: no archive fields at all. save_audio="" (unchecked
+    # checkbox) must behave identically.
+    r0 = _append_chunk(client, session_id)
+    r1 = _append_segment(client, session_id, 0, save_audio="")
+    assert r0.status_code == 200 and r1.status_code == 200
+    assert not _live_audio_root(session_id).exists()
+
+    db = SessionLocal()
+    try:
+        assert (db.get(GameSession, session_id).live_audio_files_json or "") == ""
+    finally:
+        db.close()
+
+
+def test_live_append_rejects_malformed_archive_fields(client, seed, monkeypatch):
+    """save_audio=1 with a recording_id that fails the 32-hex check (the same
+    CHUNK_ID_RE the chunked-upload endpoints use — which also rules out any
+    path traversal) or a negative segment_index is a hard 400, never a silent
+    fallback to not-saving: the client's failed-chunk UI has to surface it."""
+    session_id = _make_session(seed.world_a)
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        return "transcribed"
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = _append_segment(client, session_id, 0, rid="../../evil")
+    assert r.status_code == 400
+    r = _append_segment(client, session_id, -1)
+    assert r.status_code == 400
+
+
+def test_live_append_silent_chunk_still_saves_audio(client, seed, monkeypatch):
+    """A segment Whisper hears nothing in still has audio worth keeping —
+    the archive entry must commit even when chunk_text is empty (the commit
+    used to be conditional on the transcript alone)."""
+    import json
+    from app.routers.sessions import _live_audio_root
+    session_id = _make_session(seed.world_a)
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        return ""
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = _append_segment(client, session_id, 0, data=b"silence")
+    assert r.status_code == 200
+    assert r.json()["chunk_text"] == ""
+    assert (_live_audio_root(session_id) / _RID / "000000.webm").is_file()
+
+    db = SessionLocal()
+    try:
+        files = json.loads(db.get(GameSession, session_id).live_audio_files_json)
+    finally:
+        db.close()
+    assert files == [f"live/{session_id}/{_RID}/000000.webm"]
+
+
+def test_live_audio_list_reports_count_and_bytes(client, seed, monkeypatch):
+    session_id = _make_session(seed.world_a)
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        return "transcribed"
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    _login_gm_in(client, seed, seed.world_a)
+    # Nothing saved yet: empty, not an error.
+    r = client.get(f"/api/sessions/{session_id}/live-audio")
+    assert r.status_code == 200
+    assert r.json() == {"files": [], "count": 0, "total_bytes": 0}
+
+    _append_segment(client, session_id, 0, data=b"x" * 100)
+    _append_segment(client, session_id, 1, data=b"y" * 60)
+    r = client.get(f"/api/sessions/{session_id}/live-audio")
+    body = r.json()
+    assert body["count"] == 2
+    assert body["total_bytes"] == 160
+    assert body["files"] == [
+        f"live/{session_id}/{_RID}/000000.webm",
+        f"live/{session_id}/{_RID}/000001.webm",
+    ]
+
+
+def _make_real_webm(path, seconds):
+    """A genuinely decodable webm/opus segment (ffmpeg is part of the test
+    image) — the download endpoint concats with `-c copy`, which needs real
+    container headers, so the archive-save tests above can't just upload
+    b"fake-bytes" for it."""
+    import shutil
+    import subprocess
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg not available")
+    subprocess.run(
+        [ffmpeg, "-y", "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}", str(path)],
+        check=True, capture_output=True,
+    )
+
+
+def test_live_audio_download_concatenates_saved_segments(client, seed, monkeypatch, tmp_path):
+    session_id = _make_session(seed.world_a)
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        return "transcribed"
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    # Two differently-sized real segments; the concat has to be at least as
+    # big as the largest one (container overhead makes exact-size math flaky).
+    seg_a = tmp_path / "a.webm"
+    seg_b = tmp_path / "b.webm"
+    _make_real_webm(seg_a, 1)
+    _make_real_webm(seg_b, 2)
+
+    _login_gm_in(client, seed, seed.world_a)
+    _append_segment(client, session_id, 0, data=seg_a.read_bytes())
+    _append_segment(client, session_id, 1, data=seg_b.read_bytes())
+
+    r = client.get(f"/api/sessions/{session_id}/live-audio/download")
+    assert r.status_code == 200
+    assert len(r.content) > max(seg_a.stat().st_size, seg_b.stat().st_size)
+    assert f"session-{session_id}-recording" in r.headers["content-disposition"]
+
+
+def test_live_audio_download_single_segment_served_directly(client, seed, monkeypatch, tmp_path):
+    """One saved segment needs no ffmpeg concat — it is served byte-for-byte."""
+    from app.routers.sessions import _live_audio_root
+    session_id = _make_session(seed.world_a)
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        return "transcribed"
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    _login_gm_in(client, seed, seed.world_a)
+    _append_segment(client, session_id, 0, data=b"only-segment-bytes")
+    r = client.get(f"/api/sessions/{session_id}/live-audio/download")
+    assert r.status_code == 200
+    assert r.content == b"only-segment-bytes"
+    assert (_live_audio_root(session_id) / _RID / "000000.webm").is_file()
+
+
+def test_live_audio_download_with_nothing_saved_is_400(client, seed):
+    session_id = _make_session(seed.world_a)
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.get(f"/api/sessions/{session_id}/live-audio/download")
+    assert r.status_code == 400
+    assert "No raw audio saved" in r.json()["detail"]
+
+
+def test_session_delete_removes_raw_audio_tree(client, seed, monkeypatch):
+    from app.routers.sessions import _live_audio_root
+    session_id = _make_session(seed.world_a)
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        return "transcribed"
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    _login_gm_in(client, seed, seed.world_a)
+    _append_segment(client, session_id, 0, data=b"doomed")
+    assert _live_audio_root(session_id).is_dir()
+
+    r = client.post(f"/sessions/{session_id}/delete", follow_redirects=False)
+    assert r.status_code == 303
+    assert not _live_audio_root(session_id).exists()
 
 
 def test_summarize_live_transcript(client, seed, monkeypatch):

@@ -204,10 +204,26 @@
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">🔴 Live Session Recording <small id="live-transcript-token-count" style="color:var(--text-dim);font-weight:normal"></small></h2>
     <p style="font-size:.8rem;color:var(--text-dim);margin:0 0 .6rem">
-      Records in ~1-minute chunks, each transcribed and saved to this session as it finishes — safe for a
+      Records in short chunks, each transcribed and saved to this session as it finishes — safe for a
       multi-hour session, and nothing is lost beyond the current chunk if your browser or connection drops.
       Leave this tab open and awake for the duration; the recording stops if the tab is closed.
     </p>
+    <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem;font-size:.8rem;color:var(--text-dim)">
+      <label style="display:flex;align-items:center;gap:.35rem">Chunk length
+        <select id="live-chunk-seconds" title="Longer chunks mean fewer transcription-boundary artifacts — Whisper hallucination loops, duplicated passages, and repeated names tend to appear at the seam between two chunks — but also a longer delay before each chunk's text appears, and a bigger segment to re-upload if one fails. A change applies from the next chunk, even mid-recording." style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
+          <option value="60">1 min</option>
+          <option value="120">2 min</option>
+          <option value="180">3 min</option>
+          <option value="300">5 min</option>
+          <option value="600">10 min</option>
+          <option value="900">15 min</option>
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;gap:.35rem" title="Also keep each raw audio segment on the server, so the whole recording can be downloaded as one file afterwards and a bad transcript (Whisper hallucination loops, boundary duplicates) can be re-transcribed later with better settings.">
+        <input type="checkbox" id="live-save-audio" checked style="width:auto"/> Save raw audio
+      </label>
+      <span id="live-audio-status" style="display:none;font-size:.78rem;color:var(--text-dim)"></span>
+    </div>
     <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem">
       <button type="button" id="live-record-btn" class="ai-recap-btn" onclick="toggleLiveRecording()">🔴 Start Recording</button>
       <button type="button" class="ai-recap-btn" onclick="summarizeLiveTranscript()">✨ Summarize transcript</button>
@@ -805,23 +821,67 @@ let loot = {{ loot | tojson }};
 
 function esc(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
-// ── Live session recording — records in short chunks (see
-// MAX_LIVE_CHUNK_SECONDS below), uploading each one to
+// ── Live session recording — records in short chunks (length GM-configurable
+// via #live-chunk-seconds above; the segments-stay-separate-complete-containers
+// reasoning lives in liveStartSegment below), uploading each one to
 // /api/sessions/{id}/live-transcript/append as soon as it finishes and
 // immediately starting the next segment, so a multi-hour session never
-// holds more than about a minute of unsaved audio at once. Uploads are
+// holds more than one chunk's worth of unsaved audio at once. Uploads are
 // processed through a sequential queue (one at a time, in order) rather
 // than fired in parallel, both so the transcript can't end up scrambled
 // out of order and so a self-hosted Whisper server that's slower than
 // realtime just falls behind gracefully instead of being hit with a burst
 // of concurrent requests.
 
-const LIVE_CHUNK_SECONDS = 60;
+// Longer chunks mean fewer chunk boundaries, and chunk boundaries are where
+// the transcription artifacts live: Whisper hallucination loops (music and
+// silence around a seam feed them), duplicated passages straddling a seam,
+// repeated-name loops — a real 3.5-hour session at the old fixed 60s produced
+// pages of "Редактор субтитров…" spam. Against that, a longer chunk means the
+// transcript lags further behind the table and a failed upload puts more
+// audio at risk before its retry — hence a control rather than a new
+// constant. Read fresh at EVERY segment start (never cached at recording
+// start), so a change applies from the next chunk, mid-recording included.
+// The value persists in localStorage and is validated against the select's
+// own options, so a stale/hand-edited entry falls back to the 60s default.
+function liveChunkSeconds() {
+  const v = parseInt(localStorage.getItem('liveChunkSeconds'), 10);
+  return [60, 120, 180, 300, 600, 900].includes(v) ? v : 60;
+}
 let _liveRecording = false;
 let _liveCurrentRecorder = null;
 let _liveChunkTimer = null;
+// Minted ONCE per recording (in toggleLiveRecording's Start branch, via
+// chunked-upload.js's ndChunkUploadRandomId — the same 32-hex shape the
+// server's chunked-upload endpoints validate) and stamped onto every segment
+// as it's captured, so the server can keep the opt-in raw-audio archive of
+// this recording grouped and in order even when a failed chunk is retried
+// long after later chunks uploaded fine. Together with the per-segment index
+// below it doubles as the idempotency key for the server's save path: a
+// retry of the same segment overwrites its file instead of duplicating it.
+let _liveRecordingId = null;
+// Zero-based position of the NEXT segment to be captured this recording —
+// read-and-incremented at capture time (not upload time) so a chunk that
+// fails all 3 upload attempts and sits in _liveFailedChunks keeps its
+// original index for the retry.
+let _liveSegmentIndex = 0;
+
+// Restore + persist the two recording controls (this script sits at the end
+// of <body>, so the elements exist). Read on load and written on every
+// change — nothing here is captured at recording start, matching how
+// liveChunkSeconds() is re-read per segment.
+const saveChk = document.getElementById('live-save-audio');
+saveChk.checked = localStorage.getItem('liveSaveAudio') !== '0';  // absent = never chosen = the checked default
+saveChk.addEventListener('change', () => {
+  localStorage.setItem('liveSaveAudio', saveChk.checked ? '1' : '0');
+});
+const chunkSel = document.getElementById('live-chunk-seconds');
+chunkSel.value = String(liveChunkSeconds());
+chunkSel.addEventListener('change', () => {
+  localStorage.setItem('liveChunkSeconds', chunkSel.value);
+});
 // Acquired ONCE in toggleLiveRecording's Start branch and reused by every
-// ~60s segment's ndMicRecorder (see its own comment in base.html for why:
+// segment's ndMicRecorder (see its own comment in base.html for why:
 // re-acquiring the mic every segment cost an audible gap, a flickering mic
 // indicator, and could silently kill the recording on mobile Safari).
 // Released in liveStopMicStream, called once the final segment's onStop
@@ -898,6 +958,14 @@ async function liveProcessQueue() {
       try {
         const fd = new FormData();
         fd.append('file', file, file.name);
+        // Raw-audio archive tagging: the checkbox is read at upload time (the
+        // GM can toggle it mid-recording), while recording_id/segment_index
+        // were stamped onto the File at capture time — so a chunk retried
+        // after a failure still lands in its original recording slot, and
+        // the server can overwrite that slot instead of duplicating it.
+        fd.append('save_audio', saveChk && saveChk.checked ? '1' : '');
+        fd.append('recording_id', file.ndRecordingId || '');
+        fd.append('segment_index', String(typeof file.ndSegmentIndex === 'number' ? file.ndSegmentIndex : -1));
         const res = await fetch(`/api/sessions/${SESSION_ID}/live-transcript/append`, { method: 'POST', body: fd });
         if (!res.ok) throw await ndApiErrorFrom(res);
         const data = await res.json();
@@ -915,6 +983,11 @@ async function liveProcessQueue() {
   }
   _liveQueueBusy = false;
   liveRefreshStatus();
+  // The post-stop flush (recording already stopped) is the moment the saved
+  // segment count/bytes settle — refresh the raw-audio line then, and only
+  // then: drains while still recording fire every chunk, and polling this
+  // from there would turn a one-shot refresh into a silent poll loop.
+  if (!_liveRecording) liveRefreshAudioStatus();
 }
 
 function liveStartSegment() {
@@ -926,7 +999,13 @@ function liveStartSegment() {
   // see _liveMicStream's own comment.
   _liveCurrentRecorder = ndMicRecorder(
     (blob, mimeType) => {
-      _liveQueue.push(new File([blob], ndMicFilename(mimeType), { type: mimeType }));
+      // The segment's archive identity is stamped at capture time, not
+      // upload time — see _liveRecordingId/_liveSegmentIndex above — so a
+      // retried upload reproduces exactly the tag the first attempt had.
+      const segFile = new File([blob], ndMicFilename(mimeType), { type: mimeType });
+      segFile.ndRecordingId = _liveRecordingId;
+      segFile.ndSegmentIndex = _liveSegmentIndex++;
+      _liveQueue.push(segFile);
       liveProcessQueue();
       if (_liveRecording) {
         liveStartSegment();  // immediately pick up the next segment, no gap
@@ -945,9 +1024,12 @@ function liveStartSegment() {
   _liveCurrentRecorder.start().then(started => {
     if (!started) { _liveRecording = false; return; }
     clearTimeout(_liveChunkTimer);
+    // liveChunkSeconds() is read HERE, per segment, not once at recording
+    // start — a GM changing the selector mid-recording applies from the
+    // very next segment.
     _liveChunkTimer = setTimeout(() => {
       if (_liveCurrentRecorder) _liveCurrentRecorder.stop();
-    }, LIVE_CHUNK_SECONDS * 1000);
+    }, liveChunkSeconds() * 1000);
   });
 }
 
@@ -983,6 +1065,10 @@ async function toggleLiveRecording() {
     liveReleaseWakeLock();
     btn.textContent = '🔴 Start Recording';
     status.textContent = 'Stopped — finishing the last chunk…';
+    // Refresh the raw-audio line now; if a segment is still uploading, the
+    // queue drain below refreshes it again once the server's count/bytes
+    // have actually settled.
+    liveRefreshAudioStatus();
     return;
   }
   if (!navigator.mediaDevices || !window.MediaRecorder) {
@@ -1001,10 +1087,37 @@ async function toggleLiveRecording() {
     return;
   }
   _liveRecording = true;
+  // One id per recording (not per segment, not per page load) — the server
+  // groups a recording's saved raw segments under it, and a fresh recording
+  // in the same session never collides with a previous one's files.
+  _liveRecordingId = ndChunkUploadRandomId();
+  _liveSegmentIndex = 0;
   btn.textContent = '⏹ Stop Recording';
   status.textContent = 'Recording…';
   liveAcquireWakeLock();
   liveStartSegment();
+}
+
+// Populates the panel's raw-audio line (segment count, total size, download
+// link) from /live-audio — fetched only when a recording stops and on page
+// load, never polled, so it stays lightweight. Hidden entirely when nothing
+// has been saved ("Save raw audio" was off, or nothing recorded yet).
+async function liveRefreshAudioStatus() {
+  const el = document.getElementById('live-audio-status');
+  if (!el) return;
+  try {
+    const res = await fetch(`/api/sessions/${SESSION_ID}/live-audio`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.count) { el.style.display = 'none'; el.textContent = ''; return; }
+    el.style.display = '';
+    el.textContent = '';
+    el.append(`🎥 Raw audio: ${data.count} segment(s) (~${Math.round(data.total_bytes / (1024 * 1024))} MB) — `);
+    const a = document.createElement('a');
+    a.href = `/api/sessions/${SESSION_ID}/live-audio/download`;
+    a.textContent = 'Download recording';
+    el.appendChild(a);
+  } catch (e) { /* best-effort: the transcript itself never depends on this */ }
 }
 
 async function clearLiveTranscript() {
@@ -1190,6 +1303,9 @@ if (xpBtn) {
 
 renderPrep();
 renderLoot();
+// On page load, show the saved-raw-audio line if this session has one (a GM
+// coming back the next day can download the recording without re-recording).
+liveRefreshAudioStatus();
 {% endif %}
 </script>
 {% endblock %}

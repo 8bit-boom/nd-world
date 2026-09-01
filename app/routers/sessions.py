@@ -1,6 +1,8 @@
 import io
 import json
+import logging
 import os
+import shutil
 import tempfile
 import time
 import uuid
@@ -8,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -19,9 +21,13 @@ from ..database import get_db
 from ..deps import check_llm_cooldown, get_world_ctx, paginate
 from ..models import AudioClip, AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, Quest, World
 from ..templating import templates
-from ..uploads import copy_upload_bounded, reassemble_upload_chunks, save_upload_chunk
+from ..uploads import CHUNK_ID_RE, copy_upload_bounded, reassemble_upload_chunks, save_upload_chunk
 
 router = APIRouter()
+
+# Same name/approach as video.py's and ai.py's module loggers — ffmpeg
+# failures in the live-audio concat path warn here instead of 500-ing.
+_log = logging.getLogger("nd.sessions.router")
 
 # Same allowed set as the AI-attachment and Audio Library upload pipelines
 # (app/routers/ai.py's _ATTACH_AUDIO_EXTS, app/routers/audio.py's
@@ -31,11 +37,18 @@ _SESSION_AUDIO_EXTS = {".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus",
 # Library's own MAX_AUDIO_UPLOAD_BYTES, reusing that env var rather than
 # introducing a second one for what's really the same kind of upload.
 MAX_SESSION_AUDIO_BYTES = int(os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(1024 * 1024 * 1024)))
-# One live-recording chunk (see the "Live session recording" section below)
-# is only ever a minute or so of audio — this just needs to be generous
+# A live-recording chunk (see the "Live session recording" section below) is
+# GM-configurable from ~1 to ~15 minutes — this just needs to be generous
 # enough that a slightly-longer-than-expected chunk (a slow browser tab, a
 # missed stop/restart) doesn't 413 and silently drop that segment.
 MAX_LIVE_CHUNK_BYTES = int(os.environ.get("MAX_LIVE_CHUNK_BYTES", str(25 * 1024 * 1024)))
+# Per-segment cap for the opt-in raw-audio archive (api_live_transcript_append
+# below). The longest segment the client's chunk-length selector can produce
+# is 15 minutes, and a 15-minute browser MediaRecorder segment at even a
+# generous Opus bitrate is well under 20 MB — so ~200 MB is purely a
+# runaway-client bound (a GM pointing the endpoint at a movie file, say),
+# sized to never reject a real segment, same spirit as MAX_LIVE_CHUNK_BYTES.
+MAX_LIVE_SAVED_SEGMENT_BYTES = int(os.environ.get("MAX_LIVE_SAVED_SEGMENT_BYTES", str(200 * 1024 * 1024)))
 
 
 def _session_audio_chunks_root() -> Path:
@@ -381,6 +394,11 @@ def session_delete(session_id: int, db: Session = Depends(get_db)):
     if not gs:
         raise HTTPException(404)
     db.query(CombatSession).filter(CombatSession.game_session_id == session_id).update({"game_session_id": None})
+    # The opt-in raw-recording archive (uploads/live/<session_id>/, written
+    # by api_live_transcript_append) is keyed by this session id and
+    # referenced by nothing else once the row is gone — delete it with the
+    # row, the same way the row's other on-disk dependents are cleaned up.
+    shutil.rmtree(_live_audio_root(session_id), ignore_errors=True)
     db.delete(gs)
     db.commit()
     return RedirectResponse("/sessions", status_code=303)
@@ -1023,13 +1041,102 @@ def api_audio_job_list(request: Request, db: Session = Depends(get_db), active_w
 # arrive, so a multi-hour recording survives a crashed tab or dropped
 # connection with at most one chunk lost instead of the whole session. The
 # browser side (sessions/detail.html) stops and restarts a fresh short
-# MediaRecorder segment every ~minute and uploads each one here in order as
-# it finishes — this endpoint has no idea how long the overall recording
-# has been running, it only ever sees one chunk at a time (see
-# _transcribe_chunk above, shared with summarize-from-audio).
+# MediaRecorder segment every chunk-length (GM-configurable, ~1–15 minutes)
+# and uploads each one here in order as it finishes — this endpoint has no
+# idea how long the overall recording has been running, it only ever sees
+# one chunk at a time (see _transcribe_chunk above, shared with
+# summarize-from-audio).
+
+def _live_audio_root(session_id: int) -> Path:
+    """Where a session's opt-in raw-recording archive lives: one directory
+    per session, one subdirectory per recording (each recording start mints
+    a fresh 32-hex recording_id, so two recordings never overwrite each
+    other's segments), one zero-padded file per segment. Lives under the
+    same <DB_PATH dir>/uploads root as every other stored upload."""
+    return Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads" / "live" / str(session_id)
+
+
+def _live_audio_files(gs: GameSession) -> list:
+    """The saved raw segment paths (relative to the uploads dir, in recording
+    order) for a session, from GameSession.live_audio_files_json — a JSON
+    array maintained by api_live_transcript_append. Tolerant of NULL, blank,
+    or corrupt JSON (old rows, a partially-written value): an unreadable
+    list degrades to "nothing saved", never to a 500."""
+    try:
+        files = json.loads(gs.live_audio_files_json or "[]")
+    except ValueError:
+        return []
+    return [str(p) for p in files] if isinstance(files, list) else []
+
+
+def _ffmpeg_concat_quote(p: Path) -> str:
+    """One `file '<path>'` line for ffmpeg's concat demuxer list file. The
+    demuxer parses single-quoted strings shell-style, so an embedded quote
+    must close the string, backslash-escape the quote, and reopen — the
+    same '\'' idiom. Paths here are all server-generated (32-hex recording
+    dirs, 6-digit index names), so this never fires in practice, but concat
+    hard-fails on an unescaped one rather than skipping it."""
+    return "file '" + str(p).replace("'", "'\\''") + "'"
+
+
+async def _concat_live_segments(segs: list, out_path: Path) -> None:
+    """Stitch a session's saved raw segments, in order, into one file at
+    out_path — ffmpeg's concat demuxer with -c copy (no re-encode, so a
+    multi-hour recording assembles in seconds). Writes the demuxer's list
+    file and the output next to the segments, to a .part name replaced into
+    place only on success so a failed run can never leave a half-written
+    file cached as complete. Raises RuntimeError with the reason on any
+    failure (ffmpeg missing, unparseable segment, crash) — the caller turns
+    that into a 400, mirroring app/routers/video.py's best-effort ffmpeg
+    error style, and its async-subprocess shape follows video.py's
+    _convert_video (create_subprocess_exec, check returncode, non-empty
+    output)."""
+    import asyncio
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".txt", dir=out_path.parent, delete=False, encoding="utf-8",
+    ) as lst:
+        lst.write("\n".join(_ffmpeg_concat_quote(p) for p in segs) + "\n")
+        list_path = Path(lst.name)
+    # ".part" goes in the MIDDLE ("recording.part.webm", not the shell-ish
+    # "recording.webm.part") — ffmpeg picks its muxer from the output file's
+    # extension, and an unknown ".part" tail makes muxer init fail outright.
+    tmp_out = out_path.with_name(out_path.stem + ".part" + out_path.suffix)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_path), "-c", "copy", str(tmp_out),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0 or not tmp_out.is_file() or tmp_out.stat().st_size == 0:
+            # Tail, not head: ffmpeg's banner is the first 20 lines and the
+            # actual error is always the last one.
+            _log.warning("live-audio concat failed (rc=%s): %s", proc.returncode, stderr.decode(errors="replace")[-500:])
+            raise RuntimeError(f"ffmpeg concat failed (rc={proc.returncode}): {stderr.decode(errors='replace')[-300:]}")
+        tmp_out.replace(out_path)
+    except FileNotFoundError as exc:
+        _log.warning("live-audio concat errored: ffmpeg not available")
+        raise RuntimeError("ffmpeg is not available on the server — cannot assemble the recording.") from exc
+    finally:
+        list_path.unlink(missing_ok=True)
+        tmp_out.unlink(missing_ok=True)
+
 
 @router.post("/api/sessions/{session_id}/live-transcript/append")
-async def api_live_transcript_append(session_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def api_live_transcript_append(
+    session_id: int,
+    file: UploadFile = File(...),
+    # Opt-in raw-audio archive (the panel's "Save raw audio" checkbox): the
+    # browser additionally tags each segment with a per-recording 32-hex id
+    # and its zero-based position, so the server can keep the audio on disk
+    # in recording order and later reassemble it. All three fields are
+    # optional — an old client (or one with the checkbox off) sends none of
+    # them and gets exactly the transcribe-and-discard behavior as before.
+    save_audio: str = Form(""),
+    recording_id: str = Form(""),
+    segment_index: int = Form(-1),
+    db: Session = Depends(get_db),
+):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
@@ -1038,13 +1145,105 @@ async def api_live_transcript_append(session_id: int, file: UploadFile = File(..
         chunk_text = (await _transcribe_chunk(file, glossary=_glossary_for_world(world, gs.id), language=_language_for_world(world), denoise=_denoise_for_world(world))).strip()
     except _ai_module.WhisperError as exc:
         raise HTTPException(400, str(exc)) from exc
-    if chunk_text:
-        gs.live_transcript = (gs.live_transcript or "") + (" " if gs.live_transcript else "") + chunk_text
+    # Raw-audio save runs AFTER transcription, so a Whisper failure (the 400
+    # above) leaves nothing half-saved, and the DB row below is committed
+    # together with the transcript append as the plan requires. The upload
+    # stream was consumed by _transcribe_chunk's bounded copy, hence the
+    # seek(0) — an UploadFile is a spooled temp file, rewinding it is free.
+    saved_rel = ""
+    if save_audio:
+        # Malformed archive fields are a hard 400 rather than a silent
+        # fallback to not-saving: a client bug that quietly drops audio the
+        # GM explicitly asked to keep is worse than a failed upload, which
+        # the client's failed-chunk/retry UI surfaces. Same validation shape
+        # as uploads.save_upload_chunk's "Invalid upload id"/"Invalid chunk
+        # index" — recording_id must match uploads.CHUNK_ID_RE (32 hex, the
+        # same generator ndChunkedUpload uses client-side), which also rules
+        # out any path traversal since it admits nothing but hex chars.
+        if not CHUNK_ID_RE.match(recording_id or ""):
+            raise HTTPException(400, "Invalid recording id")
+        if segment_index < 0:
+            raise HTTPException(400, "Invalid segment index")
+        live_root = _live_audio_root(session_id)
+        seg_dir = live_root / recording_id
+        seg_dir.mkdir(parents=True, exist_ok=True)
+        # ext comes from the upload filename (MediaRecorder produces .webm in
+        # every browser that ships the API today, hence the default) — already
+        # validated against _SESSION_AUDIO_EXTS by _transcribe_chunk above.
+        ext = Path(file.filename or "").suffix.lower() or ".webm"
+        dest = seg_dir / f"{segment_index:06d}{ext}"
+        file.file.seek(0)
+        copy_upload_bounded(file, dest, max_bytes=MAX_LIVE_SAVED_SEGMENT_BYTES)
+        saved_rel = dest.relative_to(live_root.parents[1]).as_posix()
+        # A client retry of a segment whose response was lost overwrites the
+        # same file — the JSON list must not grow a duplicate entry for it.
+        files = _live_audio_files(gs)
+        if saved_rel not in files:
+            files.append(saved_rel)
+            gs.live_audio_files_json = json.dumps(files)
+    if chunk_text or saved_rel:
+        if chunk_text:
+            gs.live_transcript = (gs.live_transcript or "") + (" " if gs.live_transcript else "") + chunk_text
         db.commit()
     # chunk_text can legitimately be "" (a silent segment) — that's not an
     # error, just nothing to append; the client still needs the running
     # total either way to keep its live display in sync.
     return {"chunk_text": chunk_text, "transcript": gs.live_transcript}
+
+
+@router.get("/api/sessions/{session_id}/live-audio")
+def api_live_audio_list(session_id: int, db: Session = Depends(get_db)):
+    """What raw audio the session's live recording has saved — feeds the
+    recording panel's "Raw audio: N segment(s) (~X MB) — Download" line
+    (sessions/detail.html), which fetches this on page load and when a
+    recording stops. Paths are as stored (uploads-dir-relative, the same
+    strings live_audio_files_json holds)."""
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    if not gs:
+        raise HTTPException(404)
+    files = _live_audio_files(gs)
+    uploads_dir = _live_audio_root(session_id).parents[1]
+    total_bytes = 0
+    for rel in files:
+        try:
+            total_bytes += (uploads_dir / rel).stat().st_size
+        except OSError:
+            pass  # row remembers a file the disk lost — it just counts as 0 here
+    return {"files": files, "count": len(files), "total_bytes": total_bytes}
+
+
+@router.get("/api/sessions/{session_id}/live-audio/download")
+async def api_live_audio_download(session_id: int, db: Session = Depends(get_db)):
+    """The whole raw recording as one downloadable file: every saved segment
+    concatenated in recording order. Concatenation is -c copy via ffmpeg's
+    concat demuxer (instant, no re-encode) and is cached next to the
+    segments — rebuilt only when a segment is newer than the cached file
+    (i.e. the segment set changed), since a concat of unchanged inputs is
+    deterministic. One saved segment is served directly, no concat. ffmpeg
+    missing or failing is a 400 with the reason, not a 500 — the raw
+    segments stay on disk either way and the GM can retry."""
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    if not gs:
+        raise HTTPException(404)
+    live_root = _live_audio_root(session_id)
+    uploads_dir = live_root.parents[1]
+    segs = [uploads_dir / rel for rel in _live_audio_files(gs)]
+    segs = [p for p in segs if p.is_file()]
+    if not segs:
+        raise HTTPException(400, "No raw audio saved for this session.")
+    ext = segs[0].suffix or ".webm"
+    filename = f"session-{session_id}-recording{ext}"
+    if len(segs) == 1:
+        # Nothing to concatenate — serve the segment itself, byte-for-byte.
+        return FileResponse(segs[0], headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    out_path = live_root / f"recording{ext}"
+    newest = max(p.stat().st_mtime for p in segs)
+    if not out_path.is_file() or out_path.stat().st_size == 0 or out_path.stat().st_mtime < newest:
+        try:
+            await _concat_live_segments(segs, out_path)
+        except RuntimeError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    return FileResponse(out_path, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.post("/api/sessions/{session_id}/live-transcript/clear")
