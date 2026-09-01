@@ -3,8 +3,11 @@ recorded cutscene, a handout clip, an NPC video message) — see
 VideoClip/VideoAlbum in app/models.py. Mirrors app/routers/audio.py's
 Audio Library almost exactly (same album-tree/visibility/chunked-upload
 shape); the two real differences are poster_url (a best-effort ffmpeg
-thumbnail frame) and optional space-saving AV1 conversion on upload (see
-_convert_video, World.video_convert_enabled). Player-safe like /audio: a
+thumbnail frame) and the upload-time conversion ladder: optional
+space-saving AV1 for any container (see _convert_video,
+World.video_convert_enabled) plus an unconditional remux/transcode into a
+browser-playable MP4 for containers browsers can't play natively, like
+MKV/AVI (see _remux_or_transcode). Player-safe like /audio: a
 player sees a read-only view of whatever clips the GM has left
 visible_to_players=True. Upload/edit/delete/album-management/settings
 stay GM-only, enforced in each handler rather than via _is_player_safe,
@@ -41,7 +44,22 @@ _MAX_ALBUM_NAME = 120
 # router, so the reverse would be circular (same rationale as audio.py's own
 # local _UPLOADS_DIR copy).
 _UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
-_ALLOWED_EXTS = {".mp4", ".m4v", ".webm", ".ogv", ".mov"}
+# Extensions stored exactly as uploaded: every mainstream browser plays
+# these containers natively, so they only ever face the optional AV1 pass
+# (a world's space-saving choice), never a mandatory conversion.
+_NATIVE_EXTS = {".mp4", ".m4v", ".webm", ".ogv", ".mov"}
+# Extensions accepted but never stored as-is: ffmpeg reads every one of
+# these containers natively on the server, yet browsers mostly can't play
+# them (MKV/AVI/MPEG-PS are desktop/legacy formats, MPEG-TS/FLV are
+# streaming/broadcast containers) — so the upload pipeline converts them
+# to a native container before storing, via _remux_or_transcode's
+# remux-then-transcode ladder. _convert_video's AV1 pass works on these
+# too, since ffmpeg's read side is container-agnostic either way.
+_CONVERTIBLE_EXTS = {".mkv", ".avi", ".ts", ".wmv", ".flv", ".mpg", ".mpeg"}
+# What the upload routes' ext check admits — the rejection message below
+# lists this union, so it already covers both classes without its own
+# special-casing.
+_ALLOWED_EXTS = _NATIVE_EXTS | _CONVERTIBLE_EXTS
 # Video runs bigger than audio for the same length — deliberately NOT
 # reusing MAX_AUDIO_UPLOAD_BYTES's default so raising one doesn't silently
 # raise the other. Defaults to 2 GB; env-overridable like MAX_AUDIO_UPLOAD_BYTES.
@@ -201,19 +219,132 @@ async def _convert_video(src: Path, dest_dir: Path, max_height: Optional[int], b
         return None
 
 
+def _remux_command(src: Path, out: Path, hevc: bool) -> list:
+    """The lossless remux argv for _remux_or_transcode's first rung,
+    factored out pure so tests can pin the exact flags without spawning
+    ffmpeg. -map v:0+a:0 deliberately maps ONLY the first video and audio
+    stream — subtitle streams are excluded on purpose: MP4 cannot hold
+    PGS bitmap subs, and mov_text-converting them would fail the whole
+    remux, so dropping them matches the documented manual re-container
+    workflow this automates. hevc adds -tag:v hvc1 because Apple/QuickTime
+    refuse HEVC-in-MP4 unless it carries that tag — tagging an H.264
+    stream hvc1 would be wrong, so the caller only passes hevc=True when
+    the ffprobe probe identified the source video codec as hevc."""
+    cmd = ["ffmpeg", "-y", "-i", str(src), "-map", "0:v:0", "-map", "0:a:0", "-c", "copy"]
+    if hevc:
+        cmd += ["-tag:v", "hvc1"]
+    cmd += ["-movflags", "+faststart", str(out)]
+    return cmd
+
+
+async def _remux_or_transcode(src: Path) -> Optional[Path]:
+    """Best-effort conversion of a non-native container (MKV/AVI/TS/...)
+    into a browser-playable MP4 at src.with_suffix(".mp4") — the caller's
+    dest stem is already unique, so no extra collision handling is needed.
+    Unlike _convert_video (a space-saving bonus a world opts into), this
+    ladder is what makes a convertible-container upload playable at all —
+    but it keeps the identical never-raises graceful-degradation contract:
+    returns the new Path on success (the caller deletes `src` and stores
+    the new name) or None on ANY failure (ffmpeg/ffprobe missing, a crash,
+    a truncated/empty result), in which case the caller keeps `src`
+    untouched and the clip is stored unconverted.
+
+    Two-rung ladder — ffmpeg reads every input container natively, so no
+    format-specific handling is needed on the read side:
+    1. Remux (-c copy): lossless and near-instant; most MKVs carry
+       HEVC/H.264 video plus AAC/AC3 audio, which an MP4 muxer takes
+       as-is. The video codec is probed first (ffprobe) so an HEVC stream
+       gets the hvc1 tag Apple requires (see _remux_command); if ffprobe
+       is missing or fails the remux simply runs without the tag.
+    2. Transcode: if the remux failed, some stream isn't MP4-muxable
+       (theora video, flv1, ...) — re-encode to the most universally
+       playable H.264/AAC pairing instead."""
+    import asyncio
+    out_path = src.with_suffix(".mp4")
+    try:
+        # Probe (best-effort): ask ffprobe for the first video stream's
+        # codec name; anything other than a clean "hevc" answer leaves the
+        # hvc1 tag off, which is always safe for H.264 and every other codec.
+        hevc = False
+        probe = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(src),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        probe_stdout, _ = await probe.communicate()
+        if probe.returncode == 0 and probe_stdout.decode(errors="replace").strip().lower() == "hevc":
+            hevc = True
+        # Rung 1: lossless remux into MP4.
+        remux = await asyncio.create_subprocess_exec(
+            *_remux_command(src, out_path, hevc),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await remux.communicate()
+        if remux.returncode == 0 and out_path.is_file() and out_path.stat().st_size > 0:
+            return out_path
+        _log.warning("video remux failed (rc=%s), falling back to transcode: %s",
+                     remux.returncode, stderr.decode(errors="replace")[:500])
+        out_path.unlink(missing_ok=True)
+        # Rung 2: full transcode to max-compatibility H.264/AAC.
+        transcode = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", str(src), "-map", "0:v:0", "-map", "0:a:0",
+            "-c:v", "libx264", "-crf", "19", "-preset", "medium", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out_path),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await transcode.communicate()
+        if transcode.returncode == 0 and out_path.is_file() and out_path.stat().st_size > 0:
+            return out_path
+        _log.warning("video transcode fallback failed (rc=%s): %s",
+                     transcode.returncode, stderr.decode(errors="replace")[:500])
+        out_path.unlink(missing_ok=True)
+        return None
+    except Exception as exc:
+        _log.warning("video remux/transcode errored: %s: %s", type(exc).__name__, exc)
+        out_path.unlink(missing_ok=True)
+        return None
+
+
+def _is_non_native_container(path: Path) -> bool:
+    """True when `path`'s suffix is one of the accepted-but-not-playable
+    containers (_CONVERTIBLE_EXTS) that _finish_stored_file must convert
+    before a browser can play the clip."""
+    return path.suffix.lower() in _CONVERTIBLE_EXTS
+
+
 async def _finish_stored_file(dest: Path, target_dir, world) -> Path:
     """Shared tail of both upload routes, run once the raw file is already
     saved at `dest`: converts it to AV1 first (if the world has opted in —
-    see _convert_video), THEN generates the poster from whichever file
+    see _convert_video; ffmpeg reads every container natively, so this
+    works on MKV/AVI uploads exactly as on native ones), and — only for
+    non-native containers that the AV1 pass didn't already replace —
+    remuxes/transcodes into a browser-playable MP4 (see
+    _remux_or_transcode). THEN generates the poster from whichever file
     ends up being kept, so a poster is never generated from a file that's
     about to be deleted. Returns the final Path to store as the clip's
-    file_url; `dest` itself may already be gone if conversion succeeded."""
+    file_url; `dest` itself may already be gone if a conversion succeeded."""
     final_path = dest
     if world and world.video_convert_enabled:
         converted = await _convert_video(dest, target_dir, world.video_convert_max_height, world.video_convert_bitrate_kbps)
         if converted:
             dest.unlink(missing_ok=True)
             final_path = converted
+    if _is_non_native_container(dest) and final_path is dest:
+        # The AV1 pass didn't run or didn't succeed, so the file is still a
+        # container browsers can't play — unlike a native container, where
+        # keeping the original is merely "no space saved", here keeping it
+        # means an usually-unplayable clip, so a remux/transcode is worth
+        # attempting even for worlds that never opted into AV1.
+        remuxed = await _remux_or_transcode(dest)
+        if remuxed:
+            dest.unlink(missing_ok=True)
+            final_path = remuxed
+        else:
+            # Every rung failed — keep the original file. The clip is
+            # stored unconverted (browsers may not play it, but the GM can
+            # still download it), same graceful-degradation contract as
+            # _convert_video: a conversion is a bonus, never a failed upload.
+            _log.warning("video %s upload stored unconverted — no conversion path succeeded", dest.suffix)
     return final_path
 
 
