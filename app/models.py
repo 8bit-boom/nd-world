@@ -884,6 +884,18 @@ class AudioJob(Base):
     error = Column(Text, default="")
     transcript = Column(Text, default="")
     recap = Column(Text, default="")  # only populated for purpose="session_recap"
+    # Only populated for purpose="facts_parse" once done — the parse result
+    # (a JSON array of {content, visible_to_players} dicts, exactly what
+    # app.ai.parse_facts_from_recap returns) serialized so the parsed draft
+    # survives a page reload: the Facts page's "Restore last parse" reads it
+    # back from the latest done facts_parse job instead of the browser having
+    # had to keep the draft alive. Deliberately a generic JSON blob (not
+    # squeezed into `recap`) so it can never be mistaken for a displayable
+    # recap by the jobs UI's existing transcript/recap rendering. Empty for
+    # every other purpose. Existing installs get the column via
+    # database._migrate's _heal_table_from_model pass, same as every other
+    # late-added audio_jobs column.
+    result_json = Column(Text, default="")
     # Only populated for purpose="attachment" once done — where the
     # uploaded audio ended up, so it can be attached to a chat message
     # without re-uploading (same shape as /api/ai/attachments/upload's own

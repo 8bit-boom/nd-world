@@ -37,6 +37,9 @@ def test_scroll_position_is_tracked_and_restored(client, seed):
     assert "box.addEventListener('scroll'" in page
     # Restoration happens in bgRefresh, after the card is attached to the
     # live DOM — not inside bgRenderJob while the card is still detached.
-    refresh_body = page.split("async function bgRefresh()", 1)[1][:2800]
+    # The window is generous because bgRefresh now also reads the page's
+    # purpose/status filters up front (fetch-URL building comes first so
+    # the filtered fetch and the render stay one code path).
+    refresh_body = page.split("async function bgRefresh()", 1)[1][:4200]
     assert "querySelectorAll('[data-bg-scroll-key]')" in refresh_body
     assert "box.scrollTop = saved.scroll" in refresh_body

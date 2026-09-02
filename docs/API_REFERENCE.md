@@ -339,7 +339,9 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/facts/new` | GM | Creates a `Fact` (content + `visible_to_players` flag + optional linked session). |
 | POST | `/facts/{fact_id}/edit` | GM | Saves fact edits. |
 | POST | `/facts/{fact_id}/delete` | GM | Deletes a fact. |
-| POST | `/api/facts/parse` | GM | AI: turns a rough recap paste into draft facts (content + suggested visibility) via the local model — returned for review, **not written to the DB**. |
+| POST | `/api/facts/parse` | GM | AI: turns a rough recap paste into draft facts (content + suggested visibility) via the local model — returned for review, **not written to the DB**. Blocking; prefer `parse-job` for long input. |
+| POST | `/api/facts/parse-job` | GM | AI: the same parse as `/api/facts/parse` but as a durable background job — body `{text, game_session_id?, model?}`, returns `{job_id}` immediately; poll `/api/audio-jobs/{id}` (`result_json` holds the finished draft array). |
+| GET | `/api/facts/last-parse` | GM | The latest finished facts-parse job's draft for the active world — `{job_id, created_at, facts}`; 404 when there's none yet. Powers the Facts page's "Restore last parse". |
 | POST | `/api/facts/bulk` | GM | Bulk-inserts facts — the recap-review UI's "Confirm & Save" action. |
 | GET | `/chronicler` | Player | Chat page for the Chronicler assistant. |
 | POST | `/api/chronicler/ask` | Player | Answers a question using only facts/entities visible to the caller's role — the filtering happens server-side before anything reaches the model, not as a prompt instruction. |
@@ -733,7 +735,7 @@ jobs](DEPLOYMENT.md#updating-without-losing-in-flight-jobs) for what
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/background-jobs` | GM / Assistant | The standalone Background Jobs page. |
-| GET | `/api/audio-jobs` | GM / Assistant | Every job for the active world, any purpose, most recent first. |
+| GET | `/api/audio-jobs` | GM / Assistant | Every job for the active world, any purpose, most recent first. Optional filters: `purpose`, `status` (an exact status, or `running` = any in-progress phase), `game_session_id`. |
 | GET | `/api/audio-jobs/{job_id}` | GM / Assistant | Poll one job. |
 | POST | `/api/audio-jobs/{job_id}/cancel` | GM / Assistant | Cancels an in-progress job. |
 | GET | `/api/audio-jobs/{job_id}/transcript.md` | GM / Assistant | Downloads a finished job's transcript as a Markdown file. |

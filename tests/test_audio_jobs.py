@@ -3857,3 +3857,339 @@ def test_download_md_sanitizes_filename_and_falls_back_without_original_name(cli
     r2 = client.get(f"/api/audio-jobs/{no_name_job_id}/transcript.md")
     assert r2.status_code == 200
     assert f'filename="job-{no_name_job_id}-transcript.md"' in r2.headers["content-disposition"]
+
+
+# ── purpose="facts_parse" (create_facts_parse_job) ──────────────────────────
+# The Facts page's recap→facts parse as a durable background job (see
+# create_facts_parse_job's docstring): the synchronous POST /api/facts/parse
+# used to hold one HTTP request open for the whole model call, tripping
+# Cloudflare Tunnel's ~100s timeout (HTTP 524) on long recaps and losing
+# everything. The result lands in result_json (NOT recap — a facts draft is
+# review-UI data ({content, visible_to_players} dicts), not displayable
+# recap prose the jobs UI would render as such).
+
+_FACTS_PARSE_DRAFT = [
+    {"content": "The party visited the tavern.", "visible_to_players": True},
+    {"content": "Elyra is secretly a cult agent.", "visible_to_players": False},
+]
+
+
+@pytest.mark.asyncio
+async def test_create_facts_parse_job_runs_to_completion(client, seed, monkeypatch):
+    async def fake_parse(raw_text, model=""):
+        assert "tavern" in raw_text
+        return [dict(f) for f in _FACTS_PARSE_DRAFT]
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    job_id = audio_jobs.create_facts_parse_job(world_id=seed.world_a.id, text="went to the tavern, met Elyra")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.purpose == "facts_parse"
+    assert job.filename == "Facts"
+    assert job.transcript == "went to the tavern, met Elyra"  # the input, kept so the draft stays attributable
+    assert json.loads(job.result_json) == _FACTS_PARSE_DRAFT
+    assert job.recap == ""  # a facts draft never masquerades as a recap
+
+
+@pytest.mark.asyncio
+async def test_create_facts_parse_job_empty_result_is_done_not_error(client, seed, monkeypatch):
+    """Out-of-character chatter parses to zero facts — that's a SUCCESS the
+    Facts page's UI explains, not a failure: the model did its job."""
+    async def fake_parse(raw_text, model=""):
+        return []
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    job_id = audio_jobs.create_facts_parse_job(world_id=seed.world_a.id, text="banter with no events in it")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.result_json == "[]"
+    assert job.error == ""
+
+
+@pytest.mark.asyncio
+async def test_create_facts_parse_job_valueerror_marks_error(client, seed, monkeypatch):
+    """parse_facts_from_recap raises ValueError for every failure (Ollama
+    down, malformed JSON — see its docstring), already worded for a GM; the
+    job must carry that message in job.error, the same text the synchronous
+    /api/facts/parse maps to HTTP 502."""
+    async def failing_parse(raw_text, model=""):
+        raise ValueError("Could not parse facts from that recap — try rephrasing it.")
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", failing_parse)
+
+    job_id = audio_jobs.create_facts_parse_job(world_id=seed.world_a.id, text="gibberish")
+    job = await _await_terminal(job_id)
+    assert job.status == "error"
+    assert job.error == "Could not parse facts from that recap — try rephrasing it."
+
+
+@pytest.mark.asyncio
+async def test_create_facts_parse_job_never_transcribes(client, seed, monkeypatch):
+    """There is no audio — if _run_job's dispatch ever fell through to the
+    transcribe branch, this fails loudly instead of silently succeeding."""
+    async def fail_if_called(*a, **kw):
+        raise AssertionError("facts_parse jobs must never transcribe")
+    monkeypatch.setattr(ai_module, "transcribe_audio", fail_if_called)
+    async def fake_parse(raw_text, model=""):
+        return []
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    job_id = audio_jobs.create_facts_parse_job(world_id=seed.world_a.id, text="some recap")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.audio_path == ""
+
+
+def test_create_facts_parse_job_rejects_blank_text(seed):
+    """Checked synchronously at creation — before create_task — so the route
+    maps it to a clean 400 rather than a job erroring mid-run (same shape as
+    test_create_condense_job_rejects_invalid_strictness)."""
+    with pytest.raises(ValueError):
+        audio_jobs.create_facts_parse_job(world_id=seed.world_a.id, text="   ")
+
+
+def test_facts_parse_job_serializer_exposes_result_json_and_facts_label(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=seed.world_a.id, purpose="facts_parse", filename="Facts",
+            status="done", transcript="the input", result_json=json.dumps(_FACTS_PARSE_DRAFT),
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    data = client.get(f"/api/audio-jobs/{job_id}").json()
+    assert json.loads(data["result_json"]) == _FACTS_PARSE_DRAFT
+    assert data["purpose"] == "facts_parse"
+    assert data["purpose_label"] == "Facts"  # chip, not the raw purpose string
+
+
+# ── GET /api/audio-jobs filters (purpose / status / game_session_id) ────────
+# The Background Jobs page's dropdowns and the session page's scoped panel
+# both filter server-side — client-side filtering over page 1 of a paginated
+# list would silently hide rows living on page 2.
+
+def _login_gm_audio_jobs(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+
+def test_unified_list_filters_by_purpose(client, seed):
+    db = SessionLocal()
+    try:
+        db.add_all([
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done", filename="recap.mp3"),
+            AudioJob(world_id=seed.world_a.id, purpose="condense", status="done", filename="condense-1"),
+            AudioJob(world_id=seed.world_a.id, purpose="facts_parse", status="done", filename="facts-1"),
+            AudioJob(world_id=seed.world_a.id, purpose="facts_parse", status="error", filename="facts-2"),
+        ])
+        db.commit()
+    finally:
+        db.close()
+    _login_gm_audio_jobs(client, seed)
+
+    jobs = client.get("/api/audio-jobs?purpose=facts_parse").json()["jobs"]
+    assert {j["filename"] for j in jobs} == {"facts-1", "facts-2"}
+    assert all(j["purpose"] == "facts_parse" for j in jobs)
+
+    # No filter → everything (the pre-existing behavior, unchanged).
+    names = {j["filename"] for j in client.get("/api/audio-jobs").json()["jobs"]}
+    assert {"recap.mp3", "condense-1", "facts-1", "facts-2"} <= names
+
+
+def test_unified_list_filters_by_status(client, seed):
+    db = SessionLocal()
+    try:
+        db.add_all([
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done", filename="done-1"),
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="error", filename="err-1"),
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="summarizing", filename="run-1"),
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="interrupted", filename="int-1"),
+        ])
+        db.commit()
+    finally:
+        db.close()
+    _login_gm_audio_jobs(client, seed)
+
+    # "running" is the UI's word for every in-progress phase, not just one.
+    running = {j["filename"] for j in client.get("/api/audio-jobs?status=running").json()["jobs"]}
+    assert "run-1" in running
+    assert "done-1" not in running and "err-1" not in running and "int-1" not in running
+
+    done = {j["filename"] for j in client.get("/api/audio-jobs?status=done").json()["jobs"]}
+    assert "done-1" in done and "run-1" not in done
+
+    errs = {j["filename"] for j in client.get("/api/audio-jobs?status=error").json()["jobs"]}
+    assert "err-1" in errs and "done-1" not in errs
+
+    interrupted = {j["filename"] for j in client.get("/api/audio-jobs?status=interrupted").json()["jobs"]}
+    assert "int-1" in interrupted and "run-1" not in interrupted
+
+
+def test_unified_list_filters_by_game_session(client, seed):
+    from app.models import GameSession as _GameSession
+
+    db = SessionLocal()
+    try:
+        gs1 = _GameSession(world_id=seed.world_a.id, title="Session 1", session_num=1)
+        gs2 = _GameSession(world_id=seed.world_a.id, title="Session 2", session_num=2)
+        db.add_all([gs1, gs2])
+        db.commit()
+        db.refresh(gs1)
+        db.refresh(gs2)
+        db.add_all([
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done",
+                     filename="for-1", game_session_id=gs1.id),
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done",
+                     filename="for-2", game_session_id=gs2.id),
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done",
+                     filename="no-session", game_session_id=None),
+        ])
+        db.commit()
+        s1 = gs1.id
+    finally:
+        db.close()
+    _login_gm_audio_jobs(client, seed)
+
+    jobs = client.get(f"/api/audio-jobs?game_session_id={s1}").json()["jobs"]
+    assert {j["filename"] for j in jobs} == {"for-1"}
+
+
+def test_unified_list_filters_combine(client, seed):
+    db = SessionLocal()
+    try:
+        db.add_all([
+            AudioJob(world_id=seed.world_a.id, purpose="facts_parse", status="done", filename="facts-done"),
+            AudioJob(world_id=seed.world_a.id, purpose="facts_parse", status="error", filename="facts-err"),
+            AudioJob(world_id=seed.world_a.id, purpose="condense", status="done", filename="condense-done"),
+        ])
+        db.commit()
+    finally:
+        db.close()
+    _login_gm_audio_jobs(client, seed)
+    jobs = client.get("/api/audio-jobs?purpose=facts_parse&status=error").json()["jobs"]
+    assert {j["filename"] for j in jobs} == {"facts-err"}
+
+
+def test_session_job_list_filters_by_game_session(client, seed):
+    """The Sessions page's inline panel scopes to its own session via this
+    param — a GM on session #1 shouldn't see session #2's jobs there."""
+    from app.models import GameSession as _GameSession
+
+    db = SessionLocal()
+    try:
+        gs1 = _GameSession(world_id=seed.world_a.id, title="Session 1", session_num=1)
+        gs2 = _GameSession(world_id=seed.world_a.id, title="Session 2", session_num=2)
+        db.add_all([gs1, gs2])
+        db.commit()
+        db.refresh(gs1)
+        db.refresh(gs2)
+        db.add_all([
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done",
+                     filename="mine", game_session_id=gs1.id),
+            AudioJob(world_id=seed.world_a.id, purpose="condense", status="done",
+                     filename="theirs", game_session_id=gs2.id),
+            AudioJob(world_id=seed.world_a.id, purpose="condense", status="done",
+                     filename="unattributed", game_session_id=None),
+        ])
+        db.commit()
+        s1 = gs1.id
+    finally:
+        db.close()
+    _login_gm_audio_jobs(client, seed)
+    listed = client.get(f"/api/sessions/ai/audio-jobs?game_session_id={s1}").json()
+    assert {j["filename"] for j in listed} == {"mine"}
+    # Unfiltered keeps the pre-existing whole-world behavior.
+    all_names = {j["filename"] for j in client.get("/api/sessions/ai/audio-jobs").json()}
+    assert {"mine", "theirs", "unattributed"} <= all_names
+
+
+def test_session_page_condense_and_recap_jobs_carry_game_session_id(client, seed, monkeypatch):
+    """"Made for this session" only works if the session page's own job-
+    creating routes persist game_session_id — the condense route reads it
+    from the JSON body, the live-transcript route from the URL. If either
+    ever stops passing it, the panel's session filter would silently hide
+    the very job the GM just started."""
+    from app.models import GameSession as _GameSession
+
+    async def fake_condense(*a, **kw):
+        return "condensed"  # only the row's fields matter here, not the result
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+    async def fake_summarize(transcript, model="", extra_instructions="", think=True, **kw):
+        return "a recap"
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    db = SessionLocal()
+    try:
+        gs = _GameSession(world_id=seed.world_a.id, title="Session 1", session_num=1,
+                          live_transcript="hours of live transcript")
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        gs_id = gs.id
+    finally:
+        db.close()
+
+    _login_gm_audio_jobs(client, seed)
+    r = client.post("/api/sessions/ai/condense-job", json={"recap": "a recap", "game_session_id": gs_id})
+    assert r.status_code == 200, r.text
+    condense_job_id = r.json()["job_id"]
+
+    r2 = client.post(f"/api/sessions/{gs_id}/ai/summarize-live-transcript-job", json={})
+    assert r2.status_code == 200, r2.text
+    recap_job_id = r2.json()["job_id"]
+
+    db = SessionLocal()
+    try:
+        assert db.get(AudioJob, condense_job_id).game_session_id == gs_id
+        assert db.get(AudioJob, recap_job_id).game_session_id == gs_id
+    finally:
+        db.close()
+
+
+def test_background_jobs_page_has_purpose_and_status_filters(client, seed):
+    _login_gm_audio_jobs(client, seed)
+    html = client.get("/background-jobs").text
+    assert 'id="bg-filter-purpose"' in html
+    assert 'id="bg-filter-status"' in html
+    assert '<option value="facts_parse">Facts</option>' in html
+    assert '<option value="session_recap">Session recap</option>' in html
+    assert '<option value="condense">Condense</option>' in html
+    assert '<option value="attachment">Attachment</option>' in html
+    # Filters re-fetch server-side (keeping pagination honest), not client-side.
+    assert "audioParams.join('&')" in html
+    assert "encodeURIComponent(fPurpose)" in html
+    # Rows link to the owning session when the job has one.
+    assert "'/sessions/' + job.game_session_id" in html
+    assert "\u2192 Session" in html
+
+
+def test_session_page_scopes_jobs_panel_and_links_all_jobs(client, seed):
+    """The session page's inline panel polls the session-scoped list (its
+    listUrl carries game_session_id) instead of every job in the world, and
+    the "All jobs →" link is the advertised path to the full list."""
+    from app.models import GameSession as _GameSession
+
+    db = SessionLocal()
+    try:
+        gs = _GameSession(world_id=seed.world_a.id, title="Session 1", session_num=1)
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        gs_id = gs.id
+    finally:
+        db.close()
+
+    _login_gm_audio_jobs(client, seed)
+    html = client.get(f"/sessions/{gs_id}").text
+    assert f"game_session_id={gs_id}" in html  # the scoped listUrl
+    assert "allJobsUrl: '/background-jobs'" in html
+    # The shared panel source renders the link from that opt.
+    js = (Path(__file__).resolve().parent.parent / "static" / "js" / "audio-jobs.js").read_text()
+    assert "opts.allJobsUrl" in js
+    assert '"All jobs →"' in js

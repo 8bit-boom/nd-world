@@ -11,7 +11,9 @@
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .5rem">✨ Turn a recap into facts</h2>
     <p style="font-size:.82rem;color:var(--text-dim);margin:0 0 .8rem">
       Write a terse recap of what happened — the local AI model splits it into discrete facts and
-      guesses which ones the players already know. Nothing is saved until you review and confirm below.
+      guesses which ones the players already know. Parsing runs as a background job, so a long
+      recap just keeps working (watch the status; you can even close this tab and
+      "Restore last parse" when you come back). Nothing is saved until you review and confirm below.
     </p>
     <textarea id="recap-input" rows="4" placeholder="went to the tavern, met Elyra, she's actually working for the cult, found a strange clock…"
               style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .7rem;font-family:var(--font);font-size:.85rem;border-radius:3px"></textarea>
@@ -22,11 +24,14 @@
         {% for s in sessions.values() %}<option value="{{ s.id }}">#{{ s.session_num }} {{ s.title }}</option>{% endfor %}
       </select>
       <button type="button" id="parse-btn" style="background:var(--neon);color:#000;border:none;padding:.4rem 1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Parse with AI</button>
+      <button type="button" id="restore-parse-btn" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .8rem;font-size:.8rem;border-radius:3px;cursor:pointer"
+              title="Reload the draft from your most recent finished parse — the draft is saved on the server, so it survives a page reload">Restore last parse</button>
       <span id="parse-status" style="font-size:.8rem;color:var(--text-dim)"></span>
     </div>
 
     <div id="draft-panel" style="display:none;margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border)">
       <h3 style="color:var(--neon);font-size:.85rem;margin:0 0 .6rem">Review before saving</h3>
+      <div id="draft-empty-note" style="display:none;font-size:.82rem;color:var(--text-dim);background:var(--bg3);border:1px dashed var(--border);border-radius:4px;padding:.6rem .8rem;margin-bottom:.6rem"></div>
       <div id="draft-list" style="display:flex;flex-direction:column;gap:.5rem;margin-bottom:.6rem"></div>
       <div style="display:flex;gap:.5rem;flex-wrap:wrap">
         <button type="button" id="draft-add-btn" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.35rem .8rem;font-size:.8rem;border-radius:3px;cursor:pointer">+ Add row</button>
@@ -106,11 +111,19 @@ function toggleFactEdit(id) {
 }
 
 let draftFacts = [];
+// When non-empty, the draft panel shows this explainer instead of review
+// rows — set when a parse succeeds but finds no in-character facts (an
+// empty result is a SUCCESS the GM needs explained, not an error to
+// swallow: out-of-character chatter produces exactly this).
+let draftEmptyNote = '';
 
 function renderDraft() {
   const panel = document.getElementById('draft-panel');
   const list = document.getElementById('draft-list');
-  panel.style.display = draftFacts.length ? 'block' : 'none';
+  const emptyNote = document.getElementById('draft-empty-note');
+  panel.style.display = (draftFacts.length || draftEmptyNote) ? 'block' : 'none';
+  emptyNote.style.display = draftEmptyNote ? 'block' : 'none';
+  if (draftEmptyNote) emptyNote.textContent = draftEmptyNote;
   list.innerHTML = '';
   draftFacts.forEach((f, i) => {
     const row = document.createElement('div');
@@ -135,26 +148,68 @@ function renderDraft() {
 
 document.getElementById('draft-add-btn').addEventListener('click', () => {
   draftFacts.push({ content: '', visible_to_players: true });
+  draftEmptyNote = '';
   renderDraft();
 });
+
+// Loads a parsed draft array into the review panel — shared by the
+// background parse poll loop below and "Restore last parse", so both
+// render identically (and an empty result from either shows the same
+// out-of-character explainer).
+function loadParsedFacts(facts) {
+  draftFacts = Array.isArray(facts) ? facts.filter((f) => f && typeof f === 'object') : [];
+  draftEmptyNote = draftFacts.length ? '' :
+    'No in-character facts found — the text looks like out-of-character discussion. ' +
+    'Paste a recap of what actually happened in play.';
+  renderDraft();
+}
+
+// Polls a facts_parse job until it reaches a terminal status, then loads
+// its draft. The parse itself runs server-side as a durable background job
+// (see app/audio_jobs.py create_facts_parse_job): a long recap against a
+// CPU-local model can take minutes — far past the ~100s a reverse proxy
+// will hold one request open, which is exactly what lost the GM's whole
+// parse (HTTP 524, nothing kept) when this was a synchronous POST.
+async function pollFactsParseJob(jobId, status) {
+  for (let poll = 1; ; poll++) {
+    status.textContent = `Parsing in background… (poll ${poll})`;
+    await new Promise((r) => setTimeout(r, 3000));
+    const res = await fetch(`/api/audio-jobs/${jobId}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const job = await res.json();
+    if (job.status === 'done') {
+      let facts = [];
+      try { facts = JSON.parse(job.result_json || '[]'); } catch (e) { facts = []; }
+      loadParsedFacts(facts);
+      status.textContent = draftFacts.length
+        ? `${draftFacts.length} fact(s) drafted — review below.`
+        : 'No in-character facts found — see the note below.';
+      return;
+    }
+    if (job.status === 'error') throw new Error(job.error || 'The parse job failed.');
+    // The job itself survives closed tabs/server restarts (and auto-resumes),
+    // but THIS poll loop lives in the page — cap it so a stuck job (shouldn't
+    // happen: every terminal path is handled above) can't spin forever.
+    if (poll >= 200) throw new Error('Timed out waiting for the parse job — check Background Jobs.');
+  }
+}
 
 async function parseDraftFromRecap() {
   const text = document.getElementById('recap-input').value.trim();
   if (!text) return;
   const btn = document.getElementById('parse-btn');
   const status = document.getElementById('parse-status');
+  const sessionId = document.getElementById('recap-session').value;
   btn.disabled = true;
-  status.textContent = 'Thinking…';
+  status.textContent = 'Starting background parse…';
   try {
-    const res = await fetch('/api/facts/parse', {
+    const res = await fetch('/api/facts/parse-job', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, game_session_id: sessionId || null }),
     });
     if (!res.ok) throw await ndApiErrorFrom(res);
     const data = await res.json();
-    draftFacts = data.facts || [];
-    status.textContent = draftFacts.length ? `${draftFacts.length} fact(s) drafted — review below.` : 'No facts found — try rephrasing.';
-    renderDraft();
+    await pollFactsParseJob(data.job_id, status);
   } catch (e) {
     status.textContent = 'Failed: ' + e.message;
   } finally {
@@ -163,6 +218,28 @@ async function parseDraftFromRecap() {
 }
 
 document.getElementById('parse-btn').addEventListener('click', parseDraftFromRecap);
+
+// The parsed draft is persisted on the job row server-side (AudioJob.
+// result_json), so a reload — or a parse that finished after the tab was
+// closed — doesn't throw the review work away; this just re-fetches it.
+async function restoreLastParse() {
+  const status = document.getElementById('parse-status');
+  try {
+    const res = await fetch('/api/facts/last-parse');
+    if (res.status === 404) {
+      status.textContent = 'Nothing to restore yet — no finished parse saved.';
+      return;
+    }
+    if (!res.ok) throw await ndApiErrorFrom(res);
+    const data = await res.json();
+    loadParsedFacts(data.facts || []);
+    status.textContent = `Restored ${draftFacts.length} drafted fact(s) from your last parse.`;
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  }
+}
+
+document.getElementById('restore-parse-btn').addEventListener('click', restoreLastParse);
 
 // If we arrived here via a Background Jobs "📋 Extract facts" button, the
 // transcript (and which Session it belongs to, if known) is waiting in

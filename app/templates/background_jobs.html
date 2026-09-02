@@ -8,6 +8,25 @@
   Every durable job started from a "🔒 Process in Background" button — 🎙 audio (Session recap, Whisper Test, AI Chat/Ask AI attachments), 💬 chat, and 🎨 image generation alike — these keep running here even if the tab that started them is closed. A job still shows here after you close this page too; reopen it any time to check on things or cancel one. An audio job interrupted by a server restart resumes automatically from its last checkpoint on the next boot — "⏸ Interrupted" just means it's between attempts (or, past a few auto-retries, needs a manual ▶ Resume click here); chat/image jobs restart from the same saved request instead, with no checkpoint to resume from.
 </p>
 
+<div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin:0 0 1rem">
+  <label for="bg-filter-purpose" style="font-size:.8rem;color:var(--text-dim)">Purpose</label>
+  <select id="bg-filter-purpose" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;font-size:.8rem;border-radius:3px">
+    <option value="">All purposes</option>
+    <option value="session_recap">Session recap</option>
+    <option value="condense">Condense</option>
+    <option value="facts_parse">Facts</option>
+    <option value="attachment">Attachment</option>
+  </select>
+  <label for="bg-filter-status" style="font-size:.8rem;color:var(--text-dim)">Status</label>
+  <select id="bg-filter-status" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;font-size:.8rem;border-radius:3px">
+    <option value="">All statuses</option>
+    <option value="running">Running</option>
+    <option value="done">✓ Done</option>
+    <option value="error">✗ Error</option>
+    <option value="interrupted">⏸ Interrupted</option>
+  </select>
+</div>
+
 <div id="bg-jobs-list"></div>
 <p id="bg-jobs-empty" style="color:var(--text-dim);text-align:center;padding:2rem;display:none">No background jobs yet.</p>
 <p id="bg-jobs-pagenote" style="color:var(--text-dim);font-size:.8rem;text-align:center;margin:.5rem 0 0;display:none"></p>
@@ -132,6 +151,17 @@ function bgRenderJob(job) {
   const time = document.createElement('div');
   time.className = 'bg-job-time';
   time.textContent = 'Started ' + bgFmtTime(job.created_at);
+  // Audio jobs made from a session's page carry that session's id — link
+  // straight to it so a GM can jump from "which job was this?" to the
+  // session the recording/recap belongs to. Chat/image jobs have no
+  // game_session_id field at all (undefined → skipped).
+  if (job.game_session_id) {
+    const sessionLink = document.createElement('a');
+    sessionLink.href = '/sessions/' + job.game_session_id;
+    sessionLink.textContent = '→ Session';
+    sessionLink.style.cssText = 'color:var(--neon);text-decoration:none;margin-left:.5rem';
+    time.appendChild(sessionLink);
+  }
   card.appendChild(time);
 
   const barWrap = document.createElement('div');
@@ -576,17 +606,41 @@ async function bgRefresh() {
   // image jobs. Chat jobs are GM-only at the API level too (_require_gm
   // in routers/ai.py) — fine here since this whole page is already
   // GM-gated (audio_jobs.background_jobs_page).
+  //
+  // The purpose/status dropdowns above the list filter SERVER-side for
+  // audio (GET /api/audio-jobs?purpose=&status=) — audio is the only
+  // engine with purposes, and server-side keeps its pagination honest
+  // (a client-side filter over page 1 of 50 would silently hide rows
+  // that exist on page 2). Chat/image jobs have no purpose, so a purpose
+  // filter skips fetching them entirely; a status filter still applies
+  // to them, client-side (their lists are a flat latest-20 with nothing
+  // page 2 to hide). "running" is the UI's word for each engine's own
+  // in-progress statuses (pending/transcribing/summarizing/generating).
+  const fPurpose = document.getElementById('bg-filter-purpose').value;
+  const fStatus = document.getElementById('bg-filter-status').value;
+  const audioParams = [];
+  if (fPurpose) audioParams.push('purpose=' + encodeURIComponent(fPurpose));
+  if (fStatus) audioParams.push('status=' + encodeURIComponent(fStatus));
+  const audioUrl = audioParams.length ? '/api/audio-jobs?' + audioParams.join('&') : '/api/audio-jobs';
+  const wantChatImage = !fPurpose;
+  const noFetch = Promise.resolve({ list: [], total_pages: 1 });
   const [audio, chat, image] = await Promise.all([
-    bgFetchJobs('audio', '/api/audio-jobs', true),
-    bgFetchJobs('chat', '/api/ai/chat/jobs', false),
-    bgFetchJobs('image', '/api/ai/imagegen/jobs', false),
+    bgFetchJobs('audio', audioUrl, true),
+    wantChatImage ? bgFetchJobs('chat', '/api/ai/chat/jobs', false) : noFetch,
+    wantChatImage ? bgFetchJobs('image', '/api/ai/imagegen/jobs', false) : noFetch,
   ]);
-  const jobs = [...audio.list, ...chat.list, ...image.list]
+  const statusMatches = (j) => !fStatus
+    || (fStatus === 'running' ? IN_PROGRESS.has(j.status) : j.status === fStatus);
+  const jobs = [...audio.list, ...chat.list.filter(statusMatches), ...image.list.filter(statusMatches)]
     .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
 
   const list = document.getElementById('bg-jobs-list');
   list.innerHTML = '';
-  document.getElementById('bg-jobs-empty').style.display = jobs.length ? 'none' : 'block';
+  const emptyNote = document.getElementById('bg-jobs-empty');
+  emptyNote.textContent = (fPurpose || fStatus) && jobs.length === 0
+    ? 'No jobs match the current filters.'
+    : 'No background jobs yet.';
+  emptyNote.style.display = jobs.length ? 'none' : 'block';
 
   // Every list here is truncated one way or another — audio is a real
   // server-paginated page 1, chat/image are a flat `.limit(20)` with no
@@ -619,6 +673,11 @@ async function bgRefresh() {
   }
 }
 
+// The filter dropdowns re-run bgRefresh, which reads both and rebuilds the
+// fetch URLs — one code path for the initial load and for a filter change,
+// so the filtered and unfiltered renders can never drift apart.
+document.getElementById('bg-filter-purpose').addEventListener('change', bgRefresh);
+document.getElementById('bg-filter-status').addEventListener('change', bgRefresh);
 bgLoadModels();
 bgRefresh();
 </script>

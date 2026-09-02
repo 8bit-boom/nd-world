@@ -12,6 +12,7 @@ the smaller inline panels embedded on each originating page.
 """
 import io
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -26,7 +27,13 @@ from ..templating import templates
 
 router = APIRouter()
 
-PURPOSE_LABELS = {"session_recap": "Session Recap", "attachment": "Voice Attachment", "condense": "Condense"}
+PURPOSE_LABELS = {
+    "session_recap": "Session Recap", "attachment": "Voice Attachment", "condense": "Condense",
+    # Same short label the job row already gets from filename="Facts" (see
+    # create_facts_parse_job) — the chip and the row title agree instead of
+    # the chip falling back to the raw purpose string.
+    "facts_parse": "Facts",
+}
 
 
 def _require_can_edit(request: Request) -> None:
@@ -46,6 +53,11 @@ def _job_to_dict(job: AudioJob) -> dict:
         "filename": job.filename, "status": job.status, "error": job.error,
         "transcript": job.transcript, "recap": job.recap, "model": job.model or "",
         "extra_instructions": job.extra_instructions or "",
+        # purpose="facts_parse" only: the finished parse draft as a JSON
+        # array of {content, visible_to_players} dicts (see AudioJob.
+        # result_json) — the Facts page's poll loop parses this into its
+        # review rows, and "Restore last parse" reads it back after a reload.
+        "result_json": job.result_json or "",
         "attachment_url": job.attachment_url, "game_session_id": job.game_session_id,
         "chunk_current": job.chunk_current, "chunk_total": job.chunk_total,
         "run_started_at": job.run_started_at.isoformat() if job.run_started_at else None,
@@ -119,14 +131,37 @@ def background_jobs_page(request: Request, db: Session = Depends(get_db), active
 
 @router.get("/api/audio-jobs")
 def api_audio_job_list(
-    request: Request, page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None),
+    request: Request, page: int = 1, purpose: str = "", status: str = "",
+    game_session_id: Optional[int] = None,
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
-    """Every job for the active world, any purpose, most recent first."""
+    """Every job for the active world, any purpose, most recent first.
+
+    Optional filters, added as the one list endpoint started serving more
+    surfaces than the Background Jobs page's flat timeline: `purpose`
+    (exact match, e.g. "facts_parse" — the jobs page's purpose dropdown),
+    `status` (either an exact status, or "running" meaning everything in
+    IN_PROGRESS_STATUSES — the UI thinks in "still going vs finished",
+    not in the individual phase names), and `game_session_id` (jobs made
+    FOR that session). An unrecognized purpose/status value simply matches
+    nothing rather than 400ing — a stale dropdown option degrading to an
+    empty list is friendlier than an error page, and the dropdowns are
+    always populated from real values anyway."""
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
-    base_q = db.query(AudioJob).filter(AudioJob.world_id == world.id).order_by(AudioJob.created_at.desc())
+    base_q = db.query(AudioJob).filter(AudioJob.world_id == world.id)
+    if purpose:
+        base_q = base_q.filter(AudioJob.purpose == purpose)
+    if status:
+        if status == "running":
+            base_q = base_q.filter(AudioJob.status.in_(_audio_jobs.IN_PROGRESS_STATUSES))
+        else:
+            base_q = base_q.filter(AudioJob.status == status)
+    if game_session_id is not None:
+        base_q = base_q.filter(AudioJob.game_session_id == game_session_id)
+    base_q = base_q.order_by(AudioJob.created_at.desc())
     jobs, page, total_pages = paginate(base_q, page)
     return {"jobs": [_job_to_dict(j) for j in jobs], "page": page, "total_pages": total_pages}
 

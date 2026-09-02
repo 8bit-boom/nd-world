@@ -631,7 +631,13 @@ const sessionAudioJobs = ndAudioJobs(document.getElementById('audio-jobs-panel')
   chunkUrl: '/api/sessions/ai/audio-jobs/chunk',
   completeUrl: '/api/sessions/ai/audio-jobs/complete',
   createFromClipUrl: '/api/sessions/ai/audio-jobs/from-clip',
-  listUrl: '/api/sessions/ai/audio-jobs',
+  // Scoped to THIS session's jobs when one exists (the server filters on
+  // AudioJob.game_session_id, which every job-creating route on this page
+  // persists) — a GM on session #12 shouldn't wade through every other
+  // session's recap/condense jobs in the panel; the full world-wide list
+  // (with purpose/status filters) stays one "All jobs →" click away.
+  listUrl: '/api/sessions/ai/audio-jobs{% if gsession %}?game_session_id={{ gsession.id }}{% endif %}',
+  allJobsUrl: '/background-jobs',
   onUse: (job) => {
     // A background job's own failure/retry story already lives on the
     // Background Jobs page (auto-retry + one-click "Retry without

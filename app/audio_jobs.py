@@ -293,6 +293,57 @@ def create_text_recap_job(
     return job_id
 
 
+def create_facts_parse_job(
+    world_id: int, text: str, game_session_id: Optional[int] = None,
+    model: str = "", created_by_user_id: Optional[int] = None,
+) -> int:
+    """Parse `text` (a GM's rough recap, or a whole transcript pasted from a
+    job's "📋 Extract facts" hand-off) into draft facts as a durable
+    background job — sibling of create_condense_job above, same "text already
+    in hand, no transcribe phase" shape, but purpose="facts_parse": _run_job's
+    facts_parse branch calls _ai_module.parse_facts_from_recap (the same call
+    POST /api/facts/parse makes synchronously) and lands the result as a JSON
+    array in job.result_json rather than job.recap — a facts draft is review
+    UI data ({content, visible_to_players} dicts), not a displayable recap,
+    so it must not sit in a field the jobs UI renders as prose.
+
+    Motivated by exactly the reverse-proxy-timeout trap create_condense_job's
+    docstring describes: a long recap against a CPU-local model made the
+    synchronous POST /api/facts/parse a routine way to trip Cloudflare's
+    ~100s tunnel timeout (HTTP 524) and lose everything. `text` is stored
+    into job.transcript (the row's "input" field, same slot condense/text-
+    recap jobs use), so "Restore last parse" can also show what was parsed;
+    `game_session_id`/`model` persist like every other job setting so the
+    draft stays attributable to its session and a consistent model is
+    available to anything inspecting the row.
+
+    Raises ValueError on blank text — checked synchronously up front so the
+    route maps it to a clean HTTP 400 rather than a job that errors mid-run
+    with a message about empty input the GM can't connect to the button they
+    clicked."""
+    if not (text or "").strip():
+        raise ValueError("No recap text provided")
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=world_id, purpose="facts_parse", filename="Facts", status="pending",
+            game_session_id=game_session_id, created_by_user_id=created_by_user_id,
+            model=model or None,
+            transcript=text, audio_path="", delete_after=False,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    task = asyncio.create_task(_run_job(job_id))
+    _running_tasks[job_id] = task
+    task.add_done_callback(lambda t, jid=job_id: _forget_task(jid, t))
+    return job_id
+
+
 # Kinds worth hinting Whisper toward — proper nouns a session's spoken
 # audio is likely to actually contain. Excludes "note" (free text with no
 # guarantee its title is a clean proper noun) and "event"/"item"/"feat"
@@ -1018,6 +1069,31 @@ async def _run_job(job_id: int) -> None:
             else:
                 _set(status="done", recap=recap, chunk_current=None, chunk_total=None,
                      finished_at=datetime.utcnow(), checkpoint_json="")
+        elif purpose == "facts_parse":
+            # Single parse call, no chunking/checkpointing — parse_facts_
+            # from_recap is one schema-constrained chat request (see app.ai),
+            # so like condense there is no partial-progress state to persist
+            # between chunks. Not wrapped in the ollama_job_semaphore/
+            # thinking-ladder machinery the summarize purposes use: those
+            # guard long multi-chunk map-reduce runs against interleaving and
+            # output-budget starvation; a facts parse is short enough that
+            # the synchronous route never needed either, and this must stay
+            # behaviorally identical to it (minus the blocking HTTP request).
+            _set(status="summarizing")
+            try:
+                facts = await _ai_module.parse_facts_from_recap(transcript, model=model)
+            except ValueError as exc:
+                # parse_facts_from_recap raises ValueError for EVERY failure
+                # (Ollama down, malformed JSON — see its docstring), already
+                # worded for a GM — the same message the synchronous
+                # /api/facts/parse maps to HTTP 502.
+                _set(status="error", error=str(exc), finished_at=datetime.utcnow(), checkpoint_json="")
+                return
+            # An empty list is SUCCESS, not an error: the model understood
+            # the text and found no in-character facts in it (out-of-character
+            # chatter) — the Facts page's UI explains that to the GM.
+            _set(status="done", result_json=_json.dumps(facts),
+                 finished_at=datetime.utcnow(), checkpoint_json="")
         else:
             _set(status="done", finished_at=datetime.utcnow())
     except _job_shutdown.JobInterrupted:

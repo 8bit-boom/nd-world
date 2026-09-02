@@ -12,6 +12,9 @@
 // opts:
 //   createUrl/chunkUrl/completeUrl — same trio ndChunkedUpload expects
 //   listUrl    — GET the recent-jobs list for the active world
+//   allJobsUrl — optional; renders an "All jobs →" link to the full
+//                world-wide jobs page (set by panels whose listUrl filters
+//                down to just their own page's jobs)
 //   onUse(job) — called when the user clicks "Use this" on a finished job
 //   pollMs     — how often to re-poll while any job is in progress (default 3000)
 function ndAudioJobs(panelEl, opts) {
@@ -52,7 +55,22 @@ function ndAudioJobs(panelEl, opts) {
     panelEl.style.display = "block";
     const title = document.createElement("div");
     title.className = "nd-jobs-title";
-    title.textContent = "Background jobs";
+    if (opts.allJobsUrl) {
+      // This panel intentionally shows only a SLICE of the world's jobs
+      // (the session page passes a game_session_id filter in listUrl) —
+      // the link is the advertised escape hatch to the full list, so a GM
+      // who remembers "there was another job somewhere" has a one-click
+      // path to it instead of having to know /background-jobs exists.
+      // Text node last so the link floats right without wrapping it.
+      const all = document.createElement("a");
+      all.href = opts.allJobsUrl;
+      all.textContent = "All jobs →";
+      all.style.cssText = "float:right;color:var(--neon);text-decoration:none;text-transform:none;letter-spacing:0";
+      title.appendChild(all);
+      title.appendChild(document.createTextNode("Background jobs"));
+    } else {
+      title.textContent = "Background jobs";
+    }
     panelEl.appendChild(title);
     jobs.forEach((job) => {
       const row = document.createElement("div");

@@ -1,8 +1,12 @@
 """Tests for the Facts feature: GM-only CRUD, the local-model recap parser
 (mocked — no real Ollama needed), and world/role scoping."""
+import datetime as _dt
+import json
+import time
+
 from app import ai as ai_module
 from app.database import SessionLocal
-from app.models import Fact, GameSession
+from app.models import AudioJob, Fact, GameSession
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -172,3 +176,156 @@ def test_player_cannot_call_facts_api(client, seed):
     assert r.status_code == 403
     r = client.post("/api/facts/bulk", json={"facts": [{"content": "x", "visible_to_players": True}]})
     assert r.status_code == 403
+
+
+# ── POST /api/facts/parse-job + GET /api/facts/last-parse ───────────────────
+# The parse as a durable background job (see app/audio_jobs.py
+# create_facts_parse_job's docstring): the synchronous route held one HTTP
+# request open for the whole model call and tripped Cloudflare Tunnel's
+# ~100s timeout on long recaps, losing everything; the job row also gives
+# the parsed draft a persistent home (result_json) a reload can restore.
+
+def _login_gm(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+
+def test_api_facts_parse_job_creates_job_and_returns_id(client, seed, monkeypatch):
+    async def fake_parse(raw_text, model=""):
+        return [
+            {"content": "The party visited the tavern.", "visible_to_players": True},
+            {"content": "Elyra is secretly a cult agent.", "visible_to_players": False},
+        ]
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    db = SessionLocal()
+    try:
+        gs = GameSession(world_id=seed.world_a.id, title="Session 1", session_num=1)
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        session_id = gs.id
+    finally:
+        db.close()
+
+    _login_gm(client, seed)
+    r = client.post("/api/facts/parse-job", json={
+        "text": "went to the tavern, met Elyra, she's a cult agent",
+        "game_session_id": session_id,
+    })
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+
+    # The row is persisted immediately, with the input text and session
+    # attribution — not just handed to the browser.
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job is not None
+        assert job.world_id == seed.world_a.id
+        assert job.purpose == "facts_parse"
+        assert job.filename == "Facts"
+        assert job.transcript == "went to the tavern, met Elyra, she's a cult agent"
+        assert job.game_session_id == session_id
+    finally:
+        db.close()
+
+    # The background run lands the draft in result_json (via the ordinary
+    # audio-jobs status route the page polls) — and no Fact rows exist yet:
+    # parsing still never writes facts, only Confirm & Save does.
+    deadline = time.time() + 5.0
+    data = None
+    while time.time() < deadline:
+        data = client.get(f"/api/audio-jobs/{job_id}").json()
+        if data["status"] in ("done", "error"):
+            break
+        time.sleep(0.02)
+    assert data["status"] == "done", data.get("error")
+    assert len(json.loads(data["result_json"])) == 2
+    db = SessionLocal()
+    try:
+        assert db.query(Fact).count() == 0
+    finally:
+        db.close()
+
+
+def test_api_facts_parse_job_blank_text_is_400(client, seed):
+    _login_gm(client, seed)
+    r = client.post("/api/facts/parse-job", json={"text": "   "})
+    assert r.status_code == 400
+    db = SessionLocal()
+    try:
+        assert db.query(AudioJob).count() == 0  # nothing created, not even an erroring job
+    finally:
+        db.close()
+
+
+def test_api_facts_parse_job_requires_world_and_gm(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post("/api/facts/parse-job", json={"text": "whatever"})
+    assert r.status_code == 403
+    r = client.get("/api/facts/last-parse")
+    assert r.status_code == 403
+
+
+def test_api_facts_last_parse_returns_latest_done_job(client, seed):
+    db = SessionLocal()
+    try:
+        older = AudioJob(world_id=seed.world_a.id, purpose="facts_parse", filename="Facts",
+                         status="done", result_json='[{"content": "older", "visible_to_players": true}]')
+        newer = AudioJob(world_id=seed.world_a.id, purpose="facts_parse", filename="Facts",
+                         status="done", result_json='[{"content": "newer", "visible_to_players": false}]')
+        errored = AudioJob(world_id=seed.world_a.id, purpose="facts_parse", filename="Facts",
+                           status="error", error="boom", result_json="")
+        db.add_all([older, newer, errored])
+        db.commit()
+        # Identical microsecond timestamps would make "latest" ambiguous —
+        # space them out deterministically.
+        older.created_at = _dt.datetime(2026, 1, 1, 12, 0, 0)
+        newer.created_at = _dt.datetime(2026, 1, 2, 12, 0, 0)
+        db.commit()
+        newer_id = newer.id  # read before close() detaches the instances
+    finally:
+        db.close()
+
+    _login_gm(client, seed)
+    r = client.get("/api/facts/last-parse")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["job_id"] == newer_id
+    assert data["facts"] == [{"content": "newer", "visible_to_players": False}]
+    assert data["created_at"] == "2026-01-02T12:00:00"
+
+
+def test_api_facts_last_parse_404_when_none(client, seed):
+    _login_gm(client, seed)
+    assert client.get("/api/facts/last-parse").status_code == 404
+
+
+def test_api_facts_last_parse_scoped_to_active_world(client, seed):
+    db = SessionLocal()
+    try:
+        db.add(AudioJob(world_id=seed.world_b.id, purpose="facts_parse", filename="Facts",
+                        status="done", result_json="[]"))
+        db.commit()
+    finally:
+        db.close()
+    _login_gm(client, seed)
+    assert client.get("/api/facts/last-parse").status_code == 404
+
+
+def test_facts_page_wires_background_parse_and_restore(client, seed):
+    """The page must drive the JOB-based flow (parse-job + status polling +
+    Restore last parse), not the old blocking /api/facts/parse — that route
+    is what produced HTTP 524s on long recaps."""
+    _login_gm(client, seed)
+    html = client.get("/facts").text
+    assert "id=\"parse-btn\"" in html
+    assert "/api/facts/parse-job" in html
+    assert "pollFactsParseJob" in html
+    assert "Parsing in background… (poll" in html
+    assert "id=\"restore-parse-btn\"" in html
+    assert "restoreLastParse" in html
+    assert "/api/facts/last-parse" in html
+    # Empty parse outcome is explained, not silently swallowed.
+    assert "No in-character facts found" in html

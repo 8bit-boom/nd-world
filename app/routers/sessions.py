@@ -1019,21 +1019,31 @@ def api_audio_job_status(job_id: int, request: Request, db: Session = Depends(ge
 
 
 @router.get("/api/sessions/ai/audio-jobs")
-def api_audio_job_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def api_audio_job_list(
+    request: Request, game_session_id: Optional[int] = None,
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
     """Recent background transcription jobs for the active world — lets a
     GM find a job again after closing the tab that started it (even from a
     different browser), not just while it's still visible on the page that
-    kicked it off."""
+    kicked it off.
+
+    `game_session_id`, when given, narrows the list to jobs made FOR that
+    session (AudioJob.game_session_id == it) — the Sessions page's inline
+    panel passes its own session's id, so it shows only what belongs to the
+    session the GM is looking at instead of every recap/condense job in the
+    world (other sessions' jobs are still on /background-jobs, which has
+    purpose/status filters of its own). Every job-creating route on this
+    page persists game_session_id, so the filter is exact."""
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
-    jobs = (
-        db.query(AudioJob)
-        .filter(AudioJob.world_id == world.id, AudioJob.purpose.in_(_SESSION_JOB_PURPOSES))
-        .order_by(AudioJob.created_at.desc())
-        .limit(20)
-        .all()
+    q = db.query(AudioJob).filter(
+        AudioJob.world_id == world.id, AudioJob.purpose.in_(_SESSION_JOB_PURPOSES),
     )
+    if game_session_id is not None:
+        q = q.filter(AudioJob.game_session_id == game_session_id)
+    jobs = q.order_by(AudioJob.created_at.desc()).limit(20).all()
     return [_job_to_dict(j) for j in jobs]
 
 
