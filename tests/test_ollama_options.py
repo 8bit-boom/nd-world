@@ -804,10 +804,112 @@ async def test_parse_facts_from_recap_passes_options_and_keep_alive(monkeypatch)
     ai_module.set_ollama_generation_overrides({"seed": 42}, "1h")
     facts = await ai_module.parse_facts_from_recap("some recap text")
     assert facts == []
-    assert calls[0]["options"] == {"seed": 42}
+    # The GM's options ride along, PLUS the chunk-window pin: every parse
+    # call now carries an explicit num_ctx equal to the window the chunk
+    # budget assumed (the configured num_ctx, else the conservative default)
+    # so chunk + reserves + JSON response always fit the ENFORCED window.
+    assert calls[0]["options"] == {"num_ctx": ai_module._DEFAULT_ASSUMED_CTX_TOKENS, "seed": 42}
     assert calls[0]["keep_alive"] == "1h"
     # format= (the JSON-schema constraint) must still be sent alongside.
     assert calls[0]["format"]
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_chunks_pin_num_ctx_to_the_budgeted_window(monkeypatch):
+    """Every chunk call pins num_ctx to the window the chunk budget was
+    computed against (a configured 8192 here, the conservative default in
+    the test above) — without the pin, a model whose own Modelfile default
+    is smaller than what the budget assumed would silently truncate the
+    prompt (or 400 it, the exact reported failure) on the enforced window."""
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 200)
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    ai_module.set_ollama_generation_overrides({"num_ctx": 8192})
+    await ai_module.parse_facts_from_recap("The party met Elyra at the tavern. " * 6)
+    assert len(calls) >= 2  # actually chunked under the tiny forced budget
+    assert all(k["options"]["num_ctx"] == 8192 for k in calls)
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_default_budget_splits_an_11k_token_paste_into_several_chunks(monkeypatch):
+    """The reported production failure: a ~12k-token paste+RAG sent as ONE
+    request 400'd against the model's ~9.7k-token context. Under the default
+    budget math (no configured num_ctx → the conservative 4096 assumed) a
+    paste of that order MUST split into several chunks, each one small
+    enough to fit the window every call pins — no single call may exceed
+    num_ctx anymore, by construction."""
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    text = "The party traveled north and fought the bandits at the old bridge. " * 680  # ~46k chars ≈ 11k tokens
+    facts = await ai_module.parse_facts_from_recap(text)
+    assert facts == []
+    assert len(calls) >= 3  # several chunks, not one doomed giant call
+    # The same budget computation the parse just did, replayed so the
+    # per-chunk size bound is asserted against the real numbers, not the
+    # test's own guess.
+    budget = ai_module._transcript_chunk_char_budget(
+        text, ai_module._RECAP_SYSTEM, False,
+        extra_reserve_tokens=ai_module._FACTS_PARSE_RESPONSE_RESERVE_TOKENS,
+    )
+    for k in calls:
+        user = [m for m in k["messages"] if m["role"] == "user"][0]["content"]
+        assert len(user) <= budget  # each call saw only its own chunk
+        assert k["options"]["num_ctx"] == ai_module._DEFAULT_ASSUMED_CTX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_one_failed_chunk_does_not_fail_the_parse(monkeypatch):
+    """A model/connection failure on ONE chunk must not throw away the
+    facts every other chunk already extracted (a 6-part parse dying on part
+    1 used to be the whole job) — the failed chunk is skipped and the rest
+    merge normally."""
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 200)
+    facts_json = '{"facts": [{"content": "The party met Elyra at the tavern.", "visible_to_players": true}]}'
+
+    class _FailFirstChunkClient:
+        def __init__(self):
+            self.calls = []
+
+        async def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                raise RuntimeError("connection reset")
+            return _FakeResp(facts_json)
+
+        async def show(self, model):
+            return types.SimpleNamespace(capabilities=["thinking"])
+
+    fake = _FailFirstChunkClient()
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    facts = await ai_module.parse_facts_from_recap("The party met Elyra at the tavern. " * 6)
+    assert len(fake.calls) == 2  # chunk 1 failed, chunk 2 was still asked
+    assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True}]
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_every_chunk_failing_still_raises_valueerror(monkeypatch):
+    """The tolerance above has a floor: when EVERY chunk failed there are no
+    facts to salvage, so the parse raises the same ValueError contract the
+    single-call version always had (the job runner maps it to job.error,
+    the sync route to HTTP 502) instead of silently returning []."""
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 200)
+
+    class _AlwaysFailsClient:
+        def __init__(self):
+            self.calls = []
+
+        async def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            raise RuntimeError("connection reset")
+
+        async def show(self, model):
+            return types.SimpleNamespace(capabilities=[])
+
+    fake = _AlwaysFailsClient()
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    with pytest.raises(ValueError, match="AI unavailable"):
+        await ai_module.parse_facts_from_recap("The party met Elyra at the tavern. " * 6)
+    assert len(fake.calls) >= 2  # every chunk really was attempted
 
 
 # ── Settings > System save/validation round-trip ────────────────────────────
@@ -1928,6 +2030,38 @@ async def test_parse_facts_unvouched_rejection_falls_back_to_plain_think_false(m
         assert not any("<|think|>" in (msg.get("content") or "") for msg in fake.calls[1]["messages"])
     finally:
         ai_module._model_capabilities_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_think_rejection_recovers_per_chunk(monkeypatch):
+    """The <|think|> recovery is per CHUNK now, not per parse: chunk 1's
+    failing think=true probe is retried with the token (the GM override
+    vouches for the model), and chunk 2 onward go straight to think=False
+    + token via the poisoned capability cache and the pre-call injection —
+    no further failing 400 round-trips mid-parse. All chunks' facts still
+    merge (deduplicated here, since the fake answers every non-thinking
+    call with the same JSON)."""
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 200)
+    facts_json = '{"facts": [{"content": "The party met Elyra at the tavern.", "visible_to_players": true}]}'
+    fake = _RejectsThinkingClient("my-model", non_thinking_content=facts_json)
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        text = "The party met Elyra at the tavern. " * 6  # two chunks under the forced budget
+        facts = await ai_module.parse_facts_from_recap(text, model="my-model", think=True)
+        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True}]
+        # Chunk 1: the failing think=true probe, then the token retry.
+        assert fake.calls[0]["think"] is True
+        assert fake.calls[1]["think"] is False
+        assert fake.calls[1]["format"]  # the schema constraint survived onto the retry
+        assert fake.calls[1]["messages"][0]["content"].startswith("<|think|>")
+        # Chunk 2: downgraded pre-call, token injected WITHOUT another probe.
+        assert len(fake.calls) == 3
+        assert fake.calls[2]["think"] is False
+        assert fake.calls[2]["messages"][0]["content"].startswith("<|think|>")
+        assert fake.calls[2]["format"]
+    finally:
+        ai_module.set_ollama_generation_overrides({})
 
 
 def test_messages_with_prompt_think_token_prepends_and_inserts():

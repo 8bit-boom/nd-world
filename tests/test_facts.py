@@ -109,7 +109,7 @@ def test_facts_scoped_to_active_world(client, seed):
 
 
 def test_api_facts_parse_returns_draft_without_saving(client, seed, monkeypatch):
-    async def fake_parse(raw_text, model="", think=False, world_context=""):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
         assert "tavern" in raw_text
         return [
             {"content": "The party visited the tavern.", "visible_to_players": True},
@@ -132,7 +132,7 @@ def test_api_facts_parse_returns_draft_without_saving(client, seed, monkeypatch)
 
 
 def test_api_facts_parse_surfaces_model_failure(client, seed, monkeypatch):
-    async def fake_parse(raw_text, model="", think=False, world_context=""):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
         raise ValueError("Could not parse facts from that recap — try rephrasing it.")
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
 
@@ -194,7 +194,7 @@ def _login_gm(client, seed):
 
 
 def test_api_facts_parse_job_creates_job_and_returns_id(client, seed, monkeypatch):
-    async def fake_parse(raw_text, model="", think=False, world_context=""):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
         return [
             {"content": "The party visited the tavern.", "visible_to_players": True},
             {"content": "Elyra is secretly a cult agent.", "visible_to_players": False},
@@ -424,7 +424,7 @@ async def test_parse_facts_from_recap_defaults_to_clean_json_and_bare_text(monke
 
 
 def test_api_facts_parse_job_round_trips_model_think_and_rag(client, seed, monkeypatch):
-    async def fake_parse(raw_text, model="", think=False, world_context=""):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
         return []
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
 
@@ -480,3 +480,124 @@ def test_facts_page_ships_parse_model_think_and_rag_pickers(client, seed):
     assert "/api/ai/models" in html
     # The POST body includes the pickers' values.
     assert "parseModelOptions()" in html
+
+
+# ── Chunked parsing (parse_facts_from_recap v2) ─────────────────────────────
+# A long paste used to go out as ONE unconstrained chat call (+RAG) and
+# overflowed a small local model's context window outright (Ollama 400
+# "request ... exceeds the available context size"); it now splits with the
+# same _split_transcript_into_chunks/_transcript_chunk_char_budget machinery
+# summarize_transcript uses, calls the model once per chunk, and merges the
+# results deduplicated. These tests pin that machinery end to end.
+
+class _ScriptedParseClient:
+    """Answers each .chat() call with the next scripted payload (a JSON
+    string — or an Exception to raise), recording every kwargs dict, so a
+    test can drive a multi-chunk parse through different per-chunk model
+    answers without an Ollama server. Once the scripted list is exhausted
+    the LAST answer repeats, so the exact number of chunks a paste splits
+    into doesn't need predicting for tests that don't care about it."""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = []
+
+    async def chat(self, **kwargs):
+        self.calls.append(kwargs)
+        response = self._responses[min(len(self.calls) - 1, len(self._responses) - 1)]
+        if isinstance(response, Exception):
+            raise response
+        return types.SimpleNamespace(message=types.SimpleNamespace(content=response))
+
+    async def show(self, model):
+        return types.SimpleNamespace(capabilities=["thinking"])
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_long_text_chunked_deduped_in_order(monkeypatch):
+    """A paste too long for one chunk is extracted one chunk at a time
+    (each call seeing only its own slice, plus the RAG lore), and the
+    per-chunk facts merge in order with duplicates collapsed — the same
+    event extracted from adjacent chunks (reworded, re-punctuated) appears
+    once, in its first-seen form."""
+    budget = 200  # forces the paste into several chunks via the real splitter
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: budget)
+    fake = _ScriptedParseClient([
+        '{"facts": [{"content": "The party met Elyra at the tavern.", "visible_to_players": true}]}',
+        '{"facts": [{"content": "the party met Elyra at the tavern!", "visible_to_players": true},'
+        ' {"content": "The cult met under the clock tower.", "visible_to_players": false}]}',
+        '{"facts": [{"content": "The party fled into the sewers.", "visible_to_players": true}]}',
+        '{"facts": []}',
+    ])
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    expected_ctx = ai_module.effective_ollama_options().get("num_ctx") or ai_module._DEFAULT_ASSUMED_CTX_TOKENS
+    world_context = "- [npc] Elyra: an enchanter"
+    framing = ai_module._with_world_context("", world_context)  # the lore wrapper with an empty body
+
+    text = ("The party met Elyra at the tavern. " * 6
+            + "The cult met under the clock tower. " * 6
+            + "The party fled into the sewers. " * 6)
+    facts = await ai_module.parse_facts_from_recap(text, model="m1", world_context=world_context)
+
+    assert len(fake.calls) >= 3  # actually chunked under the tiny forced budget
+    assert [(f["content"], f["visible_to_players"]) for f in facts] == [
+        ("The party met Elyra at the tavern.", True),  # first-seen form wins over chunk 2's rewording
+        ("The cult met under the clock tower.", False),
+        ("The party fled into the sewers.", True),
+    ]
+    for kwargs in fake.calls:
+        assert kwargs["model"] == "m1"
+        assert kwargs["format"]  # the schema constraint rides EVERY chunk
+        assert kwargs["options"]["num_ctx"] == expected_ctx  # window pinned to the budgeted one
+        assert kwargs["messages"][0]["role"] == "system"
+        # The OOC-skip guidance reaches every chunk — the reported failure
+        # was a model answering a mixed transcript with a meta-DESCRIPTION
+        # of the text instead of facts.
+        assert kwargs["messages"][0]["content"] == ai_module._RECAP_SYSTEM
+        assert "out-of-character" in kwargs["messages"][0]["content"]
+        user = [m for m in kwargs["messages"] if m["role"] == "user"][0]["content"]
+        # World lore rides EVERY chunk (name accuracy is not chunk-local)...
+        assert user.startswith("Relevant world lore and notes")
+        assert world_context in user
+        # ...and the message body past the lore wrapper is exactly one
+        # chunk's worth of the paste — never the whole text again.
+        chunk = user[len(framing):]
+        assert chunk in text
+        assert len(chunk) <= budget
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_all_ooc_chunks_return_empty_list(monkeypatch):
+    """The model answering {"facts": []} for EVERY chunk (pure
+    out-of-character chatter — rules questions, setup, table talk) is a
+    SUCCESSFUL parse of zero facts, not an error: nothing raised, so the
+    caller gets [] and the job lands done with "[]" exactly as before."""
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 200)
+    fake = _ScriptedParseClient(['{"facts": []}'])
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    text = "Rules question about spell slots. " * 12  # several chunks of pure OOC chatter
+    assert await ai_module.parse_facts_from_recap(text) == []
+    assert len(fake.calls) >= 2
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_huge_world_context_never_raises_just_skips_reserve(monkeypatch):
+    """RAG lore so big it alone fills a whole chunk budget can't be reserved
+    for (the chunk would floor out and overflow anyway) — the parse logs a
+    warning and proceeds with the un-reserved budget instead of raising;
+    a bad lore blob must never turn into a hard parse failure."""
+    budget_calls = []
+
+    def fake_budget(transcript, system, think=True, extra_reserve_tokens=0):
+        budget_calls.append(extra_reserve_tokens)
+        return 200
+
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", fake_budget)
+    fake = _ScriptedParseClient(['{"facts": []}'])
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    big_lore = "- [npc] Elyra: " + "x" * 5000  # ~1250 tokens, far over a 200-char budget
+    assert await ai_module.parse_facts_from_recap("met Elyra", world_context=big_lore) == []
+    # First call computed the base budget with no extra reserve; the world_
+    # context-alone-overflows check then took the fallback — no second call
+    # asking for the (impossible) lore + response reserve.
+    assert budget_calls == [0]

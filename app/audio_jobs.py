@@ -1165,37 +1165,45 @@ async def _run_job(job_id: int) -> None:
                 _set(status="done", recap=recap, chunk_current=None, chunk_total=None,
                      finished_at=datetime.utcnow(), checkpoint_json="")
         elif purpose == "facts_parse":
-            # Single parse call, no chunking/checkpointing — parse_facts_
-            # from_recap is one schema-constrained chat request (see app.ai),
-            # so like condense there is no partial-progress state to persist
-            # between chunks. Not wrapped in the ollama_job_semaphore/
-            # thinking-ladder machinery the summarize purposes use: those
-            # guard long multi-chunk map-reduce runs against interleaving and
-            # output-budget starvation; a facts parse is short enough that
-            # the synchronous route never needed either, and this must stay
-            # behaviorally identical to it (minus the blocking HTTP request).
+            # parse_facts_from_recap chunks a long paste into several
+            # schema-constrained calls (the same budget/split machinery
+            # summarize_transcript's map-reduce uses — see app.ai), so
+            # _on_progress gives the job card real "part X/Y" progress
+            # instead of an undifferentiated "summarizing" placeholder for a
+            # many-minute parse. Held inside ollama_job_semaphore for the
+            # whole run now that it IS a multi-chunk run — same interleaving
+            # guard the summarize purposes use. No thinking-retry ladder
+            # though: the parse has its own per-chunk <|think|> rejection
+            # recovery (see app.ai._parse_facts_chat_call) and its
+            # ValueError contract is what lands in job.error below.
             _set(status="summarizing")
-            try:
-                # think/world_context: the Facts page's own Thinking checkbox
-                # and RAG opt-in (persisted on the row by
-                # create_facts_parse_job). world_context prepends retrieved
-                # World lore to the parse's user message for name accuracy —
-                # parse_facts_from_recap frames it with the same
-                # _with_world_context wording condense_recap uses.
-                facts = await _ai_module.parse_facts_from_recap(
-                    transcript, model=model, think=think, world_context=world_context,
-                )
-            except ValueError as exc:
-                # parse_facts_from_recap raises ValueError for EVERY failure
-                # (Ollama down, malformed JSON — see its docstring), already
-                # worded for a GM — the same message the synchronous
-                # /api/facts/parse maps to HTTP 502.
-                _set(status="error", error=str(exc), finished_at=datetime.utcnow(), checkpoint_json="")
-                return
+            async with _ai_module.ollama_job_semaphore:
+                try:
+                    # think/world_context: the Facts page's own Thinking checkbox
+                    # and RAG opt-in (persisted on the row by
+                    # create_facts_parse_job). world_context prepends retrieved
+                    # World lore to the parse's user message for name accuracy —
+                    # parse_facts_from_recap frames it with the same
+                    # _with_world_context wording condense_recap uses.
+                    facts = await _ai_module.parse_facts_from_recap(
+                        transcript, model=model, think=think, world_context=world_context,
+                        on_progress=_on_progress,
+                    )
+                except ValueError as exc:
+                    # parse_facts_from_recap raises ValueError when EVERY
+                    # chunk failed (Ollama down, unusable JSON — see its
+                    # docstring), already worded for a GM — the same message
+                    # the synchronous /api/facts/parse maps to HTTP 502.
+                    _set(status="error", error=str(exc), chunk_current=None, chunk_total=None,
+                         finished_at=datetime.utcnow(), checkpoint_json="")
+                    return
             # An empty list is SUCCESS, not an error: the model understood
             # the text and found no in-character facts in it (out-of-character
-            # chatter) — the Facts page's UI explains that to the GM.
-            _set(status="done", result_json=_json.dumps(facts),
+            # chatter) — the Facts page's UI explains that to the GM. Chunk
+            # progress fields clear on completion the way session_recap's
+            # done-branch does, so a finished card never shows a stale
+            # "part X/Y".
+            _set(status="done", result_json=_json.dumps(facts), chunk_current=None, chunk_total=None,
                  finished_at=datetime.utcnow(), checkpoint_json="")
         elif purpose == "session_log_recap":
             # One summarize_session_from_facts call over this session's Fact

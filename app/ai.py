@@ -2,6 +2,7 @@ import asyncio
 import os
 import json as _json
 import logging
+import re
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -1031,7 +1032,12 @@ _RECAP_SYSTEM = (
     "Default to visible_to_players: true unless the recap clearly marks something as secret "
     "or the players wouldn't plausibly know it yet. Split compound sentences into separate "
     "facts where it makes sense. Write each fact as a complete sentence in past tense. Do not "
-    "invent details that aren't implied by the recap. Respond with JSON only."
+    "invent details that aren't implied by the recap.\n\n"
+    "The text may also contain out-of-character discussion — rules questions, setup, table "
+    "talk. Ignore out-of-character discussion entirely and extract only facts about what "
+    "happened in the story; if a passage contains no in-story events, return an empty facts "
+    "list. Never describe the text itself or your extraction process — respond with the "
+    "facts JSON only."
 )
 
 _RECAP_FACTS_SCHEMA = {
@@ -1053,59 +1059,63 @@ _RECAP_FACTS_SCHEMA = {
 }
 
 
-async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = False, world_context: str = "") -> list[dict]:
-    """Turn a rough GM recap into draft facts via the local model, using
-    Ollama's JSON-schema-constrained `format` — see ollama.AsyncClient.chat's
-    `format` parameter. Raises ValueError on any failure (model unreachable,
-    malformed JSON) so the caller can surface a clear error; does not write
-    anything to the database itself.
+# Extra context-window headroom every parse chunk reserves for the model's
+# JSON response, on top of _CHUNK_RESERVED_TOKENS (which already budgets for
+# a system prompt + a generic response + margin) and the world_context
+# reserve. A facts list for one chunk is short, but it's the model's ENTIRE
+# visible answer (format= binds _RECAP_FACTS_SCHEMA to `content`), and a
+# scene-dense chunk can legitimately yield a dozen sentences — 512 tokens
+# keeps that answer from colliding with the chunk's own input tokens.
+_FACTS_PARSE_RESPONSE_RESERVE_TOKENS = 512
 
-    `think` defaults to False, same clean-JSON default every other
-    schema-constrained caller in this module uses (see _chat_kwargs' own
-    docstring) — it's a parameter only since the Facts page grew its own
-    "Thinking" checkbox: a GM opting in gets deeper extraction at the usual
-    cost (slower, and a model that spends its whole output budget reasoning
-    can come back with empty content — see generate_chat's empty-content
-    handling). JSON `format` and think=True coexist fine in Ollama: hidden
-    reasoning lands in the response's separate `thinking` field, so
-    resp.message.content below is still exactly the JSON blob.
+
+def _normalized_fact_key(content: str) -> str:
+    """The dedup key parse_facts_from_recap merges chunk results by:
+    lowercase, collapsed whitespace, trailing punctuation stripped. Adjacent
+    chunks overlap at their sentence-boundary split points, and a small local
+    model re-extracting the same scene event from both sides ("The party met
+    Elyra." vs "the party met Elyra!") used to be impossible before chunking
+    — now it would surface as a duplicate row in the GM's review list, so
+    near-identical wordings of one event collapse to the first-seen one."""
+    return re.sub(r"\s+", " ", content.strip().lower()).rstrip(".!?…")
+
+
+async def _parse_facts_chat_call(m: str, messages: list[dict], think: bool, options: dict) -> dict:
+    """One schema-constrained chat request for parse_facts_from_recap — the
+    whole request/retry machinery factored out of the chunk loop so the
+    <|think|> rejection recovery below lives in ONE place instead of being
+    duplicated per chunk. Raises ValueError on any failure (same contract
+    the pre-chunking parse had), returns the raw ollama response on success
+    (the CALLER owns the JSON parsing, so a malformed chunk is a skip-one-
+    chunk problem rather than a whole-parse failure).
+
+    `options` is the num_ctx pin computed once by the caller (see
+    parse_facts_from_recap) — layered over the GM's configured options by
+    _chat_kwargs like any per-request override, on both the original call
+    and the rejection retry below.
 
     A think=true request that Ollama rejects outright ("<model> does not
     support thinking", HTTP 400) recovers exactly like generate_chat's own
-    rejection branch instead of failing the parse: retry once with
+    rejection branch instead of failing the chunk: retry once with
     think=False — for a model nd-world itself vouches for (KNOWN_MODELS, or
     a GM's per-model override — the hf.co-imported-GGUF case, ollama#16936)
     with the <|think|> system-prompt token prepended so the reasoning the
     GM asked for still happens — and the JSON constraint stays on the retry
     too, since it binds `content` while token-triggered thinking lands in
     that separate `thinking` field. See _prompt_token_thinking_models and
-    generate_chat's matching block for the full reasoning.
-
-    `world_context`, if given, is RAG-retrieved World lore/Notes text (see
-    app.audio_jobs._build_rag_context). It's prepended ahead of the recap
-    text in the USER message by reusing _with_world_context itself — same
-    "reference material for name accuracy, not content" framing condense_
-    recap puts on its system prompt, kept word-for-word in one place so the
-    two surfaces can't drift. The user message, not the system prompt,
-    because the extraction instructions already live in _RECAP_SYSTEM and
-    the lore is context FOR the text being split, not a behavior change."""
-    m = model or effective_ollama_model()
-    messages = [
-        {"role": "system", "content": _RECAP_SYSTEM},
-        {"role": "user", "content": _with_world_context(raw_text, world_context)},
-    ]
+    generate_chat's matching block for the full reasoning."""
+    chat_kwargs = await _chat_kwargs(options, think, m)
+    if think and not chat_kwargs["think"] and m in _prompt_token_thinking_models:
+        # Same pre-call injection as generate_chat/stream_chat: the
+        # capability cache a rejection poisoned downgraded the requested
+        # think=True above, but this model's reasoning is still wanted
+        # and still available via the template's <|think|> token —
+        # without this, every chunk AFTER the first rejection would
+        # silently drop to instruct mode, and unlike chat nothing
+        # downstream labels the result, so the GM would just get
+        # shallower facts with no sign thinking ever stopped.
+        messages = _messages_with_prompt_think_token(messages)
     try:
-        chat_kwargs = await _chat_kwargs(model=m, think=think)
-        if think and not chat_kwargs["think"] and m in _prompt_token_thinking_models:
-            # Same pre-call injection as generate_chat/stream_chat: the
-            # capability cache a rejection poisoned downgraded the requested
-            # think=True above, but this model's reasoning is still wanted
-            # and still available via the template's <|think|> token —
-            # without this, every parse AFTER the first rejection would
-            # silently drop to instruct mode, and unlike chat nothing
-            # downstream labels the result, so the GM would just get
-            # shallower facts with no sign thinking ever stopped.
-            messages = _messages_with_prompt_think_token(messages)
         resp = await _client().chat(model=m, messages=messages, format=_RECAP_FACTS_SCHEMA, **chat_kwargs)
         # The EFFECTIVE think (post _chat_kwargs downgrade), not the caller's
         # requested one — same call generate_chat/stream_chat make after a
@@ -1119,14 +1129,14 @@ async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = F
         if think and "does not support thinking" in (exc.error or ""):
             # Ollama flatly refused think=true for this model — recover the
             # same way generate_chat/stream_chat do instead of failing the
-            # job. Not a transient error, so retrying the identical call
+            # chunk. Not a transient error, so retrying the identical call
             # would just 400 again; the Facts page's Thinking checkbox is
             # exactly as deliberate as AI Chat's, and this ResponseError
             # becoming the plain ValueError it used to be failed every
             # parse for hf.co-imported GGUFs Ollama never tagged as
             # thinking-capable (ollama#16936). The rejection also poisons
             # the capability cache (see _record_thinking_result), so later
-            # parses skip the doomed flag via the pre-call injection above
+            # chunks skip the doomed flag via the pre-call injection above
             # instead of repeating this round-trip.
             _record_thinking_result(m, think, failed=True)
             retry_messages = messages
@@ -1146,17 +1156,18 @@ async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = F
             # format=_RECAP_FACTS_SCHEMA stays on the retry: Ollama binds the
             # JSON constraint to the final `content`, while token-triggered
             # thinking lands in the response's separate `thinking` field — so
-            # the retry's content is still exactly the JSON blob parsed
-            # below. think=False can never re-enter this branch (_chat_kwargs
-            # skips its capability check for a falsy think entirely), so this
-            # really is a single retry; any failure IT raises still becomes
-            # the same ValueError the original call would have produced.
+            # the retry's content is still exactly the JSON blob parsed by
+            # the caller. think=False can never re-enter this branch
+            # (_chat_kwargs skips its capability check for a falsy think
+            # entirely), so this really is a single retry; any failure IT
+            # raises still becomes the same ValueError the original call
+            # would have produced.
             try:
                 resp = await _client().chat(
                     model=m,
                     messages=retry_messages,
                     format=_RECAP_FACTS_SCHEMA,
-                    **(await _chat_kwargs(model=m, think=False)),
+                    **(await _chat_kwargs(options, False, m)),
                 )
             except _ollama.ResponseError as retry_exc:
                 raise ValueError(f"Ollama error {retry_exc.status_code}: {retry_exc.error}") from retry_exc
@@ -1166,17 +1177,154 @@ async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = F
             raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
     except Exception as exc:
         raise ValueError(f"AI unavailable: {type(exc).__name__}: {exc}") from exc
-    try:
-        parsed = _json.loads(resp.message.content or "")
-        facts = parsed["facts"]
-        if not isinstance(facts, list):
-            raise ValueError
-        return [
-            {"content": str(f["content"]), "visible_to_players": bool(f["visible_to_players"])}
-            for f in facts
+    return resp
+
+
+async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = False, world_context: str = "", on_progress=None) -> list[dict]:
+    """Turn a rough GM recap into draft facts via the local model, using
+    Ollama's JSON-schema-constrained `format` — see ollama.AsyncClient.chat's
+    `format` parameter. Raises ValueError ONLY when every chunk failed (see
+    the merge loop below) so the caller can surface a clear error; does not
+    write anything to the database itself.
+
+    A paste longer than one context window is split into chunks (the SAME
+    _split_transcript_into_chunks/_transcript_chunk_char_budget machinery
+    summarize_transcript uses for session recordings) and each chunk is
+    extracted independently; the results merge into one list, deduplicated
+    by _normalized_fact_key. Before chunking, the whole paste (+RAG
+    world_context) went out as ONE unconstrained-size request, and a real
+    GM paste of ~12k prompt tokens against a ~9.7k-token model context came
+    back as a hard Ollama 400 — no facts at all, no matter how long the GM
+    waited. Chunking trades that cliff for a few extra AI calls, and each
+    call stays small enough that a local model actually extracts well
+    instead of degrading on a huge mixed transcript.
+
+    `on_progress(current, total)`, if given, is called before each chunk's
+    extraction (1-based, same "currently on part 2 of 5" contract
+    summarize_transcript gives audio_jobs.py) so the job runner can persist
+    real progress to the job row instead of an undifferentiated
+    "summarizing" placeholder for a many-minute parse.
+
+    Each chunk's num_ctx is pinned explicitly to the same window
+    _transcript_chunk_char_budget budgeted the chunk size against (the GM's
+    configured num_ctx, else _DEFAULT_ASSUMED_CTX_TOKENS) — chunk + system
+    prompt + world_context reserve + this response reserve then fit the
+    ENFORCED window even when the model's own Modelfile default is smaller
+    than what the budget assumed, which a bare "hope the default is big
+    enough" leaves to chance.
+
+    `think` defaults to False, same clean-JSON default every other
+    schema-constrained caller in this module uses (see _chat_kwargs' own
+    docstring) — it's a parameter only since the Facts page grew its own
+    "Thinking" checkbox: a GM opting in gets deeper extraction at the usual
+    cost (slower, and a model that spends its whole output budget reasoning
+    can come back with empty content — see generate_chat's empty-content
+    handling). JSON `format` and think=True coexist fine in Ollama: hidden
+    reasoning lands in the response's separate `thinking` field, so
+    resp.message.content below is still exactly the JSON blob. The per-chunk
+    "does not support thinking" rejection recovery lives in
+    _parse_facts_chat_call and works identically per chunk.
+
+    `world_context`, if given, is RAG-retrieved World lore/Notes text (see
+    app.audio_jobs._build_rag_context). It's prepended ahead of EACH chunk
+    in the USER message by reusing _with_world_context itself — same
+    "reference material for name accuracy, not content" framing condense_
+    recap puts on its system prompt, kept word-for-word in one place so the
+    two surfaces can't drift (and chunk 3 still spells names right even
+    though the lore text isn't part of any one chunk). Its token cost is
+    reserved OUT of every chunk's budget (see the reserve math below), so
+    adding RAG can shrink chunks but never overflow the window. The user
+    message, not the system prompt, because the extraction instructions
+    already live in _RECAP_SYSTEM and the lore is context FOR the text
+    being split, not a behavior change."""
+    m = model or effective_ollama_model()
+    # The window every chunk is budgeted AND pinned against — computed once
+    # since nothing below changes it mid-parse.
+    ctx_tokens = _effective_ctx_tokens()
+    # Same len // chars-per-token estimate _transcript_chunk_char_budget
+    # applies to its `system` arg — the lore rides EVERY chunk call, so its
+    # cost comes out of every chunk's input budget, not just the first one's.
+    world_context_tokens = (
+        len(world_context) // _chars_per_token_estimate(world_context)
+    ) if world_context else 0
+    base_budget = _transcript_chunk_char_budget(raw_text, _RECAP_SYSTEM, think)
+    if world_context_tokens >= base_budget // _chars_per_token_estimate(raw_text):
+        # The RAG text alone fills (or overflows) an entire chunk budget —
+        # reserving for it would floor every chunk to the 500-token minimum
+        # and STILL not fit, so the only sane move is to proceed without the
+        # reserve and let the oversized-window pin below carry it. Logged,
+        # never raised: a too-big lore blob degrading the parse beats a hard
+        # error the GM can't do anything about mid-paste.
+        _log.warning(
+            "parse_facts_from_recap: world_context (~%d tokens) alone fills a whole chunk "
+            "budget (~%d tokens) — proceeding without reserving for it, context may overflow",
+            world_context_tokens, base_budget // _chars_per_token_estimate(raw_text),
+        )
+        chunk_chars = base_budget
+    else:
+        chunk_chars = _transcript_chunk_char_budget(
+            raw_text, _RECAP_SYSTEM, think,
+            extra_reserve_tokens=world_context_tokens + _FACTS_PARSE_RESPONSE_RESERVE_TOKENS,
+        )
+    chunks = _split_transcript_into_chunks(raw_text, chunk_chars)
+    _log.info("parse_facts_from_recap: model=%s chunking into %d part(s) (%d chars total)", m, len(chunks), len(raw_text))
+    merged_facts: list[dict] = []
+    seen_keys: set[str] = set()
+    chunk_errors: list[ValueError] = []
+    for i, chunk in enumerate(chunks):
+        # Same 1-based "currently on part N" timing summarize_transcript
+        # uses — BEFORE the call, so the job card shows the in-flight part
+        # rather than a number that only updates after minutes of work.
+        if on_progress:
+            on_progress(i + 1, len(chunks))
+        messages = [
+            {"role": "system", "content": _RECAP_SYSTEM},
+            {"role": "user", "content": _with_world_context(chunk, world_context)},
         ]
-    except Exception as exc:
-        raise ValueError("Could not parse facts from that recap — try rephrasing it.") from exc
+        try:
+            resp = await _parse_facts_chat_call(m, messages, think, {"num_ctx": ctx_tokens})
+        except ValueError as exc:
+            # One chunk's model failure must not throw away every OTHER
+            # chunk's already-extracted facts (a 40-part parse dying on part
+            # 37 would have nothing to show for 36 successful calls) — log,
+            # remember, and keep going; the error is only re-raised below if
+            # NO chunk succeeded.
+            _log.error("parse_facts_from_recap: chunk %d/%d failed (%s) — continuing with the rest", i + 1, len(chunks), exc)
+            chunk_errors.append(exc)
+            continue
+        try:
+            parsed = _json.loads(resp.message.content or "")
+            facts = parsed["facts"]
+            if not isinstance(facts, list):
+                raise ValueError
+            for f in facts:
+                item = {"content": str(f["content"]), "visible_to_players": bool(f["visible_to_players"])}
+                key = _normalized_fact_key(item["content"])
+                if key in seen_keys:
+                    continue  # the same event extracted from an adjacent chunk
+                seen_keys.add(key)
+                merged_facts.append(item)
+        except Exception as exc:
+            # A chunk whose content isn't valid schema JSON (a small model
+            # failing its one job for that part) contributes nothing — but a
+            # meta-description or garbage answer for one part must not fail
+            # the whole parse the way the single-call version's hard
+            # ValueError did. Counted as a failed chunk for the raise-below
+            # decision, same as a chat-level failure.
+            _log.error("parse_facts_from_recap: chunk %d/%d returned unusable facts JSON (%s) — continuing with the rest", i + 1, len(chunks), exc)
+            chunk_errors.append(ValueError("Could not parse facts from that recap — try rephrasing it."))
+            continue
+    if chunk_errors and len(chunk_errors) == len(chunks):
+        # EVERY chunk failed — the parse genuinely produced nothing
+        # explainable as "some parts were empty", so preserve the old
+        # single-call ValueError contract (the first error, usually worded
+        # for the actual failure: Ollama down vs unusable JSON). A clean
+        # all-chunks-empty result ({"facts": []} everywhere — pure
+        # out-of-character chatter) never reaches this: nothing errored,
+        # so it falls through to the empty-list success the Facts page's
+        # UI explains to the GM.
+        raise chunk_errors[0]
+    return merged_facts
 
 
 _ENTITY_FROM_TEXT_SYSTEM = (
@@ -1878,7 +2026,18 @@ def _chars_per_token_estimate(text: str) -> int:
     return _CHARS_PER_TOKEN_ESTIMATE
 
 
-def _transcript_chunk_char_budget(transcript: str = "", system: str = "", think: bool = True) -> int:
+def _effective_ctx_tokens() -> int:
+    """The context window chunked callers budget against — the GM's
+    configured num_ctx (Settings > System) if set, else the conservative
+    low-end default. Kept as one helper (not inlined) because
+    _transcript_chunk_char_budget must budget and parse_facts_from_recap
+    must PIN (see its num_ctx override) against the exact same window —
+    two copies of this expression could silently drift apart and put a
+    chunk that no longer fits into the enforced context."""
+    return effective_ollama_options().get("num_ctx") or _DEFAULT_ASSUMED_CTX_TOKENS
+
+
+def _transcript_chunk_char_budget(transcript: str = "", system: str = "", think: bool = True, extra_reserve_tokens: int = 0) -> int:
     """`transcript` (a sample of it) drives the chars-per-token estimate;
     `system` is the system prompt that will accompany each chunk — the GM's
     World.recap_instructions is free text with no length limit, so a long
@@ -1886,6 +2045,14 @@ def _transcript_chunk_char_budget(transcript: str = "", system: str = "", think:
     window that _CHUNK_RESERVED_TOKENS budgets for. Both are optional and
     default to the same fixed English/no-system-prompt assumption this
     function used before they were accounted for.
+
+    `extra_reserve_tokens` (default 0 — summarize_transcript never passes
+    it, so its chunk sizes are byte-identical to before) lets a caller
+    reserve additional per-chunk context on top of _CHUNK_RESERVED_TOKENS
+    for input that rides EVERY chunk call but isn't part of `system` —
+    parse_facts_from_recap budgets its RAG world_context (re-sent with
+    every chunk) and its JSON response room this way, so chunk + lore +
+    response always fits the window the chunk was sized against.
 
     `think` (default True, matching summarize_transcript's own default)
     reserves an extra _THINKING_HEADROOM_TOKENS on top of
@@ -1901,10 +2068,10 @@ def _transcript_chunk_char_budget(transcript: str = "", system: str = "", think:
     tradeoff this module's other budgets already choose deliberately: a
     little over-chunking is cheap, silently losing a chunk's summary to a
     starved thinking budget is not."""
-    ctx_tokens = effective_ollama_options().get("num_ctx") or _DEFAULT_ASSUMED_CTX_TOKENS
+    ctx_tokens = _effective_ctx_tokens()
     chars_per_token = _chars_per_token_estimate(transcript)
     system_tokens = (len(system) // _chars_per_token_estimate(system)) if system else 0
-    reserved = _CHUNK_RESERVED_TOKENS + system_tokens + (_THINKING_HEADROOM_TOKENS if think else 0)
+    reserved = _CHUNK_RESERVED_TOKENS + system_tokens + (_THINKING_HEADROOM_TOKENS if think else 0) + max(0, extra_reserve_tokens)
     input_tokens = max(500, ctx_tokens - reserved)
     return input_tokens * chars_per_token
 
