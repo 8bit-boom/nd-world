@@ -154,10 +154,20 @@ let draftFacts = [];
 let draftEmptyNote = '';
 
 // Recap templates: skeletons shaped for parse_facts_from_recap — discrete
-// statements the splitter turns into one fact per line, with a placeholder
+// lines the splitter turns into one fact per line, with a placeholder
 // (<like this>) wherever the GM is meant to write. Angle brackets are
 // deliberate: an unfilled placeholder is visibly unfinished, and the model
 // treats bracketed text as a fill-in instruction rather than a fact.
+// Labels live in RECAP_TEMPLATE_LABELS because they render in TWO places:
+// the static chips above and the action buttons the empty-result note
+// builds at runtime (see renderDraft/loadParsedFacts).
+const RECAP_TEMPLATE_LABELS = {
+  standard: '📄 Standard recap',
+  timeline: '🕐 Timeline',
+  bullets: '• Bullet list',
+  combat: '⚔️ Combat & loot',
+  investigation: '🔍 Investigation',
+};
 const RECAP_TEMPLATES = {
   standard:
     "Session #: <number>\n" +
@@ -199,16 +209,23 @@ const RECAP_TEMPLATES = {
     "Still unknown: <open questions>",
 };
 
-document.querySelectorAll('.tpl-btn').forEach(btn => btn.addEventListener('click', () => {
+// One template application, shared by the chips above and the buttons the
+// empty-result note builds: replace the textarea's content with the
+// skeleton (confirm-guarded when something's already written — silently
+// wiping a half-written recap would be worse than one extra dialog), then
+// focus it. Returns whether it applied.
+function applyRecapTemplate(key) {
   const ta = document.getElementById('recap-input');
-  const tpl = RECAP_TEMPLATES[btn.dataset.tpl];
-  if (!tpl) return;
-  // Replacing non-empty text needs a confirm — a click on a chip is a
-  // coarse action and silently wiping a half-written recap would be worse
-  // than one extra dialog.
-  if (ta.value.trim() && ta.value !== tpl && !confirm('Replace the current recap text with this template?')) return;
+  const tpl = RECAP_TEMPLATES[key];
+  if (!tpl) return false;
+  if (ta.value.trim() && ta.value !== tpl && !confirm('Replace the current recap text with this template?')) return false;
   ta.value = tpl;
   ta.focus();
+  return true;
+}
+
+document.querySelectorAll('.tpl-btn').forEach(btn => btn.addEventListener('click', () => {
+  applyRecapTemplate(btn.dataset.tpl);
 }));
 
 function renderDraft() {
@@ -217,7 +234,33 @@ function renderDraft() {
   const emptyNote = document.getElementById('draft-empty-note');
   panel.style.display = (draftFacts.length || draftEmptyNote) ? 'block' : 'none';
   emptyNote.style.display = draftEmptyNote ? 'block' : 'none';
-  if (draftEmptyNote) emptyNote.textContent = draftEmptyNote;
+  if (draftEmptyNote) {
+    emptyNote.textContent = draftEmptyNote;
+    // The empty state is actionable, not a dead end: the same recap
+    // templates the textarea chips offer, right where the GM is looking.
+    // Applying one clears this empty-state panel (there are no rows to
+    // review) and drops the skeleton into the textarea — scroll + focus so
+    // the next step is obvious.
+    const tplRow = document.createElement('div');
+    tplRow.style.cssText = 'display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.55rem';
+    Object.keys(RECAP_TEMPLATES).forEach(key => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = RECAP_TEMPLATE_LABELS[key] || key;
+      b.style.cssText = 'background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer';
+      b.addEventListener('click', () => {
+        if (applyRecapTemplate(key)) {
+          draftFacts = [];
+          draftEmptyNote = '';
+          renderDraft();
+          const ta = document.getElementById('recap-input');
+          ta.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      });
+      tplRow.appendChild(b);
+    });
+    emptyNote.appendChild(tplRow);
+  }
   list.innerHTML = '';
   draftFacts.forEach((f, i) => {
     const row = document.createElement('div');
@@ -254,7 +297,7 @@ function loadParsedFacts(facts) {
   draftFacts = Array.isArray(facts) ? facts.filter((f) => f && typeof f === 'object') : [];
   draftEmptyNote = draftFacts.length ? '' :
     'No in-character facts found — the text looks like out-of-character discussion. ' +
-    'Paste a recap of what actually happened in play.';
+    'Rewrite what actually happened in play from a template:';
   renderDraft();
 }
 

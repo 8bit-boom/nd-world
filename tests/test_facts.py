@@ -348,6 +348,13 @@ def test_facts_page_ships_recap_templates(client, seed):
     assert "Hidden from players: <the secret behind it>" in html
     assert "Persons of interest: <names and why>" in html
     assert "Clues found:" in html
+    # The empty-parse outcome is actionable: its note renders one button per
+    # template that applies the skeleton to the textarea (shared helper with
+    # the chips) and clears the dead draft panel.
+    assert "applyRecapTemplate(" in html
+    assert "RECAP_TEMPLATE_LABELS" in html
+    assert "Object.keys(RECAP_TEMPLATES).forEach" in html
+    assert "Rewrite what actually happened in play from a template:" in html
 
 
 # ── Model / Thinking / RAG pickers for "Parse with AI" ──────────────────────
