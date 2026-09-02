@@ -576,14 +576,14 @@ worlds they've been invited into (`WorldMembership`).
 
 ## Rules
 
-`app/main.py` — the per-world core-rules document (falls back to bundled N&D rules).
+`app/main.py` — the per-world core-rules document (falls back to bundled N&D rules). Rendered by `app/rules_render.py`: `:::` directive blocks (`tip`/`note`/`warning`/`danger`/`lore`/`collapse`/`gm` — themed callouts, a click-to-open section, and a GM-only block that is removed server-side for players), `statblock` fenced blocks (name + label/value rows + copy button), and an optional per-world `rules_json` overlay (section icons/titles/visibility + tabs; never included in downloads).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/rules` | Player | Rendered rules page with an auto-generated table of contents. |
-| GET | `/rules/download.md` | Player* | Downloads the rules as a `.md` file. GM always; a player only once the world's `players_can_download_rules` toggle is on (`world_edit.html`) — 403 otherwise. |
-| GET | `/worlds/{world_id}/rules/edit` | GM | Rules edit form (raw Markdown). |
-| POST | `/worlds/{world_id}/rules/edit` | GM | Saves rules Markdown. |
+| GET | `/rules` | Player | Rendered rules page with an auto-generated table of contents, section filtering via the search box, and optional tabs from the world's `rules_json` overlay. |
+| GET | `/rules/download.md` | Player* | Downloads the rules as a `.md` file (pure Markdown source — no overlay, directives left as written). GM always; a player only once the world's `players_can_download_rules` toggle is on (`world_edit.html`) — 403 otherwise. |
+| GET | `/worlds/{world_id}/rules/edit` | GM | Rules edit form (raw Markdown + `rules_json` overlay textarea, with a directives/overlay cheatsheet; shows why a stored overlay is being ignored, if it is). |
+| POST | `/worlds/{world_id}/rules/edit` | GM | Saves rules Markdown plus the optional `rules_json` overlay (blank clears it; invalid JSON or wrong shape → 400 with the parse error). |
 | POST | `/worlds/{world_id}/rules/import` | GM | Imports rules from a JSON file shaped `{"rules_md": "...markdown..."}`. |
 
 ## Search

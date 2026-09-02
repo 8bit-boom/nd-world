@@ -5,9 +5,17 @@
   <h1>✏ Edit Rules — {{ edit_world.name }}</h1>
   <p style="color:var(--text-dim);font-size:.85rem;margin:.3rem 0 1rem">
     Markdown shown on this world's <a href="/rules">Rules</a> page, with an auto-generated
-    table of contents from <code>##</code>/<code>###</code> headings. Leave blank to fall
-    back to the default Neon &amp; Dragons core rules.
+    table of contents from <code>##</code>/<code>###</code> headings — plus optional
+    <code>:::</code> directive blocks and a <code>rules.json</code> overlay (both documented in
+    the cheatsheet below). Leave the Markdown blank to fall back to the default
+    Neon &amp; Dragons core rules.
   </p>
+  {% if rules_json_error %}
+  <div style="background:rgba(255,45,120,.08);border:1px solid #ff2d78;color:#ff2d78;padding:.6rem .9rem;border-radius:6px;font-size:.82rem;margin-bottom:1rem">
+    ⚠️ The stored rules.json overlay is currently <strong>ignored</strong> (the rules page renders without it) —
+    fix or clear the second textarea below. Parse error: {{ rules_json_error }}
+  </div>
+  {% endif %}
   <form method="post" action="/worlds/{{ edit_world.id }}/rules/import" enctype="multipart/form-data"
         style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-bottom:1.25rem;padding:.75rem 1rem;background:var(--bg2);border:1px solid var(--border);border-radius:6px">
     <label style="font-size:.82rem;color:var(--text-dim)">Import from JSON <small>(<code>{"rules_md": "..."}</code>, or drag &amp; drop the file below)</small></label>
@@ -21,11 +29,56 @@
     <div class="form-group">
       <textarea name="rules_md" rows="28" placeholder="# My System&#10;&#10;## Core Mechanic&#10;…" style="font-family:var(--font);font-size:.85rem" data-fmt>{{ edit_world.rules_md or '' }}</textarea>
     </div>
+    <div class="form-group">
+      <label for="rules-json-input" style="display:block;font-size:.82rem;color:var(--text-dim);margin-bottom:.3rem">
+        rules.json overlay — <em>optional</em> UI metadata only (icons, custom titles, player
+        visibility, tabs); never included in <code>/rules/download.md</code>. Blank = no overlay.
+        Invalid JSON is rejected on save with the parse error.
+      </label>
+      <textarea id="rules-json-input" name="rules_json" rows="14" style="font-family:monospace;font-size:.8rem" placeholder='{
+  "sections": {
+    "races-optional-systems": {"icon": "🧬", "title": "Races & Optional Systems", "players_visible": true, "order": 2}
+  },
+  "tabs": [
+    {"id": "core", "label": "Core", "sections": ["core-mechanic", "races-optional-systems"]}
+  ]
+}'>{{ edit_world.rules_json or '' }}</textarea>
+    </div>
     <div class="form-actions">
       <button type="submit" class="btn-save">Save</button>
       <a href="/rules" class="btn-cancel">Cancel</a>
     </div>
   </form>
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;font-size:.8rem;color:var(--text-dim);margin-top:1.25rem;line-height:1.6">
+    <strong style="color:var(--text-dim)">Cheatsheet — Markdown superpowers</strong>
+    <ul style="margin:.4rem 0 0 1.1rem;padding:0">
+      <li>
+        <code>:::tip</code>, <code>:::note</code>, <code>:::warning</code>, <code>:::danger</code>,
+        <code>:::lore</code>, <code>:::collapse</code>, <code>:::gm</code> — a themed block, closed by a
+        line containing only <code>:::</code> (an optional title goes on the first line:
+        <code>:::tip Read this first</code>). <code>:::gm</code> blocks are removed from the page for
+        players entirely; <code>:::collapse</code> renders a click-to-open section (default title
+        "Details").
+      </li>
+      <li>
+        <code>```statblock</code> fence — the first line is the block's name, following
+        <code>Label: value</code> lines become rows (split on the first colon), other lines render as
+        free text; a 📋 Copy button copies the raw text.
+      </li>
+      <li>
+        Unknown <code>:::type</code> names still render (as a note callout titled with the type name) —
+        content is never silently dropped.
+      </li>
+      <li>
+        rules.json overlay keys: <code>sections</code> maps a heading slug (the part after
+        <code>#</code> in a TOC link) to <code>{"icon", "title", "players_visible", "order"}</code>;
+        <code>tabs</code> is a list of <code>{"id", "label", "sections": [slugs]}</code> — listed slugs
+        show in that order, unlisted sections land in a trailing "More" tab;
+        <code>players_visible: false</code> hides the section from players (GMs still see it).
+      </li>
+    </ul>
+  </div>
 </div>
 <script src="/static/js/text-format-toolbar.js"></script>
 <script src="/static/js/file-dropzone.js"></script>

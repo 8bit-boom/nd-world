@@ -146,6 +146,22 @@ class World(Base):
     # to the bundled Neon & Dragons core_rules.md, for worlds actually running
     # N&D and any world created before this field existed.
     rules_md = Column(Text, nullable=True)
+    # Optional per-world rules-page overlay (JSON string) — pure UI metadata
+    # layered on top of the RENDERED rules, never part of the rules document
+    # itself (so /rules/download.md keeps serving the pure MD source). Schema
+    # (validated by app.rules_render.parse_rules_overlay, applied by
+    # apply_rules_overlay):
+    #   {"sections": {"<section-slug>": {"icon": "🧬", "title": "Races & Optional Systems",
+    #                                      "players_visible": true, "order": 2}},
+    #    "tabs": [{"id": "core", "label": "Core", "sections": ["slug", "slug"]}]}
+    # Section slugs are the ones main._rules_toc generates from ##/### headings.
+    # icon/title rename the section (TOC + heading), order reorders it in the
+    # flat flow (tabs flow uses the tab's own list order), players_visible:false
+    # hard-hides it from non-GM viewers server-side (same as :::gm blocks).
+    # NULL/"" = no overlay, plain single-page flow. Invalid JSON is ignored at
+    # render time (logged) and rejected with a 400 at save time so the GM sees
+    # the parse error immediately.
+    rules_json = Column(Text, default="")
     # GM-authored blurb shown at the top of the world's home page (/),
     # Markdown, rendered with the same `md` Jinja filter as rules_md/entity
     # bodies. NULL = no blurb.

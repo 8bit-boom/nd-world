@@ -775,6 +775,12 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN recap_instructions TEXT"))
             if "rules_md" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN rules_md TEXT"))
+            # rules_json (optional rules-page overlay) heals the same way —
+            # worlds predates _heal_table_from_model, so every new column
+            # still gets its hand-typed entry here, following the rules_md
+            # pattern above.
+            if "rules_json" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN rules_json TEXT DEFAULT ''"))
             if "home_welcome_md" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN home_welcome_md TEXT"))
             if "home_sections_json" not in w_cols:

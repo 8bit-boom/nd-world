@@ -32,6 +32,8 @@ from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app
 from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content
 from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html
+from .rules_render import (apply_rules_overlay, extract_blocks,
+                           parse_rules_overlay, restore_blocks, split_rules_sections)
 from .templating import templates
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll
@@ -1988,11 +1990,41 @@ def rules_page(request: Request, db: Session = Depends(get_db), active_world: st
     # serving the file exactly as uploaded — this is a display fix only.
     md = html.unescape(md)
     md = _RULES_LEGACY_ANCHOR_RE.sub("", md)
-    content, toc = _rules_toc(render_md(md) if md else "<p>No rules have been added for this world yet.</p>")
     user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
+    if md.strip():
+        # Phased pipeline, not the one-shot rules_render.render_rules_markdown:
+        # the skeleton (directives/statblocks swapped for sentinel paragraphs)
+        # must go through _rules_toc BEFORE the blocks are restored, so a
+        # "## Heading" typed INSIDE a :::collapse block carries no id — an id
+        # there would put a hidden heading in the TOC and make
+        # split_rules_sections cut the block's <div>/<details> open mid-element
+        # at its next split point. Block inner markdown still renders through
+        # the same escape-guarded pipeline (see app.rules_render).
+        skeleton, blocks = extract_blocks(md)
+        content, _ = _rules_toc(render_md(skeleton))
+        content = restore_blocks(content, blocks, is_gm)
+    else:
+        content = "<p>No rules have been added for this world yet.</p>"
+    sections = split_rules_sections(content)
+    tabs = None
+    if world:
+        # Overlay is display metadata only — an unparseable stored overlay is
+        # logged and ignored here (page still renders, no tabs/no renames);
+        # the same parse runs at save time and rejects bad JSON with a 400.
+        overlay, overlay_err = parse_rules_overlay(world.rules_json)
+        if overlay_err:
+            _log.warning("World %s rules_json ignored: %s", world.slug, overlay_err)
+        sections, tabs = apply_rules_overlay(sections, overlay, is_gm)
+    # TOC built from the FINAL visible sections (post :::gm / players_visible
+    # filtering, with overlay icons/titles), so the sidebar can never link to
+    # a section a viewer isn't shipped.
+    toc = [{"level": s["level"], "text": s["title"], "id": s["id"]}
+           for s in sections if s["id"]]
     is_custom = bool(world and (world.rules_md or "").strip())
     return templates.TemplateResponse("rules.html", {
-        "request": request, "world": world, "worlds": worlds, "content": content, "toc": toc,
+        "request": request, "world": world, "worlds": worlds, "toc": toc,
+        "sections": sections, "tabs": tabs, "tabs_mode": bool(tabs),
         "is_custom_rules": is_custom, "can_edit_rules": bool(user and user.is_gm),
     })
 
@@ -2018,16 +2050,33 @@ def world_rules_edit_form(world_id: int, request: Request, db: Session = Depends
     if not w:
         raise HTTPException(404)
     world, worlds = get_world_ctx(request, db, active_world)
+    # Re-validate the STORED overlay so a GM opening the editor sees why the
+    # rules page is currently ignoring it (the page itself only logs).
+    _, rules_json_error = parse_rules_overlay(w.rules_json)
     return templates.TemplateResponse("rules_edit.html", {
         "request": request, "world": world, "worlds": worlds, "edit_world": w,
+        "rules_json_error": rules_json_error,
     })
 
 
 @app.post("/worlds/{world_id}/rules/edit")
-def world_rules_edit_post(world_id: int, rules_md: str = Form(""), db: Session = Depends(get_db)):
+def world_rules_edit_post(world_id: int, rules_md: str = Form(""), rules_json: str = Form(""),
+                          db: Session = Depends(get_db)):
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
+    # Blank overlay clears it (the always-rendered textarea makes "absent" and
+    # "empty" the same thing); anything else must parse as a valid overlay —
+    # rejected with a 400 carrying the exact parse error rather than silently
+    # saved-then-ignored, so the GM sees the mistake in the moment of saving.
+    raw_json = rules_json.strip()
+    if raw_json:
+        _, rules_json_error = parse_rules_overlay(raw_json)
+        if rules_json_error:
+            raise HTTPException(400, f"rules_json: {rules_json_error}")
+        w.rules_json = raw_json
+    else:
+        w.rules_json = None
     w.rules_md = rules_md.strip() or None
     db.commit()
     return RedirectResponse("/rules", status_code=303)

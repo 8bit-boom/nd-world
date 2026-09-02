@@ -9,9 +9,11 @@
       <input id="rules-search" type="search" placeholder="Search rules…" oninput="rulesSearch(this.value)"
         style="width:100%;background:#1a1a1a;border:1px solid #333;border-radius:4px;padding:.35rem .5rem;color:#e0e0e0;font-size:.82rem"/>
     </div>
+    <!-- Section-filter count line: hidden until a query filters the page -->
+    <div id="rules-search-count" style="display:none;font-size:.72rem;color:var(--neon);margin-bottom:.4rem"></div>
     <div style="font-size:.7rem;color:#555;margin-bottom:.4rem;text-transform:uppercase;letter-spacing:.05em">Contents</div>
     {% for entry in toc %}
-    <a href="#{{ entry.id }}" class="toc-entry toc-h{{ entry.level }}" onclick="clearSearch()">{{ entry.text }}</a>
+    <a href="#{{ entry.id }}" class="toc-entry toc-h{{ entry.level }}" onclick="return rulesTocClick(this)">{{ entry.text }}</a>
     {% endfor %}
   </div>
 
@@ -32,7 +34,31 @@
       {% if can_edit_rules and world %}<a href="/worlds/{{ world.id }}/rules/edit">Add your own</a> if this world runs a different system.{% endif %}
     </p>
     {% endif %}
-    <div class="rules-body prose">{{ content|safe }}</div>
+    {% if tabs_mode %}
+    <!-- Tab bar (rules.json overlay "tabs"); buttons toggle .rules-tab-pane -->
+    <div class="rules-tabs" role="tablist">
+      {% for pane in tabs %}
+      <button type="button" class="rules-tab{{ ' active' if loop.first else '' }}" role="tab"
+              data-pane="rules-pane-{{ loop.index0 }}" data-tab-id="{{ pane.id }}"
+              onclick="rulesTabClick(this)">{{ pane.label }}</button>
+      {% endfor %}
+    </div>
+    <div class="rules-body prose tabbed" id="rules-body">
+      {% for pane in tabs %}
+      <div class="rules-tab-pane{{ ' active' if loop.first else '' }}" id="rules-pane-{{ loop.index0 }}">
+        {% for s in pane.sections %}
+        <section class="rules-section" data-section-id="{{ s.id or '' }}">{{ s.html|safe }}</section>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="rules-body prose" id="rules-body">
+      {% for s in sections %}
+      <section class="rules-section" data-section-id="{{ s.id or '' }}">{{ s.html|safe }}</section>
+      {% endfor %}
+    </div>
+    {% endif %}
   </div>
 
 </div>
@@ -59,41 +85,178 @@
 .rules-body tr:nth-child(even) td { background:#161616; }
 .rules-body code { background:#1a1a1a; padding:.1em .35em; border-radius:3px; font-size:.85em; }
 .rules-body blockquote { border-left:3px solid #333; margin:.5rem 0; padding:.3rem .8rem; color:#999; }
+/* Tabs (rules.json overlay "tabs") — one .rules-tab-pane per tab, JS toggles */
+.rules-tabs { display:flex; gap:.4rem; flex-wrap:wrap; margin:.8rem 0 0; border-bottom:1px solid var(--border); }
+.rules-tab { background:transparent; border:1px solid var(--border); border-bottom:none; color:var(--text-dim); padding:.4rem 1rem; font-size:.84rem; border-radius:6px 6px 0 0; cursor:pointer; }
+.rules-tab:hover { color:var(--neon); }
+.rules-tab.active { color:var(--neon); border-color:var(--border); background:var(--bg2,#111); position:relative; top:1px; }
+.rules-tab-pane { display:none; }
+.rules-tab-pane.active { display:block; }
+/* ::: directive callouts — distinct accent per type on the left border/title */
+.nd-callout { border:1px solid var(--border); border-left-width:3px; border-left-style:solid; border-radius:6px; background:var(--bg2,#161616); padding:.7rem .9rem; margin:1rem 0; }
+.nd-callout-title { font-weight:700; font-size:.85rem; margin-bottom:.25rem; letter-spacing:.02em; }
+.nd-callout-body p:first-child, .nd-callout-body div:first-child { margin-top:0; }
+.nd-callout-body p:last-child, .nd-callout-body div:last-child { margin-bottom:0; }
+.nd-callout-tip { border-left-color:#00f0ff; }
+.nd-callout-tip > .nd-callout-title { color:#00f0ff; }
+.nd-callout-note { border-left-color:#7c8ec8; }
+.nd-callout-note > .nd-callout-title { color:#9fb0e8; }
+.nd-callout-warning { border-left-color:#ffd23e; }
+.nd-callout-warning > .nd-callout-title { color:#ffd23e; }
+.nd-callout-danger { border-left-color:#ff2d78; }
+.nd-callout-danger > .nd-callout-title { color:#ff2d78; }
+.nd-callout-lore { border-left-color:#b06cff; }
+.nd-callout-lore > .nd-callout-title { color:#b06cff; }
+.nd-callout-gm { border-left-color:#37d67a; }
+.nd-callout-gm > .nd-callout-title { color:#37d67a; }
+/* :::collapse — native <details>, summary is the click target */
+.nd-collapse { border:1px solid var(--border); border-radius:6px; background:var(--bg2,#161616); padding:.55rem .9rem; margin:1rem 0; }
+.nd-collapse > summary { cursor:pointer; font-weight:600; color:var(--neon); }
+.nd-collapse[open] > summary { margin-bottom:.4rem; }
+/* ```statblock — name header, label/value rows, copy-raw-text button */
+.nd-statblock { position:relative; border:1px solid var(--border); border-radius:6px; background:var(--bg3,#1a1a1a); padding:.8rem 1rem .9rem; margin:1rem 0; }
+.nd-statblock-name { font-weight:700; font-size:1.02rem; color:var(--neon); border-bottom:1px solid var(--border); padding:.1rem 5.5rem .3rem 0; margin-bottom:.5rem; }
+.nd-statblock-row { display:flex; gap:.6rem; font-size:.87rem; line-height:1.55; }
+.nd-statblock-label { color:var(--text-dim,#9aa3b5); font-weight:600; min-width:7.5em; flex-shrink:0; }
+.nd-statblock-copy { position:absolute; top:.55rem; right:.6rem; background:var(--bg2,#111); border:1px solid var(--border); color:var(--text-dim); font-size:.72rem; border-radius:4px; padding:.15rem .55rem; cursor:pointer; }
+.nd-statblock-copy:hover { color:var(--neon); border-color:var(--neon); }
 </style>
 
 <script>
+// ── Tabs (rules.json overlay) ────────────────────────────────────────────
+// Per-world localStorage key: a tab choice made in one world shouldn't
+// pre-select a different tab index in another world's rules.
+const RULES_TAB_KEY = 'nd.rules.tab.{{ world.id if world else 0 }}';
+function rulesTabClick(btn) {
+  activateTab(btn.dataset.pane);
+  try { localStorage.setItem(RULES_TAB_KEY, btn.dataset.tabId); } catch (e) { /* private mode */ }
+}
+function activateTab(paneId) {
+  document.querySelectorAll('.rules-tab').forEach(b => b.classList.toggle('active', b.dataset.pane === paneId));
+  document.querySelectorAll('.rules-tab-pane').forEach(p => p.classList.toggle('active', p.id === paneId));
+}
+(function restoreTab() {
+  const tabs = document.querySelectorAll('.rules-tab');
+  if (!tabs.length) return;
+  let saved = null;
+  try { saved = localStorage.getItem(RULES_TAB_KEY); } catch (e) { /* private mode */ }
+  const match = saved && Array.from(tabs).find(b => b.dataset.tabId === saved);
+  if (match) activateTab(match.dataset.pane);
+})();
+
+// ── Search: section filter + <mark> highlighting ─────────────────────────
+// Walks the rendered section elements (the h2/h3 id split points — each is a
+// .rules-section) within the ACTIVE tab; sections whose text doesn't match
+// the query are hidden entirely, matches get <mark> highlighting, and the
+// sidebar count line reports how many sections matched. Clearing the query
+// restores everything.
 function rulesSearch(v) {
-  clearMarks();
-  if (!v) return;
+  const q = (v || '').trim().toLowerCase();
   const body = document.querySelector('.rules-body');
-  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
-  const matches = [];
+  const scope = document.querySelector('.rules-tab-pane.active') || body;
+  clearMarks();
+  const count = document.getElementById('rules-search-count');
+  const sections = scope ? Array.from(scope.querySelectorAll('.rules-section')) : [];
+  if (!q) {
+    sections.forEach(s => { s.style.display = ''; });
+    if (count) { count.style.display = 'none'; count.textContent = ''; }
+    return;
+  }
+  let n = 0;
+  sections.forEach(s => {
+    const hit = s.textContent.toLowerCase().indexOf(q) >= 0;
+    s.style.display = hit ? '' : 'none';
+    if (hit) { n++; markMatches(s, q); }
+  });
+  if (count) {
+    count.style.display = '';
+    count.textContent = n === 1 ? '1 section matches' : n + ' sections match';
+  }
+}
+function markMatches(scope, q) {
+  // Collect matching text nodes first, then mutate: splitting a node while
+  // the TreeWalker is mid-traversal would re-walk the new fragments.
+  const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+  const hits = [];
   let node;
   while ((node = walker.nextNode())) {
-    const idx = node.textContent.toLowerCase().indexOf(v.toLowerCase());
-    if (idx >= 0) matches.push({node, idx, len: v.length});
+    const idx = node.textContent.toLowerCase().indexOf(q);
+    if (idx >= 0) hits.push({node, idx, len: q.length});
   }
-  matches.reverse().forEach(({node, idx, len}) => {
+  hits.reverse().forEach(({node, idx, len}) => {
     const span = document.createElement('mark');
     span.textContent = node.textContent.slice(idx, idx + len);
     const after = node.splitText(idx);
     after.splitText(len);
     after.parentNode.replaceChild(span, after);
   });
-  const first = body.querySelector('mark');
-  if (first) first.scrollIntoView({behavior:'smooth', block:'center'});
 }
 function clearMarks() {
   document.querySelectorAll('.rules-body mark').forEach(m => {
     m.replaceWith(document.createTextNode(m.textContent));
   });
 }
-function clearSearch() { document.getElementById('rules-search').value = ''; clearMarks(); }
+function clearSearch() {
+  const inp = document.getElementById('rules-search');
+  if (inp) inp.value = '';
+  rulesSearch('');
+}
+// TOC links activate the tab holding their section first (a link into a
+// hidden pane wouldn't scroll), then clear any active section filter so the
+// target is actually visible for the browser's own anchor jump.
+function rulesTocClick(a) {
+  const id = (a.getAttribute('href') || '').slice(1);
+  const sec = document.querySelector('.rules-section[data-section-id="' + id + '"]');
+  if (sec) {
+    const pane = sec.closest('.rules-tab-pane');
+    if (pane) {
+      activateTab(pane.id);
+      const btn = document.querySelector('.rules-tab[data-pane="' + pane.id + '"]');
+      if (btn) { try { localStorage.setItem(RULES_TAB_KEY, btn.dataset.tabId); } catch (e) { /* private mode */ } }
+    }
+  }
+  clearSearch();
+  return true; // let the default anchor navigation proceed
+}
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
     const inp = document.getElementById('rules-search');
     if (inp) { e.preventDefault(); inp.focus(); inp.select(); }
   }
 });
+
+// ── Statblock copy buttons ───────────────────────────────────────────────
+// One delegated listener wires every .nd-statblock-copy (statblocks are
+// server-rendered HTML, so per-block listeners would be redundant). The raw
+// block text rides in the .nd-statblock's data-raw attribute. Falls back to
+// a hidden textarea + execCommand because navigator.clipboard only exists
+// in secure contexts (http://lan-ip self-hosting deployments don't have it).
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('.nd-statblock-copy');
+  if (!btn) return;
+  const wrap = btn.closest('.nd-statblock');
+  const raw = wrap ? (wrap.getAttribute('data-raw') || '') : '';
+  const done = ok => {
+    btn.textContent = ok ? '✅ Copied' : '⚠️ Copy failed';
+    setTimeout(() => { btn.textContent = '📋 Copy'; }, 1500);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(raw).then(() => done(true), () => done(copyFallback(raw)));
+  } else {
+    done(copyFallback(raw));
+  }
+});
+function copyFallback(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (err) { /* unsupported */ }
+  ta.remove();
+  return ok;
+}
 </script>
 {% endblock %}
