@@ -3876,7 +3876,7 @@ _FACTS_PARSE_DRAFT = [
 
 @pytest.mark.asyncio
 async def test_create_facts_parse_job_runs_to_completion(client, seed, monkeypatch):
-    async def fake_parse(raw_text, model=""):
+    async def fake_parse(raw_text, model="", think=False, world_context=""):
         assert "tavern" in raw_text
         return [dict(f) for f in _FACTS_PARSE_DRAFT]
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
@@ -3895,7 +3895,7 @@ async def test_create_facts_parse_job_runs_to_completion(client, seed, monkeypat
 async def test_create_facts_parse_job_empty_result_is_done_not_error(client, seed, monkeypatch):
     """Out-of-character chatter parses to zero facts — that's a SUCCESS the
     Facts page's UI explains, not a failure: the model did its job."""
-    async def fake_parse(raw_text, model=""):
+    async def fake_parse(raw_text, model="", think=False, world_context=""):
         return []
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
 
@@ -3912,7 +3912,7 @@ async def test_create_facts_parse_job_valueerror_marks_error(client, seed, monke
     down, malformed JSON — see its docstring), already worded for a GM; the
     job must carry that message in job.error, the same text the synchronous
     /api/facts/parse maps to HTTP 502."""
-    async def failing_parse(raw_text, model=""):
+    async def failing_parse(raw_text, model="", think=False, world_context=""):
         raise ValueError("Could not parse facts from that recap — try rephrasing it.")
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", failing_parse)
 
@@ -3929,7 +3929,7 @@ async def test_create_facts_parse_job_never_transcribes(client, seed, monkeypatc
     async def fail_if_called(*a, **kw):
         raise AssertionError("facts_parse jobs must never transcribe")
     monkeypatch.setattr(ai_module, "transcribe_audio", fail_if_called)
-    async def fake_parse(raw_text, model=""):
+    async def fake_parse(raw_text, model="", think=False, world_context=""):
         return []
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
 
@@ -3945,6 +3945,76 @@ def test_create_facts_parse_job_rejects_blank_text(seed):
     test_create_condense_job_rejects_invalid_strictness)."""
     with pytest.raises(ValueError):
         audio_jobs.create_facts_parse_job(world_id=seed.world_a.id, text="   ")
+
+
+# ── facts_parse model/think/RAG options (the Facts page's pickers) ──────────
+
+@pytest.mark.asyncio
+async def test_create_facts_parse_job_persists_think_and_rag_options(client, seed, monkeypatch):
+    async def fake_parse(raw_text, model="", think=False, world_context=""):
+        return [dict(f) for f in _FACTS_PARSE_DRAFT]
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    job_id = audio_jobs.create_facts_parse_job(
+        world_id=seed.world_a.id, text="some recap", model="gemma4:26b",
+        think=True, use_rag=True, rag_entity_limit=4, rag_notes_limit=2,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.model == "gemma4:26b"
+    assert job.think is True
+    assert job.use_rag is True
+    assert job.rag_entity_limit == 4
+    assert job.rag_notes_limit == 2
+
+
+@pytest.mark.asyncio
+async def test_create_facts_parse_job_use_rag_passes_world_context_and_think_through(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_parse(raw_text, model="", think=False, world_context=""):
+        captured.update(raw_text=raw_text, model=model, think=think, world_context=world_context)
+        return []
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    build_calls = []
+
+    def fake_build_rag_context(world_id, query, entity_limit, notes_limit, **kwargs):
+        build_calls.append((world_id, query, entity_limit, notes_limit))
+        return "- [npc] Elyra: an enchanter"
+    monkeypatch.setattr(audio_jobs, "_build_rag_context", fake_build_rag_context)
+
+    job_id = audio_jobs.create_facts_parse_job(
+        world_id=seed.world_a.id, text="went to the tavern", think=True,
+        use_rag=True, rag_entity_limit=6, rag_notes_limit=3,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["raw_text"] == "went to the tavern"
+    assert captured["think"] is True
+    assert captured["world_context"] == "- [npc] Elyra: an enchanter"
+    # queried against the pasted recap text itself (the parse's input), with
+    # the job's own limits — not the module defaults.
+    assert build_calls == [(seed.world_a.id, "went to the tavern", 6, 3)]
+
+
+@pytest.mark.asyncio
+async def test_create_facts_parse_job_use_rag_off_never_retrieves(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_parse(raw_text, model="", think=False, world_context=""):
+        captured["world_context"] = world_context
+        return []
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    def fail_if_called(*a, **kw):
+        raise AssertionError("must not retrieve RAG context when use_rag is off")
+    monkeypatch.setattr(audio_jobs, "_build_rag_context", fail_if_called)
+
+    job_id = audio_jobs.create_facts_parse_job(world_id=seed.world_a.id, text="some recap")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["world_context"] == ""
 
 
 def test_facts_parse_job_serializer_exposes_result_json_and_facts_label(client, seed):

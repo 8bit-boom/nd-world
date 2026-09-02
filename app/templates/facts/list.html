@@ -35,6 +35,30 @@
         <option value="">— none —</option>
         {% for s in sessions.values() %}<option value="{{ s.id }}">#{{ s.session_num }} {{ s.title }}</option>{% endfor %}
       </select>
+      <!-- Same picker mechanics as the Sessions page's background-job model
+           dropdown: an empty "(default model)" option plus the /api/ai/models
+           list appended by loadParseModelOptions() below. -->
+      <select id="parse-model" title="Which AI model parses this recap — see the AI page's Models tab" style="font-size:.78rem;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:.25rem .4rem">
+        <option value="">(default model)</option>
+      </select>
+      <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
+             title="Runs the parse with the model's 'thinking'/reasoning mode — usually better at separating in-character facts from banter and spelling names, but slower, and a small model can spend its whole output budget reasoning and return nothing.">
+        <input type="checkbox" id="parse-think" style="width:auto"> 🧠 Thinking
+      </label>
+      <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
+             title="Retrieves relevant World entities/notes and gives the model that context while parsing — for accuracy (correct spellings of established names/places), not as extra facts to invent.">
+        <input type="checkbox" id="parse-rag-checkbox" style="width:auto"> 🔍 RAG
+      </label>
+      <label style="font-size:.75rem;color:var(--text-dim);display:inline-flex;align-items:center;gap:.3rem" title="How many relevant World entities to pull in">
+        Entities
+        <input type="number" id="parse-rag-entity-limit" min="0" value="15"
+               style="width:50px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.2rem .35rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+      </label>
+      <label style="font-size:.75rem;color:var(--text-dim);display:inline-flex;align-items:center;gap:.3rem" title="How many World notes to pull in">
+        Notes
+        <input type="number" id="parse-rag-notes-limit" min="0" value="5"
+               style="width:50px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.2rem .35rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+      </label>
       <button type="button" id="parse-btn" style="background:var(--neon);color:#000;border:none;padding:.4rem 1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Parse with AI</button>
       <button type="button" id="restore-parse-btn" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .8rem;font-size:.8rem;border-radius:3px;cursor:pointer"
               title="Reload the draft from your most recent finished parse — the draft is saved on the server, so it survives a page reload">Restore last parse</button>
@@ -264,6 +288,43 @@ async function pollFactsParseJob(jobId, status) {
   }
 }
 
+// Same population mechanism as the Sessions page's background-job model
+// dropdown: server-offered models appended onto the "(default model)" empty
+// option. Any failure just leaves the picker on the default.
+(async function loadParseModelOptions() {
+  const sel = document.getElementById('parse-model');
+  try {
+    const res = await fetch('/api/ai/models');
+    if (!res.ok) return;
+    const d = await res.json();
+    (d.models || []).forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label || m.id;
+      sel.appendChild(opt);
+    });
+  } catch (e) { /* picker just stays on "(default model)" */ }
+})();
+
+// The parse options the pickers above hold — sent with every parse-job POST
+// so the background run reproduces exactly what the GM asked for. Blank
+// limit fields fall back to the module's own defaults server-side (same
+// convention as the Sessions page's RAG inputs).
+function parseModelOptions() {
+  const modelSel = document.getElementById('parse-model');
+  const thinkBox = document.getElementById('parse-think');
+  const ragBox = document.getElementById('parse-rag-checkbox');
+  const entityEl = document.getElementById('parse-rag-entity-limit');
+  const notesEl = document.getElementById('parse-rag-notes-limit');
+  return {
+    model: modelSel ? modelSel.value : '',
+    think: !!(thinkBox && thinkBox.checked),
+    use_rag: !!(ragBox && ragBox.checked),
+    rag_entity_limit: (entityEl && entityEl.value.trim() !== '') ? parseInt(entityEl.value, 10) : null,
+    rag_notes_limit: (notesEl && notesEl.value.trim() !== '') ? parseInt(notesEl.value, 10) : null,
+  };
+}
+
 async function parseDraftFromRecap() {
   const text = document.getElementById('recap-input').value.trim();
   if (!text) return;
@@ -275,7 +336,7 @@ async function parseDraftFromRecap() {
   try {
     const res = await fetch('/api/facts/parse-job', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, game_session_id: sessionId || null }),
+      body: JSON.stringify({ text, game_session_id: sessionId || null, ...parseModelOptions() }),
     });
     if (!res.ok) throw await ndApiErrorFrom(res);
     const data = await res.json();

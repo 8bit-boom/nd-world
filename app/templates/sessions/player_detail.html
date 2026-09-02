@@ -9,6 +9,46 @@
   <div id="recap-box" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem">
     <p id="recap-status" style="color:var(--text-dim);font-size:.85rem;margin:0">Loading recap…</p>
     <div id="recap-text" class="rendered-md" style="display:none"></div>
+    <!-- Recap generation pickers, same mechanics as the Sessions page's
+         recap panel: every choice rides along on each poll POST (the
+         endpoint IS the create-or-poll surface), and a recap generated
+         with a different model/think/RAG is a different artifact — the
+         server won't serve a previously generated one for these settings. -->
+    <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-top:.7rem;padding-top:.7rem;border-top:1px solid var(--border)">
+      <select id="recap-model" title="Which AI model generates this recap — see the AI page's Models tab" style="font-size:.78rem;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:.25rem .4rem">
+        <option value="">(default model)</option>
+      </select>
+      <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
+             title="Generates the recap with the model's 'thinking'/reasoning mode — usually better narrative quality, but slower, and it can leave a small model with no room left to actually write the recap.">
+        <input type="checkbox" id="recap-think" checked style="width:auto"> 🧠 Thinking
+      </label>
+      <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
+             title="Generates the recap with the model's 'thinking'/reasoning mode — usually better narrative quality, but slower, and it can leave a small model with no room left to actually write the recap.">
+        <input type="checkbox" id="recap-think" checked style="width:auto"> 🧠 Thinking
+      </label>
+      {% if request.state.user and request.state.user.is_gm %}
+      <!-- RAG is GM-only on this page on purpose: _build_rag_context is not
+           visibility-filtered, so retrieved lore can include GM-only
+           entities/notes. The recap is model-generated text a player reads —
+           handing a player a checkbox that pulls hidden lore into that
+           prompt is an information leak, so players get model+thinking
+           only (the server enforces the same rule). -->
+      <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
+             title="Retrieves relevant World entities/notes and gives the model that context while writing — for accuracy (correct spellings of established names/places), not as extra plot to invent.">
+        <input type="checkbox" id="recap-rag-checkbox" style="width:auto"> 🔍 RAG
+      </label>
+      <label style="font-size:.75rem;color:var(--text-dim);display:inline-flex;align-items:center;gap:.3rem" title="How many relevant World entities to pull in">
+        Entities
+        <input type="number" id="recap-rag-entity-limit" min="0" value="15"
+               style="width:50px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.2rem .35rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+      </label>
+      <label style="font-size:.75rem;color:var(--text-dim);display:inline-flex;align-items:center;gap:.3rem" title="How many World notes to pull in">
+        Notes
+        <input type="number" id="recap-rag-notes-limit" min="0" value="5"
+               style="width:50px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.2rem .35rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+      </label>
+      {% endif %}
+    </div>
   </div>
 </div>
 
@@ -31,13 +71,54 @@ function _recapMdToHtml(text) {
 const RECAP_POLL_MS = 4000;
 const RECAP_POLL_CAP_MS = 10 * 60 * 1000; // give up (with an explanation) after ~10 minutes
 
+// The recap options the pickers above hold — sent on EVERY poll POST (the
+// endpoint is the create-or-poll surface), so a change of model/think/RAG
+// takes effect on the next request instead of needing a reload. Blank limit
+// fields fall back to the server's own defaults, same convention as the
+// Sessions page's RAG inputs.
+function recapRequestOptions() {
+  const modelSel = document.getElementById('recap-model');
+  const thinkBox = document.getElementById('recap-think');
+  const ragBox = document.getElementById('recap-rag-checkbox');
+  const entityEl = document.getElementById('recap-rag-entity-limit');
+  const notesEl = document.getElementById('recap-rag-notes-limit');
+  return {
+    model: modelSel ? modelSel.value : '',
+    think: thinkBox ? thinkBox.checked : true,
+    use_rag: !!(ragBox && ragBox.checked),
+    rag_entity_limit: (entityEl && entityEl.value.trim() !== '') ? parseInt(entityEl.value, 10) : null,
+    rag_notes_limit: (notesEl && notesEl.value.trim() !== '') ? parseInt(notesEl.value, 10) : null,
+  };
+}
+
+// Same population mechanism as the Sessions page's model dropdown: the
+// server-offered model list appended onto the "(default model)" empty
+// option. A failure just leaves the picker on the default.
+(async function loadRecapModelOptions() {
+  const sel = document.getElementById('recap-model');
+  try {
+    const res = await fetch('/api/ai/models');
+    if (!res.ok) return;
+    const d = await res.json();
+    (d.models || []).forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label || m.id;
+      sel.appendChild(opt);
+    });
+  } catch (e) { /* picker just stays on "(default model)" */ }
+})();
+
 (async function () {
   const status = document.getElementById('recap-status');
   const box = document.getElementById('recap-text');
   try {
     let waited = 0;
     while (true) {
-      const res = await fetch('/api/session-log/{{ gsession.id }}/recap', { method: 'POST' });
+      const res = await fetch('/api/session-log/{{ gsession.id }}/recap', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(recapRequestOptions()),
+      });
       if (!res.ok) throw await ndApiErrorFrom(res);
       const data = await res.json();
       if (data.pending) {

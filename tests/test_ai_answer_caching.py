@@ -161,7 +161,7 @@ def test_session_log_recap_repeated_call_hits_cache(client, seed, monkeypatch):
 
     calls = []
 
-    async def fake_summarize(facts, model="", extra_instructions=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
         calls.append(1)
         return "A recap."
     from app import ai as ai_module
@@ -191,7 +191,7 @@ def test_session_log_recap_cache_separate_for_gm_and_player(client, seed, monkey
 
     calls = []
 
-    async def fake_summarize(facts, model="", extra_instructions=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
         calls.append(sorted(facts))
         return "recap:" + ",".join(sorted(facts))
     from app import ai as ai_module
@@ -226,7 +226,7 @@ def test_session_log_recap_cache_invalidated_by_new_fact(client, seed, monkeypat
 
     calls = []
 
-    async def fake_summarize(facts, model="", extra_instructions=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
         calls.append(1)
         return "recap #" + str(len(calls))
     from app import ai as ai_module
@@ -262,7 +262,7 @@ def test_session_log_recap_cache_invalidated_by_recap_instructions_save(client, 
 
     calls = []
 
-    async def fake_summarize(facts, model="", extra_instructions=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
         calls.append(extra_instructions)
         return "recap #" + str(len(calls))
     from app import ai as ai_module
@@ -292,7 +292,7 @@ def test_session_log_recap_cache_invalidated_by_fact_delete(client, seed, monkey
 
     calls = []
 
-    async def fake_summarize(facts, model="", extra_instructions=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
         calls.append(1)
         return "recap #" + str(len(calls))
     from app import ai as ai_module

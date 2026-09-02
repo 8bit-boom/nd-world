@@ -3,6 +3,9 @@
 import datetime as _dt
 import json
 import time
+import types
+
+import pytest
 
 from app import ai as ai_module
 from app.database import SessionLocal
@@ -106,7 +109,7 @@ def test_facts_scoped_to_active_world(client, seed):
 
 
 def test_api_facts_parse_returns_draft_without_saving(client, seed, monkeypatch):
-    async def fake_parse(raw_text, model=""):
+    async def fake_parse(raw_text, model="", think=False, world_context=""):
         assert "tavern" in raw_text
         return [
             {"content": "The party visited the tavern.", "visible_to_players": True},
@@ -129,7 +132,7 @@ def test_api_facts_parse_returns_draft_without_saving(client, seed, monkeypatch)
 
 
 def test_api_facts_parse_surfaces_model_failure(client, seed, monkeypatch):
-    async def fake_parse(raw_text, model=""):
+    async def fake_parse(raw_text, model="", think=False, world_context=""):
         raise ValueError("Could not parse facts from that recap — try rephrasing it.")
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
 
@@ -191,7 +194,7 @@ def _login_gm(client, seed):
 
 
 def test_api_facts_parse_job_creates_job_and_returns_id(client, seed, monkeypatch):
-    async def fake_parse(raw_text, model=""):
+    async def fake_parse(raw_text, model="", think=False, world_context=""):
         return [
             {"content": "The party visited the tavern.", "visible_to_players": True},
             {"content": "Elyra is secretly a cult agent.", "visible_to_players": False},
@@ -345,3 +348,135 @@ def test_facts_page_ships_recap_templates(client, seed):
     assert "Hidden from players: <the secret behind it>" in html
     assert "Persons of interest: <names and why>" in html
     assert "Clues found:" in html
+
+
+# ── Model / Thinking / RAG pickers for "Parse with AI" ──────────────────────
+# The GM chooses which model parses (and whether it thinks / retrieves World
+# lore) the same way the Sessions page's recording flow does — the choices
+# ride the parse-job POST body onto the AudioJob row, and _run_job passes
+# them into parse_facts_from_recap.
+
+class _CaptureChatClient:
+    """Records every .chat() kwargs dict and answers with an empty facts
+    payload, so the parse unit tests can assert exactly what
+    parse_facts_from_recap sends (model/messages/think) without an Ollama
+    server — same idea as test_ollama_options.py's _FakeChatClient. Reports
+    the model as thinking-capable so a requested think=True isn't downgraded
+    by _chat_kwargs' capability check (it cleans its cache entry up after
+    itself — see the try/finally in the tests below)."""
+
+    def __init__(self, calls):
+        self._calls = calls
+
+    async def chat(self, **kwargs):
+        self._calls.append(kwargs)
+        return types.SimpleNamespace(
+            message=types.SimpleNamespace(content='{"facts": []}'),
+        )
+
+    async def show(self, model):
+        return types.SimpleNamespace(capabilities=["thinking"])
+
+
+def _user_content(kwargs):
+    return [m for m in kwargs["messages"] if m["role"] == "user"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_from_recap_passes_model_think_and_world_context(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _CaptureChatClient(calls))
+    try:
+        await ai_module.parse_facts_from_recap(
+            "went to the tavern", model="gemma4:26b", think=True,
+            world_context="- [npc] Elyra: an enchanter",
+        )
+    finally:
+        # _model_supports_thinking caches per-model for the process — don't
+        # leak this test's fake capability answer into any other test.
+        ai_module._model_capabilities_cache.pop("gemma4:26b", None)
+
+    kwargs = calls[0]
+    assert kwargs["model"] == "gemma4:26b"  # the GM's picker choice reaches Ollama
+    assert kwargs["think"] is True  # the Thinking checkbox reaches the chat call
+    assert kwargs["format"]  # the JSON-schema constraint is still sent alongside
+    user_content = _user_content(kwargs)
+    # World lore is prepended ahead of the recap text in the user message,
+    # framed by the same _with_world_context helper condense_recap uses —
+    # reference material for name accuracy, not extra facts to invent.
+    assert user_content.startswith("Relevant world lore and notes")
+    assert "- [npc] Elyra: an enchanter" in user_content
+    assert user_content.endswith("went to the tavern")
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_from_recap_defaults_to_clean_json_and_bare_text(monkeypatch):
+    """No Thinking checkbox tick and no RAG context means exactly the old
+    call shape: think=False (a parse needs clean JSON back) and the recap
+    text alone in the user message."""
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _CaptureChatClient(calls))
+    await ai_module.parse_facts_from_recap("went to the tavern", model="m1")
+    kwargs = calls[0]
+    assert kwargs["model"] == "m1"
+    assert kwargs["think"] is False
+    assert _user_content(kwargs) == "went to the tavern"  # no lore, no framing
+
+
+def test_api_facts_parse_job_round_trips_model_think_and_rag(client, seed, monkeypatch):
+    async def fake_parse(raw_text, model="", think=False, world_context=""):
+        return []
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    _login_gm(client, seed)
+    r = client.post("/api/facts/parse-job", json={
+        "text": "went to the tavern, met Elyra",
+        "model": "gemma4:26b",
+        "think": True,
+        "use_rag": True,
+        "rag_entity_limit": 7,
+        "rag_notes_limit": 2,
+    })
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+
+    # Everything the pickers held persists on the row immediately — the
+    # background run reads it from there (and a resume after a restart
+    # reproduces the same configuration).
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.model == "gemma4:26b"
+        assert job.think is True
+        assert job.use_rag is True
+        assert job.rag_entity_limit == 7
+        assert job.rag_notes_limit == 2
+    finally:
+        db.close()
+
+
+def test_api_facts_parse_job_rejects_negative_rag_limits(client, seed):
+    """Same validation the Sessions routes apply via _rag_options_from_body —
+    a bad limit fails fast with a 400 instead of creating a doomed job."""
+    _login_gm(client, seed)
+    r = client.post("/api/facts/parse-job", json={"text": "some recap", "rag_entity_limit": -1})
+    assert r.status_code == 400
+
+
+def test_facts_page_ships_parse_model_think_and_rag_pickers(client, seed):
+    """The pickers must exist on the page AND their values must ride the
+    parse-job POST body (via parseModelOptions()) — a picker that renders
+    but never sends would silently parse with the defaults instead."""
+    _login_gm(client, seed)
+    html = client.get("/facts").text
+    assert 'id="parse-model"' in html
+    assert "(default model)" in html
+    assert 'id="parse-think"' in html
+    assert 'id="parse-rag-checkbox"' in html
+    assert 'id="parse-rag-entity-limit"' in html
+    assert 'id="parse-rag-notes-limit"' in html
+    # Same population mechanism as the Sessions page's model dropdown.
+    assert "loadParseModelOptions" in html
+    assert "/api/ai/models" in html
+    # The POST body includes the pickers' values.
+    assert "parseModelOptions()" in html

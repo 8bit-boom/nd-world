@@ -85,6 +85,11 @@ def _login_gm_in(client, seed, world):
     client.cookies.set("active_world", world.slug)
 
 
+def _login_player_in(client, seed, world):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", world.slug)
+
+
 # ── GM-only AI recap assist ──────────────────────────────────────────────────
 
 def test_expand_notes(client, seed, monkeypatch):
@@ -1142,7 +1147,7 @@ def test_player_recap_excludes_gm_only_facts_and_raw_summary(client, seed, monke
 
     captured = {}
 
-    async def fake_summarize(facts, model="", extra_instructions=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
         captured["facts"] = facts
         return "A narrated recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
@@ -1179,7 +1184,7 @@ def test_gm_recap_includes_gm_only_facts(client, seed, monkeypatch):
 
     captured = {}
 
-    async def fake_summarize(facts, model="", extra_instructions=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
         captured["facts"] = facts
         return "Full recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
@@ -1233,7 +1238,7 @@ def test_session_log_recap_done_job_is_served_without_a_second_one(client, seed,
     session_id = _make_session(seed.world_a)
     _add_fact(seed.world_a, session_id, "A fact", True)
 
-    async def fake_summarize(facts, model="", extra_instructions=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
         return "A woven recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -1260,7 +1265,7 @@ def test_session_log_recap_staleness_marker_forces_a_new_job_after_clear(client,
 
     calls = []
 
-    async def fake_summarize(facts, model="", extra_instructions=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
         calls.append(1)
         return "recap #" + str(len(calls))
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
@@ -1290,7 +1295,7 @@ def test_session_log_recap_poll_while_pending_dedups_into_one_job(client, seed, 
     onto the SAME job, not stack a duplicate generation per poll."""
     import asyncio
 
-    async def slow_summarize(facts, model="", extra_instructions=""):
+    async def slow_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
         await asyncio.sleep(30)  # still "generating" when the second POST lands
         return "late recap"
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", slow_summarize)
@@ -1315,7 +1320,7 @@ def test_session_log_recap_poll_while_pending_does_not_hit_cooldown(client, seed
     exactly the players the background job exists to stop hanging."""
     import asyncio
 
-    async def slow_summarize(facts, model="", extra_instructions=""):
+    async def slow_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
         await asyncio.sleep(30)
         return "late recap"
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", slow_summarize)
@@ -1336,7 +1341,7 @@ def test_session_log_recap_cooldown_applies_when_creating_for_a_second_session(c
     (different sessions, nothing cached or in flight) within the cooldown
     window still 429 — same contract the synchronous route had, just
     enforced at creation time."""
-    async def fake_summarize(facts, model="", extra_instructions=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
         return "A recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -1490,3 +1495,260 @@ def test_use_this_background_job_button_surfaces_errors_instead_of_silent_no_op(
     assert "try {" in body
     assert "catch (e)" in body
     assert "ai-recap-status" in body
+
+
+# ── Session-log recap: model / Thinking / RAG pickers ───────────────────────
+# The Session Log page picks which model generates the recap (and whether it
+# thinks / retrieves World lore) the same way the GM Sessions page does; the
+# choices ride every poll POST, persist on the AudioJob row, and a recap
+# generated with a different configuration is a DIFFERENT artifact for the
+# done-job cache lookup.
+
+def test_session_log_recap_job_carries_model_think_and_rag(client, seed, monkeypatch):
+    from app import audio_jobs as _audio_jobs
+
+    captured = {}
+
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        captured.update(model=model, think=think, world_context=world_context)
+        return "A narrated recap."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    build_calls = []
+
+    def fake_build_rag_context(world_id, query, entity_limit, notes_limit, **kwargs):
+        build_calls.append((world_id, query, entity_limit, notes_limit))
+        return "- [npc] Elyra: an enchanter"
+    monkeypatch.setattr(_audio_jobs, "_build_rag_context", fake_build_rag_context)
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "Public fact", True)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(f"/api/session-log/{session_id}/recap", json={
+        "model": "gemma4:26b", "think": False, "use_rag": True,
+        "rag_entity_limit": 6, "rag_notes_limit": 3,
+    })
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    assert r.json()["pending"] is True
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.model == "gemma4:26b"
+        assert job.think is False
+        assert job.use_rag is True
+        assert job.rag_entity_limit == 6
+        assert job.rag_notes_limit == 3
+    finally:
+        db.close()
+    assert _wait_recap_job_done(job_id) == "done"
+    assert captured["model"] == "gemma4:26b"
+    assert captured["think"] is False
+    assert captured["world_context"] == "- [npc] Elyra: an enchanter"
+    # queried against the session's facts — this recap's only content input
+    # (and already visibility-filtered per audience).
+    assert build_calls == [(seed.world_a.id, "Public fact", 6, 3)]
+
+
+def test_session_log_recap_rag_is_gm_only(client, seed, monkeypatch):
+    """A player's use_rag is forced off server-side: _build_rag_context is
+    not visibility-filtered, so player-enabled RAG could pull GM-only lore
+    into the recap prompt (the template hides the checkbox from players,
+    but the body is client-supplied and must not be trusted). The GM's own
+    RAG request goes through untouched."""
+    from app import audio_jobs as _audio_jobs
+
+    rag_calls = []
+
+    def fake_build_rag_context(world_id, query, entity_limit, notes_limit, **kwargs):
+        rag_calls.append((entity_limit, notes_limit))
+        return "- [npc] Elyra: an enchanter"
+
+    monkeypatch.setattr(_audio_jobs, "_build_rag_context", fake_build_rag_context)
+
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "A narrated recap."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "Public fact", True)
+
+    # Player asks for RAG — silently downgraded, not an error (the UI hides
+    # it; a hand-rolled request just loses the flag).
+    _login_player_in(client, seed, seed.world_a)
+    r = client.post(f"/api/session-log/{session_id}/recap", json={
+        "use_rag": True, "rag_entity_limit": 9, "rag_notes_limit": 9,
+    })
+    assert r.status_code == 200, r.text
+    player_job_id = r.json()["job_id"]
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, player_job_id)
+        assert job.audience == "players"
+        assert job.use_rag is False
+        assert job.rag_entity_limit is None
+        assert job.rag_notes_limit is None
+    finally:
+        db.close()
+    assert _wait_recap_job_done(player_job_id) == "done"
+    assert rag_calls == []  # the retrieval never ran for the player's recap
+
+    # GM's identical request keeps RAG.
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(f"/api/session-log/{session_id}/recap", json={
+        "use_rag": True, "rag_entity_limit": 6, "rag_notes_limit": 3,
+    })
+    assert r.status_code == 200, r.text
+    gm_job_id = r.json()["job_id"]
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, gm_job_id)
+        assert job.audience == "gm"
+        assert job.use_rag is True
+        assert job.rag_entity_limit == 6
+        assert job.rag_notes_limit == 3
+    finally:
+        db.close()
+    assert _wait_recap_job_done(gm_job_id) == "done"
+    assert rag_calls == [(6, 3)]
+
+
+def test_session_log_recap_done_job_with_different_model_forces_a_new_job(client, seed, monkeypatch):
+    """A recap generated with one model must NOT satisfy a later request for
+    another: the done rows are never deleted and stay "fresh" until a fact
+    edit, so without the config match the first model ever used would be
+    served forever no matter what the picker says."""
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    calls = []
+
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        calls.append(model)
+        return "recap by " + (model or "default")
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap", json={"model": "model-a"})
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
+    # Same model → served from the done job, no second generation.
+    r2 = client.post(f"/api/session-log/{session_id}/recap", json={"model": "model-a"})
+    assert r2.json() == {"recap": "recap by model-a"}
+    # Different model → a different artifact → new job.
+    r3 = client.post(f"/api/session-log/{session_id}/recap", json={"model": "model-b"})
+    assert r3.json()["pending"] is True
+    assert r3.json()["job_id"] != r1.json()["job_id"]
+    assert _wait_recap_job_done(r3.json()["job_id"]) == "done"
+    assert client.post(f"/api/session-log/{session_id}/recap", json={"model": "model-b"}).json() == {"recap": "recap by model-b"}
+    assert len(calls) == 2
+    assert _recap_job_count(session_id) == 2
+
+
+def test_session_log_recap_done_job_with_different_think_or_rag_forces_a_new_job(client, seed, monkeypatch):
+    """Think and RAG participate in the same done-job match: a recap woven
+    without reasoning or retrieved lore is not the artifact a request with
+    either enabled asks for."""
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "A recap."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap", json={"think": True})
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
+    # Same think → cache hit.
+    r2 = client.post(f"/api/session-log/{session_id}/recap", json={"think": True})
+    assert r2.json() == {"recap": "A recap."}
+    # Flipped think → new job; and RAG off→on mismatches too.
+    r3 = client.post(f"/api/session-log/{session_id}/recap", json={"think": False})
+    assert r3.json()["pending"] is True
+    assert _wait_recap_job_done(r3.json()["job_id"]) == "done"
+    r4 = client.post(f"/api/session-log/{session_id}/recap", json={"think": False, "use_rag": True})
+    assert r4.json()["pending"] is True
+    assert _wait_recap_job_done(r4.json()["job_id"]) == "done"
+    assert _recap_job_count(session_id) == 3
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_from_facts_defaults_num_predict_when_nothing_configured(monkeypatch):
+    """The degeneration guard: with no GM-configured num_predict (Ollama's
+    own default is unlimited), the recap call must cap ITSELF — a reported
+    degenerating model looped repeated sentences and digit garbage for
+    thousands of tokens because nothing bounded the generation. Applies with
+    think off too: a degeneration loop is not a thinking-only failure."""
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
+    seen = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen.append(options)
+        return "a recap"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    await ai_module.summarize_session_from_facts(["fact one"])
+    await ai_module.summarize_session_from_facts(["fact one"], think=False)
+    assert seen[0]["num_predict"] == ai_module._RECAP_NUM_PREDICT_DEFAULT
+    assert seen[1]["num_predict"] == ai_module._RECAP_NUM_PREDICT_DEFAULT
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_from_facts_guard_never_clobbers_configured_num_predict(monkeypatch):
+    """A GM's configured value must win over the default. With Thinking on,
+    what wins is the thinking override's widened value (configured +
+    headroom) — the guard stands down entirely. With Thinking off, the
+    configured value flows through _chat_kwargs' options merge instead, so
+    the guard must leave the per-call options without a num_predict rather
+    than silently RAISING the GM's cap to the default."""
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_predict": 512})
+    seen = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen.append(options)
+        return "a recap"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    await ai_module.summarize_session_from_facts(["fact one"], think=True)
+    assert seen[0]["num_predict"] == 512 + ai_module._THINKING_HEADROOM_TOKENS
+    await ai_module.summarize_session_from_facts(["fact one"], think=False)
+    # No per-call num_predict override at all (opts stayed empty, so
+    # generate_chat gets options=None) — the configured 512 still reaches
+    # Ollama through _chat_kwargs' own options merge, which is exactly the
+    # channel the guard must never shadow with its default.
+    assert seen[1] is None or "num_predict" not in seen[1]
+
+
+def test_session_log_page_ships_recap_model_think_and_rag_pickers(client, seed):
+    """The pickers must render under the recap box AND their values must ride
+    the poll POST (via recapRequestOptions()) — the endpoint is the
+    create-or-poll surface, so a body-less poll would silently ignore them.
+    RAG is the exception: it's GM-only (the retrieval isn't
+    visibility-filtered, so player-enabled RAG could leak hidden lore into
+    the recap a player reads) — the checkbox renders for the GM and is
+    absent for players, enforced server-side too."""
+    session_id = _make_session(seed.world_a)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    html = client.get(f"/session-log/{session_id}").text
+    assert 'id="recap-model"' in html
+    assert "(default model)" in html
+    assert 'id="recap-think" checked' in html  # Thinking starts checked
+    # Player view: no RAG controls at all (leak prevention), and the JS
+    # degrades to use_rag: false without them.
+    assert 'id="recap-rag-checkbox"' not in html
+    assert 'id="recap-rag-entity-limit"' not in html
+    assert 'id="recap-rag-notes-limit"' not in html
+    assert "use_rag: !!(ragBox && ragBox.checked)" in html
+    # Same population mechanism as the Sessions page's model dropdown.
+    assert "loadRecapModelOptions" in html
+    assert "/api/ai/models" in html
+    # The POST body includes the pickers' values.
+    assert "recapRequestOptions()" in html
+
+    _login_gm_in(client, seed, seed.world_a)
+    gm_html = client.get(f"/session-log/{session_id}").text
+    assert 'id="recap-rag-checkbox"' in gm_html
+    assert 'id="recap-rag-entity-limit"' in gm_html
+    assert 'id="recap-rag-notes-limit"' in gm_html

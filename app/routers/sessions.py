@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from .. import auth
@@ -1420,11 +1420,50 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     is_gm = bool(user and user.is_gm)
     audience = "gm" if is_gm else "players"
 
+    # This route predates taking a body at all (the page's original call
+    # sent none, and direct API calls may still not) — read the recap
+    # options optionally rather than requiring every caller to start
+    # sending an otherwise-pointless empty JSON body.
+    raw = await request.body()
+    body = json.loads(raw) if raw else {}
+    model = str(body.get("model", "")).strip()
+    think = _think_from_body(body)
+    use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
+    if audience != "gm" and use_rag:
+        # RAG is GM-only on this surface, enforced server-side (the template
+        # hides the checkbox from players, but this page serves players and
+        # the body is client-supplied): _build_rag_context retrieves world
+        # entities/notes WITHOUT the per-entity player-visibility filter, so
+        # a player-enabled RAG could pull GM-only lore into the recap prompt
+        # and read it back out of the model's answer. Model/thinking stay
+        # available to players — they only shape how the (visibility-
+        # filtered) facts are retold.
+        use_rag = False
+        rag_entity_limit = None
+        rag_notes_limit = None
+    # An explicitly picked model and "whatever the recap surface default is"
+    # must compare equal when they name the same model — a done row stores
+    # the RESOLVED default (never ""), so normalizing the empty request here
+    # is what lets the cache below hit at all for a GM with a configured
+    # surface default.
+    requested_model = model or _recap_model("")
+
     def _session_log_recap_q(extra):
+        # The model/think/RAG filters exist because a recap generated with a
+        # different configuration is a DIFFERENT artifact: without them, the
+        # first recap ever generated for (session, audience) would be served
+        # forever no matter what the picker says next (the done rows are
+        # never deleted and stay "fresh" until a fact edit). NULL — a
+        # pre-feature row — reads as the same defaults _run_job itself
+        # applies (think=True, use_rag=False), so old rows still match
+        # default requests.
         return extra.filter(
             AudioJob.purpose == "session_log_recap",
             AudioJob.game_session_id == session_id,
             AudioJob.audience == audience,
+            func.coalesce(AudioJob.model, "") == requested_model,
+            func.coalesce(AudioJob.think, True) == think,
+            func.coalesce(AudioJob.use_rag, False) == use_rag,
         )
 
     # Fresh-cache check BEFORE the cooldown gate: serving an already-done
@@ -1444,7 +1483,11 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
 
     # A still-running job answers the poll without dedup-creating a second
     # identical one (two players — or one player reloading — hitting this
-    # route while the model thinks must not stack duplicate jobs).
+    # route while the model thinks must not stack duplicate jobs). The
+    # config filters in _session_log_recap_q apply here too, deliberately:
+    # a request for a different model/think/RAG must not sit pending behind
+    # someone else's artifact — it starts its own (dedup within the SAME
+    # configuration is unaffected).
     in_flight = _session_log_recap_q(
         db.query(AudioJob).filter(AudioJob.status.in_(_audio_jobs.IN_PROGRESS_STATUSES))
     ).order_by(AudioJob.created_at.desc(), AudioJob.id.desc()).first()
@@ -1460,5 +1503,7 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     job_id = _audio_jobs.create_session_log_recap_job(
         world_id=gs.world_id, session_id=session_id, audience=audience,
         created_by_user_id=user.id if user else None,
+        model=model, think=think,
+        use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
     )
     return {"pending": True, "job_id": job_id}

@@ -10,7 +10,7 @@ from ..database import get_db
 from ..deps import get_world_ctx
 from ..models import AudioJob, Fact, GameSession
 from ..templating import templates
-from .sessions import clear_session_log_recap_cache
+from .sessions import _rag_options_from_body, clear_session_log_recap_cache
 
 router = APIRouter()
 
@@ -124,11 +124,19 @@ async def api_facts_parse_job(request: Request, db: Session = Depends(get_db), a
         raise HTTPException(400, "No recap text provided")
     session_id = body.get("game_session_id")
     user = getattr(request.state, "user", None)
+    # Model/Thinking/RAG: the Facts page's own pickers beside the parse
+    # button — think defaults to False (a parse needs clean JSON back; the
+    # checkbox starts unchecked), RAG options parsed/validated by the same
+    # helper the Sessions routes use so 0-vs-unset limits mean the same
+    # thing on both pages.
+    use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
     job_id = _audio_jobs.create_facts_parse_job(
         world_id=world.id, text=text,
         game_session_id=int(session_id) if session_id else None,
         model=str(body.get("model", "")).strip(),
         created_by_user_id=user.id if user else None,
+        think=bool(body.get("think", False)),
+        use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
     )
     return {"job_id": job_id}
 

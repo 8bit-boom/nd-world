@@ -1053,22 +1053,41 @@ _RECAP_FACTS_SCHEMA = {
 }
 
 
-async def parse_facts_from_recap(raw_text: str, model: str = "") -> list[dict]:
+async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = False, world_context: str = "") -> list[dict]:
     """Turn a rough GM recap into draft facts via the local model, using
     Ollama's JSON-schema-constrained `format` — see ollama.AsyncClient.chat's
     `format` parameter. Raises ValueError on any failure (model unreachable,
     malformed JSON) so the caller can surface a clear error; does not write
-    anything to the database itself."""
+    anything to the database itself.
+
+    `think` defaults to False, same clean-JSON default every other
+    schema-constrained caller in this module uses (see _chat_kwargs' own
+    docstring) — it's a parameter only since the Facts page grew its own
+    "Thinking" checkbox: a GM opting in gets deeper extraction at the usual
+    cost (slower, and a model that spends its whole output budget reasoning
+    can come back with empty content — see generate_chat's empty-content
+    handling). JSON `format` and think=True coexist fine in Ollama: hidden
+    reasoning lands in the response's separate `thinking` field, so
+    resp.message.content below is still exactly the JSON blob.
+
+    `world_context`, if given, is RAG-retrieved World lore/Notes text (see
+    app.audio_jobs._build_rag_context). It's prepended ahead of the recap
+    text in the USER message by reusing _with_world_context itself — same
+    "reference material for name accuracy, not content" framing condense_
+    recap puts on its system prompt, kept word-for-word in one place so the
+    two surfaces can't drift. The user message, not the system prompt,
+    because the extraction instructions already live in _RECAP_SYSTEM and
+    the lore is context FOR the text being split, not a behavior change."""
     m = model or effective_ollama_model()
     try:
         resp = await _client().chat(
             model=m,
             messages=[
                 {"role": "system", "content": _RECAP_SYSTEM},
-                {"role": "user", "content": raw_text},
+                {"role": "user", "content": _with_world_context(raw_text, world_context)},
             ],
             format=_RECAP_FACTS_SCHEMA,
-            **(await _chat_kwargs(model=m)),
+            **(await _chat_kwargs(model=m, think=think)),
         )
     except _ollama.ResponseError as exc:
         raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
@@ -1263,8 +1282,27 @@ _SUMMARIZE_FACTS_SYSTEM = (
     "simple. Respond with the recap text only, no preamble or commentary."
 )
 
+# Hard cap on this function's generation length when NOTHING else supplied a
+# num_predict — neither the GM's Settings > System "Max output tokens" nor
+# _thinking_num_predict_override's widening of one. Ollama's own default is
+# -1 (unlimited), and a recap call without a cap has a reported, ugly
+# failure mode: one GM's Session Log recap degenerated into the same
+# sentence repeated dozens of times, leaked a raw "<|im_start|>user"
+# chat-template token, then spiraled into infinite digit strings
+# ("a147c503573688711905232000000…", "…9999999…") for thousands of tokens —
+# nothing stopped the loop except the context window filling up. A recap is
+# a few short paragraphs by definition, so 1024 tokens (~4x a normal recap,
+# roughly the same chars-per-token math _CONTEXT_FIT_RESERVED_TOKENS uses)
+# is generous room for prose and hidden thinking alike while guaranteeing
+# the generation actually ENDS. Deliberately a fallback, never an override:
+# a GM's configured num_predict reaches Ollama through _chat_kwargs' options
+# merge and must not be clobbered, and _thinking_num_predict_override's
+# widened value (configured + _THINKING_HEADROOM_TOKENS) wins over both so
+# a thinking model keeps its headroom.
+_RECAP_NUM_PREDICT_DEFAULT = 1024
 
-async def summarize_session_from_facts(facts: list[str], model: str = "", extra_instructions: str = "", think: bool = True) -> str:
+
+async def summarize_session_from_facts(facts: list[str], model: str = "", extra_instructions: str = "", think: bool = True, world_context: str = "") -> str:
     """Weave a list of discrete session facts (see the Facts feature, which
     logs these per-session) into a readable narrative recap. `extra_instructions`
     is a GM's steering (e.g. World.recap_instructions — "write in Spanish"),
@@ -1272,19 +1310,51 @@ async def summarize_session_from_facts(facts: list[str], model: str = "", extra_
     defaults to True — see expand_recap_notes's docstring for why this
     family of functions differs from generate_chat's own plain default.
 
+    `world_context`, if given, is RAG-retrieved World lore/Notes text (see
+    app.audio_jobs._build_rag_context), prepended ahead of everything else
+    via _with_world_context — exactly how condense_recap frames its own.
+    The recap is generated FROM the session's facts, so the retrieved lore
+    is purely supplementary reference material (spelling an established
+    name right), never a second content source — the framing text says so.
+
     Also sizes num_ctx via _ctx_override_if_needed — a fact-heavy session
     (the player session-log route sends every fact, uncapped) could
     otherwise silently truncate at the configured/default context; this
     used to pass no num_ctx override at all, unlike condense_recap/
     summarize_transcript. See expand_recap_notes's own docstring for why
     the extra reserve is gated on num_predict actually having been widened,
-    not on bare `think`."""
+    not on bare `think`.
+
+    Finally, an unbounded run is prevented outright: when neither the GM's
+    configured options nor _thinking_num_predict_override supply a
+    num_predict, _RECAP_NUM_PREDICT_DEFAULT is set so a degenerating model
+    cannot loop forever (see that constant's comment for the reported
+    failure). The same guard is NOT yet applied to this function's recap-
+    family siblings (expand_recap_notes/condense_recap/summarize_transcript)
+    — they have their own length-target machinery; extending the guard there
+    is its own change."""
     if not facts:
         return ""
     bullet_list = "\n".join(f"- {f}" for f in facts)
-    system = _with_instructions(_SUMMARIZE_FACTS_SYSTEM, extra_instructions)
-    opts = dict(_thinking_num_predict_override(think))
-    reserve = _CONTEXT_FIT_RESERVED_TOKENS + (_THINKING_HEADROOM_TOKENS if "num_predict" in opts else 0)
+    system = _with_world_context(_with_instructions(_SUMMARIZE_FACTS_SYSTEM, extra_instructions), world_context)
+    thinking_opts = _thinking_num_predict_override(think)
+    opts = dict(thinking_opts)
+    if "num_predict" not in opts:
+        # Degeneration guard (see _RECAP_NUM_PREDICT_DEFAULT). The
+        # configured-value test mirrors _thinking_num_predict_override's
+        # own "is a bounded num_predict configured?" check exactly, so a
+        # GM's explicit setting still reaches Ollama unmolested through
+        # _chat_kwargs' merge (think=False makes the override a no-op, and
+        # clobbering a configured cap with this default would silently
+        # RAISE it) — this fires only when truly nothing else set one.
+        configured = effective_ollama_options().get("num_predict")
+        if not configured or configured < 0:
+            opts["num_predict"] = _RECAP_NUM_PREDICT_DEFAULT
+    # `thinking_opts` (not "num_predict" in opts — the guard just guaranteed
+    # that is now always true) preserves the pre-guard reserve semantics:
+    # the extra num_ctx headroom applies only when the THINKING widening
+    # actually fired.
+    reserve = _CONTEXT_FIT_RESERVED_TOKENS + (_THINKING_HEADROOM_TOKENS if thinking_opts else 0)
     opts.update(_ctx_override_if_needed(system + bullet_list, reserve))
     return await generate_chat(
         [{"role": "user", "content": bullet_list}], system=system, model=model,

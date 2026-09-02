@@ -296,6 +296,8 @@ def create_text_recap_job(
 def create_facts_parse_job(
     world_id: int, text: str, game_session_id: Optional[int] = None,
     model: str = "", created_by_user_id: Optional[int] = None,
+    think: bool = False, use_rag: bool = False,
+    rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
 ) -> int:
     """Parse `text` (a GM's rough recap, or a whole transcript pasted from a
     job's "📋 Extract facts" hand-off) into draft facts as a durable
@@ -317,6 +319,14 @@ def create_facts_parse_job(
     draft stays attributable to its session and a consistent model is
     available to anything inspecting the row.
 
+    `think` (parse_facts_from_recap's reasoning mode — the Facts page's
+    "Thinking" checkbox, OFF by default since a parse needs clean JSON back)
+    and `use_rag`/`rag_entity_limit`/`rag_notes_limit` (RAG-retrieved World
+    lore prepended to the parse's user message for name accuracy — see
+    _build_rag_context) persist on the same AudioJob columns the
+    condense/summarize purposes already use, so the runner reads them back
+    unchanged on a resume, same as every other per-job setting here.
+
     Raises ValueError on blank text — checked synchronously up front so the
     route maps it to a clean HTTP 400 rather than a job that errors mid-run
     with a message about empty input the GM can't connect to the button they
@@ -329,6 +339,8 @@ def create_facts_parse_job(
             world_id=world_id, purpose="facts_parse", filename="Facts", status="pending",
             game_session_id=game_session_id, created_by_user_id=created_by_user_id,
             model=model or None,
+            think=think, use_rag=use_rag,
+            rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
             transcript=text, audio_path="", delete_after=False,
         )
         db.add(job)
@@ -346,6 +358,8 @@ def create_facts_parse_job(
 
 def create_session_log_recap_job(
     world_id: int, session_id: int, audience: str, created_by_user_id: Optional[int] = None,
+    model: str = "", think: bool = True, use_rag: bool = False,
+    rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
 ) -> int:
     """Synthesize a Session Log page's recap (one summarize_session_from_facts
     call — see _run_job's session_log_recap branch) as a durable background
@@ -365,12 +379,15 @@ def create_session_log_recap_job(
     new row, so those checks stay in the one place that knows the request
     context (which user, which cooldown window).
 
-    `model` isn't a parameter on purpose: the Session Log recap has never
-    had a model picker, so the row is seeded with the "recap" surface
-    default directly — the same selection the old synchronous route made
-    via its _recap_model("") helper (app.routers.sessions can't be imported
-    here — it imports this module — so the one-liner is replicated; if it
-    ever drifts, the model-surface tests catch it)."""
+    `model` used to have no parameter at all (the row was always seeded with
+    the "recap" surface default): an empty string keeps exactly that
+    behavior, while a non-empty value is the Session Log page's own model
+    picker's explicit choice and is stored as-is. `think` and
+    `use_rag`/`rag_entity_limit`/`rag_notes_limit` persist on the same
+    AudioJob columns every other purpose uses — the polling route keys its
+    fresh-cache match on them too (a recap generated with a different
+    model/think/RAG is a different artifact and must never be served for
+    this request), so they have to live on the row, not just the call."""
     if audience not in ("gm", "players"):
         raise ValueError(f"audience must be 'gm' or 'players', got {audience!r}")
     db = SessionLocal()
@@ -379,7 +396,17 @@ def create_session_log_recap_job(
             world_id=world_id, purpose="session_log_recap", filename="Session Log recap", status="pending",
             game_session_id=session_id, created_by_user_id=created_by_user_id,
             audience=audience,
-            model=_ai_module.get_defaults().get("recap", ""),
+            # Empty string falls back to the "recap" surface default — the
+            # same selection the original synchronous route made via its
+            # _recap_model("") helper (app.routers.sessions can't be
+            # imported here — it imports this module — so the one-liner is
+            # replicated; if it ever drifts, the model-surface tests catch
+            # it). _run_job re-applies the same fallback for NULL/blank, so
+            # this seeding is also what the route's cache match compares
+            # against.
+            model=model or _ai_module.get_defaults().get("recap", ""),
+            think=think, use_rag=use_rag,
+            rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
             audio_path="", delete_after=False,
         )
         db.add(job)
@@ -898,12 +925,15 @@ async def _run_job(job_id: int) -> None:
             transcript = existing_transcript
 
         world_context = ""
-        if use_rag and world_id and purpose in ("condense", "session_recap"):
+        if use_rag and world_id and purpose in ("condense", "session_recap", "facts_parse"):
             # Query the transcript/text-to-condense itself — there's no
             # separate short "user question" here the way AI Chat's RAG has
             # one, so the input being summarized IS the best signal for what
             # entities/notes are relevant to it (see _build_rag_context's
-            # own docstring for the query-length cap this relies on).
+            # own docstring for the query-length cap this relies on). For
+            # purpose="facts_parse" the "transcript" is the pasted recap
+            # text (create_facts_parse_job stores it there), so the same
+            # convention carries over unchanged.
             # pinned_entity_ids/pinned_pc_ids: whatever the GM checked in
             # this session's own "Entities Featured" picker (see _session_
             # featured_picks) — guaranteed inclusion regardless of what the
@@ -1146,7 +1176,15 @@ async def _run_job(job_id: int) -> None:
             # behaviorally identical to it (minus the blocking HTTP request).
             _set(status="summarizing")
             try:
-                facts = await _ai_module.parse_facts_from_recap(transcript, model=model)
+                # think/world_context: the Facts page's own Thinking checkbox
+                # and RAG opt-in (persisted on the row by
+                # create_facts_parse_job). world_context prepends retrieved
+                # World lore to the parse's user message for name accuracy —
+                # parse_facts_from_recap frames it with the same
+                # _with_world_context wording condense_recap uses.
+                facts = await _ai_module.parse_facts_from_recap(
+                    transcript, model=model, think=think, world_context=world_context,
+                )
             except ValueError as exc:
                 # parse_facts_from_recap raises ValueError for EVERY failure
                 # (Ollama down, malformed JSON — see its docstring), already
@@ -1202,9 +1240,31 @@ async def _run_job(job_id: int) -> None:
                 _set(status="done", result_json=_json.dumps({"recap": "", "empty": True}),
                      finished_at=datetime.utcnow(), checkpoint_json="")
                 return
+            if use_rag and world_id:
+                # Built here rather than in the shared RAG block above
+                # because this purpose's transcript is empty by design — the
+                # facts ARE the input, and only they (already visibility-
+                # filtered per `audience` above) make a useful relevance
+                # query. Same "the text being summarized is the query"
+                # convention the shared block applies to the transcript
+                # (_build_rag_context caps the query length itself), and the
+                # same session's "Entities Featured" pins and blank-limit
+                # defaults as every other RAG-backed purpose.
+                pinned_entity_ids, pinned_pc_ids = _session_featured_picks(game_session_id)
+                world_context = _build_rag_context(
+                    world_id, "\n".join(f.content for f in facts),
+                    rag_entity_limit if rag_entity_limit is not None else _DEFAULT_RAG_ENTITY_LIMIT,
+                    rag_notes_limit if rag_notes_limit is not None else _DEFAULT_RAG_NOTES_LIMIT,
+                    pinned_entity_ids=pinned_entity_ids, pinned_pc_ids=pinned_pc_ids,
+                )
+            # think: the Session Log page's own "Thinking" checkbox (column
+            # NULL on pre-feature rows already read as True at the top of
+            # this function); world_context: RAG-retrieved lore, framed as
+            # supplementary reference by summarize_session_from_facts itself.
             recap = await _ai_module.summarize_session_from_facts(
                 [f.content for f in facts], model=model,
                 extra_instructions=world_instructions,
+                think=think, world_context=world_context,
             )
             _set(status="done", result_json=_json.dumps({"recap": recap}),
                  finished_at=datetime.utcnow(), checkpoint_json="")
