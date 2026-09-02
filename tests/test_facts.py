@@ -329,3 +329,19 @@ def test_facts_page_wires_background_parse_and_restore(client, seed):
     assert "/api/facts/last-parse" in html
     # Empty parse outcome is explained, not silently swallowed.
     assert "No in-character facts found" in html
+
+
+def test_facts_page_ships_recap_templates(client, seed):
+    """The template chips and their skeletons ship with the page — a GM
+    clicking one gets a parser-shaped skeleton (discrete lines the splitter
+    turns into one fact each) instead of a blank textarea."""
+    _login_gm(client, seed)
+    html = client.get("/facts").text
+    for key in ("standard", "timeline", "bullets", "combat", "investigation"):
+        assert f'data-tpl="{key}"' in html
+    assert "RECAP_TEMPLATES" in html
+    # A couple of distinctive skeleton lines per template, so a regression
+    # that empties the skeletons is caught even without executing the JS.
+    assert "Hidden from players: <the secret behind it>" in html
+    assert "Persons of interest: <names and why>" in html
+    assert "Clues found:" in html

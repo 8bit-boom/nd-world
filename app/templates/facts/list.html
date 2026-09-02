@@ -17,6 +17,18 @@
     </p>
     <textarea id="recap-input" rows="4" placeholder="went to the tavern, met Elyra, she's actually working for the cult, found a strange clock…"
               style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .7rem;font-family:var(--font);font-size:.85rem;border-radius:3px"></textarea>
+    <div style="display:flex;align-items:center;gap:.4rem;margin-top:.45rem;flex-wrap:wrap">
+      <span style="font-size:.75rem;color:var(--text-dim)">Templates:</span>
+      <!-- data-tpl keys into RECAP_TEMPLATES in the script block below. A
+           template replaces the textarea's content (with a confirm() when
+           something's already written) — it's a starting skeleton shaped
+           for the parser, not an append. -->
+      <button type="button" class="tpl-btn" data-tpl="standard" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">📄 Standard recap</button>
+      <button type="button" class="tpl-btn" data-tpl="timeline" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">🕐 Timeline</button>
+      <button type="button" class="tpl-btn" data-tpl="bullets" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">• Bullet list</button>
+      <button type="button" class="tpl-btn" data-tpl="combat" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">⚔️ Combat &amp; loot</button>
+      <button type="button" class="tpl-btn" data-tpl="investigation" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">🔍 Investigation</button>
+    </div>
     <div style="display:flex;align-items:center;gap:.6rem;margin-top:.6rem;flex-wrap:wrap">
       <label style="font-size:.82rem;color:var(--text-dim)">Session</label>
       <select id="recap-session">
@@ -116,6 +128,64 @@ let draftFacts = [];
 // empty result is a SUCCESS the GM needs explained, not an error to
 // swallow: out-of-character chatter produces exactly this).
 let draftEmptyNote = '';
+
+// Recap templates: skeletons shaped for parse_facts_from_recap — discrete
+// statements the splitter turns into one fact per line, with a placeholder
+// (<like this>) wherever the GM is meant to write. Angle brackets are
+// deliberate: an unfilled placeholder is visibly unfinished, and the model
+// treats bracketed text as a fill-in instruction rather than a fact.
+const RECAP_TEMPLATES = {
+  standard:
+    "Session #: <number>\n" +
+    "The party: <who played>\n\n" +
+    "What happened:\n" +
+    "1. <first beat>\n" +
+    "2. <key event or decision>\n" +
+    "3. <who they met / what was learned>\n" +
+    "4. <how it ended>\n\n" +
+    "Loot & rewards: <items, XP>\n" +
+    "Next hook: <where things point next>\n" +
+    "Hidden from players: <the secret behind it>",
+  timeline:
+    "In order:\n" +
+    "1. <event>\n" +
+    "2. <event>\n" +
+    "3. <event>\n" +
+    "4. <event>\n\n" +
+    "Outcome: <where things stand now>\n" +
+    "Hidden from players: <the secret behind it>",
+  bullets:
+    "- <fact>\n" +
+    "- <fact>\n" +
+    "- <fact>\n" +
+    "- <fact>",
+  combat:
+    "Enemies fought: <who, how many>\n" +
+    "How it went: <turns, tactics, turning point>\n" +
+    "Outcome: <who won, casualties, escapes>\n" +
+    "Loot: <items found>\n" +
+    "XP / rewards: <amounts>",
+  investigation:
+    "Scene: <where, what happened there>\n" +
+    "Clues found:\n" +
+    "- <clue>\n" +
+    "- <clue>\n" +
+    "Persons of interest: <names and why>\n" +
+    "Conclusions: <what the clues add up to>\n" +
+    "Still unknown: <open questions>",
+};
+
+document.querySelectorAll('.tpl-btn').forEach(btn => btn.addEventListener('click', () => {
+  const ta = document.getElementById('recap-input');
+  const tpl = RECAP_TEMPLATES[btn.dataset.tpl];
+  if (!tpl) return;
+  // Replacing non-empty text needs a confirm — a click on a chip is a
+  // coarse action and silently wiping a half-written recap would be worse
+  // than one extra dialog.
+  if (ta.value.trim() && ta.value !== tpl && !confirm('Replace the current recap text with this template?')) return;
+  ta.value = tpl;
+  ta.focus();
+}));
 
 function renderDraft() {
   const panel = document.getElementById('draft-panel');
