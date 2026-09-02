@@ -1068,6 +1068,36 @@ _RECAP_FACTS_SCHEMA = {
 # keeps that answer from colliding with the chunk's own input tokens.
 _FACTS_PARSE_RESPONSE_RESERVE_TOKENS = 512
 
+# parse_facts_from_recap sizes its chunks by INPUT TARGET, not by squeezing
+# them into a fixed window: each chunk aims for this many input tokens and
+# the per-call num_ctx pin is grown to reserves + chunk instead (see
+# _facts_parse_chunk_plan for the full story of why the old
+# "derive chunk size from an assumed window" model collapsed to 500-token
+# chunks and 26 AI calls for one ~11k-token recap). Think=True reserves a
+# much larger thinking headroom, so its default target is smaller to keep
+# the pinned window (reserves + chunk) in the same ballpark either way.
+# Env-tunable (same idiom as THINKING_HEADROOM_TOKENS) for an install that
+# wants bigger chunks per call or has very little memory to pin windows
+# with; floored at _FACTS_PARSE_MIN_CHUNK_INPUT_TOKENS so a typo'd value
+# can't re-create the 500-token-chunk pathology it replaces.
+_FACTS_PARSE_MIN_CHUNK_INPUT_TOKENS = 1024
+
+
+def _facts_parse_target_input_tokens(think: bool) -> int:
+    """The per-chunk INPUT target (in tokens) parse_facts_from_recap sizes
+    chunks to — one env var, two defaults: 3072 when think=True (whose
+    thinking reserve is huge and would otherwise pin every window past
+    10k tokens) and 4096 when think=False. See _facts_parse_chunk_plan."""
+    default = "3072" if think else "4096"
+    return max(_FACTS_PARSE_MIN_CHUNK_INPUT_TOKENS, int(os.getenv("FACTS_PARSE_TARGET_INPUT_TOKENS", default)))
+
+
+# The floor for parse_facts_from_recap's per-call num_ctx pin: reserves +
+# a chunk estimate should always clear this, but a tiny one-chunk parse
+# must not pin a window smaller than the model could legitimately want
+# (below this, Ollama would squeeze the reserves themselves).
+_FACTS_PARSE_MIN_WINDOW_TOKENS = 2048
+
 
 def _normalized_fact_key(content: str) -> str:
     """The dedup key parse_facts_from_recap merges chunk results by:
@@ -1089,7 +1119,7 @@ async def _parse_facts_chat_call(m: str, messages: list[dict], think: bool, opti
     (the CALLER owns the JSON parsing, so a malformed chunk is a skip-one-
     chunk problem rather than a whole-parse failure).
 
-    `options` is the num_ctx pin computed once by the caller (see
+    `options` is the per-chunk num_ctx pin computed by the caller (see
     parse_facts_from_recap) — layered over the GM's configured options by
     _chat_kwargs like any per-request override, on both the original call
     and the rejection retry below.
@@ -1180,6 +1210,74 @@ async def _parse_facts_chat_call(m: str, messages: list[dict], think: bool, opti
     return resp
 
 
+def _facts_parse_chunk_plan(raw_text: str, think: bool, world_context_tokens: int) -> tuple[int, int]:
+    """parse_facts_from_recap's chunk sizing, factored pure so tests can
+    force tiny chunks by stubbing it the way _transcript_chunk_char_budget
+    used to be stubbed. Returns (chunk_chars, reserve_tokens): the per-chunk
+    INPUT char budget for _split_transcript_into_chunks, and the token
+    reserve (everything a chunk call carries besides the chunk text itself —
+    _chunk_reserve_tokens over _RECAP_SYSTEM, plus the RAG lore and the JSON
+    response room) that the per-call num_ctx pin adds back on top of each
+    chunk's estimated tokens.
+
+    The old sizing worked the other way around and had the window first: it
+    derived the chunk size from an ASSUMED window (the GM's configured
+    num_ctx, else _DEFAULT_ASSUMED_CTX_TOKENS = 4096) minus stacked reserves
+    (system prompt, think headroom, world_context, JSON response), flooring
+    at 500 input tokens when the reserves overflowed it. With think=True the
+    thinking headroom alone (4096) ate the whole unconfigured default
+    window, every paste floored to 500-token chunks, and a real ~11k-token
+    recap split into 26 parts — 40+ minutes of AI calls for one parse —
+    while the model's REAL window (n_ctx 9728 observed live) sat mostly
+    idle. The window is ours to choose on this path (every chunk call
+    already pinned options={"num_ctx": ...} explicitly), so now the chunk
+    comes first — a sane input target, _facts_parse_target_input_tokens —
+    and the WINDOW is pinned per call to fit it:
+
+        num_ctx = reserve_tokens + this chunk's estimated input tokens,
+                  floored at _FACTS_PARSE_MIN_WINDOW_TOKENS,
+                  ceiled at MAX_AUTO_NUM_CTX.
+
+    One deliberate consequence: the GM's configured num_ctx no longer caps
+    a facts parse (it was exactly the bug — the cap shrank chunks toward
+    the 500-token floor, yet never bound the enforced window, since the
+    per-call pin overrides the configured value anyway). The configured
+    num_ctx still governs summarize_transcript's chunking unchanged, where
+    there is no per-call pin to grow the window with.
+
+    If the reserves ALONE overflow MAX_AUTO_NUM_CTX (an enormous RAG lore
+    blob — practically never, it would take ~30k tokens of lore), they
+    can't be honored at any pinnable window, so — as under the old model —
+    the world_context reserve is dropped with a warning and the (clamped)
+    oversized-window pin carries the call: Ollama truncates rather than
+    erroring, which degrades one parse instead of failing it mid-paste."""
+    reserve_tokens = _chunk_reserve_tokens(
+        _RECAP_SYSTEM, think, world_context_tokens + _FACTS_PARSE_RESPONSE_RESERVE_TOKENS,
+    )
+    if reserve_tokens >= MAX_AUTO_NUM_CTX:
+        _log.warning(
+            "parse_facts_from_recap: world_context (~%d tokens) pushes the per-call reserves "
+            "(~%d tokens) past the MAX_AUTO_NUM_CTX ceiling (%d) — proceeding without reserving "
+            "for it, context may overflow",
+            world_context_tokens, reserve_tokens, MAX_AUTO_NUM_CTX,
+        )
+        reserve_tokens = _chunk_reserve_tokens(_RECAP_SYSTEM, think, _FACTS_PARSE_RESPONSE_RESERVE_TOKENS)
+    chars_per_token = _chars_per_token_estimate(raw_text)
+    target_input_tokens = _facts_parse_target_input_tokens(think)
+    chunk_input_tokens = min(target_input_tokens, MAX_AUTO_NUM_CTX - reserve_tokens)
+    if chunk_input_tokens < target_input_tokens:
+        # Reserves leave less room than the target under the pin ceiling —
+        # shrink the chunk to match rather than pin a window that truncates
+        # every chunk mid-input.
+        _log.info(
+            "parse_facts_from_recap: reserves (~%d tokens) leave only %d input tokens under "
+            "MAX_AUTO_NUM_CTX (%d) — shrinking the chunk target to match",
+            reserve_tokens, max(chunk_input_tokens, 0), MAX_AUTO_NUM_CTX,
+        )
+    chunk_input_tokens = max(chunk_input_tokens, _FACTS_PARSE_MIN_CHUNK_INPUT_TOKENS)
+    return chunk_input_tokens * chars_per_token, reserve_tokens
+
+
 async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = False, world_context: str = "", on_progress=None) -> list[dict]:
     """Turn a rough GM recap into draft facts via the local model, using
     Ollama's JSON-schema-constrained `format` — see ollama.AsyncClient.chat's
@@ -1187,17 +1285,17 @@ async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = F
     the merge loop below) so the caller can surface a clear error; does not
     write anything to the database itself.
 
-    A paste longer than one context window is split into chunks (the SAME
-    _split_transcript_into_chunks/_transcript_chunk_char_budget machinery
-    summarize_transcript uses for session recordings) and each chunk is
-    extracted independently; the results merge into one list, deduplicated
-    by _normalized_fact_key. Before chunking, the whole paste (+RAG
-    world_context) went out as ONE unconstrained-size request, and a real
-    GM paste of ~12k prompt tokens against a ~9.7k-token model context came
-    back as a hard Ollama 400 — no facts at all, no matter how long the GM
-    waited. Chunking trades that cliff for a few extra AI calls, and each
-    call stays small enough that a local model actually extracts well
-    instead of degrading on a huge mixed transcript.
+    A paste longer than one comfortably-sized chunk is split into chunks
+    (the same _split_transcript_into_chunks splitter summarize_transcript
+    uses for session recordings) and each chunk is extracted independently;
+    the results merge into one list, deduplicated by _normalized_fact_key.
+    Before chunking, the whole paste (+RAG world_context) went out as ONE
+    unconstrained-size request, and a real GM paste of ~12k prompt tokens
+    against a ~9.7k-token model context came back as a hard Ollama 400 — no
+    facts at all, no matter how long the GM waited. Chunking trades that
+    cliff for a few extra AI calls, and each call stays small enough that a
+    local model actually extracts well instead of degrading on a huge mixed
+    transcript.
 
     `on_progress(current, total)`, if given, is called before each chunk's
     extraction (1-based, same "currently on part 2 of 5" contract
@@ -1205,13 +1303,17 @@ async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = F
     real progress to the job row instead of an undifferentiated
     "summarizing" placeholder for a many-minute parse.
 
-    Each chunk's num_ctx is pinned explicitly to the same window
-    _transcript_chunk_char_budget budgeted the chunk size against (the GM's
-    configured num_ctx, else _DEFAULT_ASSUMED_CTX_TOKENS) — chunk + system
-    prompt + world_context reserve + this response reserve then fit the
-    ENFORCED window even when the model's own Modelfile default is smaller
-    than what the budget assumed, which a bare "hope the default is big
-    enough" leaves to chance.
+    Each chunk call pins its own context window explicitly:
+    options={"num_ctx": reserve_tokens + that chunk's estimated input
+    tokens} (see _facts_parse_chunk_plan for the reserve math and for why
+    the sizing works chunk-first instead of window-first). Pinning means
+    chunk + system prompt + world_context + JSON response room always fit
+    the ENFORCED window even when the model's own Modelfile default is
+    smaller — which a bare "hope the default is big enough" leaves to
+    chance — and that the window GROWS with the reserves instead of the
+    chunks shrinking under them: under the old window-first sizing, a
+    think=True parse under the unconfigured default window floored every
+    chunk to 500 input tokens and split one ~11k-token recap into 26 parts.
 
     `think` defaults to False, same clean-JSON default every other
     schema-constrained caller in this module uses (see _chat_kwargs' own
@@ -1232,40 +1334,19 @@ async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = F
     recap puts on its system prompt, kept word-for-word in one place so the
     two surfaces can't drift (and chunk 3 still spells names right even
     though the lore text isn't part of any one chunk). Its token cost is
-    reserved OUT of every chunk's budget (see the reserve math below), so
-    adding RAG can shrink chunks but never overflow the window. The user
-    message, not the system prompt, because the extraction instructions
-    already live in _RECAP_SYSTEM and the lore is context FOR the text
-    being split, not a behavior change."""
+    part of every chunk call's reserve (see _facts_parse_chunk_plan), so
+    adding RAG grows each call's pinned window instead of shrinking the
+    chunks. The lore rides in the user message, not the system prompt,
+    because the extraction instructions already live in _RECAP_SYSTEM and
+    the lore is context FOR the text being split, not a behavior change."""
     m = model or effective_ollama_model()
-    # The window every chunk is budgeted AND pinned against — computed once
-    # since nothing below changes it mid-parse.
-    ctx_tokens = _effective_ctx_tokens()
     # Same len // chars-per-token estimate _transcript_chunk_char_budget
     # applies to its `system` arg — the lore rides EVERY chunk call, so its
-    # cost comes out of every chunk's input budget, not just the first one's.
+    # cost is part of every chunk's reserve, not just the first one's.
     world_context_tokens = (
         len(world_context) // _chars_per_token_estimate(world_context)
     ) if world_context else 0
-    base_budget = _transcript_chunk_char_budget(raw_text, _RECAP_SYSTEM, think)
-    if world_context_tokens >= base_budget // _chars_per_token_estimate(raw_text):
-        # The RAG text alone fills (or overflows) an entire chunk budget —
-        # reserving for it would floor every chunk to the 500-token minimum
-        # and STILL not fit, so the only sane move is to proceed without the
-        # reserve and let the oversized-window pin below carry it. Logged,
-        # never raised: a too-big lore blob degrading the parse beats a hard
-        # error the GM can't do anything about mid-paste.
-        _log.warning(
-            "parse_facts_from_recap: world_context (~%d tokens) alone fills a whole chunk "
-            "budget (~%d tokens) — proceeding without reserving for it, context may overflow",
-            world_context_tokens, base_budget // _chars_per_token_estimate(raw_text),
-        )
-        chunk_chars = base_budget
-    else:
-        chunk_chars = _transcript_chunk_char_budget(
-            raw_text, _RECAP_SYSTEM, think,
-            extra_reserve_tokens=world_context_tokens + _FACTS_PARSE_RESPONSE_RESERVE_TOKENS,
-        )
+    chunk_chars, reserve_tokens = _facts_parse_chunk_plan(raw_text, think, world_context_tokens)
     chunks = _split_transcript_into_chunks(raw_text, chunk_chars)
     _log.info("parse_facts_from_recap: model=%s chunking into %d part(s) (%d chars total)", m, len(chunks), len(raw_text))
     merged_facts: list[dict] = []
@@ -1281,8 +1362,18 @@ async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = F
             {"role": "system", "content": _RECAP_SYSTEM},
             {"role": "user", "content": _with_world_context(chunk, world_context)},
         ]
+        # THE window pin (the ONE rule, see _facts_parse_chunk_plan):
+        # reserves + THIS chunk's estimated input tokens (ceil, per-chunk
+        # chars-per-token so a dense-script chunk gets a proportionally
+        # wider window), floored at _FACTS_PARSE_MIN_WINDOW_TOKENS and
+        # ceiled at MAX_AUTO_NUM_CTX. Computed per chunk, not once, since
+        # the splitter's boundary-fitting makes real chunks shorter than
+        # the target and pinning every call at the target's window would
+        # waste KV-cache on the last (undersized) part of the paste.
+        chunk_tokens = -(-len(chunk) // _chars_per_token_estimate(chunk))
+        num_ctx = min(MAX_AUTO_NUM_CTX, max(_FACTS_PARSE_MIN_WINDOW_TOKENS, reserve_tokens + chunk_tokens))
         try:
-            resp = await _parse_facts_chat_call(m, messages, think, {"num_ctx": ctx_tokens})
+            resp = await _parse_facts_chat_call(m, messages, think, {"num_ctx": num_ctx})
         except ValueError as exc:
             # One chunk's model failure must not throw away every OTHER
             # chunk's already-extracted facts (a 40-part parse dying on part
@@ -2027,14 +2118,35 @@ def _chars_per_token_estimate(text: str) -> int:
 
 
 def _effective_ctx_tokens() -> int:
-    """The context window chunked callers budget against — the GM's
-    configured num_ctx (Settings > System) if set, else the conservative
-    low-end default. Kept as one helper (not inlined) because
-    _transcript_chunk_char_budget must budget and parse_facts_from_recap
-    must PIN (see its num_ctx override) against the exact same window —
-    two copies of this expression could silently drift apart and put a
-    chunk that no longer fits into the enforced context."""
+    """The context window window-first chunk callers budget against — the
+    GM's configured num_ctx (Settings > System) if set, else the
+    conservative low-end default. Kept as one helper (not inlined) because
+    every summarize-path budget goes through _transcript_chunk_char_budget,
+    which must derive its chunk size from exactly this window — a second
+    copy of the expression could silently drift and put a chunk that no
+    longer fits into the enforced context. (parse_facts_from_recap is
+    deliberately NOT on this list anymore: its chunk calls pin their own
+    num_ctx via _facts_parse_chunk_plan, so a small configured/default
+    window shrank its chunks to the 500-token floor instead of only
+    bounding what the pin needed to cover — see _facts_parse_chunk_plan.)"""
     return effective_ollama_options().get("num_ctx") or _DEFAULT_ASSUMED_CTX_TOKENS
+
+
+def _chunk_reserve_tokens(system: str = "", think: bool = True, extra_reserve_tokens: int = 0) -> int:
+    """The context tokens every chunk call must reserve for everything that
+    is NOT the chunk's own input: _CHUNK_RESERVED_TOKENS' generic system +
+    response + margin budget, the actual system prompt's own tokens (see
+    _transcript_chunk_char_budget for why it's estimated, not assumed),
+    _THINKING_HEADROOM_TOKENS when think=True, and any caller-specific
+    extras (RAG world_context, a JSON response reserve). Factored as ONE
+    pure expression so _transcript_chunk_char_budget's budget math and
+    parse_facts_from_recap's num_ctx pin (via _facts_parse_chunk_plan) are
+    computed from the same numbers — two copies of this arithmetic could
+    silently drift apart and put a chunk that no longer fits into the
+    enforced context."""
+    system_tokens = (len(system) // _chars_per_token_estimate(system)) if system else 0
+    reserved = _CHUNK_RESERVED_TOKENS + system_tokens + (_THINKING_HEADROOM_TOKENS if think else 0) + max(0, extra_reserve_tokens)
+    return reserved
 
 
 def _transcript_chunk_char_budget(transcript: str = "", system: str = "", think: bool = True, extra_reserve_tokens: int = 0) -> int:
@@ -2070,8 +2182,7 @@ def _transcript_chunk_char_budget(transcript: str = "", system: str = "", think:
     starved thinking budget is not."""
     ctx_tokens = _effective_ctx_tokens()
     chars_per_token = _chars_per_token_estimate(transcript)
-    system_tokens = (len(system) // _chars_per_token_estimate(system)) if system else 0
-    reserved = _CHUNK_RESERVED_TOKENS + system_tokens + (_THINKING_HEADROOM_TOKENS if think else 0) + max(0, extra_reserve_tokens)
+    reserved = _chunk_reserve_tokens(system, think, extra_reserve_tokens)
     input_tokens = max(500, ctx_tokens - reserved)
     return input_tokens * chars_per_token
 

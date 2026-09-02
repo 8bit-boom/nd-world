@@ -307,10 +307,28 @@ function loadParsedFacts(facts) {
 // CPU-local model can take minutes — far past the ~100s a reverse proxy
 // will hold one request open, which is exactly what lost the GM's whole
 // parse (HTTP 524, nothing kept) when this was a synchronous POST.
+//
+// The loop NEVER reports "Failed" while the job is merely slow. Every poll
+// reads the job's chunk_current/chunk_total progress (the same fields the
+// Background Jobs page renders as "part X/Y"), and any CHANGE resets the
+// give-up deadline, so a healthily progressing parse is polled
+// indefinitely — the old unconditional ~10-minute cap gave up with a
+// "Failed:" banner on exactly such a job (26 parts, 40+ minutes, still
+// advancing). Only a job showing NO progress for ~10 minutes (200 polls ×
+// 3s), or the ~2h absolute ceiling, ends the loop — and then the status is
+// a soft "it keeps running without this tab" note with the Parse button
+// back, never a failure: the job is still alive server-side, and "Restore
+// last parse" picks up its draft whenever it finishes.
 async function pollFactsParseJob(jobId, status) {
+  const POLL_MS = 3000;
+  const MAX_IDLE_POLLS = 200;              // ~10 min without any progress signal
+  const HARD_CAP_MS = 2 * 60 * 60 * 1000;  // 2h absolute ceiling even if progress keeps coming
+  let lastChunkCurrent = null;
+  let idlePolls = 0;
+  const startedAt = Date.now();
   for (let poll = 1; ; poll++) {
     status.textContent = `Parsing in background… (poll ${poll})`;
-    await new Promise((r) => setTimeout(r, 3000));
+    await new Promise((r) => setTimeout(r, POLL_MS));
     const res = await fetch(`/api/audio-jobs/${jobId}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const job = await res.json();
@@ -324,10 +342,26 @@ async function pollFactsParseJob(jobId, status) {
       return;
     }
     if (job.status === 'error') throw new Error(job.error || 'The parse job failed.');
-    // The job itself survives closed tabs/server restarts (and auto-resumes),
-    // but THIS poll loop lives in the page — cap it so a stuck job (shouldn't
-    // happen: every terminal path is handled above) can't spin forever.
-    if (poll >= 200) throw new Error('Timed out waiting for the parse job — check Background Jobs.');
+    // Progress signal: the runner persists chunk_current/chunk_total before
+    // each part (see app.audio_jobs._on_progress). Any change means the
+    // parse is alive — surface it and reset the idle deadline.
+    if (job.chunk_current != null && job.chunk_current !== lastChunkCurrent) {
+      lastChunkCurrent = job.chunk_current;
+      idlePolls = 0;
+    } else {
+      idlePolls++;
+    }
+    const part = (job.chunk_current && job.chunk_total) ? ` — part ${job.chunk_current}/${job.chunk_total}` : '';
+    status.textContent = `Parsing in background… (poll ${poll})${part}`;
+    // Stalled (or 2h total): give up POLLING, not the job. A plain return
+    // (not a throw) keeps this out of parseDraftFromRecap's "Failed:"
+    // catch — a stalled job is still running server-side, so the soft
+    // wording below is the whole status line, and the finally{} there
+    // re-enables the Parse button either way.
+    if (idlePolls >= MAX_IDLE_POLLS || Date.now() - startedAt >= HARD_CAP_MS) {
+      status.textContent = 'Still parsing in the background — check Background Jobs (it keeps running even with this tab closed). When it finishes, use Restore last parse to load the draft.';
+      return;
+    }
   }
 }
 

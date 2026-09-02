@@ -2,6 +2,7 @@
 (mocked — no real Ollama needed), and world/role scoping."""
 import datetime as _dt
 import json
+import logging
 import time
 import types
 
@@ -330,8 +331,34 @@ def test_facts_page_wires_background_parse_and_restore(client, seed):
     assert "id=\"restore-parse-btn\"" in html
     assert "restoreLastParse" in html
     assert "/api/facts/last-parse" in html
+    # The poll loop tracks the job's chunk progress and NEVER reports
+    # "Failed" for a merely slow job — the old unconditional ~10-minute cap
+    # gave up with a "Failed:" banner on a healthy 26-part parse that was
+    # still advancing ("Summarizing… part 7/26").
+    assert "chunk_current" in html
+    assert "Still parsing in the background" in html
+    assert "Timed out waiting for the parse job" not in html
     # Empty parse outcome is explained, not silently swallowed.
     assert "No in-character facts found" in html
+
+
+def test_facts_page_poll_resets_deadline_on_progress(client, seed):
+    """Source-slice assertions on the poll loop's progress semantics: the
+    idle deadline resets whenever chunk_current changes (so a progressing
+    job is polled indefinitely), BOTH give-up paths — the ~10-minute idle
+    cap and the ~2h absolute ceiling — lead to the soft still-running
+    message via a plain return (never a throw, so the page's "Failed: "
+    catch can't prefix it), and the message points the GM at Background
+    Jobs and Restore last parse."""
+    _login_gm(client, seed)
+    html = client.get("/facts").text
+    assert "lastChunkCurrent" in html  # the last-seen progress marker
+    assert "idlePolls = 0" in html  # reset on every observed change
+    assert "idlePolls >= MAX_IDLE_POLLS" in html
+    assert "Date.now() - startedAt >= HARD_CAP_MS" in html
+    assert ("Still parsing in the background — check Background Jobs (it keeps running even with this tab closed). "
+            "When it finishes, use Restore last parse to load the draft.") in html
+    assert "Timed out waiting for the parse job" not in html  # the old "Failed:"-worded throw is gone
 
 
 def test_facts_page_ships_recap_templates(client, seed):
@@ -528,7 +555,7 @@ async def test_parse_facts_long_text_chunked_deduped_in_order(monkeypatch):
     event extracted from adjacent chunks (reworded, re-punctuated) appears
     once, in its first-seen form."""
     budget = 200  # forces the paste into several chunks via the real splitter
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: budget)
+    monkeypatch.setattr(ai_module, "_facts_parse_chunk_plan", lambda *a, **k: (budget, 1200))
     fake = _ScriptedParseClient([
         '{"facts": [{"content": "The party met Elyra at the tavern.", "visible_to_players": true}]}',
         '{"facts": [{"content": "the party met Elyra at the tavern!", "visible_to_players": true},'
@@ -537,7 +564,6 @@ async def test_parse_facts_long_text_chunked_deduped_in_order(monkeypatch):
         '{"facts": []}',
     ])
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
-    expected_ctx = ai_module.effective_ollama_options().get("num_ctx") or ai_module._DEFAULT_ASSUMED_CTX_TOKENS
     world_context = "- [npc] Elyra: an enchanter"
     framing = ai_module._with_world_context("", world_context)  # the lore wrapper with an empty body
 
@@ -546,7 +572,7 @@ async def test_parse_facts_long_text_chunked_deduped_in_order(monkeypatch):
             + "The party fled into the sewers. " * 6)
     facts = await ai_module.parse_facts_from_recap(text, model="m1", world_context=world_context)
 
-    assert len(fake.calls) >= 3  # actually chunked under the tiny forced budget
+    assert len(fake.calls) >= 3  # actually chunked under the tiny forced plan
     assert [(f["content"], f["visible_to_players"]) for f in facts] == [
         ("The party met Elyra at the tavern.", True),  # first-seen form wins over chunk 2's rewording
         ("The cult met under the clock tower.", False),
@@ -555,7 +581,9 @@ async def test_parse_facts_long_text_chunked_deduped_in_order(monkeypatch):
     for kwargs in fake.calls:
         assert kwargs["model"] == "m1"
         assert kwargs["format"]  # the schema constraint rides EVERY chunk
-        assert kwargs["options"]["num_ctx"] == expected_ctx  # window pinned to the budgeted one
+        # The pin (reserves + chunk estimate) lands on its 2048 floor here:
+        # the stubbed 1200-token reserve plus a ≤200-char chunk sits under it.
+        assert kwargs["options"]["num_ctx"] == ai_module._FACTS_PARSE_MIN_WINDOW_TOKENS
         assert kwargs["messages"][0]["role"] == "system"
         # The OOC-skip guidance reaches every chunk — the reported failure
         # was a model answering a mixed transcript with a meta-DESCRIPTION
@@ -579,7 +607,7 @@ async def test_parse_facts_all_ooc_chunks_return_empty_list(monkeypatch):
     out-of-character chatter — rules questions, setup, table talk) is a
     SUCCESSFUL parse of zero facts, not an error: nothing raised, so the
     caller gets [] and the job lands done with "[]" exactly as before."""
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 200)
+    monkeypatch.setattr(ai_module, "_facts_parse_chunk_plan", lambda *a, **k: (200, 1200))
     fake = _ScriptedParseClient(['{"facts": []}'])
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
     text = "Rules question about spell slots. " * 12  # several chunks of pure OOC chatter
@@ -588,23 +616,34 @@ async def test_parse_facts_all_ooc_chunks_return_empty_list(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_parse_facts_huge_world_context_never_raises_just_skips_reserve(monkeypatch):
-    """RAG lore so big it alone fills a whole chunk budget can't be reserved
-    for (the chunk would floor out and overflow anyway) — the parse logs a
-    warning and proceeds with the un-reserved budget instead of raising;
-    a bad lore blob must never turn into a hard parse failure."""
-    budget_calls = []
-
-    def fake_budget(transcript, system, think=True, extra_reserve_tokens=0):
-        budget_calls.append(extra_reserve_tokens)
-        return 200
-
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", fake_budget)
+async def test_parse_facts_huge_world_context_never_raises_just_gets_reserved(monkeypatch, caplog):
+    """RAG lore so big it once broke the old window-first budget can't fail
+    the parse under the input-target sizing either way: a merely HUGE lore
+    is simply RESERVED — chunks keep their size and the per-call window pin
+    grows to cover reserves + chunk (that's the whole point of the pin) —
+    and only lore so enormous the reserves alone overflow MAX_AUTO_NUM_CTX
+    (the adapted skip condition: it takes ~30k tokens of lore) drops the
+    reserve with a warning instead of raising. A bad lore blob must never
+    turn into a hard parse failure."""
     fake = _ScriptedParseClient(['{"facts": []}'])
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
-    big_lore = "- [npc] Elyra: " + "x" * 5000  # ~1250 tokens, far over a 200-char budget
-    assert await ai_module.parse_facts_from_recap("met Elyra", world_context=big_lore) == []
-    # First call computed the base budget with no extra reserve; the world_
-    # context-alone-overflows check then took the fallback — no second call
-    # asking for the (impossible) lore + response reserve.
-    assert budget_calls == [0]
+    big_lore = "- [npc] Elyra: " + "x" * 5000  # ~1250 tokens — huge, but pinnable
+    with caplog.at_level(logging.WARNING, logger="nd.ai"):
+        assert await ai_module.parse_facts_from_recap("met Elyra", world_context=big_lore) == []
+    assert len(fake.calls) == 1
+    # No skip fired — the lore's reserve rode the window pin, which grew to
+    # exactly reserves (incl. lore) + the chunk's estimated input.
+    assert not any("proceeding without reserving" in r.getMessage() for r in caplog.records)
+    reserve = ai_module._chunk_reserve_tokens(
+        ai_module._RECAP_SYSTEM, False,
+        len(big_lore) // ai_module._chars_per_token_estimate(big_lore)
+        + ai_module._FACTS_PARSE_RESPONSE_RESERVE_TOKENS,
+    )
+    est = -(-len("met Elyra") // ai_module._chars_per_token_estimate("met Elyra"))
+    assert fake.calls[0]["options"]["num_ctx"] == max(ai_module._FACTS_PARSE_MIN_WINDOW_TOKENS, reserve + est)
+
+    caplog.clear()
+    absurd_lore = "- [npc] Elyra: " + "x" * 140_000  # ~35k tokens — reserves alone overflow the ceiling
+    with caplog.at_level(logging.WARNING, logger="nd.ai"):
+        assert await ai_module.parse_facts_from_recap("met Elyra", world_context=absurd_lore) == []
+    assert any("proceeding without reserving" in r.getMessage() for r in caplog.records)

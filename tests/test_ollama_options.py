@@ -805,56 +805,105 @@ async def test_parse_facts_from_recap_passes_options_and_keep_alive(monkeypatch)
     facts = await ai_module.parse_facts_from_recap("some recap text")
     assert facts == []
     # The GM's options ride along, PLUS the chunk-window pin: every parse
-    # call now carries an explicit num_ctx equal to the window the chunk
-    # budget assumed (the configured num_ctx, else the conservative default)
-    # so chunk + reserves + JSON response always fit the ENFORCED window.
-    assert calls[0]["options"] == {"num_ctx": ai_module._DEFAULT_ASSUMED_CTX_TOKENS, "seed": 42}
+    # call now carries an explicit num_ctx = reserves + the chunk's
+    # estimated input (floored at _FACTS_PARSE_MIN_WINDOW_TOKENS), so chunk
+    # + reserves + JSON response always fit the ENFORCED window. Computed
+    # here with the module's own helpers so the assertion is against the
+    # real numbers, not the test's guess — this tiny paste is one chunk
+    # whose reserves+estimate land under the 2048 floor.
+    reserve = ai_module._chunk_reserve_tokens(ai_module._RECAP_SYSTEM, False, 0)
+    chunk_tokens = -(-len("some recap text") // ai_module._chars_per_token_estimate("some recap text"))
+    expected_ctx = min(ai_module.MAX_AUTO_NUM_CTX, max(ai_module._FACTS_PARSE_MIN_WINDOW_TOKENS, reserve + chunk_tokens))
+    assert calls[0]["options"] == {"num_ctx": expected_ctx, "seed": 42}
     assert calls[0]["keep_alive"] == "1h"
     # format= (the JSON-schema constraint) must still be sent alongside.
     assert calls[0]["format"]
 
 
 @pytest.mark.asyncio
-async def test_parse_facts_chunks_pin_num_ctx_to_the_budgeted_window(monkeypatch):
-    """Every chunk call pins num_ctx to the window the chunk budget was
-    computed against (a configured 8192 here, the conservative default in
-    the test above) — without the pin, a model whose own Modelfile default
-    is smaller than what the budget assumed would silently truncate the
-    prompt (or 400 it, the exact reported failure) on the enforced window."""
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 200)
+async def test_facts_chunk_window_pinned_to_fit_reserves(monkeypatch):
+    """The pin rule (see _facts_parse_chunk_plan): every chunk call's
+    num_ctx is exactly reserve_tokens + THAT chunk's estimated input
+    tokens (floored at _FACTS_PARSE_MIN_WINDOW_TOKENS, ceiled at
+    MAX_AUTO_NUM_CTX). Constructed here with a stubbed chunk plan
+    (400-char chunks, 5000 tokens of reserves) so the expected pin is
+    checkable per call against the chunk text each call actually carried.
+    The GM's configured num_ctx deliberately appears nowhere in the math:
+    it used to CAP this parse (the exact bug that floored think=True chunks
+    to 500 input tokens and split an ~11k-token recap into 26 parts), while
+    the per-call pin overrides the configured value anyway."""
+    monkeypatch.setattr(ai_module, "_facts_parse_chunk_plan", lambda *a, **k: (400, 5000))
     calls = []
     monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
     ai_module.set_ollama_generation_overrides({"num_ctx": 8192})
-    await ai_module.parse_facts_from_recap("The party met Elyra at the tavern. " * 6)
-    assert len(calls) >= 2  # actually chunked under the tiny forced budget
-    assert all(k["options"]["num_ctx"] == 8192 for k in calls)
+    text = "The party met Elyra at the tavern. " * 30  # ~1050 chars → several 400-char chunks
+    await ai_module.parse_facts_from_recap(text)
+    assert len(calls) >= 2  # actually chunked under the tiny forced plan
+    for k in calls:
+        user = [m for m in k["messages"] if m["role"] == "user"][0]["content"]
+        est = -(-len(user) // ai_module._chars_per_token_estimate(user))
+        assert k["options"]["num_ctx"] == max(ai_module._FACTS_PARSE_MIN_WINDOW_TOKENS, 5000 + est)
+
+
+@pytest.mark.asyncio
+async def test_facts_chunk_window_pin_floor_and_ceiling(monkeypatch):
+    """The pin's two clamps: a tiny one-chunk parse whose reserves + input
+    estimate sit under the floor still pins 2048 (never a window too small
+    for its own reserves), and reserves so large the pin would exceed
+    MAX_AUTO_NUM_CTX clamp to the ceiling instead — Ollama then truncates
+    rather than 400ing, the accepted degradation for that pathological
+    reserve size (see _facts_parse_chunk_plan)."""
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    monkeypatch.setattr(ai_module, "_facts_parse_chunk_plan", lambda *a, **k: (10_000_000, 100))
+    await ai_module.parse_facts_from_recap("met Elyra")  # one tiny chunk
+    assert len(calls) == 1
+    assert calls[0]["options"]["num_ctx"] == ai_module._FACTS_PARSE_MIN_WINDOW_TOKENS
+
+    calls.clear()
+    monkeypatch.setattr(ai_module, "_facts_parse_chunk_plan", lambda *a, **k: (200, ai_module.MAX_AUTO_NUM_CTX - 10))
+    await ai_module.parse_facts_from_recap("The party met Elyra at the tavern. " * 30)
+    assert len(calls) >= 2
+    assert all(k["options"]["num_ctx"] == ai_module.MAX_AUTO_NUM_CTX for k in calls)
 
 
 @pytest.mark.asyncio
 async def test_parse_facts_default_budget_splits_an_11k_token_paste_into_several_chunks(monkeypatch):
-    """The reported production failure: a ~12k-token paste+RAG sent as ONE
-    request 400'd against the model's ~9.7k-token context. Under the default
-    budget math (no configured num_ctx → the conservative 4096 assumed) a
-    paste of that order MUST split into several chunks, each one small
-    enough to fit the window every call pins — no single call may exceed
-    num_ctx anymore, by construction."""
+    """The reported production failure, replayed against the real budget
+    math: an ~11k-token recap pasted with Thinking on and ~700 tokens of
+    RAG lore. Under the old window-first sizing the thinking reserve alone
+    ate the whole assumed 4096 window, every chunk floored to 500 input
+    tokens, and the paste split into 26 parts (40+ minutes of calls while
+    the job was healthily progressing). Under the input-target sizing it
+    must land in a HANDFUL of chunks, and every call's pinned window must
+    cover its reserves plus that chunk's estimated input without ever
+    exceeding MAX_AUTO_NUM_CTX — the window grows with the reserves instead
+    of the chunks shrinking under them."""
     calls = []
     monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
     text = "The party traveled north and fought the bandits at the old bridge. " * 680  # ~46k chars ≈ 11k tokens
-    facts = await ai_module.parse_facts_from_recap(text)
+    world_context = "- [npc] Elyra: " + "an enchanter of some renown. " * 93  # ~2.7k chars ≈ ~700 tokens of RAG lore
+    facts = await ai_module.parse_facts_from_recap(text, think=True, world_context=world_context)
     assert facts == []
-    assert len(calls) >= 3  # several chunks, not one doomed giant call
-    # The same budget computation the parse just did, replayed so the
-    # per-chunk size bound is asserted against the real numbers, not the
-    # test's own guess.
-    budget = ai_module._transcript_chunk_char_budget(
-        text, ai_module._RECAP_SYSTEM, False,
-        extra_reserve_tokens=ai_module._FACTS_PARSE_RESPONSE_RESERVE_TOKENS,
+    assert 3 <= len(calls) <= 6  # ~4 parts at the 3072-token think=True input target — not the old 26
+    # The reserve the parse just pinned against, replayed so the per-call
+    # bound is asserted against the real numbers, not the test's own guess.
+    reserve = ai_module._chunk_reserve_tokens(
+        ai_module._RECAP_SYSTEM, True,
+        len(world_context) // ai_module._chars_per_token_estimate(world_context)
+        + ai_module._FACTS_PARSE_RESPONSE_RESERVE_TOKENS,
     )
+    framing_len = len(ai_module._with_world_context("", world_context))
     for k in calls:
         user = [m for m in k["messages"] if m["role"] == "user"][0]["content"]
-        assert len(user) <= budget  # each call saw only its own chunk
-        assert k["options"]["num_ctx"] == ai_module._DEFAULT_ASSUMED_CTX_TOKENS
+        chunk = user[framing_len:]  # strip the lore wrapper — the rest is this call's chunk
+        est = -(-len(chunk) // ai_module._chars_per_token_estimate(chunk))
+        assert k["options"]["num_ctx"] >= reserve + est  # the pin covers reserves + this chunk
+        assert k["options"]["num_ctx"] <= ai_module.MAX_AUTO_NUM_CTX  # never past the ceiling
+    # And the pinned window genuinely grew past the old assumed-window cap —
+    # that growth IS the fix (with think+RAG the reserves alone exceed what
+    # the old model could ever budget chunks into).
+    assert calls[0]["options"]["num_ctx"] > ai_module._DEFAULT_ASSUMED_CTX_TOKENS
 
 
 @pytest.mark.asyncio
@@ -863,7 +912,7 @@ async def test_parse_facts_one_failed_chunk_does_not_fail_the_parse(monkeypatch)
     facts every other chunk already extracted (a 6-part parse dying on part
     1 used to be the whole job) — the failed chunk is skipped and the rest
     merge normally."""
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 200)
+    monkeypatch.setattr(ai_module, "_facts_parse_chunk_plan", lambda *a, **k: (200, 5000))
     facts_json = '{"facts": [{"content": "The party met Elyra at the tavern.", "visible_to_players": true}]}'
 
     class _FailFirstChunkClient:
@@ -892,7 +941,7 @@ async def test_parse_facts_every_chunk_failing_still_raises_valueerror(monkeypat
     facts to salvage, so the parse raises the same ValueError contract the
     single-call version always had (the job runner maps it to job.error,
     the sync route to HTTP 502) instead of silently returning []."""
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 200)
+    monkeypatch.setattr(ai_module, "_facts_parse_chunk_plan", lambda *a, **k: (200, 5000))
 
     class _AlwaysFailsClient:
         def __init__(self):
@@ -2041,7 +2090,7 @@ async def test_parse_facts_think_rejection_recovers_per_chunk(monkeypatch):
     no further failing 400 round-trips mid-parse. All chunks' facts still
     merge (deduplicated here, since the fake answers every non-thinking
     call with the same JSON)."""
-    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 200)
+    monkeypatch.setattr(ai_module, "_facts_parse_chunk_plan", lambda *a, **k: (200, 5000))
     facts_json = '{"facts": [{"content": "The party met Elyra at the tavern.", "visible_to_players": true}]}'
     fake = _RejectsThinkingClient("my-model", non_thinking_content=facts_json)
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
