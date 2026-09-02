@@ -22,22 +22,45 @@ function _recapMdToHtml(text) {
   return '<p>' + h + '</p>';
 }
 
+// The recap is generated as a background job server-side (a think=True
+// summarize can run minutes on a local model), so the first POST usually
+// answers {"pending": true} and this loop re-POSTs until a recap (or an
+// empty-state) comes back. POST, not GET, on every poll — the endpoint
+// itself is the create-or-poll surface, and a repeat POST while a job is
+// running just latches onto the same job instead of stacking new ones.
+const RECAP_POLL_MS = 4000;
+const RECAP_POLL_CAP_MS = 10 * 60 * 1000; // give up (with an explanation) after ~10 minutes
+
 (async function () {
   const status = document.getElementById('recap-status');
   const box = document.getElementById('recap-text');
   try {
-    const res = await fetch('/api/session-log/{{ gsession.id }}/recap', { method: 'POST' });
-    if (!res.ok) throw await ndApiErrorFrom(res);
-    const data = await res.json();
-    if (!data.recap) {
-      status.textContent = data.empty
-        ? 'No recap available for this session yet.'
-        : 'No recap produced.';
+    let waited = 0;
+    while (true) {
+      const res = await fetch('/api/session-log/{{ gsession.id }}/recap', { method: 'POST' });
+      if (!res.ok) throw await ndApiErrorFrom(res);
+      const data = await res.json();
+      if (data.pending) {
+        if (waited >= RECAP_POLL_CAP_MS) {
+          status.textContent = 'The recap is still generating after 10 minutes — it may be stuck. Try reloading this page in a bit, or ask the GM to check Background Jobs.';
+          return;
+        }
+        status.textContent = 'Generating recap… (this can take a few minutes on a local model)';
+        await new Promise(r => setTimeout(r, RECAP_POLL_MS));
+        waited += RECAP_POLL_MS;
+        continue;
+      }
+      if (!data.recap) {
+        status.textContent = data.empty
+          ? 'No recap available for this session yet.'
+          : 'No recap produced.';
+        return;
+      }
+      status.style.display = 'none';
+      box.style.display = 'block';
+      box.innerHTML = _recapMdToHtml(data.recap);
       return;
     }
-    status.style.display = 'none';
-    box.style.display = 'block';
-    box.innerHTML = _recapMdToHtml(data.recap);
   } catch (e) {
     status.textContent = 'Failed to load recap: ' + e.message;
   }

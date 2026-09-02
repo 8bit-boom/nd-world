@@ -33,6 +33,8 @@ PURPOSE_LABELS = {
     # create_facts_parse_job) — the chip and the row title agree instead of
     # the chip falling back to the raw purpose string.
     "facts_parse": "Facts",
+    # Same deal: filename="Session Log recap" (create_session_log_recap_job).
+    "session_log_recap": "Session Log recap",
 }
 
 

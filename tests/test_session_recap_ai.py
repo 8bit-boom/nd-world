@@ -9,7 +9,7 @@ import pytest
 
 from app import ai as ai_module
 from app.database import SessionLocal
-from app.models import Fact, GameSession
+from app.models import AudioJob, Fact, GameSession
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -25,6 +25,37 @@ def _poll_until_terminal(client, url, timeout=5.0):
             return data
         time.sleep(0.02)
     raise AssertionError(f"job never reached a terminal status, last seen: {data}")
+
+
+def _wait_recap_job_done(job_id, timeout=5.0):
+    """Poll a session_log_recap job's ROW until terminal. Unlike
+    _poll_until_terminal above, this works for PLAYER-driven jobs too —
+    the /api/audio-jobs status route is GM/assistant-gated, and the
+    session-log recap is player-facing. The background task runs on the
+    app's event loop thread, so it makes progress while this thread sleeps."""
+    deadline = time.time() + timeout
+    status = None
+    while time.time() < deadline:
+        db = SessionLocal()
+        try:
+            job = db.get(AudioJob, job_id)
+            status = job.status if job else None
+        finally:
+            db.close()
+        if status in ("done", "error", "cancelled", "interrupted"):
+            return status
+        time.sleep(0.02)
+    raise AssertionError(f"recap job {job_id} never reached a terminal status, last seen: {status}")
+
+
+def _recap_job_count(session_id):
+    db = SessionLocal()
+    try:
+        return db.query(AudioJob).filter(
+            AudioJob.purpose == "session_log_recap", AudioJob.game_session_id == session_id,
+        ).count()
+    finally:
+        db.close()
 
 
 def _make_session(world, title="Session 1", num=1):
@@ -1119,7 +1150,25 @@ def test_player_recap_excludes_gm_only_facts_and_raw_summary(client, seed, monke
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     r = client.post(f"/api/session-log/{session_id}/recap")
     assert r.status_code == 200
-    assert r.json()["recap"] == "A narrated recap."
+    assert r.json()["pending"] is True
+    job_id = r.json()["job_id"]
+
+    # The job rows the player-visible recap: audience "players" (so a later
+    # GM lookup can't serve this one), and the summarize call excludes the
+    # GM-only fact.
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.purpose == "session_log_recap"
+        assert job.audience == "players"
+        assert job.game_session_id == session_id
+        assert job.world_id == seed.world_a.id
+    finally:
+        db.close()
+    assert _wait_recap_job_done(job_id) == "done"
+
+    r2 = client.post(f"/api/session-log/{session_id}/recap")
+    assert r2.json() == {"recap": "A narrated recap."}
     assert captured["facts"] == ["The party arrived in Neon City."]
 
 
@@ -1137,18 +1186,186 @@ def test_gm_recap_includes_gm_only_facts(client, seed, monkeypatch):
 
     _login_gm_in(client, seed, seed.world_a)
     r = client.post(f"/api/session-log/{session_id}/recap")
-    assert r.status_code == 200
+    assert r.json()["pending"] is True
+    job_id = r.json()["job_id"]
+    db = SessionLocal()
+    try:
+        assert db.get(AudioJob, job_id).audience == "gm"
+    finally:
+        db.close()
+    assert _wait_recap_job_done(job_id) == "done"
+
+    r2 = client.post(f"/api/session-log/{session_id}/recap")
+    assert r2.json() == {"recap": "Full recap."}
     assert set(captured["facts"]) == {"Public fact", "Secret fact"}
 
 
 def test_recap_empty_when_no_facts_logged(client, seed):
     session_id = _make_session(seed.world_a)
     login(client, seed.player_a.email, PLAYER_PASSWORD)
+    # Even the no-facts case goes through a job now (the runner answers the
+    # {"recap": "", "empty": true} shape the old synchronous route did), so
+    # the first POST is pending until that job runs.
     r = client.post(f"/api/session-log/{session_id}/recap")
     assert r.status_code == 200
-    data = r.json()
+    assert r.json()["pending"] is True
+    job_id = r.json()["job_id"]
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.status == "done"
+        import json as _json
+        assert _json.loads(job.result_json) == {"recap": "", "empty": True}
+    finally:
+        db.close()
+
+    r2 = client.post(f"/api/session-log/{session_id}/recap")
+    data = r2.json()
     assert data["empty"] is True
     assert data["recap"] == ""
+
+
+def test_session_log_recap_done_job_is_served_without_a_second_one(client, seed, monkeypatch):
+    """The done job IS the cache: once it has finished, POSTs return its
+    result verbatim and create no further jobs — the page can reload (or
+    poll) as often as it likes without touching the LLM."""
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    async def fake_summarize(facts, model="", extra_instructions=""):
+        return "A woven recap."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap")
+    assert r1.json()["pending"] is True
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
+
+    for _ in range(3):
+        r = client.post(f"/api/session-log/{session_id}/recap")
+        assert r.json() == {"recap": "A woven recap."}
+    assert _recap_job_count(session_id) == 1
+
+
+def test_session_log_recap_staleness_marker_forces_a_new_job_after_clear(client, seed, monkeypatch):
+    """Fact edits invalidate via clear_session_log_recap_cache() — which now
+    moves a staleness marker instead of clearing a dict: the done job still
+    EXISTS (rows are never deleted) but is simply no longer served, and the
+    next POST starts a fresh one."""
+    from app.routers.sessions import clear_session_log_recap_cache
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    calls = []
+
+    async def fake_summarize(facts, model="", extra_instructions=""):
+        calls.append(1)
+        return "recap #" + str(len(calls))
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap")
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
+    assert client.post(f"/api/session-log/{session_id}/recap").json() == {"recap": "recap #1"}
+
+    clear_session_log_recap_cache()  # what every Fact create/edit/delete calls
+
+    r2 = client.post(f"/api/session-log/{session_id}/recap")
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["pending"] is True
+    assert body["job_id"] != r1.json()["job_id"]  # the fresh recap comes from a NEW job...
+    assert _wait_recap_job_done(body["job_id"]) == "done"
+    assert client.post(f"/api/session-log/{session_id}/recap").json() == {"recap": "recap #2"}
+    assert len(calls) == 2  # ...not from the stale done row
+    # Old rows are never deleted — both generations remain inspectable.
+    assert _recap_job_count(session_id) == 2
+
+
+def test_session_log_recap_poll_while_pending_dedups_into_one_job(client, seed, monkeypatch):
+    """Two POSTs while the first job is still thinking — the page's poll
+    loop reloading, or two players opening the same session — must latch
+    onto the SAME job, not stack a duplicate generation per poll."""
+    import asyncio
+
+    async def slow_summarize(facts, model="", extra_instructions=""):
+        await asyncio.sleep(30)  # still "generating" when the second POST lands
+        return "late recap"
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", slow_summarize)
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap")
+    assert r1.json()["pending"] is True
+    r2 = client.post(f"/api/session-log/{session_id}/recap")
+    assert r2.json()["pending"] is True
+    assert r2.json()["job_id"] == r1.json()["job_id"]
+    assert _recap_job_count(session_id) == 1
+    # Left in-flight deliberately: the client fixture's zero-grace shutdown
+    # cancels the task (same pattern as the _hanging_transcribe tests).
+
+
+def test_session_log_recap_poll_while_pending_does_not_hit_cooldown(client, seed, monkeypatch):
+    """The LLM cooldown fires at job-CREATION only. Reloading the page while
+    a generation is already running is free — a 429 here would punish
+    exactly the players the background job exists to stop hanging."""
+    import asyncio
+
+    async def slow_summarize(facts, model="", extra_instructions=""):
+        await asyncio.sleep(30)
+        return "late recap"
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", slow_summarize)
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r1 = client.post(f"/api/session-log/{session_id}/recap")  # creation — records the cooldown
+    assert r1.status_code == 200
+    r2 = client.post(f"/api/session-log/{session_id}/recap")  # instant re-poll — within any cooldown
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["job_id"] == r1.json()["job_id"]
+
+
+def test_session_log_recap_cooldown_applies_when_creating_for_a_second_session(client, seed, monkeypatch):
+    """The anti-spam gate itself is unchanged: two genuinely-new generations
+    (different sessions, nothing cached or in flight) within the cooldown
+    window still 429 — same contract the synchronous route had, just
+    enforced at creation time."""
+    async def fake_summarize(facts, model="", extra_instructions=""):
+        return "A recap."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    session_id_1 = _make_session(seed.world_a, title="S1", num=1)
+    session_id_2 = _make_session(seed.world_a, title="S2", num=2)
+    _add_fact(seed.world_a, session_id_1, "One", True)
+    _add_fact(seed.world_a, session_id_2, "Two", True)
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r1 = client.post(f"/api/session-log/{session_id_1}/recap")
+    assert r1.status_code == 200
+    r2 = client.post(f"/api/session-log/{session_id_2}/recap")
+    assert r2.status_code == 429
+
+
+def test_session_log_page_polls_for_the_background_recap(client, seed):
+    """JS-source assertion (nothing server-rendered to drive through the
+    test client): the page must show a generating state and re-POST on an
+    interval — the endpoint now answers {"pending": true} first, so a
+    single-shot fetch like the old page's would render nothing forever."""
+    session_id = _make_session(seed.world_a)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.get(f"/session-log/{session_id}")
+    assert r.status_code == 200
+    assert "Generating recap" in r.text
+    assert "RECAP_POLL_MS" in r.text
+    assert "RECAP_POLL_CAP_MS" in r.text
+    assert "data.pending" in r.text
+    assert "method: 'POST'" in r.text
 
 
 def test_player_cannot_reach_session_log_in_other_world(client, seed):

@@ -896,6 +896,18 @@ class AudioJob(Base):
     # database._migrate's _heal_table_from_model pass, same as every other
     # late-added audio_jobs column.
     result_json = Column(Text, default="")
+    # purpose="session_log_recap" only: which fact-visibility filter produced
+    # this job's result_json — "gm" (every fact, secret or not) or "players"
+    # (only visible_to_players, same boundary the synchronous session-log
+    # recap route applied per-caller). The recap genuinely differs between
+    # the two, so the (session, audience) pair — not the session alone — is
+    # what a fresh/stale/in-flight job lookup keys on. Persisted (not just a
+    # call-time argument) so the polling route can find the right job back
+    # after a reload, same as game_session_id/model above. Empty for every
+    # other purpose. Existing installs get the column via database._migrate's
+    # _heal_table_from_model pass, same as every other late-added audio_jobs
+    # column.
+    audience = Column(String(20), default="")
     # Only populated for purpose="attachment" once done — where the
     # uploaded audio ended up, so it can be attached to a chat message
     # without re-uploading (same shape as /api/ai/attachments/upload's own

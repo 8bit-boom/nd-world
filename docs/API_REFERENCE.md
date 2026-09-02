@@ -327,7 +327,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/sessions/{session_id}/ai/summarize-from-facts` | GM / Assistant | AI: weaves this session's logged `Fact` rows (all of them, secret or not) into a narrative recap. |
 | GET | `/session-log` | Player | Player-facing list of sessions (title/date/number only — never the GM's raw summary). |
 | GET | `/session-log/{session_id}` | Player | Player-facing session page; fetches its AI recap client-side. 404s if the session's world isn't one the caller belongs to. |
-| POST | `/api/session-log/{session_id}/recap` | Player | AI: synthesizes a recap from only the `Fact` rows marked `visible_to_players` for this session — the GM's raw `summary` is never sent to this endpoint's caller or to the model on their behalf. GMs calling it get every fact, secret or not. |
+| POST | `/api/session-log/{session_id}/recap` | Player | AI: returns this session's cached recap, or starts a background generation job for it (poll — re-POST — until the response stops saying `{"pending": true}`). Synthesized from only the `Fact` rows marked `visible_to_players` for this session — the GM's raw `summary` is never sent to this endpoint's caller or to the model on their behalf. GMs calling it get every fact, secret or not. |
 
 ## Facts & Chronicler
 

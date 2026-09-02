@@ -16,7 +16,7 @@ from . import ai as _ai_module
 from . import job_shutdown as _job_shutdown
 from . import retrieval as _retrieval
 from .database import SessionLocal
-from .models import AudioJob, Entity, GameSession, PlayerCharacter, World
+from .models import AudioJob, Entity, Fact, GameSession, PlayerCharacter, World
 
 _log = logging.getLogger("nd.audio_jobs")
 
@@ -330,6 +330,57 @@ def create_facts_parse_job(
             game_session_id=game_session_id, created_by_user_id=created_by_user_id,
             model=model or None,
             transcript=text, audio_path="", delete_after=False,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    task = asyncio.create_task(_run_job(job_id))
+    _running_tasks[job_id] = task
+    task.add_done_callback(lambda t, jid=job_id: _forget_task(jid, t))
+    return job_id
+
+
+def create_session_log_recap_job(
+    world_id: int, session_id: int, audience: str, created_by_user_id: Optional[int] = None,
+) -> int:
+    """Synthesize a Session Log page's recap (one summarize_session_from_facts
+    call — see _run_job's session_log_recap branch) as a durable background
+    job instead of blocking POST /api/session-log/{id}/recap for minutes —
+    sibling of create_facts_parse_job above, motivated by the exact same
+    reverse-proxy trap: a think=True summarize against a CPU-local model
+    made the synchronous route a routine Cloudflare 524, and the first
+    viewer of each cache window paid the whole wait inside one HTTP request.
+
+    `audience` ("gm" or "players") is the whole reason this job exists as a
+    keyed, findable row rather than a fire-and-forget task: the recap
+    genuinely differs by fact visibility (a GM's includes secrets), so the
+    polling route looks jobs up by (game_session_id, audience) to answer
+    "is there a fresh one / is one already running" — see AudioJob.audience.
+    Idempotent-create contract: the route, not this function, does the
+    fresh/dedup checks against existing rows; this creator ALWAYS makes a
+    new row, so those checks stay in the one place that knows the request
+    context (which user, which cooldown window).
+
+    `model` isn't a parameter on purpose: the Session Log recap has never
+    had a model picker, so the row is seeded with the "recap" surface
+    default directly — the same selection the old synchronous route made
+    via its _recap_model("") helper (app.routers.sessions can't be imported
+    here — it imports this module — so the one-liner is replicated; if it
+    ever drifts, the model-surface tests catch it)."""
+    if audience not in ("gm", "players"):
+        raise ValueError(f"audience must be 'gm' or 'players', got {audience!r}")
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=world_id, purpose="session_log_recap", filename="Session Log recap", status="pending",
+            game_session_id=session_id, created_by_user_id=created_by_user_id,
+            audience=audience,
+            model=_ai_module.get_defaults().get("recap", ""),
+            audio_path="", delete_after=False,
         )
         db.add(job)
         db.commit()
@@ -741,6 +792,11 @@ async def _run_job(job_id: int) -> None:
         rag_entity_limit = job.rag_entity_limit
         rag_notes_limit = job.rag_notes_limit
         existing_transcript = job.transcript or ""
+        # purpose="session_log_recap" only — which fact-visibility filter
+        # this job's recap must be built from (see AudioJob.audience). NULL
+        # (a pre-migration row, or any other purpose) reads as the player
+        # tier, the more restrictive of the two.
+        audience = job.audience or "players"
         checkpoint = _json.loads(job.checkpoint_json) if job.checkpoint_json else None
     finally:
         db.close()
@@ -793,7 +849,16 @@ async def _run_job(job_id: int) -> None:
         # uses, see its docstring — this must never disagree with it, or a
         # resumed job could skip straight to a purpose="attachment" "done"
         # after transcribing only part of the recording).
-        skip_transcribe = bool(existing_transcript) and not (checkpoint and checkpoint.get("phase") == "transcribe")
+        # purpose="session_log_recap" has no transcribe phase at all — it's
+        # pure summarization (of Fact rows, not of any transcript), so it
+        # must skip unconditionally even though its transcript is empty
+        # (there IS no input text to seed); without the carve-out the
+        # empty-transcript path above would send audio_path=None into
+        # transcribe_audio.
+        skip_transcribe = (
+            (bool(existing_transcript) or purpose == "session_log_recap")
+            and not (checkpoint and checkpoint.get("phase") == "transcribe")
+        )
         if not skip_transcribe:
             _set(status="transcribing", run_started_at=datetime.utcnow(), finished_at=None)
             glossary = _glossary_for_world(world_id, game_session_id) if world_id else ""
@@ -1093,6 +1158,55 @@ async def _run_job(job_id: int) -> None:
             # the text and found no in-character facts in it (out-of-character
             # chatter) — the Facts page's UI explains that to the GM.
             _set(status="done", result_json=_json.dumps(facts),
+                 finished_at=datetime.utcnow(), checkpoint_json="")
+        elif purpose == "session_log_recap":
+            # One summarize_session_from_facts call over this session's Fact
+            # rows — the identical call the old synchronous POST
+            # /api/session-log/{id}/recap made inline (same model/extra_
+            # instructions selection, same default think=True), just not
+            # inside one HTTP request anymore. Not wrapped in the
+            # ollama_job_semaphore/thinking-ladder machinery the summarize_
+            # transcript purposes use, for the same reason facts_parse above
+            # isn't: mirror the synchronous call this replaces, behaviorally.
+            # The result lands in result_json (never `recap`) so the jobs UI
+            # can't render it as a session_recap-style draft.
+            _set(status="summarizing")
+            db2 = SessionLocal()
+            try:
+                gs = db2.get(GameSession, game_session_id) if game_session_id else None
+                if gs is None:
+                    # The session was deleted between the POST that created
+                    # this job and the job actually running — nothing left to
+                    # recap. Terminal error, not a crash: a stale pending row
+                    # would block every future recap attempt for this
+                    # (session, audience) forever, since the polling route
+                    # waits on pending rows.
+                    _set(status="error", error="This session no longer exists.",
+                         finished_at=datetime.utcnow(), checkpoint_json="")
+                    return
+                q = db2.query(Fact).filter(Fact.game_session_id == game_session_id)
+                # Same visibility boundary the synchronous route applied per
+                # caller: a GM's recap weaves in every fact, players' only the
+                # ones marked visible (NULL counts as visible, matching the
+                # route's isnot(False)).
+                if audience != "gm":
+                    q = q.filter(Fact.visible_to_players.isnot(False))
+                facts = q.order_by(Fact.created_at).all()
+                world_instructions = _recap_instructions_for_world(gs.world_id)
+            finally:
+                db2.close()
+            if not facts:
+                # Mirrors the route's old {"recap": "", "empty": true}
+                # no-facts shape — the client distinguishes "genuinely
+                # nothing logged yet" from a produced-but-empty recap.
+                _set(status="done", result_json=_json.dumps({"recap": "", "empty": True}),
+                     finished_at=datetime.utcnow(), checkpoint_json="")
+                return
+            recap = await _ai_module.summarize_session_from_facts(
+                [f.content for f in facts], model=model,
+                extra_instructions=world_instructions,
+            )
+            _set(status="done", result_json=_json.dumps({"recap": recap}),
                  finished_at=datetime.utcnow(), checkpoint_json="")
         else:
             _set(status="done", finished_at=datetime.utcnow())

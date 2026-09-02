@@ -4,8 +4,8 @@ import logging
 import os
 import shutil
 import tempfile
-import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -1374,31 +1374,40 @@ def session_log_detail(session_id: int, request: Request, db: Session = Depends(
     })
 
 
-# 30 minutes, not a short poll-interval TTL like most caches in this
-# codebase — this page's only real content input (Fact rows) already has
-# EXACT invalidation via clear_session_log_recap_cache (routers.facts on
-# every create/edit/delete, and routers.ai's recap-instructions save for
-# the other input this recap bakes in), so a long TTL costs nothing in
-# practice: a browsed session-log page was re-running a full
-# summarize_session_from_facts call (think=True by default — paying
-# thinking tokens too) on every visit within the old 20s window, for
-# identical input almost all of the time. Residual staleness is bounded to
-# switching the "recap" model surface default mid-window, which is rare
-# and self-corrects on the next Fact edit or TTL expiry either way.
-_SESSION_LOG_RECAP_CACHE_TTL = 1800.0
-# Keyed by (session_id, is_gm) — Fact visibility for this route is purely
+# The recap this route serves is generated as a durable background job
+# (purpose="session_log_recap", see app/audio_jobs.py) rather than inline —
+# the old synchronous version ran summarize_session_from_facts (think=True
+# by default — minutes on a CPU-local model) inside one HTTP request, which
+# hung the Session Log page on "Loading recap…" and tripped Cloudflare
+# Tunnel's ~100s timeout (HTTP 524) for the first viewer of every cache
+# window. The job row itself is now the cache: the latest done job for
+# (session, audience) whose created_at postdates the staleness marker below
+# IS the fresh cached recap, re-parsed from result_json on every request —
+# no in-process dict and no separate TTL. Fact rows (this recap's only
+# content input) already had EXACT invalidation via clear_session_log_
+# recap_cache (routers.facts on every create/edit/delete, and routers.ai's
+# recap-instructions save for the other input the recap bakes in); that
+# function now just moves the staleness marker forward instead of clearing
+# a dict, which invalidates every existing done job at once.
+# Keyed by (session_id, audience) — Fact visibility for this route is purely
 # GM/non-GM (no per-player entity_player_access-style individual sharing),
 # so every non-GM caller for a given session legitimately gets the same
-# answer and can safely share one cache entry. Cleared wholesale by
-# routers.facts whenever a Fact is created/edited/deleted (see
-# clear_session_log_recap_cache) — same "just clear it" pattern
-# app.main._spotlight_cache already uses, rather than tracking exactly
-# which session_id(s) a fact_edit reassignment touched.
-_session_log_recap_cache: dict[tuple, tuple[float, dict]] = {}
+# answer and can safely share one job's result.
+_session_log_recap_stale_at = datetime.min
 
 
 def clear_session_log_recap_cache() -> None:
-    _session_log_recap_cache.clear()
+    # datetime.utcnow(), not time.time()/monotonic: the thing it's compared
+    # against is AudioJob.created_at, which database models default from
+    # datetime.utcnow() — a NAIVE UTC datetime. Mixing clocks is a trap
+    # here: naive-utcnow().timestamp() reinterprets the value as LOCAL time
+    # (so it's off by the UTC offset on any non-UTC host), and monotonic()
+    # shares no epoch with wall-clock datetimes at all. Two naive-UTC
+    # datetimes compare safely directly, so the marker stays in that same
+    # space. Module-level attribute (reassigned, not mutated) so tests can
+    # reset it — same convention as the old dict cache this replaces.
+    global _session_log_recap_stale_at
+    _session_log_recap_stale_at = datetime.utcnow()
 
 
 @router.post("/api/session-log/{session_id}/recap")
@@ -1409,27 +1418,47 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     if not gs or not auth.user_can_access_world(db, user, world):
         raise HTTPException(404)
     is_gm = bool(user and user.is_gm)
-    # Cache check comes BEFORE the cooldown gate: serving a still-fresh
-    # cached recap costs nothing (no Ollama call happens), so it shouldn't
-    # consume/trigger the same rate limit that exists to stop a player
-    # spamming real generations — e.g. reloading the session-log page
-    # repeatedly should just keep hitting cache, not 429.
-    cache_key = (session_id, is_gm)
-    cached = _session_log_recap_cache.get(cache_key)
-    now = time.monotonic()
-    if cached and now - cached[0] < _SESSION_LOG_RECAP_CACHE_TTL:
-        return cached[1]
+    audience = "gm" if is_gm else "players"
+
+    def _session_log_recap_q(extra):
+        return extra.filter(
+            AudioJob.purpose == "session_log_recap",
+            AudioJob.game_session_id == session_id,
+            AudioJob.audience == audience,
+        )
+
+    # Fresh-cache check BEFORE the cooldown gate: serving an already-done
+    # recap costs nothing (no Ollama call happens), so reloading the page
+    # repeatedly must stay free, not consume the rate limit that exists to
+    # stop a player spamming real generations. "Fresh" is purely the
+    # staleness comparison — done jobs are never deleted, one simply stops
+    # being served once a fact edit has postdated it.
+    done = _session_log_recap_q(
+        db.query(AudioJob).filter(AudioJob.status == "done")
+    ).order_by(AudioJob.created_at.desc(), AudioJob.id.desc()).first()
+    if done and done.created_at and done.created_at >= _session_log_recap_stale_at:
+        try:
+            return json.loads(done.result_json or "")
+        except ValueError:
+            pass  # corrupt result blob — fall through and regenerate rather than 500
+
+    # A still-running job answers the poll without dedup-creating a second
+    # identical one (two players — or one player reloading — hitting this
+    # route while the model thinks must not stack duplicate jobs).
+    in_flight = _session_log_recap_q(
+        db.query(AudioJob).filter(AudioJob.status.in_(_audio_jobs.IN_PROGRESS_STATUSES))
+    ).order_by(AudioJob.created_at.desc(), AudioJob.id.desc()).first()
+    if in_flight:
+        return {"pending": True, "job_id": in_flight.id}
+
+    # Cooldown only at actual job-CREATION time: a POST that finds a pending
+    # job (the common reload-while-generating case) just latches onto it,
+    # while two genuinely-new generations within the window still get the
+    # same 429 the synchronous route used to apply per call.
     if not is_gm:
         check_llm_cooldown(user.id if user else 0)
-    q = db.query(Fact).filter(Fact.game_session_id == session_id)
-    if not is_gm:
-        q = q.filter(Fact.visible_to_players.isnot(False))
-    facts = q.order_by(Fact.created_at).all()
-    if not facts:
-        result = {"recap": "", "empty": True}
-        _session_log_recap_cache[cache_key] = (now, result)
-        return result
-    recap = await _ai_module.summarize_session_from_facts([f.content for f in facts], model=_recap_model(""), extra_instructions=_recap_instructions_for_world(world))
-    result = {"recap": recap}
-    _session_log_recap_cache[cache_key] = (now, result)
-    return result
+    job_id = _audio_jobs.create_session_log_recap_job(
+        world_id=gs.world_id, session_id=session_id, audience=audience,
+        created_by_user_id=user.id if user else None,
+    )
+    return {"pending": True, "job_id": job_id}

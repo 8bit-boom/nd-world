@@ -94,15 +94,21 @@ def client():
     # above are reset per test.
     from app.deps import _llm_cooldowns
     _llm_cooldowns.clear()
-    # Same reasoning, same fix, for the two small AI-answer caches added in
-    # Wave 3 (plan item 1.9) — process-local dicts keyed by ids (session_id,
-    # world_id/user_id) that get reused across tests once the DB is reset
-    # above, so a cached recap/answer from one test would otherwise leak
-    # into an unrelated later test reusing the "same" id.
+    # Same reasoning, same fix, for the small AI-answer caches added in
+    # Wave 3 (plan item 1.9) — process-local state keyed by ids
+    # (session_id, world_id/user_id) that get reused across tests once the
+    # DB is reset above, so a cached recap/answer from one test would
+    # otherwise leak into an unrelated later test reusing the "same" id.
+    # The session-log recap's cache is now a staleness marker (a datetime
+    # compared against AudioJob.created_at rows — see app.routers.sessions)
+    # rather than a dict, so "clearing" it means rewinding the marker to a
+    # point no job's created_at can predate.
+    from datetime import datetime
+
     from app.routers.chronicler import _ask_cache
-    from app.routers.sessions import _session_log_recap_cache
+    import app.routers.sessions as _sessions_router
     _ask_cache.clear()
-    _session_log_recap_cache.clear()
+    _sessions_router._session_log_recap_stale_at = datetime.min
     # app.database._app_settings_flags_cache (Wave 4, Speed 4.5) — a single
     # cached snapshot, not a dict, so reset the module attribute directly
     # rather than .clear(); same drop_all/create_all-reuse leak risk as the

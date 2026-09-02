@@ -3,11 +3,12 @@ Default Models > Recap): a GM-configured fallback model for session-recap/
 condense work, used whenever a specific call doesn't pin its own model.
 
 Covers both places that read it:
-  - app/audio_jobs.py's _run_job, for background condense/summarize jobs.
-  - app/routers/sessions.py's _recap_model helper, for the direct
-    (non-job) condense-recap / summarize-from-audio / summarize-live-
-    transcript / summarize-from-facts / session-log-recap routes — none of
-    which go through _run_job at all.
+  - app/audio_jobs.py's _run_job, for background condense/summarize jobs
+    (and create_session_log_recap_job, which seeds the row with the same
+    surface default for the Session Log page's background recap).
+  - app/routers/sessions.py's _recap_model helper, for the remaining
+    direct (non-job) condense-recap / summarize-from-audio / summarize-
+    live-transcript / summarize-from-facts routes.
 
 Before this feature, an unspecified model on any of these fell straight
 through to app.ai.resolve_model's single instance-wide default, with no way
@@ -281,6 +282,22 @@ def test_session_log_recap_falls_back_to_recap_surface_default(client, seed, mon
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     r = client.post(f"/api/session-log/{session_id}/recap")
     assert r.status_code == 200
+    # The recap now runs in a background job — the surface default is read
+    # at job creation (mirroring the route's _recap_model("")), and the
+    # summarize call itself happens when that job runs, so wait it out.
+    job_id = r.json()["job_id"]
+    deadline = time.time() + 5.0
+    status = None
+    while time.time() < deadline:
+        db = SessionLocal()
+        try:
+            status = db.get(AudioJob, job_id).status
+        finally:
+            db.close()
+        if status in ("done", "error", "cancelled", "interrupted"):
+            break
+        time.sleep(0.02)
+    assert status == "done", status
     assert captured["model"] == "recap-default-model"
 
 
