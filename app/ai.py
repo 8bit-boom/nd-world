@@ -1070,6 +1070,17 @@ async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = F
     reasoning lands in the response's separate `thinking` field, so
     resp.message.content below is still exactly the JSON blob.
 
+    A think=true request that Ollama rejects outright ("<model> does not
+    support thinking", HTTP 400) recovers exactly like generate_chat's own
+    rejection branch instead of failing the parse: retry once with
+    think=False — for a model nd-world itself vouches for (KNOWN_MODELS, or
+    a GM's per-model override — the hf.co-imported-GGUF case, ollama#16936)
+    with the <|think|> system-prompt token prepended so the reasoning the
+    GM asked for still happens — and the JSON constraint stays on the retry
+    too, since it binds `content` while token-triggered thinking lands in
+    that separate `thinking` field. See _prompt_token_thinking_models and
+    generate_chat's matching block for the full reasoning.
+
     `world_context`, if given, is RAG-retrieved World lore/Notes text (see
     app.audio_jobs._build_rag_context). It's prepended ahead of the recap
     text in the USER message by reusing _with_world_context itself — same
@@ -1079,18 +1090,80 @@ async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = F
     because the extraction instructions already live in _RECAP_SYSTEM and
     the lore is context FOR the text being split, not a behavior change."""
     m = model or effective_ollama_model()
+    messages = [
+        {"role": "system", "content": _RECAP_SYSTEM},
+        {"role": "user", "content": _with_world_context(raw_text, world_context)},
+    ]
     try:
-        resp = await _client().chat(
-            model=m,
-            messages=[
-                {"role": "system", "content": _RECAP_SYSTEM},
-                {"role": "user", "content": _with_world_context(raw_text, world_context)},
-            ],
-            format=_RECAP_FACTS_SCHEMA,
-            **(await _chat_kwargs(model=m, think=think)),
-        )
+        chat_kwargs = await _chat_kwargs(model=m, think=think)
+        if think and not chat_kwargs["think"] and m in _prompt_token_thinking_models:
+            # Same pre-call injection as generate_chat/stream_chat: the
+            # capability cache a rejection poisoned downgraded the requested
+            # think=True above, but this model's reasoning is still wanted
+            # and still available via the template's <|think|> token —
+            # without this, every parse AFTER the first rejection would
+            # silently drop to instruct mode, and unlike chat nothing
+            # downstream labels the result, so the GM would just get
+            # shallower facts with no sign thinking ever stopped.
+            messages = _messages_with_prompt_think_token(messages)
+        resp = await _client().chat(model=m, messages=messages, format=_RECAP_FACTS_SCHEMA, **chat_kwargs)
+        # The EFFECTIVE think (post _chat_kwargs downgrade), not the caller's
+        # requested one — same call generate_chat/stream_chat make after a
+        # successful response, so a genuinely successful think=true parse
+        # clears the advisory failure and retires the prompt-token fallback
+        # exactly like a successful chat does (a downgraded think=False
+        # parse records nothing — see _record_thinking_result's docstring).
+        _record_thinking_result(m, chat_kwargs["think"], failed=False)
     except _ollama.ResponseError as exc:
-        raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
+        _log.error("parse_facts_from_recap Ollama error: %s %s", exc.status_code, exc.error)
+        if think and "does not support thinking" in (exc.error or ""):
+            # Ollama flatly refused think=true for this model — recover the
+            # same way generate_chat/stream_chat do instead of failing the
+            # job. Not a transient error, so retrying the identical call
+            # would just 400 again; the Facts page's Thinking checkbox is
+            # exactly as deliberate as AI Chat's, and this ResponseError
+            # becoming the plain ValueError it used to be failed every
+            # parse for hf.co-imported GGUFs Ollama never tagged as
+            # thinking-capable (ollama#16936). The rejection also poisons
+            # the capability cache (see _record_thinking_result), so later
+            # parses skip the doomed flag via the pre-call injection above
+            # instead of repeating this round-trip.
+            _record_thinking_result(m, think, failed=True)
+            retry_messages = messages
+            if _known_model_thinks(m) or _model_override_thinks(m):
+                # nd-world's OWN records still vouch for this model's
+                # thinking, so the rejection is almost certainly the missing
+                # capability tag rather than a model that can't reason —
+                # retry with the chat template's manual trigger (<|think|>
+                # system-prompt token) instead of silently dropping to
+                # instruct mode, and keep using it for future calls (see
+                # _prompt_token_thinking_models).
+                _prompt_token_thinking_models.add(m)
+                retry_messages = _messages_with_prompt_think_token(messages)
+                _log.warning("parse_facts_from_recap model=%s: does not support thinking — retrying with the %s system-prompt token", m, _PROMPT_THINK_TOKEN)
+            else:
+                _log.warning("parse_facts_from_recap model=%s: does not support thinking — retrying with think=False", m)
+            # format=_RECAP_FACTS_SCHEMA stays on the retry: Ollama binds the
+            # JSON constraint to the final `content`, while token-triggered
+            # thinking lands in the response's separate `thinking` field — so
+            # the retry's content is still exactly the JSON blob parsed
+            # below. think=False can never re-enter this branch (_chat_kwargs
+            # skips its capability check for a falsy think entirely), so this
+            # really is a single retry; any failure IT raises still becomes
+            # the same ValueError the original call would have produced.
+            try:
+                resp = await _client().chat(
+                    model=m,
+                    messages=retry_messages,
+                    format=_RECAP_FACTS_SCHEMA,
+                    **(await _chat_kwargs(model=m, think=False)),
+                )
+            except _ollama.ResponseError as retry_exc:
+                raise ValueError(f"Ollama error {retry_exc.status_code}: {retry_exc.error}") from retry_exc
+            except Exception as retry_exc:
+                raise ValueError(f"AI unavailable: {type(retry_exc).__name__}: {retry_exc}") from retry_exc
+        else:
+            raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
     except Exception as exc:
         raise ValueError(f"AI unavailable: {type(exc).__name__}: {exc}") from exc
     try:

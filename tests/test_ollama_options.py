@@ -1508,10 +1508,14 @@ class _RejectsThinkingClient:
     Records every .chat() call's kwargs so tests can assert generate_chat/
     stream_chat's internal think=False retry actually happened (and that a
     poisoned capability cache skips straight to think=False on the NEXT
-    call, without a second failing round-trip)."""
+    call, without a second failing round-trip). `non_thinking_content` lets
+    the parse_facts_from_recap tests answer non-thinking calls with JSON
+    that survives the schema-driven parsing (the default "hi" is fine for
+    the chat callers, which return content verbatim)."""
 
-    def __init__(self, model_name="my-model"):
+    def __init__(self, model_name="my-model", non_thinking_content="hi"):
         self._model_name = model_name
+        self._non_thinking_content = non_thinking_content
         self.calls: list[dict] = []
 
     async def show(self, model):
@@ -1527,7 +1531,7 @@ class _RejectsThinkingClient:
             async def _gen():
                 yield _FakeResp("hi")
             return _gen()
-        return _FakeResp("hi")
+        return _FakeResp(self._non_thinking_content)
 
 
 @pytest.mark.asyncio
@@ -1831,6 +1835,99 @@ async def test_successful_think_true_retires_prompt_token_fallback(monkeypatch):
         assert "my-model" not in ai_module._prompt_token_thinking_models
     finally:
         ai_module._prompt_token_thinking_models.discard("my-model")
+
+
+# parse_facts_from_recap gets the same two-layer recovery as the chat
+# callers above: it used to turn the same "does not support thinking" 400
+# into a hard ValueError, failing the Facts page's parse job outright —
+# these tests mirror the generate_chat/stream_chat ones above, plus the
+# JSON-schema wrinkle unique to this caller (the format= constraint and the
+# response parsing both have to survive the retry).
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_think_rejection_uses_prompt_token_for_vouched_model(monkeypatch):
+    """The Facts page's Thinking checkbox hits the ollama#16936 rejection on
+    a GM-vouched model — the parse must recover via the <|think|> token
+    retry instead of raising ValueError, with the schema constraint still on
+    the retry and the advisory failure badge still recorded. The fake's
+    non-thinking answer is real facts JSON, since parse_facts_from_recap
+    json.loads resp.message.content against _RECAP_FACTS_SCHEMA (it doesn't
+    return content verbatim the way the chat callers do)."""
+    facts_json = '{"facts": [{"content": "The party met Elyra at the tavern.", "visible_to_players": true}]}'
+    fake = _RejectsThinkingClient("my-model", non_thinking_content=facts_json)
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        facts = await ai_module.parse_facts_from_recap("met Elyra at the tavern", model="my-model", think=True)
+        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True}]
+        assert "my-model" in ai_module._model_thinking_failures  # still advisory-recorded
+        assert "my-model" in ai_module._prompt_token_thinking_models  # fallback armed for next time
+        assert len(fake.calls) == 2
+        assert fake.calls[0]["think"] is True
+        assert fake.calls[0]["format"]  # the schema constraint rode the failing probe too
+        assert not any("<|think|>" in (msg.get("content") or "") for msg in fake.calls[0]["messages"])
+        assert not fake.calls[1]["think"]
+        # The retry keeps the JSON constraint AND re-enables reasoning via
+        # the token prepended to the _RECAP_SYSTEM message already at
+        # messages[0].
+        assert fake.calls[1]["format"]
+        assert fake.calls[1]["messages"][0]["role"] == "system"
+        assert fake.calls[1]["messages"][0]["content"].startswith("<|think|>")
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_subsequent_calls_reuse_prompt_token_without_failing_round_trip(monkeypatch):
+    """Same stickiness as generate_chat's poisoned-cache test above, on the
+    parse path: once the token fallback is armed, a SECOND think=True parse
+    makes exactly ONE new .chat() call — the poisoned capability cache
+    downgrades the flag and the pre-call injection adds the token, so no
+    failing think=true round-trip is repeated (every parse job paying a 400
+    before working would double the model's latency for nothing)."""
+    facts_json = '{"facts": [{"content": "The party met Elyra at the tavern.", "visible_to_players": true}]}'
+    fake = _RejectsThinkingClient("my-model", non_thinking_content=facts_json)
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        await ai_module.parse_facts_from_recap("met Elyra at the tavern", model="my-model", think=True)
+        assert len(fake.calls) == 2  # the failing probe + the token retry
+
+        facts = await ai_module.parse_facts_from_recap("met Elyra again", model="my-model", think=True)
+        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True}]
+        assert len(fake.calls) == 3  # no second 400 — one think=False call, token included
+        assert not fake.calls[2]["think"]
+        assert fake.calls[2]["messages"][0]["role"] == "system"
+        assert fake.calls[2]["messages"][0]["content"].startswith("<|think|>")
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_unvouched_rejection_falls_back_to_plain_think_false(monkeypatch):
+    """Nobody vouches for this model (no override, no KNOWN_MODELS entry) —
+    the parse still recovers from the rejection (it used to be a hard
+    ValueError), but as a plain think=False call with NO token: nobody
+    claims this model can think, so injecting <|think|> would just pollute
+    the system prompt. Same direct cache-seeding convention as
+    test_unvouched_model_rejection_still_falls_back_to_plain_think_false
+    above, so the first call actually attempts the real think=true probe."""
+    facts_json = '{"facts": [{"content": "The party met Elyra at the tavern.", "visible_to_players": true}]}'
+    fake = _RejectsThinkingClient("stray-model", non_thinking_content=facts_json)
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module._model_capabilities_cache["stray-model"] = ["thinking"]
+    try:
+        facts = await ai_module.parse_facts_from_recap("met Elyra at the tavern", model="stray-model", think=True)
+        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True}]
+        assert "stray-model" in ai_module._model_thinking_failures
+        assert "stray-model" not in ai_module._prompt_token_thinking_models
+        assert len(fake.calls) == 2
+        assert fake.calls[0]["think"] is True
+        assert not fake.calls[1]["think"]
+        assert not any("<|think|>" in (msg.get("content") or "") for msg in fake.calls[1]["messages"])
+    finally:
+        ai_module._model_capabilities_cache.clear()
 
 
 def test_messages_with_prompt_think_token_prepends_and_inserts():
