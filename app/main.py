@@ -671,16 +671,24 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").strip().lower() == "tru
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, https_only=COOKIE_SECURE, same_site="lax")
 
 
-def _rules_toc(html: str):
+def _rules_toc(html_str: str):
+    # NOTE: the parameter is html_str (not html) — the html module is used
+    # inside for entity unescaping, and a parameter of that name would
+    # shadow it.
     toc = []
     def _repl(m):
         lvl, inner = m.group(1), m.group(2)
-        text = re.sub(r'<[^>]+>', '', inner)
+        # html.unescape: the heading's inner HTML can carry entities ("&amp;"
+        # for "&" — doc-export rules MD is often pre-escaped), and this text
+        # is rendered through the template's auto-escaping, which would turn
+        # a passed-through "&amp;" into the literal text "&amp;". Unescaping
+        # here means auto-escape re-encodes exactly once for display.
+        text = html.unescape(re.sub(r'<[^>]+>', '', inner))
         slug = re.sub(r'[^\w]+', '-', text.lower()).strip('-') or 'sec'
         toc.append({'level': int(lvl), 'text': text, 'id': slug})
         return f'<h{lvl} id="{slug}">{inner}</h{lvl}>'
-    html = re.sub(r'<h([23])>(.*?)</h\1>', _repl, html, flags=re.DOTALL)
-    return html, toc
+    html_str = re.sub(r'<h([23])>(.*?)</h\1>', _repl, html_str, flags=re.DOTALL)
+    return html_str, toc
 
 def _effective_general_upload_bytes(db: Session) -> int:
     """The general upload cap for this request: the GM's saved
@@ -1968,6 +1976,18 @@ def rules_page(request: Request, db: Session = Depends(get_db), active_world: st
     world = get_active_world(request, db, active_world)
     worlds = _visible_worlds(request, db)
     md = _world_rules_markdown(world)
+    # Uploaded rules MD (especially Word/Google-Docs exports) often carries
+    # PRE-ESCAPED HTML entities rather than bare characters — real-world
+    # files contain "&amp;amp;" where the author typed "&". markdown2 passes
+    # entities through untouched, so that rendered as the literal text
+    # "&amp;" on the page. Unescape once at render time to normalize; the
+    # result goes through render_md whose safe_mode="escape" still
+    # neutralizes any raw tag the unescape resurrects (an entity-encoded
+    # anchor comes back as a tag and is re-stripped below / shown as inert
+    # text), so the stored-XSS guard is unaffected. /rules/download.md keeps
+    # serving the file exactly as uploaded — this is a display fix only.
+    md = html.unescape(md)
+    md = _RULES_LEGACY_ANCHOR_RE.sub("", md)
     content, toc = _rules_toc(render_md(md) if md else "<p>No rules have been added for this world yet.</p>")
     user = getattr(request.state, "user", None)
     is_custom = bool(world and (world.rules_md or "").strip())

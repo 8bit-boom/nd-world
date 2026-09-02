@@ -59,3 +59,38 @@ def test_rules_toc_labels_are_clean(client, seed):
     assert r.status_code == 200
     assert '>1. Core Stats<' in r.text
     assert "&amp;lt;" not in r.text
+
+
+def test_double_escaped_entities_render_as_characters(client, seed):
+    """Doc-export MD often carries PRE-ESCAPED entities ("&amp;amp;" where
+    the author typed "&") — markdown2 passes them through untouched, so the
+    page rendered the literal text "&amp;". Unescaping at render time
+    normalizes one level of escaping; render_md's safe_mode still escapes
+    any raw tag the unescape resurrects."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    db = SessionLocal()
+    try:
+        w = db.query(World).filter(World.id == seed.world_a.id).first()
+        w.rules_md = (
+            "## Part II — Races &amp;amp; Optional Systems\n\n"
+            "Tom &amp; Jerry & friends.\n"
+            "Raw ampersand stays too: bread & butter.\n"
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/rules")
+    assert r.status_code == 200
+    # The double-escaped entity now displays as a single ampersand: the HTML
+    # carries it once-escaped ("&amp;"), never as the literal text "&amp;".
+    assert "&amp;amp;" not in r.text
+    assert "Races &amp; Optional Systems" in r.text
+    assert "Tom &amp; Jerry &amp; friends" in r.text
+    assert "bread &amp; butter" in r.text
+    # The TOC label is once-escaped too (it renders as "...Races &
+    # Optional Systems" in the browser) and appears alongside the heading
+    # itself, so the same once-escaped text shows up at least twice.
+    assert "&amp;amp;" not in r.text
+    assert r.text.count("Races &amp; Optional Systems") >= 2
