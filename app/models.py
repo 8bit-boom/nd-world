@@ -961,6 +961,18 @@ class AudioJob(Base):
     use_rag = Column(Boolean, default=False)
     rag_entity_limit = Column(Integer, nullable=True)
     rag_notes_limit = Column(Integer, nullable=True)
+    # purpose="session_recap" only: AI-drafted Facts extracted automatically
+    # from this job's transcript the moment it finishes (see app.audio_jobs.
+    # _run_job and app.ai.parse_facts_from_recap, using this same job's own
+    # `model` so the extraction matches whatever the GM chose for the recap
+    # itself) — "[]" (the default) until then, or on a job whose extraction
+    # attempt itself failed (best-effort; never blocks the recap finishing).
+    # A GM reviews/edits this draft on the Background Jobs page and clicks
+    # Confirm & Save (POST /api/facts/from-job/{id}) to actually create Fact
+    # rows — nothing here is ever auto-committed to the facts table without
+    # that explicit confirmation, same "AI drafts, human decides what's
+    # secret" gate the manual /facts parse flow already enforces.
+    pending_facts_json = Column(Text, default="[]")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

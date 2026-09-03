@@ -67,6 +67,13 @@ let BG_MODELS = [];
 // Re-applied after each render, falling back to the job-derived defaults
 // when a key has no saved state yet.
 const _bgFormState = new Map();
+// Draft Facts a session_recap job auto-extracted on completion (see
+// app.ai.parse_facts_from_recap / app.audio_jobs._auto_extract_pending_facts),
+// seeded from job.pending_facts on first render and re-applied across the
+// 3s poll re-render the same way _bgFormState preserves the retry-summary
+// row's inputs — otherwise every poll would blow away whatever a GM had
+// already edited/removed from the review list before clicking Confirm.
+const _bgFactsDraftState = new Map();
 
 async function bgLoadModels() {
   try {
@@ -201,6 +208,10 @@ function bgRenderJob(job) {
     note.className = 'bg-job-note-text';
     note.textContent = "🧠✕ This model doesn't support thinking mode (Ollama rejected it) — this recap was written with Thinking off. Untick its \"supports thinking\" override in Settings → System, or re-register the model with Ollama if you believe it should support it.";
     card.appendChild(note);
+  }
+
+  if (job.job_type === 'audio' && job.status === 'done' && job.purpose === 'session_recap' && job.pending_facts && job.pending_facts.length) {
+    bgRenderFactsReview(job, card);
   }
 
   if (job.job_type === 'audio' && job.status === 'done' && (job.transcript || job.recap)) {
@@ -478,6 +489,100 @@ async function bgDeleteJob(jobType, jobId, btn) {
     btn.disabled = false;
     btn.textContent = '🗑 Delete';
     return;
+  }
+  bgRefresh();
+}
+
+// Renders the "review AI-drafted Facts" panel for a finished session_recap
+// job (see AudioJob.pending_facts_json's own docstring) — each row is
+// editable (content + visible/GM-only) or removable before the GM commits
+// anything, same review-before-save gate the manual /facts parse UI
+// enforces, just inline here instead of a separate page visit.
+function bgRenderFactsReview(job, card) {
+  const key = bgKey(job);
+  if (!_bgFactsDraftState.has(key)) {
+    _bgFactsDraftState.set(key, job.pending_facts.map(f => ({
+      content: f.content, visible_to_players: f.visible_to_players !== false,
+    })));
+  }
+  const draft = _bgFactsDraftState.get(key);
+
+  const panel = document.createElement('div');
+  panel.className = 'bg-job-note-text';
+  panel.style.cssText = 'background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.5rem .6rem;margin-top:.4rem';
+  const title = document.createElement('div');
+  title.style.cssText = 'font-weight:bold;color:var(--text);margin-bottom:.35rem';
+  title.textContent = `📋 ${draft.length} fact${draft.length === 1 ? '' : 's'} drafted from this session — review before saving:`;
+  panel.appendChild(title);
+
+  draft.forEach((f, i) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:.4rem;align-items:flex-start;margin-bottom:.3rem';
+    const ta = document.createElement('textarea');
+    ta.value = f.content;
+    ta.rows = 1;
+    ta.style.cssText = 'flex:1;font-size:.78rem;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:.3rem .4rem;resize:vertical;font-family:inherit';
+    ta.oninput = () => { f.content = ta.value; };
+    const visLabel = document.createElement('label');
+    visLabel.style.cssText = 'display:inline-flex;align-items:center;gap:.2rem;font-size:.72rem;color:var(--text-dim);white-space:nowrap;cursor:pointer';
+    visLabel.title = 'Whether players may see this fact (vs. GM-only secret)';
+    const visCb = document.createElement('input');
+    visCb.type = 'checkbox';
+    visCb.checked = f.visible_to_players;
+    visCb.onchange = () => { f.visible_to_players = visCb.checked; };
+    visLabel.append(visCb, document.createTextNode('Players know'));
+    const rmBtn = document.createElement('button');
+    rmBtn.type = 'button';
+    rmBtn.style.cssText = 'background:none;border:none;color:#c44;cursor:pointer;font-size:.9rem;line-height:1;padding:.2rem';
+    rmBtn.title = 'Remove this draft fact';
+    rmBtn.textContent = '✕';
+    rmBtn.onclick = () => {
+      draft.splice(i, 1);
+      bgRefresh();
+    };
+    row.append(ta, visLabel, rmBtn);
+    panel.appendChild(row);
+  });
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:.4rem;margin-top:.3rem';
+  const confirmBtn = document.createElement('button');
+  confirmBtn.type = 'button';
+  confirmBtn.className = 'bg-job-btn';
+  confirmBtn.style.cssText = 'border-color:var(--neon);color:var(--neon)';
+  confirmBtn.textContent = draft.length ? `✓ Confirm & Save ${draft.length}` : '✓ Confirm & Save';
+  confirmBtn.disabled = !draft.length;
+  confirmBtn.onclick = () => bgConfirmFacts(job.id, key, confirmBtn);
+  const dismissBtn = document.createElement('button');
+  dismissBtn.type = 'button';
+  dismissBtn.className = 'bg-job-btn';
+  dismissBtn.textContent = '✕ Dismiss all';
+  dismissBtn.title = 'Discard this draft without saving any of it';
+  dismissBtn.onclick = () => bgConfirmFacts(job.id, key, dismissBtn, /* dismiss */ true);
+  actions.append(confirmBtn, dismissBtn);
+  panel.appendChild(actions);
+
+  card.appendChild(panel);
+}
+
+async function bgConfirmFacts(jobId, draftKey, btn, dismiss = false) {
+  const draft = dismiss ? [] : (_bgFactsDraftState.get(draftKey) || []);
+  btn.disabled = true;
+  btn.textContent = dismiss ? 'Dismissing…' : 'Saving…';
+  try {
+    const res = await fetch(`/api/facts/from-job/${jobId}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ facts: draft }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `HTTP ${res.status}`);
+    }
+    _bgFactsDraftState.delete(draftKey);
+  } catch (e) {
+    alert('Could not save facts: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = dismiss ? '✕ Dismiss all' : '✓ Confirm & Save';
   }
   bgRefresh();
 }

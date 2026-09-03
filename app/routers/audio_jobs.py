@@ -10,6 +10,7 @@ everything in flight across the whole world and cancel one, separate from
 the smaller inline panels embedded on each originating page.
 """
 import io
+import json
 from pathlib import Path
 
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
@@ -86,7 +87,24 @@ def _job_to_dict(job: AudioJob) -> dict:
         # rare (see _run_job's docstring) but still surfaced accurately
         # rather than hidden.
         "thinking_starved": _ai_module.is_thinking_starved_sentinel(job.error or ""),
+        # purpose="session_recap" only — Facts the AI auto-drafted from this
+        # job's transcript the moment it finished (see app.audio_jobs.
+        # _auto_extract_pending_facts), awaiting the GM's review/confirm on
+        # this page (POST /api/facts/from-job/{id}). [] once confirmed/
+        # dismissed, or for any job that predates this feature/isn't a
+        # session_recap. Malformed JSON (shouldn't happen — this column is
+        # only ever written by _auto_extract_pending_facts itself) reads as
+        # [] rather than 500ing the whole status route.
+        "pending_facts": _safe_json_list(job.pending_facts_json),
     }
+
+
+def _safe_json_list(raw: str) -> list:
+    try:
+        data = json.loads(raw or "[]")
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
 
 
 @router.get("/background-jobs", response_class=HTMLResponse)

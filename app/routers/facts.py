@@ -5,11 +5,33 @@ from sqlalchemy.orm import Session
 from .. import ai as _ai_module
 from ..database import get_db
 from ..deps import get_world_ctx
-from ..models import Fact, GameSession
+from ..models import AudioJob, Fact, GameSession
 from ..templating import templates
 from .sessions import clear_session_log_recap_cache
 
 router = APIRouter()
+
+
+def _create_facts_from_items(db: Session, world_id: int, session_id, author_id, items: list) -> list:
+    """Shared by api_facts_bulk (the manual parse-review Confirm & Save) and
+    api_facts_from_job (the auto-drafted-on-job-completion review) — same
+    per-item validation/creation either way, so the two confirm flows can't
+    quietly drift apart on what counts as a valid draft fact."""
+    created = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content", "")).strip()
+        if not content:
+            continue
+        f = Fact(
+            world_id=world_id, game_session_id=session_id, content=content,
+            visible_to_players=bool(item.get("visible_to_players", True)),
+            author_id=author_id,
+        )
+        db.add(f)
+        created.append(f)
+    return created
 
 
 @router.get("/facts", response_class=HTMLResponse)
@@ -110,22 +132,35 @@ async def api_facts_bulk(request: Request, db: Session = Depends(get_db), active
         raise HTTPException(400, '"facts" must be a non-empty list')
     session_id = body.get("game_session_id")
     session_id = int(session_id) if session_id else None
-    created = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        content = str(item.get("content", "")).strip()
-        if not content:
-            continue
-        f = Fact(
-            world_id=world.id,
-            game_session_id=session_id,
-            content=content,
-            visible_to_players=bool(item.get("visible_to_players", True)),
-            author_id=user.id if user else None,
-        )
-        db.add(f)
-        created.append(f)
+    created = _create_facts_from_items(db, world.id, session_id, user.id if user else None, items)
     db.commit()
     clear_session_log_recap_cache()
+    return {"created": len(created)}
+
+
+@router.post("/api/facts/from-job/{job_id}")
+async def api_facts_from_job(job_id: int, request: Request, db: Session = Depends(get_db)):
+    """Confirm (or dismiss) the Facts a session_recap job auto-drafted on
+    completion (AudioJob.pending_facts_json — see app.audio_jobs.
+    _auto_extract_pending_facts) — the review step on the Background Jobs
+    page. `facts` may be an edited/trimmed subset of what was drafted (or
+    an empty list to dismiss without saving any of them); either way the
+    job's pending draft is cleared once handled, so it doesn't keep
+    reappearing on every page load. Uses the job's own game_session_id
+    automatically (the draft came from that session's transcript) rather
+    than making the GM re-pick a session, unlike the free-standing /facts
+    parse-review flow this shares its creation logic with."""
+    job = db.get(AudioJob, job_id)
+    if not job:
+        raise HTTPException(404)
+    body = await request.json()
+    items = body.get("facts")
+    if not isinstance(items, list):
+        raise HTTPException(400, '"facts" must be a list (possibly empty, to dismiss)')
+    user = getattr(request.state, "user", None)
+    created = _create_facts_from_items(db, job.world_id, job.game_session_id, user.id if user else None, items)
+    job.pending_facts_json = "[]"
+    db.commit()
+    if created:
+        clear_session_log_recap_cache()
     return {"created": len(created)}

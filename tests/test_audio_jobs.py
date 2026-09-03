@@ -24,7 +24,7 @@ from app import ai as ai_module
 from app import audio_jobs
 from app import job_shutdown as _job_shutdown
 from app.database import SessionLocal
-from app.models import AudioJob, Entity, World
+from app.models import AudioJob, Entity, Fact, World
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -89,6 +89,79 @@ def _fake_ai(monkeypatch):
     monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
     monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
     monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+
+# ── Auto-drafted Facts on a finished session_recap job ──────────────────────
+# (AudioJob.pending_facts_json / app.audio_jobs._auto_extract_pending_facts —
+# "summarize, then automatically draft facts from it, reviewed before
+# saving" pipeline.)
+
+@pytest.mark.asyncio
+async def test_session_recap_job_auto_drafts_pending_facts(client, seed, tmp_path, monkeypatch):
+    captured = {}
+
+    async def fake_parse(raw_text, model=""):
+        captured["raw_text"] = raw_text
+        captured["model"] = model
+        return [{"content": "The party met Elena.", "visible_to_players": True}]
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True, model="my-model",
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert json.loads(job.pending_facts_json) == [{"content": "The party met Elena.", "visible_to_players": True}]
+    # Same model the recap itself was summarized with — a GM's per-job
+    # model choice stays consistent through the fact-extraction step too.
+    assert captured["model"] == "my-model"
+    # Drafted from the TRANSCRIPT (the fuller/raw source), not the
+    # already-compressed recap — matches the manual "Extract facts" button's
+    # own existing behavior.
+    assert captured["raw_text"] == "the party met elena at the bazaar"
+
+
+@pytest.mark.asyncio
+async def test_session_recap_job_fact_extraction_failure_still_finishes_the_job(client, seed, tmp_path, monkeypatch):
+    async def fake_parse(raw_text, model=""):
+        raise ValueError("Ollama unavailable")
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    audio = tmp_path / "clip.mp3"
+    audio.write_bytes(b"fake audio bytes")
+    job_id = audio_jobs.create_job(
+        world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+        audio_path=audio, delete_after=True,
+    )
+    job = await _await_terminal(job_id)
+    # A fact-extraction hiccup is a bonus-feature failure, not a recap
+    # failure — the job still lands "done" with its real recap.
+    assert job.status == "done", job.error
+    assert job.recap == "The party met Elena at the bazaar."
+    assert job.pending_facts_json == "[]"
+
+
+@pytest.mark.asyncio
+async def test_condense_job_never_auto_drafts_facts(client, seed, monkeypatch):
+    """Scoped to purpose="session_recap" only — condense re-shortens an
+    ALREADY-summarized recap, not a fresh session transcript, so
+    re-extracting facts from it would just be lower-quality noise."""
+    called = False
+
+    async def fake_parse(raw_text, model=""):
+        nonlocal called
+        called = True
+        return []
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    job_id = audio_jobs.create_condense_job(world_id=seed.world_a.id, text="A long existing recap.")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert called is False
+    assert job.pending_facts_json == "[]"
 
 
 # ── app/audio_jobs.py engine, exercised directly ────────────────────────────
@@ -511,6 +584,71 @@ def test_job_status_route_reports_think_rejected(client, seed):
     assert data["think_rejected"] is True
     assert data["think_fallback"] is False
     assert data["think"] is False
+
+
+def test_job_status_route_reports_pending_facts(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+            status="done", recap="a recap",
+            pending_facts_json=json.dumps([{"content": "x", "visible_to_players": True}]),
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    assert r.json()["pending_facts"] == [{"content": "x", "visible_to_players": True}]
+
+
+def test_job_status_route_pending_facts_empty_by_default(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3", status="done")
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.json()["pending_facts"] == []
+
+
+def test_job_status_route_pending_facts_malformed_json_reads_as_empty(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=seed.world_a.id, purpose="session_recap", filename="clip.mp3",
+            status="done", pending_facts_json="not valid json",
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    assert r.json()["pending_facts"] == []
+
+
+def test_background_jobs_page_wires_the_facts_review_flow():
+    js = open("app/templates/background_jobs.html").read()
+    assert "function bgRenderFactsReview(" in js
+    assert "async function bgConfirmFacts(" in js
+    assert "/api/facts/from-job/" in js
+    assert "job.pending_facts" in js
 
 
 class _RejectsThinkingClient:
@@ -954,6 +1092,44 @@ def test_build_rag_context_no_topup_leak_when_relevance_search_already_fills_the
     context = audio_jobs._build_rag_context(seed.world_a.id, "Gareth Ashfall the blacksmith", entity_limit=1, notes_limit=0)
     assert "Gareth Ashfall" in context
     assert "Completely Unrelated Entity" not in context
+
+
+# ── Facts as RAG context (closing the "RAG never sees logged Facts" gap) ───
+
+def test_build_rag_context_includes_recent_facts(client, seed):
+    db = SessionLocal()
+    try:
+        db.add_all([
+            Fact(world_id=seed.world_a.id, content="The party discovered a hidden lab.", visible_to_players=True),
+            Fact(world_id=seed.world_a.id, content="Elyra is secretly a cult agent.", visible_to_players=False),
+        ])
+        db.commit()
+    finally:
+        db.close()
+    context = audio_jobs._build_rag_context(seed.world_a.id, "anything", entity_limit=0, notes_limit=0)
+    assert "Established facts from past sessions:" in context
+    assert "The party discovered a hidden lab." in context
+    # GM-facing context — unfiltered by visible_to_players, unlike anything
+    # a player would ever see (see the docstring's own reasoning).
+    assert "Elyra is secretly a cult agent." in context
+
+
+def test_build_rag_context_no_facts_block_when_world_has_no_facts(client, seed):
+    context = audio_jobs._build_rag_context(seed.world_a.id, "anything", entity_limit=0, notes_limit=0)
+    assert context == ""
+    assert "Established facts" not in context
+
+
+def test_build_rag_context_caps_facts_at_the_limit(client, seed):
+    db = SessionLocal()
+    try:
+        for i in range(audio_jobs._RAG_FACT_LIMIT + 5):
+            db.add(Fact(world_id=seed.world_a.id, content=f"Fact number {i}.", visible_to_players=True))
+        db.commit()
+    finally:
+        db.close()
+    context = audio_jobs._build_rag_context(seed.world_a.id, "anything", entity_limit=0, notes_limit=0)
+    assert context.count("Fact number") == audio_jobs._RAG_FACT_LIMIT
 
 
 # ── pinned_entity_ids (GM-checked "Entities Featured" → guaranteed RAG) ─────

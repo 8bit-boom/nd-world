@@ -16,7 +16,7 @@ from . import ai as _ai_module
 from . import job_shutdown as _job_shutdown
 from . import retrieval as _retrieval
 from .database import SessionLocal
-from .models import AudioJob, Entity, GameSession, PlayerCharacter, World
+from .models import AudioJob, Entity, Fact, GameSession, PlayerCharacter, World
 
 _log = logging.getLogger("nd.audio_jobs")
 
@@ -113,6 +113,29 @@ def _looks_like_failure(result: str) -> bool:
     "done" recap on the chunked summarization path — without this check
     entirely, the same bug applies to any Ollama-side failure."""
     return _ai_module.is_failure_sentinel(result)
+
+
+async def _auto_extract_pending_facts(job_id: int, transcript: str, model: str) -> str:
+    """Best-effort: draft Facts from a just-finished session_recap job's
+    transcript via the SAME model that summarized it (job.model — a GM's
+    per-job model choice should stay consistent end to end, not silently
+    fall back to the instance default for this one step), using the exact
+    parse_facts_from_recap() the manual /facts "Parse with AI" flow already
+    uses. Returns a JSON string ready for AudioJob.pending_facts_json —
+    "[]" on ANY failure (model unreachable, malformed output) so a
+    fact-extraction hiccup can never turn an otherwise-successful recap job
+    into a failed one; this step is a bonus on top of the recap, not a
+    dependency of it.
+
+    Deliberately does NOT create any Fact rows itself — see
+    AudioJob.pending_facts_json's own docstring for why a human still has
+    to review/confirm before anything reaches the facts table."""
+    try:
+        facts = await _ai_module.parse_facts_from_recap(transcript, model=model)
+        return _json.dumps(facts)
+    except Exception as exc:
+        _log.warning("session_recap job %s: auto fact-extraction failed: %s: %s", job_id, type(exc).__name__, exc)
+        return "[]"
 
 
 def create_job(
@@ -466,6 +489,14 @@ def _combined_recap_instructions(world_instructions: str, job_instructions: str)
 _DEFAULT_RAG_ENTITY_LIMIT = 15
 _DEFAULT_RAG_NOTES_LIMIT = 5
 
+# Not GM-configurable (unlike entity_limit/notes_limit above) — same
+# hardcoded-cap precedent as app.routers.chronicler's own _CHRONICLER_FACT_
+# LIMIT: most-recent-first with no relevance filtering, since a campaign's
+# total logged-Fact volume is naturally small enough that simple recency
+# already covers what a "previously established" recap needs, without
+# adding a third RAG limit for a GM to configure.
+_RAG_FACT_LIMIT = 20
+
 # The FTS query app.retrieval.find_relevant_entities builds has one OR-clause
 # per unique word over 3 characters in the query text — capped here so
 # handing it an entire transcript unclipped can't balloon into a
@@ -568,7 +599,18 @@ def _build_rag_context(
     space from pinned_entity_ids — PlayerCharacter isn't an Entity, has no
     `kind`/`summary` of its own, and is never subject to the keyword
     search or top-up above, only ever appearing here because it was
-    pinned (see _format_pc_line)."""
+    pinned (see _format_pc_line).
+
+    Also includes the world's most recent logged Facts (see
+    _RAG_FACT_LIMIT) as their own "Established facts" block — previously
+    this function only ever drew on Entities/Notes, leaving everything a
+    GM had logged as a discrete Fact (session-to-session continuity: named
+    NPCs, promises made, secrets already revealed) invisible to a
+    Summarize/Condense call even with RAG turned on. Unfiltered by
+    visible_to_players — this context is GM-facing only (it feeds the
+    recap-WRITING prompt, never anything shown to players directly), same
+    "GM sees everything" reasoning app.routers.chronicler's own fact
+    lookup for a GM caller uses."""
     db = SessionLocal()
     try:
         pinned = (
@@ -615,7 +657,20 @@ def _build_rag_context(
         pinned_non_notes = [e for e in pinned if e.kind != "note"]
         entity_context = _retrieval.format_context_from_entities(pinned_non_notes + non_notes + pinned_notes + notes)
         pc_context = "\n".join(_format_pc_line(pc) for pc in pinned_pcs)
-        return "\n".join(part for part in (pc_context, entity_context) if part)
+
+        facts = (
+            db.query(Fact)
+            .filter(Fact.world_id == world_id)
+            .order_by(Fact.created_at.desc())
+            .limit(_RAG_FACT_LIMIT)
+            .all()
+        )
+        fact_context = ""
+        if facts:
+            fact_lines = "\n".join(f"- {f.content}" for f in reversed(facts))  # oldest-first reads as a timeline
+            fact_context = "Established facts from past sessions:\n" + fact_lines
+
+        return "\n".join(part for part in (pc_context, entity_context, fact_context) if part)
     finally:
         db.close()
 
@@ -917,13 +972,21 @@ async def _run_job(job_id: int) -> None:
             if _looks_like_failure(recap):
                 _set(status="error", error=recap, chunk_current=None, chunk_total=None,
                      finished_at=datetime.utcnow(), checkpoint_json="")
-            elif think and _ai_module.model_rejected_thinking(model):
-                # See the identical check in the condense branch above.
-                _set(status="done", recap=recap, think=False, think_rejected=True, chunk_current=None,
-                     chunk_total=None, finished_at=datetime.utcnow(), checkpoint_json="")
             else:
-                _set(status="done", recap=recap, chunk_current=None, chunk_total=None,
-                     finished_at=datetime.utcnow(), checkpoint_json="")
+                # Auto-draft Facts from this transcript now that the recap
+                # succeeded — see _auto_extract_pending_facts's own
+                # docstring for why this is best-effort (never turns a good
+                # recap into a failed job) and never auto-commits anything;
+                # the GM reviews/confirms on the Background Jobs page.
+                pending_facts_json = await _auto_extract_pending_facts(job_id, transcript, model)
+                if think and _ai_module.model_rejected_thinking(model):
+                    # See the identical check in the condense branch above.
+                    _set(status="done", recap=recap, think=False, think_rejected=True, chunk_current=None,
+                         chunk_total=None, finished_at=datetime.utcnow(), checkpoint_json="",
+                         pending_facts_json=pending_facts_json)
+                else:
+                    _set(status="done", recap=recap, chunk_current=None, chunk_total=None,
+                         finished_at=datetime.utcnow(), checkpoint_json="", pending_facts_json=pending_facts_json)
         else:
             _set(status="done", finished_at=datetime.utcnow())
     except _job_shutdown.JobInterrupted:

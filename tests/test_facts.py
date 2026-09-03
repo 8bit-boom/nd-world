@@ -2,7 +2,7 @@
 (mocked — no real Ollama needed), and world/role scoping."""
 from app import ai as ai_module
 from app.database import SessionLocal
-from app.models import Fact, GameSession
+from app.models import AudioJob, Fact, GameSession
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -171,4 +171,104 @@ def test_player_cannot_call_facts_api(client, seed):
     r = client.post("/api/facts/parse", json={"text": "whatever"})
     assert r.status_code == 403
     r = client.post("/api/facts/bulk", json={"facts": [{"content": "x", "visible_to_players": True}]})
+    assert r.status_code == 403
+
+
+# ── POST /api/facts/from-job/{id} — the auto-drafted-on-completion review ──
+
+def _make_recap_job(world_id, game_session_id=None, pending_facts=None):
+    import json
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=world_id, purpose="session_recap", filename="clip.mp3", status="done",
+            recap="A recap.", game_session_id=game_session_id,
+            pending_facts_json=json.dumps(pending_facts if pending_facts is not None else []),
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        return job.id
+    finally:
+        db.close()
+
+
+def test_from_job_confirms_edited_draft(client, seed):
+    job_id = _make_recap_job(seed.world_a.id, pending_facts=[
+        {"content": "The party discovered a hidden lab.", "visible_to_players": True},
+        {"content": "Elyra is secretly a cult agent.", "visible_to_players": False},
+    ])
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(f"/api/facts/from-job/{job_id}", json={"facts": [
+        {"content": "The party discovered a hidden lab.", "visible_to_players": True},
+        {"content": "Elyra is secretly a cult agent, EDITED.", "visible_to_players": False},
+    ]})
+    assert r.status_code == 200
+    assert r.json()["created"] == 2
+
+    db = SessionLocal()
+    try:
+        facts = db.query(Fact).filter(Fact.world_id == seed.world_a.id).order_by(Fact.id).all()
+        assert [f.content for f in facts] == [
+            "The party discovered a hidden lab.", "Elyra is secretly a cult agent, EDITED.",
+        ]
+        job = db.get(AudioJob, job_id)
+        assert job.pending_facts_json == "[]"
+    finally:
+        db.close()
+
+
+def test_from_job_uses_the_jobs_own_session(client, seed):
+    db = SessionLocal()
+    try:
+        gs = GameSession(world_id=seed.world_a.id, title="Session 1", session_num=1)
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        session_id = gs.id
+    finally:
+        db.close()
+    job_id = _make_recap_job(seed.world_a.id, game_session_id=session_id, pending_facts=[
+        {"content": "A fact.", "visible_to_players": True},
+    ])
+    _login_gm_in(client, seed, seed.world_a)
+    client.post(f"/api/facts/from-job/{job_id}", json={"facts": [
+        {"content": "A fact.", "visible_to_players": True},
+    ]})
+    db = SessionLocal()
+    try:
+        fact = db.query(Fact).filter(Fact.world_id == seed.world_a.id).first()
+        assert fact.game_session_id == session_id
+    finally:
+        db.close()
+
+
+def test_from_job_empty_list_dismisses_without_saving(client, seed):
+    job_id = _make_recap_job(seed.world_a.id, pending_facts=[
+        {"content": "Something drafted.", "visible_to_players": True},
+    ])
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(f"/api/facts/from-job/{job_id}", json={"facts": []})
+    assert r.status_code == 200
+    assert r.json()["created"] == 0
+
+    db = SessionLocal()
+    try:
+        assert db.query(Fact).filter(Fact.world_id == seed.world_a.id).count() == 0
+        job = db.get(AudioJob, job_id)
+        assert job.pending_facts_json == "[]"
+    finally:
+        db.close()
+
+
+def test_from_job_unknown_job_404s(client, seed):
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post("/api/facts/from-job/999999", json={"facts": []})
+    assert r.status_code == 404
+
+
+def test_from_job_requires_gm(client, seed):
+    job_id = _make_recap_job(seed.world_a.id, pending_facts=[{"content": "x", "visible_to_players": True}])
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post(f"/api/facts/from-job/{job_id}", json={"facts": []})
     assert r.status_code == 403
