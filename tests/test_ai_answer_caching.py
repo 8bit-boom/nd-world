@@ -4,9 +4,11 @@ Wave 1, this is the "and caching" half): repeated identical requests are
 served from cache instead of re-invoking Ollama, and the session-log recap
 is invalidated wherever a Fact is written so a freshly-logged fact shows
 up in the next recap instead of a stale cached one. (The session-log
-cache used to be an in-process dict with a TTL; it is now the latest done
-session_log_recap background job whose created_at postdates the module's
-staleness marker — same invalidation contract, different storage.)"""
+cache used to be an in-process dict with a TTL, then a module staleness
+marker; it is now durable DB state — the latest done session_log_recap
+job whose created_at postdates both the session's newest Fact timestamp
+and World.recap_content_touch — same invalidation contract, restart-safe
+storage.)"""
 import time
 
 from app.database import SessionLocal
@@ -152,8 +154,9 @@ def test_chronicler_cache_is_per_user_not_shared_across_players(client, seed, mo
 #
 # The "cache" here is a done session_log_recap background job: the first
 # POST answers {"pending": true} and starts the job, later POSTs return the
-# finished recap straight off the job row until a Fact write (or a
-# recap-instructions save) moves the staleness marker past it.
+# finished recap straight off the job row until a Fact write moves the
+# session's newest Fact timestamp (or a recap-instructions save / fact
+# deletion moves World.recap_content_touch) past the job's created_at.
 
 def test_session_log_recap_repeated_call_hits_cache(client, seed, monkeypatch):
     session_id = _make_session(seed.world_a)

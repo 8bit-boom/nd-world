@@ -126,6 +126,25 @@ class World(Base):
     # (background job, one-shot upload, and re-summarize), same per-world
     # scope as whisper_glossary. NULL/"" = no extra instructions.
     recap_instructions = Column(Text, nullable=True)
+    # Durable watermark for recap-affecting content mutations that leave no
+    # per-Fact row behind to timestamp: a recap-instructions save (the text is
+    # baked into every generated recap, but isn't Fact data) and a Fact
+    # DELETION (the row is gone, so Fact.updated_at — the per-fact half of
+    # the session-log recap freshness rule, see
+    # app/routers.sessions.api_session_log_recap — can't record it; without
+    # this bump, deleting a session's NEWEST fact would make every older
+    # done recap look "fresh" again and resurrect text the GM just removed).
+    # A done/in-flight session_log_recap job is only served when its
+    # created_at postdates this value (NULL = never touched = epoch, so
+    # existing installs' rows stay fresh by every job they had). Deliberately
+    # NOT an in-process module global (the mechanism this replaces): that
+    # rewound to "nothing stale" on every restart — resurrecting pre-restart
+    # fact-hiding edits to players — and was world-blind, letting a World B
+    # edit invalidate World A's recaps. A DB column is restart-safe and
+    # per-world. worlds is not in database._migrate's _heal_table_from_model
+    # list (it predates that helper), so this column gets the hand-typed
+    # ALTER entry there, following the rules_json precedent.
+    recap_content_touch = Column(DateTime, nullable=True)
     # Video Library space-saving: when enabled, every future upload to
     # /video is re-encoded to AV1 (see app/routers/video.py's
     # _convert_video) before being stored — off by default, since AV1
@@ -924,6 +943,17 @@ class AudioJob(Base):
     # _heal_table_from_model pass, same as every other late-added audio_jobs
     # column.
     audience = Column(String(20), default="")
+    # Only meaningful for purpose="facts_parse": flipped to True by POST
+    # /api/facts/bulk once the draft rows on this job's result_json have been
+    # reviewed and saved as Facts (the request carries the job_id it came
+    # from — see that route). GET /api/facts/last-parse then skips consumed
+    # rows, so "Restore last parse" never re-offers a draft that was already
+    # confirmed — before this flag existed, restoring and re-saving the same
+    # job's draft silently duplicated every fact in it. NULL (the pre-column
+    # default on existing installs, healed in via _heal_table_from_model
+    # same as every other late-added audio_jobs column) reads as not
+    # consumed, exactly the behavior those rows always had.
+    draft_consumed = Column(Boolean, nullable=True)
     # Only populated for purpose="attachment" once done — where the
     # uploaded audio ended up, so it can be attached to a chat message
     # without re-uploading (same shape as /api/ai/attachments/upload's own

@@ -4,12 +4,13 @@ summarize-from-facts on /sessions) and the player-facing session log
 GameSession.summary — only an AI recap synthesized fresh from Facts already
 marked visible_to_players for that session."""
 import time
+from datetime import datetime, timedelta
 
 import pytest
 
 from app import ai as ai_module
 from app.database import SessionLocal
-from app.models import AudioJob, Fact, GameSession
+from app.models import AudioJob, Fact, GameSession, World
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -74,8 +75,11 @@ def _make_session(world, title="Session 1", num=1):
 def _add_fact(world, session_id, content, visible):
     db = SessionLocal()
     try:
-        db.add(Fact(world_id=world.id, game_session_id=session_id, content=content, visible_to_players=visible))
+        f = Fact(world_id=world.id, game_session_id=session_id, content=content, visible_to_players=visible)
+        db.add(f)
         db.commit()
+        db.refresh(f)
+        return f.id
     finally:
         db.close()
 
@@ -1253,15 +1257,17 @@ def test_session_log_recap_done_job_is_served_without_a_second_one(client, seed,
     assert _recap_job_count(session_id) == 1
 
 
-def test_session_log_recap_staleness_marker_forces_a_new_job_after_clear(client, seed, monkeypatch):
-    """Fact edits invalidate via clear_session_log_recap_cache() — which now
-    moves a staleness marker instead of clearing a dict: the done job still
-    EXISTS (rows are never deleted) but is simply no longer served, and the
-    next POST starts a fresh one."""
-    from app.routers.sessions import clear_session_log_recap_cache
-
+def test_session_log_recap_fact_edit_forces_a_new_job_durable_rule(client, seed, monkeypatch):
+    """Invalidation is DURABLE now, read straight off the Fact rows' own
+    timestamps (max(coalesce(updated_at, created_at)) vs the job's
+    created_at) instead of an in-process marker a restart rewound: the done
+    job still EXISTS (rows are never deleted) but is simply no longer
+    served once a fact edit postdates it, and the next POST starts a fresh
+    one. The edit here goes through the real form route — the same
+    updated_at every write path (web form, bulk, MCP tool) sets, which is
+    the whole point of the rule being edit-source-agnostic."""
     session_id = _make_session(seed.world_a)
-    _add_fact(seed.world_a, session_id, "A fact", True)
+    fact_id = _add_fact(seed.world_a, session_id, "A fact", True)
 
     calls = []
 
@@ -1275,7 +1281,8 @@ def test_session_log_recap_staleness_marker_forces_a_new_job_after_clear(client,
     assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
     assert client.post(f"/api/session-log/{session_id}/recap").json() == {"recap": "recap #1"}
 
-    clear_session_log_recap_cache()  # what every Fact create/edit/delete calls
+    # What every Fact edit call does — sets the row's own updated_at.
+    client.post(f"/facts/{fact_id}/edit", data={"content": "An edited fact", "visible_to_players": "1"})
 
     r2 = client.post(f"/api/session-log/{session_id}/recap")
     assert r2.status_code == 200
@@ -1287,6 +1294,278 @@ def test_session_log_recap_staleness_marker_forces_a_new_job_after_clear(client,
     assert len(calls) == 2  # ...not from the stale done row
     # Old rows are never deleted — both generations remain inspectable.
     assert _recap_job_count(session_id) == 2
+
+
+def test_session_log_recap_freshness_survives_module_state_reset(client, seed, monkeypatch):
+    """The leak-grade flaw the durable rule exists to close: the old
+    in-process staleness marker rewound to 'nothing stale' on every restart,
+    resurrecting pre-restart fact edits to players. There is no module
+    state left to reset anymore — simulating a restart is a no-op — and the
+    done job must STILL be served stale-skipped after the edit. (The
+    edited fact's updated_at postdates the job no matter what any process
+    remembers.)"""
+    session_id = _make_session(seed.world_a)
+    fact_id = _add_fact(seed.world_a, session_id, "A fact", True)
+
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "A recap."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap")
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
+
+    # The edit, then the "restart": whatever module state the old design
+    # needed is gone, so this is literally nothing.
+    db = SessionLocal()
+    try:
+        fact = db.get(Fact, fact_id)
+        fact.content = "A fact, now hidden-edited"
+        fact.updated_at = datetime.utcnow()
+        db.commit()
+    finally:
+        db.close()
+
+    r2 = client.post(f"/api/session-log/{session_id}/recap")
+    assert r2.json()["pending"] is True
+    assert r2.json()["job_id"] != r1.json()["job_id"]
+
+
+def test_session_log_recap_stale_done_row_ignores_other_worlds_fact_edits(client, seed, monkeypatch):
+    """Per-world precision: a fact edit in World B must not invalidate
+    World A's done recap (the old global marker invalidated every world at
+    once). World B's fact rows simply aren't part of World A's session
+    freshness comparison, and World B has its own recap_content_touch."""
+    session_a = _make_session(seed.world_a, title="A", num=1)
+    _add_fact(seed.world_a, session_a, "A fact", True)
+    session_b = _make_session(seed.world_b, title="B", num=1)
+    _add_fact(seed.world_b, session_b, "B fact", True)
+
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "A recap."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_a}/recap")
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
+
+    # Edit a fact (and save recap instructions) in World B only.
+    db = SessionLocal()
+    try:
+        b_fact = db.query(Fact).filter(Fact.world_id == seed.world_b.id).first()
+        b_fact.updated_at = datetime.utcnow()
+        world_b = db.get(World, seed.world_b.id)
+        world_b.recap_content_touch = datetime.utcnow()
+        db.commit()
+    finally:
+        db.close()
+
+    # World A's done job is still fresh — same recap served, no new job.
+    assert client.post(f"/api/session-log/{session_a}/recap").json() == {"recap": "A recap."}
+    assert _recap_job_count(session_a) == 1
+
+
+def test_session_log_recap_failure_sentinel_becomes_an_error_job_not_a_cached_done(client, seed, monkeypatch):
+    """generate_chat never raises on an Ollama-side failure — it returns a
+    sentinel STRING, and the job branch used to cache it as a DONE recap in
+    result_json, served to every poller until the next fact edit. Now the
+    sentinel lands as status=error (mirroring the condense/session_recap
+    branches), the route never serves it, and the poll gets a {"failed":
+    true} payload carrying the error text."""
+    async def failing_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "[AI unavailable: ConnectError: ollama is down]"
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", failing_summarize)
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap")
+    job_id = r1.json()["job_id"]
+    assert _wait_recap_job_done(job_id) == "error"
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.status == "error"
+        assert job.error == "[AI unavailable: ConnectError: ollama is down]"
+        assert not (job.result_json or "").strip()  # nothing cached as a done recap
+    finally:
+        db.close()
+
+    # The poller's next POST: no fresh done row exists, a recent error row
+    # does — the failed payload comes back instead of a new job (the 60s
+    # creation backoff, see the sibling backoff test).
+    r2 = client.post(f"/api/session-log/{session_id}/recap")
+    assert r2.status_code == 200
+    assert r2.json() == {"failed": True, "error": "[AI unavailable: ConnectError: ollama is down]"}
+    assert _recap_job_count(session_id) == 1
+
+
+def test_session_log_recap_thinking_starved_sentinel_is_an_error_too(client, seed, monkeypatch):
+    """The narrower '[empty response ... hidden \"thinking\" ...]' sentinel
+    (a thinking model burned its whole budget on reasoning) is also a
+    failure, not a recap — this branch has no thinking-retry ladder to
+    climb, so erroring (and letting the poller surface it) is the only
+    honest outcome."""
+    async def starving_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return ('[empty response from llama3.1 — the model produced only hidden "thinking" '
+                'output but no final answer]')
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", starving_summarize)
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r1 = client.post(f"/api/session-log/{session_id}/recap")
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "error"
+    r2 = client.post(f"/api/session-log/{session_id}/recap")
+    assert r2.json()["failed"] is True
+
+
+def test_session_log_recap_error_backoff_blocks_new_jobs_for_60s_then_expires(client, seed, monkeypatch):
+    """A terminally-errored job suppresses new job creation for the same
+    (session, audience, config) key for 60 seconds — otherwise the poll
+    loop mints a doomed replacement job every 4s while Ollama is down.
+    Once the errored row is older than the window (simulated here by
+    backdating its created_at — same clock the comparison reads), a POST
+    creates a fresh job again."""
+    async def failing_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "[AI error: Ollama 500: boom]"
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", failing_summarize)
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap")
+    errored_id = r1.json()["job_id"]
+    assert _wait_recap_job_done(errored_id) == "error"
+
+    # Inside the window: the failed payload, and NO second row.
+    r2 = client.post(f"/api/session-log/{session_id}/recap")
+    assert r2.json() == {"failed": True, "error": "[AI error: Ollama 500: boom]"}
+    assert _recap_job_count(session_id) == 1
+
+    # "Wait out" the window by backdating the errored row's created_at —
+    # and the fact's timestamps by the SAME delta, so the row still
+    # postdates its content (the freshness cutoff) and the ONLY thing that
+    # changed is its age relative to the 60s window.
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, errored_id)
+        job.created_at = job.created_at - timedelta(seconds=61)
+        fact = db.query(Fact).filter(Fact.game_session_id == session_id).first()
+        fact.created_at = fact.created_at - timedelta(seconds=61)
+        fact.updated_at = fact.updated_at - timedelta(seconds=61)
+        db.commit()
+    finally:
+        db.close()
+
+    async def recovered_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "A recovered recap."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", recovered_summarize)
+
+    r3 = client.post(f"/api/session-log/{session_id}/recap")
+    assert r3.json()["pending"] is True
+    assert r3.json()["job_id"] != errored_id
+    assert _wait_recap_job_done(r3.json()["job_id"]) == "done"
+    assert _recap_job_count(session_id) == 2
+
+
+def test_session_log_recap_done_job_with_different_rag_limits_forces_a_new_job(client, seed, monkeypatch):
+    """The RAG limits participate in the done/in-flight match (A8): a recap
+    woven from 15 retrieved entities is not the artifact a request for 50
+    asks for. Unset limits normalize to the same defaults the row would
+    have been created with, so a blank-field request still hits a (15, 5)
+    row — 15/5 ARE the module defaults."""
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "A recap."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap",
+                     json={"use_rag": True, "rag_entity_limit": 15, "rag_notes_limit": 5})
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
+
+    # Same explicit limits → cache hit.
+    r2 = client.post(f"/api/session-log/{session_id}/recap",
+                     json={"use_rag": True, "rag_entity_limit": 15, "rag_notes_limit": 5})
+    assert r2.json() == {"recap": "A recap."}
+    # Unset limits → normalized to the same defaults → still the same row.
+    r3 = client.post(f"/api/session-log/{session_id}/recap", json={"use_rag": True})
+    assert r3.json() == {"recap": "A recap."}
+
+    # Different limits → a different artifact → a new job.
+    r4 = client.post(f"/api/session-log/{session_id}/recap",
+                     json={"use_rag": True, "rag_entity_limit": 50, "rag_notes_limit": 20})
+    assert r4.json()["pending"] is True
+    assert r4.json()["job_id"] != r1.json()["job_id"]
+    assert _wait_recap_job_done(r4.json()["job_id"]) == "done"
+    assert _recap_job_count(session_id) == 2
+
+
+def test_session_log_page_renders_one_think_checkbox_and_failed_recap_handling(client, seed):
+    """A4/A1 wiring: the recap-think checkbox must render exactly once (it
+    was duplicated, so getElementById bound the first and the second was a
+    dead visual toggle), and the poll JS must handle the route's
+    {"failed": true} payload as plain explanatory text — not the
+    'Failed to load recap:' wording reserved for HTTP/network errors, and
+    not an unhandled key the loop would treat as an empty recap."""
+    session_id = _make_session(seed.world_a)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    html = client.get(f"/session-log/{session_id}").text
+    assert html.count('id="recap-think"') == 1
+    assert "data.failed" in html
+    assert "Recap generation failed: " in html
+    # The failed branch returns (stops polling) rather than continuing.
+    assert "status.textContent = 'Recap generation failed: ' + (data.error" in html
+
+
+def test_session_detail_summarize_from_facts_uses_the_job_pipeline(client, seed):
+    """A5 wiring: the Sessions page's 'Summarize from Facts' button must
+    drive the session-log recap job endpoint (create-or-poll) with the
+    panel's model/think/RAG options, load the result through the same
+    review affordance aiRunRecap uses, and surface data.failed via
+    _showRecapFailed instead of offering the error text as a draft."""
+    session_id = _make_session(seed.world_a)
+    _login_gm_in(client, seed, seed.world_a)
+    html = client.get(f"/sessions/{session_id}").text
+    assert f"fetch('/api/session-log/{session_id}/recap'" in html
+    # The old blocking summarize-from-facts call is no longer wired to the
+    # button flow (expand-notes stays blocking by design — it's quick).
+    assert "/ai/summarize-from-facts" not in html
+    assert "_recapRagOptions()" in html
+    assert "_recapThinkEnabled()" in html
+    assert "data.failed" in html
+    assert "_showRecapFailed(data.error" in html
+
+
+def test_blocking_summarize_from_facts_flags_failure_sentinels(client, seed, monkeypatch):
+    """The blocking route stays as documented API but now carries the same
+    recap_failed convention summarize-from-audio uses — a sentinel string
+    is returned WITH a flag telling the client not to treat it as a
+    draft, instead of an unconditional {'recap': sentinel}."""
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    async def failing_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "[AI unavailable: ConnectError: nope]"
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", failing_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(f"/api/sessions/{session_id}/ai/summarize-from-facts")
+    assert r.status_code == 200
+    assert r.json() == {"recap": "[AI unavailable: ConnectError: nope]", "recap_failed": True}
+
+    async def good_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "A woven recap."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", good_summarize)
+    r2 = client.post(f"/api/sessions/{session_id}/ai/summarize-from-facts")
+    assert r2.json() == {"recap": "A woven recap.", "recap_failed": False}
 
 
 def test_session_log_recap_poll_while_pending_dedups_into_one_job(client, seed, monkeypatch):
@@ -1718,6 +1997,114 @@ async def test_summarize_session_from_facts_guard_never_clobbers_configured_num_
     # Ollama through _chat_kwargs' own options merge, which is exactly the
     # channel the guard must never shadow with its default.
     assert seen[1] is None or "num_predict" not in seen[1]
+
+
+# ── The same degeneration guard on the recap-family siblings (A9) ────────────
+# _recap_num_predict_default_if_unbounded now covers condense_recap,
+# expand_recap_notes and summarize_transcript too — same rule as the
+# summarize_session_from_facts guard tests above: the default applies only
+# when NOTHING else (caller options, max_tokens, the expanded-thinking rung,
+# a GM-configured cap, the thinking widening) supplied a num_predict.
+
+@pytest.mark.asyncio
+async def test_condense_recap_defaults_num_predict_when_nothing_configured(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
+    seen = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen.append(options)
+        return "a recap"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    await ai_module.condense_recap("a recap", think=True)
+    await ai_module.condense_recap("a recap", think=False)
+    # Thinking and non-thinking alike: a degeneration loop is not a
+    # thinking-only failure, and no caller/cap/configured value bounded
+    # either call.
+    assert seen[0]["num_predict"] == ai_module._RECAP_NUM_PREDICT_DEFAULT
+    assert seen[1]["num_predict"] == ai_module._RECAP_NUM_PREDICT_DEFAULT
+    # But max_tokens' own hard cap (think=False) still wins over the default.
+    await ai_module.condense_recap("a recap", max_tokens=150, think=False)
+    assert seen[2]["num_predict"] == 150
+    # And the caller's explicit options dict wins too.
+    await ai_module.condense_recap("a recap", options={"num_predict": 77}, think=False)
+    assert seen[3]["num_predict"] == 77
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_guard_never_clobbers_configured_num_predict(monkeypatch):
+    """The configured-wins half for condense_recap: with think=True the
+    thinking widening already supplies a num_predict (guard stands down,
+    covered separately in test_ollama_options); with think=False the
+    configured value must flow through _chat_kwargs' merge unmolested —
+    no per-call override at all."""
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {"num_predict": 512})
+    seen = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen.append(options)
+        return "a recap"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    await ai_module.condense_recap("a recap", think=False)
+    assert seen[0] is None or "num_predict" not in seen[0]
+
+
+@pytest.mark.asyncio
+async def test_expand_recap_notes_defaults_num_predict_when_nothing_configured(monkeypatch):
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
+    seen = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen.append(options)
+        return "expanded notes"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    await ai_module.expand_recap_notes("terse notes", think=True)
+    await ai_module.expand_recap_notes("terse notes", think=False)
+    assert seen[0]["num_predict"] == ai_module._RECAP_NUM_PREDICT_DEFAULT
+    assert seen[1]["num_predict"] == ai_module._RECAP_NUM_PREDICT_DEFAULT
+
+
+@pytest.mark.asyncio
+async def test_summarize_transcript_defaults_num_predict_when_nothing_configured(monkeypatch):
+    """Both the short single-call path AND every chunk of a long transcript
+    get the guard's default — a degenerating model loops on either."""
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
+    seen = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen.append(options)
+        return "part summary"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    await ai_module.summarize_transcript("a short transcript")
+    assert seen == [{"num_predict": ai_module._RECAP_NUM_PREDICT_DEFAULT}]
+
+    seen.clear()
+    monkeypatch.setattr(ai_module, "_transcript_chunk_char_budget", lambda *a, **k: 50)
+    long_transcript = ("The party explored the ruins. " * 30).strip()
+    await ai_module.summarize_transcript(long_transcript)
+    assert len(seen) > 1
+    assert all(o == {"num_predict": ai_module._RECAP_NUM_PREDICT_DEFAULT} for o in seen)
+
+
+@pytest.mark.asyncio
+async def test_summarize_transcript_guard_stands_down_for_expanded_thinking(monkeypatch):
+    """The expanded rung sets its own (much larger) num_predict — the guard
+    must not layer its default on top of or instead of it. This rung only
+    ever runs as a recovery from a starved budget; capping it back down to
+    the default would defeat its entire purpose."""
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
+    seen = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        seen.append(options)
+        return "a recap"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    await ai_module.summarize_transcript("a short transcript", expanded_thinking=True)
+    assert seen == [ai_module.expanded_thinking_options()]
 
 
 def test_session_log_page_ships_recap_model_think_and_rag_pickers(client, seed):

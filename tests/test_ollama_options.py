@@ -139,7 +139,13 @@ async def test_condense_recap_forwards_options_to_generate_chat(monkeypatch):
     calls = []
     monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
     await ai_module.condense_recap("a long recap", options=ai_module.context_sized_options("a long recap"))
-    assert calls[0]["options"] == ai_module.context_sized_options("a long recap")
+    # The caller's options arrive intact, plus the degeneration-guard
+    # default num_predict (_recap_num_predict_default_if_unbounded — nothing
+    # else bounded this call, see _RECAP_NUM_PREDICT_DEFAULT's comment).
+    assert calls[0]["options"] == {
+        **ai_module.context_sized_options("a long recap"),
+        "num_predict": ai_module._RECAP_NUM_PREDICT_DEFAULT,
+    }
 
 
 @pytest.mark.asyncio
@@ -167,12 +173,16 @@ async def test_condense_recap_max_tokens_is_prompt_only_when_thinking(monkeypatc
     with the visible answer — a real, reported failure was the model
     spending its whole num_predict budget on reasoning and writing no
     visible answer at all. So with thinking on, max_tokens becomes prompt
-    guidance only, same contract min_tokens already has — no num_predict
-    cap gets set at all."""
+    guidance only, same contract min_tokens already has — max_tokens sets
+    no num_predict cap of its own. (What DOES appear when nothing is
+    configured: the degeneration-guard default — _RECAP_NUM_PREDICT_
+    DEFAULT, see _recap_num_predict_default_if_unbounded — which is not a
+    max_tokens-derived cap and applies to thinking and non-thinking calls
+    alike so a degenerating model can't loop forever.)"""
     calls = []
     monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
     await ai_module.condense_recap("a recap", max_tokens=150, think=True)
-    assert "num_predict" not in (calls[0].get("options") or {})
+    assert calls[0]["options"]["num_predict"] == ai_module._RECAP_NUM_PREDICT_DEFAULT
     system = calls[0]["messages"][0]["content"]
     assert "150" in system
 
@@ -231,7 +241,10 @@ async def test_condense_recap_min_tokens_is_prompt_only_no_options_change(monkey
     calls = []
     monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
     await ai_module.condense_recap("a recap", min_tokens=80)
-    assert "options" not in calls[0]  # no options dict at all — min_tokens sets no Ollama param
+    # The degeneration guard supplies a default num_predict when nothing
+    # else did (min_tokens is prompt-only guidance) — an unbounded
+    # condense was the digit-loop/repetition failure mode.
+    assert calls[0]["options"] == {"num_predict": 1024}
     system = calls[0]["messages"][0]["content"]
     assert "80" in system
 

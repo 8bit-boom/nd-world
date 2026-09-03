@@ -96,6 +96,8 @@ CASES = [
     ("GET", "/kind/character/download-selected.zip", True),
     ("POST", "/api/ai/stream", True),
     ("POST", "/api/ai/chat/compact", True),
+    ("GET", "/api/ai/models", True),  # read-only model catalog for the player-facing recap pickers
+    ("POST", "/api/ai/models", False),  # GET-only — the rest of /api/ai stays GM-only
     ("POST", "/api/ai/attachments/upload", True),
     ("POST", "/api/ai/attachments/audio-jobs", True),
     ("POST", "/api/ai/attachments/audio-jobs/chunk", True),
@@ -128,3 +130,16 @@ def test_non_get_defaults_to_gm_only_unless_explicitly_allowlisted():
     an explicit regex above the `method != "GET"` cutoff to be player-safe."""
     assert _is_player_safe("POST", "/some/brand/new/route") is False
     assert _is_player_safe("DELETE", "/entity/5") is False
+
+
+def test_player_can_fetch_the_model_list(client, seed):
+    """Runtime half of the /api/ai/models row: the Session Log page's model
+    picker fetches this as a logged-in player, and the 403 it used to get
+    left the picker silently empty (the fetch's !res.ok just returns).
+    Unreachable Ollama is fine here — _list_loaded() degrades to [] on any
+    failure, so the route answers 200 with whatever catalog it has."""
+    from .conftest import PLAYER_PASSWORD, login
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.get("/api/ai/models")
+    assert r.status_code == 200, r.text
+    assert "models" in r.json()

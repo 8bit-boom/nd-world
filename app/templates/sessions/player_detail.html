@@ -22,10 +22,6 @@
              title="Generates the recap with the model's 'thinking'/reasoning mode — usually better narrative quality, but slower, and it can leave a small model with no room left to actually write the recap.">
         <input type="checkbox" id="recap-think" checked style="width:auto"> 🧠 Thinking
       </label>
-      <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
-             title="Generates the recap with the model's 'thinking'/reasoning mode — usually better narrative quality, but slower, and it can leave a small model with no room left to actually write the recap.">
-        <input type="checkbox" id="recap-think" checked style="width:auto"> 🧠 Thinking
-      </label>
       {% if request.state.user and request.state.user.is_gm %}
       <!-- RAG is GM-only on this page on purpose: _build_rag_context is not
            visibility-filtered, so retrieved lore can include GM-only
@@ -130,6 +126,19 @@ function recapRequestOptions() {
         await new Promise(r => setTimeout(r, RECAP_POLL_MS));
         waited += RECAP_POLL_MS;
         continue;
+      }
+      if (data.failed) {
+        // The generation itself failed (server-side sentinel check — the
+        // job is marked error, never cached as a done recap, and the route
+        // re-serves that error for a short backoff window instead of
+        // minting a doomed new job per poll). Deliberately plain text, not
+        // the "Failed to load recap:" style used for HTTP/network errors:
+        // this isn't a problem with the request, and retrying means
+        // reloading after the underlying issue (usually Ollama) is fixed.
+        // Returning stops the poll loop — the backoff window makes the
+        // next POST a new attempt only after a deliberate reload.
+        status.textContent = 'Recap generation failed: ' + (data.error || 'unknown error — ask the GM to check Background Jobs');
+        return;
       }
       if (!data.recap) {
         status.textContent = data.empty

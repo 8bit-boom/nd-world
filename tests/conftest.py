@@ -99,16 +99,13 @@ def client():
     # (session_id, world_id/user_id) that get reused across tests once the
     # DB is reset above, so a cached recap/answer from one test would
     # otherwise leak into an unrelated later test reusing the "same" id.
-    # The session-log recap's cache is now a staleness marker (a datetime
-    # compared against AudioJob.created_at rows — see app.routers.sessions)
-    # rather than a dict, so "clearing" it means rewinding the marker to a
-    # point no job's created_at can predate.
-    from datetime import datetime
-
+    # The session-log recap needs no reset here anymore: its "cache" is
+    # durable DB state (done AudioJob rows compared against Fact
+    # timestamps and World.recap_content_touch — see
+    # app.routers.sessions.api_session_log_recap), and the DB drop/create
+    # above already resets all of it.
     from app.routers.chronicler import _ask_cache
-    import app.routers.sessions as _sessions_router
     _ask_cache.clear()
-    _sessions_router._session_log_recap_stale_at = datetime.min
     # app.database._app_settings_flags_cache (Wave 4, Speed 4.5) — a single
     # cached snapshot, not a dict, so reset the module attribute directly
     # rather than .clear(); same drop_all/create_all-reuse leak risk as the

@@ -5,7 +5,7 @@ import os
 import shutil
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -1321,6 +1321,18 @@ async def api_summarize_live_transcript_job(session_id: int, request: Request, d
 
 @router.post("/api/sessions/{session_id}/ai/summarize-from-facts")
 async def api_summarize_from_facts(session_id: int, request: Request, db: Session = Depends(get_db)):
+    """Blocking facts→recap weave. Kept as documented API (it's in
+    API_REFERENCE and external scripts may call it), but the Sessions page's
+    own button now uses the /api/session-log/{id}/recap job pipeline
+    instead — a think=True call here is the same Cloudflare-524 trap the
+    job pipeline exists to avoid, and unlike this route it never caches a
+    failure sentinel as a done recap (see app.audio_jobs' session_log_recap
+    branch). generate_chat returns failures as sentinel STRINGS, so this
+    route still must not hand one back as though it were a recap:
+    recap_failed mirrors /api/sessions/ai/summarize-from-audio's identical
+    convention (is_failure_sentinel covers every sentinel family, including
+    the thinking-starved "[empty response ... hidden \"thinking\" ...]"
+    one), and the client hides its Replace/Apply affordance when it's set."""
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
@@ -1337,7 +1349,7 @@ async def api_summarize_from_facts(session_id: int, request: Request, db: Sessio
         [f.content for f in facts], model=_recap_model(""), extra_instructions=_recap_instructions_for_world(world),
         think=_think_from_body(body),
     )
-    return {"recap": recap}
+    return {"recap": recap, "recap_failed": _ai_module.is_failure_sentinel(recap)}
 
 
 # ── Player-facing session log (read-only, AI-synthesized) ───────────────────
@@ -1381,33 +1393,40 @@ def session_log_detail(session_id: int, request: Request, db: Session = Depends(
 # hung the Session Log page on "Loading recap…" and tripped Cloudflare
 # Tunnel's ~100s timeout (HTTP 524) for the first viewer of every cache
 # window. The job row itself is now the cache: the latest done job for
-# (session, audience) whose created_at postdates the staleness marker below
-# IS the fresh cached recap, re-parsed from result_json on every request —
-# no in-process dict and no separate TTL. Fact rows (this recap's only
-# content input) already had EXACT invalidation via clear_session_log_
-# recap_cache (routers.facts on every create/edit/delete, and routers.ai's
-# recap-instructions save for the other input the recap bakes in); that
-# function now just moves the staleness marker forward instead of clearing
-# a dict, which invalidates every existing done job at once.
+# (session, audience, model/think/RAG config) whose created_at postdates
+# BOTH durable staleness watermarks below IS the fresh cached recap,
+# re-parsed from result_json on every request — no in-process dict, no TTL,
+# and nothing that a server restart can rewind.
+#
+# Freshness is computed from the DATABASE, not a module global (the in-process
+# marker this replaced had three leak-grade flaws: a restart rewound it to
+# "nothing stale", resurrecting pre-restart fact-hiding edits to players; it
+# was world-blind, so a World B fact edit invalidated World A's recaps; and
+# the MCP fact tools never bumped it at all, so phone-logged facts went
+# stale-unnoticed). A done or in-flight row is fresh only when its created_at
+# is >= the session's newest Fact timestamp — max(coalesce(updated_at,
+# created_at)) over that session's rows, so a create, an edit, OR an MCP
+# write invalidates exactly the sessions whose content changed — AND >= the
+# world's World.recap_content_touch watermark (recap-instructions saves and
+# fact DELETIONS, the two recap-affecting mutations that leave no Fact row
+# behind to timestamp; NULL = never touched = epoch). NULL timestamps on
+# legacy rows count as epoch, so a pre-upgrade done recap stays fresh until
+# real content changes under it.
 # Keyed by (session_id, audience) — Fact visibility for this route is purely
 # GM/non-GM (no per-player entity_player_access-style individual sharing),
 # so every non-GM caller for a given session legitimately gets the same
 # answer and can safely share one job's result.
-_session_log_recap_stale_at = datetime.min
 
-
-def clear_session_log_recap_cache() -> None:
-    # datetime.utcnow(), not time.time()/monotonic: the thing it's compared
-    # against is AudioJob.created_at, which database models default from
-    # datetime.utcnow() — a NAIVE UTC datetime. Mixing clocks is a trap
-    # here: naive-utcnow().timestamp() reinterprets the value as LOCAL time
-    # (so it's off by the UTC offset on any non-UTC host), and monotonic()
-    # shares no epoch with wall-clock datetimes at all. Two naive-UTC
-    # datetimes compare safely directly, so the marker stays in that same
-    # space. Module-level attribute (reassigned, not mutated) so tests can
-    # reset it — same convention as the old dict cache this replaces.
-    global _session_log_recap_stale_at
-    _session_log_recap_stale_at = datetime.utcnow()
+# How long a terminally-errored recap job suppresses new job creation for
+# the same (session, audience, config) key. Without this window, the poll
+# loop of a page whose recap just failed (Ollama down, say) would mint a
+# brand-new job on every 4s poll — a pile of identical doomed jobs, each
+# holding the semaphore for its full retry timeout. Inside the window the
+# route answers {"failed": true, "error": ...} (the poll JS stops and shows
+# it, so the loop doesn't keep asking); a genuine Retry comes from the poll
+# having stopped — a page reload after the window passes — or an explicit
+# affordance added later, never from the poll loop itself.
+_RECAP_ERROR_BACKOFF_SECONDS = 60
 
 
 @router.post("/api/session-log/{session_id}/recap")
@@ -1448,6 +1467,25 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     # surface default.
     requested_model = model or _recap_model("")
 
+    # The durable staleness cutoff described in the comment block above:
+    # max(this session's newest Fact timestamp, the world's recap-content
+    # watermark). Naive-UTC datetimes throughout (AudioJob.created_at,
+    # Fact.created_at/updated_at and World.recap_content_touch all default
+    # from datetime.utcnow()), so they compare against each other directly.
+    # max(coalesce(updated_at, created_at)) treats a NULL updated_at (rows
+    # from before that column existed) as the fact's own creation time, and
+    # SQL's max() ignores the NULL a fully-timestamp-less row would produce
+    # — such a row can only exist in a hand-mangled database.
+    newest_fact_ts = (
+        db.query(func.max(func.coalesce(Fact.updated_at, Fact.created_at)))
+        .filter(Fact.game_session_id == session_id)
+        .scalar()
+    )
+    content_cutoff = max(
+        newest_fact_ts or datetime.min,
+        (world.recap_content_touch if world else None) or datetime.min,
+    )
+
     def _session_log_recap_q(extra):
         # The model/think/RAG filters exist because a recap generated with a
         # different configuration is a DIFFERENT artifact: without them, the
@@ -1455,15 +1493,27 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
         # forever no matter what the picker says next (the done rows are
         # never deleted and stay "fresh" until a fact edit). NULL — a
         # pre-feature row — reads as the same defaults _run_job itself
-        # applies (think=True, use_rag=False), so old rows still match
-        # default requests.
+        # applies (think=True, use_rag=False, limits at _DEFAULT_RAG_*), so
+        # old rows still match default requests. The RAG limits participate
+        # too: a recap woven from 15 retrieved entities is not the artifact
+        # a request for 50 asks for — both sides normalize an unset/NULL
+        # limit to the same default _run_job would apply at run time, so
+        # "blank field" and "pre-feature row" compare equal. created_at >=
+        # the cutoff IS the durable staleness rule (see above) — a done or
+        # in-flight row older than the newest content mutation is simply
+        # not returned by any lookup below.
         return extra.filter(
             AudioJob.purpose == "session_log_recap",
             AudioJob.game_session_id == session_id,
             AudioJob.audience == audience,
+            AudioJob.created_at >= content_cutoff,
             func.coalesce(AudioJob.model, "") == requested_model,
             func.coalesce(AudioJob.think, True) == think,
             func.coalesce(AudioJob.use_rag, False) == use_rag,
+            func.coalesce(AudioJob.rag_entity_limit, _audio_jobs._DEFAULT_RAG_ENTITY_LIMIT)
+            == (rag_entity_limit if rag_entity_limit is not None else _audio_jobs._DEFAULT_RAG_ENTITY_LIMIT),
+            func.coalesce(AudioJob.rag_notes_limit, _audio_jobs._DEFAULT_RAG_NOTES_LIMIT)
+            == (rag_notes_limit if rag_notes_limit is not None else _audio_jobs._DEFAULT_RAG_NOTES_LIMIT),
         )
 
     # Fresh-cache check BEFORE the cooldown gate: serving an already-done
@@ -1475,7 +1525,7 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     done = _session_log_recap_q(
         db.query(AudioJob).filter(AudioJob.status == "done")
     ).order_by(AudioJob.created_at.desc(), AudioJob.id.desc()).first()
-    if done and done.created_at and done.created_at >= _session_log_recap_stale_at:
+    if done:
         try:
             return json.loads(done.result_json or "")
         except ValueError:
@@ -1487,12 +1537,31 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     # config filters in _session_log_recap_q apply here too, deliberately:
     # a request for a different model/think/RAG must not sit pending behind
     # someone else's artifact — it starts its own (dedup within the SAME
-    # configuration is unaffected).
+    # configuration is unaffected). The freshness cutoff applies equally:
+    # a job started before the last fact edit is summarizing stale facts,
+    # so waiting on it would serve the wrong content — a new job supersedes
+    # it (the old one finishes harmlessly and is never served).
     in_flight = _session_log_recap_q(
         db.query(AudioJob).filter(AudioJob.status.in_(_audio_jobs.IN_PROGRESS_STATUSES))
     ).order_by(AudioJob.created_at.desc(), AudioJob.id.desc()).first()
     if in_flight:
         return {"pending": True, "job_id": in_flight.id}
+
+    # A terminally-errored job inside the backoff window (see
+    # _RECAP_ERROR_BACKOFF_SECONDS) answers the poll with its error instead
+    # of minting a doomed replacement every 4 seconds. Placed AFTER the
+    # fresh/in-flight checks (a newer done/running job always wins over an
+    # older error) and BEFORE the cooldown/creation path (this response
+    # generates nothing, so it must consume no cooldown). The player_detail
+    # poll JS treats data.failed as terminal for the page load and shows
+    # the error text — a retry is a deliberate reload, not a loop.
+    recent_error = _session_log_recap_q(
+        db.query(AudioJob).filter(AudioJob.status == "error")
+    ).filter(
+        AudioJob.created_at >= datetime.utcnow() - timedelta(seconds=_RECAP_ERROR_BACKOFF_SECONDS)
+    ).order_by(AudioJob.created_at.desc(), AudioJob.id.desc()).first()
+    if recent_error:
+        return {"failed": True, "error": recent_error.error or "Recap generation failed."}
 
     # Cooldown only at actual job-CREATION time: a POST that finds a pending
     # job (the common reload-while-generating case) just latches onto it,

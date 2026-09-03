@@ -325,6 +325,12 @@ async def test_summarize_transcript_widens_configured_num_predict_when_thinking(
 
 @pytest.mark.asyncio
 async def test_summarize_transcript_no_num_predict_override_when_unconfigured(monkeypatch):
+    """Unconfigured num_predict means no OVERRIDE reaches the call (no
+    widening, no per-call cap of its own) — but the recap-family
+    degeneration guard now supplies its default here too
+    (_recap_num_predict_default_if_unbounded, same rule as
+    summarize_session_from_facts), so an unbounded model can't loop
+    forever on a transcript summary either."""
     monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
     seen_options = []
 
@@ -334,7 +340,7 @@ async def test_summarize_transcript_no_num_predict_override_when_unconfigured(mo
 
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
     await ai_module.summarize_transcript("a short transcript")
-    assert seen_options == [None]
+    assert seen_options == [{"num_predict": ai_module._RECAP_NUM_PREDICT_DEFAULT}]
 
 
 @pytest.mark.asyncio
@@ -375,9 +381,10 @@ async def test_summarize_session_from_facts_widens_configured_num_predict_when_t
 
 @pytest.mark.asyncio
 async def test_expand_recap_notes_no_ctx_override_when_unconfigured_and_short(monkeypatch):
-    """No configured num_predict and no long input means nothing needs
-    protecting — options stay exactly as _thinking_num_predict_override's
-    own no-op case, matching pre-2.2 behavior for the common case."""
+    """No configured num_predict and no long input means no num_ctx
+    override is needed — the only key in the options is the degeneration
+    guard's default num_predict (_recap_num_predict_default_if_unbounded,
+    which now covers expand_recap_notes too), never a num_ctx."""
     monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
     seen_options = []
 
@@ -387,7 +394,7 @@ async def test_expand_recap_notes_no_ctx_override_when_unconfigured_and_short(mo
 
     monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
     await ai_module.expand_recap_notes("terse notes")
-    assert seen_options == [None]
+    assert seen_options == [{"num_predict": ai_module._RECAP_NUM_PREDICT_DEFAULT}]
 
 
 @pytest.mark.asyncio

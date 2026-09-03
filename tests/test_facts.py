@@ -9,6 +9,7 @@ import types
 import pytest
 
 from app import ai as ai_module
+from app import audio_jobs as audio_jobs_module
 from app.database import SessionLocal
 from app.models import AudioJob, Fact, GameSession
 
@@ -163,7 +164,7 @@ def test_api_facts_bulk_saves_reviewed_drafts(client, seed):
         "game_session_id": session_id,
     })
     assert r.status_code == 200
-    assert r.json()["created"] == 2
+    assert r.json() == {"created": 2, "skipped_duplicates": 0}
 
     db = SessionLocal()
     try:
@@ -180,6 +181,213 @@ def test_player_cannot_call_facts_api(client, seed):
     assert r.status_code == 403
     r = client.post("/api/facts/bulk", json={"facts": [{"content": "x", "visible_to_players": True}]})
     assert r.status_code == 403
+
+
+# ── World scoping on edit/delete (A7) ─────────────────────────────────────────
+# The list page only shows the active world's facts, but the routes used to
+# accept a bare fact id from ANY world — a GM with two world tabs open could
+# edit/remove a fact belonging to the other world. Same 404 boundary
+# /facts/new already implies by writing into the active world.
+
+def test_fact_edit_and_delete_404_for_other_worlds_fact(client, seed):
+    db = SessionLocal()
+    try:
+        f = Fact(world_id=seed.world_b.id, content="World B fact", visible_to_players=True)
+        db.add(f)
+        db.commit()
+        db.refresh(f)
+        fact_id = f.id
+    finally:
+        db.close()
+
+    _login_gm_in(client, seed, seed.world_a)
+    assert client.post(f"/facts/{fact_id}/edit", data={"content": "hijack"}).status_code == 404
+    assert client.post(f"/facts/{fact_id}/delete").status_code == 404
+    db = SessionLocal()
+    try:
+        assert db.get(Fact, fact_id).content == "World B fact"  # untouched
+    finally:
+        db.close()
+
+
+def test_facts_page_forms_carry_the_world_query_param(client, seed):
+    """The edit/delete form actions must go through |wq (the active-world
+    query param) exactly like /facts/new does, so a submit from a page
+    loaded under ?w=world-b targets world B — the server-side scoping above
+    is the enforcement, this is the client half that makes the common path
+    line up with it."""
+    _login_gm(client, seed)
+    client.post("/facts/new", data={"content": "A fact for the form check", "visible_to_players": "1"})
+    html = client.get("/facts").text
+    # The qualified actions carry ?w=<slug>; the bare (unqualified) forms
+    # are gone — a submit from ?w=world-b stays pinned to world B.
+    assert 'action="/facts/1/edit?w=' in html
+    assert 'action="/facts/1/delete?w=' in html
+    assert 'action="/facts/1/edit"' not in html
+    assert 'action="/facts/1/delete"' not in html
+
+
+# ── Bulk duplicate skipping + the consumed-draft marker (A7) ─────────────────
+
+def test_api_facts_bulk_skips_duplicates_of_existing_and_intra_payload(client, seed):
+    """Normalized-key dedupe on Confirm & Save: re-saving a restored draft
+    (or double-confirming) used to silently double-write every fact. The
+    key is the same _normalized_fact_key the parser itself dedupes chunks
+    by — case/punctuation-blind, so "Elyra met the party." vs "elyra met
+    the party" is still the same fact."""
+    _login_gm(client, seed)
+    r = client.post("/api/facts/bulk", json={"facts": [
+        {"content": "Elyra met the party.", "visible_to_players": True},
+        {"content": "elyra met the party.", "visible_to_players": False},  # intra-payload dup
+        {"content": "A genuinely new fact", "visible_to_players": True},
+    ]})
+    assert r.json() == {"created": 2, "skipped_duplicates": 1}
+
+    # Second save of the SAME draft: both contents now exist.
+    r2 = client.post("/api/facts/bulk", json={"facts": [
+        {"content": "Elyra met the party.", "visible_to_players": True},
+        {"content": "A genuinely new fact", "visible_to_players": True},
+    ]})
+    assert r2.json() == {"created": 0, "skipped_duplicates": 2}
+
+    db = SessionLocal()
+    try:
+        assert db.query(Fact).filter(Fact.world_id == seed.world_a.id).count() == 2
+    finally:
+        db.close()
+
+
+def test_api_facts_bulk_marks_parse_job_consumed_and_last_parse_skips_it(client, seed):
+    """bulk with a job_id flags that parse's draft as consumed, and
+    /api/facts/last-parse skips consumed rows — the restore/re-save loop
+    that duplicated facts is closed end to end."""
+    db = SessionLocal()
+    try:
+        gs = GameSession(world_id=seed.world_a.id, title="Session 1", session_num=1)
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        session_id = gs.id
+        consumed = AudioJob(world_id=seed.world_a.id, purpose="facts_parse", filename="Facts",
+                            status="done", result_json='[{"content": "already saved", "visible_to_players": true}]',
+                            draft_consumed=True)
+        unconsumed = AudioJob(world_id=seed.world_a.id, purpose="facts_parse", filename="Facts",
+                              status="done", result_json='[{"content": "fresh draft", "visible_to_players": false}]',
+                              game_session_id=session_id)
+        db.add_all([consumed, unconsumed])
+        db.commit()
+        consumed.created_at = _dt.datetime(2026, 1, 2, 12, 0, 0)
+        unconsumed.created_at = _dt.datetime(2026, 1, 1, 12, 0, 0)  # OLDER, but the only unconsumed one
+        db.commit()
+        job_to_consume_id = unconsumed.id
+    finally:
+        db.close()
+
+    _login_gm(client, seed)
+    # last-parse prefers the unconsumed row even though a newer consumed
+    # one exists, and rides its game_session_id along (the page preselects
+    # the session the draft was parsed for).
+    r = client.get("/api/facts/last-parse")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["job_id"] == job_to_consume_id
+    assert data["game_session_id"] == session_id
+    assert data["facts"] == [{"content": "fresh draft", "visible_to_players": False}]
+
+    # Saving that draft WITH its job_id consumes it...
+    r2 = client.post("/api/facts/bulk", json={
+        "facts": [{"content": "fresh draft", "visible_to_players": False}],
+        "job_id": job_to_consume_id,
+    })
+    assert r2.json() == {"created": 1, "skipped_duplicates": 0}
+    db = SessionLocal()
+    try:
+        assert db.get(AudioJob, job_to_consume_id).draft_consumed is True
+    finally:
+        db.close()
+
+    # ...so now nothing is restorable: every done parse is consumed.
+    assert client.get("/api/facts/last-parse").status_code == 404
+
+
+def test_api_facts_bulk_ignores_foreign_or_bogus_job_ids(client, seed):
+    """A job_id that isn't a facts_parse job of THIS world is ignored — the
+    facts themselves still save. Flagging another world's parse would hide
+    that world's restorable draft behind this world's save."""
+    db = SessionLocal()
+    try:
+        other_world_job = AudioJob(world_id=seed.world_b.id, purpose="facts_parse", filename="Facts",
+                                   status="done", result_json="[]")
+        other_purpose_job = AudioJob(world_id=seed.world_a.id, purpose="session_recap", filename="x",
+                                     status="done")
+        db.add_all([other_world_job, other_purpose_job])
+        db.commit()
+        other_world_job_id, other_purpose_job_id = other_world_job.id, other_purpose_job.id
+    finally:
+        db.close()
+
+    _login_gm(client, seed)
+    r = client.post("/api/facts/bulk", json={
+        "facts": [{"content": "A fact", "visible_to_players": True}],
+        "job_id": other_world_job_id,
+    })
+    assert r.json()["created"] == 1
+    r2 = client.post("/api/facts/bulk", json={
+        "facts": [{"content": "Another fact", "visible_to_players": True}],
+        "job_id": other_purpose_job_id,
+    })
+    assert r2.json()["created"] == 1
+    r3 = client.post("/api/facts/bulk", json={
+        "facts": [{"content": "Yet another", "visible_to_players": True}],
+        "job_id": "not-a-number",
+    })
+    assert r3.json()["created"] == 1
+    db = SessionLocal()
+    try:
+        assert db.get(AudioJob, other_world_job_id).draft_consumed is None
+        assert db.get(AudioJob, other_purpose_job_id).draft_consumed is None
+    finally:
+        db.close()
+
+
+def test_api_facts_parse_accepts_model_think_and_rag_options(client, seed, monkeypatch):
+    """True parity with parse-job now: the sync route honors the same
+    model/think/RAG body options (validated by the same helper) and builds
+    RAG lore with the same _build_rag_context call the job runner uses,
+    instead of silently ignoring them."""
+    captured = {}
+
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+        captured["model"] = model
+        captured["think"] = think
+        captured["world_context"] = world_context
+        return []
+
+    def fake_rag(world_id, query, entity_limit, notes_limit, **kwargs):
+        captured["rag"] = (world_id, entity_limit, notes_limit)
+        return "- [npc] Elyra: an enchanter"
+
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+    monkeypatch.setattr(audio_jobs_module, "_build_rag_context", fake_rag)
+
+    _login_gm(client, seed)
+    r = client.post("/api/facts/parse", json={
+        "text": "met Elyra", "model": "gemma4:26b", "think": True,
+        "use_rag": True, "rag_entity_limit": 7, "rag_notes_limit": 2,
+    })
+    assert r.status_code == 200, r.text
+    assert captured["model"] == "gemma4:26b"
+    assert captured["think"] is True
+    assert captured["world_context"] == "- [npc] Elyra: an enchanter"
+    assert captured["rag"] == (seed.world_a.id, 7, 2)
+
+    # No RAG → no lore query at all; limits validate the same way too.
+    captured.clear()
+    r2 = client.post("/api/facts/parse", json={"text": "met Elyra", "use_rag": False})
+    assert r2.status_code == 200
+    assert captured["world_context"] == ""
+    assert "rag" not in captured
+    assert client.post("/api/facts/parse", json={"text": "x", "rag_entity_limit": -1}).status_code == 400
 
 
 # ── POST /api/facts/parse-job + GET /api/facts/last-parse ───────────────────
@@ -359,6 +567,49 @@ def test_facts_page_poll_resets_deadline_on_progress(client, seed):
     assert ("Still parsing in the background — check Background Jobs (it keeps running even with this tab closed). "
             "When it finishes, use Restore last parse to load the draft.") in html
     assert "Timed out waiting for the parse job" not in html  # the old "Failed:"-worded throw is gone
+
+
+def test_facts_page_poll_treats_transient_fetch_failures_as_retries(client, seed):
+    """A3: a poll that throws is a NETWORK problem, not a parse verdict —
+    the loop backs off exponentially (3s → 6s → … capped at 30s), survives
+    up to 10 consecutive failures, resets the ladder on any successful
+    poll, and only a job status of "error" produces a "Failed:" message.
+    Also: the parse/restore/draft controls disable while a poll owns the
+    page, re-enabled on every exit, and a second parse can't start."""
+    _login_gm(client, seed)
+    html = client.get("/facts").text
+    # The transient-retry ladder.
+    assert "MAX_CONSECUTIVE_FETCH_FAILURES" in html
+    assert "MAX_BACKOFF_MS = 30000" in html
+    assert "POLL_MS * Math.pow(2, fetchFailures)" in html
+    assert "fetchFailures = 0" in html  # a successful poll resets the ladder
+    assert "retrying in" in html  # the backoff status line
+    # Only the runner's own terminal verdict fails the parse.
+    assert "if (job.status === 'error') throw new Error(job.error" in html
+    # The soft give-up wording after 10 consecutive failures.
+    assert "the parse itself keeps running in the background" in html
+    # Busy-state: disable restore + draft controls around the poll, and
+    # guard the entry so a second parse can't stack onto a running one.
+    assert "_setParseBusyControls(true)" in html
+    assert "_setParseBusyControls(false)" in html
+    assert "if (btn.disabled) return;" in html
+    assert "'restore-parse-btn', 'draft-add-btn', 'draft-save-btn'" in html
+
+
+def test_facts_page_wires_job_id_consumption_and_restore_session_preselect(client, seed):
+    """A7 wiring: the draft save sends the draft's source job_id (so the
+    server can mark it consumed), the poll/restore track that id, and
+    restoreLastParse preselects the session the parse ran for plus shows
+    its creation date."""
+    _login_gm(client, seed)
+    html = client.get("/facts").text
+    assert "let lastParseJobId = null;" in html
+    assert "lastParseJobId = jobId;" in html
+    assert "lastParseJobId = data.job_id || null;" in html
+    assert "job_id: lastParseJobId" in html
+    # Restore preselects the session and shows when the draft was parsed.
+    assert "data.game_session_id" in html
+    assert "toLocaleString()" in html
 
 
 def test_facts_page_ships_recap_templates(client, seed):

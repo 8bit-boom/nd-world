@@ -103,7 +103,7 @@
     {% for f in facts %}
     <div class="en-note{% if not f.visible_to_players %} en-hidden{% endif %}" style="background:var(--bg2)">
       <div class="en-note-content rendered-md" id="fact-view-{{ f.id }}">{{ f.content | md | safe }}</div>
-      <form id="fact-edit-{{ f.id }}" method="post" action="/facts/{{ f.id }}/edit" style="display:none;margin-top:.4rem">
+      <form id="fact-edit-{{ f.id }}" method="post" action="{{ ('/facts/' ~ f.id ~ '/edit')|wq }}" style="display:none;margin-top:.4rem">
         <textarea name="content" rows="2" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px" data-fmt>{{ f.content }}</textarea>
         <div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem">
           <select name="game_session_id">
@@ -125,7 +125,7 @@
         {% endif %}
         <span class="en-note-vis">{% if f.visible_to_players %}👁 visible to players{% else %}🔒 GM only{% endif %}</span>
         <button type="button" class="en-btn" onclick="toggleFactEdit({{ f.id }})">Edit</button>
-        <form action="/facts/{{ f.id }}/delete" method="post" class="en-inline-form" onsubmit="return confirm('Delete this fact?')">
+        <form action="{{ ('/facts/' ~ f.id ~ '/delete')|wq }}" method="post" class="en-inline-form" onsubmit="return confirm('Delete this fact?')">
           <button type="submit" class="en-btn en-btn-del">Delete</button>
         </form>
       </div>
@@ -301,6 +301,13 @@ function loadParsedFacts(facts) {
   renderDraft();
 }
 
+// The job id of the parse the CURRENT draft came from — set by the poll
+// loop below (the job it started) and by restoreLastParse (the job whose
+// draft was restored). Sent along with /api/facts/bulk so the server can
+// flag that job's draft as consumed and "Restore last parse" stops
+// offering a draft that was already reviewed and saved.
+let lastParseJobId = null;
+
 // Polls a facts_parse job until it reaches a terminal status, then loads
 // its draft. The parse itself runs server-side as a durable background job
 // (see app/audio_jobs.py create_facts_parse_job): a long recap against a
@@ -308,31 +315,63 @@ function loadParsedFacts(facts) {
 // will hold one request open, which is exactly what lost the GM's whole
 // parse (HTTP 524, nothing kept) when this was a synchronous POST.
 //
-// The loop NEVER reports "Failed" while the job is merely slow. Every poll
-// reads the job's chunk_current/chunk_total progress (the same fields the
-// Background Jobs page renders as "part X/Y"), and any CHANGE resets the
-// give-up deadline, so a healthily progressing parse is polled
-// indefinitely — the old unconditional ~10-minute cap gave up with a
-// "Failed:" banner on exactly such a job (26 parts, 40+ minutes, still
-// advancing). Only a job showing NO progress for ~10 minutes (200 polls ×
-// 3s), or the ~2h absolute ceiling, ends the loop — and then the status is
-// a soft "it keeps running without this tab" note with the Parse button
-// back, never a failure: the job is still alive server-side, and "Restore
-// last parse" picks up its draft whenever it finishes.
+// The loop NEVER reports "Failed" while the job is merely slow or the
+// connection merely flaky. Two separate ladders:
+// - SLOW JOB: every poll reads the job's chunk_current/chunk_total progress
+//   (the same fields the Background Jobs page renders as "part X/Y"), and
+//   any CHANGE resets the give-up deadline, so a healthily progressing
+//   parse is polled indefinitely — the old unconditional ~10-minute cap
+//   gave up with a "Failed:" banner on exactly such a job (26 parts, 40+
+//   minutes, still advancing). Only a job showing NO progress for ~10
+//   minutes (200 polls × 3s), or the ~2h absolute ceiling, ends the loop —
+//   and then the status is a soft "it keeps running without this tab" note
+//   with the Parse button back, never a failure: the job is still alive
+//   server-side, and "Restore last parse" picks up its draft whenever it
+//   finishes.
+// - FLAKY CONNECTION: a poll that throws (a network blip, one bad proxy
+//   hop, a transient 5xx) is NOT a parse failure — the job keeps running
+//   server-side regardless. Consecutive poll failures back off
+//   exponentially (3s → 6s → 12s → … capped at 30s) up to 10 in a row
+//   before giving up POLLING with another soft note; a single successful
+//   poll resets the ladder. ONLY a job status of "error" — the runner's
+//   own terminal verdict — produces a "Failed: <job.error>" here.
 async function pollFactsParseJob(jobId, status) {
   const POLL_MS = 3000;
   const MAX_IDLE_POLLS = 200;              // ~10 min without any progress signal
   const HARD_CAP_MS = 2 * 60 * 60 * 1000;  // 2h absolute ceiling even if progress keeps coming
+  const MAX_CONSECUTIVE_FETCH_FAILURES = 10;
+  const MAX_BACKOFF_MS = 30000;
   let lastChunkCurrent = null;
   let idlePolls = 0;
+  let fetchFailures = 0;
+  let nextDelayMs = POLL_MS;
   const startedAt = Date.now();
   for (let poll = 1; ; poll++) {
     status.textContent = `Parsing in background… (poll ${poll})`;
-    await new Promise((r) => setTimeout(r, POLL_MS));
-    const res = await fetch(`/api/audio-jobs/${jobId}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const job = await res.json();
+    await new Promise((r) => setTimeout(r, nextDelayMs));
+    let job;
+    try {
+      const res = await fetch(`/api/audio-jobs/${jobId}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      job = await res.json();
+    } catch (e) {
+      // Transient poll failure — see the FLAKY CONNECTION ladder above.
+      // Deliberately NOT a throw: one dropped poll used to land here as
+      // "Failed:" while the job was still happily running server-side.
+      fetchFailures++;
+      if (fetchFailures >= MAX_CONSECUTIVE_FETCH_FAILURES) {
+        status.textContent = `Couldn't reach the server after ${fetchFailures} tries (${e.message}) — the parse itself keeps running in the background. Use Restore last parse once it finishes.`;
+        return;  // soft give-up: polling, not the job
+      }
+      nextDelayMs = Math.min(MAX_BACKOFF_MS, POLL_MS * Math.pow(2, fetchFailures));
+      status.textContent = `Poll failed (${e.message}) — retrying in ${Math.round(nextDelayMs / 1000)}s…`;
+      continue;
+    }
+    // A successful poll resets the backoff ladder entirely.
+    fetchFailures = 0;
+    nextDelayMs = POLL_MS;
     if (job.status === 'done') {
+      lastParseJobId = jobId;
       let facts = [];
       try { facts = JSON.parse(job.result_json || '[]'); } catch (e) { facts = []; }
       loadParsedFacts(facts);
@@ -402,13 +441,33 @@ function parseModelOptions() {
   };
 }
 
+// Everything on this panel that must go quiet while a parse poll loop owns
+// the page state: the Parse button itself (disabled by parseDraftFromRecap
+// below) plus "Restore last parse" and the draft controls — restoring a
+// draft or adding rows mid-poll would race the poll's own loadParsedFacts
+// call and one of the two drafts would silently win. Re-enabled in
+// parseDraftFromRecap's finally, which EVERY exit path (done, error,
+// soft give-up, thrown poll failure) runs through.
+function _setParseBusyControls(disabled) {
+  ['restore-parse-btn', 'draft-add-btn', 'draft-save-btn'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = disabled;
+  });
+}
+
 async function parseDraftFromRecap() {
+  const btn = document.getElementById('parse-btn');
+  // A poll loop already owns the panel (the button is only re-enabled in
+  // this function's finally) — a double-click, or the Background Jobs
+  // hand-off below firing while a manual parse is still polling, must not
+  // stack a second job on top of the first.
+  if (btn.disabled) return;
   const text = document.getElementById('recap-input').value.trim();
   if (!text) return;
-  const btn = document.getElementById('parse-btn');
   const status = document.getElementById('parse-status');
   const sessionId = document.getElementById('recap-session').value;
   btn.disabled = true;
+  _setParseBusyControls(true);
   status.textContent = 'Starting background parse…';
   try {
     const res = await fetch('/api/facts/parse-job', {
@@ -422,6 +481,7 @@ async function parseDraftFromRecap() {
     status.textContent = 'Failed: ' + e.message;
   } finally {
     btn.disabled = false;
+    _setParseBusyControls(false);
   }
 }
 
@@ -430,8 +490,13 @@ document.getElementById('parse-btn').addEventListener('click', parseDraftFromRec
 // The parsed draft is persisted on the job row server-side (AudioJob.
 // result_json), so a reload — or a parse that finished after the tab was
 // closed — doesn't throw the review work away; this just re-fetches it.
+// Jobs whose draft was already confirmed via Confirm & Save are skipped
+// server-side (draft_consumed), so this can never resurrect a saved draft
+// for a second round of duplicates.
 async function restoreLastParse() {
   const status = document.getElementById('parse-status');
+  const btn = document.getElementById('restore-parse-btn');
+  btn.disabled = true;
   try {
     const res = await fetch('/api/facts/last-parse');
     if (res.status === 404) {
@@ -440,10 +505,25 @@ async function restoreLastParse() {
     }
     if (!res.ok) throw await ndApiErrorFrom(res);
     const data = await res.json();
+    lastParseJobId = data.job_id || null;
+    // Preselect the session the parse was run for (when it carried one and
+    // it's still in the picker) — the natural next step after a restore is
+    // Confirm & Save, and the facts should land on the session the GM
+    // originally picked, not on "— none —" by default. Same guard the
+    // Background Jobs hand-off below uses against a deleted session.
+    if (data.game_session_id) {
+      const sel = document.getElementById('recap-session');
+      if ([...sel.options].some((o) => o.value === String(data.game_session_id))) {
+        sel.value = String(data.game_session_id);
+      }
+    }
     loadParsedFacts(data.facts || []);
-    status.textContent = `Restored ${draftFacts.length} drafted fact(s) from your last parse.`;
+    const when = data.created_at ? ` (${new Date(data.created_at).toLocaleString()})` : '';
+    status.textContent = `Restored ${draftFacts.length} drafted fact(s) from your last parse${when}.`;
   } catch (e) {
     status.textContent = 'Failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -481,10 +561,21 @@ document.getElementById('draft-save-btn').addEventListener('click', async () => 
   try {
     const res = await fetch('/api/facts/bulk', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ facts: clean, game_session_id: sessionId || null }),
+      // job_id (when the draft came from a parse job) lets the server flag
+      // that job's draft as consumed so "Restore last parse" stops offering
+      // it — restoring and re-saving the same draft was a silent duplicate
+      // of every fact in it. The status line below also surfaces any rows
+      // the server skipped as duplicates of already-logged facts.
+      body: JSON.stringify({ facts: clean, game_session_id: sessionId || null, job_id: lastParseJobId }),
     });
     if (!res.ok) throw await ndApiErrorFrom(res);
+    const data = await res.json();
     window.location.reload();
+    if (data.skipped_duplicates) {
+      // The reload races this text; set it anyway so a slow reload still
+      // shows the GM why fewer rows landed than they confirmed.
+      status.textContent = `Saved ${data.created} fact(s); skipped ${data.skipped_duplicates} duplicate(s) of facts already logged.`;
+    }
   } catch (e) {
     status.textContent = 'Failed: ' + e.message;
     btn.disabled = false;

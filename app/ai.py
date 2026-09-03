@@ -1575,10 +1575,22 @@ async def expand_recap_notes(notes: str, model: str = "", think: bool = True, ex
     num_predict exists to widen) — gating on bare `think` instead would
     make this fire on nearly every thinking call regardless of input
     length, since the headroom alone already exceeds the unconfigured
-    assumed default context."""
+    assumed default context.
+
+    Finally the degeneration guard applies here too
+    (_recap_num_predict_default_if_unbounded): when nothing else bounded the
+    generation, _RECAP_NUM_PREDICT_DEFAULT caps it — an expanded recap is
+    the same few-paragraphs-length prose a facts recap is, so the same
+    reported loop-forever failure mode applies here unchanged."""
     system = _with_instructions(_EXPAND_NOTES_SYSTEM, extra_instructions)
-    opts = dict(_thinking_num_predict_override(think))
-    reserve = _CONTEXT_FIT_RESERVED_TOKENS + (_THINKING_HEADROOM_TOKENS if "num_predict" in opts else 0)
+    thinking_opts = _thinking_num_predict_override(think)
+    opts = dict(thinking_opts)
+    _recap_num_predict_default_if_unbounded(opts)
+    # `thinking_opts` (not `opts`, which the guard just ensured carries a
+    # num_predict one way or another) keeps the reserve gated on the
+    # THINKING widening actually firing, same semantics as
+    # summarize_session_from_facts above.
+    reserve = _CONTEXT_FIT_RESERVED_TOKENS + (_THINKING_HEADROOM_TOKENS if thinking_opts else 0)
     opts.update(_ctx_override_if_needed(system + notes, reserve))
     return await generate_chat(
         [{"role": "user", "content": notes}], system=system, model=model,
@@ -1614,6 +1626,29 @@ _SUMMARIZE_FACTS_SYSTEM = (
 _RECAP_NUM_PREDICT_DEFAULT = 1024
 
 
+def _recap_num_predict_default_if_unbounded(opts: dict) -> None:
+    """Degeneration guard (see _RECAP_NUM_PREDICT_DEFAULT): set the default
+    cap on `opts` in place when NOTHING else supplied a num_predict — not
+    the caller (an opts["num_predict"] that arrived via a per-call
+    `options=` dict, condense_recap's max_tokens hard cap, or the expanded-
+    thinking rung), not _thinking_num_predict_override's widening of a
+    configured value, and not the GM's own Settings > System "Max output
+    tokens" (checked here so a configured cap still reaches Ollama through
+    _chat_kwargs' options merge unmolested — clobbering a lower configured
+    value with this default would silently RAISE the GM's cap, and the
+    widened configured+headroom value legitimately wants to win over both).
+    The configured-value test mirrors _thinking_num_predict_override's own
+    "is a bounded num_predict configured?" check exactly. Shared by every
+    recap-family function (summarize_session_from_facts, expand_recap_notes,
+    condense_recap, summarize_transcript) so the four call sites can never
+    drift apart on when the fallback applies."""
+    if "num_predict" in opts:
+        return
+    configured = effective_ollama_options().get("num_predict")
+    if not configured or configured < 0:
+        opts["num_predict"] = _RECAP_NUM_PREDICT_DEFAULT
+
+
 async def summarize_session_from_facts(facts: list[str], model: str = "", extra_instructions: str = "", think: bool = True, world_context: str = "") -> str:
     """Weave a list of discrete session facts (see the Facts feature, which
     logs these per-session) into a readable narrative recap. `extra_instructions`
@@ -1641,27 +1676,18 @@ async def summarize_session_from_facts(facts: list[str], model: str = "", extra_
     configured options nor _thinking_num_predict_override supply a
     num_predict, _RECAP_NUM_PREDICT_DEFAULT is set so a degenerating model
     cannot loop forever (see that constant's comment for the reported
-    failure). The same guard is NOT yet applied to this function's recap-
-    family siblings (expand_recap_notes/condense_recap/summarize_transcript)
-    — they have their own length-target machinery; extending the guard there
-    is its own change."""
+    failure). The same guard now covers this function's recap-family
+    siblings (expand_recap_notes/condense_recap/summarize_transcript) via
+    _recap_num_predict_default_if_unbounded — each slots it in at its own
+    merge point, standing down whenever its max_tokens/expanded-rung/caller
+    machinery already set a num_predict."""
     if not facts:
         return ""
     bullet_list = "\n".join(f"- {f}" for f in facts)
     system = _with_world_context(_with_instructions(_SUMMARIZE_FACTS_SYSTEM, extra_instructions), world_context)
     thinking_opts = _thinking_num_predict_override(think)
     opts = dict(thinking_opts)
-    if "num_predict" not in opts:
-        # Degeneration guard (see _RECAP_NUM_PREDICT_DEFAULT). The
-        # configured-value test mirrors _thinking_num_predict_override's
-        # own "is a bounded num_predict configured?" check exactly, so a
-        # GM's explicit setting still reaches Ollama unmolested through
-        # _chat_kwargs' merge (think=False makes the override a no-op, and
-        # clobbering a configured cap with this default would silently
-        # RAISE it) — this fires only when truly nothing else set one.
-        configured = effective_ollama_options().get("num_predict")
-        if not configured or configured < 0:
-            opts["num_predict"] = _RECAP_NUM_PREDICT_DEFAULT
+    _recap_num_predict_default_if_unbounded(opts)
     # `thinking_opts` (not "num_predict" in opts — the guard just guaranteed
     # that is now always true) preserves the pre-guard reserve semantics:
     # the extra num_ctx headroom applies only when the THINKING widening
@@ -1801,6 +1827,14 @@ async def condense_recap(
     unlimited configured value, so it never interferes with the max_tokens
     branch above.
 
+    The degeneration guard applies as the LAST step of that merge
+    (_recap_num_predict_default_if_unbounded): when neither max_tokens'
+    hard cap, the expanded-thinking rung, a caller-supplied `options`
+    entry, a GM-configured cap, nor the thinking widening set a
+    num_predict, _RECAP_NUM_PREDICT_DEFAULT does — a condensed recap is a
+    few sentences, so an unbounded degenerating loop has no legitimate
+    use case here (see that constant's comment for the reported failure).
+
     `world_context`, if given, is RAG-retrieved World lore/Notes text
     (see app.audio_jobs._build_rag_context) prepended ahead of everything
     else — see _with_world_context's own docstring.
@@ -1883,6 +1917,10 @@ async def condense_recap(
         opts["num_predict"] = expanded_thinking_options()["num_predict"]
     else:
         opts.update(_thinking_num_predict_override(think))
+    # Degeneration guard, deliberately AFTER every other num_predict source
+    # above so each of them wins over the default (see
+    # _recap_num_predict_default_if_unbounded).
+    _recap_num_predict_default_if_unbounded(opts)
     return await generate_chat(
         [{"role": "user", "content": recap}], system=system, model=model,
         options=opts or None, think=think,
@@ -2445,6 +2483,19 @@ async def summarize_transcript(transcript: str, model: str = "", extra_instructi
     # expanded_thinking replaces this with a much larger explicit budget
     # instead — see this function's own docstring.
     predict_override = expanded_thinking_options() if expanded_thinking else (_thinking_num_predict_override(think) or None)
+    # Degeneration guard (see _RECAP_NUM_PREDICT_DEFAULT), same rule as the
+    # recap-family siblings: when neither the expanded rung, the thinking
+    # widening, nor a GM-configured cap supplied a num_predict, cap each
+    # generate_chat call below (single-call and every chunk part alike) so a
+    # degenerating model can't loop forever — a chunk part's summary is even
+    # shorter prose than a full recap, so the default covers both paths
+    # generously. The expanded rung is skipped: it only ever runs as a
+    # recovery from a starved budget, and its own explicit num_predict is
+    # the whole point.
+    if not expanded_thinking:
+        _guarded_predict = dict(predict_override or {})
+        _recap_num_predict_default_if_unbounded(_guarded_predict)
+        predict_override = _guarded_predict or None
     chunks = _split_transcript_into_chunks(transcript, chunk_chars)
     if len(chunks) <= 1:
         system = _with_world_context(_with_instructions(_SUMMARIZE_TRANSCRIPT_SYSTEM, extra_instructions), world_context)

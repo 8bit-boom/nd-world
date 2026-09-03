@@ -8,6 +8,7 @@ import ollama as _ollama
 import time as _time
 import urllib.request as _urllib
 import uuid as _uuid
+from datetime import datetime
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse as _SR
 from pydantic import BaseModel
@@ -1404,15 +1405,17 @@ def api_recap_instructions_save(body: RecapInstructionsBody, request: Request, d
     if not world:
         raise HTTPException(404)
     world.recap_instructions = body.instructions.strip()
+    # recap_instructions is baked into every generated session-log recap but
+    # isn't Fact data, so the per-Fact timestamps of the recap freshness
+    # rule can't see a save here — the world's durable watermark (World.
+    # recap_content_touch, the same column a fact DELETION bumps; see
+    # app/routers/sessions.py's session-log recap comment block) records it
+    # instead. Same utcnow() the rule's other inputs use (naive UTC, what
+    # AudioJob.created_at/Fact timestamps default from). Replaced an
+    # in-process marker bump here: that rewound on restart and was never
+    # world-scoped; the column is both.
+    world.recap_content_touch = datetime.utcnow()
     db.commit()
-    # The session-log recap cache (app.routers.sessions) has a long TTL
-    # since exact fact-edit invalidation already covers its main content
-    # input — but recap_instructions is baked into the same generated
-    # text and isn't fact data, so a save here would otherwise sit stale
-    # for up to that TTL. Local import: avoids a module-level dependency
-    # between the two routers for one narrow cross-cutting call.
-    from .sessions import clear_session_log_recap_cache
-    clear_session_log_recap_cache()
     return {"ok": True, "instructions": world.recap_instructions}
 
 

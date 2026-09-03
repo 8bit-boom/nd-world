@@ -781,6 +781,16 @@ def _migrate():
             # pattern above.
             if "rules_json" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN rules_json TEXT DEFAULT ''"))
+            # recap_content_touch (durable session-log-recap staleness
+            # watermark — see World.recap_content_touch's own docstring in
+            # app/models.py) heals the same way. Deliberately NO DEFAULT
+            # clause: existing rows must backfill NULL, which the freshness
+            # comparison reads as "never touched" (epoch) so every existing
+            # done recap job stays fresh exactly as it was the moment before
+            # the upgrade — a DEFAULT now() would have invalidated every
+            # recap in every world on first boot after the update.
+            if "recap_content_touch" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN recap_content_touch DATETIME"))
             if "home_welcome_md" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN home_welcome_md TEXT"))
             if "home_sections_json" not in w_cols:

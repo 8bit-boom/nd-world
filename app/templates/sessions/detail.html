@@ -58,7 +58,7 @@
             <input type="checkbox" id="recap-think-checkbox" checked> 🧠 Thinking
           </label>
           <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
-                 title="Retrieves relevant World entities/notes and gives the model that context for accuracy (correct names, places, established facts) — applies to Condense and 'Process in Background' below only, not Expand notes/Summarize from Facts.">
+                 title="Retrieves relevant World entities/notes and gives the model that context for accuracy (correct names, places, established facts) — applies to Condense, 'Summarize from Facts', and 'Process in Background' below; not Expand notes.">
             <input type="checkbox" id="recap-rag-checkbox"> 🔍 RAG
           </label>
           <label style="font-size:.75rem;color:var(--text-dim);display:inline-flex;align-items:center;gap:.3rem" title="How many relevant World entities to pull in">
@@ -478,8 +478,80 @@ function aiCondenseRecapFit() {
 }
 
 {% if gsession %}
-function aiSummarizeFromFacts() {
-  aiRunRecap('/api/sessions/{{ gsession.id }}/ai/summarize-from-facts', {});
+// "Summarize from Facts" runs through the session-log recap JOB pipeline
+// (POST /api/session-log/{id}/recap — audience resolves to "gm" for this
+// page's caller) instead of the old blocking summarize-from-facts request:
+// a think=True weave against a CPU-local model runs minutes, which is a
+// routine Cloudflare 524 (the ~100s proxy timeout) waiting to happen, and
+// the old route had no sentinel check — a failed call handed back its
+// "[AI unavailable: ...]" string as a draft the Apply button would happily
+// paste into the Summary field. The pipeline is sentinel-safe end to end
+// (a failed generation lands as an errored job the route refuses to serve)
+// and this loop loads the finished recap into the exact same review/Replace
+// affordance aiRunRecap uses, so Apply/Discard behavior is unchanged.
+async function aiSummarizeFromFacts() {
+  const status = document.getElementById('ai-recap-status');
+  const modelSel = document.getElementById('audio-bgjob-model');
+  const POLL_MS = 4000;
+  const POLL_CAP_MS = 10 * 60 * 1000; // give up (with an explanation) after ~10 minutes
+  status.textContent = 'Summarizing from facts…';
+  _aiRecapButtons().forEach(b => b.disabled = true);
+  try {
+    let waited = 0;
+    while (true) {
+      const res = await fetch('/api/session-log/{{ gsession.id }}/recap', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        // The GM's panel options: Thinking, the background-job model
+        // picker, and the RAG opt-in (the pipeline retrieves lore for name
+        // accuracy the same way Condense/Process in Background do).
+        body: JSON.stringify({
+          think: _recapThinkEnabled(),
+          model: modelSel ? modelSel.value : '',
+          ..._recapRagOptions(),
+        }),
+      });
+      if (!res.ok) throw await ndApiErrorFrom(res);
+      const data = await res.json();
+      if (data.pending) {
+        if (waited >= POLL_CAP_MS) {
+          status.textContent = 'The recap is still generating after 10 minutes — it may be stuck. Check Background Jobs below.';
+          return;
+        }
+        status.textContent = 'Summarizing from facts in the background… (this can take a few minutes on a local model)';
+        await new Promise(r => setTimeout(r, POLL_MS));
+        waited += POLL_MS;
+        continue;
+      }
+      if (data.failed) {
+        // The generation errored server-side (its sentinel never gets
+        // cached as a done recap). Show the error through the same
+        // retry-style panel _showRecapFailed uses for a summarize-from-
+        // audio failure — never offer the error text as an applyable
+        // draft. Returning stops the loop; the route's short backoff
+        // window means a deliberate Retry only comes from pressing the
+        // button again after fixing the underlying issue (usually Ollama).
+        _aiRecapDraft = '';
+        _showRecapFailed(data.error || '(no error detail — check Background Jobs)');
+        status.textContent = '';
+        return;
+      }
+      _aiRecapDraft = data.recap || '';
+      if (!_aiRecapDraft) {
+        status.textContent = data.empty ? 'No facts logged for this session yet.' : 'No recap produced.';
+        return;
+      }
+      // _showRecapDraft (not a bare _setRecapPreviewText+display) so the
+      // Apply/Retry button visibility always resets here too — same
+      // reasoning as aiRunRecap's own call.
+      _showRecapDraft(_aiRecapDraft);
+      status.textContent = '';
+      return;
+    }
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  } finally {
+    _aiRecapButtons().forEach(b => b.disabled = false);
+  }
 }
 
 // ── NPCs Featured picker: folder tree + live search ─────────────────────

@@ -384,6 +384,17 @@ def _is_player_safe(method: str, path: str) -> bool:
         # shares dice. GET and POST both included, deliberately before the
         # GET-only section below.
         return True
+    if method == "GET" and path == "/api/ai/models":
+        # Read-only model catalog (ids/labels + which are downloaded) — every
+        # player-facing recap surface with a model picker fetches it (the
+        # Session Log page above all), and a 403 there left the picker
+        # silently empty for exactly the non-GM accounts it exists for. No
+        # secrets in the payload: it's the same catalog the GM /ai page's
+        # Models tab shows. Deliberately GET-only and one exact path — every
+        # other /api/ai route (model/preset management and friends) stays
+        # GM-only; the players_can_ask_ai-gated stream endpoints listed
+        # above are the separate, deliberate chat exceptions.
+        return True
     if method != "GET":
         return False
     if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log", "/audio", "/video", "/pages"):
@@ -464,6 +475,15 @@ def _is_assistant_safe(method: str, path: str) -> bool:
     if path == "/sessions" or path.startswith("/sessions/"):
         return True
     if path.startswith("/api/sessions/"):
+        return True
+    # Facts — the discrete session log IS content (the whole feature is
+    # "log what happened in play", the same tier as a session's Summary
+    # field): the list page, quick-add/edit/delete forms, and every /api/
+    # facts route (the parser, last-parse restore, and the bulk confirm
+    # that writes the reviewed draft). All methods deliberately — CRUD is
+    # content, same trust level as entity notes an assistant already
+    # manages.
+    if path == "/facts" or path.startswith("/facts/") or path.startswith("/api/facts/"):
         return True
     # Calendar — in-world dates/events are content.
     if path == "/calendar" or path.startswith("/calendar/") or path.startswith("/api/calendar/"):

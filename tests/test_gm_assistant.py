@@ -51,8 +51,6 @@ CASES = [
     ("POST", "/api/ai/imagegen/generate", False),
     ("POST", "/video/settings", False),  # world upload-policy preferences
     ("POST", "/api/entities/bulk-visibility", False),  # Settings > Visibility
-    ("GET", "/facts", False),  # not in the plan's content list
-    ("POST", "/facts/new", False),
     ("GET", "/quests", False),
     ("GET", "/parties", False),
     ("GET", "/combat", False),
@@ -65,6 +63,19 @@ CASES = [
     ("POST", "/characters/1/retire-to-npc", False),
     ("GET", "/worlds/1/home/edit", False),
     ("POST", "/api/worlds/1/home/quick-link", False),
+    # Facts — session-log content, the same tier as a session's Summary
+    # field (see _is_assistant_safe's own comment). Note the PLAYER tier
+    # still blocks all of these (test_player_safe.py) — this is purely an
+    # assistant widening.
+    ("GET", "/facts", True),
+    ("POST", "/facts/new", True),
+    ("POST", "/facts/5/edit", True),
+    ("POST", "/facts/5/delete", True),
+    ("POST", "/api/facts/parse", True),
+    ("POST", "/api/facts/parse-job", True),
+    ("GET", "/api/facts/last-parse", True),
+    ("POST", "/api/facts/bulk", True),
+    ("POST", "/api/facts/not-a-real-route", True),  # the whole /api/facts/ prefix is content tier
     # Content — exactly what _is_assistant_safe exists to allow.
     ("GET", "/new", True),
     ("POST", "/new", True),
@@ -297,6 +308,18 @@ def test_assistant_can_create_content_but_not_admin(client, seed):
     assert r.status_code == 403
     assert client.get("/export").status_code == 403
     assert client.get("/ai").status_code == 403
+
+    # Facts are content for an assistant too (the discrete session log —
+    # same tier as a session's Summary field), while staying player-blocked.
+    assert client.get("/facts").status_code == 200
+    r = client.post("/facts/new", data={"content": "Assistant logged this."}, follow_redirects=False)
+    assert r.status_code == 303
+    from app.models import Fact
+    db = SessionLocal()
+    try:
+        assert db.query(Fact).filter(Fact.content == "Assistant logged this.").count() == 1
+    finally:
+        db.close()
 
 
 def test_assistant_gets_edit_ui_on_player_visible_pages(client, seed):

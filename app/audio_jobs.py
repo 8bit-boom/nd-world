@@ -1210,12 +1210,15 @@ async def _run_job(job_id: int) -> None:
             # rows — the identical call the old synchronous POST
             # /api/session-log/{id}/recap made inline (same model/extra_
             # instructions selection, same default think=True), just not
-            # inside one HTTP request anymore. Not wrapped in the
-            # ollama_job_semaphore/thinking-ladder machinery the summarize_
-            # transcript purposes use, for the same reason facts_parse above
-            # isn't: mirror the synchronous call this replaces, behaviorally.
-            # The result lands in result_json (never `recap`) so the jobs UI
-            # can't render it as a session_recap-style draft.
+            # inside one HTTP request anymore. Held inside
+            # ollama_job_semaphore like the condense/session_recap branches:
+            # a think=True summarize against a CPU-local model runs for
+            # minutes, and an unheld one would interleave with (and evict
+            # the KV cache of) every other queued summarization for no
+            # benefit — there is no ladder/checkpoint machinery to mirror,
+            # just the one call. The result lands in result_json (never
+            # `recap`) so the jobs UI can't render it as a session_recap-
+            # style draft.
             _set(status="summarizing")
             db2 = SessionLocal()
             try:
@@ -1269,11 +1272,25 @@ async def _run_job(job_id: int) -> None:
             # NULL on pre-feature rows already read as True at the top of
             # this function); world_context: RAG-retrieved lore, framed as
             # supplementary reference by summarize_session_from_facts itself.
-            recap = await _ai_module.summarize_session_from_facts(
-                [f.content for f in facts], model=model,
-                extra_instructions=world_instructions,
-                think=think, world_context=world_context,
-            )
+            async with _ai_module.ollama_job_semaphore:
+                recap = await _ai_module.summarize_session_from_facts(
+                    [f.content for f in facts], model=model,
+                    extra_instructions=world_instructions,
+                    think=think, world_context=world_context,
+                )
+            # generate_chat never raises on an Ollama-side failure — it
+            # returns a failure-sentinel STRING instead, and there's no
+            # thinking-ladder here to climb first (this branch is one call).
+            # Without this check the sentinel was cached as a DONE recap in
+            # result_json and served to every poller until the next fact
+            # edit — a cached "[AI unavailable: ...]" is worse than no cache
+            # at all, since it looks exactly like a real recap to the route.
+            # Mirrors the condense (~above) and session_recap branches'
+            # terminal-error handling; the route then never serves it (only
+            # done rows are) and its poller surfaces job.error instead.
+            if _looks_like_failure(recap) or _ai_module.is_thinking_starved_sentinel(recap):
+                _set(status="error", error=recap, finished_at=datetime.utcnow(), checkpoint_json="")
+                return
             _set(status="done", result_json=_json.dumps({"recap": recap}),
                  finished_at=datetime.utcnow(), checkpoint_json="")
         else:
