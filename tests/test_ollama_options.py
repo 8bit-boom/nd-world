@@ -824,7 +824,8 @@ async def test_parse_facts_from_recap_passes_options_and_keep_alive(monkeypatch)
     # here with the module's own helpers so the assertion is against the
     # real numbers, not the test's guess — this tiny paste is one chunk
     # whose reserves+estimate land under the 2048 floor.
-    reserve = ai_module._chunk_reserve_tokens(ai_module._RECAP_SYSTEM, False, 0)
+    reserve = ai_module._chunk_reserve_tokens(
+        ai_module._RECAP_SYSTEM, False, ai_module._FACTS_PARSE_RESPONSE_RESERVE_TOKENS)
     chunk_tokens = -(-len("some recap text") // ai_module._chars_per_token_estimate("some recap text"))
     expected_ctx = min(ai_module.MAX_AUTO_NUM_CTX, max(ai_module._FACTS_PARSE_MIN_WINDOW_TOKENS, reserve + chunk_tokens))
     assert calls[0]["options"] == {"num_ctx": expected_ctx, "seed": 42}

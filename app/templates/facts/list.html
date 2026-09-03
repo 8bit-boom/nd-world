@@ -25,7 +25,6 @@
            for the parser, not an append. -->
       <button type="button" class="tpl-btn" data-tpl="standard" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">📄 Standard recap</button>
       <button type="button" class="tpl-btn" data-tpl="timeline" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">🕐 Timeline</button>
-      <button type="button" class="tpl-btn" data-tpl="bullets" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">• Bullet list</button>
       <button type="button" class="tpl-btn" data-tpl="combat" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">⚔️ Combat &amp; loot</button>
       <button type="button" class="tpl-btn" data-tpl="investigation" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">🔍 Investigation</button>
     </div>
@@ -164,56 +163,45 @@ let draftEmptyNote = '';
 const RECAP_TEMPLATE_LABELS = {
   standard: '📄 Standard recap',
   timeline: '🕐 Timeline',
-  bullets: '• Bullet list',
   combat: '⚔️ Combat & loot',
   investigation: '🔍 Investigation',
 };
+// ZERO-fill templates: each is a single English instruction line for the
+// model, NOT a form to fill in — the GM clicks a chip, pastes their raw
+// transcript under the instruction, and hits Parse. The model reads both
+// (the instruction is part of the text it sees) and writes the facts
+// itself, in English (the parse prompt also enforces that). The old
+// fill-in skeletons were the reported failure: a GM who left <number>,
+// <who played> unfilled got an empty parse and 26 wasted chunk calls.
 const RECAP_TEMPLATES = {
   standard:
-    "Session #: <number>\n" +
-    "The party: <who played>\n\n" +
-    "What happened:\n" +
-    "1. <first beat>\n" +
-    "2. <key event or decision>\n" +
-    "3. <who they met / what was learned>\n" +
-    "4. <how it ended>\n\n" +
-    "Loot & rewards: <items, XP>\n" +
-    "Next hook: <where things point next>\n" +
-    "Hidden from players: <the secret behind it>",
+    "Extract this session's key events as discrete facts — what happened, " +
+    "who was there, what was learned, how it ended. Ignore out-of-character " +
+    "table talk. Write each fact in English.\n\n" +
+    "TRANSCRIPT:\n",
   timeline:
-    "In order:\n" +
-    "1. <event>\n" +
-    "2. <event>\n" +
-    "3. <event>\n" +
-    "4. <event>\n\n" +
-    "Outcome: <where things stand now>\n" +
-    "Hidden from players: <the secret behind it>",
-  bullets:
-    "- <fact>\n" +
-    "- <fact>\n" +
-    "- <fact>\n" +
-    "- <fact>",
+    "Extract this session's events as discrete facts in CHRONOLOGICAL order " +
+    "(what happened first, what happened next, how it ended). Write each " +
+    "fact in English. Ignore out-of-character table talk.\n\n" +
+    "TRANSCRIPT:\n",
   combat:
-    "Enemies fought: <who, how many>\n" +
-    "How it went: <turns, tactics, turning point>\n" +
-    "Outcome: <who won, casualties, escapes>\n" +
-    "Loot: <items found>\n" +
-    "XP / rewards: <amounts>",
+    "Extract facts about EVERY combat in this session: enemies fought, " +
+    "tactics, casualties, escapes, and every item of loot gained. Write " +
+    "each fact in English. Ignore out-of-character table talk.\n\n" +
+    "TRANSCRIPT:\n",
   investigation:
-    "Scene: <where, what happened there>\n" +
-    "Clues found:\n" +
-    "- <clue>\n" +
-    "- <clue>\n" +
-    "Persons of interest: <names and why>\n" +
-    "Conclusions: <what the clues add up to>\n" +
-    "Still unknown: <open questions>",
+    "Extract facts about the investigation in this session: clues found, " +
+    "persons of interest, conclusions drawn, and what remains unknown. " +
+    "Write each fact in English.\n\n" +
+    "TRANSCRIPT:\n",
 };
 
 // One template application, shared by the chips above and the buttons the
 // empty-result note builds: replace the textarea's content with the
-// skeleton (confirm-guarded when something's already written — silently
-// wiping a half-written recap would be worse than one extra dialog), then
-// focus it. Returns whether it applied.
+// instruction line (confirm-guarded when something's already written —
+// silently wiping a half-written recap would be worse than one extra
+// dialog), then focus it so the GM pastes their transcript right below.
+// Returns whether it applied.
 function applyRecapTemplate(key) {
   const ta = document.getElementById('recap-input');
   const tpl = RECAP_TEMPLATES[key];
@@ -227,29 +215,6 @@ function applyRecapTemplate(key) {
 document.querySelectorAll('.tpl-btn').forEach(btn => btn.addEventListener('click', () => {
   applyRecapTemplate(btn.dataset.tpl);
 }));
-
-// Placeholder guard: a template skeleton is a FILL-IN FORM, not a recap —
-// parsing it verbatim makes the model extract "facts" like "Session #:
-// <number>" (or nothing at all). Collect every <placeholder> the templates
-// define and check which ones are still sitting unfilled in the given
-// text. Deliberately conservative: only placeholders that EXACTLY match a
-// known template slot count, so a GM's own angle-bracket notation never
-// false-positives.
-const KNOWN_TEMPLATE_PLACEHOLDERS = (() => {
-  const set = new Set();
-  for (const tpl of Object.values(RECAP_TEMPLATES)) {
-    for (const m of tpl.matchAll(/<[^<>]{2,60}>/g)) set.add(m[0]);
-  }
-  return set;
-})();
-
-function unfilledTemplatePlaceholders(text) {
-  const found = [];
-  for (const ph of KNOWN_TEMPLATE_PLACEHOLDERS) {
-    if (text.includes(ph)) found.push(ph);
-  }
-  return found;
-}
 
 function renderDraft() {
   const panel = document.getElementById('draft-panel');
@@ -488,17 +453,6 @@ async function parseDraftFromRecap() {
   const text = document.getElementById('recap-input').value.trim();
   if (!text) return;
   const status = document.getElementById('parse-status');
-  // Parsing an UNFILLED template skeleton wastes a multi-minute model run
-  // extracting "facts" like "Session #: <number>" (or nothing at all) —
-  // the exact empty-result the GM hit. Block it up front with the list of
-  // what's still unfilled instead of letting the job burn.
-  const unfilled = unfilledTemplatePlaceholders(text);
-  if (unfilled.length) {
-    status.textContent = 'This recap still has unfilled template placeholders (' +
-      unfilled.slice(0, 4).join(', ') + (unfilled.length > 4 ? ', …' : '') +
-      ') — replace them with what actually happened, then Parse.';
-    return;
-  }
   const sessionId = document.getElementById('recap-session').value;
   btn.disabled = true;
   _setParseBusyControls(true);

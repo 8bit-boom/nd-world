@@ -618,14 +618,16 @@ def test_facts_page_ships_recap_templates(client, seed):
     turns into one fact each) instead of a blank textarea."""
     _login_gm(client, seed)
     html = client.get("/facts").text
-    for key in ("standard", "timeline", "bullets", "combat", "investigation"):
+    for key in ("standard", "timeline", "combat", "investigation"):
         assert f'data-tpl="{key}"' in html
     assert "RECAP_TEMPLATES" in html
-    # A couple of distinctive skeleton lines per template, so a regression
-    # that empties the skeletons is caught even without executing the JS.
-    assert "Hidden from players: <the secret behind it>" in html
-    assert "Persons of interest: <names and why>" in html
-    assert "Clues found:" in html
+    # The skeletons are ZERO-fill instruction lines (no placeholders to
+    # fill) — the GM pastes their transcript under the instruction.
+    assert "Extract this session's key events as discrete facts" in html
+    assert "in CHRONOLOGICAL order" in html
+    assert "every item of loot gained" in html
+    assert "persons of interest, conclusions drawn" in html
+    assert "TRANSCRIPT:" in html
     # The empty-parse outcome is actionable: its note renders one button per
     # template that applies the skeleton to the textarea (shared helper with
     # the chips) and clears the dead draft panel.
@@ -900,14 +902,11 @@ async def test_parse_facts_huge_world_context_never_raises_just_gets_reserved(mo
     assert any("proceeding without reserving" in r.getMessage() for r in caplog.records)
 
 
-def test_facts_page_guards_unfilled_template_placeholders(client, seed):
-    """Parsing the raw Standard-recap skeleton (placeholders unfilled) used
-    to burn a multi-minute model run extracting "facts" like
-    'Session #: <number>' — or nothing. The page must detect unfilled
-    template placeholders and refuse up front, naming them, instead of
-    starting a doomed job."""
+def test_facts_page_has_no_placeholder_guard(client, seed):
+    """The templates are ZERO-fill instruction lines now — there is no
+    placeholder guard to trip over, and no skeleton left in the page to
+    accidentally parse as if it were session content."""
     _login_gm(client, seed)
     html = client.get("/facts").text
-    assert "unfilledTemplatePlaceholders" in html
-    assert "KNOWN_TEMPLATE_PLACEHOLDERS" in html
-    assert "unfilled template placeholders" in html
+    assert "unfilledTemplatePlaceholders" not in html
+    assert "KNOWN_TEMPLATE_PLACEHOLDERS" not in html

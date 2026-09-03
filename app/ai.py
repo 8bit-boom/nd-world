@@ -1037,7 +1037,8 @@ _RECAP_SYSTEM = (
     "talk. Ignore out-of-character discussion entirely and extract only facts about what "
     "happened in the story; if a passage contains no in-story events, return an empty facts "
     "list. Never describe the text itself or your extraction process — respond with the "
-    "facts JSON only."
+    "facts JSON only. Write every fact in English, regardless of the language the recap or "
+    "transcript is written in."
 )
 
 _RECAP_FACTS_SCHEMA = {
@@ -1603,7 +1604,8 @@ _SUMMARIZE_FACTS_SYSTEM = (
     "for one session. Weave them into a short, readable narrative recap in flowing prose — a "
     "few short paragraphs, past tense, third person. Use only the facts given; don't invent "
     "new details, and don't drop any of them. Markdown is fine for light formatting but keep it "
-    "simple. Respond with the recap text only, no preamble or commentary."
+    "simple. Respond with the recap text only, no preamble or commentary. Write the recap in "
+    "English, regardless of the language the facts are written in."
 )
 
 # Hard cap on this function's generation length when NOTHING else supplied a
@@ -2170,7 +2172,8 @@ _SUMMARIZE_TRANSCRIPT_SYSTEM = (
     "structure. Turn it into a short, readable narrative recap in flowing prose — a few "
     "paragraphs, past tense, third person. Use your judgment to skip out-of-character chatter, "
     "rules discussion, and filler, keeping only what happened in the story. Don't invent details "
-    "that aren't in the transcript. Respond with the recap text only, no preamble or commentary."
+    "that aren't in the transcript. Respond with the recap text only, no preamble or commentary. "
+    "Write the recap in English, regardless of the language the transcript is in."
 )
 
 _SUMMARIZE_TRANSCRIPT_PART_SYSTEM = (
@@ -2182,7 +2185,8 @@ _SUMMARIZE_TRANSCRIPT_PART_SYSTEM = (
     "full session recap, so don't add your own preamble, conclusion, or reference to \"the rest "
     "of the summary\" — just narrate what happened in this part. Skip out-of-character chatter, "
     "rules discussion, and filler. Don't invent details that aren't in the text. Respond with "
-    "this part's summary only, no preamble or commentary."
+    "this part's summary only, no preamble or commentary. Write the part summary in English, "
+    "regardless of the language the transcript is in."
 )
 
 # A transcript longer than fits comfortably in one context window (a
