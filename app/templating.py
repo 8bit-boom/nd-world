@@ -11,6 +11,7 @@ everything exactly once here fixes that app-wide and is the reason this module
 """
 import json
 import os
+import hashlib
 from pathlib import Path
 
 import jinja2
@@ -85,6 +86,40 @@ templates = Jinja2Templates(
     directory=str(BASE_DIR / "app" / "templates"),
     context_processors=[_kinds_context_processor],
 )
+
+# Content-hash cache-busting for static assets: templates render e.g.
+# style.css?v={{ asset_v('style.css') }} and the version string is the
+# first 10 hex chars of the file's SHA-1, so any edit to the file changes
+# the URL and busts browser/CDN caches automatically — replacing the manual
+# "?v=N bump N any time you change style.css" convention, which relied on
+# remembering to do it. Hashes are computed once per file per process.
+_asset_versions: dict = {}
+
+
+def asset_v(name: str) -> str:
+    cached = _asset_versions.get(name)
+    if cached:
+        return cached
+    try:
+        digest = hashlib.sha1((BASE_DIR / "static" / name).read_bytes()).hexdigest()[:10]
+    except OSError:
+        # Missing/unreadable file — a constant still produces a stable URL
+        # rather than erroring every render that references the asset.
+        digest = "0"
+    _asset_versions[name] = digest
+    return digest
+
+
+templates.env.globals["asset_v"] = asset_v
+# Content-creation gate for templates: True for a GM, and for a non-GM whose
+# active-world membership is role="assistant" (request.state.is_assistant,
+# computed by auth_gate on every non-GM request — see deps.can_edit_content).
+# CONTENT templates use `{% if can_edit(request) %}` for create/edit/delete
+# controls; world-ADMINISTRATION controls (Settings, world management,
+# exports/backups, model overrides) keep their `request.state.user.is_gm`
+# checks. The middleware guarantees request.state.is_assistant always exists,
+# so this never needs a getattr dance in templates.
+templates.env.globals["can_edit"] = deps.can_edit_content
 # Last-resort default for the (nonexistent today) case of a template
 # rendered outside any request — real renders get the per-world merged
 # values from the context processor above.

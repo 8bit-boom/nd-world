@@ -419,6 +419,11 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA busy_timeout=30000")
+    # SQLite's default synchronous=FULL fsyncs the WAL on every commit; NORMAL
+    # (the recommended pairing with WAL) only checkpoints periodically — still
+    # durable across an app crash, which is the failure mode that matters for
+    # a self-hosted single-writer app, and meaningfully faster on slow disks.
+    cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.close()
 
 
@@ -485,6 +490,11 @@ def _migrate():
         # ADD COLUMN checks above it doesn't need a PRAGMA table_info
         # existence check first.
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_entities_world_id_kind ON entities (world_id, kind)"))
+        # Folder browsing filters on (world_id, folder) across every kind at
+        # once — the (world_id, kind) composite above can't serve it, and
+        # folder has only a single-column index (usable, but this resolves
+        # both filters as one index scan like the kind composite does).
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_entities_world_folder ON entities (world_id, folder)"))
 
         note_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(entity_notes)")).fetchall()]
         if note_cols and "content_is_html" not in note_cols:
@@ -642,6 +652,19 @@ def _migrate():
                 ("ollama_server_env_json", "TEXT DEFAULT '{}'"),
                 ("ollama_vram_override_mb", "INTEGER"),
                 ("ollama_model_overrides_json", "TEXT DEFAULT '{}'"),
+                # Upload size limits (Settings > System's "Upload limits") —
+                # deliberately NO DEFAULT clause, so existing installs' rows
+                # get NULL, which every enforcement site treats as "use the
+                # MAX_* environment default" (see AppSettings.max_upload_mb's
+                # comment in models.py). app_settings is not in the
+                # _heal_table_from_model list below (it predates that
+                # helper), so these hand-typed entries are what gets the
+                # columns onto existing installs.
+                ("max_upload_mb", "INTEGER"),
+                ("max_gallery_upload_mb", "INTEGER"),
+                ("max_video_mb", "INTEGER"),
+                ("max_audio_mb", "INTEGER"),
+                ("max_ai_attachment_mb", "INTEGER"),
             ]:
                 if col not in as_cols:
                     conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN {col} {defn}"))
@@ -708,6 +731,22 @@ def _migrate():
             tpl_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(sheet_templates)")).fetchall()]
             if "sheet_mode" not in tpl_cols:
                 conn.execute(text("ALTER TABLE sheet_templates ADD COLUMN sheet_mode VARCHAR(16) DEFAULT 'nd'"))
+        # world_memberships table — the GM-Assistant role column (see
+        # WorldMembership.role in app/models.py). world_memberships is not in
+        # the _heal_table_from_model list below (it predates that helper),
+        # same as app_settings, so this hand-typed entry is what gets the
+        # column onto existing installs. DEFAULT 'player' matters: SQLite
+        # backfills existing rows with it, so every membership that existed
+        # before this feature stays exactly what it was — a player — instead
+        # of NULLing out (NOT NULL + DEFAULT is legal in ALTER TABLE ADD
+        # COLUMN precisely so this backfill can happen).
+        wm_exists = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='world_memberships'"
+        )).fetchone()
+        if wm_exists:
+            wm_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(world_memberships)")).fetchall()]
+            if "role" not in wm_cols:
+                conn.execute(text("ALTER TABLE world_memberships ADD COLUMN role VARCHAR(20) DEFAULT 'player' NOT NULL"))
         # worlds table — add players_see_party if missing
         w_exists = conn.execute(text(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='worlds'"
@@ -736,6 +775,22 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN recap_instructions TEXT"))
             if "rules_md" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN rules_md TEXT"))
+            # rules_json (optional rules-page overlay) heals the same way —
+            # worlds predates _heal_table_from_model, so every new column
+            # still gets its hand-typed entry here, following the rules_md
+            # pattern above.
+            if "rules_json" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN rules_json TEXT DEFAULT ''"))
+            # recap_content_touch (durable session-log-recap staleness
+            # watermark — see World.recap_content_touch's own docstring in
+            # app/models.py) heals the same way. Deliberately NO DEFAULT
+            # clause: existing rows must backfill NULL, which the freshness
+            # comparison reads as "never touched" (epoch) so every existing
+            # done recap job stays fresh exactly as it was the moment before
+            # the upgrade — a DEFAULT now() would have invalidated every
+            # recap in every world on first boot after the update.
+            if "recap_content_touch" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN recap_content_touch DATETIME"))
             if "home_welcome_md" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN home_welcome_md TEXT"))
             if "home_sections_json" not in w_cols:

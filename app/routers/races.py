@@ -22,7 +22,7 @@ from ..imaging import convert_image, make_thumbnail
 from ..models import Entity
 from ..rendering import render_md
 from ..templating import templates
-from ..uploads import copy_upload_bounded, unique_upload_filename
+from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename
 
 router = APIRouter()
 
@@ -31,6 +31,19 @@ ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"}
 
 _RACES_DIR = Path(__file__).parent.parent / "races"
 _RACE_TIERS = ["standard", "advanced", "exceptional"]
+
+
+def _effective_general_upload_bytes(db: Optional[Session]) -> int:
+    """Race-image uploads' size cap for this request: the GM's saved
+    AppSettings.max_upload_mb (Settings > System's "Upload limits" — applies
+    to new uploads immediately, no restart) or the MAX_UPLOAD_BYTES env
+    default when left blank; db=None falls back to that same env default,
+    matching copy_upload_bounded's own max_bytes=None behavior. See
+    effective_upload_bytes (app/uploads.py)."""
+    if db is None:
+        return MAX_UPLOAD_BYTES
+    settings = get_app_settings(db)
+    return effective_upload_bytes(getattr(settings, "max_upload_mb", None), MAX_UPLOAD_BYTES)
 
 
 def _upload_race_image(file: Optional[UploadFile], db: Optional[Session] = None) -> Optional[str]:
@@ -43,7 +56,7 @@ def _upload_race_image(file: Optional[UploadFile], db: Optional[Session] = None)
     races_dir.mkdir(parents=True, exist_ok=True)
     fname = unique_upload_filename(file.filename, ext)
     dest = races_dir / fname
-    copy_upload_bounded(file, dest)
+    copy_upload_bounded(file, dest, max_bytes=_effective_general_upload_bytes(db))
     if db is not None:
         settings = get_app_settings(db)
         dest = convert_image(dest, static_format=settings.static_format,

@@ -82,7 +82,10 @@
     </div>
 
     <div class="form-group">
-      <label>Template <small>(adds structured fields like age, status, or a stat block — <a href="{{ '/entity-templates'|wq }}" target="_blank">manage templates</a>)</small></label>
+      {# The template PICKER is content tooling (assistants may use it), but
+         "manage templates" links to /entity-templates — template management
+         stays GM-only — so the link itself is only rendered for the GM. #}
+      <label>Template <small>(adds structured fields like age, status, or a stat block — {% if request.state.user and request.state.user.is_gm %}<a href="{{ '/entity-templates'|wq }}" target="_blank">manage templates</a>{% else %}pick one to prefill the fields below{% endif %})</small></label>
       <select id="template-select" onchange="rebuildCustomFields()"></select>
     </div>
     <div id="custom-fields-container"></div>

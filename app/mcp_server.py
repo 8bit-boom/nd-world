@@ -62,6 +62,21 @@ def _require_gm(user):
         raise PermissionError("This action requires a GM token")
 
 
+def _bump_recap_content_touch(world) -> None:
+    """Advance the world's durable recap-staleness watermark (World.
+    recap_content_touch — see its docstring in app/models.py). The MCP fact
+    tools call this on deletion, the one fact mutation that leaves no Fact
+    row behind for the session-log recap freshness rule to timestamp
+    (creates/updates are covered by Fact.created_at/updated_at, which the
+    freshness rule reads directly). Without it, a phone-logged fact removal
+    would leave every cached player recap mentioning the removed fact
+    looking fresh forever — the exact class of MCP-side staleness the
+    durable rule exists to close."""
+    if world is None:
+        return
+    world.recap_content_touch = datetime.utcnow()
+
+
 @mcp.tool()
 def list_worlds(ctx: Context) -> list[dict]:
     """List the worlds this token's user can access (all worlds for a GM,
@@ -97,7 +112,11 @@ def create_fact(
         if not content:
             raise ValueError("content must not be empty")
         f = Fact(world_id=world.id, game_session_id=game_session_id, content=content,
-                  visible_to_players=visible_to_players, author_id=user.id)
+                 visible_to_players=visible_to_players, author_id=user.id,
+                 # Belt-and-braces alongside the column default — the
+                 # session-log recap freshness rule reads this timestamp to
+                 # invalidate cached recaps (see app/routers/sessions.py).
+                 updated_at=datetime.utcnow())
         db.add(f)
         db.commit()
         db.refresh(f)
@@ -161,8 +180,11 @@ def delete_fact(ctx: Context, fact_id: int) -> dict:
         fact = db.get(Fact, fact_id)
         if not fact:
             raise ValueError(f"Fact {fact_id} not found")
-        _load_world(db, fact.world_id, user)
+        world = _load_world(db, fact.world_id, user)
         db.delete(fact)
+        # No Fact row survives a delete to carry a timestamp, so the world's
+        # recap watermark records it instead — see _bump_recap_content_touch.
+        _bump_recap_content_touch(world)
         db.commit()
         return {"deleted": fact_id}
     finally:

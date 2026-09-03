@@ -2,7 +2,9 @@
 
 Every HTTP route exposed by nd-world (`app/main.py` + `app/routers/*.py`), grouped by
 feature area, plus the MCP server's tools (`app/mcp_server.py`). Generated from a full
-audit of the route table — **366 HTTP routes** and **8 MCP tools** as of this writing.
+audit of the route table — **453 HTTP routes** and **8 MCP tools** as of this writing,
+and regression-enforced by `tests/test_api_reference_docs.py` (a new route fails CI
+until it gets a row here).
 
 This is a reference for developers and AI agents working on the codebase, not
 end-user documentation — see the [README](../README.md) for how to use the app
@@ -20,6 +22,7 @@ authorization boundary:
 | **Public** | No login required — reachable before authentication (`/login`, `/join/{code}`, `/health`, static/upload assets). |
 | **Player** | Any logged-in account (GM or player) may call it. Reachable only because the route is explicitly listed in `_is_player_safe()` (`app/main.py`) — a table-driven allowlist, regression-tested by `tests/test_player_safe.py`. |
 | **GM** | Requires `User.is_gm == True`. This is the **default** — any route not explicitly allowlisted in `_is_player_safe()` is GM-only automatically, including every brand-new route added without touching that function. Non-GM requests get a 403 (JSON for `/api/*`, an HTML page otherwise). |
+| **GM / Assistant** | GMs always; plus a **GM-Assistant** — a non-GM whose `WorldMembership.role` in the active world is `"assistant"` (set by the GM from the world's Members table) — may call it. Governed by a second allowlist, `_is_assistant_safe()` (`app/main.py`), covering world **content** (entities/notes, sessions, calendar, tables, boards, maps/schematics, pages, gallery, audio/video, imports, and the AI content-drafters) while administration (Settings, `/worlds/*`, invites/members, backups, export, AI model/system management) stays GM-only. Assistants see exactly what players see — every visibility filter stays keyed on `is_gm`. New routes are GM-only for assistants too unless deliberately added to `_is_assistant_safe()`; regression-tested by `tests/test_gm_assistant.py`. |
 
 A handful of routes carry their own extra checks inside the handler on top of this
 (e.g. a player can only move *their own* schematic token, or edit *their own*
@@ -47,6 +50,7 @@ worlds they've been invited into (`WorldMembership`).
 - [Sessions & Session Log](#sessions--session-log)
 - [Facts & Chronicler](#facts--chronicler)
 - [Combat](#combat)
+- [Dice](#dice)
 - [Parties](#parties)
 - [Calendar](#calendar)
 - [Maps](#maps)
@@ -56,6 +60,8 @@ worlds they've been invited into (`WorldMembership`).
 - [Handouts](#handouts)
 - [Audio Library](#audio-library)
 - [Video Library](#video-library)
+- [Gallery (Images)](#gallery-images)
+- [Pages](#pages)
 - [Random Tables](#random-tables)
 - [Rules](#rules)
 - [Search](#search)
@@ -106,6 +112,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/account/2fa/backup-codes/regenerate` | Player | Replaces the caller's backup codes with a fresh set of 8 (requires the current password); the old codes stop working immediately. |
 | POST | `/account/tokens/new` | Player | Issues a new MCP bearer token (`ApiToken`) for the caller — the raw token is shown once at creation and only its sha256 hash is stored. |
 | POST | `/account/tokens/{token_id}/revoke` | Player | Revokes (deletes) one of the caller's own MCP tokens. |
+| POST | `/account/trusted-devices/{device_id}/revoke` | Player | Revokes one of the caller's own trusted devices, so two-step auth is re-required there on the next login. |
 
 ## Worlds
 
@@ -124,10 +131,11 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/worlds/{world_id}/invites/new` | GM | Creates a new `InviteCode` (optionally time- or use-limited). |
 | POST | `/worlds/{world_id}/invites/{invite_id}/revoke` | GM | Revokes an unused invite link. |
 | POST | `/worlds/{world_id}/members/{user_id}/remove` | GM | Removes a player's `WorldMembership` from this world. |
+| POST | `/worlds/{world_id}/members/{user_id}/role` | GM | Sets a member's `WorldMembership.role` — `player` (default) or `assistant` (GM-Assistant: player visibility, may create/edit world content via `_is_assistant_safe`; see the Auth model above). Unknown roles get a 400. |
 | GET | `/worlds/{world_id}/notes/{user_id}` | Player | A private GM↔player note thread — visible to the GM and that one player only. |
 | POST | `/worlds/{world_id}/notes/{user_id}/new` | GM | Posts a new private note to a player. |
 | POST | `/worlds/{world_id}/notes/{user_id}/{note_id}/delete` | GM | Deletes a private note. |
-| POST | `/folders/rename` | GM | Renames (or clears, moving entities to Unfiled) a folder across all entities of a kind. |
+| POST | `/folders/rename` | GM / Assistant | Renames (or clears, moving entities to Unfiled) a folder across all entities of a kind. |
 | GET | `/worlds/{world_id}/export` | GM | Downloads a single-world JSON export (entities + embedded images). |
 | POST | `/worlds/{world_id}/import` | GM | Imports a previously-exported world JSON, merging into this world. |
 | POST | `/api/worlds` | GM | JSON API: creates a world (used by the NeonDragonsApp companion flow). |
@@ -142,6 +150,9 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/worlds/{world_id}/home/edit` | GM | Edit form for the home page's Quick Link sections. |
 | POST | `/worlds/{world_id}/home/edit` | GM | Saves the full edited/reordered section list. |
 | POST | `/api/worlds/{world_id}/home/quick-link` | GM | Appends one link to a section without going through the full edit form (used by "drag a nav tab onto the home page"). |
+| POST | `/api/worlds/{world_id}/home/pinned-tile` | GM | Pins an entity/character as a highlighted tile on this world's home page. |
+| POST | `/api/worlds/{world_id}/home/pinned-tile/remove` | GM | Removes a pinned home-page tile. |
+| POST | `/api/worlds/{world_id}/home/hide-kind` | GM | Hides (or re-shows) one entity-kind stat tile on this world's home page. |
 
 ## Custom Kinds (Categories)
 
@@ -167,19 +178,24 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/entity/{entity_id}/download.md` | Player* | Downloads the entity (body + visible notes) as a `.md` file. GM always; a player only once `players_can_download_entities` is on — independent of whether the entity itself is visible to them (`_entity_view_gate` still 404s a hidden/inaccessible entity first). |
 | GET | `/api/entity/{entity_id}/preview` | Player | Hover-preview popup content (name/summary/image) for the base-template's link-hover feature. |
 | GET | `/api/hover-preview/config` | Player | Instance-wide hover-preview timing/size settings (Settings > Options). |
-| GET | `/new` | GM | New-entity form (kind chosen via query param). |
-| POST | `/new` | GM | Creates an entity. |
-| GET | `/entity/{entity_id}/edit` | GM | Edit form. |
-| POST | `/entity/{entity_id}/edit` | GM | Saves entity edits (including per-player visibility overrides). |
-| POST | `/entity/{entity_id}/delete` | GM | Deletes an entity. |
-| POST | `/kind/{kind}/bulk-delete` | GM | Deletes many entities of one kind at once (checkbox multi-select UI). |
+| GET | `/new` | GM / Assistant | New-entity form (kind chosen via query param). |
+| POST | `/new` | GM / Assistant | Creates an entity. |
+| GET | `/entity/{entity_id}/edit` | GM / Assistant | Edit form. |
+| POST | `/entity/{entity_id}/edit` | GM / Assistant | Saves entity edits (including per-player visibility overrides). |
+| POST | `/entity/{entity_id}/delete` | GM / Assistant | Deletes an entity. |
+| POST | `/entity/{entity_id}/duplicate` | GM / Assistant | Clones an entity (with a "copy" suffix on the name) as a starting point for variants. |
+| POST | `/kind/{kind}/bulk-delete` | GM / Assistant | Deletes many entities of one kind at once (checkbox multi-select UI). |
 | POST | `/api/entities/bulk-visibility` | GM | Sets `visible_to_players` (and, for "specific players" mode, the per-player access list) across a selected batch of entities in one call — Settings > Visibility tab. |
-| POST | `/entity/{entity_id}/link/{target_id}` | GM | Creates a bidirectional relationship link between two entities. |
-| POST | `/entity/{entity_id}/unlink/{target_id}` | GM | Removes a link. |
-| POST | `/entity/{entity_id}/notes/new` | GM | Adds a note to an entity — independently hideable from the entity's own visibility. |
-| POST | `/entity/{entity_id}/notes/{note_id}/toggle` | GM | Toggles a note's `visible_to_players` flag. |
-| POST | `/entity/{entity_id}/notes/{note_id}/delete` | GM | Deletes a note. |
-| POST | `/api/upload-image` | GM | Uploads an image and returns its URL — backs the rich-text formatting toolbar's image button on GM-only fields (entity body/notes). |
+| POST | `/api/entities/bulk-folder` | GM / Assistant | Moves a selected batch of entities into a folder in one call (the list pages' bulk-action bar). |
+| GET | `/api/entities/picker` | Player | Lightweight `{id, name, kind, folder}` listing for entity-picker UIs, filtered to what the caller may see. |
+| POST | `/entity/{entity_id}/link/{target_id}` | GM / Assistant | Creates a bidirectional relationship link between two entities. |
+| POST | `/entity/{entity_id}/unlink/{target_id}` | GM / Assistant | Removes a link. |
+| POST | `/entity/{entity_id}/notes/new` | GM / Assistant | Adds a note to an entity — independently hideable from the entity's own visibility. |
+| POST | `/entity/{entity_id}/notes/import` | GM / Assistant | Imports a note from an uploaded file — `.md`/`.txt`/`.pdf` become plain text, `.html`/`.htm` convert to markdown (or stay sanitized HTML with "preserve original formatting"), images become an embedded note. |
+| POST | `/entity/{entity_id}/notes/{note_id}/toggle` | GM / Assistant | Toggles a note's `visible_to_players` flag. |
+| POST | `/entity/{entity_id}/notes/{note_id}/delete` | GM / Assistant | Deletes a note. |
+| POST | `/api/upload-image` | GM / Assistant | Uploads an image and returns its URL — backs the rich-text formatting toolbar's image button on GM-only fields (entity body/notes). |
+| POST | `/api/entity/{entity_id}/image` | GM / Assistant | Sets an entity's portrait directly from a URL (Image Studio's "Set as portrait"/"Attach" flow) without the full edit form. |
 
 ## Entity Field Templates
 
@@ -224,6 +240,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/worlds/{world_id}/characters/sync` | Player | Creates a new character from a NeonDragonsApp sync payload (upsert-by-name). |
 | GET | `/api/me` | Player | The caller's own user info (id, display name, is_gm, active world) — used by the Android app and frontend JS. |
 | POST | `/api/characters/roll` | Player | Server-side dice roller (stat/skill checks) used by the character sheet. |
+| POST | `/characters/{pc_id}/retire-to-npc` | GM | Converts a retired player character into a `character`-kind Entity, preserving its lore. |
 
 ## Character Sheet Templates
 
@@ -278,31 +295,40 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/sessions` | GM | Session list for the active world. |
-| GET | `/sessions/new` | GM | New session form. |
-| POST | `/sessions/new` | GM | Creates a `GameSession`. |
-| GET | `/sessions/{session_id}` | GM | Session detail: prep checklist, XP/loot log, recap (with the AI toolbar). |
-| POST | `/sessions/{session_id}/edit` | GM | Saves session edits, including the raw `summary` recap text. |
-| POST | `/sessions/{session_id}/delete` | GM | Deletes a session. |
-| POST | `/api/sessions/{session_id}/prep/toggle` | GM | Toggles a prep checklist item. |
-| POST | `/api/sessions/{session_id}/prep/add` | GM | Adds a prep checklist item. |
-| POST | `/api/sessions/{session_id}/prep/{idx}/delete` | GM | Removes a prep checklist item. |
-| POST | `/api/sessions/{session_id}/prep/generate` | GM | AI: drafts a prep checklist from the prior session's recap/facts, the world's open quests, and the assigned party — returned for review, not written until confirmed items are POSTed to `prep/add`. |
-| POST | `/api/sessions/{session_id}/xp` | GM | Records XP awarded this session. |
-| POST | `/api/sessions/{session_id}/loot/transfer` | GM | Transfers loot from the session log to a party/character. |
-| POST | `/api/sessions/ai/expand-notes` | GM | AI: expands terse GM notes (from the Summary textarea) into a written narrative recap via the local Ollama model. |
-| POST | `/api/sessions/ai/condense-recap` | GM | AI: condenses/tightens an existing recap. |
-| POST | `/api/sessions/ai/summarize-from-audio` | GM | AI: transcribes an uploaded/mic-recorded session audio clip via Whisper (biased by the world's name glossary) and summarizes it into a recap — session-independent, usable on the New Session form. |
-| POST | `/api/sessions/ai/summarize-from-audio/chunk`, `/api/sessions/ai/summarize-from-audio/complete` | GM | Chunked variant of the above for a recording over the direct-upload size threshold. |
-| POST | `/api/sessions/ai/audio-jobs`, `/api/sessions/ai/audio-jobs/chunk`, `/api/sessions/ai/audio-jobs/complete` | GM | Transcribe (and, for `session_recap`, summarize) a session recording as a durable background job instead of blocking the upload request. |
-| GET | `/api/sessions/ai/audio-jobs/{job_id}`, `/api/sessions/ai/audio-jobs` | GM | Poll one session audio job, or list them. |
-| POST | `/api/sessions/{session_id}/live-transcript/append` | GM | Transcribes one ~1-minute chunk of a live session recording via Whisper and appends it to the session's running live transcript. |
-| POST | `/api/sessions/{session_id}/live-transcript/clear` | GM | Clears the accumulated live transcript. |
-| POST | `/api/sessions/{session_id}/ai/summarize-live-transcript` | GM | AI: summarizes the accumulated live transcript into a recap. |
-| POST | `/api/sessions/{session_id}/ai/summarize-from-facts` | GM | AI: weaves this session's logged `Fact` rows (all of them, secret or not) into a narrative recap. |
+| GET | `/sessions` | GM / Assistant | Session list for the active world. |
+| GET | `/sessions/new` | GM / Assistant | New session form. |
+| POST | `/sessions/new` | GM / Assistant | Creates a `GameSession`. |
+| GET | `/sessions/{session_id}` | GM / Assistant | Session detail: prep checklist, XP/loot log, recap (with the AI toolbar). |
+| POST | `/sessions/{session_id}/edit` | GM / Assistant | Saves session edits, including the raw `summary` recap text. |
+| POST | `/sessions/{session_id}/recap-publish` | GM / Assistant | Saves the session's PLAYER-facing recap (`player_summary`) and sets its published flag — the Session Log serves a published recap verbatim to players; unpublished/empty falls back to the facts-recap pipeline. |
+| POST | `/sessions/{session_id}/delete` | GM / Assistant | Deletes a session. |
+| POST | `/api/sessions/{session_id}/prep/toggle` | GM / Assistant | Toggles a prep checklist item. |
+| POST | `/api/sessions/{session_id}/prep/add` | GM / Assistant | Adds a prep checklist item. |
+| POST | `/api/sessions/{session_id}/prep/{idx}/delete` | GM / Assistant | Removes a prep checklist item. |
+| POST | `/api/sessions/{session_id}/prep/generate` | GM / Assistant | AI: drafts a prep checklist from the prior session's recap/facts, the world's open quests, and the assigned party — returned for review, not written until confirmed items are POSTed to `prep/add`. |
+| POST | `/api/sessions/{session_id}/xp` | GM / Assistant | Records XP awarded this session. |
+| POST | `/api/sessions/{session_id}/loot/transfer` | GM / Assistant | Transfers loot from the session log to a party/character. |
+| POST | `/api/sessions/ai/expand-notes` | GM / Assistant | AI: expands terse GM notes (from the Summary textarea) into a written narrative recap via the local Ollama model. |
+| POST | `/api/sessions/ai/condense-recap` | GM / Assistant | AI: condenses/tightens an existing recap. |
+| POST | `/api/sessions/ai/condense-job` | GM / Assistant | Durable background-job variant of the condense pass above. |
+| POST | `/api/sessions/ai/summarize-transcript` | GM / Assistant | AI: summarizes an already-transcribed transcript text into a recap. |
+| POST | `/api/sessions/ai/summarize-from-audio` | GM / Assistant | AI: transcribes an uploaded/mic-recorded session audio clip via Whisper (biased by the world's name glossary) and summarizes it into a recap — session-independent, usable on the New Session form. |
+| POST | `/api/sessions/ai/summarize-from-audio/chunk`, `/api/sessions/ai/summarize-from-audio/complete` | GM / Assistant | Chunked variant of the above for a recording over the direct-upload size threshold. |
+| POST | `/api/sessions/ai/audio-jobs`, `/api/sessions/ai/audio-jobs/chunk`, `/api/sessions/ai/audio-jobs/complete` | GM / Assistant | Transcribe (and, for `session_recap`, summarize) a session recording as a durable background job instead of blocking the upload request. |
+| GET | `/api/sessions/ai/audio-jobs/{job_id}`, `/api/sessions/ai/audio-jobs` | GM / Assistant | Poll one session audio job, or list them. |
+| POST | `/api/sessions/ai/audio-jobs/from-clip` | GM / Assistant | Starts a session audio job from an existing Audio Library clip (no re-upload). |
+| GET | `/sessions/{session_id}/summary.md` | GM / Assistant | Downloads the session's summary/recap as a Markdown file. |
+| GET | `/sessions/{session_id}/transcript.md` | GM / Assistant | Downloads the session's transcript as a Markdown file. |
+| POST | `/api/sessions/{session_id}/live-transcript/append` | GM / Assistant | Transcribes one chunk of a live session recording via Whisper and appends it to the session's running live transcript. When the client sends `save_audio`/`recording_id`/`segment_index` ("Save raw audio" checkbox), also keeps the raw segment on disk for re-transcription/download. |
+| POST | `/api/sessions/{session_id}/live-transcript/clear` | GM / Assistant | Clears the accumulated live transcript. |
+| GET | `/api/sessions/{session_id}/live-audio` | GM / Assistant | Lists the raw audio segments saved by a live recording (paths, count, total bytes). |
+| GET | `/api/sessions/{session_id}/live-audio/download` | GM / Assistant | Downloads the whole saved raw recording as one file (ffmpeg concat of the segments in order). 400 if nothing was saved or ffmpeg fails. |
+| POST | `/api/sessions/{session_id}/ai/summarize-live-transcript` | GM / Assistant | AI: summarizes the accumulated live transcript into a recap. |
+| POST | `/api/sessions/{session_id}/ai/summarize-live-transcript-job` | GM / Assistant | Durable background-job variant of the live-transcript summary above. |
+| POST | `/api/sessions/{session_id}/ai/summarize-from-facts` | GM / Assistant | AI: weaves this session's logged `Fact` rows (all of them, secret or not) into a narrative recap. |
 | GET | `/session-log` | Player | Player-facing list of sessions (title/date/number only — never the GM's raw summary). |
-| GET | `/session-log/{session_id}` | Player | Player-facing session page; fetches its AI recap client-side. 404s if the session's world isn't one the caller belongs to. |
-| POST | `/api/session-log/{session_id}/recap` | Player | AI: synthesizes a recap from only the `Fact` rows marked `visible_to_players` for this session — the GM's raw `summary` is never sent to this endpoint's caller or to the model on their behalf. GMs calling it get every fact, secret or not. |
+| GET | `/session-log/{session_id}` | Player | Player-facing session page. Serves the session's published player recap verbatim when one is published; otherwise fetches the AI facts-recap client-side (create-or-poll). 404s if the session's world isn't one the caller belongs to. |
+| POST | `/api/session-log/{session_id}/recap` | Player | AI: returns this session's cached recap, or starts a background generation job for it (poll — re-POST — until the response stops saying `{"pending": true}`). Synthesized from only the `Fact` rows marked `visible_to_players` for this session — the GM's raw `summary` is never sent to this endpoint's caller or to the model on their behalf. GMs calling it get every fact, secret or not. Accepts optional JSON options (`model`, `think`, `use_rag`, `rag_entity_limit`, `rag_notes_limit`) — a different configuration is a different artifact and regenerates. RAG is GM-only on this surface (forced off for players; the retrieval isn't visibility-filtered). |
 
 ## Facts & Chronicler
 
@@ -314,8 +340,11 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/facts/new` | GM | Creates a `Fact` (content + `visible_to_players` flag + optional linked session). |
 | POST | `/facts/{fact_id}/edit` | GM | Saves fact edits. |
 | POST | `/facts/{fact_id}/delete` | GM | Deletes a fact. |
-| POST | `/api/facts/parse` | GM | AI: turns a rough recap paste into draft facts (content + suggested visibility) via the local model — returned for review, **not written to the DB**. |
-| POST | `/api/facts/bulk` | GM | Bulk-inserts facts — the recap-review UI's "Confirm & Save" action. |
+| POST | `/api/facts/parse` | GM | AI: turns a rough recap paste into draft facts (content + suggested visibility) via the local model — returned for review, **not written to the DB**. Blocking; prefer `parse-job` for long input. |
+| POST | `/api/facts/parse-job` | GM | AI: the same parse as `/api/facts/parse` but as a durable background job — body `{text, game_session_id?, model?}`, returns `{job_id}` immediately; poll `/api/audio-jobs/{id}` (`result_json` holds the finished draft array). |
+| GET | `/api/facts/last-parse` | GM | The latest finished facts-parse job's draft for the active world — `{job_id, created_at, facts}`; 404 when there's none yet. Powers the Facts page's "Restore last parse". |
+| POST | `/api/facts/bulk` | GM | Bulk-inserts facts — the recap-review UI's "Confirm & Save" action. Duplicate content (world-scoped, case/punctuation-blind) is skipped, not re-inserted — response is `{created, skipped_duplicates}`. |
+| POST | `/api/facts/from-job/{job_id}` | GM | Confirms (or dismisses) the Facts a finished `session_recap` job auto-drafted from its transcript (`AudioJob.pending_facts_json`) — body `{facts}` may be an edited/trimmed subset (or `[]` to dismiss without saving); uses the job's own session automatically. Same dedup rule as `/api/facts/bulk`; response is `{created, skipped_duplicates}`. |
 | GET | `/chronicler` | Player | Chat page for the Chronicler assistant. |
 | POST | `/api/chronicler/ask` | Player | Answers a question using only facts/entities visible to the caller's role — the filtering happens server-side before anything reaches the model, not as a prompt instruction. |
 
@@ -334,6 +363,17 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/combat/{combat_id}/link-session` | GM | Associates this combat with a `GameSession`. |
 | POST | `/combat/{combat_id}/unlink-session` | GM | Removes that association. |
 | POST | `/api/combat/{combat_id}/sync-characters` | GM | Pulls current HP/stats from linked `PlayerCharacter` rows into the combatant list. |
+
+## Dice
+
+`app/routers/dice.py` — the shared table dice roller: system-agnostic dice notation (`2d6+3`, `d20`, `4d8+2d6+1`) with a world-scoped roll log every member (players included) can read and write.
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/dice` | Player | Dice roller page: notation form, quick-pick buttons, and the world's latest 50 rolls. |
+| POST | `/dice` | Player | Rolls from the page form and redirects back (POST-redirect-GET; invalid notation round-trips as `?error=`). |
+| POST | `/api/dice/roll` | Player | Rolls a notation string and appends the result to the world's roll log; returns the stored roll (per-die breakdown included). |
+| GET | `/api/dice/history` | Player | The world's latest 50 rolls as JSON (newest first). |
 
 ## Parties
 
@@ -356,12 +396,14 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/calendar` | GM | Calendar view with logged events. |
-| GET | `/calendar/config` | GM | Calendar configuration form (month names/lengths, starting date). |
-| POST | `/calendar/config` | GM | Saves calendar configuration. |
-| POST | `/api/calendar/events` | GM | Adds an event on a given in-world date. |
-| POST | `/api/calendar/events/{event_id}/delete` | GM | Deletes an event. |
-| POST | `/api/calendar/advance` | GM | Advances the in-world "current date" by N days. |
+| GET | `/calendar` | GM / Assistant | Calendar view with logged events. |
+| GET | `/calendar/config` | GM / Assistant | Calendar configuration form (month names/lengths, starting date). |
+| POST | `/calendar/config` | GM / Assistant | Saves calendar configuration. |
+| POST | `/api/calendar/events` | GM / Assistant | Adds an event on a given in-world date. |
+| POST | `/api/calendar/events/{event_id}/delete` | GM / Assistant | Deletes an event. |
+| POST | `/api/calendar/days/{day}/icons` | GM / Assistant | Attaches weather/condition icons to a calendar day. |
+| POST | `/api/calendar/icons/{icon_id}/delete` | GM / Assistant | Removes a day icon. |
+| POST | `/api/calendar/advance` | GM / Assistant | Advances the in-world "current date" by N days. |
 
 ## Maps
 
@@ -370,13 +412,13 @@ worlds they've been invited into (`WorldMembership`).
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/maps` | Player | Map list for the active world. |
-| GET | `/maps/new` | GM | New map form. |
-| POST | `/maps/new` | GM | Creates a map. |
-| POST | `/maps/{slug}/rename` | GM | Renames a map. |
-| POST | `/maps/{slug}/delete` | GM | Deletes a map. |
-| POST | `/maps/{slug}/upload` | GM | Uploads/replaces the map's background image. |
+| GET | `/maps/new` | GM / Assistant | New map form. |
+| POST | `/maps/new` | GM / Assistant | Creates a map. |
+| POST | `/maps/{slug}/rename` | GM / Assistant | Renames a map. |
+| POST | `/maps/{slug}/delete` | GM / Assistant | Deletes a map. |
+| POST | `/maps/{slug}/upload` | GM / Assistant | Uploads/replaces the map's background image. |
 | GET | `/maps/{slug}` | Player | Map viewer with markers/regions. |
-| POST | `/api/maps/{slug}/overlay` | GM | Saves marker/region overlay data. |
+| POST | `/api/maps/{slug}/overlay` | GM / Assistant | Saves marker/region overlay data. |
 
 ## Schematics
 
@@ -384,24 +426,24 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/maps/schematic/new` | GM | New schematic form. |
-| POST | `/maps/schematic/new` | GM | Creates a schematic. |
-| GET | `/maps/schematic/{slug}` | GM | GM editor canvas. |
-| POST | `/maps/schematic/{slug}/link-combat` | GM | Links the schematic to a `CombatSession` for token sync. |
-| POST | `/maps/schematic/{slug}/unlink-combat` | GM | Removes the combat link. |
-| POST | `/maps/schematic/{slug}/pull-combat` | GM | One-way sync Combat → Map: creates/refreshes a token for every combatant in the linked combat. |
-| POST | `/maps/schematic/{slug}/push-combat` | GM | One-way sync Map → Combat: writes token HP/max HP/conditions back onto the linked combat's combatants. |
+| GET | `/maps/schematic/new` | GM / Assistant | New schematic form. |
+| POST | `/maps/schematic/new` | GM / Assistant | Creates a schematic. |
+| GET | `/maps/schematic/{slug}` | GM / Assistant | GM editor canvas. |
+| POST | `/maps/schematic/{slug}/link-combat` | GM / Assistant | Links the schematic to a `CombatSession` for token sync. |
+| POST | `/maps/schematic/{slug}/unlink-combat` | GM / Assistant | Removes the combat link. |
+| POST | `/maps/schematic/{slug}/pull-combat` | GM / Assistant | One-way sync Combat → Map: creates/refreshes a token for every combatant in the linked combat. |
+| POST | `/maps/schematic/{slug}/push-combat` | GM / Assistant | One-way sync Map → Combat: writes token HP/max HP/conditions back onto the linked combat's combatants. |
 | GET | `/maps/schematic/{slug}/view` | Player | Read/interact-only player view (hides GM-only elements). |
 | GET | `/maps/schematic/{slug}/view.json` | Player | Player-view state as JSON (polled by the view page for live updates). |
 | POST | `/api/maps/schematic/{slug}/move-token` | Player | Moves a token — a non-GM player may only move the one token linked to their own `PlayerCharacter`. |
 | POST | `/api/maps/schematic/{slug}/pickup-item` | Player | A player picks up an entire item-token stack into their own character's inventory. |
 | POST | `/api/maps/schematic/{slug}/buy-item` | Player | A player buys one stock row from a merchant token, deducting currency and reducing stock (row-level locked against concurrent buys). |
-| POST | `/maps/schematic/{slug}/grid` | GM | Saves the grid overlay type/config (none/square/hex). |
-| POST | `/maps/schematic/{slug}/elements` | GM | Saves the full canvas element list (shapes, tokens, labels). |
-| POST | `/maps/schematic/{slug}/upload` | GM | Uploads a background image. |
-| POST | `/maps/schematic/{slug}/embed-image` | GM | Embeds a picked image file directly into an element (data-URI, no separate upload round trip) — backs the editor's 🖼 Embed Image tool. |
-| POST | `/maps/schematic/{slug}/rename` | GM | Renames a schematic. |
-| POST | `/maps/schematic/{slug}/delete` | GM | Deletes a schematic. |
+| POST | `/maps/schematic/{slug}/grid` | GM / Assistant | Saves the grid overlay type/config (none/square/hex). |
+| POST | `/maps/schematic/{slug}/elements` | GM / Assistant | Saves the full canvas element list (shapes, tokens, labels). |
+| POST | `/maps/schematic/{slug}/upload` | GM / Assistant | Uploads a background image. |
+| POST | `/maps/schematic/{slug}/embed-image` | GM / Assistant | Embeds a picked image file directly into an element (data-URI, no separate upload round trip) — backs the editor's 🖼 Embed Image tool. |
+| POST | `/maps/schematic/{slug}/rename` | GM / Assistant | Renames a schematic. |
+| POST | `/maps/schematic/{slug}/delete` | GM / Assistant | Deletes a schematic. |
 
 ## Investigation Boards
 
@@ -409,16 +451,16 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/boards` | GM | Board list. |
-| GET | `/boards/new` | GM | New board form. |
-| POST | `/boards/new` | GM | Creates a blank board. |
-| GET | `/boards/{slug}` | GM | Board canvas (nodes/edges editor). |
-| POST | `/boards/{slug}/save` | GM | Saves the node/edge layout. |
-| POST | `/boards/{slug}/delete` | GM | Deletes a board. |
-| GET | `/boards/{slug}/export` | GM | Exports the board as JSON. |
-| POST | `/boards/generate-orgs` | GM | Auto-generates a faction/organization relationship board from `organization`-kind entities and their links (radial cluster layout, plus keyword-classified allies/enemies/controls/rivals edges inferred from entity text). |
-| GET | `/api/orgs/graph` | GM | The same faction-graph data as JSON without saving a board — for external use. |
-| POST | `/boards/generate-dreamlands` | GM | Generates a fixed, bundled 50-location geographic atlas of the Dreamlands (reference content, not derived from world data). |
+| GET | `/boards` | GM / Assistant | Board list. |
+| GET | `/boards/new` | GM / Assistant | New board form. |
+| POST | `/boards/new` | GM / Assistant | Creates a blank board. |
+| GET | `/boards/{slug}` | GM / Assistant | Board canvas (nodes/edges editor). |
+| POST | `/boards/{slug}/save` | GM / Assistant | Saves the node/edge layout. |
+| POST | `/boards/{slug}/delete` | GM / Assistant | Deletes a board. |
+| GET | `/boards/{slug}/export` | GM / Assistant | Exports the board as JSON. |
+| POST | `/boards/generate-orgs` | GM / Assistant | Auto-generates a faction/organization relationship board from `organization`-kind entities and their links (radial cluster layout, plus keyword-classified allies/enemies/controls/rivals edges inferred from entity text). |
+| GET | `/api/orgs/graph` | GM / Assistant | The same faction-graph data as JSON without saving a board — for external use. |
+| POST | `/boards/generate-dreamlands` | GM / Assistant | Generates a fixed, bundled 50-location geographic atlas of the Dreamlands (reference content, not derived from world data). |
 
 ## King in Yellow & Dreamlands
 
@@ -447,19 +489,20 @@ worlds they've been invited into (`WorldMembership`).
 
 ## Audio Library
 
-`app/routers/audio.py` — a per-world tree of GM-uploaded audio clips (ambiance, sound effects, NPC voice lines, recorded handouts), organized into nested albums (`AudioAlbum`/`AudioClip` in `app/models.py`). Unlike Images (GM-only end to end), the library itself is player-safe: a player sees a read-only view filtered to `visible_to_players=True`, same default-visible convention as an `Entity`. Upload/edit/delete/album management are GM-only, enforced in each handler.
+`app/routers/audio.py` — a per-world tree of GM-uploaded audio clips (ambiance, sound effects, NPC voice lines, recorded handouts), organized into nested albums (`AudioAlbum`/`AudioClip` in `app/models.py`). Unlike Images (GM-only end to end), the library itself is player-safe: a player sees a read-only view filtered to `visible_to_players=True`, same default-visible convention as an `Entity`. Upload/edit/delete/album management are GM-or-Assistant (enforced in each handler; a GM-Assistant — see the Auth model — may manage clips like a GM, but always sees only what a player sees).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/audio` | Player | Top-level clip/album list for the active world. |
 | GET | `/audio/albums/{album_id}` | Player | One album's clips and sub-albums, with a breadcrumb. |
-| POST | `/audio/albums/new` | GM | Creates an album (optionally as a child, via `parent_id`). |
-| POST | `/audio/albums/{album_id}/rename` | GM | Renames an album. |
-| POST | `/audio/albums/{album_id}/delete` | GM | Deletes an album, cascading to its sub-albums and their clips (and files). |
-| POST | `/audio/upload` | GM | Uploads one audio clip (single request, up to `MAX_AUDIO_UPLOAD_BYTES`). |
-| POST | `/audio/upload/chunk`, `/audio/upload/complete` | GM | Client-split large-upload pair (see `app/uploads.py`) for a clip too big for a single request behind a reverse proxy's body-size cap. |
-| POST | `/audio/{clip_id}/edit` | GM | Updates a clip's name/description/visibility/album. |
-| POST | `/audio/{clip_id}/delete` | GM | Deletes a clip and its file. |
+| POST | `/audio/albums/new` | GM / Assistant | Creates an album (optionally as a child, via `parent_id`). |
+| POST | `/audio/albums/{album_id}/rename` | GM / Assistant | Renames an album. |
+| POST | `/audio/albums/{album_id}/delete` | GM / Assistant | Deletes an album, cascading to its sub-albums and their clips (and files). |
+| POST | `/audio/upload` | GM / Assistant | Uploads one audio clip (single request, up to `MAX_AUDIO_UPLOAD_BYTES`). |
+| POST | `/audio/upload/chunk`, `/audio/upload/complete` | GM / Assistant | Client-split large-upload pair (see `app/uploads.py`) for a clip too big for a single request behind a reverse proxy's body-size cap. |
+| POST | `/audio/{clip_id}/edit` | GM / Assistant | Updates a clip's name/description/visibility/album. |
+| POST | `/audio/{clip_id}/delete` | GM / Assistant | Deletes a clip and its file. |
+| GET | `/api/audio/clips` | Player | JSON clip listing for the soundboard/picker UIs, visibility-filtered. |
 
 ## Video Library
 
@@ -470,13 +513,52 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/video` | Player | Top-level clip/album list for the active world; the space-saving conversion settings panel appears here (GM only) but not inside an album. |
 | GET | `/video/albums/{album_id}` | Player | One album's clips and sub-albums, with a breadcrumb. |
 | POST | `/video/settings` | GM | Saves the world's AV1 conversion preferences (on/off, max height, target bitrate) — applies to future uploads only. |
-| POST | `/video/albums/new` | GM | Creates an album (optionally as a child, via `parent_id`). |
-| POST | `/video/albums/{album_id}/rename` | GM | Renames an album. |
-| POST | `/video/albums/{album_id}/delete` | GM | Deletes an album, cascading to its sub-albums and their clips (and files). |
-| POST | `/video/upload` | GM | Uploads one video clip (single request, up to `MAX_VIDEO_UPLOAD_BYTES`); converts to AV1 if the world has opted in, then generates a poster frame best-effort. |
-| POST | `/video/upload/chunk`, `/video/upload/complete` | GM | Client-split large-upload pair, same as the Audio Library's. |
-| POST | `/video/{clip_id}/edit` | GM | Updates a clip's name/description/visibility/album. |
-| POST | `/video/{clip_id}/delete` | GM | Deletes a clip and its file (and poster, if one was generated). |
+| POST | `/video/albums/new` | GM / Assistant | Creates an album (optionally as a child, via `parent_id`). |
+| POST | `/video/albums/{album_id}/rename` | GM / Assistant | Renames an album. |
+| POST | `/video/albums/{album_id}/delete` | GM / Assistant | Deletes an album, cascading to its sub-albums and their clips (and files). |
+| POST | `/video/upload` | GM / Assistant | Uploads one video clip (single request, up to `MAX_VIDEO_UPLOAD_BYTES`); converts to AV1 if the world has opted in, then generates a poster frame best-effort. |
+| POST | `/video/upload/chunk`, `/video/upload/complete` | GM / Assistant | Client-split large-upload pair, same as the Audio Library's. |
+| POST | `/video/{clip_id}/edit` | GM / Assistant | Updates a clip's name/description/visibility/album. |
+| POST | `/video/{clip_id}/delete` | GM / Assistant | Deletes a clip and its file (and poster, if one was generated). |
+
+## Gallery (Images)
+
+`app/routers/gallery.py` — a per-world image library organized into albums (`ImageAlbum`/`Image` in `app/models.py`), GM end to end and now open to a GM-Assistant as well (unlike the Audio/Video libraries it has no player-facing read tier): the gallery is the asset workspace feeding portraits, maps, handouts, and the Spotlight broadcast.
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/images` | GM / Assistant | Image gallery for the active world (album grid + loose images). |
+| GET | `/images/albums/{album_id}` | GM / Assistant | One album's images. |
+| POST | `/images/albums/new` | GM / Assistant | Creates an album. |
+| POST | `/images/albums/{album_id}/rename` | GM / Assistant | Renames an album. |
+| POST | `/images/albums/{album_id}/delete` | GM / Assistant | Deletes an album. |
+| POST | `/images/albums/{album_id}/upload` | GM / Assistant | Uploads images directly into an album. |
+| POST | `/images/albums/upload/chunk` | GM / Assistant | Receives one part of a large (>100 MB) album image split client-side; reassembled by `/images/albums/upload/complete`. |
+| POST | `/images/albums/upload/complete` | GM / Assistant | Reassembles a chunked album image upload (converted + thumbnailed) and attaches it to the album; returns `{"url": ...}`. |
+| POST | `/images/albums/{album_id}/add` | GM / Assistant | Adds existing uploaded images to an album. |
+| POST | `/images/albums/{album_id}/remove` | GM / Assistant | Removes an image from an album. |
+| POST | `/images/albums/{album_id}/move` | GM / Assistant | Moves an image to a different album. |
+| POST | `/images/delete` | GM / Assistant | Deletes an uploaded image. |
+| POST | `/images/spotlight` | GM / Assistant | Broadcasts an image to every open tab in the world (lightbox popup — players included). |
+| POST | `/images/spotlight/clear` | GM / Assistant | Stops the current spotlight broadcast. |
+| GET | `/api/gallery/browse` | GM / Assistant | JSON album/image listing for picker UIs. |
+
+## Pages
+
+`app/routers/pages.py` — GM-authored static document pages (house rules summaries, player guides, custom handouts) organized into albums, rendered from their source file. Player-readable once published.
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/pages` | Player | Pages list for the active world. |
+| GET | `/pages/{doc_id}` | Player | Renders one page. |
+| POST | `/pages/{doc_id}/edit` | GM / Assistant | Saves page edits (name/description/visibility/album). |
+| POST | `/pages/{doc_id}/delete` | GM / Assistant | Deletes a page and its file. |
+| POST | `/pages/upload` | GM / Assistant | Uploads a page source file (single request). |
+| POST | `/pages/upload/chunk`, `/pages/upload/complete` | GM / Assistant | Client-split large-upload pair for a page file over the direct threshold. |
+| POST | `/pages/albums/new` | GM / Assistant | Creates a pages album. |
+| POST | `/pages/albums/{album_id}/rename` | GM / Assistant | Renames a pages album. |
+| POST | `/pages/albums/{album_id}/delete` | GM / Assistant | Deletes a pages album. |
+| GET | `/pages/albums/{album_id}` | Player | One pages album's contents, with a breadcrumb. |
 
 ## Random Tables
 
@@ -484,26 +566,26 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/tables` | GM | Table list. |
-| GET | `/tables/new` | GM | New table form. |
-| POST | `/tables/new` | GM | Creates a table. |
-| GET | `/tables/{table_id}/edit` | GM | Edit form. |
-| POST | `/tables/{table_id}/edit` | GM | Saves table edits. |
-| POST | `/tables/{table_id}/delete` | GM | Deletes a table. |
-| POST | `/api/tables/{table_id}/roll` | GM | Rolls on a table and returns the result. |
-| GET | `/tables/export` | GM | Exports all tables as JSON. |
-| POST | `/tables/import` | GM | Imports tables from JSON. |
+| GET | `/tables` | GM / Assistant | Table list. |
+| GET | `/tables/new` | GM / Assistant | New table form. |
+| POST | `/tables/new` | GM / Assistant | Creates a table. |
+| GET | `/tables/{table_id}/edit` | GM / Assistant | Edit form. |
+| POST | `/tables/{table_id}/edit` | GM / Assistant | Saves table edits. |
+| POST | `/tables/{table_id}/delete` | GM / Assistant | Deletes a table. |
+| POST | `/api/tables/{table_id}/roll` | GM / Assistant | Rolls on a table and returns the result. |
+| GET | `/tables/export` | GM / Assistant | Exports all tables as JSON. |
+| POST | `/tables/import` | GM / Assistant | Imports tables from JSON. |
 
 ## Rules
 
-`app/main.py` — the per-world core-rules document (falls back to bundled N&D rules).
+`app/main.py` — the per-world core-rules document (falls back to bundled N&D rules). Rendered by `app/rules_render.py`: `:::` directive blocks (`tip`/`note`/`warning`/`danger`/`lore`/`collapse`/`gm` — themed callouts, a click-to-open section, and a GM-only block that is removed server-side for players), `statblock` fenced blocks (name + label/value rows + copy button), and an optional per-world `rules_json` overlay (section icons/titles/visibility + tabs; never included in downloads).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/rules` | Player | Rendered rules page with an auto-generated table of contents. |
-| GET | `/rules/download.md` | Player* | Downloads the rules as a `.md` file. GM always; a player only once the world's `players_can_download_rules` toggle is on (`world_edit.html`) — 403 otherwise. |
-| GET | `/worlds/{world_id}/rules/edit` | GM | Rules edit form (raw Markdown). |
-| POST | `/worlds/{world_id}/rules/edit` | GM | Saves rules Markdown. |
+| GET | `/rules` | Player | Rendered rules page with an auto-generated table of contents, section filtering via the search box, and optional tabs from the world's `rules_json` overlay. |
+| GET | `/rules/download.md` | Player* | Downloads the rules as a `.md` file (pure Markdown source — no overlay, directives left as written). GM always; a player only once the world's `players_can_download_rules` toggle is on (`world_edit.html`) — 403 otherwise. |
+| GET | `/worlds/{world_id}/rules/edit` | GM | Rules edit form (raw Markdown + `rules_json` overlay textarea, with a directives/overlay cheatsheet; shows why a stored overlay is being ignored, if it is). |
+| POST | `/worlds/{world_id}/rules/edit` | GM | Saves rules Markdown plus the optional `rules_json` overlay (blank clears it; invalid JSON or wrong shape → 400 with the parse error). |
 | POST | `/worlds/{world_id}/rules/import` | GM | Imports rules from a JSON file shaped `{"rules_md": "...markdown..."}`. |
 
 ## Search
@@ -511,6 +593,7 @@ worlds they've been invited into (`WorldMembership`).
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/search` | Player | Full-text search across entity names, tags, summaries, and body text, filtered to what the caller may see. |
+| GET | `/api/spotlight` | Player | Current spotlight image + version counter — polled by every open tab so a GM's broadcast pops up for players too. |
 
 ## Import / Export
 
@@ -518,12 +601,12 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/import` | GM | Import page: JSON bulk import, bulk image matching, bulk AVIF/WebP re-encode. |
-| POST | `/api/import` | GM | Legacy single-shot bulk JSON import endpoint. |
-| POST | `/api/import/images` | GM | Bulk portrait/art import — files matched by filename to existing entities. |
-| POST | `/api/import/detect` | GM | Inspects an uploaded JSON payload and classifies each item's likely kind/shape before import. |
-| POST | `/api/import/execute` | GM | Executes a reviewed/confirmed bulk import. |
-| POST | `/api/import/convert-images` | GM | Retroactively re-encodes every image already in the active world (entity/character art, schematic/board images, gallery albums, maps) to a target format (AVIF/WebP/PNG/JPG). Preserves each image's readable filename (see `app/uploads.py`'s `unique_upload_filename`) — only the extension changes — and rewrites every reference to that image consistently, even one shared across an entity and a gallery album. |
+| GET | `/import` | GM / Assistant | Import page: JSON bulk import, bulk image matching, bulk AVIF/WebP re-encode. |
+| POST | `/api/import` | GM / Assistant | Legacy single-shot bulk JSON import endpoint. |
+| POST | `/api/import/images` | GM / Assistant | Bulk portrait/art import — files matched by filename to existing entities. |
+| POST | `/api/import/detect` | GM / Assistant | Inspects an uploaded JSON payload and classifies each item's likely kind/shape before import. |
+| POST | `/api/import/execute` | GM / Assistant | Executes a reviewed/confirmed bulk import. |
+| POST | `/api/import/convert-images` | GM / Assistant | Retroactively re-encodes every image already in the active world (entity/character art, schematic/board images, gallery albums, maps) to a target format (AVIF/WebP/PNG/JPG). Preserves each image's readable filename (see `app/uploads.py`'s `unique_upload_filename`) — only the extension changes — and rewrites every reference to that image consistently, even one shared across an entity and a gallery album. |
 | GET | `/api/worlds/{world_id}/content-pack` | Player | A world's homebrew races/professions/feats/items as JSON, for the NeonDragonsApp Android app's content sync. |
 | GET | `/export` | GM | **Export & Backup hub page** — one place linking Full Backup, World Book, World JSON (single/split), and Import, each with a one-line explanation of when to use it. Replaces the old scattered nav/world-card export buttons. |
 | GET | `/export/book.zip` | GM | Downloads a zip containing a readable HTML "book" export of the active world's lore (entities, boards, maps, rules) — linked from the hub above. |
@@ -532,6 +615,8 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/worlds/{world_id}/export/player-characters.json` | GM | All player characters in this world as JSON. |
 | GET | `/worlds/{world_id}/export/entities/{kind}.json` | GM | All entities of one kind as JSON. |
 | GET | `/worlds/{world_id}/export/templates/{template_id}.json` | GM | One Sheet Template as JSON. |
+| GET | `/export/foundry.json` | GM | Foundry VTT import pack for the whole active world. |
+| GET | `/export/rules-and-notes.md` | GM | Downloads the world's rules plus entity notes as one Markdown file. |
 
 ## AI — Chat & World-Building
 
@@ -540,11 +625,11 @@ worlds they've been invited into (`WorldMembership`).
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/ai` | GM | AI chat page (Chat / Image Gen / Models / Whisper / Starred tabs). |
-| GET | `/api/ai/world-context` | GM | Keyword-search RAG context (relevant entities) for the current chat, unfiltered by player visibility. |
-| POST | `/api/ai/world-context-smart` | GM | Same, backed by an FTS5 full-text index over entity name/summary/body/tags (falls back to plain `LIKE` if FTS5 is unavailable) — also returns `entities` (what was actually retrieved, for the RAG transparency panel/pinning). |
-| POST | `/api/ai/save-note` | GM | Saves an AI chat response as a note on an entity. |
-| POST | `/api/ai/generate/entity-smart` | GM | Generates a full draft entity (name/summary/body) from a prompt, with world context. |
-| POST | `/api/ai/entity-from-text` | GM | Turns a pasted/dictated passage into a draft entity. |
+| GET | `/api/ai/world-context` | GM / Assistant | Keyword-search RAG context (relevant entities) for the current chat, unfiltered by player visibility. |
+| POST | `/api/ai/world-context-smart` | GM / Assistant | Same, backed by an FTS5 full-text index over entity name/summary/body/tags (falls back to plain `LIKE` if FTS5 is unavailable) — also returns `entities` (what was actually retrieved, for the RAG transparency panel/pinning). |
+| POST | `/api/ai/save-note` | GM / Assistant | Saves an AI chat response as a note on an entity. |
+| POST | `/api/ai/generate/entity-smart` | GM / Assistant | Generates a full draft entity (name/summary/body) from a prompt, with world context. |
+| POST | `/api/ai/entity-from-text` | GM / Assistant | Turns a pasted/dictated passage into a draft entity. |
 | POST | `/api/ai/chat` | GM | Non-streaming chat completion. |
 | POST | `/api/ai/stream` | GM* | Streaming chat completion (SSE) — GM always; a player may if the active world's `players_can_ask_ai` is on. Accepts a per-request `options` (temperature/top_p/etc, clamped) and a `surface` for per-surface default-model fallback; the SSE stream leads with a `note` event if the requested model had to be fuzzy-matched to an available one. |
 | GET | `/api/ai/models` | GM | Lists available/known Ollama models with loaded/builtin flags. |
@@ -583,13 +668,21 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/api/ai/chat/jobs/{job_id}` | GM | Poll one chat job. |
 | POST | `/api/ai/chat/jobs/{job_id}/cancel` | GM | Cancels an in-progress chat job. |
 | DELETE | `/api/ai/chat/jobs/{job_id}` | GM | Deletes a finished chat job (400 if still in progress — cancel first). |
-| POST | `/api/ai/generate/entity` | GM | Generates an expanded description for a named entity. |
-| POST | `/api/ai/generate/npc` | GM | Generates an NPC backstory/personality. |
-| POST | `/api/ai/generate/location` | GM | Generates a location description. |
-| POST | `/api/ai/generate/quest` | GM | Generates a quest hook. |
+| POST | `/api/ai/generate/entity` | GM / Assistant | Generates an expanded description for a named entity. |
+| POST | `/api/ai/generate/npc` | GM / Assistant | Generates an NPC backstory/personality. |
+| POST | `/api/ai/generate/location` | GM / Assistant | Generates a location description. |
+| POST | `/api/ai/generate/quest` | GM / Assistant | Generates a quest hook. |
 | POST | `/api/ai/status` | GM | Ollama connectivity/model status. |
 | GET | `/api/ai/test-chat` | GM | Single-turn non-streaming smoke test — surfaces the exact Ollama error for a given model id, plus a `note` if it had to be fuzzy-matched. |
 | GET | `/api/ai/ping` | GM | SSE smoke test that streams 5 dummy tokens without touching Ollama, to isolate transport issues from model issues. |
+| GET | `/api/ai/context-info` | GM | Token/context-window usage estimate for the current chat session (the context-usage indicator). |
+| POST | `/api/ai/chat/compact` | GM* | Compacts a chat session's history into a shorter summary — player-reachable sibling of `/api/ai/stream` (same `players_can_ask_ai` gate). |
+| GET | `/api/ai/ollama/hf-search` | GM | Searches Hugging Face for GGUF-tagged model repos (Models tab's HF search). |
+| GET | `/api/ai/ollama/hf-files` | GM | Lists a Hugging Face repo's GGUF files for direct import. |
+| POST | `/api/ai/ollama/upload/direct` | GM | Points Ollama at a remote GGUF URL to pull itself (no nd-world relay). |
+| POST | `/api/ai/ollama/upload/chunk`, `/api/ai/ollama/upload/complete` | GM | Client-split upload pair for pushing a local `.gguf` into Ollama (up to `MAX_MODEL_UPLOAD_BYTES`). |
+| GET | `/api/ai/ollama/upload/status/{import_id}` | GM | Progress of an in-flight .gguf upload/pull. |
+| GET/POST | `/api/ai/whisper/denoise` | GM | Lists the bundled audio-denoise profiles / enqueues a denoise job for an audio attachment or session recording. |
 
 \* GM always; a player may if the active world's `players_can_ask_ai` is on (same axis `/api/ai/stream` uses) — these routes back the per-entity "Ask AI" / "Talk as this NPC" panel, not the GM-only `/ai` World Chat page.
 
@@ -624,27 +717,34 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/api/ai/imagegen/jobs/{job_id}` | GM | Poll one image generation job. |
 | POST | `/api/ai/imagegen/jobs/{job_id}/cancel` | GM | Cancels an in-progress image generation job. |
 | DELETE | `/api/ai/imagegen/jobs/{job_id}` | GM | Deletes a finished image generation job (400 if still in progress — cancel first). |
+| GET | `/api/ai/imagegen/backends` | GM | Which image-generation backends (SwarmUI/ComfyUI) are configured and reachable. |
+| GET | `/api/ai/imagegen/updates` | GM | Backend version/update availability (the VRAM/status card's update strip). |
+| POST | `/api/ai/imagegen/restart` | GM | Restarts the SwarmUI backend service. |
+| POST | `/api/ai/imagegen/update` | GM | Updates the SwarmUI backend in place. |
+| POST | `/api/ai/imagegen/free-memory` | GM | Asks the backend to unload models and free VRAM. |
 
 ## Background Jobs
 
 `app/routers/audio_jobs.py` — a unified view over every durable `AudioJob`
 regardless of which surface started it (Session Recap, an AI Chat/Ask AI
 voice-memo attachment, or the Whisper Test tab), backing the standalone
-**Background Jobs** page where a GM can see everything in flight across the
-whole world in one place, separate from the smaller inline panels embedded
+**Background Jobs** page where a GM (or a GM-Assistant) can see everything
+in flight across the whole world in one place, separate from the smaller inline panels embedded
 on each originating page. See [Updating without losing in-flight
 jobs](DEPLOYMENT.md#updating-without-losing-in-flight-jobs) for what
 `status: "interrupted"` and the resume flow below mean.
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/background-jobs` | GM | The standalone Background Jobs page. |
-| GET | `/api/audio-jobs` | GM | Every job for the active world, any purpose, most recent first. |
-| GET | `/api/audio-jobs/{job_id}` | GM | Poll one job. |
-| POST | `/api/audio-jobs/{job_id}/cancel` | GM | Cancels an in-progress job. |
-| DELETE | `/api/audio-jobs/{job_id}` | GM | Deletes a finished job (400 if still in progress — cancel first). |
-| POST | `/api/audio-jobs/{job_id}/resummarize` | GM | Re-runs just the summarization step against the job's already-saved transcript, optionally with a different model/instructions — no re-upload or re-transcription needed. Always a fresh pass, not a continuation of an interrupted attempt (see the next row for that). |
-| POST | `/api/audio-jobs/{job_id}/resume` | GM | Continue a job interrupted by a server restart (`status: "interrupted"`) from its saved checkpoint — a true resume, picking up from the exact chunk it left off on. Always resets the auto-resume attempt counter, since a manual click is a deliberate decision, not another automatic retry. 400 if the job isn't in the `"interrupted"` state, or if there's nothing left to resume from (audio gone, no transcript). |
+| GET | `/background-jobs` | GM / Assistant | The standalone Background Jobs page. |
+| GET | `/api/audio-jobs` | GM / Assistant | Every job for the active world, any purpose, most recent first. Optional filters: `purpose`, `status` (an exact status, or `running` = any in-progress phase), `game_session_id`. |
+| GET | `/api/audio-jobs/{job_id}` | GM / Assistant | Poll one job. |
+| POST | `/api/audio-jobs/{job_id}/cancel` | GM / Assistant | Cancels an in-progress job. |
+| GET | `/api/audio-jobs/{job_id}/transcript.md` | GM / Assistant | Downloads a finished job's transcript as a Markdown file. |
+| GET | `/api/audio-jobs/{job_id}/recap.md` | GM / Assistant | Downloads a finished job's AI recap as a Markdown file. |
+| DELETE | `/api/audio-jobs/{job_id}` | GM / Assistant | Deletes a finished job (400 if still in progress — cancel first). |
+| POST | `/api/audio-jobs/{job_id}/resummarize` | GM / Assistant | Re-runs just the summarization step against the job's already-saved transcript, optionally with a different model/instructions — no re-upload or re-transcription needed. Always a fresh pass, not a continuation of an interrupted attempt (see the next row for that). |
+| POST | `/api/audio-jobs/{job_id}/resume` | GM / Assistant | Continue a job interrupted by a server restart (`status: "interrupted"`) from its saved checkpoint — a true resume, picking up from the exact chunk it left off on. Always resets the auto-resume attempt counter, since a manual click is a deliberate decision, not another automatic retry. 400 if the job isn't in the `"interrupted"` state, or if there's nothing left to resume from (audio gone, no transcript). |
 
 ## Settings
 
@@ -655,12 +755,17 @@ jobs](DEPLOYMENT.md#updating-without-losing-in-flight-jobs) for what
 | GET | `/settings` | GM | Settings page (Options / System / Visibility tabs). |
 | POST | `/settings` | GM | Saves per-GM display preferences. |
 | POST | `/settings/system` | GM | Saves instance-wide settings: image format/quality, Ollama URL/model override, per-request Ollama generation tuning (temperature/top_p/.../use_mmap, a VRAM override for hardware detection), Ollama server-level tuning (flash attention, KV cache type, and the rest — written to a shared-volume env file for the "ollama" service to pick up on its next restart; see docs/DEPLOYMENT.md), SwarmUI/Android-emulator/Editor external URLs, hover-preview timing, and the Dreamlands/King in Yellow enable toggles. |
+| POST | `/settings/system/model-override` | GM | Saves a per-model Ollama override (default options + "supports thinking" flag) for one installed model. |
+| POST | `/settings/system/model-override/delete` | GM | Deletes a per-model override. |
 
 ## Admin & Uploads
 
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/admin/backup.zip` | GM | Streams a full-fidelity backup zip: a consistent `VACUUM INTO` snapshot of `world.db`, all uploads, all map JSON, and a row-count manifest. Safe to run against a live database. |
+| GET | `/api/backups` | GM | Lists scheduled DB snapshots (`ND_BACKUP_DIR`) — 400 if scheduled backups aren't configured. |
+| POST | `/api/backups/run` | GM | Takes a `VACUUM INTO` snapshot right now and prunes to `ND_BACKUP_KEEP` — same primitive the optional scheduler thread runs on `ND_BACKUP_INTERVAL_SECONDS`. |
+| POST | `/worlds/{world_id}/nav-menus/edit` | GM | Saves this world's customized top-nav menu grouping (Settings > Navigation). |
 | GET | `/imagestudio` | GM | Embedded SwarmUI iframe (`SWARMUI_EXTERNAL_URL`). |
 | GET | `/androidapp` | Player | Embedded noVNC viewer for the optional Android-emulator Compose profile. |
 | GET | `/editor` | GM | Embedded noVNC viewer for the optional NeonDragonsEditor Compose profile. |

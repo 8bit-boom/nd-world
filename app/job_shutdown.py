@@ -119,9 +119,27 @@ async def drain(tasks: list[asyncio.Task], grace: float | None = None) -> int:
     if not tasks:
         return 0
 
-    _done, pending = await asyncio.wait(tasks, timeout=STOP_GRACE_SECONDS if grace is None else grace)
+    # A task whose own event loop is already closed can never run or finish
+    # again — in the test suite a previous test's TestClient portal loop can
+    # leave a cancelled-but-never-settled job task in an engine's registry,
+    # and handing it to asyncio.wait below would burn the whole settle window
+    # on a task that cancel() cannot even reach (it raises through the task's
+    # own closed loop). Exclude them up front; mark_stragglers_interrupted()
+    # is the fallback for whatever DB state they were in when their loop died.
+    live = [t for t in tasks if not t.get_loop().is_closed()]
+    stranded = len(tasks) - len(live)
+    if stranded:
+        _log.warning(
+            "%d job task(s) belong to an already-closed event loop and can never "
+            "settle; treating them as shutdown stragglers",
+            stranded,
+        )
+    if not live:
+        return stranded
+
+    _done, pending = await asyncio.wait(live, timeout=STOP_GRACE_SECONDS if grace is None else grace)
     if not pending:
-        return 0
+        return stranded
 
     for task in pending:
         task.cancel()
@@ -133,4 +151,4 @@ async def drain(tasks: list[asyncio.Task], grace: float | None = None) -> int:
             "is the fallback for whatever state they left in the DB",
             len(still_pending), _CANCEL_SETTLE_SECONDS,
         )
-    return len(pending)
+    return len(pending) + stranded

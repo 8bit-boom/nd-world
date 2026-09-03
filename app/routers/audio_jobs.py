@@ -5,13 +5,15 @@ purpose-scoped create/chunk/complete/list routes (app/routers/sessions.py,
 app/routers/ai.py) since the upload mechanics and per-purpose result shape
 differ, but status/cancel is identical for every job once it exists, so
 that part lives here once instead of being duplicated a third time. Powers
-the standalone "Background Jobs" page (GM-only) where a GM can see
+the standalone "Background Jobs" page (GM + GM-Assistant) where
+they can see
 everything in flight across the whole world and cancel one, separate from
 the smaller inline panels embedded on each originating page.
 """
 import io
 import json
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -20,18 +22,30 @@ from sqlalchemy.orm import Session
 from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
 from ..database import get_db
-from ..deps import get_world_ctx, paginate
+from ..deps import get_world_ctx, paginate, can_edit_content
 from ..models import AudioJob
 from ..templating import templates
 
 router = APIRouter()
 
-PURPOSE_LABELS = {"session_recap": "Session Recap", "attachment": "Voice Attachment", "condense": "Condense"}
+PURPOSE_LABELS = {
+    "session_recap": "Session Recap", "attachment": "Voice Attachment", "condense": "Condense",
+    # Same short label the job row already gets from filename="Facts" (see
+    # create_facts_parse_job) — the chip and the row title agree instead of
+    # the chip falling back to the raw purpose string.
+    "facts_parse": "Facts",
+    # Same deal: filename="Session Log recap" (create_session_log_recap_job).
+    "session_log_recap": "Session Log recap",
+}
 
 
-def _require_gm(request: Request) -> None:
-    user = getattr(request.state, "user", None)
-    if not (user and user.is_gm):
+def _require_can_edit(request: Request) -> None:
+    """A GM, or a GM-Assistant (WorldMembership.role == "assistant") — the
+    Background Jobs page and API are content tooling (assistants upload
+    session recordings and watch/cancel/retry the resulting jobs, and the
+    auth_gate's _is_assistant_safe already allows every route here for
+    them), so this replaces the old GM-only gate wholesale."""
+    if not can_edit_content(request):
         raise HTTPException(403)
 
 
@@ -42,6 +56,11 @@ def _job_to_dict(job: AudioJob) -> dict:
         "filename": job.filename, "status": job.status, "error": job.error,
         "transcript": job.transcript, "recap": job.recap, "model": job.model or "",
         "extra_instructions": job.extra_instructions or "",
+        # purpose="facts_parse" only: the finished parse draft as a JSON
+        # array of {content, visible_to_players} dicts (see AudioJob.
+        # result_json) — the Facts page's poll loop parses this into its
+        # review rows, and "Restore last parse" reads it back after a reload.
+        "result_json": job.result_json or "",
         "attachment_url": job.attachment_url, "game_session_id": job.game_session_id,
         "chunk_current": job.chunk_current, "chunk_total": job.chunk_total,
         "run_started_at": job.run_started_at.isoformat() if job.run_started_at else None,
@@ -54,6 +73,13 @@ def _job_to_dict(job: AudioJob) -> dict:
         # Retry-summary row's checkbox pre-checks correctly for every job.
         "think": job.think if job.think is not None else True,
         "fit_context": bool(job.fit_context),
+        # purpose="condense" only: the strictness this job was created with
+        # ("guideline"|"firm"|"strict") — NULL (a pre-migration row, or one
+        # created before the setting existed) reads as "guideline", the
+        # default it was created under. Exposed so the jobs UI can explain
+        # which enforcement level produced the recap; see AudioJob.
+        # condense_strictness and app.audio_jobs._run_job.
+        "strictness": job.condense_strictness or "guideline",
         "use_rag": bool(job.use_rag),
         "rag_entity_limit": job.rag_entity_limit,
         "rag_notes_limit": job.rag_notes_limit,
@@ -72,6 +98,11 @@ def _job_to_dict(job: AudioJob) -> dict:
         # think_fallback's budget-starvation case; the GM-facing guidance
         # differs (untick the override vs. give it more headroom).
         "think_rejected": bool(job.think_rejected),
+        # True when that rejection was worked around with the <|think|>
+        # prompt token for a vouched model (ollama#16936) — reasoning DID
+        # run, so think stays true and the UI note is informational rather
+        # than "untick the override". See AudioJob.think_token_fallback.
+        "think_token_fallback": bool(job.think_token_fallback),
         # True once the auto-retry ladder ever climbed into an EXPANDED
         # budget rung for this job — see AudioJob.expanded_thinking's own
         # docstring. Can be True with think_fallback False (the expanded
@@ -109,7 +140,7 @@ def _safe_json_list(raw: str) -> list:
 
 @router.get("/background-jobs", response_class=HTMLResponse)
 def background_jobs_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_gm(request)
+    _require_can_edit(request)
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -120,21 +151,44 @@ def background_jobs_page(request: Request, db: Session = Depends(get_db), active
 
 @router.get("/api/audio-jobs")
 def api_audio_job_list(
-    request: Request, page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None),
+    request: Request, page: int = 1, purpose: str = "", status: str = "",
+    game_session_id: Optional[int] = None,
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
-    """Every job for the active world, any purpose, most recent first."""
-    _require_gm(request)
+    """Every job for the active world, any purpose, most recent first.
+
+    Optional filters, added as the one list endpoint started serving more
+    surfaces than the Background Jobs page's flat timeline: `purpose`
+    (exact match, e.g. "facts_parse" — the jobs page's purpose dropdown),
+    `status` (either an exact status, or "running" meaning everything in
+    IN_PROGRESS_STATUSES — the UI thinks in "still going vs finished",
+    not in the individual phase names), and `game_session_id` (jobs made
+    FOR that session). An unrecognized purpose/status value simply matches
+    nothing rather than 400ing — a stale dropdown option degrading to an
+    empty list is friendlier than an error page, and the dropdowns are
+    always populated from real values anyway."""
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
-    base_q = db.query(AudioJob).filter(AudioJob.world_id == world.id).order_by(AudioJob.created_at.desc())
+    base_q = db.query(AudioJob).filter(AudioJob.world_id == world.id)
+    if purpose:
+        base_q = base_q.filter(AudioJob.purpose == purpose)
+    if status:
+        if status == "running":
+            base_q = base_q.filter(AudioJob.status.in_(_audio_jobs.IN_PROGRESS_STATUSES))
+        else:
+            base_q = base_q.filter(AudioJob.status == status)
+    if game_session_id is not None:
+        base_q = base_q.filter(AudioJob.game_session_id == game_session_id)
+    base_q = base_q.order_by(AudioJob.created_at.desc())
     jobs, page, total_pages = paginate(base_q, page)
     return {"jobs": [_job_to_dict(j) for j in jobs], "page": page, "total_pages": total_pages}
 
 
 @router.get("/api/audio-jobs/{job_id}")
 def api_audio_job_status(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -155,7 +209,7 @@ def _audio_job_download_filename(job: AudioJob, suffix: str) -> str:
 
 @router.get("/api/audio-jobs/{job_id}/transcript.md")
 def api_audio_job_download_transcript(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -172,7 +226,7 @@ def api_audio_job_download_transcript(job_id: int, request: Request, db: Session
 
 @router.get("/api/audio-jobs/{job_id}/recap.md")
 def api_audio_job_download_recap(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -189,7 +243,7 @@ def api_audio_job_download_recap(job_id: int, request: Request, db: Session = De
 
 @router.post("/api/audio-jobs/{job_id}/cancel")
 def api_audio_job_cancel(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -205,7 +259,7 @@ def api_audio_job_cancel(job_id: int, request: Request, db: Session = Depends(ge
 
 @router.delete("/api/audio-jobs/{job_id}")
 def api_audio_job_delete(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -235,7 +289,7 @@ async def api_audio_job_resummarize(
     be a routine way to trip the reverse proxy's own timeout). The caller
     polls the regular job list/status routes for the result, same as any
     other in-flight job on this page."""
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
@@ -258,7 +312,7 @@ async def api_audio_job_resume(job_id: int, request: Request, db: Session = Depe
     another automatic retry, so a job that hit job_shutdown.
     MAX_AUTO_RESUMES and gave up automatically can still be resumed by
     hand without immediately re-hitting that same cap."""
-    _require_gm(request)
+    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)

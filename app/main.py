@@ -29,12 +29,14 @@ from . import deps
 from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
 from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache
-from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE
+from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content
 from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html
+from .rules_render import (apply_rules_overlay, extract_blocks,
+                           parse_rules_overlay, restore_blocks, split_rules_sections)
 from .templating import templates
-from .uploads import copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob
+from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -62,8 +64,19 @@ from .routers.gallery import router as gallery_router
 from .routers.audio import router as audio_router
 from .routers.audio_jobs import router as audio_jobs_router
 from .routers.video import router as video_router, _delete_clip_file as _delete_video_clip_file
+# Module references (not just `router`) for the upload-limit routers — their
+# MAX_* env-default constants feed Settings > System's "Upload limits"
+# placeholders, imported rather than re-declared so the form can never drift
+# from the limit actually enforced when nothing is saved (see
+# _UPLOAD_LIMIT_FIELDS).
+from .routers import ai as _ai_router_module
+from .routers import audio as _audio_router_module
+from .routers import gallery as _gallery_router_module
+from .routers import video as _video_router_module
 from .routers.pages import router as pages_router, _delete_doc_file as _delete_page_doc_file
 from .routers.nav_menus_admin import router as nav_menus_admin_router
+from .routers.dice import router as dice_router
+from .routers.backups import router as backups_router
 from . import gallery as _gallery_module
 from . import mcp_server
 from . import ai as _ai_module
@@ -72,6 +85,7 @@ from . import ollama_tuning as _tuning
 from . import chat_jobs as _chat_jobs
 from . import image_jobs as _image_jobs
 from . import job_shutdown as _job_shutdown
+from . import backups as _backups
 from . import auth as _auth
 from .constants import KINDS, SUBTYPES, KIND_ICONS
 
@@ -138,6 +152,8 @@ app.include_router(audio_jobs_router)
 app.include_router(video_router)
 app.include_router(pages_router)
 app.include_router(nav_menus_admin_router)
+app.include_router(dice_router)
+app.include_router(backups_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 
@@ -251,6 +267,9 @@ def _startup_tasks():
     _audio_jobs.resume_interrupted_jobs()
     _image_jobs.resume_interrupted_jobs()
     _chat_jobs.resume_interrupted_jobs()
+    # Optional scheduled DB snapshots — no-op unless ND_BACKUP_DIR is set,
+    # so the test suite (which never sets it) never grows a thread.
+    _backups.start()
 
 
 async def _shutdown_tasks():
@@ -265,6 +284,7 @@ async def _shutdown_tasks():
     _audio_jobs.mark_stragglers_interrupted()
     _image_jobs.mark_stragglers_interrupted()
     _chat_jobs.mark_stragglers_interrupted()
+    _backups.stop()
 
 
 
@@ -357,6 +377,24 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if re.match(r"^/api/session-log/\d+/recap$", path):
         return True
+    if path in ("/dice", "/api/dice/roll", "/api/dice/history"):
+        # The shared dice roller: every member of the active world may roll
+        # and read the roll log — world membership (get_world_ctx inside
+        # app/routers/dice.py) is the only gate, matching how a real table
+        # shares dice. GET and POST both included, deliberately before the
+        # GET-only section below.
+        return True
+    if method == "GET" and path == "/api/ai/models":
+        # Read-only model catalog (ids/labels + which are downloaded) — every
+        # player-facing recap surface with a model picker fetches it (the
+        # Session Log page above all), and a 403 there left the picker
+        # silently empty for exactly the non-GM accounts it exists for. No
+        # secrets in the payload: it's the same catalog the GM /ai page's
+        # Models tab shows. Deliberately GET-only and one exact path — every
+        # other /api/ai route (model/preset management and friends) stays
+        # GM-only; the players_can_ask_ai-gated stream endpoints listed
+        # above are the separate, deliberate chat exceptions.
+        return True
     if method != "GET":
         return False
     if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log", "/audio", "/video", "/pages"):
@@ -386,6 +424,186 @@ def _is_player_safe(method: str, path: str) -> bool:
     return False
 
 
+# ── GM-Assistant allowlist ─────────────────────────────────────────────────────
+# POLICY: a GM-Assistant (a WorldMembership with role="assistant" in the
+# ACTIVE world — checked per-request by _is_assistant_member below) may
+# create/edit/delete world CONTENT — entities and their notes, sessions and
+# the session-recording tooling, the calendar, random tables, investigation
+# boards, maps and schematics, pages, gallery albums, audio/video clips, and
+# the bulk-content import tools — everything a GM does to fill the world, on
+# top of seeing exactly what a player sees (visibility filters stay keyed on
+# is_gm; an assistant never sees hidden rows a player wouldn't).
+# World ADMINISTRATION stays GM-only: Settings, world create/edit/delete and
+# everything under /worlds/*, memberships/invites, backups, export, AI model
+# management and system info (/settings/system, /api/ai model/preset/whisper
+# routes), imagegen backends, MCP (which keeps its own is_gm checks). Like
+# _is_player_safe above, this list must be extended DELIBERATELY: any route
+# not matched here is GM-only for an assistant too, so new routes stay safe
+# by default.
+def _is_assistant_safe(method: str, path: str) -> bool:
+    # Entities — every POST under /entity/* is content mutation (edit,
+    # duplicate, delete, link/unlink, notes add/import/toggle/delete); the
+    # only GET that isn't already player-safe is the edit form itself.
+    # /entity/{id} and /entity/{id}/download.md reads stay on the player
+    # tier (download is gated by the world's players_can_download_entities
+    # toggle for non-GMs).
+    if path.startswith("/entity/") and (method == "POST" or re.match(r"^/entity/\d+/edit$", path)):
+        return True
+    if path in ("/new",) and method in ("GET", "POST"):
+        # New-entity form + create (kind via query param / form field).
+        return True
+    if path == "/api/upload-image" and method == "POST":
+        # Rich-text toolbar image upload on entity body/notes fields.
+        return True
+    if method == "POST" and re.match(r"^/api/entity/\d+/image$", path):
+        # Image Studio's "Set as portrait" — entity content.
+        return True
+    if method == "POST" and re.match(r"^/kind/[^/]+/bulk-delete$", path):
+        # The list pages' bulk-action bar.
+        return True
+    if path == "/api/entities/bulk-folder" and method == "POST":
+        # Folder organization is content curation — unlike bulk-visibility
+        # (Settings > Visibility tab), which stays GM-only: what players can
+        # see is the GM's call, made per-world in Settings.
+        return True
+    if path == "/folders/rename" and method == "POST":
+        # Entity-folder organization in the /kind list pages.
+        return True
+    # Sessions & session-recording tooling — all content (prep lists, XP/loot
+    # logging, recaps, transcripts, the AI recap assistants). /session-log*
+    # reads and /api/session-log/{id}/recap are already player-safe.
+    if path == "/sessions" or path.startswith("/sessions/"):
+        return True
+    if path.startswith("/api/sessions/"):
+        return True
+    # Facts — the discrete session log IS content (the whole feature is
+    # "log what happened in play", the same tier as a session's Summary
+    # field): the list page, quick-add/edit/delete forms, and every /api/
+    # facts route (the parser, last-parse restore, and the bulk confirm
+    # that writes the reviewed draft). All methods deliberately — CRUD is
+    # content, same trust level as entity notes an assistant already
+    # manages.
+    if path == "/facts" or path.startswith("/facts/") or path.startswith("/api/facts/"):
+        return True
+    # Calendar — in-world dates/events are content.
+    if path == "/calendar" or path.startswith("/calendar/") or path.startswith("/api/calendar/"):
+        return True
+    # Random tables — including the tables area's own JSON export/import pair
+    # (a content round-trip, not the world-level /export* surface, which
+    # stays GM-only).
+    if path == "/tables" or path.startswith("/tables/") or path.startswith("/api/tables/"):
+        return True
+    # Investigation boards — layout/content editing and the two generators.
+    if path == "/boards" or path.startswith("/boards/") or path == "/api/orgs/graph":
+        return True
+    # Maps + schematics. Player reads are already player-safe; what's added
+    # here is creation (new/upload), the GM editor canvas, and every
+    # management POST (rename/delete/overlay/grid/elements/embed-image/combat
+    # links). Deliberately segment-anchored like _is_player_safe so a plain
+    # map named "schematic-x" can't slip into these prefixes.
+    if path in ("/maps/new",) and method in ("GET", "POST"):
+        return True
+    if method == "POST" and re.match(r"^/maps/[^/]+/(rename|delete|upload)$", path):
+        return True
+    if method == "POST" and re.match(r"^/api/maps/[^/]+/overlay$", path):
+        return True
+    if path == "/maps/schematic/new" and method in ("GET", "POST"):
+        return True
+    if method == "GET" and re.match(r"^/maps/schematic/[^/]+$", path):
+        # The GM schematic editor canvas itself — editing is its purpose.
+        return True
+    if method == "POST" and path.startswith("/maps/schematic/"):
+        return True
+    # Gallery (images) — albums, uploads, spotlight broadcast; content end to
+    # end per the plan (unlike Audio/Video/Pages it has no player tier, so
+    # every route here is new for an assistant).
+    if path == "/images" or path.startswith("/images/") or path == "/api/gallery/browse":
+        return True
+    # Pages — upload/edit/delete and album management; reads are player-safe.
+    if method == "POST" and (path in ("/pages/upload", "/pages/upload/chunk", "/pages/upload/complete")
+                             or path.startswith("/pages/albums/")
+                             or re.match(r"^/pages/\d+/(edit|delete)$", path)):
+        return True
+    # Audio library — clip upload (incl. the chunked pair) and album/clip
+    # management; GETs and the read-only player view are already player-safe.
+    if method == "POST" and (path.startswith("/audio/albums/")
+                             or path in ("/audio/upload", "/audio/upload/chunk", "/audio/upload/complete")
+                             or re.match(r"^/audio/\d+/(edit|delete)$", path)):
+        return True
+    if path == "/api/audio/clips" and method == "GET":
+        # Session-page "choose from Audio Library" picker JSON.
+        return True
+    # Video library — same shape as audio. /video/settings (AV1 conversion
+    # preferences — a world upload-policy setting) stays GM-only.
+    if method == "POST" and (path.startswith("/video/albums/")
+                             or path in ("/video/upload", "/video/upload/chunk", "/video/upload/complete")
+                             or re.match(r"^/video/\d+/(edit|delete)$", path)):
+        return True
+    # Background jobs — the unified view over every durable transcription job
+    # (session recordings above all): assistants upload session recordings
+    # and watch/cancel/retry their jobs like the GM does.
+    if path == "/background-jobs" and method == "GET":
+        return True
+    if path == "/api/audio-jobs" and method == "GET":
+        return True
+    if path.startswith("/api/audio-jobs/"):
+        return True
+    # Bulk-content import tools — the /import page and every /api/import*
+    # endpoint (JSON bulk import, image matching, AVIF/WebP re-encode).
+    # Deliberately NOT /worlds/{id}/import (world administration, and
+    # /worlds/* is excluded wholesale below) nor anything under /export*.
+    if path == "/import" and method == "GET":
+        return True
+    if method == "POST" and (path == "/api/import" or path.startswith("/api/import/")):
+        return True
+    # AI content-generation endpoints only — the entity editor's smart-draft
+    # button and the world-context RAG lookups it (and the note saver) rely
+    # on, plus the standalone entity/npc/location/quest drafters. Everything
+    # else under /api/ai — the /ai chat page surface, model/preset/whisper
+    # management, imagegen, chat history — stays GM-only.
+    if method == "POST" and path in (
+        "/api/ai/generate/entity-smart",
+        "/api/ai/generate/entity",
+        "/api/ai/generate/npc",
+        "/api/ai/generate/location",
+        "/api/ai/generate/quest",
+        "/api/ai/entity-from-text",
+        "/api/ai/save-note",
+        "/api/ai/world-context-smart",
+    ):
+        return True
+    if path == "/api/ai/world-context" and method == "GET":
+        return True
+    return False
+
+
+def _is_assistant_member(db, request: Request, user) -> bool:
+    """Does this non-GM user hold role="assistant" in their ACTIVE world?
+
+    Resolves the active world exactly like get_world_ctx does — ?w=<slug>
+    query param over the active_world cookie, falling back to the first
+    world the user is a member of when the cookie is absent or stale — then
+    checks that world's WorldMembership row. Missing world/membership →
+    False. Only called for non-GM requests (GMs are can_edit everywhere
+    already); runs one indexed query over the user's own memberships, the
+    same query get_world_ctx would run downstream anyway, so the per-request
+    cost is one extra SQLite-local lookup."""
+    active = resolve_world_slug(request, request.cookies.get(DEFAULT_WORLD_COOKIE))
+    rows = (
+        db.query(WorldMembership, World.slug)
+        .join(World, World.id == WorldMembership.world_id)
+        .filter(WorldMembership.user_id == user.id)
+        .order_by(World.id)
+        .all()
+    )
+    if not rows:
+        return False
+    membership = next((m for m, slug in rows if slug == active), None)
+    if membership is None:
+        membership = rows[0][0]  # same first-accessible-world fallback as get_world_ctx
+    return membership.role == "assistant"
+
+
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
     path = request.url.path
@@ -412,6 +630,18 @@ async def auth_gate(request: Request, call_next):
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.id == user_id).first()
+        # Assistant flag for the GM-Assistant role (WorldMembership.role ==
+        # "assistant"): computed for EVERY non-GM request, not just ones that
+        # fail the player-safe check, because templates consult can_edit(request)
+        # (request.state.is_assistant underneath) to decide whether to render
+        # content-creation controls on player-visible pages too (the entity
+        # detail page's note form, the "+ New" nav button, ...). Tradeoff,
+        # accepted deliberately: this is one extra membership query on every
+        # non-GM request — SQLite-local and the same query get_world_ctx runs
+        # downstream on most pages anyway. GMs skip it (they can already edit
+        # everything); a user who turns out to be logged-out/session-stale
+        # wastes the lookup, which is the rare path.
+        is_assistant = bool(user and not user.is_gm and _is_assistant_member(db, request, user))
     finally:
         db.close()
     if not user:
@@ -427,17 +657,22 @@ async def auth_gate(request: Request, call_next):
             return JSONResponse({"detail": "Session expired — please log in again."}, status_code=401)
         return RedirectResponse(f"/login?next={quote(path)}", status_code=303)
 
-    if not user.is_gm and not _is_player_safe(request.method, path):
-        if path.startswith("/api/"):
-            return JSONResponse({"detail": "GM access required"}, status_code=403)
-        return HTMLResponse(
-            "<body style='background:#0a0a0f;color:#c8d0e0;font-family:monospace;padding:2rem'>"
-            "<h1 style='color:#ff2d78'>403 — GM access required</h1>"
-            "<p><a href='/' style='color:#00f0ff'>&larr; Back</a></p></body>",
-            status_code=403,
-        )
-
     request.state.user = user
+    # Always present so templates can read it unconditionally (a GM renders
+    # the same controls via can_edit()'s is_gm half — always False here).
+    request.state.is_assistant = is_assistant
+
+    if not user.is_gm and not _is_player_safe(request.method, path):
+        if not (is_assistant and _is_assistant_safe(request.method, path)):
+            if path.startswith("/api/"):
+                return JSONResponse({"detail": "GM access required"}, status_code=403)
+            return HTMLResponse(
+                "<body style='background:#0a0a0f;color:#c8d0e0;font-family:monospace;padding:2rem'>"
+                "<h1 style='color:#ff2d78'>403 — GM access required</h1>"
+                "<p><a href='/' style='color:#00f0ff'>&larr; Back</a></p></body>",
+                status_code=403,
+            )
+
     return await call_next(request)
 
 
@@ -458,16 +693,35 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").strip().lower() == "tru
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, https_only=COOKIE_SECURE, same_site="lax")
 
 
-def _rules_toc(html: str):
+def _rules_toc(html_str: str):
+    # NOTE: the parameter is html_str (not html) — the html module is used
+    # inside for entity unescaping, and a parameter of that name would
+    # shadow it.
     toc = []
     def _repl(m):
         lvl, inner = m.group(1), m.group(2)
-        text = re.sub(r'<[^>]+>', '', inner)
+        # html.unescape: the heading's inner HTML can carry entities ("&amp;"
+        # for "&" — doc-export rules MD is often pre-escaped), and this text
+        # is rendered through the template's auto-escaping, which would turn
+        # a passed-through "&amp;" into the literal text "&amp;". Unescaping
+        # here means auto-escape re-encodes exactly once for display.
+        text = html.unescape(re.sub(r'<[^>]+>', '', inner))
         slug = re.sub(r'[^\w]+', '-', text.lower()).strip('-') or 'sec'
         toc.append({'level': int(lvl), 'text': text, 'id': slug})
         return f'<h{lvl} id="{slug}">{inner}</h{lvl}>'
-    html = re.sub(r'<h([23])>(.*?)</h\1>', _repl, html, flags=re.DOTALL)
-    return html, toc
+    html_str = re.sub(r'<h([23])>(.*?)</h\1>', _repl, html_str, flags=re.DOTALL)
+    return html_str, toc
+
+def _effective_general_upload_bytes(db: Session) -> int:
+    """The general upload cap for this request: the GM's saved
+    AppSettings.max_upload_mb (Settings > System's "Upload limits" — applies
+    to new uploads immediately, no restart) or the MAX_UPLOAD_BYTES env
+    default when left blank. Used by every copy_upload_bounded call site
+    without a category-specific limit of its own (portraits, maps,
+    schematics); see effective_upload_bytes (app/uploads.py)."""
+    settings = get_app_settings(db)
+    return effective_upload_bytes(getattr(settings, "max_upload_mb", None), MAX_UPLOAD_BYTES)
+
 
 def save_upload(file: UploadFile, subdir: str = "", db: Optional[Session] = None):
     if not file or not file.filename:
@@ -479,9 +733,15 @@ def save_upload(file: UploadFile, subdir: str = "", db: Optional[Session] = None
     target_dir = UPLOADS_DIR / subdir if subdir else UPLOADS_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / filename
-    copy_upload_bounded(file, dest)
     if db is not None:
         settings = get_app_settings(db)
+        copy_upload_bounded(file, dest, max_bytes=effective_upload_bytes(
+            getattr(settings, "max_upload_mb", None), MAX_UPLOAD_BYTES))
+    else:
+        # No session from this caller — same env-default fallback
+        # copy_upload_bounded itself applies when max_bytes is None.
+        copy_upload_bounded(file, dest)
+    if db is not None:
         dest = convert_image(dest, static_format=settings.static_format,
                               animated_format=settings.animated_format)
     else:
@@ -796,7 +1056,7 @@ _WORLD_DELETE_MODELS = (
     InvestBoard, RandomTable, CombatSession, Party, Quest, GameSession,
     WorldCalendar, CalendarEvent, CalendarDayIcon, ImageAlbum, AudioClip, AudioAlbum,
     VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset,
-    AudioJob, ImageJob, ChatJob, EntityTemplate, SheetTemplate,
+    AudioJob, ImageJob, ChatJob, EntityTemplate, SheetTemplate, DiceRoll,
 )
 
 
@@ -1018,6 +1278,28 @@ def member_remove(world_id: int, user_id: int, db: Session = Depends(get_db)):
     if m:
         db.delete(m)
         db.commit()
+    return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
+
+
+@app.post("/worlds/{world_id}/members/{user_id}/role")
+def member_set_role(
+    world_id: int, user_id: int, role: str = Form(...), db: Session = Depends(get_db)
+):
+    """Promote/demote a member between "player" and "assistant" (see
+    WorldMembership.role in app/models.py). GM-only — it's not in
+    _is_player_safe or _is_assistant_safe, so the auth_gate already turned
+    any non-GM away before we get here (an assistant managing their own
+    role would defeat the whole tier). Unknown roles are a 400 rather than
+    a silent no-op so a template typo can't quietly reset someone."""
+    if role not in ("player", "assistant"):
+        raise HTTPException(400, "Role must be 'player' or 'assistant'")
+    m = db.query(WorldMembership).filter(
+        WorldMembership.world_id == world_id, WorldMembership.user_id == user_id
+    ).first()
+    if not m:
+        raise HTTPException(404)
+    m.role = role
+    db.commit()
     return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
 
 
@@ -1503,7 +1785,8 @@ async def map_new(
         if ext in ALLOWED_EXTS:
             maps_upload_dir = UPLOADS_DIR / "maps"
             maps_upload_dir.mkdir(parents=True, exist_ok=True)
-            copy_upload_bounded(image_file, maps_upload_dir / (slug + ext))
+            copy_upload_bounded(image_file, maps_upload_dir / (slug + ext),
+                                max_bytes=_effective_general_upload_bytes(db))
     return RedirectResponse(f"/maps/{slug}", status_code=303)
 
 @app.post("/maps/{slug}/rename")
@@ -1582,7 +1865,7 @@ async def map_upload_image(slug: str, request: Request, file: UploadFile = File(
         if old.exists():
             old.unlink()
     dest = maps_upload_dir / (slug + ext)
-    copy_upload_bounded(file, dest)
+    copy_upload_bounded(file, dest, max_bytes=_effective_general_upload_bytes(db))
     return RedirectResponse("/maps", status_code=303)
 
 def _world_parties_payload(db: Session, world_id: int):
@@ -1715,12 +1998,54 @@ def rules_page(request: Request, db: Session = Depends(get_db), active_world: st
     world = get_active_world(request, db, active_world)
     worlds = _visible_worlds(request, db)
     md = _world_rules_markdown(world)
-    content, toc = _rules_toc(render_md(md) if md else "<p>No rules have been added for this world yet.</p>")
+    # Uploaded rules MD (especially Word/Google-Docs exports) often carries
+    # PRE-ESCAPED HTML entities rather than bare characters — real-world
+    # files contain "&amp;amp;" where the author typed "&". markdown2 passes
+    # entities through untouched, so that rendered as the literal text
+    # "&amp;" on the page. Unescape once at render time to normalize; the
+    # result goes through render_md whose safe_mode="escape" still
+    # neutralizes any raw tag the unescape resurrects (an entity-encoded
+    # anchor comes back as a tag and is re-stripped below / shown as inert
+    # text), so the stored-XSS guard is unaffected. /rules/download.md keeps
+    # serving the file exactly as uploaded — this is a display fix only.
+    md = html.unescape(md)
+    md = _RULES_LEGACY_ANCHOR_RE.sub("", md)
     user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
+    if md.strip():
+        # Phased pipeline, not the one-shot rules_render.render_rules_markdown:
+        # the skeleton (directives/statblocks swapped for sentinel paragraphs)
+        # must go through _rules_toc BEFORE the blocks are restored, so a
+        # "## Heading" typed INSIDE a :::collapse block carries no id — an id
+        # there would put a hidden heading in the TOC and make
+        # split_rules_sections cut the block's <div>/<details> open mid-element
+        # at its next split point. Block inner markdown still renders through
+        # the same escape-guarded pipeline (see app.rules_render).
+        skeleton, blocks = extract_blocks(md)
+        content, _ = _rules_toc(render_md(skeleton))
+        content = restore_blocks(content, blocks, is_gm)
+    else:
+        content = "<p>No rules have been added for this world yet.</p>"
+    sections = split_rules_sections(content)
+    tabs = None
+    if world:
+        # Overlay is display metadata only — an unparseable stored overlay is
+        # logged and ignored here (page still renders, no tabs/no renames);
+        # the same parse runs at save time and rejects bad JSON with a 400.
+        overlay, overlay_err = parse_rules_overlay(world.rules_json)
+        if overlay_err:
+            _log.warning("World %s rules_json ignored: %s", world.slug, overlay_err)
+        sections, tabs = apply_rules_overlay(sections, overlay, is_gm)
+    # TOC built from the FINAL visible sections (post :::gm / players_visible
+    # filtering, with overlay icons/titles), so the sidebar can never link to
+    # a section a viewer isn't shipped.
+    toc = [{"level": s["level"], "text": s["title"], "id": s["id"]}
+           for s in sections if s["id"]]
     is_custom = bool(world and (world.rules_md or "").strip())
     return templates.TemplateResponse("rules.html", {
-        "request": request, "world": world, "worlds": worlds, "content": content, "toc": toc,
-        "is_custom_rules": is_custom, "can_edit": bool(user and user.is_gm),
+        "request": request, "world": world, "worlds": worlds, "toc": toc,
+        "sections": sections, "tabs": tabs, "tabs_mode": bool(tabs),
+        "is_custom_rules": is_custom, "can_edit_rules": bool(user and user.is_gm),
     })
 
 
@@ -1745,16 +2070,33 @@ def world_rules_edit_form(world_id: int, request: Request, db: Session = Depends
     if not w:
         raise HTTPException(404)
     world, worlds = get_world_ctx(request, db, active_world)
+    # Re-validate the STORED overlay so a GM opening the editor sees why the
+    # rules page is currently ignoring it (the page itself only logs).
+    _, rules_json_error = parse_rules_overlay(w.rules_json)
     return templates.TemplateResponse("rules_edit.html", {
         "request": request, "world": world, "worlds": worlds, "edit_world": w,
+        "rules_json_error": rules_json_error,
     })
 
 
 @app.post("/worlds/{world_id}/rules/edit")
-def world_rules_edit_post(world_id: int, rules_md: str = Form(""), db: Session = Depends(get_db)):
+def world_rules_edit_post(world_id: int, rules_md: str = Form(""), rules_json: str = Form(""),
+                          db: Session = Depends(get_db)):
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
+    # Blank overlay clears it (the always-rendered textarea makes "absent" and
+    # "empty" the same thing); anything else must parse as a valid overlay —
+    # rejected with a 400 carrying the exact parse error rather than silently
+    # saved-then-ignored, so the GM sees the mistake in the moment of saving.
+    raw_json = rules_json.strip()
+    if raw_json:
+        _, rules_json_error = parse_rules_overlay(raw_json)
+        if rules_json_error:
+            raise HTTPException(400, f"rules_json: {rules_json_error}")
+        w.rules_json = raw_json
+    else:
+        w.rules_json = None
     w.rules_md = rules_md.strip() or None
     db.commit()
     return RedirectResponse("/rules", status_code=303)
@@ -2345,7 +2687,7 @@ async def schematic_upload_image(slug: str, file: UploadFile = File(...), db: Se
         old = sch_dir / (slug + old_ext)
         if old.exists(): old.unlink()
     dest = sch_dir / (slug + ext)
-    copy_upload_bounded(file, dest)
+    copy_upload_bounded(file, dest, max_bytes=_effective_general_upload_bytes(db))
     s.image_url = f"/uploads/schematics/{slug}{ext}"
     db.commit()
     return RedirectResponse(f"/maps/schematic/{slug}", status_code=303)
@@ -2376,7 +2718,7 @@ async def schematic_embed_image(slug: str, file: UploadFile = File(...), db: Ses
     embeds_dir = UPLOADS_DIR / "schematics" / "embeds"
     embeds_dir.mkdir(parents=True, exist_ok=True)
     fname = unique_upload_filename(file.filename, ext)
-    copy_upload_bounded(file, embeds_dir / fname)
+    copy_upload_bounded(file, embeds_dir / fname, max_bytes=_effective_general_upload_bytes(db))
     return {"url": f"/uploads/schematics/embeds/{fname}"}
 
 @app.post("/maps/schematic/{slug}/rename")
@@ -2660,6 +3002,22 @@ def content_editor(request: Request, db: Session = Depends(get_db), active_world
         "editor_url": editor_url,
     })
 
+# The five Settings > System "Upload limits" fields — each pairs its
+# AppSettings column name with the module-level MAX_* env-default constant it
+# falls back to when blank (see AppSettings.max_upload_mb's comment in
+# models.py and effective_upload_bytes in app/uploads.py). The defaults are
+# imported from each limit's enforcement-site router rather than re-declared
+# here, so the placeholder shown in the form can never drift from the value
+# actually enforced when nothing is saved.
+_UPLOAD_LIMIT_FIELDS = (
+    ("max_upload_mb", "General uploads (images, maps, schematics)", MAX_UPLOAD_BYTES),
+    ("max_gallery_upload_mb", "Gallery albums", _gallery_router_module._MAX_GALLERY_UPLOAD_BYTES),
+    ("max_video_mb", "Video clips", _video_router_module._MAX_VIDEO_BYTES),
+    ("max_audio_mb", "Audio library", _audio_router_module._MAX_AUDIO_BYTES),
+    ("max_ai_attachment_mb", "AI voice-memo attachments", _ai_router_module._MAX_ATTACHMENT_AUDIO_BYTES),
+)
+
+
 def _settings_context(request: Request, db: Session, active_world: str, tab: str, system_error: str = None):
     world, worlds = get_world_ctx(request, db, active_world)
     settings = get_app_settings(db)
@@ -2700,6 +3058,18 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "env_android_emulator_url": ANDROID_EMULATOR_URL,
         "env_editor_external_url": EDITOR_EXTERNAL_URL,
         "env_whisper_url": _ai_module.WHISPER_URL,
+        # Settings > System's "Upload limits" — per field: the saved value
+        # (None when unset, matching this page's existing "leave a field
+        # blank to fall back to its env default" convention — so merely
+        # re-saving this form never materializes the env defaults as
+        # explicit overrides) and the env default in MB for the placeholder.
+        # See _UPLOAD_LIMIT_FIELDS above.
+        "upload_limit_fields": [
+            {"name": name, "label": label,
+             "value": getattr(settings, name, None),
+             "env_default_mb": default_bytes // (1024 * 1024)}
+            for name, label, default_bytes in _UPLOAD_LIMIT_FIELDS
+        ],
         "system_error": system_error,
         "vis_entities": vis_entities,
         "world_players": world_players,
@@ -2770,6 +3140,11 @@ def settings_system_save(
     android_emulator_url: str = Form(""),
     editor_external_url: str = Form(""),
     whisper_url: str = Form(""),
+    max_upload_mb: str = Form(""),
+    max_gallery_upload_mb: str = Form(""),
+    max_video_mb: str = Form(""),
+    max_audio_mb: str = Form(""),
+    max_ai_attachment_mb: str = Form(""),
     dreamlands_enabled: Optional[str] = Form(None),
     king_in_yellow_enabled: Optional[str] = Form(None),
     ollama_temperature: str = Form(""),
@@ -2864,6 +3239,29 @@ def settings_system_save(
         ("ollama_vram_override_mb", "VRAM override (MB)", ollama_vram_override_mb, int, 0, 1048576),
     ):
         val, err = _parse_optional_number(label, raw, kind, lo, hi)
+        if err:
+            return templates.TemplateResponse(
+                "settings.html",
+                _settings_context(request, db, active_world, "system", system_error=err),
+                status_code=400,
+            )
+        parsed[field] = val
+
+    # Upload size limits (Settings > System's "Upload limits") — same
+    # blank-means-unset numeric convention and the same 400-on-invalid
+    # rejection as the Ollama tuning loop above, via its parser. Blank →
+    # NULL → that limit's MAX_* env default keeps applying; a non-number
+    # or <= 0 MB entry is a mistake, not something to clamp (same
+    # "reject, don't guess" choice num_ctx=0 gets). Whole MB only — every
+    # limit label in the app already speaks MB.
+    for field, label, raw in (
+        ("max_upload_mb", "General upload limit (MB)", max_upload_mb),
+        ("max_gallery_upload_mb", "Gallery album upload limit (MB)", max_gallery_upload_mb),
+        ("max_video_mb", "Video upload limit (MB)", max_video_mb),
+        ("max_audio_mb", "Audio upload limit (MB)", max_audio_mb),
+        ("max_ai_attachment_mb", "AI voice-memo attachment limit (MB)", max_ai_attachment_mb),
+    ):
+        val, err = _parse_optional_number(label, raw, int, 1, None)
         if err:
             return templates.TemplateResponse(
                 "settings.html",
@@ -3718,10 +4116,11 @@ def api_entity_set_image(
     """Sets an entity's portrait directly from a URL — Image Studio's
     "Set as portrait"/"Attach" actions on a generated image, without
     round-tripping through the full entity edit form (which requires every
-    other field). GM-only, world-scoped like every other entity-mutating
+    other field). Content editing (an entity's portrait), so GM-Assistants
+    pass too — matching the middleware tier the rest of the entity-editing
+    routes sit behind; world-scoped like every other entity-mutating
     route (see delete() above for the same ownership-check shape)."""
-    user = getattr(request.state, "user", None)
-    if not (user and user.is_gm):
+    if not can_edit_content(request):
         raise HTTPException(403)
     entity = db.get(Entity, entity_id)
     if not entity:

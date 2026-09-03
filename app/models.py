@@ -126,6 +126,25 @@ class World(Base):
     # (background job, one-shot upload, and re-summarize), same per-world
     # scope as whisper_glossary. NULL/"" = no extra instructions.
     recap_instructions = Column(Text, nullable=True)
+    # Durable watermark for recap-affecting content mutations that leave no
+    # per-Fact row behind to timestamp: a recap-instructions save (the text is
+    # baked into every generated recap, but isn't Fact data) and a Fact
+    # DELETION (the row is gone, so Fact.updated_at — the per-fact half of
+    # the session-log recap freshness rule, see
+    # app/routers.sessions.api_session_log_recap — can't record it; without
+    # this bump, deleting a session's NEWEST fact would make every older
+    # done recap look "fresh" again and resurrect text the GM just removed).
+    # A done/in-flight session_log_recap job is only served when its
+    # created_at postdates this value (NULL = never touched = epoch, so
+    # existing installs' rows stay fresh by every job they had). Deliberately
+    # NOT an in-process module global (the mechanism this replaces): that
+    # rewound to "nothing stale" on every restart — resurrecting pre-restart
+    # fact-hiding edits to players — and was world-blind, letting a World B
+    # edit invalidate World A's recaps. A DB column is restart-safe and
+    # per-world. worlds is not in database._migrate's _heal_table_from_model
+    # list (it predates that helper), so this column gets the hand-typed
+    # ALTER entry there, following the rules_json precedent.
+    recap_content_touch = Column(DateTime, nullable=True)
     # Video Library space-saving: when enabled, every future upload to
     # /video is re-encoded to AV1 (see app/routers/video.py's
     # _convert_video) before being stored — off by default, since AV1
@@ -146,6 +165,22 @@ class World(Base):
     # to the bundled Neon & Dragons core_rules.md, for worlds actually running
     # N&D and any world created before this field existed.
     rules_md = Column(Text, nullable=True)
+    # Optional per-world rules-page overlay (JSON string) — pure UI metadata
+    # layered on top of the RENDERED rules, never part of the rules document
+    # itself (so /rules/download.md keeps serving the pure MD source). Schema
+    # (validated by app.rules_render.parse_rules_overlay, applied by
+    # apply_rules_overlay):
+    #   {"sections": {"<section-slug>": {"icon": "🧬", "title": "Races & Optional Systems",
+    #                                      "players_visible": true, "order": 2}},
+    #    "tabs": [{"id": "core", "label": "Core", "sections": ["slug", "slug"]}]}
+    # Section slugs are the ones main._rules_toc generates from ##/### headings.
+    # icon/title rename the section (TOC + heading), order reorders it in the
+    # flat flow (tabs flow uses the tab's own list order), players_visible:false
+    # hard-hides it from non-GM viewers server-side (same as :::gm blocks).
+    # NULL/"" = no overlay, plain single-page flow. Invalid JSON is ignored at
+    # render time (logged) and rejected with a 400 at save time so the GM sees
+    # the parse error immediately.
+    rules_json = Column(Text, default="")
     # GM-authored blurb shown at the top of the world's home page (/),
     # Markdown, rendered with the same `md` Jinja filter as rules_md/entity
     # bodies. NULL = no blurb.
@@ -266,6 +301,15 @@ class WorldMembership(Base):
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     joined_at = Column(DateTime, default=datetime.utcnow)
+    # "player" (default — join a world, see what players see) or "assistant"
+    # (a trusted table helper: player visibility — existing visibility filters
+    # stay keyed on is_gm — but may create/edit world CONTENT; the route-level
+    # half of that promise lives in _is_assistant_safe in app/main.py).
+    # server_default matters alongside the Python default: it's what makes a
+    # fresh create_all() schema carry DEFAULT 'player' in the DDL itself,
+    # matching the ALTER TABLE _migrate() issues for existing installs (so a
+    # row written by anything that skips the ORM still lands as a player).
+    role = Column(String(20), default="player", nullable=False, server_default="player")
 
     world = relationship("World")
     user = relationship("User")
@@ -366,6 +410,28 @@ class EntityNote(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     entity = relationship("Entity", backref="notes")
+
+
+class DiceRoll(Base):
+    """One shared dice roll — the table's roll log. World-scoped so players
+    only ever see rolls made in worlds they belong to; every member of the
+    world can roll and read (players included — see _is_player_safe), with
+    the roller's display name denormalized onto the row so the log stays
+    readable even if the account is later deleted."""
+    __tablename__ = "dice_rolls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    user_name = Column(String(120), nullable=False, default="")
+    notation = Column(String(120), nullable=False)
+    # JSON array of per-term results, e.g. [{"term":"2d6","rolls":[3,5],"sum":8},{"term":"+1","sum":1}]
+    breakdown = Column(Text, nullable=False, default="[]")
+    total = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # The roll-log page reads "newest 50 in this world" on every visit.
+    __table_args__ = (Index("ix_dice_rolls_world_created", "world_id", "created_at"),)
 
 
 class PlayerCharacter(Base):
@@ -799,6 +865,34 @@ class GameSession(Base):
     # writes/applies an AI draft into — this is the messy raw material that
     # feeds it, via summarize_transcript.
     live_transcript = Column(Text, default="")
+    # JSON array of the raw segment files saved alongside a live recording
+    # (opt-in via the recording panel's "Save raw audio" checkbox): relative
+    # paths under the uploads dir, "live/<session_id>/<recording_id>/<6-digit
+    # segment index><ext>", in recording order — see /live-transcript/append
+    # in routers/sessions.py, which writes one entry per uploaded segment.
+    # Kept at all because Whisper hallucination loops / boundary duplicates
+    # (the known failure modes of chunked transcription) make a transcript
+    # unrecoverable once the audio is gone — with the audio on disk a bad
+    # transcript can be re-transcribed later with better settings, and the
+    # whole recording reassembled for download. Empty/NULL = nothing saved
+    # (the default, and every upload made with "Save raw audio" unchecked).
+    # game_sessions IS in database._migrate's _heal_table_from_model list,
+    # so existing installs get this column automatically on next boot.
+    live_audio_files_json = Column(Text, default="")
+    # The GM-curated PLAYER-facing recap for this session — what the Session
+    # Log (the player-visible pages) shows. This closes the "two parallel
+    # recap worlds" gap: `summary` above has always been the GM's own
+    # polished recap (never player-visible), while players got a separate
+    # AI-generated recap woven only from Fact rows — so a session with a
+    # great summary but no facts showed players nothing, and nothing the GM
+    # curated ever reached them. Flow: the GM writes or pulls an AI draft
+    # into player_summary, hits Publish, and the Session Log serves it
+    # verbatim; unpublish (or an empty text) falls the Session Log back to
+    # its facts-recap pipeline. game_sessions IS in database._migrate's
+    # _heal_table_from_model list, so existing installs get these columns
+    # automatically on next boot.
+    player_summary = Column(Text, default="")
+    player_summary_published = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -839,6 +933,41 @@ class AudioJob(Base):
     error = Column(Text, default="")
     transcript = Column(Text, default="")
     recap = Column(Text, default="")  # only populated for purpose="session_recap"
+    # Only populated for purpose="facts_parse" once done — the parse result
+    # (a JSON array of {content, visible_to_players} dicts, exactly what
+    # app.ai.parse_facts_from_recap returns) serialized so the parsed draft
+    # survives a page reload: the Facts page's "Restore last parse" reads it
+    # back from the latest done facts_parse job instead of the browser having
+    # had to keep the draft alive. Deliberately a generic JSON blob (not
+    # squeezed into `recap`) so it can never be mistaken for a displayable
+    # recap by the jobs UI's existing transcript/recap rendering. Empty for
+    # every other purpose. Existing installs get the column via
+    # database._migrate's _heal_table_from_model pass, same as every other
+    # late-added audio_jobs column.
+    result_json = Column(Text, default="")
+    # purpose="session_log_recap" only: which fact-visibility filter produced
+    # this job's result_json — "gm" (every fact, secret or not) or "players"
+    # (only visible_to_players, same boundary the synchronous session-log
+    # recap route applied per-caller). The recap genuinely differs between
+    # the two, so the (session, audience) pair — not the session alone — is
+    # what a fresh/stale/in-flight job lookup keys on. Persisted (not just a
+    # call-time argument) so the polling route can find the right job back
+    # after a reload, same as game_session_id/model above. Empty for every
+    # other purpose. Existing installs get the column via database._migrate's
+    # _heal_table_from_model pass, same as every other late-added audio_jobs
+    # column.
+    audience = Column(String(20), default="")
+    # Only meaningful for purpose="facts_parse": flipped to True by POST
+    # /api/facts/bulk once the draft rows on this job's result_json have been
+    # reviewed and saved as Facts (the request carries the job_id it came
+    # from — see that route). GET /api/facts/last-parse then skips consumed
+    # rows, so "Restore last parse" never re-offers a draft that was already
+    # confirmed — before this flag existed, restoring and re-saving the same
+    # job's draft silently duplicated every fact in it. NULL (the pre-column
+    # default on existing installs, healed in via _heal_table_from_model
+    # same as every other late-added audio_jobs column) reads as not
+    # consumed, exactly the behavior those rows always had.
+    draft_consumed = Column(Boolean, nullable=True)
     # Only populated for purpose="attachment" once done — where the
     # uploaded audio ended up, so it can be attached to a chat message
     # without re-uploading (same shape as /api/ai/attachments/upload's own
@@ -925,6 +1054,18 @@ class AudioJob(Base):
     # can't do it, full stop" (untick its Settings > System override), not
     # "give it a bigger budget." False for every job that never hit this.
     think_rejected = Column(Boolean, default=False)
+    # Set alongside think_rejected when the rejection was Ollama's missing
+    # capability tag on an hf.co-imported GGUF (ollama#16936) that nd-world
+    # worked around by sending the <|think|> prompt token instead (see
+    # app.ai.model_thinks_via_prompt_token). The recap in that case WAS
+    # produced with reasoning, so `think` deliberately stays True (unlike a
+    # bare think_rejected, which flips it to False) and the Background Jobs
+    # note differs: informational "reasoning ran via the token", not
+    # "written with Thinking off / untick the override". False for every
+    # job that never hit this. Existing installs get the column via
+    # database._migrate's _heal_table_from_model pass, same as every other
+    # late-added audio_jobs column.
+    think_token_fallback = Column(Boolean, default=False)
     # Set when the auto-retry ladder above ever had to climb into an
     # EXPANDED budget rung (see app.ai.expanded_thinking_options and
     # app.audio_jobs._run_job's attempt_plans) — i.e. even the normal
@@ -949,6 +1090,16 @@ class AudioJob(Base):
     # separate column needed for that.
     min_tokens = Column(Integer, nullable=True)
     max_tokens = Column(Integer, nullable=True)
+    # purpose="condense" only: persisted condense strictness
+    # ("guideline"|"firm"|"strict") steering how hard min/max/
+    # extra-instructions are enforced in the prompt and whether a strict
+    # out-of-band auto-retry runs (see app.audio_jobs._run_job) —
+    # "guideline" is today's best-effort behavior. Persisted (not just a
+    # call-time argument) so a resume/redo reuses the same strictness the
+    # GM originally set, same as min_tokens/max_tokens above. Existing
+    # installs get the column via database._migrate's _heal_table_from_model
+    # pass, same as every other late-added audio_jobs column.
+    condense_strictness = Column(String, default="guideline")
     # purpose="condense"/"session_recap" only: opt this run into RAG —
     # retrieving relevant World entities/notes and prepending them to the
     # summarize/condense system prompt for accuracy (spelling names,
@@ -1342,6 +1493,44 @@ class AppSettings(Base):
     # ids can't be columns. A model with no entry here just uses the plain
     # instance-wide fields above, unchanged.
     ollama_model_overrides_json = Column(Text, default="{}")
+    # ── Upload size limits (Settings > System's "Upload limits" section) ──
+    # Stored in MB — the unit every limit label in the UI already uses — as
+    # nullable Integer columns. NULL (the state on any existing install the
+    # migration adds the columns to, and any blank form field) means "use
+    # the MAX_UPLOAD_BYTES / MAX_GALLERY_UPLOAD_BYTES / MAX_VIDEO_UPLOAD_BYTES
+    # / MAX_AUDIO_UPLOAD_BYTES environment default", so a GM raising a limit
+    # here never has to touch docker-compose, and an env-var deployment keeps
+    # working unchanged. The effective bytes value is (value * 1 MB), computed
+    # per request by effective_upload_bytes() (app/uploads.py) plus each
+    # enforcement site's own _effective_*_bytes() helper — so a saved value
+    # applies to new uploads immediately, no restart. One column per
+    # enforcement site (not one global knob) because the limits exist for
+    # different reasons at different magnitudes — a 20 MB portrait cap and a
+    # 2 GB video cap shouldn't move together.
+    # General copy_upload_bounded/read_upload_bounded default
+    # (app/uploads.py MAX_UPLOAD_BYTES): portraits, maps, schematic
+    # embeds, calendar icons, home background, bulk import — the
+    # small-file cap that keeps unbounded uploads from filling /data.
+    max_upload_mb = Column(Integer, nullable=True)
+    # Gallery album image uploads (app/routers/gallery.py
+    # _MAX_GALLERY_UPLOAD_BYTES, env MAX_GALLERY_UPLOAD_BYTES, 500 MB) —
+    # big animated art legitimately exceeds the general cap.
+    max_gallery_upload_mb = Column(Integer, nullable=True)
+    # /video clips (app/routers/video.py _MAX_VIDEO_BYTES, env
+    # MAX_VIDEO_UPLOAD_BYTES, 2048 MB) — shown on the video page's
+    # "Up to N MB each" hint.
+    max_video_mb = Column(Integer, nullable=True)
+    # /audio clips (app/routers/audio.py _MAX_AUDIO_BYTES, env
+    # MAX_AUDIO_UPLOAD_BYTES, 1024 MB) — shown on the audio page's
+    # "Up to N MB each" hint.
+    max_audio_mb = Column(Integer, nullable=True)
+    # AI chat/Ask AI voice-memo attachments (app/routers/ai.py
+    # _MAX_ATTACHMENT_AUDIO_BYTES, same env var as the audio library but
+    # a separate enforcement site — image/document attachments keep their
+    # own _MAX_ATTACHMENT_BYTES/MAX_AI_ATTACHMENT_BYTES env cap, which
+    # deliberately isn't a column: a smaller voice-memo limit shouldn't
+    # silently change what a dropped PDF may weigh).
+    max_ai_attachment_mb = Column(Integer, nullable=True)
     # Hover-a-link-for-N-seconds entity preview popup (base.html's global
     # mouseover handler + GET /api/entity/{id}/preview) — instance-wide like
     # everything else on this row, editable from Settings > Options.

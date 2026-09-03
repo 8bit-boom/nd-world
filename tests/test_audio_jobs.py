@@ -584,6 +584,34 @@ def test_job_status_route_reports_think_rejected(client, seed):
     assert data["think_rejected"] is True
     assert data["think_fallback"] is False
     assert data["think"] is False
+    assert data["think_token_fallback"] is False
+
+
+def test_job_status_route_reports_think_token_fallback(client, seed):
+    """The vouched-model flavor of a rejection: reasoning ran via the
+    <|think|> prompt token, so think stays true and the flag is exposed
+    for the Background Jobs page's informational (not corrective) note —
+    see AudioJob.think_token_fallback's own docstring."""
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=seed.world_a.id, purpose="condense", filename="clip.mp3",
+            status="done", recap="a recap", think=True, think_rejected=True, think_token_fallback=True,
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["think_rejected"] is True
+    assert data["think_token_fallback"] is True
+    assert data["think"] is True
 
 
 def test_job_status_route_reports_pending_facts(client, seed):
@@ -678,11 +706,14 @@ async def test_condense_job_recovers_from_thinking_rejection(client, seed, monke
     """End-to-end: a real condense_recap -> generate_chat call chain (not
     _fake_ai's flat fake) against a fake Ollama client that rejects
     think=true — the job must land "done" with the real recap (app.ai's own
-    internal think=False retry recovers it, see Wave 1), not "error" with
-    the raw Ollama 400, and be labeled think_rejected so the GM knows why.
-    The ladder above never sees this at all — is_thinking_starved_sentinel
-    doesn't match a rejection, so this exercises a path the ladder tests
-    above don't cover."""
+    internal recovery recovers it), not "error" with the raw Ollama 400,
+    and be labeled think_rejected so the GM knows why. model-x here is
+    VOUCHED (a GM override ticked its thinking checkbox), so under the
+    <|think|> prompt-token fallback the retry still carried reasoning:
+    think stays True and think_token_fallback is set alongside
+    think_rejected. The ladder above never sees this at all —
+    is_thinking_starved_sentinel doesn't match a rejection, so this
+    exercises a path the ladder tests above don't cover."""
     monkeypatch.setattr(ai_module, "condense_recap", _REAL_CONDENSE_RECAP)
     fake = _RejectsThinkingClient()
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
@@ -695,17 +726,54 @@ async def test_condense_job_recovers_from_thinking_rejection(client, seed, monke
         assert job.status == "done", job.error
         assert job.recap == "A tidy recap."
         assert job.think_rejected is True
-        assert job.think is False
+        assert job.think_token_fallback is True
+        assert job.think is True
         assert job.think_fallback is False
+        # The recovery's retry carried the <|think|> token, not a plain
+        # think=False downgrade — the vouch (the override) routed it there.
+        assert fake.calls[0]["think"] is True
+        assert fake.calls[1]["think"] is False
+        assert fake.calls[1]["messages"][0]["content"].startswith("<|think|>")
     finally:
         ai_module.set_ollama_generation_overrides({})
         ai_module._model_thinking_failures.discard("model-x")
+        ai_module._prompt_token_thinking_models.discard("model-x")
+
+
+@pytest.mark.asyncio
+async def test_condense_job_unvouched_rejection_flips_think_off(client, seed, monkeypatch):
+    """The OTHER flavor: nobody vouched for this model (no override, not in
+    KNOWN_MODELS — the capability cache is pre-seeded so think=true still
+    reaches Ollama and gets rejected). There's no prompt-token workaround
+    for a model nd-world doesn't trust to handle it, so the old labeling
+    applies verbatim: think flips to False, think_rejected set,
+    think_token_fallback NOT set."""
+    monkeypatch.setattr(ai_module, "condense_recap", _REAL_CONDENSE_RECAP)
+    fake = _RejectsThinkingClient()
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module._model_capabilities_cache["stray-model"] = ["thinking"]
+    try:
+        job_id = audio_jobs.create_condense_job(
+            world_id=seed.world_a.id, text="A long existing recap.", model="stray-model", think=True,
+        )
+        job = await _await_terminal(job_id)
+        assert job.status == "done", job.error
+        assert job.recap == "A tidy recap."
+        assert job.think_rejected is True
+        assert job.think_token_fallback is False
+        assert job.think is False
+        assert not any(str(m.get("content", "")).startswith("<|think|>") for m in fake.calls[1]["messages"])
+    finally:
+        ai_module._model_capabilities_cache.clear()
+        ai_module._model_thinking_failures.discard("stray-model")
+        ai_module._prompt_token_thinking_models.discard("stray-model")
 
 
 @pytest.mark.asyncio
 async def test_session_recap_job_recovers_from_thinking_rejection(client, seed, tmp_path, monkeypatch):
     """Same recovery, on the session_recap (chunked summarize_transcript)
-    path rather than condense's single-call path."""
+    path rather than condense's single-call path — vouched model, so the
+    <|think|> token flavor: think stays True, think_token_fallback set."""
     monkeypatch.setattr(ai_module, "summarize_transcript", _REAL_SUMMARIZE_TRANSCRIPT)
     fake = _RejectsThinkingClient("The party explored the ruins.")
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
@@ -726,10 +794,12 @@ async def test_session_recap_job_recovers_from_thinking_rejection(client, seed, 
         assert job.status == "done", job.error
         assert job.recap == "The party explored the ruins."
         assert job.think_rejected is True
-        assert job.think is False
+        assert job.think_token_fallback is True
+        assert job.think is True
     finally:
         ai_module.set_ollama_generation_overrides({})
         ai_module._model_thinking_failures.discard("model-x")
+        ai_module._prompt_token_thinking_models.discard("model-x")
 
 
 def test_job_status_route_thinking_starved_false_for_other_failures(client, seed):
@@ -772,7 +842,10 @@ def test_background_jobs_page_wires_the_ladder_notes(client, seed):
     """job.expanded_thinking and job.think_fallback are independent flags
     (see docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 1 item 1.3) — a
     done audio job's card must be able to render either note, and both if
-    both are set."""
+    both are set. The think_rejected note now comes in two flavors, split
+    by think_token_fallback: the <|think|> prompt-token workaround's
+    informational note (reasoning still ran) must not carry the plain
+    rejection's "untick the override" guidance."""
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     page_html = client.get("/background-jobs").text
@@ -780,6 +853,8 @@ def test_background_jobs_page_wires_the_ladder_notes(client, seed):
     assert "automatically retried with an expanded limit" in page_html
     assert "even with an expanded limit" in page_html
     assert "this recap was written with Thinking off" in page_html
+    assert "job.think_rejected && job.think_token_fallback" in page_html
+    assert "reasoning still ran, via the <|think|> prompt token" in page_html
 
 
 # ── purpose="condense" (create_condense_job) ────────────────────────────────
@@ -881,6 +956,139 @@ async def test_create_condense_job_auto_widens_ctx_for_a_long_input_without_fit_
     assert job.status == "done", job.error
     assert captured["options"] is not None
     assert captured["options"]["num_ctx"] > ai_module._DEFAULT_ASSUMED_CTX_TOKENS
+
+
+# ── purpose="condense": strictness setting ──────────────────────────────────
+# create_condense_job persists condense_strictness ("guideline"|"firm"|
+# "strict"); in "strict" mode _run_job additionally estimates the finished
+# recap's tokens with the same estimator the status labels use and re-runs
+# condense_recap ONCE when the result lands outside the requested range.
+
+@pytest.mark.asyncio
+async def test_create_condense_job_persists_strictness_round_trip(client, seed):
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text="A long existing recap.", strictness="strict",
+    )
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.condense_strictness == "strict"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_create_condense_job_defaults_strictness_to_guideline(client, seed):
+    job_id = audio_jobs.create_condense_job(world_id=seed.world_a.id, text="A long existing recap.")
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.condense_strictness == "guideline"
+    finally:
+        db.close()
+
+
+def test_create_condense_job_rejects_invalid_strictness(seed):
+    with pytest.raises(ValueError):
+        audio_jobs.create_condense_job(world_id=seed.world_a.id, text="text", strictness="bogus")
+
+
+@pytest.mark.asyncio
+async def test_condense_job_strict_mode_retries_a_too_short_recap_once(client, seed, monkeypatch):
+    """strict + a min_tokens target: the first (too short) draft must be
+    re-run exactly once with a violation note in the extra instructions,
+    and the in-band second draft wins. The drafts' sizes are chosen against
+    the same chars-per-token estimator _run_job checks with (ASCII ~4
+    chars/token): ~3 tokens first (far below 50), then exactly ~50."""
+    calls = []
+
+    async def fake_condense(recap, model="", options=None, think=True, extra_instructions="",
+                            min_tokens=None, max_tokens=None, strictness="guideline", **kwargs):
+        calls.append({
+            "extra_instructions": extra_instructions, "min_tokens": min_tokens,
+            "max_tokens": max_tokens, "strictness": strictness,
+        })
+        if len(calls) == 1:
+            return "Too short."
+        return "x" * 200
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text="A long existing recap.", min_tokens=50, strictness="strict",
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.recap == "x" * 200
+    assert len(calls) == 2  # one strict violation → exactly one retry, no more
+    assert "previous draft" in calls[1]["extra_instructions"]
+    assert calls[1]["min_tokens"] == 50
+    assert calls[1]["strictness"] == "strict"
+    assert job.condense_strictness == "strict"
+
+
+@pytest.mark.asyncio
+async def test_condense_job_strict_mode_in_band_first_attempt_makes_one_call(client, seed, monkeypatch):
+    """The strict check must only fire on an actual violation — a first
+    draft already inside the requested range costs exactly one AI call."""
+    calls = []
+
+    async def fake_condense(recap, **kwargs):
+        calls.append(kwargs)
+        return "y" * 400  # ~100 tokens against a 50-token minimum — in band
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text="A long existing recap.", min_tokens=50, strictness="strict",
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.recap == "y" * 400
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("strictness", ["guideline", "firm"])
+@pytest.mark.asyncio
+async def test_condense_job_only_strict_retries_an_out_of_band_recap(client, seed, monkeypatch, strictness):
+    """guideline/firm stop at prompt wording even when the result blatantly
+    misses the target — the out-of-band retry is the "strict" tier's whole
+    distinguishing feature, so it must never leak into the other two."""
+    calls = []
+
+    async def fake_condense(recap, **kwargs):
+        calls.append(kwargs)
+        return "Too short."  # ~3 tokens against a 50-token minimum
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text="A long existing recap.", min_tokens=50, strictness=strictness,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.recap == "Too short."
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_condense_job_strict_retry_failure_keeps_the_first_recap(client, seed, monkeypatch):
+    """A retry that itself lands on a failure sentinel is discarded — the
+    first draft was a usable answer, and reporting the failure text (or the
+    starved sentinel) as a "done" recap would be strictly worse."""
+    calls = []
+
+    async def fake_condense(recap, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return "Too short."
+        return "[AI error: connection refused]"
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+
+    job_id = audio_jobs.create_condense_job(
+        world_id=seed.world_a.id, text="A long existing recap.", min_tokens=50, strictness="strict",
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.recap == "Too short."
+    assert len(calls) == 2
 
 
 # ── purpose="session_recap" seeded directly (create_text_recap_job) ────────
@@ -2523,6 +2731,81 @@ def test_condense_job_passes_min_max_tokens_and_extra_instructions(client, seed,
     assert captured["max_tokens"] == 100
 
 
+def test_condense_job_route_persists_strictness(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/condense-job", json={"recap": "text", "strictness": "firm"})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    data = _poll_until_terminal(client, f"/api/sessions/ai/audio-jobs/{job_id}")
+    assert data["status"] == "done", data
+    # The unified Background Jobs status route exposes the strictness the
+    # job was created with (the session-scoped poll shape above is
+    # deliberately lean and doesn't carry per-condense settings).
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    assert r.json()["strictness"] == "firm"
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.condense_strictness == "firm"
+    finally:
+        db.close()
+
+
+def test_condense_job_route_defaults_strictness_to_guideline(client, seed):
+    """No strictness field in the body (today's UI payloads before the
+    setting existed) must read as "guideline" everywhere — the row AND the
+    unified status route, which normalizes NULL for pre-migration rows."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/condense-job", json={"recap": "text"})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    data = _poll_until_terminal(client, f"/api/sessions/ai/audio-jobs/{job_id}")
+    assert data["status"] == "done", data
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    assert r.json()["strictness"] == "guideline"
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.condense_strictness == "guideline"
+    finally:
+        db.close()
+
+
+def test_condense_job_route_rejects_bogus_strictness(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/sessions/ai/condense-job", json={"recap": "text", "strictness": "bogus"})
+    assert r.status_code == 400
+    assert "strictness" in r.json()["detail"]
+
+
+def test_job_status_route_condense_strictness_null_reads_as_guideline(client, seed):
+    """A pre-migration row (column NULL) must report "guideline" through the
+    unified status route too — same NULL-reads-as-default convention
+    _run_job itself applies."""
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="condense", filename="old.mp3",
+                       status="done", condense_strictness=None)
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/audio-jobs/{job_id}")
+    assert r.status_code == 200
+    assert r.json()["strictness"] == "guideline"
+
+
 @pytest.mark.parametrize("body", [
     {"recap": "text", "min_tokens": "not a number"},
     {"recap": "text", "max_tokens": "not a number"},
@@ -2621,10 +2904,14 @@ def test_audio_job_create_route_rag_off_by_default(client, seed, tmp_path):
 def test_condense_recap_route_passes_min_max_tokens_and_extra_instructions(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_condense(recap, model="", options=None, think=True, extra_instructions="", min_tokens=None, max_tokens=None):
+    # strictness needs a default here (not **kwargs) so the test also pins
+    # that a body WITHOUT the field forwards "guideline" to condense_recap,
+    # not None/something else.
+    async def fake_condense(recap, model="", options=None, think=True, extra_instructions="", min_tokens=None, max_tokens=None, strictness="guideline"):
         captured["extra_instructions"] = extra_instructions
         captured["min_tokens"] = min_tokens
         captured["max_tokens"] = max_tokens
+        captured["strictness"] = strictness
         return "condensed"
     monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
 
@@ -2637,6 +2924,7 @@ def test_condense_recap_route_passes_min_max_tokens_and_extra_instructions(clien
     assert captured["extra_instructions"] == "focus on combat"
     assert captured["min_tokens"] == 20
     assert captured["max_tokens"] == 100
+    assert captured["strictness"] == "guideline"
 
 
 def test_condense_recap_route_rejects_min_greater_than_max(client, seed):
@@ -3745,3 +4033,448 @@ def test_download_md_sanitizes_filename_and_falls_back_without_original_name(cli
     r2 = client.get(f"/api/audio-jobs/{no_name_job_id}/transcript.md")
     assert r2.status_code == 200
     assert f'filename="job-{no_name_job_id}-transcript.md"' in r2.headers["content-disposition"]
+
+
+# ── purpose="facts_parse" (create_facts_parse_job) ──────────────────────────
+# The Facts page's recap→facts parse as a durable background job (see
+# create_facts_parse_job's docstring): the synchronous POST /api/facts/parse
+# used to hold one HTTP request open for the whole model call, tripping
+# Cloudflare Tunnel's ~100s timeout (HTTP 524) on long recaps and losing
+# everything. The result lands in result_json (NOT recap — a facts draft is
+# review-UI data ({content, visible_to_players} dicts), not displayable
+# recap prose the jobs UI would render as such).
+
+_FACTS_PARSE_DRAFT = [
+    {"content": "The party visited the tavern.", "visible_to_players": True},
+    {"content": "Elyra is secretly a cult agent.", "visible_to_players": False},
+]
+
+
+@pytest.mark.asyncio
+async def test_create_facts_parse_job_runs_to_completion(client, seed, monkeypatch):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+        assert "tavern" in raw_text
+        return [dict(f) for f in _FACTS_PARSE_DRAFT]
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    job_id = audio_jobs.create_facts_parse_job(world_id=seed.world_a.id, text="went to the tavern, met Elyra")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.purpose == "facts_parse"
+    assert job.filename == "Facts"
+    assert job.transcript == "went to the tavern, met Elyra"  # the input, kept so the draft stays attributable
+    assert json.loads(job.result_json) == _FACTS_PARSE_DRAFT
+    assert job.recap == ""  # a facts draft never masquerades as a recap
+
+
+@pytest.mark.asyncio
+async def test_create_facts_parse_job_empty_result_is_done_not_error(client, seed, monkeypatch):
+    """Out-of-character chatter parses to zero facts — that's a SUCCESS the
+    Facts page's UI explains, not a failure: the model did its job."""
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+        return []
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    job_id = audio_jobs.create_facts_parse_job(world_id=seed.world_a.id, text="banter with no events in it")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.result_json == "[]"
+    assert job.error == ""
+
+
+@pytest.mark.asyncio
+async def test_create_facts_parse_job_valueerror_marks_error(client, seed, monkeypatch):
+    """parse_facts_from_recap raises ValueError for every failure (Ollama
+    down, malformed JSON — see its docstring), already worded for a GM; the
+    job must carry that message in job.error, the same text the synchronous
+    /api/facts/parse maps to HTTP 502."""
+    async def failing_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+        raise ValueError("Could not parse facts from that recap — try rephrasing it.")
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", failing_parse)
+
+    job_id = audio_jobs.create_facts_parse_job(world_id=seed.world_a.id, text="gibberish")
+    job = await _await_terminal(job_id)
+    assert job.status == "error"
+    assert job.error == "Could not parse facts from that recap — try rephrasing it."
+
+
+@pytest.mark.asyncio
+async def test_create_facts_parse_job_never_transcribes(client, seed, monkeypatch):
+    """There is no audio — if _run_job's dispatch ever fell through to the
+    transcribe branch, this fails loudly instead of silently succeeding."""
+    async def fail_if_called(*a, **kw):
+        raise AssertionError("facts_parse jobs must never transcribe")
+    monkeypatch.setattr(ai_module, "transcribe_audio", fail_if_called)
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+        return []
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    job_id = audio_jobs.create_facts_parse_job(world_id=seed.world_a.id, text="some recap")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.audio_path == ""
+
+
+def test_create_facts_parse_job_rejects_blank_text(seed):
+    """Checked synchronously at creation — before create_task — so the route
+    maps it to a clean 400 rather than a job erroring mid-run (same shape as
+    test_create_condense_job_rejects_invalid_strictness)."""
+    with pytest.raises(ValueError):
+        audio_jobs.create_facts_parse_job(world_id=seed.world_a.id, text="   ")
+
+
+@pytest.mark.asyncio
+async def test_create_facts_parse_job_reports_chunk_progress_and_clears_when_done(client, seed, monkeypatch):
+    """parse_facts_from_recap's per-chunk on_progress lands on the job row
+    (chunk_current/chunk_total — the same columns session_recap's map-reduce
+    populates, which both job UIs already render as "Summarizing… part X/Y")
+    and is CLEARED when the job finishes so a done card never shows a stale
+    part counter. Not racy: the fake parse reports progress and then BLOCKS
+    on an event, so the mid-run assertion only reads the row after the
+    report has already committed."""
+    progress_reported = asyncio.Event()
+    release_parse = asyncio.Event()
+
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+        on_progress(2, 3)
+        progress_reported.set()
+        await release_parse.wait()
+        return []
+
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    job_id = audio_jobs.create_facts_parse_job(world_id=seed.world_a.id, text="a long recap")
+    await asyncio.wait_for(progress_reported.wait(), timeout=5)
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.status == "summarizing"  # the status both job UIs already render chunk progress for
+        assert job.chunk_current == 2
+        assert job.chunk_total == 3
+    finally:
+        db.close()
+
+    release_parse.set()
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.result_json == "[]"
+    assert job.chunk_current is None
+    assert job.chunk_total is None
+
+
+# ── facts_parse model/think/RAG options (the Facts page's pickers) ──────────
+
+@pytest.mark.asyncio
+async def test_create_facts_parse_job_persists_think_and_rag_options(client, seed, monkeypatch):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+        return [dict(f) for f in _FACTS_PARSE_DRAFT]
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    job_id = audio_jobs.create_facts_parse_job(
+        world_id=seed.world_a.id, text="some recap", model="gemma4:26b",
+        think=True, use_rag=True, rag_entity_limit=4, rag_notes_limit=2,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert job.model == "gemma4:26b"
+    assert job.think is True
+    assert job.use_rag is True
+    assert job.rag_entity_limit == 4
+    assert job.rag_notes_limit == 2
+
+
+@pytest.mark.asyncio
+async def test_create_facts_parse_job_use_rag_passes_world_context_and_think_through(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+        captured.update(raw_text=raw_text, model=model, think=think, world_context=world_context)
+        return []
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    build_calls = []
+
+    def fake_build_rag_context(world_id, query, entity_limit, notes_limit, **kwargs):
+        build_calls.append((world_id, query, entity_limit, notes_limit))
+        return "- [npc] Elyra: an enchanter"
+    monkeypatch.setattr(audio_jobs, "_build_rag_context", fake_build_rag_context)
+
+    job_id = audio_jobs.create_facts_parse_job(
+        world_id=seed.world_a.id, text="went to the tavern", think=True,
+        use_rag=True, rag_entity_limit=6, rag_notes_limit=3,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["raw_text"] == "went to the tavern"
+    assert captured["think"] is True
+    assert captured["world_context"] == "- [npc] Elyra: an enchanter"
+    # queried against the pasted recap text itself (the parse's input), with
+    # the job's own limits — not the module defaults.
+    assert build_calls == [(seed.world_a.id, "went to the tavern", 6, 3)]
+
+
+@pytest.mark.asyncio
+async def test_create_facts_parse_job_use_rag_off_never_retrieves(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+        captured["world_context"] = world_context
+        return []
+    monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
+
+    def fail_if_called(*a, **kw):
+        raise AssertionError("must not retrieve RAG context when use_rag is off")
+    monkeypatch.setattr(audio_jobs, "_build_rag_context", fail_if_called)
+
+    job_id = audio_jobs.create_facts_parse_job(world_id=seed.world_a.id, text="some recap")
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["world_context"] == ""
+
+
+def test_facts_parse_job_serializer_exposes_result_json_and_facts_label(client, seed):
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=seed.world_a.id, purpose="facts_parse", filename="Facts",
+            status="done", transcript="the input", result_json=json.dumps(_FACTS_PARSE_DRAFT),
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    data = client.get(f"/api/audio-jobs/{job_id}").json()
+    assert json.loads(data["result_json"]) == _FACTS_PARSE_DRAFT
+    assert data["purpose"] == "facts_parse"
+    assert data["purpose_label"] == "Facts"  # chip, not the raw purpose string
+
+
+# ── GET /api/audio-jobs filters (purpose / status / game_session_id) ────────
+# The Background Jobs page's dropdowns and the session page's scoped panel
+# both filter server-side — client-side filtering over page 1 of a paginated
+# list would silently hide rows living on page 2.
+
+def _login_gm_audio_jobs(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+
+def test_unified_list_filters_by_purpose(client, seed):
+    db = SessionLocal()
+    try:
+        db.add_all([
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done", filename="recap.mp3"),
+            AudioJob(world_id=seed.world_a.id, purpose="condense", status="done", filename="condense-1"),
+            AudioJob(world_id=seed.world_a.id, purpose="facts_parse", status="done", filename="facts-1"),
+            AudioJob(world_id=seed.world_a.id, purpose="facts_parse", status="error", filename="facts-2"),
+        ])
+        db.commit()
+    finally:
+        db.close()
+    _login_gm_audio_jobs(client, seed)
+
+    jobs = client.get("/api/audio-jobs?purpose=facts_parse").json()["jobs"]
+    assert {j["filename"] for j in jobs} == {"facts-1", "facts-2"}
+    assert all(j["purpose"] == "facts_parse" for j in jobs)
+
+    # No filter → everything (the pre-existing behavior, unchanged).
+    names = {j["filename"] for j in client.get("/api/audio-jobs").json()["jobs"]}
+    assert {"recap.mp3", "condense-1", "facts-1", "facts-2"} <= names
+
+
+def test_unified_list_filters_by_status(client, seed):
+    db = SessionLocal()
+    try:
+        db.add_all([
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done", filename="done-1"),
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="error", filename="err-1"),
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="summarizing", filename="run-1"),
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="interrupted", filename="int-1"),
+        ])
+        db.commit()
+    finally:
+        db.close()
+    _login_gm_audio_jobs(client, seed)
+
+    # "running" is the UI's word for every in-progress phase, not just one.
+    running = {j["filename"] for j in client.get("/api/audio-jobs?status=running").json()["jobs"]}
+    assert "run-1" in running
+    assert "done-1" not in running and "err-1" not in running and "int-1" not in running
+
+    done = {j["filename"] for j in client.get("/api/audio-jobs?status=done").json()["jobs"]}
+    assert "done-1" in done and "run-1" not in done
+
+    errs = {j["filename"] for j in client.get("/api/audio-jobs?status=error").json()["jobs"]}
+    assert "err-1" in errs and "done-1" not in errs
+
+    interrupted = {j["filename"] for j in client.get("/api/audio-jobs?status=interrupted").json()["jobs"]}
+    assert "int-1" in interrupted and "run-1" not in interrupted
+
+
+def test_unified_list_filters_by_game_session(client, seed):
+    from app.models import GameSession as _GameSession
+
+    db = SessionLocal()
+    try:
+        gs1 = _GameSession(world_id=seed.world_a.id, title="Session 1", session_num=1)
+        gs2 = _GameSession(world_id=seed.world_a.id, title="Session 2", session_num=2)
+        db.add_all([gs1, gs2])
+        db.commit()
+        db.refresh(gs1)
+        db.refresh(gs2)
+        db.add_all([
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done",
+                     filename="for-1", game_session_id=gs1.id),
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done",
+                     filename="for-2", game_session_id=gs2.id),
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done",
+                     filename="no-session", game_session_id=None),
+        ])
+        db.commit()
+        s1 = gs1.id
+    finally:
+        db.close()
+    _login_gm_audio_jobs(client, seed)
+
+    jobs = client.get(f"/api/audio-jobs?game_session_id={s1}").json()["jobs"]
+    assert {j["filename"] for j in jobs} == {"for-1"}
+
+
+def test_unified_list_filters_combine(client, seed):
+    db = SessionLocal()
+    try:
+        db.add_all([
+            AudioJob(world_id=seed.world_a.id, purpose="facts_parse", status="done", filename="facts-done"),
+            AudioJob(world_id=seed.world_a.id, purpose="facts_parse", status="error", filename="facts-err"),
+            AudioJob(world_id=seed.world_a.id, purpose="condense", status="done", filename="condense-done"),
+        ])
+        db.commit()
+    finally:
+        db.close()
+    _login_gm_audio_jobs(client, seed)
+    jobs = client.get("/api/audio-jobs?purpose=facts_parse&status=error").json()["jobs"]
+    assert {j["filename"] for j in jobs} == {"facts-err"}
+
+
+def test_session_job_list_filters_by_game_session(client, seed):
+    """The Sessions page's inline panel scopes to its own session via this
+    param — a GM on session #1 shouldn't see session #2's jobs there."""
+    from app.models import GameSession as _GameSession
+
+    db = SessionLocal()
+    try:
+        gs1 = _GameSession(world_id=seed.world_a.id, title="Session 1", session_num=1)
+        gs2 = _GameSession(world_id=seed.world_a.id, title="Session 2", session_num=2)
+        db.add_all([gs1, gs2])
+        db.commit()
+        db.refresh(gs1)
+        db.refresh(gs2)
+        db.add_all([
+            AudioJob(world_id=seed.world_a.id, purpose="session_recap", status="done",
+                     filename="mine", game_session_id=gs1.id),
+            AudioJob(world_id=seed.world_a.id, purpose="condense", status="done",
+                     filename="theirs", game_session_id=gs2.id),
+            AudioJob(world_id=seed.world_a.id, purpose="condense", status="done",
+                     filename="unattributed", game_session_id=None),
+        ])
+        db.commit()
+        s1 = gs1.id
+    finally:
+        db.close()
+    _login_gm_audio_jobs(client, seed)
+    listed = client.get(f"/api/sessions/ai/audio-jobs?game_session_id={s1}").json()
+    assert {j["filename"] for j in listed} == {"mine"}
+    # Unfiltered keeps the pre-existing whole-world behavior.
+    all_names = {j["filename"] for j in client.get("/api/sessions/ai/audio-jobs").json()}
+    assert {"mine", "theirs", "unattributed"} <= all_names
+
+
+def test_session_page_condense_and_recap_jobs_carry_game_session_id(client, seed, monkeypatch):
+    """"Made for this session" only works if the session page's own job-
+    creating routes persist game_session_id — the condense route reads it
+    from the JSON body, the live-transcript route from the URL. If either
+    ever stops passing it, the panel's session filter would silently hide
+    the very job the GM just started."""
+    from app.models import GameSession as _GameSession
+
+    async def fake_condense(*a, **kw):
+        return "condensed"  # only the row's fields matter here, not the result
+    monkeypatch.setattr(ai_module, "condense_recap", fake_condense)
+    async def fake_summarize(transcript, model="", extra_instructions="", think=True, **kw):
+        return "a recap"
+    monkeypatch.setattr(ai_module, "summarize_transcript", fake_summarize)
+
+    db = SessionLocal()
+    try:
+        gs = _GameSession(world_id=seed.world_a.id, title="Session 1", session_num=1,
+                          live_transcript="hours of live transcript")
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        gs_id = gs.id
+    finally:
+        db.close()
+
+    _login_gm_audio_jobs(client, seed)
+    r = client.post("/api/sessions/ai/condense-job", json={"recap": "a recap", "game_session_id": gs_id})
+    assert r.status_code == 200, r.text
+    condense_job_id = r.json()["job_id"]
+
+    r2 = client.post(f"/api/sessions/{gs_id}/ai/summarize-live-transcript-job", json={})
+    assert r2.status_code == 200, r2.text
+    recap_job_id = r2.json()["job_id"]
+
+    db = SessionLocal()
+    try:
+        assert db.get(AudioJob, condense_job_id).game_session_id == gs_id
+        assert db.get(AudioJob, recap_job_id).game_session_id == gs_id
+    finally:
+        db.close()
+
+
+def test_background_jobs_page_has_purpose_and_status_filters(client, seed):
+    _login_gm_audio_jobs(client, seed)
+    html = client.get("/background-jobs").text
+    assert 'id="bg-filter-purpose"' in html
+    assert 'id="bg-filter-status"' in html
+    assert '<option value="facts_parse">Facts</option>' in html
+    assert '<option value="session_recap">Session recap</option>' in html
+    assert '<option value="condense">Condense</option>' in html
+    assert '<option value="attachment">Attachment</option>' in html
+    # Filters re-fetch server-side (keeping pagination honest), not client-side.
+    assert "audioParams.join('&')" in html
+    assert "encodeURIComponent(fPurpose)" in html
+    # Rows link to the owning session when the job has one.
+    assert "'/sessions/' + job.game_session_id" in html
+    assert "\u2192 Session" in html
+
+
+def test_session_page_scopes_jobs_panel_and_links_all_jobs(client, seed):
+    """The session page's inline panel polls the session-scoped list (its
+    listUrl carries game_session_id) instead of every job in the world, and
+    the "All jobs →" link is the advertised path to the full list."""
+    from app.models import GameSession as _GameSession
+
+    db = SessionLocal()
+    try:
+        gs = _GameSession(world_id=seed.world_a.id, title="Session 1", session_num=1)
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        gs_id = gs.id
+    finally:
+        db.close()
+
+    _login_gm_audio_jobs(client, seed)
+    html = client.get(f"/sessions/{gs_id}").text
+    assert f"game_session_id={gs_id}" in html  # the scoped listUrl
+    assert "allJobsUrl: '/background-jobs'" in html
+    # The shared panel source renders the link from that opt.
+    js = (Path(__file__).resolve().parent.parent / "static" / "js" / "audio-jobs.js").read_text()
+    assert "opts.allJobsUrl" in js
+    assert '"All jobs →"' in js

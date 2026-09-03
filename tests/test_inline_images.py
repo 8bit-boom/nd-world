@@ -16,6 +16,15 @@ def _png_file(name="pic.png"):
     return {"file": (name, io.BytesIO(_PNG_BYTES), "image/png")}
 
 
+def _toolbar_js(client):
+    r = client.get("/static/js/text-format-toolbar.js")
+    assert r.status_code == 200
+    # The Docker test image COPYes the working tree as-is, and a Windows
+    # checkout has CRLF line endings — normalize so the structural
+    # "\n..." index() parsing below is line-ending-agnostic.
+    return r.text.replace("\r\n", "\n")
+
+
 def test_gm_upload_image_returns_url(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     r = client.post("/api/upload-image", files=_png_file())
@@ -49,9 +58,7 @@ def test_gm_can_also_use_character_upload_image(client, seed):
 
 
 def test_toolbar_js_supports_drag_and_drop_image_upload(client, seed):
-    r = client.get("/static/js/text-format-toolbar.js")
-    assert r.status_code == 200
-    js = r.text
+    js = _toolbar_js(client)
     assert "function ndFmtSetupDragDrop(ta)" in js
     assert 'ta.addEventListener("drop"' in js
     assert 'ta.addEventListener("dragover"' in js
@@ -59,8 +66,7 @@ def test_toolbar_js_supports_drag_and_drop_image_upload(client, seed):
 
 
 def test_toolbar_js_drag_drop_ignores_non_file_drags(client, seed):
-    r = client.get("/static/js/text-format-toolbar.js")
-    js = r.text
+    js = _toolbar_js(client)
     fn_start = js.index("function ndFmtHasFiles")
     fn_end = js.index("\n}", fn_start)
     fn_body = js[fn_start:fn_end]
@@ -78,9 +84,7 @@ def test_toolbar_js_page_wide_drop_guard_excludes_file_inputs(client, seed):
     "populate the input" default action. That default action only applies if
     nothing in the event's propagation chain called preventDefault(), so the
     blanket handler silently broke dragging an image onto that input."""
-    r = client.get("/static/js/text-format-toolbar.js")
-    assert r.status_code == 200
-    js = r.text
+    js = _toolbar_js(client)
     assert "function ndFmtIsFileInputTarget(target)" in js
     guard_start = js.index("function ndFmtIsFileInputTarget")
     guard_end = js.index("\n}", guard_start)
@@ -92,8 +96,7 @@ def test_toolbar_js_page_wide_drop_guard_excludes_file_inputs(client, seed):
 
 
 def test_toolbar_js_shares_upload_logic_between_click_and_drop(client, seed):
-    r = client.get("/static/js/text-format-toolbar.js")
-    js = r.text
+    js = _toolbar_js(client)
     assert "async function ndFmtUploadOneImage(" in js
     insert_fn_start = js.index("function ndFmtInsertImage")
     insert_fn_end = js.index("\n}", insert_fn_start)

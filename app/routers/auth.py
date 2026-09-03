@@ -412,7 +412,11 @@ def _redeem(request: Request, db: Session, invite: InviteCode):
             WorldMembership.world_id == invite.world_id, WorldMembership.user_id == user.id
         ).first()
         if not existing:
-            db.add(WorldMembership(world_id=invite.world_id, user_id=user.id))
+            # role="player" is belt-and-braces with the column default — an
+            # invite always joins someone as a plain player; only the GM can
+            # promote a member to assistant afterwards (see member_set_role
+            # in app/main.py).
+            db.add(WorldMembership(world_id=invite.world_id, user_id=user.id, role="player"))
             invite.uses_count = (invite.uses_count or 0) + 1
             db.commit()
     world = db.query(World).filter(World.id == invite.world_id).first()

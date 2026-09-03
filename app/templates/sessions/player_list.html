@@ -13,6 +13,12 @@
        style="display:block;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;text-decoration:none;color:var(--text);transition:border-color .15s">
       <div style="font-weight:bold">#{{ s.session_num }} {{ s.title }}</div>
       {% if s.session_date %}<div style="font-size:.78rem;color:var(--text-dim);margin-top:.2rem">{{ s.session_date }}</div>{% endif %}
+      {% set marker = recap_markers.get(s.id) if recap_markers else None %}
+      {% if marker == 'published' %}
+      <div style="font-size:.75rem;color:var(--neon);margin-top:.2rem">📢 Published recap</div>
+      {% elif marker == 'auto' %}
+      <div style="font-size:.75rem;color:var(--text-dim);margin-top:.2rem">♻ Recap from facts available</div>
+      {% endif %}
     </a>
     {% endfor %}
   </div>

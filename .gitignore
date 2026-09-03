@@ -4,4 +4,7 @@ fix_*.py
 python
 tests/_data/
 .pytest_cache/
+# Secrets and local dev environment (AGENTS.md: .env is git-ignored on purpose)
+.env
+.venv/
 # .github/ was intentionally removed — workflows need to be tracked

@@ -10,7 +10,7 @@ import pytest
 
 from app import ai as ai_module
 from app.database import SessionLocal
-from app.models import World
+from app.models import AppSettings, World
 from app.routers import ai as ai_router
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
@@ -38,6 +38,22 @@ def _set_world(world_id, **kw):
 
 def _upload_file(client, name, data, content_type):
     return client.post("/api/ai/attachments/upload", files={"file": (name, io.BytesIO(data), content_type)})
+
+
+def _set_app_settings(**kw):
+    """Write AppSettings fields directly (the `client` fixture drops and
+    recreates every table per test, so there's nothing to reset afterward)."""
+    db = SessionLocal()
+    try:
+        s = db.query(AppSettings).first()
+        if not s:
+            s = AppSettings(id=1)
+            db.add(s)
+        for k, v in kw.items():
+            setattr(s, k, v)
+        db.commit()
+    finally:
+        db.close()
 
 
 # ── Upload endpoint: permission gate ────────────────────────────────────────
@@ -138,6 +154,17 @@ def test_attachment_upload_rejects_file_over_configured_limit(client, seed, monk
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = _upload_file(client, "note.txt", _TXT_BYTES, "text/plain")
+    assert r.status_code == 413
+
+
+def test_attachment_upload_audio_settings_limit_rejects_oversized_memo(client, seed):
+    """A lowered AppSettings.max_ai_attachment_mb (Settings > System's
+    "Upload limits") caps voice-memo uploads on the direct route — 413
+    before Whisper is ever touched."""
+    _set_app_settings(max_ai_attachment_mb=1)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = _upload_file(client, "memo.mp3", _MP3_BYTES + b"\x00" * (2 * 1024 * 1024), "audio/mpeg")
     assert r.status_code == 413
 
 

@@ -197,6 +197,19 @@
         <label for="whisper-url">Whisper URL (audio attachment transcription)</label>
         <input id="whisper-url" name="whisper_url" value="{{ settings.whisper_url or '' }}" placeholder="{{ env_whisper_url or 'not set' }}">
       </div>
+      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Upload limits</h2>
+      <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
+        Per-kind upload size caps, in MB. Blank = use the built-in default. Limits
+        apply to new uploads immediately; no restart needed.
+      </p>
+      {% for f in upload_limit_fields %}
+      <div class="form-group">
+        <label for="{{ f.name | replace('_', '-') }}">{{ f.label }} (MB)</label>
+        <input id="{{ f.name | replace('_', '-') }}" type="number" step="1" min="1" name="{{ f.name }}"
+               value="{{ f.value if f.value is not none else '' }}" placeholder="{{ f.env_default_mb }} (env default)"
+               style="max-width:160px">
+      </div>
+      {% endfor %}
       <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Ollama generation tuning</h2>
       <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
         Two different things live on this page. <strong>Generation tuning</strong> below is
@@ -421,7 +434,7 @@
           <strong>{{ m }}</strong>{% if o.thinking %} 🧠{% endif %}
           — {{ o.options.keys() | list | join(', ') if o.options else '' }}{% if o.keep_alive %}{{ ', ' if o.options else '' }}keep_alive={{ o.keep_alive }}{% endif %}{% if o.thinking %}{{ ', ' if (o.options or o.keep_alive) else '' }}thinking-capable{% endif %}
           {% if o.thinking and m in ollama_thinking_failures %}
-          <span style="color:#e8a33d" title="Ollama rejected a real think=true request for this model despite the checkbox — the override may be wrong, or the model needs to be re-registered with Ollama so it carries the capability tag itself.">⚠ thinking failed last time</span>
+          <span style="color:#e8a33d" title="Ollama rejected a real think=true request for this model despite the checkbox. For hf.co-imported GGUFs this is a missing capability tag (ollama#16936), and nd-world works around it by sending the <|think|> prompt token instead — reasoning still reaches the UI. Re-saving Settings re-probes whether Ollama accepts think=true again.">⚠ thinking failed last time</span>
           {% endif %}
         </span>
         <form method="post" action="/settings/system/model-override/delete" style="display:inline;margin:0" onsubmit="return confirm('Remove the override for {{ m }}?')">

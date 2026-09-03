@@ -18,7 +18,10 @@ from ..gallery import all_world_image_urls, discover_world_images, image_display
 from ..imaging import convert_image, make_thumbnail
 from ..models import ImageAlbum, World
 from ..templating import templates, thumb_url
-from ..uploads import copy_upload_bounded, unique_upload_filename
+from ..uploads import (
+    MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, reassemble_upload_chunks, save_upload_chunk,
+    unique_upload_filename,
+)
 
 router = APIRouter()
 
@@ -42,6 +45,50 @@ _GALLERY_INITIAL_BATCH = 200
 _UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
 _ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"}
 
+# Album uploads get their own, much higher total cap than MAX_UPLOAD_BYTES:
+# gallery albums host big animated art (a 100 MB+ animated WebP is a real
+# upload) that legitimately exceeds MAX_UPLOAD_BYTES' 20 MB default. 500 MB
+# is a sanity ceiling against volume-filling accidents, not a target;
+# env-tunable like MAX_UPLOAD_BYTES itself. max() keeps an explicitly
+# lowered MAX_UPLOAD_BYTES from silently shrinking this too — the two knobs
+# are independent.
+_MAX_GALLERY_UPLOAD_BYTES = max(MAX_UPLOAD_BYTES, int(os.environ.get("MAX_GALLERY_UPLOAD_BYTES", str(500 * 1024 * 1024))))
+
+
+def _effective_gallery_upload_bytes(db: Session) -> int:
+    """This request's album-upload cap: the GM's saved
+    AppSettings.max_gallery_upload_mb (Settings > System's "Upload limits" —
+    applies to new uploads immediately, no restart) or the _MAX_GALLERY_UPLOAD_BYTES
+    env default when left blank. Computed per request rather than at import so
+    a settings save takes effect without a process restart; see
+    effective_upload_bytes (app/uploads.py)."""
+    settings = get_app_settings(db)
+    return effective_upload_bytes(getattr(settings, "max_gallery_upload_mb", None), _MAX_GALLERY_UPLOAD_BYTES)
+
+
+# Per-part cap for the chunked path — one ~80 MB part from
+# chunked-upload.js plus headroom for multipart overhead. A single part can
+# never legitimately exceed the whole file's own cap (also enforced at
+# reassembly), so this just bounds what one /chunk request may write.
+_GALLERY_CHUNK_MAX_BYTES = 128 * 1024 * 1024
+
+
+def _gallery_chunks_root() -> Path:
+    return _UPLOADS_DIR / "gallery" / "_chunks"
+
+
+def _finalize_album_image(dest: Path, db: Session) -> str:
+    """Shared post-processing for an album image that's already saved to
+    disk (either straight from the request body or reassembled from
+    uploaded chunks): convert to the configured static/animated format and
+    generate the grid thumbnail. convert_image may swap the extension
+    (e.g. .webp -> .avif), so the returned URL is always built from the
+    path it gives back, never from the saved name."""
+    settings = get_app_settings(db)
+    dest = convert_image(dest, static_format=settings.static_format, animated_format=settings.animated_format)
+    make_thumbnail(dest)
+    return f"/uploads/gallery/{dest.name}"
+
 
 def _upload_album_image(file: Optional[UploadFile], db: Session) -> Optional[str]:
     if not file or not file.filename:
@@ -52,11 +99,8 @@ def _upload_album_image(file: Optional[UploadFile], db: Session) -> Optional[str
     target_dir = _UPLOADS_DIR / "gallery"
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / unique_upload_filename(file.filename, ext)
-    copy_upload_bounded(file, dest)
-    settings = get_app_settings(db)
-    dest = convert_image(dest, static_format=settings.static_format, animated_format=settings.animated_format)
-    make_thumbnail(dest)
-    return f"/uploads/gallery/{dest.name}"
+    copy_upload_bounded(file, dest, max_bytes=_effective_gallery_upload_bytes(db))
+    return _finalize_album_image(dest, db)
 
 
 def _load_urls(album: ImageAlbum) -> list:
@@ -487,3 +531,68 @@ async def album_upload_image(
     album.image_urls_json = json.dumps(current)
     db.commit()
     return RedirectResponse(f"/images/albums/{album_id}", status_code=303)
+
+
+@router.post("/images/albums/upload/chunk")
+async def album_upload_chunk(
+    request: Request, file: UploadFile = File(...), upload_id: str = Form(...),
+    chunk_index: int = Form(...),
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Receive one part of a large album image, split client-side by
+    ndChunkedUpload (static/js/chunked-upload.js) — Cloudflare's fixed
+    100 MB request-body cap otherwise blocks big animated art outright (see
+    docs/DEPLOYMENT.md's "Upload size limit" section). Mirrors ai.py's
+    attachment chunk pair, which itself mirrors audio.py's original."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    # A lowered Settings limit applies per part too: min() keeps a saved
+    # total cap below the 128 MB default from letting one /chunk request
+    # write bytes reassembly would only reject afterward.
+    save_upload_chunk(
+        _gallery_chunks_root(), upload_id, chunk_index, file,
+        max_bytes=min(_GALLERY_CHUNK_MAX_BYTES, _effective_gallery_upload_bytes(db)),
+    )
+    return {"ok": True}
+
+
+@router.post("/images/albums/upload/complete")
+async def album_upload_chunk_complete(
+    request: Request, upload_id: str = Form(...), filename: str = Form(...),
+    total_chunks: int = Form(...), album_id: int = Form(...),
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Reassemble the parts uploaded via .../upload/chunk and finish exactly
+    like the one-shot /images/albums/{album_id}/upload — same conversion,
+    thumbnail, and album-append rules — just fed from disk instead of the
+    request body directly. Returns JSON (not the usual 303 redirect) since
+    ndChunkedUpload reads the response body to get the new image's URL."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    ext = Path(filename).suffix.lower()
+    # Validate the extension before spending any I/O on reassembly — a
+    # rejected type should never write a byte into uploads/gallery.
+    if ext not in _ALLOWED_EXTS:
+        raise HTTPException(400, "Unsupported file type")
+    album = _album_or_404(db, world.id, album_id)
+    target_dir = _UPLOADS_DIR / "gallery"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / unique_upload_filename(filename, ext)
+    reassemble_upload_chunks(
+        _gallery_chunks_root(), upload_id, total_chunks, dest,
+        max_bytes=_effective_gallery_upload_bytes(db),
+    )
+    current = _load_urls(album)
+    if len(current) >= _MAX_IMAGES_PER_ALBUM:
+        # Unlike the direct route (which just silently drops the append when
+        # full), a chunked upload has already written the file to disk —
+        # unlink it so a rejected upload leaves no orphaned bytes behind.
+        dest.unlink(missing_ok=True)
+        raise HTTPException(400, "Album is full")
+    url = _finalize_album_image(dest, db)
+    current.append(url)
+    album.image_urls_json = json.dumps(current)
+    db.commit()
+    return {"url": url}

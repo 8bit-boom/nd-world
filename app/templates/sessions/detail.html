@@ -58,7 +58,7 @@
             <input type="checkbox" id="recap-think-checkbox" checked> 🧠 Thinking
           </label>
           <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
-                 title="Retrieves relevant World entities/notes and gives the model that context for accuracy (correct names, places, established facts) — applies to Condense and 'Process in Background' below only, not Expand notes/Summarize from Facts.">
+                 title="Retrieves relevant World entities/notes and gives the model that context for accuracy (correct names, places, established facts) — applies to Condense, 'Summarize from Facts', and 'Process in Background' below; not Expand notes.">
             <input type="checkbox" id="recap-rag-checkbox"> 🔍 RAG
           </label>
           <label style="font-size:.75rem;color:var(--text-dim);display:inline-flex;align-items:center;gap:.3rem" title="How many relevant World entities to pull in">
@@ -74,6 +74,32 @@
           <span id="ai-recap-status" style="font-size:.78rem;color:var(--text-dim)"></span>
         </div>
 
+        {% if gsession %}
+        <!-- ── Player recap: what the Session Log (player-visible pages) shows
+             for this session. Closes the old gap where the GM's polished
+             Summary was never player-visible and players only got an AI
+             recap woven from Fact rows (so a summary-without-facts session
+             showed them nothing). "Use AI recap" pulls the generated facts-
+             recap draft in as a starting point; Publish serves the text to
+             players verbatim; Unpublish falls the Session Log back to its
+             facts-recap pipeline. -->
+        <div style="margin-top:.9rem;padding:.8rem .9rem;background:var(--bg2);border:1px solid var(--border);border-radius:5px">
+          <label style="display:block;font-size:.8rem;color:var(--text-dim);margin-bottom:.35rem">
+            📣 Player recap <span style="color:var(--neon)">{% if gsession.player_summary_published and gsession.player_summary %}— published, live on the Session Log{% endif %}</span>
+            <textarea id="player-summary-field" rows="5" placeholder="What the players should read as this session's recap (Markdown) — publish it and it appears on their Session Log"
+                      style="width:100%;margin-top:.3rem;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.45rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px">{{ gsession.player_summary or '' }}</textarea>
+          </label>
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+            <button type="button" class="ai-recap-btn" onclick="playerRecapUseAi()" title="Runs the same facts-recap generation the Session Log would run, and loads the draft here for you to edit before publishing">♻ Use AI recap</button>
+            <button type="button" class="btn-save" onclick="playerRecapPublish(true)">📢 Save &amp; Publish to players</button>
+            {% if gsession.player_summary_published %}
+            <button type="button" class="ai-recap-btn" onclick="playerRecapPublish(false)">Unpublish</button>
+            {% endif %}
+            <span id="player-recap-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+          </div>
+        </div>
+        {% endif %}
+
         <details style="margin-top:.4rem">
           <summary style="cursor:pointer;font-size:.75rem;color:var(--text-dim)">Condense settings (optional)</summary>
           <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-top:.4rem">
@@ -88,6 +114,16 @@
               <input type="number" id="condense-max-tokens" min="1" placeholder="none"
                      title="Hard cap on the condensed recap's length (Ollama's num_predict) — enforced only when 🧠 Thinking is off, since hidden reasoning would otherwise compete with the visible answer for that same budget; with Thinking on it's a soft target instead, same as Min tokens, and the model sees it as guidance so it can try to land inside it instead of getting cut off mid-sentence"
                      style="width:75px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+            </label>
+            <label style="font-size:.75rem;color:var(--text-dim);display:flex;align-items:center;gap:.3rem">
+              Strictness
+              <select id="condense-strictness"
+                      title="How hard the Min/Max tokens and extra instructions are enforced. Guideline = today's best-effort wording (the model is asked nicely). Firm = the min/max/extra instructions become mandatory prompt requirements. Strict = Firm, plus one automatic re-run if the result lands outside the token range (estimated, 15% tolerance)."
+                      style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+                <option value="guideline">Guideline (best effort)</option>
+                <option value="firm">Firm requirement</option>
+                <option value="strict">Strict + auto-retry</option>
+              </select>
             </label>
             <input type="text" id="condense-extra-instructions" placeholder="Extra instructions for Condense (optional)…"
                    title="One-off notes for Condense specifically, e.g. &quot;keep character names&quot; — added to (not replacing) the world's standing recap instructions"
@@ -194,10 +230,26 @@
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">🔴 Live Session Recording <small id="live-transcript-token-count" style="color:var(--text-dim);font-weight:normal"></small></h2>
     <p style="font-size:.8rem;color:var(--text-dim);margin:0 0 .6rem">
-      Records in ~1-minute chunks, each transcribed and saved to this session as it finishes — safe for a
+      Records in short chunks, each transcribed and saved to this session as it finishes — safe for a
       multi-hour session, and nothing is lost beyond the current chunk if your browser or connection drops.
       Leave this tab open and awake for the duration; the recording stops if the tab is closed.
     </p>
+    <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem;font-size:.8rem;color:var(--text-dim)">
+      <label style="display:flex;align-items:center;gap:.35rem">Chunk length
+        <select id="live-chunk-seconds" title="Longer chunks mean fewer transcription-boundary artifacts — Whisper hallucination loops, duplicated passages, and repeated names tend to appear at the seam between two chunks — but also a longer delay before each chunk's text appears, and a bigger segment to re-upload if one fails. A change applies from the next chunk, even mid-recording." style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
+          <option value="60">1 min</option>
+          <option value="120">2 min</option>
+          <option value="180">3 min</option>
+          <option value="300">5 min</option>
+          <option value="600">10 min</option>
+          <option value="900">15 min</option>
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;gap:.35rem" title="Also keep each raw audio segment on the server, so the whole recording can be downloaded as one file afterwards and a bad transcript (Whisper hallucination loops, boundary duplicates) can be re-transcribed later with better settings.">
+        <input type="checkbox" id="live-save-audio" checked style="width:auto"/> Save raw audio
+      </label>
+      <span id="live-audio-status" style="display:none;font-size:.78rem;color:var(--text-dim)"></span>
+    </div>
     <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem">
       <button type="button" id="live-record-btn" class="ai-recap-btn" onclick="toggleLiveRecording()">🔴 Start Recording</button>
       <button type="button" class="ai-recap-btn" onclick="summarizeLiveTranscript()">✨ Summarize transcript</button>
@@ -425,6 +477,7 @@ async function aiStartCondenseJob(recap, fitContext) {
         recap, fit_context: !!fitContext, think: _recapThinkEnabled(),
         model: modelSel ? modelSel.value : '',
         min_tokens: minTokens, max_tokens: maxTokens,
+        strictness: document.getElementById("condense-strictness").value || "guideline",
         extra_instructions: document.getElementById('condense-extra-instructions').value.trim(),
         game_session_id: {{ gsession.id if gsession else 'null' }},
         ..._recapRagOptions(),
@@ -451,8 +504,149 @@ function aiCondenseRecapFit() {
 }
 
 {% if gsession %}
-function aiSummarizeFromFacts() {
-  aiRunRecap('/api/sessions/{{ gsession.id }}/ai/summarize-from-facts', {});
+// "Summarize from Facts" runs through the session-log recap JOB pipeline
+// (POST /api/session-log/{id}/recap — audience resolves to "gm" for this
+// page's caller) instead of the old blocking summarize-from-facts request:
+// a think=True weave against a CPU-local model runs minutes, which is a
+// routine Cloudflare 524 (the ~100s proxy timeout) waiting to happen, and
+// the old route had no sentinel check — a failed call handed back its
+// "[AI unavailable: ...]" string as a draft the Apply button would happily
+// paste into the Summary field. The pipeline is sentinel-safe end to end
+// (a failed generation lands as an errored job the route refuses to serve)
+// and this loop loads the finished recap into the exact same review/Replace
+// affordance aiRunRecap uses, so Apply/Discard behavior is unchanged.
+async function aiSummarizeFromFacts() {
+  const status = document.getElementById('ai-recap-status');
+  const modelSel = document.getElementById('audio-bgjob-model');
+  const POLL_MS = 4000;
+  const POLL_CAP_MS = 10 * 60 * 1000; // give up (with an explanation) after ~10 minutes
+  status.textContent = 'Summarizing from facts…';
+  _aiRecapButtons().forEach(b => b.disabled = true);
+  try {
+    let waited = 0;
+    while (true) {
+      const res = await fetch('/api/session-log/{{ gsession.id }}/recap', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        // The GM's panel options: Thinking, the background-job model
+        // picker, and the RAG opt-in (the pipeline retrieves lore for name
+        // accuracy the same way Condense/Process in Background do).
+        body: JSON.stringify({
+          think: _recapThinkEnabled(),
+          model: modelSel ? modelSel.value : '',
+          ..._recapRagOptions(),
+        }),
+      });
+      if (!res.ok) throw await ndApiErrorFrom(res);
+      const data = await res.json();
+      if (data.pending) {
+        if (waited >= POLL_CAP_MS) {
+          status.textContent = 'The recap is still generating after 10 minutes — it may be stuck. Check Background Jobs below.';
+          return;
+        }
+        status.textContent = 'Summarizing from facts in the background… (this can take a few minutes on a local model)';
+        await new Promise(r => setTimeout(r, POLL_MS));
+        waited += POLL_MS;
+        continue;
+      }
+      if (data.failed) {
+        // The generation errored server-side (its sentinel never gets
+        // cached as a done recap). Show the error through the same
+        // retry-style panel _showRecapFailed uses for a summarize-from-
+        // audio failure — never offer the error text as an applyable
+        // draft. Returning stops the loop; the route's short backoff
+        // window means a deliberate Retry only comes from pressing the
+        // button again after fixing the underlying issue (usually Ollama).
+        _aiRecapDraft = '';
+        _showRecapFailed(data.error || '(no error detail — check Background Jobs)');
+        status.textContent = '';
+        return;
+      }
+      _aiRecapDraft = data.recap || '';
+      if (!_aiRecapDraft) {
+        status.textContent = data.empty ? 'No facts logged for this session yet.' : 'No recap produced.';
+        return;
+      }
+      // _showRecapDraft (not a bare _setRecapPreviewText+display) so the
+      // Apply/Retry button visibility always resets here too — same
+      // reasoning as aiRunRecap's own call.
+      _showRecapDraft(_aiRecapDraft);
+      status.textContent = '';
+      return;
+    }
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  } finally {
+    _aiRecapButtons().forEach(b => b.disabled = false);
+  }
+}
+
+// ── Player recap (the publish model) ────────────────────────────────────
+// "Use AI recap" runs the SAME session-log recap job the Session Log's own
+// fallback runs (POST /api/session-log/{id}/recap), but lands the finished
+// draft in the player-summary field for the GM to edit — the publish model
+// exists precisely so the GM curates what players read rather than
+// consuming raw model output. "Save & Publish" posts text + the published
+// flag in one form post; the Session Log then serves the published text
+// verbatim with no AI involved.
+async function playerRecapUseAi() {
+  const status = document.getElementById('player-recap-status');
+  const field = document.getElementById('player-summary-field');
+  const modelSel = document.getElementById('audio-bgjob-model');
+  const POLL_MS = 4000;
+  const POLL_CAP_MS = 10 * 60 * 1000;
+  status.textContent = 'Generating the AI recap…';
+  let waited = 0;
+  try {
+    while (true) {
+      const res = await fetch('/api/session-log/{{ gsession.id }}/recap', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          think: _recapThinkEnabled(),
+          model: modelSel ? modelSel.value : '',
+          ..._recapRagOptions(),
+        }),
+      });
+      if (!res.ok) throw await ndApiErrorFrom(res);
+      const data = await res.json();
+      if (data.pending) {
+        if (waited >= POLL_CAP_MS) {
+          status.textContent = 'Still generating after 10 minutes — check Background Jobs, then try again.';
+          return;
+        }
+        status.textContent = 'Generating in the background…';
+        await new Promise(r => setTimeout(r, POLL_MS));
+        waited += POLL_MS;
+        continue;
+      }
+      if (data.failed) {
+        status.textContent = 'Recap generation failed: ' + (data.error || 'check Background Jobs');
+        return;
+      }
+      if (!data.recap) {
+        status.textContent = data.empty
+          ? 'No facts logged for this session yet — write the recap yourself or add facts first.'
+          : 'No recap produced.';
+        return;
+      }
+      field.value = data.recap;
+      status.textContent = 'AI recap loaded — edit it if you like, then Save & Publish.';
+      return;
+    }
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  }
+}
+
+function playerRecapPublish(publish) {
+  const field = document.getElementById('player-summary-field');
+  const status = document.getElementById('player-recap-status');
+  const fd = new FormData();
+  fd.append('player_summary', field.value);
+  if (publish) fd.append('publish', '1');
+  fetch('/sessions/{{ gsession.id }}/recap-publish', { method: 'POST', body: fd }).then(res => {
+    if (res.ok) location.reload();
+    else res.json().then(d => { status.textContent = d.detail || 'Failed to save.'; }).catch(() => { status.textContent = 'Failed to save.'; });
+  });
 }
 
 // ── NPCs Featured picker: folder tree + live search ─────────────────────
@@ -604,7 +798,13 @@ const sessionAudioJobs = ndAudioJobs(document.getElementById('audio-jobs-panel')
   chunkUrl: '/api/sessions/ai/audio-jobs/chunk',
   completeUrl: '/api/sessions/ai/audio-jobs/complete',
   createFromClipUrl: '/api/sessions/ai/audio-jobs/from-clip',
-  listUrl: '/api/sessions/ai/audio-jobs',
+  // Scoped to THIS session's jobs when one exists (the server filters on
+  // AudioJob.game_session_id, which every job-creating route on this page
+  // persists) — a GM on session #12 shouldn't wade through every other
+  // session's recap/condense jobs in the panel; the full world-wide list
+  // (with purpose/status filters) stays one "All jobs →" click away.
+  listUrl: '/api/sessions/ai/audio-jobs{% if gsession %}?game_session_id={{ gsession.id }}{% endif %}',
+  allJobsUrl: '/background-jobs',
   onUse: (job) => {
     // A background job's own failure/retry story already lives on the
     // Background Jobs page (auto-retry + one-click "Retry without
@@ -794,23 +994,67 @@ let loot = {{ loot | tojson }};
 
 function esc(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
-// ── Live session recording — records in short chunks (see
-// MAX_LIVE_CHUNK_SECONDS below), uploading each one to
+// ── Live session recording — records in short chunks (length GM-configurable
+// via #live-chunk-seconds above; the segments-stay-separate-complete-containers
+// reasoning lives in liveStartSegment below), uploading each one to
 // /api/sessions/{id}/live-transcript/append as soon as it finishes and
 // immediately starting the next segment, so a multi-hour session never
-// holds more than about a minute of unsaved audio at once. Uploads are
+// holds more than one chunk's worth of unsaved audio at once. Uploads are
 // processed through a sequential queue (one at a time, in order) rather
 // than fired in parallel, both so the transcript can't end up scrambled
 // out of order and so a self-hosted Whisper server that's slower than
 // realtime just falls behind gracefully instead of being hit with a burst
 // of concurrent requests.
 
-const LIVE_CHUNK_SECONDS = 60;
+// Longer chunks mean fewer chunk boundaries, and chunk boundaries are where
+// the transcription artifacts live: Whisper hallucination loops (music and
+// silence around a seam feed them), duplicated passages straddling a seam,
+// repeated-name loops — a real 3.5-hour session at the old fixed 60s produced
+// pages of "Редактор субтитров…" spam. Against that, a longer chunk means the
+// transcript lags further behind the table and a failed upload puts more
+// audio at risk before its retry — hence a control rather than a new
+// constant. Read fresh at EVERY segment start (never cached at recording
+// start), so a change applies from the next chunk, mid-recording included.
+// The value persists in localStorage and is validated against the select's
+// own options, so a stale/hand-edited entry falls back to the 60s default.
+function liveChunkSeconds() {
+  const v = parseInt(localStorage.getItem('liveChunkSeconds'), 10);
+  return [60, 120, 180, 300, 600, 900].includes(v) ? v : 60;
+}
 let _liveRecording = false;
 let _liveCurrentRecorder = null;
 let _liveChunkTimer = null;
+// Minted ONCE per recording (in toggleLiveRecording's Start branch, via
+// chunked-upload.js's ndChunkUploadRandomId — the same 32-hex shape the
+// server's chunked-upload endpoints validate) and stamped onto every segment
+// as it's captured, so the server can keep the opt-in raw-audio archive of
+// this recording grouped and in order even when a failed chunk is retried
+// long after later chunks uploaded fine. Together with the per-segment index
+// below it doubles as the idempotency key for the server's save path: a
+// retry of the same segment overwrites its file instead of duplicating it.
+let _liveRecordingId = null;
+// Zero-based position of the NEXT segment to be captured this recording —
+// read-and-incremented at capture time (not upload time) so a chunk that
+// fails all 3 upload attempts and sits in _liveFailedChunks keeps its
+// original index for the retry.
+let _liveSegmentIndex = 0;
+
+// Restore + persist the two recording controls (this script sits at the end
+// of <body>, so the elements exist). Read on load and written on every
+// change — nothing here is captured at recording start, matching how
+// liveChunkSeconds() is re-read per segment.
+const saveChk = document.getElementById('live-save-audio');
+saveChk.checked = localStorage.getItem('liveSaveAudio') !== '0';  // absent = never chosen = the checked default
+saveChk.addEventListener('change', () => {
+  localStorage.setItem('liveSaveAudio', saveChk.checked ? '1' : '0');
+});
+const chunkSel = document.getElementById('live-chunk-seconds');
+chunkSel.value = String(liveChunkSeconds());
+chunkSel.addEventListener('change', () => {
+  localStorage.setItem('liveChunkSeconds', chunkSel.value);
+});
 // Acquired ONCE in toggleLiveRecording's Start branch and reused by every
-// ~60s segment's ndMicRecorder (see its own comment in base.html for why:
+// segment's ndMicRecorder (see its own comment in base.html for why:
 // re-acquiring the mic every segment cost an audible gap, a flickering mic
 // indicator, and could silently kill the recording on mobile Safari).
 // Released in liveStopMicStream, called once the final segment's onStop
@@ -887,6 +1131,14 @@ async function liveProcessQueue() {
       try {
         const fd = new FormData();
         fd.append('file', file, file.name);
+        // Raw-audio archive tagging: the checkbox is read at upload time (the
+        // GM can toggle it mid-recording), while recording_id/segment_index
+        // were stamped onto the File at capture time — so a chunk retried
+        // after a failure still lands in its original recording slot, and
+        // the server can overwrite that slot instead of duplicating it.
+        fd.append('save_audio', saveChk && saveChk.checked ? '1' : '');
+        fd.append('recording_id', file.ndRecordingId || '');
+        fd.append('segment_index', String(typeof file.ndSegmentIndex === 'number' ? file.ndSegmentIndex : -1));
         const res = await fetch(`/api/sessions/${SESSION_ID}/live-transcript/append`, { method: 'POST', body: fd });
         if (!res.ok) throw await ndApiErrorFrom(res);
         const data = await res.json();
@@ -904,6 +1156,11 @@ async function liveProcessQueue() {
   }
   _liveQueueBusy = false;
   liveRefreshStatus();
+  // The post-stop flush (recording already stopped) is the moment the saved
+  // segment count/bytes settle — refresh the raw-audio line then, and only
+  // then: drains while still recording fire every chunk, and polling this
+  // from there would turn a one-shot refresh into a silent poll loop.
+  if (!_liveRecording) liveRefreshAudioStatus();
 }
 
 function liveStartSegment() {
@@ -915,7 +1172,13 @@ function liveStartSegment() {
   // see _liveMicStream's own comment.
   _liveCurrentRecorder = ndMicRecorder(
     (blob, mimeType) => {
-      _liveQueue.push(new File([blob], ndMicFilename(mimeType), { type: mimeType }));
+      // The segment's archive identity is stamped at capture time, not
+      // upload time — see _liveRecordingId/_liveSegmentIndex above — so a
+      // retried upload reproduces exactly the tag the first attempt had.
+      const segFile = new File([blob], ndMicFilename(mimeType), { type: mimeType });
+      segFile.ndRecordingId = _liveRecordingId;
+      segFile.ndSegmentIndex = _liveSegmentIndex++;
+      _liveQueue.push(segFile);
       liveProcessQueue();
       if (_liveRecording) {
         liveStartSegment();  // immediately pick up the next segment, no gap
@@ -934,9 +1197,12 @@ function liveStartSegment() {
   _liveCurrentRecorder.start().then(started => {
     if (!started) { _liveRecording = false; return; }
     clearTimeout(_liveChunkTimer);
+    // liveChunkSeconds() is read HERE, per segment, not once at recording
+    // start — a GM changing the selector mid-recording applies from the
+    // very next segment.
     _liveChunkTimer = setTimeout(() => {
       if (_liveCurrentRecorder) _liveCurrentRecorder.stop();
-    }, LIVE_CHUNK_SECONDS * 1000);
+    }, liveChunkSeconds() * 1000);
   });
 }
 
@@ -972,6 +1238,10 @@ async function toggleLiveRecording() {
     liveReleaseWakeLock();
     btn.textContent = '🔴 Start Recording';
     status.textContent = 'Stopped — finishing the last chunk…';
+    // Refresh the raw-audio line now; if a segment is still uploading, the
+    // queue drain below refreshes it again once the server's count/bytes
+    // have actually settled.
+    liveRefreshAudioStatus();
     return;
   }
   if (!navigator.mediaDevices || !window.MediaRecorder) {
@@ -990,10 +1260,37 @@ async function toggleLiveRecording() {
     return;
   }
   _liveRecording = true;
+  // One id per recording (not per segment, not per page load) — the server
+  // groups a recording's saved raw segments under it, and a fresh recording
+  // in the same session never collides with a previous one's files.
+  _liveRecordingId = ndChunkUploadRandomId();
+  _liveSegmentIndex = 0;
   btn.textContent = '⏹ Stop Recording';
   status.textContent = 'Recording…';
   liveAcquireWakeLock();
   liveStartSegment();
+}
+
+// Populates the panel's raw-audio line (segment count, total size, download
+// link) from /live-audio — fetched only when a recording stops and on page
+// load, never polled, so it stays lightweight. Hidden entirely when nothing
+// has been saved ("Save raw audio" was off, or nothing recorded yet).
+async function liveRefreshAudioStatus() {
+  const el = document.getElementById('live-audio-status');
+  if (!el) return;
+  try {
+    const res = await fetch(`/api/sessions/${SESSION_ID}/live-audio`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.count) { el.style.display = 'none'; el.textContent = ''; return; }
+    el.style.display = '';
+    el.textContent = '';
+    el.append(`🎥 Raw audio: ${data.count} segment(s) (~${Math.round(data.total_bytes / (1024 * 1024))} MB) — `);
+    const a = document.createElement('a');
+    a.href = `/api/sessions/${SESSION_ID}/live-audio/download`;
+    a.textContent = 'Download recording';
+    el.appendChild(a);
+  } catch (e) { /* best-effort: the transcript itself never depends on this */ }
 }
 
 async function clearLiveTranscript() {
@@ -1179,6 +1476,9 @@ if (xpBtn) {
 
 renderPrep();
 renderLoot();
+// On page load, show the saved-raw-audio line if this session has one (a GM
+// coming back the next day can download the recording without re-recording).
+liveRefreshAudioStatus();
 {% endif %}
 </script>
 {% endblock %}

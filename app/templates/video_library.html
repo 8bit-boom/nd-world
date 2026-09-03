@@ -14,7 +14,7 @@
   </nav>
   <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.3rem;flex-wrap:wrap">
     <h1 style="margin:0">📁 {{ album.name }}</h1>
-    {% if can_edit %}
+    {% if can_edit(request) %}
     <button type="button" class="btn-cancel" style="font-size:.75rem;padding:.25rem .6rem" onclick="videoToggleAlbumRename()">✏ Rename</button>
     <form method="post" action="{{ ('/video/albums/' + album.id|string + '/delete')|wq }}"
           onsubmit="return confirm('Delete this album? Every sub-album and clip inside it is deleted permanently — this can\'t be undone.');" style="display:inline">
@@ -22,7 +22,7 @@
     </form>
     {% endif %}
   </div>
-  {% if can_edit %}
+  {% if can_edit(request) %}
   <form method="post" action="{{ ('/video/albums/' + album.id|string + '/rename')|wq }}" id="video-album-rename-form" style="display:none;margin-bottom:1rem;gap:.5rem">
     <input type="text" name="name" value="{{ album.name }}" maxlength="120" required
            style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
@@ -35,11 +35,11 @@
 
   <p style="color:var(--text-dim);font-size:.85rem;margin:.3rem 0 1.2rem">
     Recorded cutscenes, handout clips, NPC video messages.
-    {% if can_edit %}Upload a clip below — it's visible to players by default unless you hide it.
+    {% if can_edit(request) %}Upload a clip below — it's visible to players by default unless you hide it.
     {% else %}Anything your GM has shared with the party.{% endif %}
   </p>
 
-  {% if can_edit and not album %}
+  {% if can_edit(request) and not album %}
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.5rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">💾 Space-Saving Conversion</h2>
     <p style="color:var(--text-dim);font-size:.8rem;margin:0 0 .8rem">
@@ -69,7 +69,7 @@
   </div>
   {% endif %}
 
-  {% if can_edit %}
+  {% if can_edit(request) %}
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.5rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">📁 {{ 'New Sub-album' if album else 'New Album' }}</h2>
     <form method="post" action="{{ '/video/albums/new'|wq }}" style="display:flex;gap:.5rem;flex-wrap:wrap">
@@ -133,14 +133,14 @@
         <div class="video-clip-info">
           <div class="video-clip-name">
             {{ c.name }}
-            {% if can_edit and not c.visible_to_players %}<span class="video-clip-hidden-tag">hidden from players</span>{% endif %}
+            {% if can_edit(request) and not c.visible_to_players %}<span class="video-clip-hidden-tag">hidden from players</span>{% endif %}
           </div>
           {% if c.description %}<div class="video-clip-desc">{{ c.description }}</div>{% endif %}
         </div>
         <video controls preload="{{ 'none' if c.poster_url else 'metadata' }}" src="{{ c.file_url }}"
                {% if c.poster_url %}poster="{{ c.poster_url }}"{% endif %}
                style="width:100%;max-width:360px;border-radius:4px;background:#000"></video>
-        {% if can_edit %}
+        {% if can_edit(request) %}
         <div class="video-clip-actions">
           <button type="button" class="btn-cancel" style="font-size:.75rem;padding:.25rem .6rem" onclick="videoToggleEdit({{ c.id }})">✏ Edit</button>
           <form method="post" action="{{ ('/video/' + c.id|string + '/delete')|wq }}" onsubmit="return confirm('Delete this clip? This can\'t be undone.');" style="display:inline">
@@ -174,7 +174,7 @@
     </div>
     {% else %}
     <p style="color:var(--text-dim);font-size:.82rem;margin:0">
-      {% if can_edit %}No clips here yet — upload one above.{% else %}Nothing here yet.{% endif %}
+      {% if can_edit(request) %}No clips here yet — upload one above.{% else %}Nothing here yet.{% endif %}
     </p>
     {% endif %}
   </div>

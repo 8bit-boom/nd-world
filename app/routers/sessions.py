@@ -1,15 +1,17 @@
 import io
 import json
+import logging
 import os
+import shutil
 import tempfile
-import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
-from sqlalchemy import or_
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from .. import auth
@@ -18,10 +20,15 @@ from .. import audio_jobs as _audio_jobs
 from ..database import get_db
 from ..deps import check_llm_cooldown, get_world_ctx, paginate
 from ..models import AudioClip, AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, Quest, World
+from ..rendering import render_md
 from ..templating import templates
-from ..uploads import copy_upload_bounded, reassemble_upload_chunks, save_upload_chunk
+from ..uploads import CHUNK_ID_RE, copy_upload_bounded, reassemble_upload_chunks, save_upload_chunk
 
 router = APIRouter()
+
+# Same name/approach as video.py's and ai.py's module loggers — ffmpeg
+# failures in the live-audio concat path warn here instead of 500-ing.
+_log = logging.getLogger("nd.sessions.router")
 
 # Same allowed set as the AI-attachment and Audio Library upload pipelines
 # (app/routers/ai.py's _ATTACH_AUDIO_EXTS, app/routers/audio.py's
@@ -31,11 +38,18 @@ _SESSION_AUDIO_EXTS = {".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus",
 # Library's own MAX_AUDIO_UPLOAD_BYTES, reusing that env var rather than
 # introducing a second one for what's really the same kind of upload.
 MAX_SESSION_AUDIO_BYTES = int(os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(1024 * 1024 * 1024)))
-# One live-recording chunk (see the "Live session recording" section below)
-# is only ever a minute or so of audio — this just needs to be generous
+# A live-recording chunk (see the "Live session recording" section below) is
+# GM-configurable from ~1 to ~15 minutes — this just needs to be generous
 # enough that a slightly-longer-than-expected chunk (a slow browser tab, a
 # missed stop/restart) doesn't 413 and silently drop that segment.
 MAX_LIVE_CHUNK_BYTES = int(os.environ.get("MAX_LIVE_CHUNK_BYTES", str(25 * 1024 * 1024)))
+# Per-segment cap for the opt-in raw-audio archive (api_live_transcript_append
+# below). The longest segment the client's chunk-length selector can produce
+# is 15 minutes, and a 15-minute browser MediaRecorder segment at even a
+# generous Opus bitrate is well under 20 MB — so ~200 MB is purely a
+# runaway-client bound (a GM pointing the endpoint at a movie file, say),
+# sized to never reject a real segment, same spirit as MAX_LIVE_CHUNK_BYTES.
+MAX_LIVE_SAVED_SEGMENT_BYTES = int(os.environ.get("MAX_LIVE_SAVED_SEGMENT_BYTES", str(200 * 1024 * 1024)))
 
 
 def _session_audio_chunks_root() -> Path:
@@ -381,6 +395,11 @@ def session_delete(session_id: int, db: Session = Depends(get_db)):
     if not gs:
         raise HTTPException(404)
     db.query(CombatSession).filter(CombatSession.game_session_id == session_id).update({"game_session_id": None})
+    # The opt-in raw-recording archive (uploads/live/<session_id>/, written
+    # by api_live_transcript_append) is keyed by this session id and
+    # referenced by nothing else once the row is gone — delete it with the
+    # row, the same way the row's other on-disk dependents are cleaned up.
+    shutil.rmtree(_live_audio_root(session_id), ignore_errors=True)
     db.delete(gs)
     db.commit()
     return RedirectResponse("/sessions", status_code=303)
@@ -565,6 +584,22 @@ def _condense_token_bounds(body: dict) -> tuple[Optional[int], Optional[int]]:
     return bounds["min_tokens"], bounds["max_tokens"]
 
 
+def _condense_strictness(body: dict) -> str:
+    """Parse+validate Condense's optional strictness setting — same
+    "blank means default" convention _condense_token_bounds uses. Missing/
+    blank reads as "guideline" (today's best-effort wording); anything
+    else that isn't one of the three known values raises HTTPException(400)
+    so a typo'd request fails fast instead of silently downgrading to the
+    soft default the GM didn't ask for."""
+    raw = body.get("strictness")
+    if raw in (None, ""):
+        return "guideline"
+    strictness = str(raw).strip()
+    if strictness not in ("guideline", "firm", "strict"):
+        raise HTTPException(400, "strictness must be guideline, firm, or strict")
+    return strictness
+
+
 def _rag_options_from_body(body: dict) -> tuple[bool, Optional[int], Optional[int]]:
     """Parse+validate Condense/Summarize's optional RAG opt-in from a JSON
     request body — same "blank means unset" convention _condense_token_bounds
@@ -625,6 +660,7 @@ async def api_condense_recap(request: Request):
     if not recap:
         raise HTTPException(400, "No recap provided")
     min_tokens, max_tokens = _condense_token_bounds(body)
+    strictness = _condense_strictness(body)
     model = _recap_model(str(body.get("model", "")).strip())
     extra_instructions = str(body.get("extra_instructions", "")).strip()
     _reject_if_too_long_to_condense(recap, extra_instructions)
@@ -642,6 +678,7 @@ async def api_condense_recap(request: Request):
     recap_result = await _ai_module.condense_recap(
         recap, model=model, options=options, think=think,
         extra_instructions=extra_instructions, min_tokens=min_tokens, max_tokens=max_tokens,
+        strictness=strictness,
     )
     return {"recap": recap_result}
 
@@ -665,6 +702,7 @@ async def api_condense_job_create(
     if not recap:
         raise HTTPException(400, "No recap provided")
     min_tokens, max_tokens = _condense_token_bounds(body)
+    strictness = _condense_strictness(body)
     extra_instructions = str(body.get("extra_instructions", "")).strip()
     _reject_if_too_long_to_condense(recap, extra_instructions)
     use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
@@ -675,6 +713,7 @@ async def api_condense_job_create(
         think=_think_from_body(body), fit_context=bool(body.get("fit_context")),
         extra_instructions=extra_instructions,
         min_tokens=min_tokens, max_tokens=max_tokens,
+        strictness=strictness,
         use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
         game_session_id=gs_id, created_by_user_id=_current_user_id(request),
     )
@@ -981,21 +1020,31 @@ def api_audio_job_status(job_id: int, request: Request, db: Session = Depends(ge
 
 
 @router.get("/api/sessions/ai/audio-jobs")
-def api_audio_job_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def api_audio_job_list(
+    request: Request, game_session_id: Optional[int] = None,
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
     """Recent background transcription jobs for the active world — lets a
     GM find a job again after closing the tab that started it (even from a
     different browser), not just while it's still visible on the page that
-    kicked it off."""
+    kicked it off.
+
+    `game_session_id`, when given, narrows the list to jobs made FOR that
+    session (AudioJob.game_session_id == it) — the Sessions page's inline
+    panel passes its own session's id, so it shows only what belongs to the
+    session the GM is looking at instead of every recap/condense job in the
+    world (other sessions' jobs are still on /background-jobs, which has
+    purpose/status filters of its own). Every job-creating route on this
+    page persists game_session_id, so the filter is exact."""
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
-    jobs = (
-        db.query(AudioJob)
-        .filter(AudioJob.world_id == world.id, AudioJob.purpose.in_(_SESSION_JOB_PURPOSES))
-        .order_by(AudioJob.created_at.desc())
-        .limit(20)
-        .all()
+    q = db.query(AudioJob).filter(
+        AudioJob.world_id == world.id, AudioJob.purpose.in_(_SESSION_JOB_PURPOSES),
     )
+    if game_session_id is not None:
+        q = q.filter(AudioJob.game_session_id == game_session_id)
+    jobs = q.order_by(AudioJob.created_at.desc()).limit(20).all()
     return [_job_to_dict(j) for j in jobs]
 
 
@@ -1003,13 +1052,102 @@ def api_audio_job_list(request: Request, db: Session = Depends(get_db), active_w
 # arrive, so a multi-hour recording survives a crashed tab or dropped
 # connection with at most one chunk lost instead of the whole session. The
 # browser side (sessions/detail.html) stops and restarts a fresh short
-# MediaRecorder segment every ~minute and uploads each one here in order as
-# it finishes — this endpoint has no idea how long the overall recording
-# has been running, it only ever sees one chunk at a time (see
-# _transcribe_chunk above, shared with summarize-from-audio).
+# MediaRecorder segment every chunk-length (GM-configurable, ~1–15 minutes)
+# and uploads each one here in order as it finishes — this endpoint has no
+# idea how long the overall recording has been running, it only ever sees
+# one chunk at a time (see _transcribe_chunk above, shared with
+# summarize-from-audio).
+
+def _live_audio_root(session_id: int) -> Path:
+    """Where a session's opt-in raw-recording archive lives: one directory
+    per session, one subdirectory per recording (each recording start mints
+    a fresh 32-hex recording_id, so two recordings never overwrite each
+    other's segments), one zero-padded file per segment. Lives under the
+    same <DB_PATH dir>/uploads root as every other stored upload."""
+    return Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads" / "live" / str(session_id)
+
+
+def _live_audio_files(gs: GameSession) -> list:
+    """The saved raw segment paths (relative to the uploads dir, in recording
+    order) for a session, from GameSession.live_audio_files_json — a JSON
+    array maintained by api_live_transcript_append. Tolerant of NULL, blank,
+    or corrupt JSON (old rows, a partially-written value): an unreadable
+    list degrades to "nothing saved", never to a 500."""
+    try:
+        files = json.loads(gs.live_audio_files_json or "[]")
+    except ValueError:
+        return []
+    return [str(p) for p in files] if isinstance(files, list) else []
+
+
+def _ffmpeg_concat_quote(p: Path) -> str:
+    """One `file '<path>'` line for ffmpeg's concat demuxer list file. The
+    demuxer parses single-quoted strings shell-style, so an embedded quote
+    must close the string, backslash-escape the quote, and reopen — the
+    same '\'' idiom. Paths here are all server-generated (32-hex recording
+    dirs, 6-digit index names), so this never fires in practice, but concat
+    hard-fails on an unescaped one rather than skipping it."""
+    return "file '" + str(p).replace("'", "'\\''") + "'"
+
+
+async def _concat_live_segments(segs: list, out_path: Path) -> None:
+    """Stitch a session's saved raw segments, in order, into one file at
+    out_path — ffmpeg's concat demuxer with -c copy (no re-encode, so a
+    multi-hour recording assembles in seconds). Writes the demuxer's list
+    file and the output next to the segments, to a .part name replaced into
+    place only on success so a failed run can never leave a half-written
+    file cached as complete. Raises RuntimeError with the reason on any
+    failure (ffmpeg missing, unparseable segment, crash) — the caller turns
+    that into a 400, mirroring app/routers/video.py's best-effort ffmpeg
+    error style, and its async-subprocess shape follows video.py's
+    _convert_video (create_subprocess_exec, check returncode, non-empty
+    output)."""
+    import asyncio
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".txt", dir=out_path.parent, delete=False, encoding="utf-8",
+    ) as lst:
+        lst.write("\n".join(_ffmpeg_concat_quote(p) for p in segs) + "\n")
+        list_path = Path(lst.name)
+    # ".part" goes in the MIDDLE ("recording.part.webm", not the shell-ish
+    # "recording.webm.part") — ffmpeg picks its muxer from the output file's
+    # extension, and an unknown ".part" tail makes muxer init fail outright.
+    tmp_out = out_path.with_name(out_path.stem + ".part" + out_path.suffix)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(list_path), "-c", "copy", str(tmp_out),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0 or not tmp_out.is_file() or tmp_out.stat().st_size == 0:
+            # Tail, not head: ffmpeg's banner is the first 20 lines and the
+            # actual error is always the last one.
+            _log.warning("live-audio concat failed (rc=%s): %s", proc.returncode, stderr.decode(errors="replace")[-500:])
+            raise RuntimeError(f"ffmpeg concat failed (rc={proc.returncode}): {stderr.decode(errors='replace')[-300:]}")
+        tmp_out.replace(out_path)
+    except FileNotFoundError as exc:
+        _log.warning("live-audio concat errored: ffmpeg not available")
+        raise RuntimeError("ffmpeg is not available on the server — cannot assemble the recording.") from exc
+    finally:
+        list_path.unlink(missing_ok=True)
+        tmp_out.unlink(missing_ok=True)
+
 
 @router.post("/api/sessions/{session_id}/live-transcript/append")
-async def api_live_transcript_append(session_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def api_live_transcript_append(
+    session_id: int,
+    file: UploadFile = File(...),
+    # Opt-in raw-audio archive (the panel's "Save raw audio" checkbox): the
+    # browser additionally tags each segment with a per-recording 32-hex id
+    # and its zero-based position, so the server can keep the audio on disk
+    # in recording order and later reassemble it. All three fields are
+    # optional — an old client (or one with the checkbox off) sends none of
+    # them and gets exactly the transcribe-and-discard behavior as before.
+    save_audio: str = Form(""),
+    recording_id: str = Form(""),
+    segment_index: int = Form(-1),
+    db: Session = Depends(get_db),
+):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
@@ -1018,13 +1156,105 @@ async def api_live_transcript_append(session_id: int, file: UploadFile = File(..
         chunk_text = (await _transcribe_chunk(file, glossary=_glossary_for_world(world, gs.id), language=_language_for_world(world), denoise=_denoise_for_world(world))).strip()
     except _ai_module.WhisperError as exc:
         raise HTTPException(400, str(exc)) from exc
-    if chunk_text:
-        gs.live_transcript = (gs.live_transcript or "") + (" " if gs.live_transcript else "") + chunk_text
+    # Raw-audio save runs AFTER transcription, so a Whisper failure (the 400
+    # above) leaves nothing half-saved, and the DB row below is committed
+    # together with the transcript append as the plan requires. The upload
+    # stream was consumed by _transcribe_chunk's bounded copy, hence the
+    # seek(0) — an UploadFile is a spooled temp file, rewinding it is free.
+    saved_rel = ""
+    if save_audio:
+        # Malformed archive fields are a hard 400 rather than a silent
+        # fallback to not-saving: a client bug that quietly drops audio the
+        # GM explicitly asked to keep is worse than a failed upload, which
+        # the client's failed-chunk/retry UI surfaces. Same validation shape
+        # as uploads.save_upload_chunk's "Invalid upload id"/"Invalid chunk
+        # index" — recording_id must match uploads.CHUNK_ID_RE (32 hex, the
+        # same generator ndChunkedUpload uses client-side), which also rules
+        # out any path traversal since it admits nothing but hex chars.
+        if not CHUNK_ID_RE.match(recording_id or ""):
+            raise HTTPException(400, "Invalid recording id")
+        if segment_index < 0:
+            raise HTTPException(400, "Invalid segment index")
+        live_root = _live_audio_root(session_id)
+        seg_dir = live_root / recording_id
+        seg_dir.mkdir(parents=True, exist_ok=True)
+        # ext comes from the upload filename (MediaRecorder produces .webm in
+        # every browser that ships the API today, hence the default) — already
+        # validated against _SESSION_AUDIO_EXTS by _transcribe_chunk above.
+        ext = Path(file.filename or "").suffix.lower() or ".webm"
+        dest = seg_dir / f"{segment_index:06d}{ext}"
+        file.file.seek(0)
+        copy_upload_bounded(file, dest, max_bytes=MAX_LIVE_SAVED_SEGMENT_BYTES)
+        saved_rel = dest.relative_to(live_root.parents[1]).as_posix()
+        # A client retry of a segment whose response was lost overwrites the
+        # same file — the JSON list must not grow a duplicate entry for it.
+        files = _live_audio_files(gs)
+        if saved_rel not in files:
+            files.append(saved_rel)
+            gs.live_audio_files_json = json.dumps(files)
+    if chunk_text or saved_rel:
+        if chunk_text:
+            gs.live_transcript = (gs.live_transcript or "") + (" " if gs.live_transcript else "") + chunk_text
         db.commit()
     # chunk_text can legitimately be "" (a silent segment) — that's not an
     # error, just nothing to append; the client still needs the running
     # total either way to keep its live display in sync.
     return {"chunk_text": chunk_text, "transcript": gs.live_transcript}
+
+
+@router.get("/api/sessions/{session_id}/live-audio")
+def api_live_audio_list(session_id: int, db: Session = Depends(get_db)):
+    """What raw audio the session's live recording has saved — feeds the
+    recording panel's "Raw audio: N segment(s) (~X MB) — Download" line
+    (sessions/detail.html), which fetches this on page load and when a
+    recording stops. Paths are as stored (uploads-dir-relative, the same
+    strings live_audio_files_json holds)."""
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    if not gs:
+        raise HTTPException(404)
+    files = _live_audio_files(gs)
+    uploads_dir = _live_audio_root(session_id).parents[1]
+    total_bytes = 0
+    for rel in files:
+        try:
+            total_bytes += (uploads_dir / rel).stat().st_size
+        except OSError:
+            pass  # row remembers a file the disk lost — it just counts as 0 here
+    return {"files": files, "count": len(files), "total_bytes": total_bytes}
+
+
+@router.get("/api/sessions/{session_id}/live-audio/download")
+async def api_live_audio_download(session_id: int, db: Session = Depends(get_db)):
+    """The whole raw recording as one downloadable file: every saved segment
+    concatenated in recording order. Concatenation is -c copy via ffmpeg's
+    concat demuxer (instant, no re-encode) and is cached next to the
+    segments — rebuilt only when a segment is newer than the cached file
+    (i.e. the segment set changed), since a concat of unchanged inputs is
+    deterministic. One saved segment is served directly, no concat. ffmpeg
+    missing or failing is a 400 with the reason, not a 500 — the raw
+    segments stay on disk either way and the GM can retry."""
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    if not gs:
+        raise HTTPException(404)
+    live_root = _live_audio_root(session_id)
+    uploads_dir = live_root.parents[1]
+    segs = [uploads_dir / rel for rel in _live_audio_files(gs)]
+    segs = [p for p in segs if p.is_file()]
+    if not segs:
+        raise HTTPException(400, "No raw audio saved for this session.")
+    ext = segs[0].suffix or ".webm"
+    filename = f"session-{session_id}-recording{ext}"
+    if len(segs) == 1:
+        # Nothing to concatenate — serve the segment itself, byte-for-byte.
+        return FileResponse(segs[0], headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    out_path = live_root / f"recording{ext}"
+    newest = max(p.stat().st_mtime for p in segs)
+    if not out_path.is_file() or out_path.stat().st_size == 0 or out_path.stat().st_mtime < newest:
+        try:
+            await _concat_live_segments(segs, out_path)
+        except RuntimeError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    return FileResponse(out_path, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.post("/api/sessions/{session_id}/live-transcript/clear")
@@ -1092,6 +1322,18 @@ async def api_summarize_live_transcript_job(session_id: int, request: Request, d
 
 @router.post("/api/sessions/{session_id}/ai/summarize-from-facts")
 async def api_summarize_from_facts(session_id: int, request: Request, db: Session = Depends(get_db)):
+    """Blocking facts→recap weave. Kept as documented API (it's in
+    API_REFERENCE and external scripts may call it), but the Sessions page's
+    own button now uses the /api/session-log/{id}/recap job pipeline
+    instead — a think=True call here is the same Cloudflare-524 trap the
+    job pipeline exists to avoid, and unlike this route it never caches a
+    failure sentinel as a done recap (see app.audio_jobs' session_log_recap
+    branch). generate_chat returns failures as sentinel STRINGS, so this
+    route still must not hand one back as though it were a recap:
+    recap_failed mirrors /api/sessions/ai/summarize-from-audio's identical
+    convention (is_failure_sentinel covers every sentinel family, including
+    the thinking-starved "[empty response ... hidden \"thinking\" ...]"
+    one), and the client hides its Replace/Apply affordance when it's set."""
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
@@ -1108,7 +1350,7 @@ async def api_summarize_from_facts(session_id: int, request: Request, db: Sessio
         [f.content for f in facts], model=_recap_model(""), extra_instructions=_recap_instructions_for_world(world),
         think=_think_from_body(body),
     )
-    return {"recap": recap}
+    return {"recap": recap, "recap_failed": _ai_module.is_failure_sentinel(recap)}
 
 
 # ── Player-facing session log (read-only, AI-synthesized) ───────────────────
@@ -1122,14 +1364,63 @@ async def api_summarize_from_facts(session_id: int, request: Request, db: Sessio
 # a GM browsing the same page) — the same security boundary the Chronicler
 # uses, just narrated for one session instead of the whole world.
 
+@router.post("/sessions/{session_id}/recap-publish")
+def session_recap_publish(
+    session_id: int, request: Request,
+    player_summary: str = Form(""), publish: Optional[str] = Form(None),
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Save the GM-curated PLAYER-facing recap and (optionally) publish it.
+    This is the Session Log's canonical content: a published summary is
+    served to players verbatim (markdown-rendered, no AI call), and an
+    unpublished or empty one falls the Session Log back to its facts-recap
+    pipeline. Reachable by GMs AND assistants — /sessions/* is in
+    _is_assistant_safe, and curating the player-visible recap is content
+    work, exactly like /sessions/{id}/edit's summary editing beside it."""
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    if not gs:
+        raise HTTPException(404)
+    gs.player_summary = player_summary
+    # Publishing an empty text is a no-op publish (there'd be nothing to
+    # show) — but the TEXT is still saved, so an in-progress draft survives.
+    gs.player_summary_published = bool(publish) and bool(player_summary.strip())
+    db.commit()
+    return RedirectResponse(f"/sessions/{session_id}", status_code=303)
+
+
 @router.get("/session-log", response_class=HTMLResponse)
 def session_log_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
     sessions = db.query(GameSession).filter(
         GameSession.world_id == (world.id if world else 1)
     ).order_by(GameSession.session_num.desc()).all()
+    # Per-session recap markers for the list (one aggregate query, no N+1):
+    # "published" beats "auto" — a GM-published recap is the canonical one
+    # players see — and "auto" just means the session HAS facts its
+    # facts-recap pipeline can weave.
+    ids = [s.id for s in sessions]
+    published_ids = {
+        s.id for s in sessions
+        if s.player_summary_published and (s.player_summary or "").strip()
+    }
+    fact_session_ids = {
+        row[0] for row in
+        db.query(Fact.game_session_id).filter(
+            Fact.world_id == (world.id if world else 1),
+            Fact.game_session_id.in_(ids),
+        ).all()
+    } if ids else set()
+    markers = {}
+    for s in sessions:
+        if s.id in published_ids:
+            markers[s.id] = "published"
+        elif s.id in fact_session_ids:
+            markers[s.id] = "auto"
+        else:
+            markers[s.id] = None
     return templates.TemplateResponse("sessions/player_list.html", {
         "request": request, "world": world, "worlds": worlds, "sessions": sessions,
+        "recap_markers": markers,
     })
 
 
@@ -1140,36 +1431,61 @@ def session_log_detail(session_id: int, request: Request, db: Session = Depends(
     user = getattr(request.state, "user", None)
     if not gs or not auth.user_can_access_world(db, user, db.get(World, gs.world_id)):
         raise HTTPException(404)
+    # A PUBLISHED player summary is the whole point of the publish model:
+    # it's served to the viewer verbatim (markdown-rendered, no AI call, no
+    # polling) — the Session Log's canonical content. Anything else
+    # (unpublished, empty) falls through to the facts-recap pipeline below.
+    published = bool(
+        gs.player_summary_published and (gs.player_summary or "").strip()
+    )
+    player_summary_html = render_md(gs.player_summary) if published else ""
     return templates.TemplateResponse("sessions/player_detail.html", {
         "request": request, "world": world, "worlds": worlds, "gsession": gs,
+        "player_recap_published": published, "player_summary_html": player_summary_html,
     })
 
 
-# 30 minutes, not a short poll-interval TTL like most caches in this
-# codebase — this page's only real content input (Fact rows) already has
-# EXACT invalidation via clear_session_log_recap_cache (routers.facts on
-# every create/edit/delete, and routers.ai's recap-instructions save for
-# the other input this recap bakes in), so a long TTL costs nothing in
-# practice: a browsed session-log page was re-running a full
-# summarize_session_from_facts call (think=True by default — paying
-# thinking tokens too) on every visit within the old 20s window, for
-# identical input almost all of the time. Residual staleness is bounded to
-# switching the "recap" model surface default mid-window, which is rare
-# and self-corrects on the next Fact edit or TTL expiry either way.
-_SESSION_LOG_RECAP_CACHE_TTL = 1800.0
-# Keyed by (session_id, is_gm) — Fact visibility for this route is purely
+# The recap this route serves is generated as a durable background job
+# (purpose="session_log_recap", see app/audio_jobs.py) rather than inline —
+# the old synchronous version ran summarize_session_from_facts (think=True
+# by default — minutes on a CPU-local model) inside one HTTP request, which
+# hung the Session Log page on "Loading recap…" and tripped Cloudflare
+# Tunnel's ~100s timeout (HTTP 524) for the first viewer of every cache
+# window. The job row itself is now the cache: the latest done job for
+# (session, audience, model/think/RAG config) whose created_at postdates
+# BOTH durable staleness watermarks below IS the fresh cached recap,
+# re-parsed from result_json on every request — no in-process dict, no TTL,
+# and nothing that a server restart can rewind.
+#
+# Freshness is computed from the DATABASE, not a module global (the in-process
+# marker this replaced had three leak-grade flaws: a restart rewound it to
+# "nothing stale", resurrecting pre-restart fact-hiding edits to players; it
+# was world-blind, so a World B fact edit invalidated World A's recaps; and
+# the MCP fact tools never bumped it at all, so phone-logged facts went
+# stale-unnoticed). A done or in-flight row is fresh only when its created_at
+# is >= the session's newest Fact timestamp — max(coalesce(updated_at,
+# created_at)) over that session's rows, so a create, an edit, OR an MCP
+# write invalidates exactly the sessions whose content changed — AND >= the
+# world's World.recap_content_touch watermark (recap-instructions saves and
+# fact DELETIONS, the two recap-affecting mutations that leave no Fact row
+# behind to timestamp; NULL = never touched = epoch). NULL timestamps on
+# legacy rows count as epoch, so a pre-upgrade done recap stays fresh until
+# real content changes under it.
+# Keyed by (session_id, audience) — Fact visibility for this route is purely
 # GM/non-GM (no per-player entity_player_access-style individual sharing),
 # so every non-GM caller for a given session legitimately gets the same
-# answer and can safely share one cache entry. Cleared wholesale by
-# routers.facts whenever a Fact is created/edited/deleted (see
-# clear_session_log_recap_cache) — same "just clear it" pattern
-# app.main._spotlight_cache already uses, rather than tracking exactly
-# which session_id(s) a fact_edit reassignment touched.
-_session_log_recap_cache: dict[tuple, tuple[float, dict]] = {}
+# answer and can safely share one job's result.
 
-
-def clear_session_log_recap_cache() -> None:
-    _session_log_recap_cache.clear()
+# How long a terminally-errored recap job suppresses new job creation for
+# the same (session, audience, config) key. Without this window, the poll
+# loop of a page whose recap just failed (Ollama down, say) would mint a
+# brand-new job on every 4s poll — a pile of identical doomed jobs, each
+# holding the semaphore for its full retry timeout. Inside the window the
+# route answers {"failed": true, "error": ...} (the poll JS stops and shows
+# it, so the loop doesn't keep asking); a genuine Retry comes from the poll
+# having stopped — a page reload after the window passes — or an explicit
+# affordance added later, never from the poll loop itself.
+_RECAP_ERROR_BACKOFF_SECONDS = 60
 
 
 @router.post("/api/session-log/{session_id}/recap")
@@ -1180,27 +1496,142 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     if not gs or not auth.user_can_access_world(db, user, world):
         raise HTTPException(404)
     is_gm = bool(user and user.is_gm)
-    # Cache check comes BEFORE the cooldown gate: serving a still-fresh
-    # cached recap costs nothing (no Ollama call happens), so it shouldn't
-    # consume/trigger the same rate limit that exists to stop a player
-    # spamming real generations — e.g. reloading the session-log page
-    # repeatedly should just keep hitting cache, not 429.
-    cache_key = (session_id, is_gm)
-    cached = _session_log_recap_cache.get(cache_key)
-    now = time.monotonic()
-    if cached and now - cached[0] < _SESSION_LOG_RECAP_CACHE_TTL:
-        return cached[1]
+    audience = "gm" if is_gm else "players"
+
+    # This route predates taking a body at all (the page's original call
+    # sent none, and direct API calls may still not) — read the recap
+    # options optionally rather than requiring every caller to start
+    # sending an otherwise-pointless empty JSON body.
+    raw = await request.body()
+    body = json.loads(raw) if raw else {}
+    model = str(body.get("model", "")).strip()
+    think = _think_from_body(body)
+    use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
+    if audience != "gm" and use_rag:
+        # RAG is GM-only on this surface, enforced server-side (the template
+        # hides the checkbox from players, but this page serves players and
+        # the body is client-supplied): _build_rag_context retrieves world
+        # entities/notes WITHOUT the per-entity player-visibility filter, so
+        # a player-enabled RAG could pull GM-only lore into the recap prompt
+        # and read it back out of the model's answer. Model/thinking stay
+        # available to players — they only shape how the (visibility-
+        # filtered) facts are retold.
+        use_rag = False
+        rag_entity_limit = None
+        rag_notes_limit = None
+    # An explicitly picked model and "whatever the recap surface default is"
+    # must compare equal when they name the same model — a done row stores
+    # the RESOLVED default (never ""), so normalizing the empty request here
+    # is what lets the cache below hit at all for a GM with a configured
+    # surface default.
+    requested_model = model or _recap_model("")
+
+    # The durable staleness cutoff described in the comment block above:
+    # max(this session's newest Fact timestamp, the world's recap-content
+    # watermark). Naive-UTC datetimes throughout (AudioJob.created_at,
+    # Fact.created_at/updated_at and World.recap_content_touch all default
+    # from datetime.utcnow()), so they compare against each other directly.
+    # max(coalesce(updated_at, created_at)) treats a NULL updated_at (rows
+    # from before that column existed) as the fact's own creation time, and
+    # SQL's max() ignores the NULL a fully-timestamp-less row would produce
+    # — such a row can only exist in a hand-mangled database.
+    newest_fact_ts = (
+        db.query(func.max(func.coalesce(Fact.updated_at, Fact.created_at)))
+        .filter(Fact.game_session_id == session_id)
+        .scalar()
+    )
+    content_cutoff = max(
+        newest_fact_ts or datetime.min,
+        (world.recap_content_touch if world else None) or datetime.min,
+    )
+
+    def _session_log_recap_q(extra):
+        # The model/think/RAG filters exist because a recap generated with a
+        # different configuration is a DIFFERENT artifact: without them, the
+        # first recap ever generated for (session, audience) would be served
+        # forever no matter what the picker says next (the done rows are
+        # never deleted and stay "fresh" until a fact edit). NULL — a
+        # pre-feature row — reads as the same defaults _run_job itself
+        # applies (think=True, use_rag=False, limits at _DEFAULT_RAG_*), so
+        # old rows still match default requests. The RAG limits participate
+        # too: a recap woven from 15 retrieved entities is not the artifact
+        # a request for 50 asks for — both sides normalize an unset/NULL
+        # limit to the same default _run_job would apply at run time, so
+        # "blank field" and "pre-feature row" compare equal. created_at >=
+        # the cutoff IS the durable staleness rule (see above) — a done or
+        # in-flight row older than the newest content mutation is simply
+        # not returned by any lookup below.
+        return extra.filter(
+            AudioJob.purpose == "session_log_recap",
+            AudioJob.game_session_id == session_id,
+            AudioJob.audience == audience,
+            AudioJob.created_at >= content_cutoff,
+            func.coalesce(AudioJob.model, "") == requested_model,
+            func.coalesce(AudioJob.think, True) == think,
+            func.coalesce(AudioJob.use_rag, False) == use_rag,
+            func.coalesce(AudioJob.rag_entity_limit, _audio_jobs._DEFAULT_RAG_ENTITY_LIMIT)
+            == (rag_entity_limit if rag_entity_limit is not None else _audio_jobs._DEFAULT_RAG_ENTITY_LIMIT),
+            func.coalesce(AudioJob.rag_notes_limit, _audio_jobs._DEFAULT_RAG_NOTES_LIMIT)
+            == (rag_notes_limit if rag_notes_limit is not None else _audio_jobs._DEFAULT_RAG_NOTES_LIMIT),
+        )
+
+    # Fresh-cache check BEFORE the cooldown gate: serving an already-done
+    # recap costs nothing (no Ollama call happens), so reloading the page
+    # repeatedly must stay free, not consume the rate limit that exists to
+    # stop a player spamming real generations. "Fresh" is purely the
+    # staleness comparison — done jobs are never deleted, one simply stops
+    # being served once a fact edit has postdated it.
+    done = _session_log_recap_q(
+        db.query(AudioJob).filter(AudioJob.status == "done")
+    ).order_by(AudioJob.created_at.desc(), AudioJob.id.desc()).first()
+    if done:
+        try:
+            return json.loads(done.result_json or "")
+        except ValueError:
+            pass  # corrupt result blob — fall through and regenerate rather than 500
+
+    # A still-running job answers the poll without dedup-creating a second
+    # identical one (two players — or one player reloading — hitting this
+    # route while the model thinks must not stack duplicate jobs). The
+    # config filters in _session_log_recap_q apply here too, deliberately:
+    # a request for a different model/think/RAG must not sit pending behind
+    # someone else's artifact — it starts its own (dedup within the SAME
+    # configuration is unaffected). The freshness cutoff applies equally:
+    # a job started before the last fact edit is summarizing stale facts,
+    # so waiting on it would serve the wrong content — a new job supersedes
+    # it (the old one finishes harmlessly and is never served).
+    in_flight = _session_log_recap_q(
+        db.query(AudioJob).filter(AudioJob.status.in_(_audio_jobs.IN_PROGRESS_STATUSES))
+    ).order_by(AudioJob.created_at.desc(), AudioJob.id.desc()).first()
+    if in_flight:
+        return {"pending": True, "job_id": in_flight.id}
+
+    # A terminally-errored job inside the backoff window (see
+    # _RECAP_ERROR_BACKOFF_SECONDS) answers the poll with its error instead
+    # of minting a doomed replacement every 4 seconds. Placed AFTER the
+    # fresh/in-flight checks (a newer done/running job always wins over an
+    # older error) and BEFORE the cooldown/creation path (this response
+    # generates nothing, so it must consume no cooldown). The player_detail
+    # poll JS treats data.failed as terminal for the page load and shows
+    # the error text — a retry is a deliberate reload, not a loop.
+    recent_error = _session_log_recap_q(
+        db.query(AudioJob).filter(AudioJob.status == "error")
+    ).filter(
+        AudioJob.created_at >= datetime.utcnow() - timedelta(seconds=_RECAP_ERROR_BACKOFF_SECONDS)
+    ).order_by(AudioJob.created_at.desc(), AudioJob.id.desc()).first()
+    if recent_error:
+        return {"failed": True, "error": recent_error.error or "Recap generation failed."}
+
+    # Cooldown only at actual job-CREATION time: a POST that finds a pending
+    # job (the common reload-while-generating case) just latches onto it,
+    # while two genuinely-new generations within the window still get the
+    # same 429 the synchronous route used to apply per call.
     if not is_gm:
         check_llm_cooldown(user.id if user else 0)
-    q = db.query(Fact).filter(Fact.game_session_id == session_id)
-    if not is_gm:
-        q = q.filter(Fact.visible_to_players.isnot(False))
-    facts = q.order_by(Fact.created_at).all()
-    if not facts:
-        result = {"recap": "", "empty": True}
-        _session_log_recap_cache[cache_key] = (now, result)
-        return result
-    recap = await _ai_module.summarize_session_from_facts([f.content for f in facts], model=_recap_model(""), extra_instructions=_recap_instructions_for_world(world))
-    result = {"recap": recap}
-    _session_log_recap_cache[cache_key] = (now, result)
-    return result
+    job_id = _audio_jobs.create_session_log_recap_job(
+        world_id=gs.world_id, session_id=session_id, audience=audience,
+        created_by_user_id=user.id if user else None,
+        model=model, think=think,
+        use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
+    )
+    return {"pending": True, "job_id": job_id}

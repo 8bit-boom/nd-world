@@ -7,16 +7,35 @@ enforced both by the middleware (no POST /video/* entry there) and by an
 explicit check in each handler.
 """
 import io
+import shutil
 from pathlib import Path
 
 import pytest
 
 from app.database import SessionLocal
-from app.models import VideoAlbum, VideoClip
+from app.models import AppSettings, VideoAlbum, VideoClip
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
 _MP4_BYTES = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 500
+
+
+def _set_app_settings(**kw):
+    """Write AppSettings fields directly (the `client` fixture drops and
+    recreates every table per test, so there's nothing to reset afterward).
+    Used by the upload-limit tests to cover the Settings > System →
+    enforcement path end to end, without a form round-trip."""
+    db = SessionLocal()
+    try:
+        s = db.query(AppSettings).first()
+        if not s:
+            s = AppSettings(id=1)
+            db.add(s)
+        for k, v in kw.items():
+            setattr(s, k, v)
+        db.commit()
+    finally:
+        db.close()
 
 
 def _mp4_file(name="clip.mp4"):
@@ -125,6 +144,63 @@ def test_video_upload_rejects_file_over_configured_limit(client, seed, monkeypat
         assert db.query(VideoClip).filter(VideoClip.world_id == seed.world_a.id).count() == 0
     finally:
         db.close()
+
+
+def test_video_upload_settings_limit_rejects_oversized_file(client, seed):
+    """A saved AppSettings.max_video_mb (Settings > System's "Upload limits")
+    lowers the direct-upload cap below its env default — no monkeypatching,
+    no restart: the route resolves the limit from the DB per request."""
+    _set_app_settings(max_video_mb=1)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    big = {"file": ("big.mp4", io.BytesIO(_MP4_BYTES + b"\x00" * (2 * 1024 * 1024)), "video/mp4")}
+    r = client.post("/video/upload", files=big)
+    assert r.status_code == 413
+    db = SessionLocal()
+    try:
+        assert db.query(VideoClip).filter(VideoClip.world_id == seed.world_a.id).count() == 0
+    finally:
+        db.close()
+
+
+def test_video_upload_passes_effective_limit_from_settings(client, seed, monkeypatch):
+    """With max_video_mb set, the byte cap handed to copy_upload_bounded
+    comes from AppSettings (MB → bytes), not the module-level env default —
+    asserted via a spy around the real helper so no huge upload is needed."""
+    import app.routers.video as video_module
+
+    received = {}
+    real = video_module.copy_upload_bounded
+
+    def _spy(file, dest, max_bytes=None):
+        received["max_bytes"] = max_bytes
+        return real(file, dest, max_bytes=max_bytes)
+
+    monkeypatch.setattr(video_module, "copy_upload_bounded", _spy)
+    _set_app_settings(max_video_mb=4096)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/video/upload", files=_mp4_file(), follow_redirects=False)
+    assert r.status_code == 303
+    assert received["max_bytes"] == 4096 * 1024 * 1024
+
+
+def test_video_page_shows_settings_limit(client, seed):
+    _set_app_settings(max_video_mb=4096)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/video")
+    assert "Up to 4096 MB each" in r.text
+
+
+def test_video_page_falls_back_to_env_default_without_setting(client, seed):
+    """No AppSettings value → the MAX_VIDEO_UPLOAD_BYTES env default (2 GB
+    here — conftest doesn't override it) still applies and is what the page
+    advertises."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/video")
+    assert "Up to 2048 MB each" in r.text
 
 
 def test_video_upload_file_input_allows_multiple(client, seed):
@@ -621,6 +697,260 @@ async def test_convert_video_returns_none_on_nonzero_exit(tmp_path, monkeypatch)
     result = await video_module._convert_video(src, tmp_path, None, None)
     assert result is None
     assert not (tmp_path / "clip123-av1.webm").exists()
+
+
+# ── Non-native containers (MKV/AVI/... accepted, remuxed/transcoded to MP4) ─
+
+def test_video_upload_accepts_mkv_extension(client, seed, monkeypatch):
+    import app.routers.video as video_module
+
+    async def fake_remux(src):
+        out = src.with_suffix(".mp4")
+        out.write_bytes(b"fake remuxed mp4")
+        return out
+    monkeypatch.setattr(video_module, "_remux_or_transcode", fake_remux)
+
+    async def fake_poster(video_path, dest_dir):
+        return None
+    monkeypatch.setattr(video_module, "_generate_poster", fake_poster)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/video/upload", files=_mp4_file("movie.mkv"), follow_redirects=False)
+    assert r.status_code == 303  # accepted — not the 400 a truly unknown ext gets
+    db = SessionLocal()
+    try:
+        clip = db.query(VideoClip).filter(VideoClip.world_id == seed.world_a.id).first()
+        assert clip is not None
+        assert clip.file_url.endswith(".mp4")  # stored under the converted name
+    finally:
+        db.close()
+
+
+def test_video_upload_complete_accepts_mkv_extension(client, seed, tmp_path, monkeypatch):
+    import app.routers.video as video_module
+    monkeypatch.setattr(video_module, "_UPLOADS_DIR", tmp_path)
+    monkeypatch.setattr(video_module, "_CHUNKS_ROOT", tmp_path / "video" / "_chunks")
+
+    async def fake_remux(src):
+        out = src.with_suffix(".mp4")
+        out.write_bytes(b"fake remuxed mp4")
+        return out
+    monkeypatch.setattr(video_module, "_remux_or_transcode", fake_remux)
+
+    async def fake_poster(video_path, dest_dir):
+        return None
+    monkeypatch.setattr(video_module, "_generate_poster", fake_poster)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    upload_id = "7" * 32
+    r0 = client.post("/video/upload/chunk", data={"upload_id": upload_id, "chunk_index": "0"},
+                      files={"file": ("part", io.BytesIO(b"x" * 100), "application/octet-stream")})
+    assert r0.status_code == 200
+    r = client.post("/video/upload/complete", data={
+        "upload_id": upload_id, "filename": "movie.mkv", "total_chunks": "1",
+    })
+    assert r.status_code == 200  # accepted — not the 400 a truly unknown ext gets
+    db = SessionLocal()
+    try:
+        clip = db.query(VideoClip).filter(VideoClip.world_id == seed.world_a.id).first()
+        assert clip is not None
+        assert clip.file_url.endswith(".mp4")
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_finish_stored_file_non_native_uses_remux_when_av1_off(seed, tmp_path, monkeypatch):
+    import app.routers.video as video_module
+    from app.models import World
+
+    # In-memory flag only — `w` is passed straight to _finish_stored_file,
+    # and committing would expire its attributes while it's detached after
+    # close (DetachedInstanceError on the first attribute access).
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.video_convert_enabled = False
+    finally:
+        db.close()
+
+    dest = tmp_path / "clip123.mkv"
+    dest.write_bytes(b"fake mkv")
+
+    async def fake_remux(src):
+        out = src.with_suffix(".mp4")
+        out.write_bytes(b"fake remuxed mp4")
+        return out
+    monkeypatch.setattr(video_module, "_remux_or_transcode", fake_remux)
+
+    result = await video_module._finish_stored_file(dest, tmp_path, w)
+    assert result.suffix == ".mp4"
+    assert result.is_file()
+    assert not dest.exists()  # original MKV replaced by the remuxed MP4
+
+
+@pytest.mark.asyncio
+async def test_finish_stored_file_non_native_prefers_av1_when_enabled(seed, tmp_path, monkeypatch):
+    import app.routers.video as video_module
+    from app.models import World
+
+    # In-memory flag only — same detached-after-close reasoning as the
+    # av1-off variant above.
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.video_convert_enabled = True
+    finally:
+        db.close()
+
+    async def fake_convert(src, dest_dir, max_height, bitrate_kbps):
+        out = dest_dir / f"{src.stem}-av1.webm"
+        out.write_bytes(b"fake av1 output")
+        return out
+    monkeypatch.setattr(video_module, "_convert_video", fake_convert)
+
+    remux_calls = []
+
+    async def recording_remux(src):
+        remux_calls.append(src)  # records any call so the test can assert there was none
+        return None
+    monkeypatch.setattr(video_module, "_remux_or_transcode", recording_remux)
+
+    dest = tmp_path / "clip123.mkv"
+    dest.write_bytes(b"fake mkv")
+    result = await video_module._finish_stored_file(dest, tmp_path, w)
+    assert remux_calls == []  # AV1 succeeded, so the remux/transcode ladder never ran
+    assert result.name.endswith("-av1.webm")
+    assert not dest.exists()
+
+
+@pytest.mark.asyncio
+async def test_finish_stored_file_non_native_falls_back_to_remux_when_av1_fails(seed, tmp_path, monkeypatch):
+    import app.routers.video as video_module
+    from app.models import World
+
+    # In-memory flag only — same detached-after-close reasoning as the
+    # av1-off variant above.
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.video_convert_enabled = True
+    finally:
+        db.close()
+
+    async def fake_convert(src, dest_dir, max_height, bitrate_kbps):
+        return None  # graceful AV1 failure — see _convert_video's contract
+    monkeypatch.setattr(video_module, "_convert_video", fake_convert)
+
+    async def fake_remux(src):
+        out = src.with_suffix(".mp4")
+        out.write_bytes(b"fake remuxed mp4")
+        return out
+    monkeypatch.setattr(video_module, "_remux_or_transcode", fake_remux)
+
+    dest = tmp_path / "clip123.mkv"
+    dest.write_bytes(b"fake mkv")
+    result = await video_module._finish_stored_file(dest, tmp_path, w)
+    assert result.suffix == ".mp4"
+    assert not dest.exists()
+
+
+@pytest.mark.asyncio
+async def test_finish_stored_file_keeps_original_when_everything_fails(seed, tmp_path, monkeypatch):
+    import app.routers.video as video_module
+    from app.models import World
+
+    # In-memory flag only — same detached-after-close reasoning as the
+    # av1-off variant above.
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.video_convert_enabled = True
+    finally:
+        db.close()
+
+    async def fake_convert(src, dest_dir, max_height, bitrate_kbps):
+        return None
+    monkeypatch.setattr(video_module, "_convert_video", fake_convert)
+
+    async def fake_remux(src):
+        return None
+    monkeypatch.setattr(video_module, "_remux_or_transcode", fake_remux)
+
+    dest = tmp_path / "clip123.mkv"
+    dest.write_bytes(b"fake mkv")
+    result = await video_module._finish_stored_file(dest, tmp_path, w)
+    assert result == dest  # original kept — the clip is stored unconverted
+    assert result.is_file()  # and untouched
+    assert not (tmp_path / "clip123.mp4").exists()  # no half-written output left behind
+
+
+def test_remux_command_builder():
+    import app.routers.video as video_module
+
+    src, out = Path("movie.mkv"), Path("movie.mp4")
+    hevc_cmd = video_module._remux_command(src, out, hevc=True)
+    assert hevc_cmd[hevc_cmd.index("-tag:v") + 1] == "hvc1"  # Apple's required HEVC tag
+    assert hevc_cmd.count("-map") == 2  # video then audio, in that order
+    assert hevc_cmd[hevc_cmd.index("-map") + 1] == "0:v:0"
+    assert hevc_cmd[hevc_cmd.index("-map", hevc_cmd.index("-map") + 1) + 1] == "0:a:0"
+    for flag, value in (("-c", "copy"), ("-movflags", "+faststart")):
+        assert hevc_cmd[hevc_cmd.index(flag) + 1] == value
+    plain_cmd = video_module._remux_command(src, out, hevc=False)
+    assert "-tag:v" not in plain_cmd and "hvc1" not in plain_cmd  # no tag for non-HEVC sources
+    assert plain_cmd[-1] == str(out)
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None,
+                    reason="ffmpeg absent — the mocked tests above already pin the ladder's contract")
+def test_video_upload_mkv_gets_remuxed_to_mp4_by_real_ffmpeg(client, seed, tmp_path, monkeypatch):
+    """Real-ffmpeg integration for the whole non-native path: build a tiny
+    MKV with ffmpeg itself, upload it with the world's AV1 opt-in off (the
+    default), and assert the stored clip is a real, non-empty .mp4 — the
+    remux rung runs for real (H.264/AAC in MKV remuxes into MP4 losslessly)."""
+    import subprocess
+
+    import app.routers.video as video_module
+    monkeypatch.setattr(video_module, "_UPLOADS_DIR", tmp_path)
+
+    built = subprocess.run([
+        "ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=duration=0.5:size=128x96:rate=10",
+        "-f", "lavfi", "-i", "sine=duration=0.5", "-c:v", "libx264", "-c:a", "aac", str(tmp_path / "source.mkv"),
+    ], capture_output=True)
+    assert built.returncode == 0
+    assert (tmp_path / "source.mkv").stat().st_size > 0
+
+    async def fake_poster(video_path, dest_dir):
+        return None  # poster is not this test's subject — skip its own ffmpeg run
+    monkeypatch.setattr(video_module, "_generate_poster", fake_poster)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    # Upload the BUILT mkv's actual bytes — _mp4_file's _MP4_BYTES placeholder
+    # content would just exercise the graceful keep-original fallback instead.
+    r = client.post("/video/upload",
+                    files={"file": ("cutscene.mkv", io.BytesIO((tmp_path / "source.mkv").read_bytes()), "video/x-matroska")},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        clip = db.query(VideoClip).filter(VideoClip.world_id == seed.world_a.id).first()
+        file_url = clip.file_url
+    finally:
+        db.close()
+    assert file_url.endswith(".mp4")
+    stored = tmp_path / "video" / file_url[len("/uploads/video/"):]
+    assert stored.is_file()
+    assert stored.stat().st_size > 0
+    # And it is genuinely an MP4 container now, not a renamed MKV — ffprobe
+    # reports mp4 among the mov-style format names for a real MP4 mux output.
+    probe = subprocess.run([
+        "ffprobe", "-v", "error", "-show_entries", "format=format_name", "-of", "csv=p=0", str(stored),
+    ], capture_output=True)
+    assert probe.returncode == 0
+    assert "mp4" in probe.stdout.decode(errors="replace")
 
 
 # ── Albums and sub-albums ───────────────────────────────────────────────────

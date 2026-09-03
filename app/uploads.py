@@ -104,6 +104,23 @@ def read_upload_bounded(file: UploadFile, max_bytes: int = None) -> bytes:
     return b"".join(chunks)
 
 
+def effective_upload_bytes(mb_value, default_bytes: int) -> int:
+    """Turn an AppSettings max_*_mb column value (Settings > System's
+    "Upload limits") into the byte cap an upload call should enforce on this
+    very request. None/blank (a fresh install the migration gave NULL
+    columns, or a cleared form field) or <= 0 falls back to default_bytes —
+    the same MAX_* environment constant that module's limit was before — so
+    env-var deployments keep working unchanged and a GM's saved value simply
+    overrides it per instance, with no restart. Values are stored in MB (the
+    unit every limit label in the UI already uses), so the effective cap is
+    value * 1 MB. Routers wrap this in a tiny _effective_*_bytes(db) helper
+    rather than importing get_app_settings here, keeping uploads.py free of
+    DB imports (routers import this module, not the other way around)."""
+    if not mb_value or mb_value <= 0:
+        return default_bytes
+    return mb_value * 1024 * 1024
+
+
 # ── Client-side-split large-file uploads ────────────────────────────────────
 #
 # A big file (a whole session recording, a long ambiance track, a large

@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Dice — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div style="max-width:860px;margin:0 auto;padding:1.5rem 1rem">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+    <h1 style="color:var(--neon);font-size:1.3rem;margin:0">🎲 Dice</h1>
+  </div>
+
+  {% if not world %}
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;color:var(--text-dim);font-size:.9rem">
+    No active world yet — rolls are world-scoped, so create or switch to a world first.
+  </div>
+  {% else %}
+
+  <form method="post" action="{{ '/dice'|wq }}" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem;margin-bottom:.6rem;display:flex;gap:.6rem;flex-wrap:wrap;align-items:flex-end">
+    <div class="form-group" style="flex:1;min-width:220px;margin:0">
+      <label>Roll</label>
+      <input name="notation" value="{{ last_notation }}" placeholder="2d6+3" autofocus
+             autocomplete="off" spellcheck="false" style="font-family:monospace"/>
+    </div>
+    <button type="submit" class="btn-primary">🎲 Roll</button>
+  </form>
+
+  <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:1rem">
+    {% for quick in ['d20', '2d6+3', '4d6', '1d100', '1d10+2'] %}
+    <button type="button" class="dice-quick" data-notation="{{ quick }}"
+            style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .7rem;font-size:.8rem;font-family:monospace;border-radius:3px;cursor:pointer">{{ quick }}</button>
+    {% endfor %}
+  </div>
+
+  {% if error %}
+  <div style="background:var(--bg2);border:1px solid #a33;border-radius:6px;padding:.7rem 1rem;margin-bottom:1rem;color:#e88;font-size:.85rem">{{ error }}</div>
+  {% endif %}
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .7rem">Roll log — {{ world.name }} <span style="color:var(--text-dim);font-weight:normal;font-size:.78rem">(latest {{ rolls|length }})</span></h2>
+    {% if rolls %}
+    <div id="dice-log" style="display:flex;flex-direction:column;gap:.45rem">
+      {% for r in rolls %}
+      <div style="display:flex;align-items:baseline;gap:.7rem;flex-wrap:wrap;padding:.45rem .6rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px">
+        <span style="font-size:.78rem;color:var(--text-dim);min-width:8ch">{{ r.user_name }}</span>
+        <span style="font-family:monospace;font-size:.85rem">{{ r.notation }}</span>
+        <span style="font-size:.75rem;color:var(--text-dim)">
+          {% for t in r.breakdown %}{{ t.term }}{% if t.rolls %} [{{ t.rolls|join(', ') }}]{% endif %} {% endfor %}
+        </span>
+        <span style="margin-left:auto;font-weight:bold;color:var(--neon);font-size:1rem">= {{ r.total }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p style="color:var(--text-dim);font-size:.85rem;margin:0">No rolls yet — everyone at the table (players included) can roll here and see the shared log.</p>
+    {% endif %}
+  </div>
+
+  <script>
+  (function(){
+    document.querySelectorAll('.dice-quick').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        var input = document.querySelector('input[name="notation"]');
+        if (input) { input.value = btn.dataset.notation; input.closest('form').submit(); }
+      });
+    });
+    // Live refresh so a roll made on another device (or by a player) shows up
+    // without reloading — same poll-the-small-JSON-endpoint pattern as the
+    // spotlight and schematic player views.
+    var lastId = {{ rolls[0].id if rolls else 0 }};
+    setInterval(function(){
+      fetch('/api/dice/history').then(function(r){ return r.ok ? r.json() : null; }).then(function(d){
+        if (!d || !d.rolls || !d.rolls.length || d.rolls[0].id === lastId) return;
+        location.reload();
+      }).catch(function(){});
+    }, 5000);
+  })();
+  </script>
+  {% endif %}
+</div>
+{% endblock %}

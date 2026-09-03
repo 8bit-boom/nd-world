@@ -66,10 +66,12 @@ def _reset_ollama_overrides():
     ai_module.set_ollama_generation_overrides({})
     ai_module._model_capabilities_cache.clear()
     ai_module._model_thinking_failures.clear()
+    ai_module._prompt_token_thinking_models.clear()
     yield
     ai_module.set_ollama_generation_overrides({})
     ai_module._model_capabilities_cache.clear()
     ai_module._model_thinking_failures.clear()
+    ai_module._prompt_token_thinking_models.clear()
 
 
 # ── app.ai override plumbing ────────────────────────────────────────────────
@@ -137,7 +139,13 @@ async def test_condense_recap_forwards_options_to_generate_chat(monkeypatch):
     calls = []
     monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
     await ai_module.condense_recap("a long recap", options=ai_module.context_sized_options("a long recap"))
-    assert calls[0]["options"] == ai_module.context_sized_options("a long recap")
+    # The caller's options arrive intact, plus the degeneration-guard
+    # default num_predict (_recap_num_predict_default_if_unbounded — nothing
+    # else bounded this call, see _RECAP_NUM_PREDICT_DEFAULT's comment).
+    assert calls[0]["options"] == {
+        **ai_module.context_sized_options("a long recap"),
+        "num_predict": ai_module._RECAP_NUM_PREDICT_DEFAULT,
+    }
 
 
 @pytest.mark.asyncio
@@ -165,12 +173,16 @@ async def test_condense_recap_max_tokens_is_prompt_only_when_thinking(monkeypatc
     with the visible answer — a real, reported failure was the model
     spending its whole num_predict budget on reasoning and writing no
     visible answer at all. So with thinking on, max_tokens becomes prompt
-    guidance only, same contract min_tokens already has — no num_predict
-    cap gets set at all."""
+    guidance only, same contract min_tokens already has — max_tokens sets
+    no num_predict cap of its own. (What DOES appear when nothing is
+    configured: the degeneration-guard default — _RECAP_NUM_PREDICT_
+    DEFAULT, see _recap_num_predict_default_if_unbounded — which is not a
+    max_tokens-derived cap and applies to thinking and non-thinking calls
+    alike so a degenerating model can't loop forever.)"""
     calls = []
     monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
     await ai_module.condense_recap("a recap", max_tokens=150, think=True)
-    assert "num_predict" not in (calls[0].get("options") or {})
+    assert calls[0]["options"]["num_predict"] == ai_module._RECAP_NUM_PREDICT_DEFAULT
     system = calls[0]["messages"][0]["content"]
     assert "150" in system
 
@@ -229,7 +241,10 @@ async def test_condense_recap_min_tokens_is_prompt_only_no_options_change(monkey
     calls = []
     monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
     await ai_module.condense_recap("a recap", min_tokens=80)
-    assert "options" not in calls[0]  # no options dict at all — min_tokens sets no Ollama param
+    # The degeneration guard supplies a default num_predict when nothing
+    # else did (min_tokens is prompt-only guidance) — an unbounded
+    # condense was the digit-loop/repetition failure mode.
+    assert calls[0]["options"] == {"num_predict": 1024}
     system = calls[0]["messages"][0]["content"]
     assert "80" in system
 
@@ -241,6 +256,77 @@ async def test_condense_recap_no_length_notes_when_neither_bound_given(monkeypat
     await ai_module.condense_recap("a recap")
     system = calls[0]["messages"][0]["content"]
     assert "Length target" not in system
+
+
+# ── condense_recap: strictness (guideline vs firm/strict length wording) ────
+# "guideline" is the original best-effort wording (pinned here so a reword
+# can't silently drift); "firm"/"strict" reword the same targets as
+# mandatory requirements and mark the GM's extra instructions binding.
+
+@pytest.mark.asyncio
+async def test_condense_recap_guideline_keeps_the_original_soft_wording(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", min_tokens=80, max_tokens=200, strictness="guideline")
+    system = calls[0]["messages"][0]["content"]
+    assert "don't cut it any shorter" in system
+    assert "no more than ~200 tokens" in system
+    # The mandatory phrasing must not leak into the soft default.
+    assert "MUST be at least" not in system
+    assert "REQUIRED" not in system
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_firm_strictness_makes_min_max_requirements(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", min_tokens=80, max_tokens=200, strictness="firm")
+    system = calls[0]["messages"][0]["content"]
+    assert "MUST be at least ~80 tokens" in system
+    assert "stay at or below ~200 tokens" in system
+    # The soft wording must be fully replaced, not appended alongside.
+    assert "don't cut it any shorter" not in system
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_firm_marks_extra_instructions_binding(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", extra_instructions="focus on combat", strictness="firm")
+    system = calls[0]["messages"][0]["content"]
+    assert "Treat the extra instructions below as binding requirements, not suggestions." in system
+    assert "focus on combat" in system
+    # The compliance line sits before the instructions it binds — its
+    # "below" is only true in that order.
+    assert system.index("binding requirements") < system.index("focus on combat")
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_guideline_never_marks_instructions_binding(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", extra_instructions="focus on combat")
+    system = calls[0]["messages"][0]["content"]
+    assert "binding requirements" not in system
+    assert "focus on combat" in system
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_no_binding_line_when_no_extra_instructions(monkeypatch):
+    """The compliance sentence only makes sense when there ARE instructions
+    below it — with none, firm/strict must not append a dangling reference."""
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    await ai_module.condense_recap("a recap", min_tokens=80, strictness="strict")
+    system = calls[0]["messages"][0]["content"]
+    assert "binding requirements" not in system
+    assert "MUST be at least ~80 tokens" in system
+
+
+@pytest.mark.asyncio
+async def test_condense_recap_rejects_an_unknown_strictness():
+    with pytest.raises(ValueError):
+        await ai_module.condense_recap("a recap", strictness="bogus")
 
 
 # ── condense_recap: expanded_thinking (the retry ladder's recovery rung) ───
@@ -731,10 +817,162 @@ async def test_parse_facts_from_recap_passes_options_and_keep_alive(monkeypatch)
     ai_module.set_ollama_generation_overrides({"seed": 42}, "1h")
     facts = await ai_module.parse_facts_from_recap("some recap text")
     assert facts == []
-    assert calls[0]["options"] == {"seed": 42}
+    # The GM's options ride along, PLUS the chunk-window pin: every parse
+    # call now carries an explicit num_ctx = reserves + the chunk's
+    # estimated input (floored at _FACTS_PARSE_MIN_WINDOW_TOKENS), so chunk
+    # + reserves + JSON response always fit the ENFORCED window. Computed
+    # here with the module's own helpers so the assertion is against the
+    # real numbers, not the test's guess — this tiny paste is one chunk
+    # whose reserves+estimate land under the 2048 floor.
+    reserve = ai_module._chunk_reserve_tokens(
+        ai_module._RECAP_SYSTEM, False, ai_module._FACTS_PARSE_RESPONSE_RESERVE_TOKENS)
+    chunk_tokens = -(-len("some recap text") // ai_module._chars_per_token_estimate("some recap text"))
+    expected_ctx = min(ai_module.MAX_AUTO_NUM_CTX, max(ai_module._FACTS_PARSE_MIN_WINDOW_TOKENS, reserve + chunk_tokens))
+    assert calls[0]["options"] == {"num_ctx": expected_ctx, "seed": 42}
     assert calls[0]["keep_alive"] == "1h"
     # format= (the JSON-schema constraint) must still be sent alongside.
     assert calls[0]["format"]
+
+
+@pytest.mark.asyncio
+async def test_facts_chunk_window_pinned_to_fit_reserves(monkeypatch):
+    """The pin rule (see _facts_parse_chunk_plan): every chunk call's
+    num_ctx is exactly reserve_tokens + THAT chunk's estimated input
+    tokens (floored at _FACTS_PARSE_MIN_WINDOW_TOKENS, ceiled at
+    MAX_AUTO_NUM_CTX). Constructed here with a stubbed chunk plan
+    (400-char chunks, 5000 tokens of reserves) so the expected pin is
+    checkable per call against the chunk text each call actually carried.
+    The GM's configured num_ctx deliberately appears nowhere in the math:
+    it used to CAP this parse (the exact bug that floored think=True chunks
+    to 500 input tokens and split an ~11k-token recap into 26 parts), while
+    the per-call pin overrides the configured value anyway."""
+    monkeypatch.setattr(ai_module, "_facts_parse_chunk_plan", lambda *a, **k: (400, 5000))
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    ai_module.set_ollama_generation_overrides({"num_ctx": 8192})
+    text = "The party met Elyra at the tavern. " * 30  # ~1050 chars → several 400-char chunks
+    await ai_module.parse_facts_from_recap(text)
+    assert len(calls) >= 2  # actually chunked under the tiny forced plan
+    for k in calls:
+        user = [m for m in k["messages"] if m["role"] == "user"][0]["content"]
+        est = -(-len(user) // ai_module._chars_per_token_estimate(user))
+        assert k["options"]["num_ctx"] == max(ai_module._FACTS_PARSE_MIN_WINDOW_TOKENS, 5000 + est)
+
+
+@pytest.mark.asyncio
+async def test_facts_chunk_window_pin_floor_and_ceiling(monkeypatch):
+    """The pin's two clamps: a tiny one-chunk parse whose reserves + input
+    estimate sit under the floor still pins 2048 (never a window too small
+    for its own reserves), and reserves so large the pin would exceed
+    MAX_AUTO_NUM_CTX clamp to the ceiling instead — Ollama then truncates
+    rather than 400ing, the accepted degradation for that pathological
+    reserve size (see _facts_parse_chunk_plan)."""
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    monkeypatch.setattr(ai_module, "_facts_parse_chunk_plan", lambda *a, **k: (10_000_000, 100))
+    await ai_module.parse_facts_from_recap("met Elyra")  # one tiny chunk
+    assert len(calls) == 1
+    assert calls[0]["options"]["num_ctx"] == ai_module._FACTS_PARSE_MIN_WINDOW_TOKENS
+
+    calls.clear()
+    monkeypatch.setattr(ai_module, "_facts_parse_chunk_plan", lambda *a, **k: (200, ai_module.MAX_AUTO_NUM_CTX - 10))
+    await ai_module.parse_facts_from_recap("The party met Elyra at the tavern. " * 30)
+    assert len(calls) >= 2
+    assert all(k["options"]["num_ctx"] == ai_module.MAX_AUTO_NUM_CTX for k in calls)
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_default_budget_splits_an_11k_token_paste_into_several_chunks(monkeypatch):
+    """The reported production failure, replayed against the real budget
+    math: an ~11k-token recap pasted with Thinking on and ~700 tokens of
+    RAG lore. Under the old window-first sizing the thinking reserve alone
+    ate the whole assumed 4096 window, every chunk floored to 500 input
+    tokens, and the paste split into 26 parts (40+ minutes of calls while
+    the job was healthily progressing). Under the input-target sizing it
+    must land in a HANDFUL of chunks, and every call's pinned window must
+    cover its reserves plus that chunk's estimated input without ever
+    exceeding MAX_AUTO_NUM_CTX — the window grows with the reserves instead
+    of the chunks shrinking under them."""
+    calls = []
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeChatClient(calls))
+    text = "The party traveled north and fought the bandits at the old bridge. " * 680  # ~46k chars ≈ 11k tokens
+    world_context = "- [npc] Elyra: " + "an enchanter of some renown. " * 93  # ~2.7k chars ≈ ~700 tokens of RAG lore
+    facts = await ai_module.parse_facts_from_recap(text, think=True, world_context=world_context)
+    assert facts == []
+    assert 3 <= len(calls) <= 6  # ~4 parts at the 3072-token think=True input target — not the old 26
+    # The reserve the parse just pinned against, replayed so the per-call
+    # bound is asserted against the real numbers, not the test's own guess.
+    reserve = ai_module._chunk_reserve_tokens(
+        ai_module._RECAP_SYSTEM, True,
+        len(world_context) // ai_module._chars_per_token_estimate(world_context)
+        + ai_module._FACTS_PARSE_RESPONSE_RESERVE_TOKENS,
+    )
+    framing_len = len(ai_module._with_world_context("", world_context))
+    for k in calls:
+        user = [m for m in k["messages"] if m["role"] == "user"][0]["content"]
+        chunk = user[framing_len:]  # strip the lore wrapper — the rest is this call's chunk
+        est = -(-len(chunk) // ai_module._chars_per_token_estimate(chunk))
+        assert k["options"]["num_ctx"] >= reserve + est  # the pin covers reserves + this chunk
+        assert k["options"]["num_ctx"] <= ai_module.MAX_AUTO_NUM_CTX  # never past the ceiling
+    # And the pinned window genuinely grew past the old assumed-window cap —
+    # that growth IS the fix (with think+RAG the reserves alone exceed what
+    # the old model could ever budget chunks into).
+    assert calls[0]["options"]["num_ctx"] > ai_module._DEFAULT_ASSUMED_CTX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_one_failed_chunk_does_not_fail_the_parse(monkeypatch):
+    """A model/connection failure on ONE chunk must not throw away the
+    facts every other chunk already extracted (a 6-part parse dying on part
+    1 used to be the whole job) — the failed chunk is skipped and the rest
+    merge normally."""
+    monkeypatch.setattr(ai_module, "_facts_parse_chunk_plan", lambda *a, **k: (200, 5000))
+    facts_json = '{"facts": [{"content": "The party met Elyra at the tavern.", "visible_to_players": true}]}'
+
+    class _FailFirstChunkClient:
+        def __init__(self):
+            self.calls = []
+
+        async def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                raise RuntimeError("connection reset")
+            return _FakeResp(facts_json)
+
+        async def show(self, model):
+            return types.SimpleNamespace(capabilities=["thinking"])
+
+    fake = _FailFirstChunkClient()
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    facts = await ai_module.parse_facts_from_recap("The party met Elyra at the tavern. " * 6)
+    assert len(fake.calls) == 2  # chunk 1 failed, chunk 2 was still asked
+    assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True}]
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_every_chunk_failing_still_raises_valueerror(monkeypatch):
+    """The tolerance above has a floor: when EVERY chunk failed there are no
+    facts to salvage, so the parse raises the same ValueError contract the
+    single-call version always had (the job runner maps it to job.error,
+    the sync route to HTTP 502) instead of silently returning []."""
+    monkeypatch.setattr(ai_module, "_facts_parse_chunk_plan", lambda *a, **k: (200, 5000))
+
+    class _AlwaysFailsClient:
+        def __init__(self):
+            self.calls = []
+
+        async def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            raise RuntimeError("connection reset")
+
+        async def show(self, model):
+            return types.SimpleNamespace(capabilities=[])
+
+    fake = _AlwaysFailsClient()
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    with pytest.raises(ValueError, match="AI unavailable"):
+        await ai_module.parse_facts_from_recap("The party met Elyra at the tavern. " * 6)
+    assert len(fake.calls) >= 2  # every chunk really was attempted
 
 
 # ── Settings > System save/validation round-trip ────────────────────────────
@@ -1435,10 +1673,14 @@ class _RejectsThinkingClient:
     Records every .chat() call's kwargs so tests can assert generate_chat/
     stream_chat's internal think=False retry actually happened (and that a
     poisoned capability cache skips straight to think=False on the NEXT
-    call, without a second failing round-trip)."""
+    call, without a second failing round-trip). `non_thinking_content` lets
+    the parse_facts_from_recap tests answer non-thinking calls with JSON
+    that survives the schema-driven parsing (the default "hi" is fine for
+    the chat callers, which return content verbatim)."""
 
-    def __init__(self, model_name="my-model"):
+    def __init__(self, model_name="my-model", non_thinking_content="hi"):
         self._model_name = model_name
+        self._non_thinking_content = non_thinking_content
         self.calls: list[dict] = []
 
     async def show(self, model):
@@ -1454,7 +1696,7 @@ class _RejectsThinkingClient:
             async def _gen():
                 yield _FakeResp("hi")
             return _gen()
-        return _FakeResp("hi")
+        return _FakeResp(self._non_thinking_content)
 
 
 @pytest.mark.asyncio
@@ -1463,7 +1705,10 @@ async def test_generate_chat_records_thinking_failure_on_rejection(monkeypatch):
     think=False retry in generate_chat) — the caller gets real output, not
     the old sentinel string. The Settings warning badge still fires
     (_model_thinking_failures), and exactly two Ollama calls happen: the
-    failing think=True probe, then a clean think=False retry."""
+    failing think=True probe, then a think=False retry. Because this test's
+    GM override vouches for the model, that retry carries the <|think|>
+    prompt token (ollama#16936 fallback) rather than dropping to plain
+    instruct mode — see the dedicated section below."""
     fake = _RejectsThinkingClient("my-model")
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
     ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
@@ -1474,6 +1719,11 @@ async def test_generate_chat_records_thinking_failure_on_rejection(monkeypatch):
         assert len(fake.calls) == 2
         assert fake.calls[0]["think"] is True
         assert not fake.calls[1]["think"]
+        # The vouched-model retry re-enables reasoning via the token — this
+        # call passes no system=, so the helper inserts a fresh system
+        # message at index 0 to carry it.
+        assert fake.calls[1]["messages"][0]["role"] == "system"
+        assert fake.calls[1]["messages"][0]["content"].startswith("<|think|>")
     finally:
         ai_module.set_ollama_generation_overrides({})
 
@@ -1493,6 +1743,9 @@ async def test_stream_chat_records_thinking_failure_on_rejection(monkeypatch):
         assert len(fake.calls) == 2
         assert fake.calls[0]["think"] is True
         assert not fake.calls[1]["think"]
+        # Same vouched-model <|think|> token retry as generate_chat above.
+        assert fake.calls[1]["messages"][0]["role"] == "system"
+        assert fake.calls[1]["messages"][0]["content"].startswith("<|think|>")
     finally:
         ai_module.set_ollama_generation_overrides({})
 
@@ -1503,7 +1756,9 @@ async def test_generate_chat_skips_straight_to_think_false_after_poisoned(monkey
     rejection, a LATER think=True request must not repeat the failing
     round-trip — _model_supports_thinking's cache short-circuits before
     ever consulting the (still-True) override, so only one clean
-    think=False call happens."""
+    think=False call happens (carrying the <|think|> token now that the
+    fallback is armed for this vouched model — see the dedicated section
+    below)."""
     fake = _RejectsThinkingClient("my-model")
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
     ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
@@ -1582,6 +1837,312 @@ async def test_thinking_failure_cleared_by_a_later_successful_think_call(monkeyp
     result = await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="my-model")
     assert result == "hi"
     assert "my-model" not in ai_module._model_thinking_failures
+
+
+# ── <|think|> prompt-token fallback for vouched models (ollama#16936) ───────
+#
+# The rejection-recovery above falls back to plain think=False — silently
+# dropping the reasoning a GM explicitly asked for. But when nd-world ITSELF
+# vouches for the model's thinking (KNOWN_MODELS, or the per-model override
+# checkbox those tests above use), the rejection is almost certainly not "the
+# GM was wrong" but Ollama's missing capability tag on hf.co-imported GGUFs
+# (ollama#16936: the import path never reports "thinking", so /api/chat 400s
+# an explicit think=true). Gemma 4 still reasons perfectly when the template's
+# own <|think|> token is supplied as literal system-message text, so for
+# exactly those vouched models the retry (and every later think=True request,
+# until a Settings save re-arms the real probe) sends think=False WITH the
+# token prepended to the system message — reasoning still reaches the UI
+# instead of being quietly lost. Unvouched models keep the plain think=False
+# fallback: nobody claims they can think, so there's no token to send.
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_think_rejection_uses_prompt_token_for_vouched_model(monkeypatch):
+    """The override vouches, Ollama rejects the real think=true probe — the
+    retry must re-enable reasoning via the <|think|> token, not silently
+    drop to instruct mode. The advisory failure badge still fires, and a
+    system= IS passed here so the token gets PREPENDED to it (the
+    insert-a-fresh-system-message branch is covered by the helper unit test
+    and the two extended rejection tests above, which pass no system=)."""
+    fake = _RejectsThinkingClient("my-model")
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        result = await ai_module.generate_chat(
+            [{"role": "user", "content": "hi"}], system="You are a scribe.", think=True, model="my-model",
+        )
+        assert result == "hi"
+        assert "my-model" in ai_module._model_thinking_failures  # still advisory-recorded
+        assert "my-model" in ai_module._prompt_token_thinking_models  # fallback armed for next time
+        assert len(fake.calls) == 2
+        assert fake.calls[0]["think"] is True
+        assert not any("<|think|>" in (msg.get("content") or "") for msg in fake.calls[0]["messages"])
+        assert not fake.calls[1]["think"]
+        assert fake.calls[1]["messages"][0]["role"] == "system"
+        assert fake.calls[1]["messages"][0]["content"].startswith("<|think|>You are a scribe.")
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_think_rejection_uses_prompt_token_for_vouched_model(monkeypatch):
+    """Same prompt-token retry on the streaming path."""
+    fake = _RejectsThinkingClient("my-model")
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        tokens = [tok async for tok in ai_module.stream_chat(
+            [{"role": "user", "content": "hi"}], system="You are a scribe.", think=True, model="my-model",
+        )]
+        assert tokens == ["hi"]
+        assert "my-model" in ai_module._model_thinking_failures
+        assert "my-model" in ai_module._prompt_token_thinking_models
+        assert len(fake.calls) == 2
+        assert fake.calls[0]["think"] is True
+        assert not any("<|think|>" in (msg.get("content") or "") for msg in fake.calls[0]["messages"])
+        assert not fake.calls[1]["think"]
+        assert fake.calls[1]["messages"][0]["role"] == "system"
+        assert fake.calls[1]["messages"][0]["content"].startswith("<|think|>You are a scribe.")
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_poisoned_vouched_model_skips_straight_to_prompt_token(monkeypatch):
+    """The fallback is sticky: once armed, a SECOND think=True request makes
+    no repeated failing think=true round-trip — the poisoned capability
+    cache downgrades the flag AND the pre-call injection adds the token, so
+    exactly one (non-failing) call goes out."""
+    fake = _RejectsThinkingClient("my-model")
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="my-model")
+        assert len(fake.calls) == 2  # the failing probe + the token retry
+
+        result = await ai_module.generate_chat([{"role": "user", "content": "hi again"}], think=True, model="my-model")
+        assert result == "hi"
+        assert len(fake.calls) == 3  # no second 400 — one think=False call, token included
+        assert not fake.calls[2]["think"]
+        assert fake.calls[2]["messages"][0]["role"] == "system"
+        assert fake.calls[2]["messages"][0]["content"].startswith("<|think|>")
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_unvouched_model_rejection_still_falls_back_to_plain_think_false(monkeypatch):
+    """Nobody vouches for this model (no override, no KNOWN_MODELS entry) —
+    the token fallback must NOT engage; the retry stays a plain think=False
+    call. The capability cache is pre-seeded as thinking-capable (same
+    direct-seeding convention as the poisoned-model test above) so the
+    first call actually attempts the real think=true probe despite .show()
+    reporting no tag."""
+    fake = _RejectsThinkingClient("stray-model")
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module._model_capabilities_cache["stray-model"] = ["thinking"]
+    try:
+        result = await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="stray-model")
+        assert result == "hi"
+        assert "stray-model" in ai_module._model_thinking_failures
+        assert "stray-model" not in ai_module._prompt_token_thinking_models
+        assert len(fake.calls) == 2
+        assert fake.calls[0]["think"] is True
+        assert not fake.calls[1]["think"]
+        assert not any("<|think|>" in (msg.get("content") or "") for msg in fake.calls[1]["messages"])
+    finally:
+        ai_module._model_capabilities_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_settings_save_re_arms_real_think_probe_after_prompt_token_fallback(monkeypatch):
+    """The fallback is armed, but a Settings save clears it along with the
+    capability cache — the next think=True request must attempt a REAL
+    think=true again (which Ollama rejects here, exercising the full
+    rejection → token-retry cycle a second time)."""
+    fake = _RejectsThinkingClient("my-model")
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="my-model")
+        assert len(fake.calls) == 2
+        assert "my-model" in ai_module._prompt_token_thinking_models
+
+        ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+        assert "my-model" not in ai_module._prompt_token_thinking_models
+
+        result = await ai_module.generate_chat([{"role": "user", "content": "hi again"}], think=True, model="my-model")
+        assert result == "hi"
+        assert len(fake.calls) == 4  # a fresh think=True probe (rejected again) + token retry
+        assert fake.calls[2]["think"] is True
+        assert not fake.calls[3]["think"]
+        assert fake.calls[3]["messages"][0]["content"].startswith("<|think|>")
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_successful_think_true_retires_prompt_token_fallback(monkeypatch):
+    """If Ollama later DOES accept think=true (an update tagged the model,
+    or the GM re-registered it properly), the successful probe retires the
+    token fallback — the API flag is the cleaner mechanism, so no token is
+    injected on that call or any later one."""
+    calls = []
+    fake = _FakeChatClient(calls, show_capabilities=["thinking"])
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module._prompt_token_thinking_models.add("my-model")
+    try:
+        result = await ai_module.generate_chat([{"role": "user", "content": "hi"}], think=True, model="my-model")
+        assert result == "hi"
+        # think=true was actually sent (no downgrade → no injection either)
+        assert calls[0]["think"] is True
+        assert not any("<|think|>" in (msg.get("content") or "") for msg in calls[0]["messages"])
+        assert "my-model" not in ai_module._prompt_token_thinking_models
+    finally:
+        ai_module._prompt_token_thinking_models.discard("my-model")
+
+
+# parse_facts_from_recap gets the same two-layer recovery as the chat
+# callers above: it used to turn the same "does not support thinking" 400
+# into a hard ValueError, failing the Facts page's parse job outright —
+# these tests mirror the generate_chat/stream_chat ones above, plus the
+# JSON-schema wrinkle unique to this caller (the format= constraint and the
+# response parsing both have to survive the retry).
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_think_rejection_uses_prompt_token_for_vouched_model(monkeypatch):
+    """The Facts page's Thinking checkbox hits the ollama#16936 rejection on
+    a GM-vouched model — the parse must recover via the <|think|> token
+    retry instead of raising ValueError, with the schema constraint still on
+    the retry and the advisory failure badge still recorded. The fake's
+    non-thinking answer is real facts JSON, since parse_facts_from_recap
+    json.loads resp.message.content against _RECAP_FACTS_SCHEMA (it doesn't
+    return content verbatim the way the chat callers do)."""
+    facts_json = '{"facts": [{"content": "The party met Elyra at the tavern.", "visible_to_players": true}]}'
+    fake = _RejectsThinkingClient("my-model", non_thinking_content=facts_json)
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        facts = await ai_module.parse_facts_from_recap("met Elyra at the tavern", model="my-model", think=True)
+        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True}]
+        assert "my-model" in ai_module._model_thinking_failures  # still advisory-recorded
+        assert "my-model" in ai_module._prompt_token_thinking_models  # fallback armed for next time
+        assert len(fake.calls) == 2
+        assert fake.calls[0]["think"] is True
+        assert fake.calls[0]["format"]  # the schema constraint rode the failing probe too
+        assert not any("<|think|>" in (msg.get("content") or "") for msg in fake.calls[0]["messages"])
+        assert not fake.calls[1]["think"]
+        # The retry keeps the JSON constraint AND re-enables reasoning via
+        # the token prepended to the _RECAP_SYSTEM message already at
+        # messages[0].
+        assert fake.calls[1]["format"]
+        assert fake.calls[1]["messages"][0]["role"] == "system"
+        assert fake.calls[1]["messages"][0]["content"].startswith("<|think|>")
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_subsequent_calls_reuse_prompt_token_without_failing_round_trip(monkeypatch):
+    """Same stickiness as generate_chat's poisoned-cache test above, on the
+    parse path: once the token fallback is armed, a SECOND think=True parse
+    makes exactly ONE new .chat() call — the poisoned capability cache
+    downgrades the flag and the pre-call injection adds the token, so no
+    failing think=true round-trip is repeated (every parse job paying a 400
+    before working would double the model's latency for nothing)."""
+    facts_json = '{"facts": [{"content": "The party met Elyra at the tavern.", "visible_to_players": true}]}'
+    fake = _RejectsThinkingClient("my-model", non_thinking_content=facts_json)
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        await ai_module.parse_facts_from_recap("met Elyra at the tavern", model="my-model", think=True)
+        assert len(fake.calls) == 2  # the failing probe + the token retry
+
+        facts = await ai_module.parse_facts_from_recap("met Elyra again", model="my-model", think=True)
+        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True}]
+        assert len(fake.calls) == 3  # no second 400 — one think=False call, token included
+        assert not fake.calls[2]["think"]
+        assert fake.calls[2]["messages"][0]["role"] == "system"
+        assert fake.calls[2]["messages"][0]["content"].startswith("<|think|>")
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_unvouched_rejection_falls_back_to_plain_think_false(monkeypatch):
+    """Nobody vouches for this model (no override, no KNOWN_MODELS entry) —
+    the parse still recovers from the rejection (it used to be a hard
+    ValueError), but as a plain think=False call with NO token: nobody
+    claims this model can think, so injecting <|think|> would just pollute
+    the system prompt. Same direct cache-seeding convention as
+    test_unvouched_model_rejection_still_falls_back_to_plain_think_false
+    above, so the first call actually attempts the real think=true probe."""
+    facts_json = '{"facts": [{"content": "The party met Elyra at the tavern.", "visible_to_players": true}]}'
+    fake = _RejectsThinkingClient("stray-model", non_thinking_content=facts_json)
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module._model_capabilities_cache["stray-model"] = ["thinking"]
+    try:
+        facts = await ai_module.parse_facts_from_recap("met Elyra at the tavern", model="stray-model", think=True)
+        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True}]
+        assert "stray-model" in ai_module._model_thinking_failures
+        assert "stray-model" not in ai_module._prompt_token_thinking_models
+        assert len(fake.calls) == 2
+        assert fake.calls[0]["think"] is True
+        assert not fake.calls[1]["think"]
+        assert not any("<|think|>" in (msg.get("content") or "") for msg in fake.calls[1]["messages"])
+    finally:
+        ai_module._model_capabilities_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_parse_facts_think_rejection_recovers_per_chunk(monkeypatch):
+    """The <|think|> recovery is per CHUNK now, not per parse: chunk 1's
+    failing think=true probe is retried with the token (the GM override
+    vouches for the model), and chunk 2 onward go straight to think=False
+    + token via the poisoned capability cache and the pre-call injection —
+    no further failing 400 round-trips mid-parse. All chunks' facts still
+    merge (deduplicated here, since the fake answers every non-thinking
+    call with the same JSON)."""
+    monkeypatch.setattr(ai_module, "_facts_parse_chunk_plan", lambda *a, **k: (200, 5000))
+    facts_json = '{"facts": [{"content": "The party met Elyra at the tavern.", "visible_to_players": true}]}'
+    fake = _RejectsThinkingClient("my-model", non_thinking_content=facts_json)
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
+    try:
+        text = "The party met Elyra at the tavern. " * 6  # two chunks under the forced budget
+        facts = await ai_module.parse_facts_from_recap(text, model="my-model", think=True)
+        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True}]
+        # Chunk 1: the failing think=true probe, then the token retry.
+        assert fake.calls[0]["think"] is True
+        assert fake.calls[1]["think"] is False
+        assert fake.calls[1]["format"]  # the schema constraint survived onto the retry
+        assert fake.calls[1]["messages"][0]["content"].startswith("<|think|>")
+        # Chunk 2: downgraded pre-call, token injected WITHOUT another probe.
+        assert len(fake.calls) == 3
+        assert fake.calls[2]["think"] is False
+        assert fake.calls[2]["messages"][0]["content"].startswith("<|think|>")
+        assert fake.calls[2]["format"]
+    finally:
+        ai_module.set_ollama_generation_overrides({})
+
+
+def test_messages_with_prompt_think_token_prepends_and_inserts():
+    """The helper is pure: it returns a NEW list (and a new dict for the
+    mutated system message) without touching the caller's originals —
+    generate_chat/stream_chat reuse their `full` list in later branches
+    (e.g. the rejection retry), so an in-place mutation would compound."""
+    src = [{"role": "system", "content": "You are..."}, {"role": "user", "content": "hi"}]
+    out = ai_module._messages_with_prompt_think_token(src)
+    assert out[0]["content"] == "<|think|>You are..."
+    assert out[0] is not src[0]
+    assert src == [{"role": "system", "content": "You are..."}, {"role": "user", "content": "hi"}]
+
+    src_no_system = [{"role": "user", "content": "hi"}]
+    out_no_system = ai_module._messages_with_prompt_think_token(src_no_system)
+    assert out_no_system[0] == {"role": "system", "content": "<|think|>"}
+    assert out_no_system[1] == {"role": "user", "content": "hi"}
+    assert src_no_system == [{"role": "user", "content": "hi"}]
 
 
 def test_settings_page_shows_thinking_failure_warning(client, seed):

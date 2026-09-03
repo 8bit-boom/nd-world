@@ -207,6 +207,7 @@ def create_job(
 def create_condense_job(
     world_id: int, text: str, model: str = "", think: bool = True, fit_context: bool = False,
     extra_instructions: str = "", min_tokens: Optional[int] = None, max_tokens: Optional[int] = None,
+    strictness: str = "guideline",
     game_session_id: Optional[int] = None, created_by_user_id: Optional[int] = None,
     use_rag: bool = False, rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
 ) -> int:
@@ -230,18 +231,29 @@ def create_condense_job(
     `extra_instructions`/`min_tokens`/`max_tokens` are condense_recap's own
     steering/length-target params (see its docstring) — persisted on the
     row like every other condense setting so a resume/redo uses the same
-    values the GM originally set.
+    values the GM originally set. `strictness` ("guideline"|"firm"|
+    "strict") rides along the same way: it decides whether those targets
+    are phrased as soft guidance or binding requirements, and — for
+    "strict" only — whether _run_job estimates the finished recap's token
+    count and auto-retries once when it lands outside the requested range.
+    Validated here (not just inside condense_recap) so a bogus value fails
+    at job creation — where the route maps it to a clean HTTP 400 — rather
+    than surfacing mid-run as a job error the GM can't connect to the
+    setting that caused it.
 
     `use_rag`/`rag_entity_limit`/`rag_notes_limit` — same RAG opt-in
     create_job's own docstring describes, see _build_rag_context."""
     db = SessionLocal()
     try:
+        if strictness not in ("guideline", "firm", "strict"):
+            raise ValueError(f"strictness must be guideline, firm, or strict, got {strictness!r}")
         job = AudioJob(
             world_id=world_id, purpose="condense", filename="Condense", status="pending",
             game_session_id=game_session_id, created_by_user_id=created_by_user_id,
             model=model or None, think=think, fit_context=fit_context,
             extra_instructions=extra_instructions.strip() or None,
             min_tokens=min_tokens, max_tokens=max_tokens,
+            condense_strictness=strictness,
             use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
             transcript=text, audio_path="", delete_after=False,
         )
@@ -290,6 +302,135 @@ def create_text_recap_job(
             extra_instructions=extra_instructions.strip() or None,
             use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
             transcript=text, audio_path="", delete_after=False,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    task = asyncio.create_task(_run_job(job_id))
+    _running_tasks[job_id] = task
+    task.add_done_callback(lambda t, jid=job_id: _forget_task(jid, t))
+    return job_id
+
+
+def create_facts_parse_job(
+    world_id: int, text: str, game_session_id: Optional[int] = None,
+    model: str = "", created_by_user_id: Optional[int] = None,
+    think: bool = False, use_rag: bool = False,
+    rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
+) -> int:
+    """Parse `text` (a GM's rough recap, or a whole transcript pasted from a
+    job's "📋 Extract facts" hand-off) into draft facts as a durable
+    background job — sibling of create_condense_job above, same "text already
+    in hand, no transcribe phase" shape, but purpose="facts_parse": _run_job's
+    facts_parse branch calls _ai_module.parse_facts_from_recap (the same call
+    POST /api/facts/parse makes synchronously) and lands the result as a JSON
+    array in job.result_json rather than job.recap — a facts draft is review
+    UI data ({content, visible_to_players} dicts), not a displayable recap,
+    so it must not sit in a field the jobs UI renders as prose.
+
+    Motivated by exactly the reverse-proxy-timeout trap create_condense_job's
+    docstring describes: a long recap against a CPU-local model made the
+    synchronous POST /api/facts/parse a routine way to trip Cloudflare's
+    ~100s tunnel timeout (HTTP 524) and lose everything. `text` is stored
+    into job.transcript (the row's "input" field, same slot condense/text-
+    recap jobs use), so "Restore last parse" can also show what was parsed;
+    `game_session_id`/`model` persist like every other job setting so the
+    draft stays attributable to its session and a consistent model is
+    available to anything inspecting the row.
+
+    `think` (parse_facts_from_recap's reasoning mode — the Facts page's
+    "Thinking" checkbox, OFF by default since a parse needs clean JSON back)
+    and `use_rag`/`rag_entity_limit`/`rag_notes_limit` (RAG-retrieved World
+    lore prepended to the parse's user message for name accuracy — see
+    _build_rag_context) persist on the same AudioJob columns the
+    condense/summarize purposes already use, so the runner reads them back
+    unchanged on a resume, same as every other per-job setting here.
+
+    Raises ValueError on blank text — checked synchronously up front so the
+    route maps it to a clean HTTP 400 rather than a job that errors mid-run
+    with a message about empty input the GM can't connect to the button they
+    clicked."""
+    if not (text or "").strip():
+        raise ValueError("No recap text provided")
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=world_id, purpose="facts_parse", filename="Facts", status="pending",
+            game_session_id=game_session_id, created_by_user_id=created_by_user_id,
+            model=model or None,
+            think=think, use_rag=use_rag,
+            rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
+            transcript=text, audio_path="", delete_after=False,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    task = asyncio.create_task(_run_job(job_id))
+    _running_tasks[job_id] = task
+    task.add_done_callback(lambda t, jid=job_id: _forget_task(jid, t))
+    return job_id
+
+
+def create_session_log_recap_job(
+    world_id: int, session_id: int, audience: str, created_by_user_id: Optional[int] = None,
+    model: str = "", think: bool = True, use_rag: bool = False,
+    rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
+) -> int:
+    """Synthesize a Session Log page's recap (one summarize_session_from_facts
+    call — see _run_job's session_log_recap branch) as a durable background
+    job instead of blocking POST /api/session-log/{id}/recap for minutes —
+    sibling of create_facts_parse_job above, motivated by the exact same
+    reverse-proxy trap: a think=True summarize against a CPU-local model
+    made the synchronous route a routine Cloudflare 524, and the first
+    viewer of each cache window paid the whole wait inside one HTTP request.
+
+    `audience` ("gm" or "players") is the whole reason this job exists as a
+    keyed, findable row rather than a fire-and-forget task: the recap
+    genuinely differs by fact visibility (a GM's includes secrets), so the
+    polling route looks jobs up by (game_session_id, audience) to answer
+    "is there a fresh one / is one already running" — see AudioJob.audience.
+    Idempotent-create contract: the route, not this function, does the
+    fresh/dedup checks against existing rows; this creator ALWAYS makes a
+    new row, so those checks stay in the one place that knows the request
+    context (which user, which cooldown window).
+
+    `model` used to have no parameter at all (the row was always seeded with
+    the "recap" surface default): an empty string keeps exactly that
+    behavior, while a non-empty value is the Session Log page's own model
+    picker's explicit choice and is stored as-is. `think` and
+    `use_rag`/`rag_entity_limit`/`rag_notes_limit` persist on the same
+    AudioJob columns every other purpose uses — the polling route keys its
+    fresh-cache match on them too (a recap generated with a different
+    model/think/RAG is a different artifact and must never be served for
+    this request), so they have to live on the row, not just the call."""
+    if audience not in ("gm", "players"):
+        raise ValueError(f"audience must be 'gm' or 'players', got {audience!r}")
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=world_id, purpose="session_log_recap", filename="Session Log recap", status="pending",
+            game_session_id=session_id, created_by_user_id=created_by_user_id,
+            audience=audience,
+            # Empty string falls back to the "recap" surface default — the
+            # same selection the original synchronous route made via its
+            # _recap_model("") helper (app.routers.sessions can't be
+            # imported here — it imports this module — so the one-liner is
+            # replicated; if it ever drifts, the model-surface tests catch
+            # it). _run_job re-applies the same fallback for NULL/blank, so
+            # this seeding is also what the route's cache match compares
+            # against.
+            model=model or _ai_module.get_defaults().get("recap", ""),
+            think=think, use_rag=use_rag,
+            rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
+            audio_path="", delete_after=False,
         )
         db.add(job)
         db.commit()
@@ -725,10 +866,19 @@ async def _run_job(job_id: int) -> None:
         fit_context = bool(job.fit_context)
         min_tokens = job.min_tokens
         max_tokens = job.max_tokens
+        # NULL (a pre-migration row, or one created before strictness
+        # existed) reads as the "guideline" default — same convention
+        # _run_job applies to job.think above.
+        strictness = job.condense_strictness or "guideline"
         use_rag = bool(job.use_rag)
         rag_entity_limit = job.rag_entity_limit
         rag_notes_limit = job.rag_notes_limit
         existing_transcript = job.transcript or ""
+        # purpose="session_log_recap" only — which fact-visibility filter
+        # this job's recap must be built from (see AudioJob.audience). NULL
+        # (a pre-migration row, or any other purpose) reads as the player
+        # tier, the more restrictive of the two.
+        audience = job.audience or "players"
         checkpoint = _json.loads(job.checkpoint_json) if job.checkpoint_json else None
     finally:
         db.close()
@@ -781,7 +931,16 @@ async def _run_job(job_id: int) -> None:
         # uses, see its docstring — this must never disagree with it, or a
         # resumed job could skip straight to a purpose="attachment" "done"
         # after transcribing only part of the recording).
-        skip_transcribe = bool(existing_transcript) and not (checkpoint and checkpoint.get("phase") == "transcribe")
+        # purpose="session_log_recap" has no transcribe phase at all — it's
+        # pure summarization (of Fact rows, not of any transcript), so it
+        # must skip unconditionally even though its transcript is empty
+        # (there IS no input text to seed); without the carve-out the
+        # empty-transcript path above would send audio_path=None into
+        # transcribe_audio.
+        skip_transcribe = (
+            (bool(existing_transcript) or purpose == "session_log_recap")
+            and not (checkpoint and checkpoint.get("phase") == "transcribe")
+        )
         if not skip_transcribe:
             _set(status="transcribing", run_started_at=datetime.utcnow(), finished_at=None)
             glossary = _glossary_for_world(world_id, game_session_id) if world_id else ""
@@ -821,12 +980,15 @@ async def _run_job(job_id: int) -> None:
             transcript = existing_transcript
 
         world_context = ""
-        if use_rag and world_id and purpose in ("condense", "session_recap"):
+        if use_rag and world_id and purpose in ("condense", "session_recap", "facts_parse"):
             # Query the transcript/text-to-condense itself — there's no
             # separate short "user question" here the way AI Chat's RAG has
             # one, so the input being summarized IS the best signal for what
             # entities/notes are relevant to it (see _build_rag_context's
-            # own docstring for the query-length cap this relies on).
+            # own docstring for the query-length cap this relies on). For
+            # purpose="facts_parse" the "transcript" is the pasted recap
+            # text (create_facts_parse_job stores it there), so the same
+            # convention carries over unchanged.
             # pinned_entity_ids/pinned_pc_ids: whatever the GM checked in
             # this session's own "Entities Featured" picker (see _session_
             # featured_picks) — guaranteed inclusion regardless of what the
@@ -899,6 +1061,7 @@ async def _run_job(job_id: int) -> None:
                         transcript, model=model, options=options, think=attempt_think,
                         extra_instructions=instructions, min_tokens=min_tokens, max_tokens=max_tokens,
                         world_context=world_context, expanded_thinking=attempt_expanded,
+                        strictness=strictness,
                     )
                 if not _ai_module.is_thinking_starved_sentinel(recap):
                     break
@@ -913,6 +1076,65 @@ async def _run_job(job_id: int) -> None:
                     _set(think=False, think_fallback=True, expanded_thinking=next_expanded)
                 else:
                     _set(expanded_thinking=next_expanded)
+            # Strict mode's out-of-band length check. Everything above steers
+            # the model via prompt wording alone — a prompt instruction,
+            # however firmly worded, is still just a request, so "strict"
+            # closes the loop by MEASURING the finished recap with the same
+            # coarse chars-per-token estimator the Background Jobs /
+            # session page labels use (_chars_per_token_estimate — keeps
+            # this check consistent with the "Transcript: ~N tokens ·
+            # Recap: ~M tokens" numbers the GM can already see, so the
+            # verdict never disagrees with the displayed sizes) and
+            # re-running ONCE when the result lands outside the requested
+            # range. The 15% tolerance band exists because those estimates
+            # are approximate (±15% easily swallows several hundred real
+            # tokens on a long recap) — a 1400-token draft against a 1500
+            # minimum is inside the noise, and punishing it with a
+            # full-priced re-run buys nothing. Only one retry: a strict
+            # re-run doubles the job's AI cost, and past a single
+            # correction pass the model has already shown where its length
+            # instincts sit — editing the result by hand is cheaper for the
+            # GM than an unbounded loop of nudges. A retry that itself
+            # fails/starves is discarded in favor of the first recap,
+            # which was at least a usable answer. The retry reuses the
+            # WINNING rung's options/think/expanded (the loop variables
+            # still hold them — the loop only ever breaks on the rung that
+            # produced the recap being checked), so the re-run is
+            # apples-to-apples with the attempt that just missed the range
+            # rather than resetting to the job's base thinking settings.
+            if (
+                strictness == "strict" and (min_tokens or max_tokens)
+                and not _looks_like_failure(recap)
+                and not _ai_module.is_thinking_starved_sentinel(recap)
+            ):
+                est_tokens = -(-len(recap) // _ai_module._chars_per_token_estimate(recap))
+                below = min_tokens and est_tokens < min_tokens * 0.85
+                above = max_tokens and est_tokens > max_tokens * 1.15
+                if below or above:
+                    if below:
+                        violation_note = (
+                            f"Your previous draft was ~{est_tokens} tokens; the requirement is at least "
+                            f"~{min_tokens} tokens. Expand it with more specific detail from the recap."
+                        )
+                    else:
+                        violation_note = (
+                            f"Your previous draft was ~{est_tokens} tokens; the requirement is at most "
+                            f"~{max_tokens} tokens. Trim it to fit."
+                        )
+                    _log.warning(
+                        "condense job %s: strict length check failed (estimated ~%s tokens vs min=%s max=%s) — one strict retry",
+                        job_id, est_tokens, min_tokens, max_tokens,
+                    )
+                    async with _ai_module.ollama_job_semaphore:
+                        retry_recap = await _ai_module.condense_recap(
+                            transcript, model=model, options=options, think=attempt_think,
+                            extra_instructions=_combined_recap_instructions(instructions, violation_note),
+                            min_tokens=min_tokens, max_tokens=max_tokens,
+                            world_context=world_context, expanded_thinking=attempt_expanded,
+                            strictness=strictness,
+                        )
+                    if not _looks_like_failure(retry_recap) and not _ai_module.is_thinking_starved_sentinel(retry_recap):
+                        recap = retry_recap
             if _looks_like_failure(recap):
                 _set(status="error", error=recap, finished_at=datetime.utcnow())
             elif think and _ai_module.model_rejected_thinking(model):
@@ -922,8 +1144,20 @@ async def _run_job(job_id: int) -> None:
                 # is_thinking_starved_sentinel. Label the result so the
                 # Retry-summary UI's Thinking checkbox reflects what
                 # actually produced the recap, same reasoning as
-                # think_fallback just above.
-                _set(status="done", recap=recap, think=False, think_rejected=True, finished_at=datetime.utcnow())
+                # think_fallback just above. Two flavors: a model nobody
+                # vouched for really did run with thinking off (flip think,
+                # point the GM at the override), while a VOUCHED model that
+                # got rejected was served reasoning via the <|think|> prompt
+                # token instead (ollama#16936's missing capability tag on
+                # hf.co imports) — keep think=True there and flag
+                # think_token_fallback so the UI explains it informationally
+                # rather than telling the GM to disable the very override
+                # that powers the workaround.
+                if _ai_module.model_thinks_via_prompt_token(model):
+                    _set(status="done", recap=recap, think_rejected=True, think_token_fallback=True,
+                         finished_at=datetime.utcnow())
+                else:
+                    _set(status="done", recap=recap, think=False, think_rejected=True, finished_at=datetime.utcnow())
             else:
                 _set(status="done", recap=recap, finished_at=datetime.utcnow())
         elif purpose == "session_recap":
@@ -980,13 +1214,149 @@ async def _run_job(job_id: int) -> None:
                 # the GM reviews/confirms on the Background Jobs page.
                 pending_facts_json = await _auto_extract_pending_facts(job_id, transcript, model)
                 if think and _ai_module.model_rejected_thinking(model):
-                    # See the identical check in the condense branch above.
-                    _set(status="done", recap=recap, think=False, think_rejected=True, chunk_current=None,
-                         chunk_total=None, finished_at=datetime.utcnow(), checkpoint_json="",
-                         pending_facts_json=pending_facts_json)
+                    # See the identical check in the condense branch above —
+                    # including its two flavors (plain rejection vs the
+                    # <|think|> prompt-token workaround for vouched models).
+                    if _ai_module.model_thinks_via_prompt_token(model):
+                        _set(status="done", recap=recap, think_rejected=True, think_token_fallback=True,
+                             chunk_current=None, chunk_total=None, finished_at=datetime.utcnow(), checkpoint_json="",
+                             pending_facts_json=pending_facts_json)
+                    else:
+                        _set(status="done", recap=recap, think=False, think_rejected=True, chunk_current=None,
+                             chunk_total=None, finished_at=datetime.utcnow(), checkpoint_json="",
+                             pending_facts_json=pending_facts_json)
                 else:
                     _set(status="done", recap=recap, chunk_current=None, chunk_total=None,
                          finished_at=datetime.utcnow(), checkpoint_json="", pending_facts_json=pending_facts_json)
+        elif purpose == "facts_parse":
+            # parse_facts_from_recap chunks a long paste into several
+            # schema-constrained calls (the same budget/split machinery
+            # summarize_transcript's map-reduce uses — see app.ai), so
+            # _on_progress gives the job card real "part X/Y" progress
+            # instead of an undifferentiated "summarizing" placeholder for a
+            # many-minute parse. Held inside ollama_job_semaphore for the
+            # whole run now that it IS a multi-chunk run — same interleaving
+            # guard the summarize purposes use. No thinking-retry ladder
+            # though: the parse has its own per-chunk <|think|> rejection
+            # recovery (see app.ai._parse_facts_chat_call) and its
+            # ValueError contract is what lands in job.error below.
+            _set(status="summarizing")
+            async with _ai_module.ollama_job_semaphore:
+                try:
+                    # think/world_context: the Facts page's own Thinking checkbox
+                    # and RAG opt-in (persisted on the row by
+                    # create_facts_parse_job). world_context prepends retrieved
+                    # World lore to the parse's user message for name accuracy —
+                    # parse_facts_from_recap frames it with the same
+                    # _with_world_context wording condense_recap uses.
+                    facts = await _ai_module.parse_facts_from_recap(
+                        transcript, model=model, think=think, world_context=world_context,
+                        on_progress=_on_progress,
+                    )
+                except ValueError as exc:
+                    # parse_facts_from_recap raises ValueError when EVERY
+                    # chunk failed (Ollama down, unusable JSON — see its
+                    # docstring), already worded for a GM — the same message
+                    # the synchronous /api/facts/parse maps to HTTP 502.
+                    _set(status="error", error=str(exc), chunk_current=None, chunk_total=None,
+                         finished_at=datetime.utcnow(), checkpoint_json="")
+                    return
+            # An empty list is SUCCESS, not an error: the model understood
+            # the text and found no in-character facts in it (out-of-character
+            # chatter) — the Facts page's UI explains that to the GM. Chunk
+            # progress fields clear on completion the way session_recap's
+            # done-branch does, so a finished card never shows a stale
+            # "part X/Y".
+            _set(status="done", result_json=_json.dumps(facts), chunk_current=None, chunk_total=None,
+                 finished_at=datetime.utcnow(), checkpoint_json="")
+        elif purpose == "session_log_recap":
+            # One summarize_session_from_facts call over this session's Fact
+            # rows — the identical call the old synchronous POST
+            # /api/session-log/{id}/recap made inline (same model/extra_
+            # instructions selection, same default think=True), just not
+            # inside one HTTP request anymore. Held inside
+            # ollama_job_semaphore like the condense/session_recap branches:
+            # a think=True summarize against a CPU-local model runs for
+            # minutes, and an unheld one would interleave with (and evict
+            # the KV cache of) every other queued summarization for no
+            # benefit — there is no ladder/checkpoint machinery to mirror,
+            # just the one call. The result lands in result_json (never
+            # `recap`) so the jobs UI can't render it as a session_recap-
+            # style draft.
+            _set(status="summarizing")
+            db2 = SessionLocal()
+            try:
+                gs = db2.get(GameSession, game_session_id) if game_session_id else None
+                if gs is None:
+                    # The session was deleted between the POST that created
+                    # this job and the job actually running — nothing left to
+                    # recap. Terminal error, not a crash: a stale pending row
+                    # would block every future recap attempt for this
+                    # (session, audience) forever, since the polling route
+                    # waits on pending rows.
+                    _set(status="error", error="This session no longer exists.",
+                         finished_at=datetime.utcnow(), checkpoint_json="")
+                    return
+                q = db2.query(Fact).filter(Fact.game_session_id == game_session_id)
+                # Same visibility boundary the synchronous route applied per
+                # caller: a GM's recap weaves in every fact, players' only the
+                # ones marked visible (NULL counts as visible, matching the
+                # route's isnot(False)).
+                if audience != "gm":
+                    q = q.filter(Fact.visible_to_players.isnot(False))
+                facts = q.order_by(Fact.created_at).all()
+                world_instructions = _recap_instructions_for_world(gs.world_id)
+            finally:
+                db2.close()
+            if not facts:
+                # Mirrors the route's old {"recap": "", "empty": true}
+                # no-facts shape — the client distinguishes "genuinely
+                # nothing logged yet" from a produced-but-empty recap.
+                _set(status="done", result_json=_json.dumps({"recap": "", "empty": True}),
+                     finished_at=datetime.utcnow(), checkpoint_json="")
+                return
+            if use_rag and world_id:
+                # Built here rather than in the shared RAG block above
+                # because this purpose's transcript is empty by design — the
+                # facts ARE the input, and only they (already visibility-
+                # filtered per `audience` above) make a useful relevance
+                # query. Same "the text being summarized is the query"
+                # convention the shared block applies to the transcript
+                # (_build_rag_context caps the query length itself), and the
+                # same session's "Entities Featured" pins and blank-limit
+                # defaults as every other RAG-backed purpose.
+                pinned_entity_ids, pinned_pc_ids = _session_featured_picks(game_session_id)
+                world_context = _build_rag_context(
+                    world_id, "\n".join(f.content for f in facts),
+                    rag_entity_limit if rag_entity_limit is not None else _DEFAULT_RAG_ENTITY_LIMIT,
+                    rag_notes_limit if rag_notes_limit is not None else _DEFAULT_RAG_NOTES_LIMIT,
+                    pinned_entity_ids=pinned_entity_ids, pinned_pc_ids=pinned_pc_ids,
+                )
+            # think: the Session Log page's own "Thinking" checkbox (column
+            # NULL on pre-feature rows already read as True at the top of
+            # this function); world_context: RAG-retrieved lore, framed as
+            # supplementary reference by summarize_session_from_facts itself.
+            async with _ai_module.ollama_job_semaphore:
+                recap = await _ai_module.summarize_session_from_facts(
+                    [f.content for f in facts], model=model,
+                    extra_instructions=world_instructions,
+                    think=think, world_context=world_context,
+                )
+            # generate_chat never raises on an Ollama-side failure — it
+            # returns a failure-sentinel STRING instead, and there's no
+            # thinking-ladder here to climb first (this branch is one call).
+            # Without this check the sentinel was cached as a DONE recap in
+            # result_json and served to every poller until the next fact
+            # edit — a cached "[AI unavailable: ...]" is worse than no cache
+            # at all, since it looks exactly like a real recap to the route.
+            # Mirrors the condense (~above) and session_recap branches'
+            # terminal-error handling; the route then never serves it (only
+            # done rows are) and its poller surfaces job.error instead.
+            if _looks_like_failure(recap) or _ai_module.is_thinking_starved_sentinel(recap):
+                _set(status="error", error=recap, finished_at=datetime.utcnow(), checkpoint_json="")
+                return
+            _set(status="done", result_json=_json.dumps({"recap": recap}),
+                 finished_at=datetime.utcnow(), checkpoint_json="")
         else:
             _set(status="done", finished_at=datetime.utcnow())
     except _job_shutdown.JobInterrupted:

@@ -11,22 +11,62 @@
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .5rem">✨ Turn a recap into facts</h2>
     <p style="font-size:.82rem;color:var(--text-dim);margin:0 0 .8rem">
       Write a terse recap of what happened — the local AI model splits it into discrete facts and
-      guesses which ones the players already know. Nothing is saved until you review and confirm below.
+      guesses which ones the players already know. Parsing runs as a background job, so a long
+      recap just keeps working (watch the status; you can even close this tab and
+      "Restore last parse" when you come back). Nothing is saved until you review and confirm below.
     </p>
     <textarea id="recap-input" rows="4" placeholder="went to the tavern, met Elyra, she's actually working for the cult, found a strange clock…"
               style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .7rem;font-family:var(--font);font-size:.85rem;border-radius:3px"></textarea>
+    <div style="display:flex;align-items:center;gap:.4rem;margin-top:.45rem;flex-wrap:wrap">
+      <span style="font-size:.75rem;color:var(--text-dim)">Templates:</span>
+      <!-- data-tpl keys into RECAP_TEMPLATES in the script block below. A
+           template replaces the textarea's content (with a confirm() when
+           something's already written) — it's a starting skeleton shaped
+           for the parser, not an append. -->
+      <button type="button" class="tpl-btn" data-tpl="standard" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">📄 Standard recap</button>
+      <button type="button" class="tpl-btn" data-tpl="timeline" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">🕐 Timeline</button>
+      <button type="button" class="tpl-btn" data-tpl="combat" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">⚔️ Combat &amp; loot</button>
+      <button type="button" class="tpl-btn" data-tpl="investigation" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">🔍 Investigation</button>
+    </div>
     <div style="display:flex;align-items:center;gap:.6rem;margin-top:.6rem;flex-wrap:wrap">
       <label style="font-size:.82rem;color:var(--text-dim)">Session</label>
       <select id="recap-session">
         <option value="">— none —</option>
         {% for s in sessions.values() %}<option value="{{ s.id }}">#{{ s.session_num }} {{ s.title }}</option>{% endfor %}
       </select>
+      <!-- Same picker mechanics as the Sessions page's background-job model
+           dropdown: an empty "(default model)" option plus the /api/ai/models
+           list appended by loadParseModelOptions() below. -->
+      <select id="parse-model" title="Which AI model parses this recap — see the AI page's Models tab" style="font-size:.78rem;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:.25rem .4rem">
+        <option value="">(default model)</option>
+      </select>
+      <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
+             title="Runs the parse with the model's 'thinking'/reasoning mode — usually better at separating in-character facts from banter and spelling names, but slower, and a small model can spend its whole output budget reasoning and return nothing.">
+        <input type="checkbox" id="parse-think" style="width:auto"> 🧠 Thinking
+      </label>
+      <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
+             title="Retrieves relevant World entities/notes and gives the model that context while parsing — for accuracy (correct spellings of established names/places), not as extra facts to invent.">
+        <input type="checkbox" id="parse-rag-checkbox" style="width:auto"> 🔍 RAG
+      </label>
+      <label style="font-size:.75rem;color:var(--text-dim);display:inline-flex;align-items:center;gap:.3rem" title="How many relevant World entities to pull in">
+        Entities
+        <input type="number" id="parse-rag-entity-limit" min="0" value="15"
+               style="width:50px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.2rem .35rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+      </label>
+      <label style="font-size:.75rem;color:var(--text-dim);display:inline-flex;align-items:center;gap:.3rem" title="How many World notes to pull in">
+        Notes
+        <input type="number" id="parse-rag-notes-limit" min="0" value="5"
+               style="width:50px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.2rem .35rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+      </label>
       <button type="button" id="parse-btn" style="background:var(--neon);color:#000;border:none;padding:.4rem 1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Parse with AI</button>
+      <button type="button" id="restore-parse-btn" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .8rem;font-size:.8rem;border-radius:3px;cursor:pointer"
+              title="Reload the draft from your most recent finished parse — the draft is saved on the server, so it survives a page reload">Restore last parse</button>
       <span id="parse-status" style="font-size:.8rem;color:var(--text-dim)"></span>
     </div>
 
     <div id="draft-panel" style="display:none;margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border)">
       <h3 style="color:var(--neon);font-size:.85rem;margin:0 0 .6rem">Review before saving</h3>
+      <div id="draft-empty-note" style="display:none;font-size:.82rem;color:var(--text-dim);background:var(--bg3);border:1px dashed var(--border);border-radius:4px;padding:.6rem .8rem;margin-bottom:.6rem"></div>
       <div id="draft-list" style="display:flex;flex-direction:column;gap:.5rem;margin-bottom:.6rem"></div>
       <div style="display:flex;gap:.5rem;flex-wrap:wrap">
         <button type="button" id="draft-add-btn" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.35rem .8rem;font-size:.8rem;border-radius:3px;cursor:pointer">+ Add row</button>
@@ -62,7 +102,7 @@
     {% for f in facts %}
     <div class="en-note{% if not f.visible_to_players %} en-hidden{% endif %}" style="background:var(--bg2)">
       <div class="en-note-content rendered-md" id="fact-view-{{ f.id }}">{{ f.content | md | safe }}</div>
-      <form id="fact-edit-{{ f.id }}" method="post" action="/facts/{{ f.id }}/edit" style="display:none;margin-top:.4rem">
+      <form id="fact-edit-{{ f.id }}" method="post" action="{{ ('/facts/' ~ f.id ~ '/edit')|wq }}" style="display:none;margin-top:.4rem">
         <textarea name="content" rows="2" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px" data-fmt>{{ f.content }}</textarea>
         <div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem">
           <select name="game_session_id">
@@ -84,7 +124,7 @@
         {% endif %}
         <span class="en-note-vis">{% if f.visible_to_players %}👁 visible to players{% else %}🔒 GM only{% endif %}</span>
         <button type="button" class="en-btn" onclick="toggleFactEdit({{ f.id }})">Edit</button>
-        <form action="/facts/{{ f.id }}/delete" method="post" class="en-inline-form" onsubmit="return confirm('Delete this fact?')">
+        <form action="{{ ('/facts/' ~ f.id ~ '/delete')|wq }}" method="post" class="en-inline-form" onsubmit="return confirm('Delete this fact?')">
           <button type="submit" class="en-btn en-btn-del">Delete</button>
         </form>
       </div>
@@ -106,11 +146,109 @@ function toggleFactEdit(id) {
 }
 
 let draftFacts = [];
+// When non-empty, the draft panel shows this explainer instead of review
+// rows — set when a parse succeeds but finds no in-character facts (an
+// empty result is a SUCCESS the GM needs explained, not an error to
+// swallow: out-of-character chatter produces exactly this).
+let draftEmptyNote = '';
+
+// Recap templates: skeletons shaped for parse_facts_from_recap — discrete
+// lines the splitter turns into one fact per line, with a placeholder
+// (<like this>) wherever the GM is meant to write. Angle brackets are
+// deliberate: an unfilled placeholder is visibly unfinished, and the model
+// treats bracketed text as a fill-in instruction rather than a fact.
+// Labels live in RECAP_TEMPLATE_LABELS because they render in TWO places:
+// the static chips above and the action buttons the empty-result note
+// builds at runtime (see renderDraft/loadParsedFacts).
+const RECAP_TEMPLATE_LABELS = {
+  standard: '📄 Standard recap',
+  timeline: '🕐 Timeline',
+  combat: '⚔️ Combat & loot',
+  investigation: '🔍 Investigation',
+};
+// ZERO-fill templates: each is a single English instruction line for the
+// model, NOT a form to fill in — the GM clicks a chip, pastes their raw
+// transcript under the instruction, and hits Parse. The model reads both
+// (the instruction is part of the text it sees) and writes the facts
+// itself, in English (the parse prompt also enforces that). The old
+// fill-in skeletons were the reported failure: a GM who left <number>,
+// <who played> unfilled got an empty parse and 26 wasted chunk calls.
+const RECAP_TEMPLATES = {
+  standard:
+    "Extract this session's key events as discrete facts — what happened, " +
+    "who was there, what was learned, how it ended. Ignore out-of-character " +
+    "table talk. Write each fact in English.\n\n" +
+    "TRANSCRIPT:\n",
+  timeline:
+    "Extract this session's events as discrete facts in CHRONOLOGICAL order " +
+    "(what happened first, what happened next, how it ended). Write each " +
+    "fact in English. Ignore out-of-character table talk.\n\n" +
+    "TRANSCRIPT:\n",
+  combat:
+    "Extract facts about EVERY combat in this session: enemies fought, " +
+    "tactics, casualties, escapes, and every item of loot gained. Write " +
+    "each fact in English. Ignore out-of-character table talk.\n\n" +
+    "TRANSCRIPT:\n",
+  investigation:
+    "Extract facts about the investigation in this session: clues found, " +
+    "persons of interest, conclusions drawn, and what remains unknown. " +
+    "Write each fact in English.\n\n" +
+    "TRANSCRIPT:\n",
+};
+
+// One template application, shared by the chips above and the buttons the
+// empty-result note builds: replace the textarea's content with the
+// instruction line (confirm-guarded when something's already written —
+// silently wiping a half-written recap would be worse than one extra
+// dialog), then focus it so the GM pastes their transcript right below.
+// Returns whether it applied.
+function applyRecapTemplate(key) {
+  const ta = document.getElementById('recap-input');
+  const tpl = RECAP_TEMPLATES[key];
+  if (!tpl) return false;
+  if (ta.value.trim() && ta.value !== tpl && !confirm('Replace the current recap text with this template?')) return false;
+  ta.value = tpl;
+  ta.focus();
+  return true;
+}
+
+document.querySelectorAll('.tpl-btn').forEach(btn => btn.addEventListener('click', () => {
+  applyRecapTemplate(btn.dataset.tpl);
+}));
 
 function renderDraft() {
   const panel = document.getElementById('draft-panel');
   const list = document.getElementById('draft-list');
-  panel.style.display = draftFacts.length ? 'block' : 'none';
+  const emptyNote = document.getElementById('draft-empty-note');
+  panel.style.display = (draftFacts.length || draftEmptyNote) ? 'block' : 'none';
+  emptyNote.style.display = draftEmptyNote ? 'block' : 'none';
+  if (draftEmptyNote) {
+    emptyNote.textContent = draftEmptyNote;
+    // The empty state is actionable, not a dead end: the same recap
+    // templates the textarea chips offer, right where the GM is looking.
+    // Applying one clears this empty-state panel (there are no rows to
+    // review) and drops the skeleton into the textarea — scroll + focus so
+    // the next step is obvious.
+    const tplRow = document.createElement('div');
+    tplRow.style.cssText = 'display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.55rem';
+    Object.keys(RECAP_TEMPLATES).forEach(key => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = RECAP_TEMPLATE_LABELS[key] || key;
+      b.style.cssText = 'background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer';
+      b.addEventListener('click', () => {
+        if (applyRecapTemplate(key)) {
+          draftFacts = [];
+          draftEmptyNote = '';
+          renderDraft();
+          const ta = document.getElementById('recap-input');
+          ta.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      });
+      tplRow.appendChild(b);
+    });
+    emptyNote.appendChild(tplRow);
+  }
   list.innerHTML = '';
   draftFacts.forEach((f, i) => {
     const row = document.createElement('div');
@@ -135,34 +273,257 @@ function renderDraft() {
 
 document.getElementById('draft-add-btn').addEventListener('click', () => {
   draftFacts.push({ content: '', visible_to_players: true });
+  draftEmptyNote = '';
   renderDraft();
 });
 
+// Loads a parsed draft array into the review panel — shared by the
+// background parse poll loop below and "Restore last parse", so both
+// render identically (and an empty result from either shows the same
+// out-of-character explainer).
+function loadParsedFacts(facts) {
+  draftFacts = Array.isArray(facts) ? facts.filter((f) => f && typeof f === 'object') : [];
+  draftEmptyNote = draftFacts.length ? '' :
+    'No in-character facts found — the text looks like out-of-character discussion. ' +
+    'Rewrite what actually happened in play from a template:';
+  renderDraft();
+}
+
+// The job id of the parse the CURRENT draft came from — set by the poll
+// loop below (the job it started) and by restoreLastParse (the job whose
+// draft was restored). Sent along with /api/facts/bulk so the server can
+// flag that job's draft as consumed and "Restore last parse" stops
+// offering a draft that was already reviewed and saved.
+let lastParseJobId = null;
+
+// Polls a facts_parse job until it reaches a terminal status, then loads
+// its draft. The parse itself runs server-side as a durable background job
+// (see app/audio_jobs.py create_facts_parse_job): a long recap against a
+// CPU-local model can take minutes — far past the ~100s a reverse proxy
+// will hold one request open, which is exactly what lost the GM's whole
+// parse (HTTP 524, nothing kept) when this was a synchronous POST.
+//
+// The loop NEVER reports "Failed" while the job is merely slow or the
+// connection merely flaky. Two separate ladders:
+// - SLOW JOB: every poll reads the job's chunk_current/chunk_total progress
+//   (the same fields the Background Jobs page renders as "part X/Y"), and
+//   any CHANGE resets the give-up deadline, so a healthily progressing
+//   parse is polled indefinitely — the old unconditional ~10-minute cap
+//   gave up with a "Failed:" banner on exactly such a job (26 parts, 40+
+//   minutes, still advancing). Only a job showing NO progress for ~10
+//   minutes (200 polls × 3s), or the ~2h absolute ceiling, ends the loop —
+//   and then the status is a soft "it keeps running without this tab" note
+//   with the Parse button back, never a failure: the job is still alive
+//   server-side, and "Restore last parse" picks up its draft whenever it
+//   finishes.
+// - FLAKY CONNECTION: a poll that throws (a network blip, one bad proxy
+//   hop, a transient 5xx) is NOT a parse failure — the job keeps running
+//   server-side regardless. Consecutive poll failures back off
+//   exponentially (3s → 6s → 12s → … capped at 30s) up to 10 in a row
+//   before giving up POLLING with another soft note; a single successful
+//   poll resets the ladder. ONLY a job status of "error" — the runner's
+//   own terminal verdict — produces a "Failed: <job.error>" here.
+async function pollFactsParseJob(jobId, status) {
+  const POLL_MS = 3000;
+  const MAX_IDLE_POLLS = 200;              // ~10 min without any progress signal
+  const HARD_CAP_MS = 2 * 60 * 60 * 1000;  // 2h absolute ceiling even if progress keeps coming
+  const MAX_CONSECUTIVE_FETCH_FAILURES = 10;
+  const MAX_BACKOFF_MS = 30000;
+  let lastChunkCurrent = null;
+  let idlePolls = 0;
+  let fetchFailures = 0;
+  let nextDelayMs = POLL_MS;
+  const startedAt = Date.now();
+  for (let poll = 1; ; poll++) {
+    status.textContent = `Parsing in background… (poll ${poll})`;
+    await new Promise((r) => setTimeout(r, nextDelayMs));
+    let job;
+    try {
+      const res = await fetch(`/api/audio-jobs/${jobId}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      job = await res.json();
+    } catch (e) {
+      // Transient poll failure — see the FLAKY CONNECTION ladder above.
+      // Deliberately NOT a throw: one dropped poll used to land here as
+      // "Failed:" while the job was still happily running server-side.
+      fetchFailures++;
+      if (fetchFailures >= MAX_CONSECUTIVE_FETCH_FAILURES) {
+        status.textContent = `Couldn't reach the server after ${fetchFailures} tries (${e.message}) — the parse itself keeps running in the background. Use Restore last parse once it finishes.`;
+        return;  // soft give-up: polling, not the job
+      }
+      nextDelayMs = Math.min(MAX_BACKOFF_MS, POLL_MS * Math.pow(2, fetchFailures));
+      status.textContent = `Poll failed (${e.message}) — retrying in ${Math.round(nextDelayMs / 1000)}s…`;
+      continue;
+    }
+    // A successful poll resets the backoff ladder entirely.
+    fetchFailures = 0;
+    nextDelayMs = POLL_MS;
+    if (job.status === 'done') {
+      lastParseJobId = jobId;
+      let facts = [];
+      try { facts = JSON.parse(job.result_json || '[]'); } catch (e) { facts = []; }
+      loadParsedFacts(facts);
+      status.textContent = draftFacts.length
+        ? `${draftFacts.length} fact(s) drafted — review below.`
+        : 'No in-character facts found — see the note below.';
+      return;
+    }
+    if (job.status === 'error') throw new Error(job.error || 'The parse job failed.');
+    // Progress signal: the runner persists chunk_current/chunk_total before
+    // each part (see app.audio_jobs._on_progress). Any change means the
+    // parse is alive — surface it and reset the idle deadline.
+    if (job.chunk_current != null && job.chunk_current !== lastChunkCurrent) {
+      lastChunkCurrent = job.chunk_current;
+      idlePolls = 0;
+    } else {
+      idlePolls++;
+    }
+    const part = (job.chunk_current && job.chunk_total) ? ` — part ${job.chunk_current}/${job.chunk_total}` : '';
+    status.textContent = `Parsing in background… (poll ${poll})${part}`;
+    // Stalled (or 2h total): give up POLLING, not the job. A plain return
+    // (not a throw) keeps this out of parseDraftFromRecap's "Failed:"
+    // catch — a stalled job is still running server-side, so the soft
+    // wording below is the whole status line, and the finally{} there
+    // re-enables the Parse button either way.
+    if (idlePolls >= MAX_IDLE_POLLS || Date.now() - startedAt >= HARD_CAP_MS) {
+      status.textContent = 'Still parsing in the background — check Background Jobs (it keeps running even with this tab closed). When it finishes, use Restore last parse to load the draft.';
+      return;
+    }
+  }
+}
+
+// Same population mechanism as the Sessions page's background-job model
+// dropdown: server-offered models appended onto the "(default model)" empty
+// option. Any failure just leaves the picker on the default.
+(async function loadParseModelOptions() {
+  const sel = document.getElementById('parse-model');
+  try {
+    const res = await fetch('/api/ai/models');
+    if (!res.ok) return;
+    const d = await res.json();
+    (d.models || []).forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label || m.id;
+      sel.appendChild(opt);
+    });
+  } catch (e) { /* picker just stays on "(default model)" */ }
+})();
+
+// The parse options the pickers above hold — sent with every parse-job POST
+// so the background run reproduces exactly what the GM asked for. Blank
+// limit fields fall back to the module's own defaults server-side (same
+// convention as the Sessions page's RAG inputs).
+function parseModelOptions() {
+  const modelSel = document.getElementById('parse-model');
+  const thinkBox = document.getElementById('parse-think');
+  const ragBox = document.getElementById('parse-rag-checkbox');
+  const entityEl = document.getElementById('parse-rag-entity-limit');
+  const notesEl = document.getElementById('parse-rag-notes-limit');
+  return {
+    model: modelSel ? modelSel.value : '',
+    think: !!(thinkBox && thinkBox.checked),
+    use_rag: !!(ragBox && ragBox.checked),
+    rag_entity_limit: (entityEl && entityEl.value.trim() !== '') ? parseInt(entityEl.value, 10) : null,
+    rag_notes_limit: (notesEl && notesEl.value.trim() !== '') ? parseInt(notesEl.value, 10) : null,
+  };
+}
+
+// Everything on this panel that must go quiet while a parse poll loop owns
+// the page state: the Parse button itself (disabled by parseDraftFromRecap
+// below) plus "Restore last parse" and the draft controls — restoring a
+// draft or adding rows mid-poll would race the poll's own loadParsedFacts
+// call and one of the two drafts would silently win. Re-enabled in
+// parseDraftFromRecap's finally, which EVERY exit path (done, error,
+// soft give-up, thrown poll failure) runs through.
+function _setParseBusyControls(disabled) {
+  ['restore-parse-btn', 'draft-add-btn', 'draft-save-btn'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = disabled;
+  });
+}
+
 async function parseDraftFromRecap() {
+  const btn = document.getElementById('parse-btn');
+  // A poll loop already owns the panel (the button is only re-enabled in
+  // this function's finally) — a double-click, or the Background Jobs
+  // hand-off below firing while a manual parse is still polling, must not
+  // stack a second job on top of the first.
+  if (btn.disabled) return;
   const text = document.getElementById('recap-input').value.trim();
   if (!text) return;
-  const btn = document.getElementById('parse-btn');
   const status = document.getElementById('parse-status');
+  const sessionId = document.getElementById('recap-session').value;
   btn.disabled = true;
-  status.textContent = 'Thinking…';
+  _setParseBusyControls(true);
+  status.textContent = 'Starting background parse…';
   try {
-    const res = await fetch('/api/facts/parse', {
+    const res = await fetch('/api/facts/parse-job', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, game_session_id: sessionId || null, ...parseModelOptions() }),
     });
     if (!res.ok) throw await ndApiErrorFrom(res);
     const data = await res.json();
-    draftFacts = data.facts || [];
-    status.textContent = draftFacts.length ? `${draftFacts.length} fact(s) drafted — review below.` : 'No facts found — try rephrasing.';
-    renderDraft();
+    await pollFactsParseJob(data.job_id, status);
   } catch (e) {
     status.textContent = 'Failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    _setParseBusyControls(false);
+  }
+}
+
+document.getElementById('parse-btn').addEventListener('click', parseDraftFromRecap);
+
+// The parsed draft is persisted on the job row server-side (AudioJob.
+// result_json), so a reload — or a parse that finished after the tab was
+// closed — doesn't throw the review work away; this just re-fetches it.
+// Jobs whose draft was already confirmed via Confirm & Save are skipped
+// server-side (draft_consumed), so this can never resurrect a saved draft
+// for a second round of duplicates.
+async function restoreLastParse(quiet = false) {
+  const status = document.getElementById('parse-status');
+  const btn = document.getElementById('restore-parse-btn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/facts/last-parse');
+    if (res.status === 404) {
+      // quiet = the on-load auto-restore: a page with nothing to restore
+      // is just a page, not a message-worthy event.
+      if (!quiet) status.textContent = 'Nothing to restore yet — no finished parse saved.';
+      return;
+    }
+    if (!res.ok) throw await ndApiErrorFrom(res);
+    const data = await res.json();
+    lastParseJobId = data.job_id || null;
+    // Preselect the session the parse was run for (when it carried one and
+    // it's still in the picker) — the natural next step after a restore is
+    // Confirm & Save, and the facts should land on the session the GM
+    // originally picked, not on "— none —" by default. Same guard the
+    // Background Jobs hand-off below uses against a deleted session.
+    if (data.game_session_id) {
+      const sel = document.getElementById('recap-session');
+      if ([...sel.options].some((o) => o.value === String(data.game_session_id))) {
+        sel.value = String(data.game_session_id);
+      }
+    }
+    loadParsedFacts(data.facts || []);
+    const when = data.created_at ? ` (${new Date(data.created_at).toLocaleString()})` : '';
+    status.textContent = `Restored ${draftFacts.length} drafted fact(s) from your last parse${when}.`;
+  } catch (e) {
+    if (!quiet) status.textContent = 'Failed: ' + e.message;
   } finally {
     btn.disabled = false;
   }
 }
 
-document.getElementById('parse-btn').addEventListener('click', parseDraftFromRecap);
+// Auto-restore on page load — the header promises "you can even close this
+// tab and Restore last parse when you come back", but requiring the click
+// meant a GM reopening the page saw a blank parse panel next to a finished
+// background job. quiet=true keeps "nothing to restore" off an untouched page.
+document.addEventListener('DOMContentLoaded', () => restoreLastParse(true));
+
+document.getElementById('restore-parse-btn').addEventListener('click', restoreLastParse);
 
 // If we arrived here via a Background Jobs "📋 Extract facts" button, the
 // transcript (and which Session it belongs to, if known) is waiting in
@@ -196,10 +557,21 @@ document.getElementById('draft-save-btn').addEventListener('click', async () => 
   try {
     const res = await fetch('/api/facts/bulk', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ facts: clean, game_session_id: sessionId || null }),
+      // job_id (when the draft came from a parse job) lets the server flag
+      // that job's draft as consumed so "Restore last parse" stops offering
+      // it — restoring and re-saving the same draft was a silent duplicate
+      // of every fact in it. The status line below also surfaces any rows
+      // the server skipped as duplicates of already-logged facts.
+      body: JSON.stringify({ facts: clean, game_session_id: sessionId || null, job_id: lastParseJobId }),
     });
     if (!res.ok) throw await ndApiErrorFrom(res);
+    const data = await res.json();
     window.location.reload();
+    if (data.skipped_duplicates) {
+      // The reload races this text; set it anyway so a slow reload still
+      // shows the GM why fewer rows landed than they confirmed.
+      status.textContent = `Saved ${data.created} fact(s); skipped ${data.skipped_duplicates} duplicate(s) of facts already logged.`;
+    }
   } catch (e) {
     status.textContent = 'Failed: ' + e.message;
     btn.disabled = false;

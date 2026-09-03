@@ -34,6 +34,21 @@ def with_world(path: str, world) -> str:
     return f"{path}{sep}w={world.slug}"
 
 
+def can_edit_content(request: Request) -> bool:
+    """True if this request may create/edit/delete world CONTENT (entities,
+    notes, sessions, calendar, tables, boards, maps, schematics, pages,
+    gallery/audio/video clips, imports): a GM always, plus a non-GM whose
+    membership in the ACTIVE world carries role="assistant" (see
+    WorldMembership.role in app/models.py and _is_assistant_safe in
+    app/main.py — the middleware is the enforcement boundary; this helper is
+    the same answer routers and templates need locally). Reads request.state.
+    is_assistant, which auth_gate computes for every non-GM request — so a
+    router should call this instead of re-querying WorldMembership. Used by
+    the Jinja global `can_edit(request)` (app/templating.py) too."""
+    user = getattr(request.state, "user", None)
+    return bool(user and (user.is_gm or getattr(request.state, "is_assistant", False)))
+
+
 def get_world_ctx(request: Request, db: Session, active_world: Optional[str]):
     """The active world plus the world-switcher list, filtered to what this
     viewer may access — GMs see every world, players only the ones they're a
