@@ -1510,6 +1510,19 @@ def start_resume_job(job_id: int, reset_attempts: bool = False) -> AudioJob:
     already set, so this only needs to validate the audio is still there
     when it ISN'T.
 
+    purpose="session_log_recap" is a carve-out from all of the above: it
+    has neither audio_path nor a transcript by design (see
+    create_session_log_recap_job — its "transcript" is this session's Fact
+    rows, re-read fresh from the DB by _run_job's session_log_recap branch
+    on every run, resume included) and never writes a checkpoint, so it
+    has exactly one phase — "summarizing" — with nothing to validate a
+    resume point against. Without this carve-out the checks below always
+    failed for this purpose (no audio, no transcript — indistinguishable
+    from a genuinely lost audio upload), so an interrupted session-log
+    recap could never resume; it just re-errored ("please re-upload",
+    nonsensical for a job with no upload) every time, forcing a full
+    regenerate on the caller's very next request.
+
     `reset_attempts`, if true, zeroes resumed_count — for a GM manually
     resuming a job that hit job_shutdown.MAX_AUTO_RESUMES and gave up
     automatically; a manual resume is a deliberate human decision, not
@@ -1522,11 +1535,14 @@ def start_resume_job(job_id: int, reset_attempts: bool = False) -> AudioJob:
             raise ValueError("Job not found.")
         if job.status != "interrupted":
             raise ValueError("Only a job paused by a server restart can be resumed this way.")
-        if not job.audio_path and not job.transcript:
+        if job.purpose != "session_log_recap" and not job.audio_path and not job.transcript:
             raise ValueError("This job's audio is gone and it has no transcript to resume from — please re-upload.")
         checkpoint = _json.loads(job.checkpoint_json) if job.checkpoint_json else None
         phase = (checkpoint or {}).get("phase")
-        resuming_summarize = phase == "summarize" or (not phase and bool(job.transcript))
+        resuming_summarize = (
+            phase == "summarize" or (not phase and bool(job.transcript))
+            or job.purpose == "session_log_recap"
+        )
         if resuming_summarize:
             job.status = "summarizing"
         else:
@@ -1634,7 +1650,15 @@ def resume_interrupted_jobs() -> int:
                 job.finished_at = datetime.utcnow()
                 db.commit()
                 continue
-            if not job.transcript and (not job.audio_path or not Path(job.audio_path).is_file()):
+            # purpose="session_log_recap" has no viable "resume point" to
+            # check in the first place — it has neither audio nor a
+            # transcript by design (see start_resume_job's own docstring)
+            # and re-reads this session's Facts fresh from the DB on every
+            # run, so it's exempt from the check below the same way
+            # start_resume_job exempts it.
+            if job.purpose != "session_log_recap" and not job.transcript and (
+                not job.audio_path or not Path(job.audio_path).is_file()
+            ):
                 job.status = "error"
                 job.error = "Interrupted by a server restart — please re-upload."
                 job.finished_at = datetime.utcnow()

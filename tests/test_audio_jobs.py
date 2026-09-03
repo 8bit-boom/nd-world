@@ -24,7 +24,7 @@ from app import ai as ai_module
 from app import audio_jobs
 from app import job_shutdown as _job_shutdown
 from app.database import SessionLocal
-from app.models import AudioJob, Entity, Fact, World
+from app.models import AudioJob, Entity, Fact, GameSession, World
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -2280,6 +2280,90 @@ def test_resume_marks_error_when_the_audio_file_is_gone_and_no_transcript(client
         assert "re-upload" in j.error.lower()
     finally:
         db.close()
+
+
+# ── purpose="session_log_recap" resume carve-out ────────────────────────────
+# This purpose has neither audio_path nor a transcript by design (see
+# create_session_log_recap_job) — it re-reads the session's Facts fresh from
+# the DB every run. Before this carve-out, resume_interrupted_jobs and
+# start_resume_job both treated "no audio, no transcript" as "this job's
+# content is gone", force-erroring it with a nonsensical "please re-upload"
+# message instead of just re-running the one-shot summarize call — meaning a
+# session_log_recap job interrupted by any server restart (a routine
+# `docker compose restart`/Watchtower update) could never actually resume,
+# and the Session Log page's poll just started a brand new job on the very
+# next visit instead of ever serving a cached "done" one.
+
+@pytest.mark.asyncio
+async def test_resume_interrupted_jobs_resumes_session_log_recap_without_transcript_or_audio(
+    client, seed, monkeypatch,
+):
+    async def fake_summarize_from_facts(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "A woven recap."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize_from_facts)
+
+    session_id = None
+    db = SessionLocal()
+    try:
+        gs = GameSession(world_id=seed.world_a.id, title="Session 1", session_num=1)
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        session_id = gs.id
+        db.add(Fact(world_id=seed.world_a.id, game_session_id=session_id, content="A fact", visible_to_players=True))
+        db.commit()
+
+        job = AudioJob(
+            world_id=seed.world_a.id, purpose="session_log_recap", status="interrupted",
+            filename="Session Log recap", game_session_id=session_id, audience="gm",
+            audio_path="", delete_after=False,
+            error="Paused by a server restart",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    resumed = audio_jobs.resume_interrupted_jobs()
+    assert resumed == 1
+
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert json.loads(job.result_json) == {"recap": "A woven recap."}
+    assert job.resumed_count == 1
+
+
+@pytest.mark.asyncio
+async def test_start_resume_job_resumes_session_log_recap_without_transcript_or_audio(client, seed):
+    db = SessionLocal()
+    try:
+        gs = GameSession(world_id=seed.world_a.id, title="Session 1", session_num=1)
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        session_id = gs.id
+
+        job = AudioJob(
+            world_id=seed.world_a.id, purpose="session_log_recap", status="interrupted",
+            filename="Session Log recap", game_session_id=session_id, audience="players",
+            audio_path="", delete_after=False,
+            error="Paused by a server restart",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    resumed = audio_jobs.start_resume_job(job_id)
+    assert resumed.status == "summarizing"  # not a ValueError, not left "interrupted"
+
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error  # no facts logged -> the {"recap": "", "empty": True} shape
+    assert json.loads(job.result_json) == {"recap": "", "empty": True}
 
 
 @pytest.mark.asyncio
