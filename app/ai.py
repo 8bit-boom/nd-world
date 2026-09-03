@@ -1694,10 +1694,71 @@ async def summarize_session_from_facts(facts: list[str], model: str = "", extra_
     # actually fired.
     reserve = _CONTEXT_FIT_RESERVED_TOKENS + (_THINKING_HEADROOM_TOKENS if thinking_opts else 0)
     opts.update(_ctx_override_if_needed(system + bullet_list, reserve))
-    return await generate_chat(
+    recap = await generate_chat(
         [{"role": "user", "content": bullet_list}], system=system, model=model,
         options=opts or None, think=think,
     )
+    # A degenerating local model (repetition loops, leaked chat-template
+    # tokens like <|im_start|>, endless digit runs — the reported failure)
+    # produces output that is worse than no recap. Clean the mechanical
+    # artifacts, and if the result STILL reads as heavily degenerate, retry
+    # once with a raised repeat_penalty (only when the GM hasn't configured
+    # one) and keep whichever attempt reads less repetitively. Best-effort:
+    # never raises, and a model that loops even under the penalty still
+    # returns its (bounded) output.
+    recap = _clean_degenerate_recap(recap)
+    if _recap_degeneration_ratio(recap) > 0.4 and "repeat_penalty" not in opts:
+        retry_opts = dict(opts)
+        retry_opts["repeat_penalty"] = 1.2
+        retry_recap = _clean_degenerate_recap(await generate_chat(
+            [{"role": "user", "content": bullet_list}], system=system, model=model,
+            options=retry_opts, think=think,
+        ))
+        if _recap_degeneration_ratio(retry_recap) <= _recap_degeneration_ratio(recap):
+            recap = retry_recap
+    return recap
+
+
+def _clean_degenerate_recap(recap: str) -> str:
+    """Strip the mechanical artifacts of a degenerating local model from a
+    generated recap: leaked chat-template tokens (<|im_start|>-style, which
+    several GGUF exports emit mid-loop), and runs of identical consecutive
+    lines (a repetition loop shows up as the same sentence dozens of times
+    in a row). Line-level, whitespace-normalized comparison — formatting
+    variations of the same looped line still collapse."""
+    if not recap:
+        return recap
+    for token in ("<|im_start|>", "<|im_end|>", "<|im_sep|>", "<|channel|>",
+                  "<start_of_turn>", "<end_of_turn>", "<|think|>"):
+        recap = recap.replace(token, "")
+    lines = recap.split("\n")
+    cleaned = []
+    for line in lines:
+        stripped = line.strip()
+        # Collapse any run of 2+ identical consecutive lines to one.
+        if stripped and cleaned and cleaned[-1].strip() == stripped:
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned)
+
+
+def _recap_degeneration_ratio(recap: str) -> float:
+    """Fraction of non-empty lines that duplicate an earlier non-empty line
+    (order-preserving, whitespace-normalized). ~0 is a healthy recap;
+    >0.4 is the repetition-loop failure the reported screenshots showed.
+    Purely heuristic — used only to pick between two generation attempts,
+    never to reject content."""
+    lines = [ln.strip() for ln in recap.split("\n") if ln.strip()]
+    if len(lines) < 4:
+        return 0.0
+    seen, dupes = set(), 0
+    for line in lines:
+        key = re.sub(r"\s+", " ", line.lower())
+        if key in seen:
+            dupes += 1
+        else:
+            seen.add(key)
+    return dupes / len(lines)
 
 
 _COMPACT_CHAT_SYSTEM = (

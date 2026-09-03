@@ -228,6 +228,29 @@ document.querySelectorAll('.tpl-btn').forEach(btn => btn.addEventListener('click
   applyRecapTemplate(btn.dataset.tpl);
 }));
 
+// Placeholder guard: a template skeleton is a FILL-IN FORM, not a recap —
+// parsing it verbatim makes the model extract "facts" like "Session #:
+// <number>" (or nothing at all). Collect every <placeholder> the templates
+// define and check which ones are still sitting unfilled in the given
+// text. Deliberately conservative: only placeholders that EXACTLY match a
+// known template slot count, so a GM's own angle-bracket notation never
+// false-positives.
+const KNOWN_TEMPLATE_PLACEHOLDERS = (() => {
+  const set = new Set();
+  for (const tpl of Object.values(RECAP_TEMPLATES)) {
+    for (const m of tpl.matchAll(/<[^<>]{2,60}>/g)) set.add(m[0]);
+  }
+  return set;
+})();
+
+function unfilledTemplatePlaceholders(text) {
+  const found = [];
+  for (const ph of KNOWN_TEMPLATE_PLACEHOLDERS) {
+    if (text.includes(ph)) found.push(ph);
+  }
+  return found;
+}
+
 function renderDraft() {
   const panel = document.getElementById('draft-panel');
   const list = document.getElementById('draft-list');
@@ -465,6 +488,17 @@ async function parseDraftFromRecap() {
   const text = document.getElementById('recap-input').value.trim();
   if (!text) return;
   const status = document.getElementById('parse-status');
+  // Parsing an UNFILLED template skeleton wastes a multi-minute model run
+  // extracting "facts" like "Session #: <number>" (or nothing at all) —
+  // the exact empty-result the GM hit. Block it up front with the list of
+  // what's still unfilled instead of letting the job burn.
+  const unfilled = unfilledTemplatePlaceholders(text);
+  if (unfilled.length) {
+    status.textContent = 'This recap still has unfilled template placeholders (' +
+      unfilled.slice(0, 4).join(', ') + (unfilled.length > 4 ? ', …' : '') +
+      ') — replace them with what actually happened, then Parse.';
+    return;
+  }
   const sessionId = document.getElementById('recap-session').value;
   btn.disabled = true;
   _setParseBusyControls(true);
@@ -493,14 +527,16 @@ document.getElementById('parse-btn').addEventListener('click', parseDraftFromRec
 // Jobs whose draft was already confirmed via Confirm & Save are skipped
 // server-side (draft_consumed), so this can never resurrect a saved draft
 // for a second round of duplicates.
-async function restoreLastParse() {
+async function restoreLastParse(quiet = false) {
   const status = document.getElementById('parse-status');
   const btn = document.getElementById('restore-parse-btn');
   btn.disabled = true;
   try {
     const res = await fetch('/api/facts/last-parse');
     if (res.status === 404) {
-      status.textContent = 'Nothing to restore yet — no finished parse saved.';
+      // quiet = the on-load auto-restore: a page with nothing to restore
+      // is just a page, not a message-worthy event.
+      if (!quiet) status.textContent = 'Nothing to restore yet — no finished parse saved.';
       return;
     }
     if (!res.ok) throw await ndApiErrorFrom(res);
@@ -521,11 +557,17 @@ async function restoreLastParse() {
     const when = data.created_at ? ` (${new Date(data.created_at).toLocaleString()})` : '';
     status.textContent = `Restored ${draftFacts.length} drafted fact(s) from your last parse${when}.`;
   } catch (e) {
-    status.textContent = 'Failed: ' + e.message;
+    if (!quiet) status.textContent = 'Failed: ' + e.message;
   } finally {
     btn.disabled = false;
   }
 }
+
+// Auto-restore on page load — the header promises "you can even close this
+// tab and Restore last parse when you come back", but requiring the click
+// meant a GM reopening the page saw a blank parse panel next to a finished
+// background job. quiet=true keeps "nothing to restore" off an untouched page.
+document.addEventListener('DOMContentLoaded', () => restoreLastParse(true));
 
 document.getElementById('restore-parse-btn').addEventListener('click', restoreLastParse);
 

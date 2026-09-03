@@ -898,3 +898,16 @@ async def test_parse_facts_huge_world_context_never_raises_just_gets_reserved(mo
     with caplog.at_level(logging.WARNING, logger="nd.ai"):
         assert await ai_module.parse_facts_from_recap("met Elyra", world_context=absurd_lore) == []
     assert any("proceeding without reserving" in r.getMessage() for r in caplog.records)
+
+
+def test_facts_page_guards_unfilled_template_placeholders(client, seed):
+    """Parsing the raw Standard-recap skeleton (placeholders unfilled) used
+    to burn a multi-minute model run extracting "facts" like
+    'Session #: <number>' — or nothing. The page must detect unfilled
+    template placeholders and refuse up front, naming them, instead of
+    starting a doomed job."""
+    _login_gm(client, seed)
+    html = client.get("/facts").text
+    assert "unfilledTemplatePlaceholders" in html
+    assert "KNOWN_TEMPLATE_PLACEHOLDERS" in html
+    assert "unfilled template placeholders" in html
