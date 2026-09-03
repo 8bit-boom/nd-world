@@ -27,7 +27,7 @@
       </select>
       <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
              title="Generates the recap with the model's 'thinking'/reasoning mode — usually better narrative quality, but slower, and it can leave a small model with no room left to actually write the recap.">
-        <input type="checkbox" id="recap-think" checked style="width:auto"> 🧠 Thinking
+        <input type="checkbox" id="recap-think" {% if recap_defaults.think %}checked{% endif %} style="width:auto"> 🧠 Thinking
       </label>
       {% if request.state.user and request.state.user.is_gm %}
       <!-- RAG is GM-only on this page on purpose: _build_rag_context is not
@@ -38,16 +38,16 @@
            only (the server enforces the same rule). -->
       <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
              title="Retrieves relevant World entities/notes and gives the model that context while writing — for accuracy (correct spellings of established names/places), not as extra plot to invent.">
-        <input type="checkbox" id="recap-rag-checkbox" style="width:auto"> 🔍 RAG
+        <input type="checkbox" id="recap-rag-checkbox" {% if recap_defaults.use_rag %}checked{% endif %} style="width:auto"> 🔍 RAG
       </label>
       <label style="font-size:.75rem;color:var(--text-dim);display:inline-flex;align-items:center;gap:.3rem" title="How many relevant World entities to pull in">
         Entities
-        <input type="number" id="recap-rag-entity-limit" min="0" value="15"
+        <input type="number" id="recap-rag-entity-limit" min="0" value="{{ recap_defaults.rag_entity_limit }}"
                style="width:50px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.2rem .35rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
       </label>
       <label style="font-size:.75rem;color:var(--text-dim);display:inline-flex;align-items:center;gap:.3rem" title="How many World notes to pull in">
         Notes
-        <input type="number" id="recap-rag-notes-limit" min="0" value="5"
+        <input type="number" id="recap-rag-notes-limit" min="0" value="{{ recap_defaults.rag_notes_limit }}"
                style="width:50px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.2rem .35rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
       </label>
       <!-- GM-only manual regenerate — the only way to get a fresh recap
@@ -107,8 +107,17 @@ function recapRequestOptions() {
 
 // Same population mechanism as the Sessions page's model dropdown: the
 // server-offered model list appended onto the "(default model)" empty
-// option. A failure just leaves the picker on the default.
-(async function loadRecapModelOptions() {
+// option. A failure just leaves the picker on the default. Once populated,
+// re-select whatever model actually produced the last recap for this
+// (session, audience) — RECAP_DEFAULT_MODEL, seeded server-side by the
+// route from the latest session_log_recap job's own `model` column (see
+// its own comment) — so the picker doesn't silently fall back to "(default
+// model)" on every reload just because the real list wasn't loaded yet
+// when the select's initial HTML was parsed. The caller awaits this before
+// the poll loop's first request reads recapRequestOptions(), so that
+// request already carries the right value instead of a blank one.
+const RECAP_DEFAULT_MODEL = {{ recap_defaults.model|tojson }};
+async function loadRecapModelOptions() {
   const sel = document.getElementById('recap-model');
   try {
     const res = await fetch('/api/ai/models');
@@ -120,8 +129,11 @@ function recapRequestOptions() {
       opt.textContent = m.label || m.id;
       sel.appendChild(opt);
     });
+    if (RECAP_DEFAULT_MODEL && Array.from(sel.options).some((o) => o.value === RECAP_DEFAULT_MODEL)) {
+      sel.value = RECAP_DEFAULT_MODEL;
+    }
   } catch (e) { /* picker just stays on "(default model)" */ }
-})();
+}
 
 // `force` only matters on the FIRST request of a run — see the route's own
 // comment on why a forced regenerate still respects an already-in-flight
@@ -193,7 +205,11 @@ async function pollRecap(force) {
   }
 }
 
-pollRecap(false);
+// Wait for the model list (and RECAP_DEFAULT_MODEL's re-selection) to
+// settle BEFORE the first poll reads recapRequestOptions() — otherwise
+// that first request fires with the select still on its blank initial
+// state and defeats the whole point of remembering the last-used model.
+loadRecapModelOptions().then(() => pollRecap(false));
 
 const _recapRegenBtn = document.getElementById('recap-regenerate-btn');
 if (_recapRegenBtn) {

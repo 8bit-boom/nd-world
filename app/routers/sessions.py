@@ -1439,9 +1439,40 @@ def session_log_detail(session_id: int, request: Request, db: Session = Depends(
         gs.player_summary_published and (gs.player_summary or "").strip()
     )
     player_summary_html = render_md(gs.player_summary) if published else ""
+
+    # Seed the recap pickers from the LAST config used for this (session,
+    # audience) instead of hardcoded defaults ("(default model)", RAG off,
+    # 15/5). Without this, a plain page reload always sent the blank-
+    # default request — which the fresh-cache match in api_session_log_recap
+    # treats as a DIFFERENT artifact from whatever a GM had just generated
+    # with a specific model/RAG choice (e.g. via the Regenerate button) —
+    # so it silently regenerated under different settings instead of
+    # re-serving the good recap that was just on screen. Any status, not
+    # just "done": the point is "what did someone last actually ask for",
+    # so the NEXT request (cache hit or fresh) stays consistent with it.
+    audience = "gm" if (user and user.is_gm) else "players"
+    last_job = (
+        db.query(AudioJob)
+        .filter(AudioJob.purpose == "session_log_recap", AudioJob.game_session_id == session_id,
+                AudioJob.audience == audience)
+        .order_by(AudioJob.created_at.desc(), AudioJob.id.desc())
+        .first()
+    )
+    recap_defaults = {
+        "model": (last_job.model or "") if last_job else "",
+        "think": (last_job.think if last_job.think is not None else True) if last_job else True,
+        "use_rag": bool(last_job.use_rag) if last_job else False,
+        "rag_entity_limit": (
+            last_job.rag_entity_limit if last_job.rag_entity_limit is not None else _audio_jobs._DEFAULT_RAG_ENTITY_LIMIT
+        ) if last_job else _audio_jobs._DEFAULT_RAG_ENTITY_LIMIT,
+        "rag_notes_limit": (
+            last_job.rag_notes_limit if last_job.rag_notes_limit is not None else _audio_jobs._DEFAULT_RAG_NOTES_LIMIT
+        ) if last_job else _audio_jobs._DEFAULT_RAG_NOTES_LIMIT,
+    }
     return templates.TemplateResponse("sessions/player_detail.html", {
         "request": request, "world": world, "worlds": worlds, "gsession": gs,
         "player_recap_published": published, "player_summary_html": player_summary_html,
+        "recap_defaults": recap_defaults,
     })
 
 

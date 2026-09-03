@@ -1593,6 +1593,69 @@ def test_session_log_recap_done_job_with_different_rag_limits_forces_a_new_job(c
     assert _recap_job_count(session_id) == 2
 
 
+# ── GET /session-log/{id} seeds the pickers from the LAST job's config ─────
+# Without this, a plain reload always sent the blank-default request (empty
+# model, RAG off, 15/5) — which the fresh-cache match treats as a DIFFERENT
+# artifact from whatever a GM had just generated with a specific model/RAG
+# choice (e.g. via Regenerate), so the page silently regenerated under
+# different settings instead of re-serving the good recap just shown.
+
+def test_session_log_page_defaults_the_pickers_when_no_job_exists_yet(client, seed):
+    session_id = _make_session(seed.world_a)
+    _login_gm_in(client, seed, seed.world_a)
+    html = client.get(f"/session-log/{session_id}").text
+    assert "const RECAP_DEFAULT_MODEL = \"\";" in html
+    assert 'id="recap-think" checked' in html
+    assert 'id="recap-rag-checkbox" ' in html and 'id="recap-rag-checkbox" checked' not in html
+    assert 'id="recap-rag-entity-limit" min="0" value="15"' in html
+    assert 'id="recap-rag-notes-limit" min="0" value="5"' in html
+
+
+def test_session_log_page_seeds_pickers_from_the_last_job_for_this_audience(client, seed, monkeypatch):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "A recap."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap", json={
+        "model": "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:gemma-4-26B-A4B-it-UD-IQ4_NL.gguf",
+        "think": False, "use_rag": True, "rag_entity_limit": 8, "rag_notes_limit": 3,
+    })
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
+
+    html = client.get(f"/session-log/{session_id}").text
+    assert 'const RECAP_DEFAULT_MODEL = "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:gemma-4-26B-A4B-it-UD-IQ4_NL.gguf";' in html
+    assert 'id="recap-think" checked' not in html  # think=False on the last job
+    assert 'id="recap-rag-checkbox" checked' in html
+    assert 'id="recap-rag-entity-limit" min="0" value="8"' in html
+    assert 'id="recap-rag-notes-limit" min="0" value="3"' in html
+
+
+def test_session_log_page_picker_defaults_are_scoped_per_audience(client, seed, monkeypatch):
+    """A GM's own last config must not leak into a player's picker
+    defaults, and vice versa — each audience gets its OWN last job."""
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "A recap."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A public fact", True)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap", json={"model": "gm-only-model", "think": False})
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    html = client.get(f"/session-log/{session_id}").text
+    # The player's OWN picker defaults, not the GM's — no prior player-
+    # audience job exists yet, so this is the untouched default state.
+    assert 'const RECAP_DEFAULT_MODEL = "";' in html
+    assert 'id="recap-think" checked' in html
+
+
 def test_session_log_page_renders_one_think_checkbox_and_failed_recap_handling(client, seed):
     """A4/A1 wiring: the recap-think checkbox must render exactly once (it
     was duplicated, so getElementById bound the first and the second was a
