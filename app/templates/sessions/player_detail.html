@@ -6,6 +6,13 @@
   <h1 style="color:var(--neon);font-size:1.3rem;margin:.5rem 0">#{{ gsession.session_num }} {{ gsession.title }}</h1>
   {% if gsession.session_date %}<p style="color:var(--text-dim);font-size:.85rem;margin:0 0 1rem">{{ gsession.session_date }}</p>{% endif %}
 
+  {% if player_recap_published %}
+  <!-- A GM-published recap is the canonical content: rendered verbatim
+       server-side, no AI call, no polling. -->
+  <div id="recap-box" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem">
+    <div class="rendered-md">{{ player_summary_html|safe }}</div>
+  </div>
+  {% else %}
   <div id="recap-box" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem">
     <p id="recap-status" style="color:var(--text-dim);font-size:.85rem;margin:0">Loading recap…</p>
     <div id="recap-text" class="rendered-md" style="display:none"></div>
@@ -156,4 +163,5 @@ function recapRequestOptions() {
   }
 })();
 </script>
+  {% endif %}
 {% endblock %}

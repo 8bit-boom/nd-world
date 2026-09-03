@@ -74,6 +74,32 @@
           <span id="ai-recap-status" style="font-size:.78rem;color:var(--text-dim)"></span>
         </div>
 
+        {% if gsession %}
+        <!-- ── Player recap: what the Session Log (player-visible pages) shows
+             for this session. Closes the old gap where the GM's polished
+             Summary was never player-visible and players only got an AI
+             recap woven from Fact rows (so a summary-without-facts session
+             showed them nothing). "Use AI recap" pulls the generated facts-
+             recap draft in as a starting point; Publish serves the text to
+             players verbatim; Unpublish falls the Session Log back to its
+             facts-recap pipeline. -->
+        <div style="margin-top:.9rem;padding:.8rem .9rem;background:var(--bg2);border:1px solid var(--border);border-radius:5px">
+          <label style="display:block;font-size:.8rem;color:var(--text-dim);margin-bottom:.35rem">
+            📣 Player recap <span style="color:var(--neon)">{% if gsession.player_summary_published and gsession.player_summary %}— published, live on the Session Log{% endif %}</span>
+            <textarea id="player-summary-field" rows="5" placeholder="What the players should read as this session's recap (Markdown) — publish it and it appears on their Session Log"
+                      style="width:100%;margin-top:.3rem;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.45rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px">{{ gsession.player_summary or '' }}</textarea>
+          </label>
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+            <button type="button" class="ai-recap-btn" onclick="playerRecapUseAi()" title="Runs the same facts-recap generation the Session Log would run, and loads the draft here for you to edit before publishing">♻ Use AI recap</button>
+            <button type="button" class="btn-save" onclick="playerRecapPublish(true)">📢 Save &amp; Publish to players</button>
+            {% if gsession.player_summary_published %}
+            <button type="button" class="ai-recap-btn" onclick="playerRecapPublish(false)">Unpublish</button>
+            {% endif %}
+            <span id="player-recap-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+          </div>
+        </div>
+        {% endif %}
+
         <details style="margin-top:.4rem">
           <summary style="cursor:pointer;font-size:.75rem;color:var(--text-dim)">Condense settings (optional)</summary>
           <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-top:.4rem">
@@ -552,6 +578,75 @@ async function aiSummarizeFromFacts() {
   } finally {
     _aiRecapButtons().forEach(b => b.disabled = false);
   }
+}
+
+// ── Player recap (the publish model) ────────────────────────────────────
+// "Use AI recap" runs the SAME session-log recap job the Session Log's own
+// fallback runs (POST /api/session-log/{id}/recap), but lands the finished
+// draft in the player-summary field for the GM to edit — the publish model
+// exists precisely so the GM curates what players read rather than
+// consuming raw model output. "Save & Publish" posts text + the published
+// flag in one form post; the Session Log then serves the published text
+// verbatim with no AI involved.
+async function playerRecapUseAi() {
+  const status = document.getElementById('player-recap-status');
+  const field = document.getElementById('player-summary-field');
+  const modelSel = document.getElementById('audio-bgjob-model');
+  const POLL_MS = 4000;
+  const POLL_CAP_MS = 10 * 60 * 1000;
+  status.textContent = 'Generating the AI recap…';
+  let waited = 0;
+  try {
+    while (true) {
+      const res = await fetch('/api/session-log/{{ gsession.id }}/recap', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          think: _recapThinkEnabled(),
+          model: modelSel ? modelSel.value : '',
+          ..._recapRagOptions(),
+        }),
+      });
+      if (!res.ok) throw await ndApiErrorFrom(res);
+      const data = await res.json();
+      if (data.pending) {
+        if (waited >= POLL_CAP_MS) {
+          status.textContent = 'Still generating after 10 minutes — check Background Jobs, then try again.';
+          return;
+        }
+        status.textContent = 'Generating in the background…';
+        await new Promise(r => setTimeout(r, POLL_MS));
+        waited += POLL_MS;
+        continue;
+      }
+      if (data.failed) {
+        status.textContent = 'Recap generation failed: ' + (data.error || 'check Background Jobs');
+        return;
+      }
+      if (!data.recap) {
+        status.textContent = data.empty
+          ? 'No facts logged for this session yet — write the recap yourself or add facts first.'
+          : 'No recap produced.';
+        return;
+      }
+      field.value = data.recap;
+      status.textContent = 'AI recap loaded — edit it if you like, then Save & Publish.';
+      return;
+    }
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  }
+}
+
+function playerRecapPublish(publish) {
+  const field = document.getElementById('player-summary-field');
+  const status = document.getElementById('player-recap-status');
+  const fd = new FormData();
+  fd.append('player_summary', field.value);
+  if (publish) fd.append('publish', '1');
+  fetch('/sessions/{{ gsession.id }}/recap-publish', { method: 'POST', body: fd }).then(res => {
+    if (res.ok) location.reload();
+    else res.json().then(d => { status.textContent = d.detail || 'Failed to save.'; }).catch(() => { status.textContent = 'Failed to save.'; });
+  });
 }
 
 // ── NPCs Featured picker: folder tree + live search ─────────────────────

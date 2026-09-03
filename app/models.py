@@ -879,6 +879,20 @@ class GameSession(Base):
     # game_sessions IS in database._migrate's _heal_table_from_model list,
     # so existing installs get this column automatically on next boot.
     live_audio_files_json = Column(Text, default="")
+    # The GM-curated PLAYER-facing recap for this session — what the Session
+    # Log (the player-visible pages) shows. This closes the "two parallel
+    # recap worlds" gap: `summary` above has always been the GM's own
+    # polished recap (never player-visible), while players got a separate
+    # AI-generated recap woven only from Fact rows — so a session with a
+    # great summary but no facts showed players nothing, and nothing the GM
+    # curated ever reached them. Flow: the GM writes or pulls an AI draft
+    # into player_summary, hits Publish, and the Session Log serves it
+    # verbatim; unpublish (or an empty text) falls the Session Log back to
+    # its facts-recap pipeline. game_sessions IS in database._migrate's
+    # _heal_table_from_model list, so existing installs get these columns
+    # automatically on next boot.
+    player_summary = Column(Text, default="")
+    player_summary_published = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

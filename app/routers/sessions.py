@@ -20,6 +20,7 @@ from .. import audio_jobs as _audio_jobs
 from ..database import get_db
 from ..deps import check_llm_cooldown, get_world_ctx, paginate
 from ..models import AudioClip, AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, Quest, World
+from ..rendering import render_md
 from ..templating import templates
 from ..uploads import CHUNK_ID_RE, copy_upload_bounded, reassemble_upload_chunks, save_upload_chunk
 
@@ -1363,14 +1364,63 @@ async def api_summarize_from_facts(session_id: int, request: Request, db: Sessio
 # a GM browsing the same page) — the same security boundary the Chronicler
 # uses, just narrated for one session instead of the whole world.
 
+@router.post("/sessions/{session_id}/recap-publish")
+def session_recap_publish(
+    session_id: int, request: Request,
+    player_summary: str = Form(""), publish: Optional[str] = Form(None),
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Save the GM-curated PLAYER-facing recap and (optionally) publish it.
+    This is the Session Log's canonical content: a published summary is
+    served to players verbatim (markdown-rendered, no AI call), and an
+    unpublished or empty one falls the Session Log back to its facts-recap
+    pipeline. Reachable by GMs AND assistants — /sessions/* is in
+    _is_assistant_safe, and curating the player-visible recap is content
+    work, exactly like /sessions/{id}/edit's summary editing beside it."""
+    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+    if not gs:
+        raise HTTPException(404)
+    gs.player_summary = player_summary
+    # Publishing an empty text is a no-op publish (there'd be nothing to
+    # show) — but the TEXT is still saved, so an in-progress draft survives.
+    gs.player_summary_published = bool(publish) and bool(player_summary.strip())
+    db.commit()
+    return RedirectResponse(f"/sessions/{session_id}", status_code=303)
+
+
 @router.get("/session-log", response_class=HTMLResponse)
 def session_log_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
     sessions = db.query(GameSession).filter(
         GameSession.world_id == (world.id if world else 1)
     ).order_by(GameSession.session_num.desc()).all()
+    # Per-session recap markers for the list (one aggregate query, no N+1):
+    # "published" beats "auto" — a GM-published recap is the canonical one
+    # players see — and "auto" just means the session HAS facts its
+    # facts-recap pipeline can weave.
+    ids = [s.id for s in sessions]
+    published_ids = {
+        s.id for s in sessions
+        if s.player_summary_published and (s.player_summary or "").strip()
+    }
+    fact_session_ids = {
+        row[0] for row in
+        db.query(Fact.game_session_id).filter(
+            Fact.world_id == (world.id if world else 1),
+            Fact.game_session_id.in_(ids),
+        ).all()
+    } if ids else set()
+    markers = {}
+    for s in sessions:
+        if s.id in published_ids:
+            markers[s.id] = "published"
+        elif s.id in fact_session_ids:
+            markers[s.id] = "auto"
+        else:
+            markers[s.id] = None
     return templates.TemplateResponse("sessions/player_list.html", {
         "request": request, "world": world, "worlds": worlds, "sessions": sessions,
+        "recap_markers": markers,
     })
 
 
@@ -1381,8 +1431,17 @@ def session_log_detail(session_id: int, request: Request, db: Session = Depends(
     user = getattr(request.state, "user", None)
     if not gs or not auth.user_can_access_world(db, user, db.get(World, gs.world_id)):
         raise HTTPException(404)
+    # A PUBLISHED player summary is the whole point of the publish model:
+    # it's served to the viewer verbatim (markdown-rendered, no AI call, no
+    # polling) — the Session Log's canonical content. Anything else
+    # (unpublished, empty) falls through to the facts-recap pipeline below.
+    published = bool(
+        gs.player_summary_published and (gs.player_summary or "").strip()
+    )
+    player_summary_html = render_md(gs.player_summary) if published else ""
     return templates.TemplateResponse("sessions/player_detail.html", {
         "request": request, "world": world, "worlds": worlds, "gsession": gs,
+        "player_recap_published": published, "player_summary_html": player_summary_html,
     })
 
 

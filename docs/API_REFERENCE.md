@@ -300,6 +300,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/sessions/new` | GM / Assistant | Creates a `GameSession`. |
 | GET | `/sessions/{session_id}` | GM / Assistant | Session detail: prep checklist, XP/loot log, recap (with the AI toolbar). |
 | POST | `/sessions/{session_id}/edit` | GM / Assistant | Saves session edits, including the raw `summary` recap text. |
+| POST | `/sessions/{session_id}/recap-publish` | GM / Assistant | Saves the session's PLAYER-facing recap (`player_summary`) and sets its published flag — the Session Log serves a published recap verbatim to players; unpublished/empty falls back to the facts-recap pipeline. |
 | POST | `/sessions/{session_id}/delete` | GM / Assistant | Deletes a session. |
 | POST | `/api/sessions/{session_id}/prep/toggle` | GM / Assistant | Toggles a prep checklist item. |
 | POST | `/api/sessions/{session_id}/prep/add` | GM / Assistant | Adds a prep checklist item. |
@@ -326,8 +327,8 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/sessions/{session_id}/ai/summarize-live-transcript-job` | GM / Assistant | Durable background-job variant of the live-transcript summary above. |
 | POST | `/api/sessions/{session_id}/ai/summarize-from-facts` | GM / Assistant | AI: weaves this session's logged `Fact` rows (all of them, secret or not) into a narrative recap. |
 | GET | `/session-log` | Player | Player-facing list of sessions (title/date/number only — never the GM's raw summary). |
-| GET | `/session-log/{session_id}` | Player | Player-facing session page; fetches its AI recap client-side. 404s if the session's world isn't one the caller belongs to. |
-| POST | `/api/session-log/{session_id}/recap` | Player | AI: returns this session's cached recap, or starts a background generation job for it (poll — re-POST — until the response stops saying `{"pending": true}`). Synthesized from only the `Fact` rows marked `visible_to_players` for this session — the GM's raw `summary` is never sent to this endpoint's caller or to the model on their behalf. GMs calling it get every fact, secret or not. |
+| GET | `/session-log/{session_id}` | Player | Player-facing session page. Serves the session's published player recap verbatim when one is published; otherwise fetches the AI facts-recap client-side (create-or-poll). 404s if the session's world isn't one the caller belongs to. |
+| POST | `/api/session-log/{session_id}/recap` | Player | AI: returns this session's cached recap, or starts a background generation job for it (poll — re-POST — until the response stops saying `{"pending": true}`). Synthesized from only the `Fact` rows marked `visible_to_players` for this session — the GM's raw `summary` is never sent to this endpoint's caller or to the model on their behalf. GMs calling it get every fact, secret or not. Accepts optional JSON options (`model`, `think`, `use_rag`, `rag_entity_limit`, `rag_notes_limit`) — a different configuration is a different artifact and regenerates. RAG is GM-only on this surface (forced off for players; the retrieval isn't visibility-filtered). |
 
 ## Facts & Chronicler
 
