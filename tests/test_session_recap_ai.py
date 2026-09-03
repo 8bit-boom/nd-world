@@ -1473,6 +1473,91 @@ def test_session_log_recap_error_backoff_blocks_new_jobs_for_60s_then_expires(cl
     assert _recap_job_count(session_id) == 2
 
 
+# ── `force` — the Session Log page's manual "🔁 Regenerate" button ──────────
+
+def test_session_log_recap_force_skips_the_fresh_cache(client, seed, monkeypatch):
+    """A GM clicking Regenerate must always get a brand new job, not the
+    cached done one — the whole point of the button."""
+    calls = []
+
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        calls.append(1)
+        return f"recap #{len(calls)}"
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap")
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
+    assert client.post(f"/api/session-log/{session_id}/recap").json() == {"recap": "recap #1"}  # cache hit
+
+    r2 = client.post(f"/api/session-log/{session_id}/recap", json={"force": True})
+    assert r2.json()["pending"] is True
+    assert r2.json()["job_id"] != r1.json()["job_id"]
+    assert _wait_recap_job_done(r2.json()["job_id"]) == "done"
+    assert client.post(f"/api/session-log/{session_id}/recap").json() == {"recap": "recap #2"}
+    assert _recap_job_count(session_id) == 2
+
+
+def test_session_log_recap_force_skips_the_error_backoff(client, seed, monkeypatch):
+    """force must also bypass _RECAP_ERROR_BACKOFF_SECONDS — a GM retrying
+    right after a failure shouldn't have to wait out the poll-loop-spam
+    guard that window exists for."""
+    async def failing_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "[AI error: Ollama 500: boom]"
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", failing_summarize)
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap")
+    errored_id = r1.json()["job_id"]
+    assert _wait_recap_job_done(errored_id) == "error"
+
+    # Still well inside the 60s backoff window — an unforced poll gets the
+    # cached failure, not a new job.
+    assert client.post(f"/api/session-log/{session_id}/recap").json() == {
+        "failed": True, "error": "[AI error: Ollama 500: boom]",
+    }
+    assert _recap_job_count(session_id) == 1
+
+    async def recovered_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "Recovered."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", recovered_summarize)
+
+    r2 = client.post(f"/api/session-log/{session_id}/recap", json={"force": True})
+    assert r2.json()["pending"] is True
+    assert r2.json()["job_id"] != errored_id
+    assert _wait_recap_job_done(r2.json()["job_id"]) == "done"
+    assert _recap_job_count(session_id) == 2
+
+
+def test_session_log_recap_force_ignored_for_a_player(client, seed, monkeypatch):
+    """force is a GM-only affordance — silently ignored (not a 403) for a
+    player, who has no Regenerate button to click in the first place."""
+    calls = []
+
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        calls.append(1)
+        return f"recap #{len(calls)}"
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r1 = client.post(f"/api/session-log/{session_id}/recap")
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
+
+    r2 = client.post(f"/api/session-log/{session_id}/recap", json={"force": True})
+    assert r2.json() == {"recap": "recap #1"}  # still the cached one — force had no effect
+    assert _recap_job_count(session_id) == 1
+
+
 def test_session_log_recap_done_job_with_different_rag_limits_forces_a_new_job(client, seed, monkeypatch):
     """The RAG limits participate in the done/in-flight match (A8): a recap
     woven from 15 retrieved entities is not the artifact a request for 50
@@ -1997,6 +2082,124 @@ async def test_summarize_session_from_facts_guard_never_clobbers_configured_num_
     # Ollama through _chat_kwargs' own options merge, which is exactly the
     # channel the guard must never shadow with its default.
     assert seen[1] is None or "num_predict" not in seen[1]
+
+
+# ── _clean_degenerate_recap: hallucinated-turn cleanup ──────────────────────
+# A degenerating model doesn't only loop repeated lines (the guard above) —
+# a thin session (few facts logged) can give it little to genuinely narrate,
+# and rather than stopping once it's said everything real, it fills the
+# rest of its num_predict budget by simulating an entirely different,
+# unrelated conversation. Reported: a recap that ended mid-sentence, then
+# continued with a leaked "<|im1_start|>system" token, a fake system prompt
+# about extracting "eat"/"drink" sentences, and invented user/assistant
+# turns with unrelated C code. None of that repeats line-for-line, so the
+# pre-existing repetition-ratio check alone never caught it.
+
+def test_clean_degenerate_recap_strips_any_pipe_delimited_special_token():
+    """Not a fixed token list — <|im1_start|>, <|endoftext|>, and any other
+    <|...|>-shaped variant a specific GGUF export happens to leak all match
+    the same regex, not just the exact <|im_start|> spelling seen before."""
+    cleaned, truncated = ai_module._clean_degenerate_recap(
+        "A real recap paragraph.<|im1_start|>assistant<|endoftext|> more text<|channel|>"
+    )
+    assert "<|" not in cleaned
+    assert "A real recap paragraph." in cleaned
+
+
+def test_clean_degenerate_recap_strips_gemma_turn_tokens():
+    cleaned, truncated = ai_module._clean_degenerate_recap(
+        "<start_of_turn>A real recap paragraph.<end_of_turn>"
+    )
+    assert cleaned == "A real recap paragraph."
+    assert truncated is False
+
+
+def test_clean_degenerate_recap_truncates_at_a_hallucinated_turn_marker():
+    """The reported failure shape: real content, then a bare role-marker
+    line, then an entirely different fake conversation. Everything from
+    the marker on is dropped and `truncated` comes back True — even though
+    nothing here repeats, so the line-repetition heuristic alone would
+    have missed it."""
+    raw = (
+        "The party met Elena at the bazaar and struck a deal.\n\n"
+        "system\n\n"
+        "You are a helpful assistant. Extract sentences with 'eat' or 'drink'.\n\n"
+        "user\n\n"
+        "#include <stdio.h>\n"
+    )
+    cleaned, truncated = ai_module._clean_degenerate_recap(raw)
+    assert cleaned == "The party met Elena at the bazaar and struck a deal."
+    assert truncated is True
+
+
+def test_clean_degenerate_recap_does_not_truncate_a_marker_word_inside_a_sentence():
+    """Only a BARE role-marker line (nothing else on it) counts — a
+    legitimate recap mentioning "the system" or the word "user" inline in
+    prose must survive untouched."""
+    raw = "The old system of guilds governed the market, and every user of the bazaar paid a toll."
+    cleaned, truncated = ai_module._clean_degenerate_recap(raw)
+    assert cleaned == raw
+    assert truncated is False
+
+
+def test_clean_degenerate_recap_does_not_truncate_when_marker_is_the_very_first_line():
+    """No real content precedes it yet, so this isn't "hallucination after
+    real output" — collapsing to nothing would discard content a retry
+    might have salvaged instead. (In practice a recap opening with a bare
+    "assistant" line is itself pathological, but truncating to an empty
+    string here would be a strictly worse outcome than leaving it alone
+    for the caller's degeneration-ratio/retry logic to handle.)"""
+    cleaned, truncated = ai_module._clean_degenerate_recap("assistant\n\nSome recap text.")
+    assert truncated is False
+    assert "Some recap text." in cleaned
+
+
+def test_clean_degenerate_recap_still_collapses_repeated_lines():
+    cleaned, truncated = ai_module._clean_degenerate_recap(
+        "The party explored the ruins.\nThe party explored the ruins.\nThe party explored the ruins.\nThey found treasure."
+    )
+    assert cleaned == "The party explored the ruins.\nThey found treasure."
+    assert truncated is False
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_from_facts_retries_on_a_hallucinated_turn(monkeypatch):
+    """truncated=True from the FIRST attempt must trigger the same
+    repeat_penalty retry the repetition-ratio check already does — a
+    truncated-but-non-repetitive recap wouldn't otherwise trip
+    _recap_degeneration_ratio at all."""
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
+    calls = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        calls.append(options)
+        if len(calls) == 1:
+            return "The party met Elena.\n\nsystem\n\nfake unrelated task\n\nuser\n\n#include <stdio.h>"
+        return "The party met Elena at the bazaar and struck a deal."
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    recap = await ai_module.summarize_session_from_facts(["The party met Elena at the bazaar."])
+    assert recap == "The party met Elena at the bazaar and struck a deal."
+    assert len(calls) == 2  # the retry actually happened
+    assert calls[1]["repeat_penalty"] == 1.2
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_from_facts_keeps_first_attempt_when_retry_is_no_better(monkeypatch):
+    """Best-effort: if the retry ALSO comes back truncated, the first
+    attempt's (still-truncated-but-non-empty) cleaned text is kept rather
+    than being discarded for something no better."""
+    monkeypatch.setattr(ai_module, "effective_ollama_options", lambda: {})
+    calls = []
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=True):
+        calls.append(options)
+        return f"Real content attempt {len(calls)}.\n\nassistant\n\nfake stuff"
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    recap = await ai_module.summarize_session_from_facts(["fact one"])
+    assert recap == "Real content attempt 1."  # first attempt kept, not overwritten by an equally-bad retry
+    assert len(calls) == 2
 
 
 # ── The same degeneration guard on the recap-family siblings (A9) ────────────

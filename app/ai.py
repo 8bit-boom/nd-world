@@ -1701,47 +1701,87 @@ async def summarize_session_from_facts(facts: list[str], model: str = "", extra_
         options=opts or None, think=think,
     )
     # A degenerating local model (repetition loops, leaked chat-template
-    # tokens like <|im_start|>, endless digit runs — the reported failure)
-    # produces output that is worse than no recap. Clean the mechanical
-    # artifacts, and if the result STILL reads as heavily degenerate, retry
-    # once with a raised repeat_penalty (only when the GM hasn't configured
-    # one) and keep whichever attempt reads less repetitively. Best-effort:
-    # never raises, and a model that loops even under the penalty still
-    # returns its (bounded) output.
-    recap = _clean_degenerate_recap(recap)
-    if _recap_degeneration_ratio(recap) > 0.4 and "repeat_penalty" not in opts:
+    # tokens like <|im_start|>, endless digit runs, a hallucinated new
+    # conversation once it runs out of real facts to narrate — the reported
+    # failures) produces output that is worse than no recap. Clean the
+    # mechanical artifacts, and if the result STILL reads as degenerate
+    # (repetitive, or had to be cut short), retry once with a raised
+    # repeat_penalty (only when the GM hasn't configured one) and keep
+    # whichever attempt reads less degenerate. Best-effort: never raises,
+    # and a model that loops even under the penalty still returns its
+    # (bounded) output.
+    recap, truncated = _clean_degenerate_recap(recap)
+    if (truncated or _recap_degeneration_ratio(recap) > 0.4) and "repeat_penalty" not in opts:
         retry_opts = dict(opts)
         retry_opts["repeat_penalty"] = 1.2
-        retry_recap = _clean_degenerate_recap(await generate_chat(
+        retry_recap, retry_truncated = _clean_degenerate_recap(await generate_chat(
             [{"role": "user", "content": bullet_list}], system=system, model=model,
             options=retry_opts, think=think,
         ))
-        if _recap_degeneration_ratio(retry_recap) <= _recap_degeneration_ratio(recap):
-            recap = retry_recap
+        retry_ratio, orig_ratio = _recap_degeneration_ratio(retry_recap), _recap_degeneration_ratio(recap)
+        if retry_ratio < orig_ratio or (retry_ratio == orig_ratio and not retry_truncated and truncated):
+            recap, truncated = retry_recap, retry_truncated
     return recap
 
 
-def _clean_degenerate_recap(recap: str) -> str:
+# Any <|...|>-shaped special token a GGUF chat template might leak
+# (<|im_start|>, <|im1_start|>, <|endoftext|>, <|channel|>, <|think|>, and
+# any model- or export-specific variant not seen yet) — a regex sweep
+# instead of a fixed list, since a hardcoded list only ever catches tokens
+# someone already reported.
+_CHAT_TEMPLATE_TOKEN_RE = re.compile(r"<\|[^<>|]{0,40}\|>")
+# A bare role-marker line — the shape a chat template renders a turn
+# boundary as once its special tokens are stripped (see
+# _clean_degenerate_recap's own docstring for the failure this catches).
+_CHAT_ROLE_MARKER_RE = re.compile(r"^(system|user|assistant|model)$", re.IGNORECASE)
+
+
+def _clean_degenerate_recap(recap: str) -> tuple[str, bool]:
     """Strip the mechanical artifacts of a degenerating local model from a
-    generated recap: leaked chat-template tokens (<|im_start|>-style, which
-    several GGUF exports emit mid-loop), and runs of identical consecutive
-    lines (a repetition loop shows up as the same sentence dozens of times
-    in a row). Line-level, whitespace-normalized comparison — formatting
-    variations of the same looped line still collapse."""
+    generated recap, and report whether doing so had to cut the output
+    short. Two failure shapes handled:
+
+    - Leaked chat-template special tokens (_CHAT_TEMPLATE_TOKEN_RE's <|...|>
+      shape, plus the handful of Gemma-style angle-bracket turn markers)
+      are simply removed wherever they appear.
+    - A bare "system"/"user"/"assistant"/"model" line, once real content
+      already precedes it, marks the start of a HALLUCINATED new
+      conversation: a thin session (few facts logged) gives the model
+      little to narrate, and rather than stopping, it fills the rest of
+      its num_predict budget by simulating an entirely different, unrelated
+      exchange — reported as a recap that ended mid-sentence, then
+      continued into a fake "extract eat/drink sentences" system prompt
+      with invented user/assistant turns and unrelated C code. Everything
+      from that marker onward is not the recap, so it's dropped rather
+      than shown to the GM; the caller treats this as worth a retry (see
+      summarize_session_from_facts) even when nothing repeats, since a
+      truncated-but-non-repetitive recap wouldn't otherwise trip
+      _recap_degeneration_ratio.
+
+    Also collapses any run of 2+ identical consecutive lines (the older,
+    already-reported repetition-loop failure) — line-level, whitespace-
+    normalized comparison, so formatting variations of the same looped
+    line still collapse.
+
+    Returns (cleaned_text, truncated)."""
     if not recap:
-        return recap
-    for token in ("<|im_start|>", "<|im_end|>", "<|im_sep|>", "<|channel|>",
-                  "<start_of_turn>", "<end_of_turn>", "<|think|>"):
+        return recap, False
+    recap = _CHAT_TEMPLATE_TOKEN_RE.sub("", recap)
+    for token in ("<start_of_turn>", "<end_of_turn>"):
         recap = recap.replace(token, "")
     lines = recap.split("\n")
     cleaned = []
+    truncated = False
     for line in lines:
         stripped = line.strip()
+        if _CHAT_ROLE_MARKER_RE.match(stripped) and any(ln.strip() for ln in cleaned):
+            truncated = True
+            break
         # Collapse any run of 2+ identical consecutive lines to one.
         if stripped and cleaned and cleaned[-1].strip() == stripped:
             continue
         cleaned.append(line)
-    return "\n".join(cleaned)
+    return "\n".join(cleaned).rstrip(), truncated
 
 
 def _recap_degeneration_ratio(recap: str) -> float:

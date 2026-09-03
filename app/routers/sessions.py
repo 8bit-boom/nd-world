@@ -1526,6 +1526,17 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     # surface default.
     requested_model = model or _recap_model("")
 
+    # GM-only manual override — the Session Log page's "🔁 Regenerate"
+    # button. Silently ignored (not a 403) for a non-GM caller: nothing bad
+    # happens by treating it as absent, and there's no player-facing control
+    # that would ever send it. Skips the fresh-cache AND recent-error checks
+    # below so a deliberate click always starts a genuinely new job — never
+    # blocked by an old error's backoff window, and never re-serving the
+    # very recap the GM is asking to redo. Does NOT skip the in-flight dedup
+    # check just below: if a job for this exact config is already running,
+    # racing a second one against it would just waste the Ollama semaphore.
+    force = bool(body.get("force")) and is_gm
+
     # The durable staleness cutoff described in the comment block above:
     # max(this session's newest Fact timestamp, the world's recap-content
     # watermark). Naive-UTC datetimes throughout (AudioJob.created_at,
@@ -1580,15 +1591,18 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     # repeatedly must stay free, not consume the rate limit that exists to
     # stop a player spamming real generations. "Fresh" is purely the
     # staleness comparison — done jobs are never deleted, one simply stops
-    # being served once a fact edit has postdated it.
-    done = _session_log_recap_q(
-        db.query(AudioJob).filter(AudioJob.status == "done")
-    ).order_by(AudioJob.created_at.desc(), AudioJob.id.desc()).first()
-    if done:
-        try:
-            return json.loads(done.result_json or "")
-        except ValueError:
-            pass  # corrupt result blob — fall through and regenerate rather than 500
+    # being served once a fact edit has postdated it. Skipped entirely when
+    # `force` (see its own comment above) — the whole point of a manual
+    # regenerate is to NOT get the cached answer back.
+    if not force:
+        done = _session_log_recap_q(
+            db.query(AudioJob).filter(AudioJob.status == "done")
+        ).order_by(AudioJob.created_at.desc(), AudioJob.id.desc()).first()
+        if done:
+            try:
+                return json.loads(done.result_json or "")
+            except ValueError:
+                pass  # corrupt result blob — fall through and regenerate rather than 500
 
     # A still-running job answers the poll without dedup-creating a second
     # identical one (two players — or one player reloading — hitting this
@@ -1613,14 +1627,18 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     # older error) and BEFORE the cooldown/creation path (this response
     # generates nothing, so it must consume no cooldown). The player_detail
     # poll JS treats data.failed as terminal for the page load and shows
-    # the error text — a retry is a deliberate reload, not a loop.
-    recent_error = _session_log_recap_q(
-        db.query(AudioJob).filter(AudioJob.status == "error")
-    ).filter(
-        AudioJob.created_at >= datetime.utcnow() - timedelta(seconds=_RECAP_ERROR_BACKOFF_SECONDS)
-    ).order_by(AudioJob.created_at.desc(), AudioJob.id.desc()).first()
-    if recent_error:
-        return {"failed": True, "error": recent_error.error or "Recap generation failed."}
+    # the error text — a retry is a deliberate reload, not a loop. Skipped
+    # under `force`, same reasoning as the fresh-cache check above: a GM
+    # who just clicked Regenerate must never be told to wait out an old
+    # failure's backoff window.
+    if not force:
+        recent_error = _session_log_recap_q(
+            db.query(AudioJob).filter(AudioJob.status == "error")
+        ).filter(
+            AudioJob.created_at >= datetime.utcnow() - timedelta(seconds=_RECAP_ERROR_BACKOFF_SECONDS)
+        ).order_by(AudioJob.created_at.desc(), AudioJob.id.desc()).first()
+        if recent_error:
+            return {"failed": True, "error": recent_error.error or "Recap generation failed."}
 
     # Cooldown only at actual job-CREATION time: a POST that finds a pending
     # job (the common reload-while-generating case) just latches onto it,
