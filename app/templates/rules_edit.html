@@ -76,9 +76,58 @@
         <code>tabs</code> is a list of <code>{"id", "label", "sections": [slugs]}</code> — listed slugs
         show in that order, unlisted sections land in a trailing "More" tab;
         <code>players_visible: false</code> hides the section from players (GMs still see it).
+        Full guide with a worked example: <a href="https://github.com/8bit-boom/nd-world/blob/main/docs/RULES_OVERLAY.md" target="_blank" rel="noopener">docs/RULES_OVERLAY.md</a>.
       </li>
     </ul>
   </div>
+
+  <details style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;font-size:.8rem;color:var(--text-dim);margin-top:1rem;line-height:1.6">
+    <summary style="cursor:pointer;color:var(--text)">📖 How to build the rules.json overlay — step by step</summary>
+    <div style="margin-top:.6rem">
+      <p style="margin:.3rem 0"><strong>What it's for.</strong> The overlay is UI metadata on top of your
+      markdown: icons, custom section titles, reordering, per-section player visibility, and tab
+      groups. It never changes the rule text — <code>/rules/download.md</code> keeps serving the pure
+      markdown, overlay or not.</p>
+
+      <p style="margin:.3rem 0"><strong>Step 1 — get the section slugs.</strong> Every <code>##</code>/<code>###</code>
+      heading becomes a section whose slug is the lowercase heading with spaces and punctuation
+      collapsed to <code>-</code> — e.g. <code>## Part II — Races &amp; Optional Systems</code> becomes
+      <code>part-ii-races-optional-systems</code>. The easiest way to read them off your own document:
+      open the Rules page and copy the target of any TOC link (everything after the <code>#</code>).</p>
+
+      <p style="margin:.3rem 0"><strong>Step 2 — write the JSON.</strong> Two optional top-level keys:
+      <code>sections</code> (slug → settings) and <code>tabs</code> (grouping). Example:</p>
+      <pre style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.5rem .7rem;font-size:.75rem;white-space:pre-wrap">{
+  "sections": {
+    "part-i-core-rules": { "icon": "⚔️", "order": 1 },
+    "part-ii-races-optional-systems": { "icon": "🧬", "order": 2 },
+    "appendix-b-editorial-notes-source-map": { "players_visible": false }
+  },
+  "tabs": [
+    { "label": "⚔️ Core", "sections": ["part-i-core-rules"] },
+    { "label": "🧬 Races", "sections": ["part-ii-races-optional-systems"] }
+  ]
+}</pre>
+      <p style="margin:.3rem 0">Slugs not mentioned in <code>tabs</code> land in a trailing "More" tab;
+      sections missing from <code>sections</code> keep their natural title and position.
+      <code>players_visible: false</code> is the data-driven version of a <code>:::gm</code> block —
+      removed server-side for non-GM viewers, and the TOC never links to it.</p>
+
+      <p style="margin:.3rem 0"><strong>Step 3 — apply it.</strong> Either paste the JSON into the
+      overlay textarea above and Save (invalid JSON is rejected with the parse error), or save it
+      as a <code>.json</code> file and upload it through the <strong>Import from JSON</strong> box at
+      the top of this page — an overlay-only file (no <code>rules_md</code>) is accepted and updates
+      the UI without touching your markdown.</p>
+
+      <p style="margin:.3rem 0"><strong>Validation &amp; safety.</strong> A stored overlay that fails
+      validation is ignored on the Rules page (with the ⚠️ banner above), never a broken page.
+      Unknown section slugs in <code>tabs</code> are harmless. Changes take effect on the Rules page
+      immediately — no restart.</p>
+
+      <p style="margin:.3rem 0">Full guide with a worked example:
+      <a href="https://github.com/8bit-boom/nd-world/blob/main/docs/RULES_OVERLAY.md" target="_blank" rel="noopener">docs/RULES_OVERLAY.md</a> on GitHub.</p>
+    </div>
+  </details>
 </div>
 <script src="/static/js/text-format-toolbar.js"></script>
 <script src="/static/js/file-dropzone.js"></script>

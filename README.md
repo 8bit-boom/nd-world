@@ -757,6 +757,21 @@ for reusing a ruleset across worlds/installs without re-pasting). `docs/asterion
 formats, ready to paste or upload for any world using the built-in Asterion
 character system.
 
+### Rules page superpowers & the rules.json overlay
+
+The Rules renderer also supports directive blocks and a statblock fence —
+`:::tip|note|warning|danger|lore|collapse|gm [title] … :::` themed callouts
+(`:::gm` content is removed server-side for non-GM viewers),
+```` ```statblock ```` cards with a copy button — and an optional
+**rules.json overlay**: a per-world JSON file (same import box) that adds
+icons, custom section titles, reordering, tab groups, and per-section
+player visibility to the auto-generated Rules page, keyed by the section
+slugs the TOC generates. Full schema, slug rules, and a worked example:
+[docs/RULES_OVERLAY.md](docs/RULES_OVERLAY.md); a step-by-step cheatsheet
+also ships inside the app on the Rules edit page. The 20 MB
+`MAX_UPLOAD_BYTES` default applies to these imports too (raise it via
+Settings → System → Upload limits if your rules file is bigger).
+
 Want to run a Neon & Dragons world with Asterion's simpler, player-invented-ability
 engine instead of N&D's fixed feat catalog, while keeping N&D's actual races,
 professions, origins, and major edges? See `docs/nd_asterion_conversion.md` — a
