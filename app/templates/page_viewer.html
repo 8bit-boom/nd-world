@@ -9,7 +9,10 @@
       <h1 style="margin:.2rem 0 0;font-size:1.3rem">📄 {{ doc.name }}</h1>
       {% if doc.description %}<p style="color:var(--text-dim);font-size:.85rem;margin:.2rem 0 0">{{ doc.description }}</p>{% endif %}
     </div>
-    <a class="btn-save" style="text-decoration:none;white-space:nowrap" href="{{ doc.file_url }}" target="_blank" rel="noopener">↗ Open in new tab</a>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+      <a class="btn-save" style="text-decoration:none;white-space:nowrap" href="{{ doc.file_url }}" target="_blank" rel="noopener">↗ Open in new tab</a>
+      <a class="btn-cancel" style="text-decoration:none;white-space:nowrap" href="{{ ('/pages/' + doc.id|string + '/download')|wq }}">⬇ Download</a>
+    </div>
   </div>
 
   {# Sandboxed by design: this document is GM-uploaded raw HTML that can

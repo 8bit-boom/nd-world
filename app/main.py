@@ -407,7 +407,7 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if re.match(r"^/pages/albums/\d+$", path):
         return True
-    if re.match(r"^/pages/\d+$", path):
+    if re.match(r"^/pages/\d+(/download)?$", path):
         return True
     if re.match(r"^/entity/\d+(/download\.md)?$", path):
         return True

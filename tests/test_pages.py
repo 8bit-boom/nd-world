@@ -518,6 +518,85 @@ def test_pages_viewer_cross_world_404s(client, seed):
     assert r.status_code == 404
 
 
+# ── /pages/{id}/download ──────────────────────────────────────────────────
+# The raw file_url (what 'Open'/the viewer iframe use) deliberately does
+# NOT force a download (see main.py's serve_upload) — this route serves the
+# identical file with Content-Disposition: attachment instead, gated by the
+# exact same visibility rule as the viewer (a page a viewer can already
+# open is exactly the set they may also download).
+
+def _add_downloadable_doc(tmp_path, monkeypatch, world_id, **kw):
+    from app.routers import pages as pages_module
+    monkeypatch.setattr(pages_module, "_UPLOADS_DIR", tmp_path)
+    (tmp_path / "pages").mkdir(exist_ok=True)
+    fname = kw.pop("fname", "doc.html")
+    (tmp_path / "pages" / fname).write_bytes(_HTML_BYTES)
+    return _add_doc(world_id, file_url=f"/uploads/pages/{fname}", **kw)
+
+
+def test_pages_download_gm(client, seed, tmp_path, monkeypatch):
+    did = _add_downloadable_doc(tmp_path, monkeypatch, seed.world_a.id, name="Calendar", visible_to_players=True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/pages/{did}/download")
+    assert r.status_code == 200
+    assert r.content == _HTML_BYTES
+    assert 'attachment; filename="Calendar.html"' in r.headers["content-disposition"]
+
+
+def test_pages_download_player_when_visible(client, seed, tmp_path, monkeypatch):
+    did = _add_downloadable_doc(tmp_path, monkeypatch, seed.world_a.id, name="Calendar", visible_to_players=True)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/pages/{did}/download")
+    assert r.status_code == 200
+    assert r.content == _HTML_BYTES
+
+
+def test_pages_download_404s_for_player_when_hidden(client, seed, tmp_path, monkeypatch):
+    did = _add_downloadable_doc(tmp_path, monkeypatch, seed.world_a.id, name="GM Secret", visible_to_players=False)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get(f"/pages/{did}/download").status_code == 404
+
+
+def test_pages_download_reachable_by_gm_when_hidden(client, seed, tmp_path, monkeypatch):
+    did = _add_downloadable_doc(tmp_path, monkeypatch, seed.world_a.id, name="GM Secret", visible_to_players=False)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get(f"/pages/{did}/download").status_code == 200
+
+
+def test_pages_download_cross_world_404s(client, seed, tmp_path, monkeypatch):
+    did = _add_downloadable_doc(tmp_path, monkeypatch, seed.world_b.id, name="Other World Doc")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get(f"/pages/{did}/download").status_code == 404
+
+
+def test_pages_download_sanitizes_special_characters_in_filename(client, seed, tmp_path, monkeypatch):
+    did = _add_downloadable_doc(tmp_path, monkeypatch, seed.world_a.id,
+                                 name="Hunt: Moonlight/Chase?.html", visible_to_players=True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/pages/{did}/download")
+    assert r.status_code == 200
+    disposition = r.headers["content-disposition"]
+    assert "/" not in disposition and ":" not in disposition and "?" not in disposition
+
+
+def test_pages_download_missing_file_on_disk_404s(client, seed, tmp_path, monkeypatch):
+    """The DB row exists but its file is gone (e.g. manually deleted from
+    disk) — a 500 would leak a stack trace, 404 matches every other
+    doesn't-actually-exist case this router already returns."""
+    from app.routers import pages as pages_module
+    monkeypatch.setattr(pages_module, "_UPLOADS_DIR", tmp_path)
+    did = _add_doc(seed.world_a.id, name="Ghost Doc", visible_to_players=True, file_url="/uploads/pages/gone.html")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get(f"/pages/{did}/download").status_code == 404
+
+
 def test_pages_viewer_iframe_is_sandboxed_without_allow_same_origin(client, seed):
     """The one thing an HTML library needs that video/audio never did — see
     page_viewer.html's own comment for why allow-same-origin must never be

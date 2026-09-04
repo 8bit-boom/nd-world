@@ -551,6 +551,7 @@ worlds they've been invited into (`WorldMembership`).
 |---|---|---|---|
 | GET | `/pages` | Player | Pages list for the active world. |
 | GET | `/pages/{doc_id}` | Player | Renders one page. |
+| GET | `/pages/{doc_id}/download` | Player | Downloads a page's raw .html file (`Content-Disposition: attachment`) — same visibility gate as viewing it; a player sees this only for a page already `visible_to_players`. |
 | POST | `/pages/{doc_id}/edit` | GM / Assistant | Saves page edits (name/description/visibility/album). |
 | POST | `/pages/{doc_id}/delete` | GM / Assistant | Deletes a page and its file. |
 | POST | `/pages/upload` | GM / Assistant | Uploads a page source file (single request). |

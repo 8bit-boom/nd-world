@@ -78,6 +78,8 @@ CASES = [
     ("GET", "/audio/albums/1", True),
     ("GET", "/video", True),
     ("GET", "/video/albums/1", True),
+    ("GET", "/pages/1", True),
+    ("GET", "/pages/1/download", True),
     ("GET", "/search", True),
     ("GET", "/maps", True),
     # A plain map named e.g. "Schematic Vault" slugifies to "schematic-vault" —

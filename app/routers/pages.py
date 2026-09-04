@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -224,6 +224,36 @@ def pages_viewer(doc_id: int, request: Request, db: Session = Depends(get_db), a
     return templates.TemplateResponse("page_viewer.html", {
         "request": request, "world": world, "worlds": worlds, "doc": doc,
     })
+
+
+@router.get("/pages/{doc_id}/download")
+def pages_download(doc_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Serves the same file the sandboxed viewer renders, but with
+    Content-Disposition: attachment — a raw visit to doc.file_url (what
+    'Open'/the iframe use) deliberately does NOT force a download (see
+    main.py's serve_upload), since the whole feature exists to be read
+    in-app. Same visibility gate/404-not-403 convention as pages_viewer:
+    a page a non-GM viewer can already open is exactly the set they may
+    also download — no separate opt-in, since the file is not meaningfully
+    more exposed as a save-as than it already is rendered in an iframe."""
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    doc = _doc_or_404(db, world.id, doc_id)
+    if not doc.visible_to_players and not _is_gm(request):
+        raise HTTPException(404)
+    root = _UPLOADS_DIR.resolve()
+    if not doc.file_url or not doc.file_url.startswith("/uploads/"):
+        raise HTTPException(404)
+    try:
+        path = (root / doc.file_url[len("/uploads/"):]).resolve()
+    except (OSError, RuntimeError):
+        raise HTTPException(404)
+    if not path.is_relative_to(root) or not path.is_file():
+        raise HTTPException(404)
+    fname = "".join(c if c.isalnum() or c in " -_" else "" for c in (doc.name or "page")) or "page"
+    ext = path.suffix or ".html"
+    return FileResponse(path, media_type="text/html", filename=f"{fname}{ext}")
 
 
 @router.post("/pages/albums/new")
