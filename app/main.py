@@ -32,7 +32,7 @@ from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app
 from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content
 from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html
-from .rules_render import (apply_rules_overlay, extract_blocks,
+from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_overlay,
                            parse_rules_overlay, restore_blocks, split_rules_sections)
 from .templating import templates
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes
@@ -2104,9 +2104,13 @@ def world_rules_edit_post(world_id: int, rules_md: str = Form(""), rules_json: s
 
 @app.post("/worlds/{world_id}/rules/import")
 async def world_rules_import(world_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """Import rules from a JSON file shaped {"rules_md": "...markdown..."} (a
-    "name" key is accepted too but only rules_md is used) — an alternative to
-    pasting the whole document into the textarea by hand."""
+    """Import rules from a JSON file. Two shapes are accepted:
+    {"rules_md": "...markdown..."} (a "name" key is accepted too but only
+    rules_md is used) — an alternative to pasting the whole document into
+    the textarea by hand — and the rules.json UI OVERLAY the Rules page's
+    tab/icon/visibility system consumes ({"sections": {...}, "tabs":
+    [...]}), which sets World.rules_json without touching the markdown. A
+    file carrying BOTH applies both."""
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
@@ -2114,10 +2118,27 @@ async def world_rules_import(world_id: int, file: UploadFile = File(...), db: Se
         payload = json.loads((await file.read()).decode("utf-8"))
     except Exception:
         raise HTTPException(400, "Not valid JSON")
-    md = str(payload.get("rules_md", "")).strip()
-    if not md:
-        raise HTTPException(400, 'JSON must have a non-empty "rules_md" string field')
-    w.rules_md = md
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Not valid JSON")
+    md = str(payload.get("rules_md", "") or "").strip()
+    overlay_payload = None
+    if "sections" in payload or "tabs" in payload:
+        overlay_payload = payload
+    elif isinstance(payload.get("rules_json"), dict):
+        overlay_payload = payload["rules_json"]
+    if not md and overlay_payload is None:
+        raise HTTPException(
+            400,
+            'JSON must have a non-empty "rules_md" string field, or a rules '
+            'overlay object with "sections"/"tabs" keys',
+        )
+    if md:
+        w.rules_md = md
+    if overlay_payload is not None:
+        parsed, err = parse_rules_overlay(json.dumps(overlay_payload))
+        if err:
+            raise HTTPException(400, f"rules overlay invalid: {err}")
+        w.rules_json = json.dumps(parsed)
     db.commit()
     return RedirectResponse("/rules", status_code=303)
 

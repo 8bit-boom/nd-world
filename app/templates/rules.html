@@ -79,12 +79,13 @@
 .rules-body h2 { border-left:3px solid var(--neon); padding-left:.6rem; margin-top:2rem; }
 .rules-body h3 { margin-top:1.4rem; color:#e0e0e0; }
 .rules-body mark { background:#ffee00; color:#000; border-radius:2px; padding:0 2px; }
-/* Wide tables (long code spans in Source-Map-style tables) scroll inside
-   the rules container instead of spilling past its background — the table
-   becomes a horizontally scrollable block. display:table + overflow-x
-   together don't scroll, so display:block is required here. */
-.rules-body table { border-collapse:collapse; width:100%; margin:.6rem 0; display:block; overflow-x:auto; }
-.rules-body th, .rules-body td { border:1px solid #2a2a2a; padding:.3rem .6rem; font-size:.88rem; overflow-wrap:break-word; }
+/* Wide tables (long unbreakable code spans in Source-Map-style tables)
+   forced the table wider than the container — a table's min-content width
+   includes unbroken tokens, and overflow-wrap:break-word does NOT reduce
+   it for table layout. overflow-wrap:anywhere does: long code spans wrap
+   mid-token and every column stays inside the rules panel. */
+.rules-body table { border-collapse:collapse; width:100%; margin:.6rem 0; }
+.rules-body th, .rules-body td { border:1px solid #2a2a2a; padding:.3rem .6rem; font-size:.88rem; overflow-wrap:anywhere; }
 .rules-body th { background:#1a1a1a; }
 .rules-body tr:nth-child(even) td { background:#161616; }
 .rules-body code { background:#1a1a1a; padding:.1em .35em; border-radius:3px; font-size:.85em; }
