@@ -2115,7 +2115,14 @@ async def world_rules_import(world_id: int, file: UploadFile = File(...), db: Se
     if not w:
         raise HTTPException(404)
     try:
-        payload = json.loads((await file.read()).decode("utf-8"))
+        # Bounded read: same per-category limit philosophy as every other
+        # upload — an unbounded file.read() here would let a single request
+        # buffer arbitrary bytes in memory. The 413 from the bounded read is
+        # re-raised as-is so the GM sees the real size problem, not a
+        # misleading "Not valid JSON".
+        payload = json.loads(read_upload_bounded(file, max_bytes=MAX_UPLOAD_BYTES).decode("utf-8"))
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(400, "Not valid JSON")
     if not isinstance(payload, dict):

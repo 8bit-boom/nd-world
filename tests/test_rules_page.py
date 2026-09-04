@@ -367,3 +367,30 @@ def test_rules_import_both_md_and_overlay(client, seed):
         assert json.loads(w.rules_json)["tabs"][0]["label"] == "All"
     finally:
         db.close()
+
+
+def test_rules_edit_page_ships_the_overlay_guide(client, seed):
+    """The editor teaches the overlay workflow: slug discovery from the TOC,
+    the two top-level keys, the apply paths (textarea or import box), and a
+    pointer to docs/RULES_OVERLAY.md."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    html = client.get(f"/worlds/{seed.world_a.id}/rules/edit").text
+    assert "How to build the rules.json overlay" in html
+    assert "copy the target of any TOC link" in html
+    assert "part-ii-races-optional-systems" in html
+    assert "Import from JSON" in html
+    assert "docs/RULES_OVERLAY.md" in html
+
+
+def test_rules_overlay_docs_exist_and_cover_the_schema():
+    """The GitHub guide must document the schema the renderer consumes —
+    keys drift here is caught the same way route docs drift is."""
+    from pathlib import Path
+    doc = (Path(__file__).parent.parent / "docs" / "RULES_OVERLAY.md").read_text(encoding="utf-8")
+    for needle in (
+        '"players_visible"', '"order"', '"tabs"', '"icon"',
+        "part-ii-races-optional-systems",
+        "Import from JSON",
+        "players_visible: false",
+    ):
+        assert needle in doc, f"docs/RULES_OVERLAY.md is missing: {needle}"
