@@ -328,6 +328,7 @@ def _resolve_target_album(db: Session, world_id: int, album_id: str) -> Optional
 async def pages_upload(
     request: Request, file: UploadFile = File(...), name: str = Form(""),
     description: str = Form(""), visible_to_players: Optional[str] = Form(None),
+    is_character_sheet_template: Optional[str] = Form(None),
     album_id: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
@@ -354,6 +355,7 @@ async def pages_upload(
         world_id=world.id, name=doc_name, description=description.strip()[:_MAX_DESCRIPTION],
         file_url=f"/uploads/pages/{dest.name}",
         visible_to_players=bool(visible_to_players), album_id=target_album_id,
+        is_character_sheet_template=bool(is_character_sheet_template),
     )
     db.add(doc)
     db.commit()
@@ -382,6 +384,7 @@ async def pages_upload_complete(
     request: Request, upload_id: str = Form(...), filename: str = Form(...),
     total_chunks: int = Form(...), name: str = Form(""),
     description: str = Form(""), visible_to_players: Optional[str] = Form(None),
+    is_character_sheet_template: Optional[str] = Form(None),
     album_id: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
@@ -412,6 +415,7 @@ async def pages_upload_complete(
         world_id=world.id, name=doc_name, description=description.strip()[:_MAX_DESCRIPTION],
         file_url=f"/uploads/pages/{dest.name}",
         visible_to_players=bool(visible_to_players), album_id=target_album_id,
+        is_character_sheet_template=bool(is_character_sheet_template),
     )
     db.add(doc)
     db.commit()
@@ -421,7 +425,9 @@ async def pages_upload_complete(
 @router.post("/pages/{doc_id}/edit")
 async def pages_edit(
     doc_id: int, request: Request, name: str = Form(""), description: str = Form(""),
-    visible_to_players: Optional[str] = Form(None), album_id: str = Form(""),
+    visible_to_players: Optional[str] = Form(None),
+    is_character_sheet_template: Optional[str] = Form(None),
+    album_id: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     _require_can_edit(request)
@@ -434,6 +440,7 @@ async def pages_edit(
         doc.name = name
     doc.description = description.strip()[:_MAX_DESCRIPTION]
     doc.visible_to_players = bool(visible_to_players)
+    doc.is_character_sheet_template = bool(is_character_sheet_template)
     doc.album_id = _resolve_target_album(db, world.id, album_id)
     db.commit()
     dest = f"/pages/albums/{doc.album_id}" if doc.album_id else "/pages"

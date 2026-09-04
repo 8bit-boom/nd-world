@@ -561,6 +561,19 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/pages/albums/{album_id}/delete` | GM / Assistant | Deletes a pages album. |
 | GET | `/pages/albums/{album_id}` | Player | One pages album's contents, with a breadcrumb. |
 
+`app/routers/character_sheets.py` — a player's personal, fillable copy of a page the GM has marked as a character sheet template (a checkbox on the Pages upload/edit form). Access is GM + the owning player only everywhere below — not GM-Assistant, not another player.
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/pages/sheets` | Player | "My Character Sheets" — the caller's own sheets; GM sees every sheet in the world, grouped by owner. |
+| POST | `/pages/sheets/new` | Player | Creates a fillable sheet from a template (`template_id`, optional `player_character_id`/`name`); redirects to its editor. |
+| GET | `/pages/sheets/{sheet_id}` | Owner / GM | The fill-in editor page (sandboxed iframe + Saving indicator + rename/PC-link/download/delete controls). |
+| GET | `/pages/sheets/{sheet_id}/render` | Owner / GM | The template's HTML with the auto-save bridge script + this sheet's saved data injected, served with the same sandboxed CSP/X-Frame-Options headers as an uploaded page. |
+| POST | `/pages/sheets/{sheet_id}/save` | Owner / GM | Saves the sheet's field data (JSON body `{"data": {...}}`) — called by the auto-save bridge on every debounced change. |
+| POST | `/pages/sheets/{sheet_id}/edit` | Owner / GM | Renames the sheet and/or changes its linked `PlayerCharacter`. |
+| POST | `/pages/sheets/{sheet_id}/delete` | Owner / GM | Deletes the sheet (the template file itself is untouched). |
+| GET | `/pages/sheets/{sheet_id}/download` | Owner / GM | Downloads the filled sheet as a standalone `.html` file (`Content-Disposition: attachment`). |
+
 ## Random Tables
 
 `app/routers/tables.py` — GM-authored roll tables (loot, encounters, NPC names, etc.).

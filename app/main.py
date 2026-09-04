@@ -36,7 +36,7 @@ from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_over
                            parse_rules_overlay, restore_blocks, split_rules_sections)
 from .templating import templates
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll, CharacterSheet
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -74,6 +74,7 @@ from .routers import audio as _audio_router_module
 from .routers import gallery as _gallery_router_module
 from .routers import video as _video_router_module
 from .routers.pages import router as pages_router, _delete_doc_file as _delete_page_doc_file
+from .routers.character_sheets import router as character_sheets_router
 from .routers.nav_menus_admin import router as nav_menus_admin_router
 from .routers.dice import router as dice_router
 from .routers.backups import router as backups_router
@@ -150,6 +151,7 @@ app.include_router(gallery_router)
 app.include_router(audio_router)
 app.include_router(audio_jobs_router)
 app.include_router(video_router)
+app.include_router(character_sheets_router)
 app.include_router(pages_router)
 app.include_router(nav_menus_admin_router)
 app.include_router(dice_router)
@@ -377,6 +379,13 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if re.match(r"^/api/session-log/\d+/recap$", path):
         return True
+    if path == "/pages/sheets/new" or re.match(r"^/pages/sheets/\d+/(save|edit|delete)$", path):
+        # Player-writable POSTs for a player's OWN character sheets — see
+        # app/routers/character_sheets.py's module docstring. The handler-
+        # level "owner or GM" check on every one of these is the real
+        # gate (this allowlist only decides "reachable at all"), same
+        # shape as every other player-writable POST route above.
+        return True
     if path in ("/dice", "/api/dice/roll", "/api/dice/history"):
         # The shared dice roller: every member of the active world may roll
         # and read the roll log — world membership (get_world_ctx inside
@@ -408,6 +417,8 @@ def _is_player_safe(method: str, path: str) -> bool:
     if re.match(r"^/pages/albums/\d+$", path):
         return True
     if re.match(r"^/pages/\d+(/download)?$", path):
+        return True
+    if path == "/pages/sheets" or re.match(r"^/pages/sheets/\d+(/render|/download)?$", path):
         return True
     if re.match(r"^/entity/\d+(/download\.md)?$", path):
         return True
@@ -711,6 +722,28 @@ def _rules_toc(html_str: str):
         return f'<h{lvl} id="{slug}">{inner}</h{lvl}>'
     html_str = re.sub(r'<h([23])>(.*?)</h\1>', _repl, html_str, flags=re.DOTALL)
     return html_str, toc
+
+def _note_toc_label(note) -> str:
+    """Sidebar nav label for one private note: its title, or — for an
+    untitled note — the first non-blank line of its raw markdown content
+    with a few common leading markers (#, >, -, *) stripped so "## Recap"
+    doesn't show up as literal "## Recap" in the TOC. Not a full markdown
+    strip (this is a short nav label, not rendered content), just enough
+    to keep the common cases readable."""
+    title = (note.title or "").strip()
+    if title:
+        return title
+    first_line = ""
+    for line in (note.content or "").splitlines():
+        line = line.strip()
+        if line:
+            first_line = line
+            break
+    first_line = re.sub(r'^[#>*\-\s]+', '', first_line).strip()
+    if not first_line:
+        return "Untitled note"
+    return first_line[:60] + ("…" if len(first_line) > 60 else "")
+
 
 def _effective_general_upload_bytes(db: Session) -> int:
     """The general upload cap for this request: the GM's saved
@@ -1056,7 +1089,7 @@ _WORLD_DELETE_MODELS = (
     InvestBoard, RandomTable, CombatSession, Party, Quest, GameSession,
     WorldCalendar, CalendarEvent, CalendarDayIcon, ImageAlbum, AudioClip, AudioAlbum,
     VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset,
-    AudioJob, ImageJob, ChatJob, EntityTemplate, SheetTemplate, DiceRoll,
+    AudioJob, ImageJob, ChatJob, EntityTemplate, SheetTemplate, DiceRoll, CharacterSheet,
 )
 
 
@@ -1327,9 +1360,14 @@ def private_notes_view(
         .all()
     )
     worlds = _visible_worlds(request, db)
+    # Sidebar "Contents" nav — same idea as Rules' TOC (_rules_toc), except
+    # Notes has no single continuous document to pull headings from, so each
+    # entry is one note (labeled by its title, or a derived label — see
+    # _note_toc_label) rather than a markdown heading.
+    toc = [{"id": f"note-{n.id}", "text": _note_toc_label(n)} for n in notes]
     return templates.TemplateResponse("private_notes.html", {
         "request": request, "world": w, "worlds": worlds,
-        "target_user": target_user, "notes": notes, "can_manage": is_gm,
+        "target_user": target_user, "notes": notes, "can_manage": is_gm, "toc": toc,
     })
 
 
@@ -4241,11 +4279,23 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         custom_sections = _group_by_section(tpl_fields)
     else:
         custom_fields = {}
+    # Same "navigate by content" sidebar + section-filtering search as Rules
+    # (_rules_toc/split_rules_sections), but opt-in: only wraps the page in
+    # the two-column layout when the body actually has H2/H3 headings to
+    # navigate — the vast majority of entities (characters, items, ...)
+    # have short bodies with none, and render exactly as before. This is
+    # what a long GM-authored reference document stored as a "note" entity
+    # (the motivating case) gives you for free.
+    body_sections, toc = [], []
+    if entity.body:
+        content_html, toc = _rules_toc(render_md(_RULES_LEGACY_ANCHOR_RE.sub("", entity.body)))
+        body_sections = split_rules_sections(content_html)
     return templates.TemplateResponse("entities/detail.html", {
         "request": request, "entity": entity,
         "world": world, "worlds": worlds, "backlinks": backlinks,
         "entity_notes": entity_notes,
         "custom_sections": custom_sections, "custom_fields": custom_fields,
+        "body_sections": body_sections, "toc": toc,
     })
 
 # ── Entity Field Templates ──────────────────────────────────────────────────

@@ -1,6 +1,25 @@
 {% extends "base.html" %}
 {% block title %}{{ entity.name }} — N&D World{% endblock %}
 {% block content %}
+{% if toc %}
+<div class="ed-layout">
+  <!-- Sidebar TOC — same pattern as Rules (rules.html)/Private Notes
+       (private_notes.html): only appears when the body actually has H2/H3
+       headings, so short-bodied entities (most characters, items, ...)
+       render exactly as before. -->
+  <div class="ed-toc-wrap">
+    <div style="margin-bottom:.6rem">
+      <input id="ed-search" type="search" placeholder="Search this page…" oninput="entitySearch(this.value)"
+        style="width:100%;background:#1a1a1a;border:1px solid #333;border-radius:4px;padding:.35rem .5rem;color:#e0e0e0;font-size:.82rem"/>
+    </div>
+    <div id="ed-search-count" style="display:none;font-size:.72rem;color:var(--neon);margin-bottom:.4rem"></div>
+    <div style="font-size:.7rem;color:#555;margin-bottom:.4rem;text-transform:uppercase;letter-spacing:.05em">Contents</div>
+    {% for entry in toc %}
+    <a href="#{{ entry.id }}" class="toc-entry toc-h{{ entry.level }}">{{ entry.text }}</a>
+    {% endfor %}
+  </div>
+  <div class="ed-content">
+{% endif %}
 <article class="detail kind-{{ entity.kind }}">
   <header class="detail-header">
     {% if entity.image_url %}
@@ -54,8 +73,10 @@
   {% endif %}
 
   {% if entity.body %}
-  <div class="detail-body prose">
-    {{ entity.body | md | safe }}
+  <div class="detail-body prose" id="ed-body">
+    {% for s in body_sections %}
+    <section class="ed-section" data-section-id="{{ s.id or '' }}">{{ s.html|safe }}</section>
+    {% endfor %}
   </div>
   {% endif %}
 
@@ -248,8 +269,25 @@
   </details>
   {% endif %}
 </article>
+{% if toc %}
+  </div>
+</div>
+{% endif %}
 
 <style>
+.ed-layout { display:flex; gap:0; min-height:80vh; }
+.ed-toc-wrap { width:230px; flex-shrink:0; position:sticky; top:60px; height:calc(100vh - 60px); overflow-y:auto; background:var(--bg2,#111); border-right:1px solid #222; padding:1rem .5rem; }
+.ed-content { flex:1; padding:0 1.5rem; min-width:0; }
+@media (max-width: 768px) {
+  .ed-layout { flex-direction:column; min-height:0; }
+  .ed-toc-wrap { width:100%; flex-shrink:1; position:static; height:auto; max-height:40vh; border-right:none; border-bottom:1px solid #222; }
+  .ed-content { padding:1rem; }
+}
+.toc-entry { display:block; padding:.28rem .5rem; color:#aaa; text-decoration:none; border-radius:3px; font-size:.8rem; line-height:1.3; transition:background .12s,color .12s; }
+.toc-entry:hover { background:#1e1e1e; color:var(--neon); }
+.toc-h2 { font-weight:600; margin-top:.3rem; }
+.toc-h3 { padding-left:1rem; font-size:.76rem; color:#777; }
+.detail-body mark.ed-search-hit { background:#ffee00; color:#000; border-radius:2px; padding:0 2px; }
 .entity-fields { margin-top: 1.5rem; display:flex; flex-direction:column; gap: .75rem; }
 .ef-section { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:.85rem 1rem; }
 .ef-section-title { font-size:.72rem; text-transform:uppercase; letter-spacing:.08em; color:var(--neon); margin-bottom:.6rem; border-bottom:1px solid var(--border); padding-bottom:.35rem; }
@@ -512,5 +550,74 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
   });
 })();
 </script>
+{% if toc %}
+<script>
+// Sidebar search: same shape as rules.html's rulesSearch/markMatches/
+// clearMarks — hides non-matching .ed-section chunks and highlights hits.
+// Entity body content can carry GENUINE <mark> elements of its own (the
+// [mark]...[/mark] bracket syntax — see app/rendering.py render_md), so
+// search-inserted marks get their own ed-search-hit class and
+// entityClearMarks only ever undoes those, never a real authored highlight.
+function entitySearch(v) {
+  const q = (v || '').trim().toLowerCase();
+  const body = document.getElementById('ed-body');
+  const sections = body ? Array.from(body.querySelectorAll('.ed-section')) : [];
+  entityClearMarks();
+  const count = document.getElementById('ed-search-count');
+  if (!q) {
+    sections.forEach(s => { s.style.display = ''; });
+    if (count) { count.style.display = 'none'; count.textContent = ''; }
+    return;
+  }
+  let n = 0;
+  sections.forEach(s => {
+    const hit = s.textContent.toLowerCase().indexOf(q) >= 0;
+    s.style.display = hit ? '' : 'none';
+    if (hit) { n++; entityMarkMatches(s, q); }
+  });
+  if (count) {
+    count.style.display = '';
+    count.textContent = n === 1 ? '1 section matches' : n + ' sections match';
+  }
+}
+function entityMarkMatches(scope, q) {
+  const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+  const hits = [];
+  let node;
+  while ((node = walker.nextNode())) {
+    const idx = node.textContent.toLowerCase().indexOf(q);
+    if (idx >= 0) hits.push({node, idx, len: q.length});
+  }
+  hits.reverse().forEach(({node, idx, len}) => {
+    const span = document.createElement('mark');
+    span.className = 'ed-search-hit';
+    span.textContent = node.textContent.slice(idx, idx + len);
+    const after = node.splitText(idx);
+    after.splitText(len);
+    after.parentNode.replaceChild(span, after);
+  });
+}
+function entityClearMarks() {
+  document.querySelectorAll('.ed-section mark.ed-search-hit').forEach(m => {
+    m.replaceWith(document.createTextNode(m.textContent));
+  });
+}
+// TOC links clear any active section filter so the anchor target (which
+// might currently be hidden by a stale search) is actually visible.
+document.addEventListener('click', function (e) {
+  const a = e.target.closest('.ed-toc-wrap .toc-entry');
+  if (!a) return;
+  const inp = document.getElementById('ed-search');
+  if (inp) inp.value = '';
+  entitySearch('');
+});
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    const inp = document.getElementById('ed-search');
+    if (inp) { e.preventDefault(); inp.focus(); inp.select(); }
+  }
+});
+</script>
+{% endif %}
 <script src="/static/js/text-format-toolbar.js"></script>
 {% endblock %}

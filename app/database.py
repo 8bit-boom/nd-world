@@ -918,7 +918,7 @@ def _migrate():
             "combat_sessions", "parties", "quests", "game_sessions",
             "world_calendars", "calendar_events", "image_albums",
             "audio_jobs", "image_jobs", "chat_jobs", "chat_sessions",
-            "prompt_presets",
+            "prompt_presets", "page_docs",
         ):
             _heal_table_from_model(conn, _table)
 
