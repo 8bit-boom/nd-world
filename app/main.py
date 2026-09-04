@@ -704,10 +704,22 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").strip().lower() == "tru
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, https_only=COOKIE_SECURE, same_site="lax")
 
 
-def _rules_toc(html_str: str):
+def _rules_toc(html_str: str, levels: str = "23"):
     # NOTE: the parameter is html_str (not html) — the html module is used
     # inside for entity unescaping, and a parameter of that name would
     # shadow it.
+    #
+    # `levels` (default "23", Rules' own convention — its markdown never
+    # uses a bare # heading, that's the page's own <h1> title) picks which
+    # heading tags count as TOC/section split points. The entity-detail
+    # route (app.main's detail()) passes "123" instead: real GM-authored
+    # long-form documents (a full player's guide, say) commonly use H1 for
+    # top-level chapters ("# Part I — ...") with H2/H3 for the finer
+    # structure beneath each one — restricting to H2/H3 there would drop
+    # every chapter heading from the sidebar and leave only their
+    # subsections, which is backwards from what the document's own
+    # structure (and its author's hand-typed "Contents" list, if it has
+    # one) actually says the top level is.
     toc = []
     def _repl(m):
         lvl, inner = m.group(1), m.group(2)
@@ -720,7 +732,7 @@ def _rules_toc(html_str: str):
         slug = re.sub(r'[^\w]+', '-', text.lower()).strip('-') or 'sec'
         toc.append({'level': int(lvl), 'text': text, 'id': slug})
         return f'<h{lvl} id="{slug}">{inner}</h{lvl}>'
-    html_str = re.sub(r'<h([23])>(.*?)</h\1>', _repl, html_str, flags=re.DOTALL)
+    html_str = re.sub(rf'<h([{levels}])>(.*?)</h\1>', _repl, html_str, flags=re.DOTALL)
     return html_str, toc
 
 def _note_toc_label(note) -> str:
@@ -4274,15 +4286,19 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         custom_fields = {}
     # Same "navigate by content" sidebar + section-filtering search as Rules
     # (_rules_toc/split_rules_sections), but opt-in: only wraps the page in
-    # the two-column layout when the body actually has H2/H3 headings to
-    # navigate — the vast majority of entities (characters, items, ...)
-    # have short bodies with none, and render exactly as before. This is
-    # what a long GM-authored reference document stored as a "note" entity
-    # (the motivating case) gives you for free.
+    # the two-column layout when the body actually has headings to navigate
+    # — the vast majority of entities (characters, items, ...) have short
+    # bodies with none, and render exactly as before. This is what a long
+    # GM-authored reference document stored as a "note" entity (the
+    # motivating case) gives you for free. Unlike Rules (H2/H3 only — see
+    # _rules_toc's own comment), entities include H1: a real player's-guide
+    # style document commonly uses "# Part I — ..." for its top-level
+    # chapters, and restricting to H2/H3 would drop every chapter from the
+    # sidebar and keep only their subsections.
     body_sections, toc = [], []
     if entity.body:
-        content_html, toc = _rules_toc(render_md(_RULES_LEGACY_ANCHOR_RE.sub("", entity.body)))
-        body_sections = split_rules_sections(content_html)
+        content_html, toc = _rules_toc(render_md(_RULES_LEGACY_ANCHOR_RE.sub("", entity.body)), levels="123")
+        body_sections = split_rules_sections(content_html, include_h1=True)
     return templates.TemplateResponse("entities/detail.html", {
         "request": request, "entity": entity,
         "world": world, "worlds": worlds, "backlinks": backlinks,

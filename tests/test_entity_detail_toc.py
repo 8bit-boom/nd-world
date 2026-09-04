@@ -1,10 +1,13 @@
 """Tests for the entity-detail sidebar TOC + search (app/main.py's `detail`
 route, app/templates/entities/detail.html) — the same "navigate by content"
 idea as the Rules page (rules.html), reusing its own _rules_toc/
-split_rules_sections helpers. Opt-in: the two-column layout only appears
-when the entity's body actually has H2/H3 markdown headings, so the vast
-majority of entities (characters, items, ...) with short/flat bodies are
-completely unaffected.
+split_rules_sections helpers with levels="123"/include_h1=True (Rules
+itself stays H2/H3-only — see _rules_toc's own comment on why: real
+GM-authored long-form documents commonly use H1 for their top-level
+chapters, e.g. "# Part I — ..."). Opt-in: the two-column layout only
+appears when the entity's body actually has headings, so the vast majority
+of entities (characters, items, ...) with short/flat bodies are completely
+unaffected.
 """
 from app.database import SessionLocal
 from app.models import Entity
@@ -113,3 +116,49 @@ def test_stat_block_and_toc_coexist_for_item_with_headings(client, seed):
     assert "STR" in r.text and "12" in r.text
     assert 'class="ed-toc-wrap"' in r.text
     assert ">Lore<" in r.text
+
+
+# ── H1-chapter documents (real GM-authored player's-guide style content) ──
+# A GM-uploaded reference document (the motivating case for this whole
+# feature) commonly structures itself with H1 for its top-level chapters —
+# "# Part I — ..." — and H2/H3 underneath, unlike Rules' own convention
+# (its markdown never uses a bare # heading, since that's the page's own
+# <h1> title). These entries lock in that H1 is a real split point here.
+
+_CHAPTER_BODY = """# The Long Guide
+
+Intro before any chapter.
+
+# Part I — You Are a Hunter
+
+You play a Hunter.
+
+## The Hunter's Burden
+
+Three truths.
+
+# Part II — The Sky Above the Hunt
+
+The Moon matters.
+"""
+
+
+def test_h1_chapters_become_top_level_toc_entries(client, seed):
+    eid = _add_entity(seed.world_a.id, name="The Long Guide", body=_CHAPTER_BODY, visible_to_players=True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get(f"/entity/{eid}")
+    assert r.status_code == 200
+    assert 'class="ed-toc-wrap"' in r.text
+    assert '>Part I — You Are a Hunter<' in r.text
+    assert '>Part II — The Sky Above the Hunt<' in r.text
+    # The H2 nested under Part I is still a separate TOC entry too.
+    assert ">The Hunter's Burden<" in r.text
+
+
+def test_h1_chapters_get_own_toc_class_and_split_into_sections(client, seed):
+    eid = _add_entity(seed.world_a.id, name="The Long Guide", body=_CHAPTER_BODY, visible_to_players=True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get(f"/entity/{eid}")
+    assert 'class="toc-entry toc-h1"' in r.text
+    assert 'class="ed-section" data-section-id="part-i-you-are-a-hunter"' in r.text
+    assert 'class="ed-section" data-section-id="part-ii-the-sky-above-the-hunt"' in r.text

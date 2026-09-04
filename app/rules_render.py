@@ -283,14 +283,20 @@ def render_rules_markdown(md: str, is_gm: bool) -> str:
 # restored after _rules_toc runs), so they can't become split points and
 # chop a callout's <div> in half.
 _SECTION_HEADING_RE = re.compile(r'<h([23]) id="([^"]*)">(.*?)</h[23]>', re.DOTALL)
+# entity-detail's variant: real GM-authored long-form documents commonly use
+# H1 for their top-level chapters — see app.main._rules_toc's own comment on
+# the same "123" vs "23" split.
+_SECTION_HEADING_RE_WITH_H1 = re.compile(r'<h([123]) id="([^"]*)">(.*?)</h[123]>', re.DOTALL)
 
 
-def split_rules_sections(content_html: str) -> list:
-    """Split rendered rules HTML into section chunks at the h2/h3 id split
-    points. -> [{id, level, title, html}] in document order; anything before
-    the first heading is a preamble section with id=None (always shown,
-    never in the TOC, untouchable by the overlay)."""
-    matches = list(_SECTION_HEADING_RE.finditer(content_html))
+def split_rules_sections(content_html: str, include_h1: bool = False) -> list:
+    """Split rendered rules HTML into section chunks at the h2/h3 (or,
+    with include_h1, h1/h2/h3) id split points. -> [{id, level, title,
+    html}] in document order; anything before the first heading is a
+    preamble section with id=None (always shown, never in the TOC,
+    untouchable by the overlay)."""
+    heading_re = _SECTION_HEADING_RE_WITH_H1 if include_h1 else _SECTION_HEADING_RE
+    matches = list(heading_re.finditer(content_html))
     if not matches:
         return [{"id": None, "level": 0, "title": "", "html": content_html}]
     sections = []
