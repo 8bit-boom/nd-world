@@ -253,6 +253,32 @@ def test_rules_blank_rules_json_no_behavior_change(client, seed):
 
 # ── rules editor (rules_json textarea) ────────────────────────────────────────
 
+# ── Search JS vs. authored [mark] highlights ──────────────────────────────
+#
+# render_md() supports a [mark]...[/mark] bracket syntax that emits a real
+# <mark> element (see tests/test_text_formatting.py). The rules search box
+# also inserts <mark> elements to highlight hits, and its clearMarks() must
+# only remove ITS OWN marks — a bare '.rules-body mark' selector would strip
+# styling from a GM's genuine authored highlight the moment a viewer typed
+# into (and cleared) the search box.
+
+def test_rules_mark_tag_not_tagged_as_search_hit(client, seed):
+    _set_rules(seed.world_a.id, rules_md=(
+        "## Highlights\n\nThis is [mark]important[/mark] text.\n"
+    ))
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/rules")
+    assert r.status_code == 200
+    # The genuine authored highlight renders as a plain <mark>, never
+    # carrying the class the search JS uses to mark its own insertions.
+    assert "<mark>important</mark>" in r.text
+    assert 'class="rules-search-hit"' not in r.text
+    # The search JS only clears marks it created itself.
+    assert "mark.rules-search-hit" in r.text
+    assert "rules-body mark'" not in r.text  # no unscoped selector remains
+
+
 def test_rules_edit_saves_rules_json(client, seed):
     overlay = '{"tabs": [{"id": "core", "label": "Core", "sections": []}]}'
     login(client, seed.gm.email, GM_PASSWORD)
