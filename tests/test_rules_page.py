@@ -4,6 +4,8 @@ Regression coverage for a bug where legacy <a name="..."></a> anchors
 then double-escaped again in the sidebar TOC, showing literal "&lt;a
 name=..." text instead of a clean heading — see app.main._world_rules_markdown.
 """
+import json
+
 from app.database import SessionLocal
 from app.models import World
 
@@ -306,3 +308,62 @@ def test_rules_edit_form_shows_stored_overlay_error(client, seed):
     assert "ignored" in r.text
     assert "not valid JSON" in r.text
     assert "not-json{" in r.text  # stored value still shown for fixing
+
+
+def test_rules_import_accepts_overlay_only_json(client, seed):
+    """The import route accepts the rules.json UI OVERLAY by itself —
+    {"sections": ..., "tabs": ...} with no rules_md — setting
+    World.rules_json while leaving the uploaded markdown untouched."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    db = SessionLocal()
+    try:
+        w = db.query(World).filter(World.id == seed.world_a.id).first()
+        w.rules_md = "## Existing rules\n\nKeep me."
+        db.commit()
+    finally:
+        db.close()
+
+    overlay = {"sections": {"part-i-core-rules": {"icon": "⚔️", "players_visible": False}},
+               "tabs": [{"label": "Core", "sections": ["part-i-core-rules"]}]}
+    r = client.post(f"/worlds/{seed.world_a.id}/rules/import",
+                    files={"file": ("overlay.json", json.dumps(overlay), "application/json")},
+                    follow_redirects=False)
+    assert r.status_code == 303
+
+    db = SessionLocal()
+    try:
+        w = db.query(World).filter(World.id == seed.world_a.id).first()
+        # Markdown untouched, overlay stored normalized.
+        assert "Keep me." in w.rules_md
+        stored = json.loads(w.rules_json)
+        assert stored["sections"]["part-i-core-rules"]["icon"] == "⚔️"
+        assert stored["sections"]["part-i-core-rules"]["players_visible"] is False
+    finally:
+        db.close()
+
+
+def test_rules_import_overlay_invalid_json_is_400(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    bad = json.dumps({"sections": {"x": {"players_visible": "not-a-bool"}}})
+    r = client.post(f"/worlds/{seed.world_a.id}/rules/import",
+                    files={"file": ("overlay.json", bad, "application/json")})
+    assert r.status_code == 400
+    assert "overlay invalid" in r.json()["detail"]
+
+
+def test_rules_import_both_md_and_overlay(client, seed):
+    """A file carrying BOTH applies both — the docs promise it."""
+    payload = {"rules_md": "## Fresh rules\n\nFresh body.",
+               "rules_json": {"tabs": [{"label": "All", "sections": []}]}}
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(f"/worlds/{seed.world_a.id}/rules/import",
+                    files={"file": ("rules.json", json.dumps(payload), "application/json")},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        w = db.query(World).filter(World.id == seed.world_a.id).first()
+        assert "Fresh rules" in w.rules_md
+        assert json.loads(w.rules_json)["tabs"][0]["label"] == "All"
+    finally:
+        db.close()
