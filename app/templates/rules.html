@@ -78,7 +78,7 @@
 .toc-h3 { padding-left:1rem; font-size:.76rem; color:#777; }
 .rules-body h2 { border-left:3px solid var(--neon); padding-left:.6rem; margin-top:2rem; }
 .rules-body h3 { margin-top:1.4rem; color:#e0e0e0; }
-.rules-body mark { background:#ffee00; color:#000; border-radius:2px; padding:0 2px; }
+.rules-body mark.rules-search-hit { background:#ffee00; color:#000; border-radius:2px; padding:0 2px; }
 /* Wide tables (long unbreakable code spans in Source-Map-style tables)
    forced the table wider than the container — a table's min-content width
    includes unbroken tokens, and overflow-wrap:break-word does NOT reduce
@@ -190,6 +190,7 @@ function markMatches(scope, q) {
   }
   hits.reverse().forEach(({node, idx, len}) => {
     const span = document.createElement('mark');
+    span.className = 'rules-search-hit';
     span.textContent = node.textContent.slice(idx, idx + len);
     const after = node.splitText(idx);
     after.splitText(len);
@@ -197,7 +198,7 @@ function markMatches(scope, q) {
   });
 }
 function clearMarks() {
-  document.querySelectorAll('.rules-body mark').forEach(m => {
+  document.querySelectorAll('.rules-body mark.rules-search-hit').forEach(m => {
     m.replaceWith(document.createTextNode(m.textContent));
   });
 }
