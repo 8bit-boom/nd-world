@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}My Character Sheets — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="form-page" style="max-width:900px">
+  <h1>🧬 {{ 'Character Sheets' if is_gm else 'My Character Sheets' }}</h1>
+  <p style="color:var(--text-dim);font-size:.85rem;margin:.3rem 0 1.2rem">
+    {% if is_gm %}Every filled-in character sheet in this world, grouped by player. Start a new one from a template's "＋ New sheet from this" button on the <a href="{{ '/pages'|wq }}">Pages</a> page.
+    {% else %}Fillable copies you've made of a GM's character sheet templates — your changes save automatically as you type. Start a new one from a template's "＋ New sheet from this" button on the <a href="{{ '/pages'|wq }}">Pages</a> page.{% endif %}
+  </p>
+
+  {% if is_gm %}
+    {% if owners %}
+    {% for o in owners %}
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.2rem">
+      <h2 style="color:var(--neon);font-size:.9rem;margin:0 0 .7rem">{{ (o.user.display_name or o.user.email) if o.user else 'Unknown player' }}</h2>
+      <div class="pages-doc-list">
+        {% for s in o.sheets %}
+        <div class="pages-doc-row">
+          <div class="pages-doc-info">
+            <div class="pages-doc-name">{{ s.name }}</div>
+            {% if s.player_character_id %}<div class="pages-doc-desc">🔗 linked to a character</div>{% endif %}
+          </div>
+          <a class="btn-save" style="text-decoration:none;white-space:nowrap" href="{{ ('/pages/sheets/' + s.id|string)|wq }}">✏ Open</a>
+          <a class="btn-cancel" style="text-decoration:none;white-space:nowrap;font-size:.75rem;padding:.25rem .6rem" href="{{ ('/pages/sheets/' + s.id|string + '/download')|wq }}">⬇ Download</a>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <p style="color:var(--text-dim);font-size:.82rem">No character sheets have been started yet.</p>
+    {% endif %}
+  {% else %}
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem">
+      {% if sheets %}
+      <div class="pages-doc-list">
+        {% for s in sheets %}
+        <div class="pages-doc-row">
+          <div class="pages-doc-info">
+            <div class="pages-doc-name">{{ s.name }}</div>
+            {% if s.player_character_id %}<div class="pages-doc-desc">🔗 linked to a character</div>{% endif %}
+          </div>
+          <a class="btn-save" style="text-decoration:none;white-space:nowrap" href="{{ ('/pages/sheets/' + s.id|string)|wq }}">✏ Open</a>
+          <a class="btn-cancel" style="text-decoration:none;white-space:nowrap;font-size:.75rem;padding:.25rem .6rem" href="{{ ('/pages/sheets/' + s.id|string + '/download')|wq }}">⬇ Download</a>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p style="color:var(--text-dim);font-size:.82rem;margin:0">You haven't started a character sheet yet — visit <a href="{{ '/pages'|wq }}">Pages</a> to find a template.</p>
+      {% endif %}
+    </div>
+  {% endif %}
+</div>
+
+<style>
+.pages-doc-list { display:flex; flex-direction:column; gap:.7rem; }
+.pages-doc-row { display:flex; flex-wrap:wrap; align-items:center; gap:.8rem; background:var(--bg3); border:1px solid var(--border); border-radius:5px; padding:.7rem .9rem; }
+.pages-doc-info { flex:1; min-width:160px; }
+.pages-doc-name { font-weight:600; font-size:.9rem; display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }
+.pages-doc-desc { font-size:.78rem; color:var(--text-dim); margin-top:.15rem; }
+</style>
+{% endblock %}

@@ -36,7 +36,7 @@ from .rules_render import (apply_rules_overlay, extract_blocks,
                            parse_rules_overlay, restore_blocks, split_rules_sections)
 from .templating import templates
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll, CharacterSheet
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -74,6 +74,7 @@ from .routers import audio as _audio_router_module
 from .routers import gallery as _gallery_router_module
 from .routers import video as _video_router_module
 from .routers.pages import router as pages_router, _delete_doc_file as _delete_page_doc_file
+from .routers.character_sheets import router as character_sheets_router
 from .routers.nav_menus_admin import router as nav_menus_admin_router
 from .routers.dice import router as dice_router
 from .routers.backups import router as backups_router
@@ -150,6 +151,7 @@ app.include_router(gallery_router)
 app.include_router(audio_router)
 app.include_router(audio_jobs_router)
 app.include_router(video_router)
+app.include_router(character_sheets_router)
 app.include_router(pages_router)
 app.include_router(nav_menus_admin_router)
 app.include_router(dice_router)
@@ -377,6 +379,13 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if re.match(r"^/api/session-log/\d+/recap$", path):
         return True
+    if path == "/pages/sheets/new" or re.match(r"^/pages/sheets/\d+/(save|edit|delete)$", path):
+        # Player-writable POSTs for a player's OWN character sheets — see
+        # app/routers/character_sheets.py's module docstring. The handler-
+        # level "owner or GM" check on every one of these is the real
+        # gate (this allowlist only decides "reachable at all"), same
+        # shape as every other player-writable POST route above.
+        return True
     if path in ("/dice", "/api/dice/roll", "/api/dice/history"):
         # The shared dice roller: every member of the active world may roll
         # and read the roll log — world membership (get_world_ctx inside
@@ -408,6 +417,8 @@ def _is_player_safe(method: str, path: str) -> bool:
     if re.match(r"^/pages/albums/\d+$", path):
         return True
     if re.match(r"^/pages/\d+(/download)?$", path):
+        return True
+    if path == "/pages/sheets" or re.match(r"^/pages/sheets/\d+(/render|/download)?$", path):
         return True
     if re.match(r"^/entity/\d+(/download\.md)?$", path):
         return True
@@ -1056,7 +1067,7 @@ _WORLD_DELETE_MODELS = (
     InvestBoard, RandomTable, CombatSession, Party, Quest, GameSession,
     WorldCalendar, CalendarEvent, CalendarDayIcon, ImageAlbum, AudioClip, AudioAlbum,
     VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset,
-    AudioJob, ImageJob, ChatJob, EntityTemplate, SheetTemplate, DiceRoll,
+    AudioJob, ImageJob, ChatJob, EntityTemplate, SheetTemplate, DiceRoll, CharacterSheet,
 )
 
 

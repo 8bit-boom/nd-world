@@ -80,6 +80,18 @@ CASES = [
     ("GET", "/video/albums/1", True),
     ("GET", "/pages/1", True),
     ("GET", "/pages/1/download", True),
+    # Character sheets — the router's own owner-or-GM check is the real
+    # gate (404 for anyone else), same pattern as pages_viewer/pages_download
+    # above; a player must be able to reach these to create/save/edit/delete
+    # their OWN sheets.
+    ("GET", "/pages/sheets", True),
+    ("POST", "/pages/sheets/new", True),
+    ("GET", "/pages/sheets/1", True),
+    ("GET", "/pages/sheets/1/render", True),
+    ("POST", "/pages/sheets/1/save", True),
+    ("POST", "/pages/sheets/1/edit", True),
+    ("POST", "/pages/sheets/1/delete", True),
+    ("GET", "/pages/sheets/1/download", True),
     ("GET", "/search", True),
     ("GET", "/maps", True),
     # A plain map named e.g. "Schematic Vault" slugifies to "schematic-vault" —

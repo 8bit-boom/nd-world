@@ -836,6 +836,47 @@ class PageDoc(Base):
     visible_to_players = Column(Boolean, default=True)
     album_id = Column(Integer, ForeignKey("page_albums.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # GM-marked: this page is a fillable character sheet template, not just
+    # a read-only reference doc — see CharacterSheet (a player's personal
+    # filled copy of one of these, in app/routers/character_sheets.py). Off
+    # by default; only templates opted into this show the "+ New sheet
+    # from this template" action to players on the Pages library page.
+    is_character_sheet_template = Column(Boolean, default=False)
+
+
+class CharacterSheet(Base):
+    """A player's personal, fillable copy of a PageDoc marked
+    is_character_sheet_template — see app/routers/character_sheets.py.
+    Field values are captured generically from the template's own <input>/
+    <textarea>/<select> elements (by name, falling back to id) via a
+    postMessage bridge (static/js/character-sheet-bridge.js) injected into
+    the sandboxed iframe that renders it — the template's raw HTML file is
+    never modified, and this table holds only the {field_key: value} data,
+    not a second copy of the file. Access is GM + owning player only (the
+    same tier PlayerCharacter itself uses, where a GM-Assistant has no
+    rights at all) — a filled sheet is personal player data, not Pages
+    content an assistant manages."""
+    __tablename__ = "character_sheets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    template_id = Column(Integer, ForeignKey("page_docs.id"), nullable=False, index=True)
+    owner_user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    # Optional link to the PlayerCharacter this filled sheet represents —
+    # nullable so a player can start filling one in before deciding (or
+    # without ever linking it). Settable only to one of the owner's OWN
+    # characters (enforced in the router, mirroring characters.py's own
+    # ownership checks) — never another player's PC.
+    player_character_id = Column(Integer, ForeignKey("player_characters.id"), nullable=True, index=True)
+    name = Column(String(256), default="")  # defaults to the linked PC's name, or the template's name
+    data_json = Column(Text, default="{}")  # {"field key": "value", ...}
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    world = relationship("World")
+    template = relationship("PageDoc")
+    owner = relationship("User")
+    player_character = relationship("PlayerCharacter")
 
 
 class GameSession(Base):

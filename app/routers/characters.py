@@ -23,7 +23,7 @@ from ..deps import get_world_ctx
 from ..imaging import convert_image, make_thumbnail
 from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename
-from ..models import Entity, PlayerCharacter, SheetTemplate, User, World, WorldMembership
+from ..models import CharacterSheet, Entity, PlayerCharacter, SheetTemplate, User, World, WorldMembership
 
 router = APIRouter()
 
@@ -527,6 +527,11 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
         SheetTemplate.id == pc.sheet_template_id
     ).first() if pc.sheet_template_id else None
     world_members = _assignable_members(db, pc.world_id) if user and user.is_gm else []
+    # Player-fillable Pages character sheets linked to this PC (see
+    # app/routers/character_sheets.py) — unrelated to chosen_tpl/SheetTemplate
+    # above (this app's own native structured sheet), just a "see also" panel
+    # for any fillable GM-uploaded HTML sheet the owner has connected here.
+    linked_sheets = db.query(CharacterSheet).filter(CharacterSheet.player_character_id == pc.id).all()
 
     if chosen_tpl and chosen_tpl.sheet_mode == "custom":
         tpl_fields = json.loads(chosen_tpl.fields_json or "[]")
@@ -539,6 +544,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
             "tpl_fields": tpl_fields,
             "custom_fields": custom_fields,
             "world_members": world_members,
+            "linked_sheets": linked_sheets,
         })
 
     d = _derived(pc)
@@ -555,6 +561,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
         "world_members": world_members,
         "equipment_catalog": catalog["equipment"],
         "feats_catalog": catalog["feats"],
+        "linked_sheets": linked_sheets,
     })
 
 

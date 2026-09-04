@@ -65,10 +65,16 @@
       <textarea name="description" placeholder="Description (optional; applied to every file when uploading several at once)" maxlength="512" rows="2"
                 style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px;resize:vertical"></textarea>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap">
-        <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:var(--text-dim)">
-          <input type="checkbox" name="visible_to_players" value="1" checked style="width:auto"/>
-          Visible to players
-        </label>
+        <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:var(--text-dim)">
+            <input type="checkbox" name="visible_to_players" value="1" checked style="width:auto"/>
+            Visible to players
+          </label>
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:var(--text-dim)">
+            <input type="checkbox" name="is_character_sheet_template" value="1" style="width:auto"/>
+            🧬 Character sheet template
+          </label>
+        </div>
         <button type="submit" class="btn-save" id="pages-upload-submit">⬆ Upload{{ ' to ' + album.name if album else '' }}</button>
       </div>
       <div id="pages-upload-progress" style="display:none;font-size:.78rem;color:var(--text-dim);border-top:1px solid var(--border);padding-top:.6rem;margin-top:.2rem"></div>
@@ -103,12 +109,19 @@
         <div class="pages-doc-info">
           <div class="pages-doc-name">
             {{ d.name }}
+            {% if d.is_character_sheet_template %}<span class="pages-doc-sheet-tag">🧬 sheet template</span>{% endif %}
             {% if can_edit(request) and not d.visible_to_players %}<span class="pages-doc-hidden-tag">hidden from players</span>{% endif %}
           </div>
           {% if d.description %}<div class="pages-doc-desc">{{ d.description }}</div>{% endif %}
         </div>
         <a class="btn-save" style="text-decoration:none;white-space:nowrap" href="{{ ('/pages/' + d.id|string)|wq }}" target="_blank" rel="noopener">▶ Open</a>
         <a class="btn-cancel" style="text-decoration:none;white-space:nowrap;font-size:.75rem;padding:.25rem .6rem" href="{{ ('/pages/' + d.id|string + '/download')|wq }}">⬇ Download</a>
+        {% if d.is_character_sheet_template %}
+        <form method="post" action="{{ '/pages/sheets/new'|wq }}" style="display:inline">
+          <input type="hidden" name="template_id" value="{{ d.id }}"/>
+          <button type="submit" class="btn-cancel" style="text-decoration:none;white-space:nowrap;font-size:.75rem;padding:.25rem .6rem">＋ New sheet from this</button>
+        </form>
+        {% endif %}
         {% if can_edit(request) %}
         <div class="pages-doc-actions">
           <button type="button" class="btn-cancel" style="font-size:.75rem;padding:.25rem .6rem" onclick="pagesToggleEdit({{ d.id }})">✏ Edit</button>
@@ -129,11 +142,17 @@
               {% for a in albums %}<option value="{{ a.id }}" {% if d.album_id == a.id %}selected{% endif %}>{{ a.name }}</option>{% endfor %}
             </select>
           </div>
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:.6rem">
-            <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-dim)">
-              <input type="checkbox" name="visible_to_players" value="1" {% if d.visible_to_players %}checked{% endif %} style="width:auto"/>
-              Visible to players
-            </label>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:.6rem;flex-wrap:wrap">
+            <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+              <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-dim)">
+                <input type="checkbox" name="visible_to_players" value="1" {% if d.visible_to_players %}checked{% endif %} style="width:auto"/>
+                Visible to players
+              </label>
+              <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-dim)">
+                <input type="checkbox" name="is_character_sheet_template" value="1" {% if d.is_character_sheet_template %}checked{% endif %} style="width:auto"/>
+                🧬 Character sheet template
+              </label>
+            </div>
             <button type="submit" class="btn-save" style="font-size:.78rem;padding:.3rem .7rem">Save</button>
           </div>
         </form>
@@ -162,6 +181,7 @@
 .pages-doc-info { flex:1; min-width:160px; }
 .pages-doc-name { font-weight:600; font-size:.9rem; display:flex; align-items:center; gap:.5rem; flex-wrap:wrap; }
 .pages-doc-hidden-tag { font-size:.65rem; color:var(--neon2); border:1px solid var(--neon2); border-radius:10px; padding:.05rem .4rem; font-weight:normal; text-transform:uppercase; letter-spacing:.03em; }
+.pages-doc-sheet-tag { font-size:.65rem; color:var(--neon); border:1px solid var(--neon); border-radius:10px; padding:.05rem .4rem; font-weight:normal; text-transform:uppercase; letter-spacing:.03em; }
 .pages-doc-desc { font-size:.78rem; color:var(--text-dim); margin-top:.15rem; }
 .pages-doc-actions { display:flex; gap:.4rem; flex-shrink:0; }
 .pages-doc-edit-form { flex-basis:100%; margin-top:.5rem; padding-top:.6rem; border-top:1px solid var(--border); }
@@ -229,6 +249,7 @@ async function pagesUploadAll(form, files) {
   const albumIdInput = form.querySelector('[name=album_id]');
   const description = form.querySelector('[name=description]').value;
   const visible = form.querySelector('[name=visible_to_players]').checked;
+  const isSheetTemplate = form.querySelector('[name=is_character_sheet_template]').checked;
   // The custom "Name" field only makes sense for a single file — for a
   // multi-file selection every page defaults to its own filename instead.
   const singleName = files.length === 1 ? form.querySelector('[name=name]').value.trim() : '';
@@ -245,7 +266,7 @@ async function pagesUploadAll(form, files) {
     try {
       if (file.size > PAGES_CHUNK_UPLOAD_THRESHOLD) {
         await pagesUploadChunked(file, {
-          description, visible, albumIdInput, name: singleName,
+          description, visible, isSheetTemplate, albumIdInput, name: singleName,
           line, index: i, total: files.length,
         });
       } else {
@@ -254,6 +275,7 @@ async function pagesUploadAll(form, files) {
         fd.append('file', file);
         fd.append('description', description);
         if (visible) fd.append('visible_to_players', '1');
+        if (isSheetTemplate) fd.append('is_character_sheet_template', '1');
         if (albumIdInput) fd.append('album_id', albumIdInput.value);
         if (singleName) fd.append('name', singleName);
         const res = await fetch(form.action, { method: 'POST', body: fd });
@@ -300,6 +322,7 @@ async function pagesUploadChunked(file, opts) {
   fd.append('total_chunks', String(totalChunks));
   fd.append('description', opts.description);
   if (opts.visible) fd.append('visible_to_players', '1');
+  if (opts.isSheetTemplate) fd.append('is_character_sheet_template', '1');
   if (opts.albumIdInput) fd.append('album_id', opts.albumIdInput.value);
   if (opts.name) fd.append('name', opts.name);
   const res = await fetch('/pages/upload/complete', { method: 'POST', body: fd });

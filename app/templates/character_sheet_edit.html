@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}{{ sheet.name }} — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div style="max-width:1200px;margin:0 auto;padding:0 1rem">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:.8rem;flex-wrap:wrap;margin-bottom:.6rem">
+    <div>
+      <a href="{{ '/pages/sheets'|wq }}" style="font-size:.8rem;color:var(--text-dim);text-decoration:none">← My Character Sheets</a>
+      <h1 style="margin:.2rem 0 0;font-size:1.3rem">🧬 {{ sheet.name }}</h1>
+      <p style="color:var(--text-dim);font-size:.8rem;margin:.2rem 0 0">
+        Based on <strong>{{ template.name if template else 'a deleted template' }}</strong>
+        {% if linked_pc %}&middot; 🔗 linked to <a href="{{ ('/characters/' + linked_pc.id|string)|wq }}">{{ linked_pc.name }}</a>{% endif %}
+      </p>
+    </div>
+    <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
+      <span id="nd-sheet-save-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+      <a class="btn-cancel" style="text-decoration:none;white-space:nowrap" href="{{ ('/pages/sheets/' + sheet.id|string + '/download')|wq }}">⬇ Download</a>
+    </div>
+  </div>
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem;margin-bottom:1rem;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
+    <form method="post" action="{{ ('/pages/sheets/' + sheet.id|string + '/edit')|wq }}" style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;flex:1">
+      <input type="text" name="name" value="{{ sheet.name }}" maxlength="256" placeholder="Sheet name"
+             style="flex:1;min-width:180px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
+      <label style="display:flex;align-items:center;gap:.4rem;font-size:.8rem;color:var(--text-dim)">
+        Character:
+        <select name="player_character_id" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
+          <option value="">— none —</option>
+          {% for pc in own_pcs %}
+          <option value="{{ pc.id }}" {% if linked_pc and pc.id == linked_pc.id %}selected{% endif %}>{{ pc.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button type="submit" class="btn-save" style="font-size:.8rem">Save details</button>
+    </form>
+    <form method="post" action="{{ ('/pages/sheets/' + sheet.id|string + '/delete')|wq }}"
+          onsubmit="return confirm('Delete this character sheet? This can\'t be undone.');" style="display:inline">
+      <button type="submit" class="btn-cancel" style="font-size:.8rem;border-color:#a33;color:#e07">🗑 Delete</button>
+    </form>
+  </div>
+
+  {# Same sandboxing rationale as page_viewer.html: this is GM-authored raw
+     HTML served from this app's own origin. allow-scripts WITHOUT
+     allow-same-origin keeps the frame's script in an opaque origin with no
+     access to this app's cookies/session/DOM — it can only reach the
+     outside world via postMessage, which is exactly how the injected
+     character-sheet-bridge.js (see character_sheets.py's /render route)
+     reports field changes back to the listener below. #}
+  <iframe id="nd-sheet-frame" src="{{ ('/pages/sheets/' + sheet.id|string + '/render')|wq }}" sandbox="allow-scripts allow-popups"
+          referrerpolicy="no-referrer"
+          style="width:100%;height:75vh;border:1px solid var(--border);border-radius:6px;background:#fff"></iframe>
+</div>
+
+<script>
+(function () {
+  var frame = document.getElementById('nd-sheet-frame');
+  var status = document.getElementById('nd-sheet-save-status');
+  var sheetId = {{ sheet.id|tojson }};
+  var saveTimer = null;
+  var pendingData = null;
+
+  function setStatus(text, isError) {
+    status.textContent = text;
+    status.style.color = isError ? '#e07' : 'var(--text-dim)';
+  }
+
+  async function flush() {
+    if (pendingData === null) return;
+    var data = pendingData;
+    pendingData = null;
+    setStatus('Saving…', false);
+    try {
+      var res = await fetch('/pages/sheets/' + sheetId + '/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: data }),
+      });
+      if (!res.ok) throw new Error('save failed');
+      setStatus('Saved ✓', false);
+    } catch (e) {
+      setStatus('Save failed — will retry on your next change', true);
+    }
+  }
+
+  window.addEventListener('message', function (event) {
+    // event.origin is meaningless here (a sandboxed frame without
+    // allow-same-origin reports the literal string "null") — the frame's
+    // identity is verified via event.source instead, which is exactly the
+    // iframe's own contentWindow only when the message really came from it.
+    if (!frame || event.source !== frame.contentWindow) return;
+    var msg = event.data;
+    if (!msg || msg.source !== 'nd-character-sheet' || msg.type !== 'nd-sheet-save') return;
+    if (msg.sheetId !== sheetId) return;
+    pendingData = msg.data || {};
+    setStatus('Editing…', false);
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(flush, 400);
+  });
+})();
+</script>
+{% endblock %}
