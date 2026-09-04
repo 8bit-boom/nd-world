@@ -723,6 +723,28 @@ def _rules_toc(html_str: str):
     html_str = re.sub(r'<h([23])>(.*?)</h\1>', _repl, html_str, flags=re.DOTALL)
     return html_str, toc
 
+def _note_toc_label(note) -> str:
+    """Sidebar nav label for one private note: its title, or — for an
+    untitled note — the first non-blank line of its raw markdown content
+    with a few common leading markers (#, >, -, *) stripped so "## Recap"
+    doesn't show up as literal "## Recap" in the TOC. Not a full markdown
+    strip (this is a short nav label, not rendered content), just enough
+    to keep the common cases readable."""
+    title = (note.title or "").strip()
+    if title:
+        return title
+    first_line = ""
+    for line in (note.content or "").splitlines():
+        line = line.strip()
+        if line:
+            first_line = line
+            break
+    first_line = re.sub(r'^[#>*\-\s]+', '', first_line).strip()
+    if not first_line:
+        return "Untitled note"
+    return first_line[:60] + ("…" if len(first_line) > 60 else "")
+
+
 def _effective_general_upload_bytes(db: Session) -> int:
     """The general upload cap for this request: the GM's saved
     AppSettings.max_upload_mb (Settings > System's "Upload limits" — applies
@@ -1338,9 +1360,14 @@ def private_notes_view(
         .all()
     )
     worlds = _visible_worlds(request, db)
+    # Sidebar "Contents" nav — same idea as Rules' TOC (_rules_toc), except
+    # Notes has no single continuous document to pull headings from, so each
+    # entry is one note (labeled by its title, or a derived label — see
+    # _note_toc_label) rather than a markdown heading.
+    toc = [{"id": f"note-{n.id}", "text": _note_toc_label(n)} for n in notes]
     return templates.TemplateResponse("private_notes.html", {
         "request": request, "world": w, "worlds": worlds,
-        "target_user": target_user, "notes": notes, "can_manage": is_gm,
+        "target_user": target_user, "notes": notes, "can_manage": is_gm, "toc": toc,
     })
 
 
