@@ -4272,11 +4272,23 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         custom_sections = _group_by_section(tpl_fields)
     else:
         custom_fields = {}
+    # Same "navigate by content" sidebar + section-filtering search as Rules
+    # (_rules_toc/split_rules_sections), but opt-in: only wraps the page in
+    # the two-column layout when the body actually has H2/H3 headings to
+    # navigate — the vast majority of entities (characters, items, ...)
+    # have short bodies with none, and render exactly as before. This is
+    # what a long GM-authored reference document stored as a "note" entity
+    # (the motivating case) gives you for free.
+    body_sections, toc = [], []
+    if entity.body:
+        content_html, toc = _rules_toc(render_md(_RULES_LEGACY_ANCHOR_RE.sub("", entity.body)))
+        body_sections = split_rules_sections(content_html)
     return templates.TemplateResponse("entities/detail.html", {
         "request": request, "entity": entity,
         "world": world, "worlds": worlds, "backlinks": backlinks,
         "entity_notes": entity_notes,
         "custom_sections": custom_sections, "custom_fields": custom_fields,
+        "body_sections": body_sections, "toc": toc,
     })
 
 # ── Entity Field Templates ──────────────────────────────────────────────────
