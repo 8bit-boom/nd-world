@@ -107,14 +107,17 @@ async function mpLoadDefaults(defaults) {
   const askSel   = document.getElementById('mp-default-ask_ai');
   const imgSel   = document.getElementById('mp-default-image');
   const recapSel = document.getElementById('mp-default-recap');
+  const assistSel = document.getElementById('mp-default-assist');
 
   const llmOptions = _mpModels.map(m => `<option value="${m.id}">${m.label || m.id}</option>`).join('');
   chatSel.innerHTML  = '<option value="">— use system default —</option>' + llmOptions;
   askSel.innerHTML   = '<option value="">— use system default —</option>' + llmOptions;
   recapSel.innerHTML = '<option value="">— use system default —</option>' + llmOptions;
+  assistSel.innerHTML = '<option value="">— use system default —</option>' + llmOptions;
   chatSel.value  = defaults.chat || '';
   askSel.value   = defaults.ask_ai || '';
   recapSel.value = defaults.recap || '';
+  assistSel.value = defaults.assist || '';
 
   try {
     const mr = await fetch('/api/ai/imagegen/models').then(r => r.json());

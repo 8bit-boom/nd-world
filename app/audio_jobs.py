@@ -13,10 +13,11 @@ from pathlib import Path
 from typing import Optional
 
 from . import ai as _ai_module
+from . import ai_assist as _ai_assist
 from . import job_shutdown as _job_shutdown
 from . import retrieval as _retrieval
 from .database import SessionLocal
-from .models import AudioJob, Entity, Fact, GameSession, PlayerCharacter, World
+from .models import AudioJob, Entity, Fact, GameSession, PlayerCharacter, Quest, World
 
 _log = logging.getLogger("nd.audio_jobs")
 
@@ -445,6 +446,89 @@ def create_session_log_recap_job(
     return job_id
 
 
+def create_assist_job(
+    world_id: int, *, op: str, surface: str = "assist", content: str = "",
+    meta: str = "", instruction: str = "", lang: str = "",
+    model: str = "", think: bool = False, use_rag: bool = False,
+    rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
+    created_by_user_id: Optional[int] = None,
+) -> int:
+    """Run one AI-assist operation (app/ai_assist.run_assist) as a durable
+    background job — sibling of create_condense_job's "text already in
+    hand, no transcribe phase" shape, for content too big for the
+    interactive POST /api/ai/assist cap (a whole rules document above all)
+    or ops a GM would rather not hold a browser request open for.
+
+    Everything the op needs beyond the shared per-job columns lands in
+    assist_params_json (op/surface/meta/instruction/lang — see the AudioJob
+    column's own docstring); `content` goes to `transcript` (the row's
+    "input" slot, same as condense/text-recap jobs) and the result to
+    result_json — the run_assist return shape verbatim, so the polling
+    route hands the panel the identical payload the interactive route
+    would have. Raises ValueError (mapped to a clean 400 by the route) on
+    an unknown op, exactly like run_assist itself."""
+    if op not in _ai_assist.ALL_OPS:
+        raise ValueError(f"Unknown AI assist operation: {op!r}")
+    params = {
+        "op": op, "surface": surface, "meta": meta,
+        "instruction": instruction.strip(), "lang": lang.strip(),
+    }
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=world_id, purpose="ai_assist",
+            filename=f"AI assist · {surface}", status="pending",
+            created_by_user_id=created_by_user_id,
+            model=model or None, think=think,
+            extra_instructions=instruction.strip() or None,
+            use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
+            assist_params_json=_json.dumps(params),
+            transcript=content or "", audio_path="", delete_after=False,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    task = asyncio.create_task(_run_job(job_id))
+    _running_tasks[job_id] = task
+    task.add_done_callback(lambda t, jid=job_id: _forget_task(jid, t))
+    return job_id
+
+
+def create_world_summary_job(world_id: int, *, created_by_user_id: Optional[int] = None) -> int:
+    """Generate the dashboard's AI world summary as a durable background
+    job — the campaign-state digest is assembled at run time (see
+    _run_job's world_summary branch: entity roster, open quests, recent
+    facts/sessions), which is also why this creator takes no content
+    argument. The result lands in `recap` (displayable prose, exactly what
+    the session_recap purposes put there) and the polling route caches on
+    the newest done row until a Regenerate click POSTs a new job — no
+    staleness watermark by design (world state changes constantly; the
+    card labels the snapshot with its generation time instead)."""
+    db = SessionLocal()
+    try:
+        job = AudioJob(
+            world_id=world_id, purpose="world_summary", filename="World summary", status="pending",
+            created_by_user_id=created_by_user_id,
+            model=_ai_module.get_defaults().get("assist", "") or None,
+            audio_path="", delete_after=False,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    task = asyncio.create_task(_run_job(job_id))
+    _running_tasks[job_id] = task
+    task.add_done_callback(lambda t, jid=job_id: _forget_task(jid, t))
+    return job_id
+
+
 # Kinds worth hinting Whisper toward — proper nouns a session's spoken
 # audio is likely to actually contain. Excludes "note" (free text with no
 # guarantee its title is a clean proper noun) and "event"/"item"/"feat"
@@ -606,6 +690,103 @@ def _recap_instructions_for_world(world_id: int) -> str:
     try:
         w = db.get(World, world_id)
         return (w.recap_instructions or "").strip() if w else ""
+    finally:
+        db.close()
+
+
+# Caps for the world-summary digest (purpose="world_summary") — generous
+# enough that a real campaign's shape comes through, tight enough that one
+# digest can't blow the model's context before the summarize call even
+# starts (the caps apply to LINE COUNT; per-line size is bounded by the
+# summary fields quoted, not bodies).
+_SUMMARY_ENTITY_LIMIT = 120
+_SUMMARY_QUEST_LIMIT = 30
+_SUMMARY_FACT_LIMIT = 40
+_SUMMARY_SESSION_LIMIT = 10
+
+
+def _world_summary_state_text(world_id: int) -> str:
+    """The deterministic campaign-state digest behind the dashboard's world
+    summary — assembled fresh at run time (never cached on the row) so a
+    Regenerate after play always reflects the world as it stands. One
+    line per entity/quest/fact/session, ordered so the newest material
+    lands last (recency reads better to a model than alphabetization);
+    GM-facing by design (the card is GM/assistant-only), so no visibility
+    filtering — secrets included, exactly like the GM's own dashboard."""
+    db = SessionLocal()
+    try:
+        world = db.get(World, world_id)
+        if not world:
+            return ""
+        entities = (
+            db.query(Entity)
+            .filter(Entity.world_id == world_id)
+            .order_by(Entity.updated_at.desc())
+            .limit(_SUMMARY_ENTITY_LIMIT)
+            .all()
+        )
+        quests = (
+            db.query(Quest)
+            .filter(Quest.world_id == world_id)
+            .order_by(Quest.updated_at.desc())
+            .limit(_SUMMARY_QUEST_LIMIT)
+            .all()
+        )
+        facts = (
+            db.query(Fact)
+            .filter(Fact.world_id == world_id)
+            .order_by(Fact.created_at.desc())
+            .limit(_SUMMARY_FACT_LIMIT)
+            .all()
+        )
+        sessions = (
+            db.query(GameSession)
+            .filter(GameSession.world_id == world_id)
+            .order_by(GameSession.session_num.desc())
+            .limit(_SUMMARY_SESSION_LIMIT)
+            .all()
+        )
+        # A world with no entities/quests/facts/sessions has nothing to
+        # summarize — return empty so the run branch reports a clean "no
+        # content" error instead of asking the model to riff on a bare
+        # world name (which would just invent a campaign).
+        if not (entities or quests or facts or sessions):
+            return ""
+        lines = [f"# {world.name}", world.description or "", ""]
+        if entities:
+            lines.append(f"## Recent entities ({len(entities)})")
+            for e in entities:
+                line = f"- [{e.kind}] {e.name}"
+                if e.subtype:
+                    line += f" ({e.subtype})"
+                if e.summary:
+                    line += f": {e.summary}"
+                lines.append(line)
+            lines.append("")
+        if quests:
+            lines.append(f"## Quests ({len(quests)})")
+            for q in quests:
+                line = f"- [{q.status or 'active'}] {q.title}"
+                if q.summary:
+                    line += f": {q.summary}"
+                lines.append(line)
+            lines.append("")
+        if facts:
+            lines.append(f"## Recent facts ({len(facts)}, newest first)")
+            for f in facts:
+                lines.append(f"- {f.content}")
+            lines.append("")
+        if sessions:
+            lines.append(f"## Recent sessions ({len(sessions)})")
+            for s in sessions:
+                line = f"- #{s.session_num or '?'} {s.title}"
+                if s.session_date:
+                    line += f" ({s.session_date})"
+                if s.summary:
+                    line += f": {s.summary[:300]}"
+                lines.append(line)
+            lines.append("")
+        return "\n".join(lines)
     finally:
         db.close()
 
@@ -879,6 +1060,15 @@ async def _run_job(job_id: int) -> None:
         # (a pre-migration row, or any other purpose) reads as the player
         # tier, the more restrictive of the two.
         audience = job.audience or "players"
+        # purpose="ai_assist" only — the op's parameters (see
+        # AudioJob.assist_params_json). Parsed defensively: a malformed
+        # blob (hand-edited DB, a truncated write) must not crash the run
+        # before the generic error handling can record it.
+        try:
+            assist_params = _json.loads(job.assist_params_json) if job.assist_params_json else {}
+        except Exception:
+            _log.warning("audio job %s: malformed assist_params_json — treating as empty", job_id)
+            assist_params = {}
         checkpoint = _json.loads(job.checkpoint_json) if job.checkpoint_json else None
     finally:
         db.close()
@@ -936,9 +1126,12 @@ async def _run_job(job_id: int) -> None:
         # must skip unconditionally even though its transcript is empty
         # (there IS no input text to seed); without the carve-out the
         # empty-transcript path above would send audio_path=None into
-        # transcribe_audio.
+        # transcribe_audio. Same for purpose="ai_assist" (an op whose
+        # content can legitimately be empty — table_entries works off meta
+        # + instruction alone) and purpose="world_summary" (its input is
+        # assembled fresh from the DB at run time, never from `transcript`).
         skip_transcribe = (
-            (bool(existing_transcript) or purpose == "session_log_recap")
+            (bool(existing_transcript) or purpose in ("session_log_recap", "ai_assist", "world_summary"))
             and not (checkpoint and checkpoint.get("phase") == "transcribe")
         )
         if not skip_transcribe:
@@ -988,7 +1181,10 @@ async def _run_job(job_id: int) -> None:
             # own docstring for the query-length cap this relies on). For
             # purpose="facts_parse" the "transcript" is the pasted recap
             # text (create_facts_parse_job stores it there), so the same
-            # convention carries over unchanged.
+            # convention carries over unchanged. purpose="ai_assist" builds
+            # its own RAG in its branch below (a content-less op needs the
+            # meta+instruction fallback as its query); world_summary never
+            # uses RAG — its input already IS the world.
             # pinned_entity_ids/pinned_pc_ids: whatever the GM checked in
             # this session's own "Entities Featured" picker (see _session_
             # featured_picks) — guaranteed inclusion regardless of what the
@@ -1357,6 +1553,66 @@ async def _run_job(job_id: int) -> None:
                 return
             _set(status="done", result_json=_json.dumps({"recap": recap}),
                  finished_at=datetime.utcnow(), checkpoint_json="")
+        elif purpose == "ai_assist":
+            # One app.ai_assist.run_assist call with everything the op
+            # needs read back off the row (see create_assist_job). The
+            # result — the run_assist return shape verbatim — lands in
+            # result_json (never `recap`) so the jobs UI can't mistake an
+            # assist draft for session-recap prose. Held inside
+            # ollama_job_semaphore like every other summarization purpose:
+            # a whole-document rules rewrite can run for many minutes.
+            _set(status="summarizing")
+            op = assist_params.get("op", "")
+            rag_query = "\n".join(x for x in (transcript, assist_params.get("meta", ""), assist_params.get("instruction", "")) if x)
+            if use_rag and world_id and rag_query.strip():
+                world_context = _build_rag_context(
+                    world_id, rag_query,
+                    rag_entity_limit if rag_entity_limit is not None else _DEFAULT_RAG_ENTITY_LIMIT,
+                    rag_notes_limit if rag_notes_limit is not None else _DEFAULT_RAG_NOTES_LIMIT,
+                )
+            async with _ai_module.ollama_job_semaphore:
+                result = await _ai_assist.run_assist(
+                    op,
+                    content=transcript,
+                    meta=assist_params.get("meta", ""),
+                    instruction=assist_params.get("instruction", ""),
+                    lang=assist_params.get("lang", ""),
+                    model=model, think=think, world_context=world_context,
+                )
+            # Both failure families must land as error rows, never cached
+            # as a done result the polling route would happily serve:
+            # generate_chat's sentinel strings (free-text ops) and
+            # ValueError (structured ops — malformed JSON / AI down).
+            if result.get("mode") == "text" and (
+                _looks_like_failure(result.get("text", ""))
+                or _ai_module.is_thinking_starved_sentinel(result.get("text", ""))
+            ):
+                _set(status="error", error=result.get("text", ""), finished_at=datetime.utcnow(), checkpoint_json="")
+                return
+            _set(status="done", result_json=_json.dumps(result),
+                 finished_at=datetime.utcnow(), checkpoint_json="")
+        elif purpose == "world_summary":
+            # Assemble the campaign-state digest fresh at run time (never
+            # trust a `transcript` seeded at creation — the world moved
+            # since), then one free-text summarize over it. The result is
+            # displayable prose, so it goes to `recap` like the session
+            # recap purposes; the polling route caches on this done row
+            # until a Regenerate click.
+            _set(status="summarizing")
+            state_text = _world_summary_state_text(world_id)
+            if not state_text.strip():
+                _set(status="error", error="This world has no content to summarize yet.",
+                     finished_at=datetime.utcnow(), checkpoint_json="")
+                return
+            async with _ai_module.ollama_job_semaphore:
+                result = await _ai_assist.run_assist(
+                    _ai_assist.OP_WORLD_SUMMARY, content=state_text, model=model, think=think,
+                )
+            if _looks_like_failure(result.get("text", "")) or _ai_module.is_thinking_starved_sentinel(result.get("text", "")):
+                _set(status="error", error=result.get("text", ""), finished_at=datetime.utcnow(), checkpoint_json="")
+                return
+            _set(status="done", recap=result.get("text", ""),
+                 finished_at=datetime.utcnow(), checkpoint_json="")
         else:
             _set(status="done", finished_at=datetime.utcnow())
     except _job_shutdown.JobInterrupted:
@@ -1535,13 +1791,14 @@ def start_resume_job(job_id: int, reset_attempts: bool = False) -> AudioJob:
             raise ValueError("Job not found.")
         if job.status != "interrupted":
             raise ValueError("Only a job paused by a server restart can be resumed this way.")
-        if job.purpose != "session_log_recap" and not job.audio_path and not job.transcript:
+        single_phase = job.purpose in ("session_log_recap", "ai_assist", "world_summary")
+        if not single_phase and not job.audio_path and not job.transcript:
             raise ValueError("This job's audio is gone and it has no transcript to resume from — please re-upload.")
         checkpoint = _json.loads(job.checkpoint_json) if job.checkpoint_json else None
         phase = (checkpoint or {}).get("phase")
         resuming_summarize = (
             phase == "summarize" or (not phase and bool(job.transcript))
-            or job.purpose == "session_log_recap"
+            or single_phase
         )
         if resuming_summarize:
             job.status = "summarizing"

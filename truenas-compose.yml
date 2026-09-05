@@ -141,7 +141,9 @@ services:
       net.ix-portals.ollama.host: ""
     # To pull a model after first start:
     #   docker compose exec ollama ollama pull gemma4:26b
-    # For NVIDIA GPU, uncomment the deploy block below:
+    # For an NVIDIA GPU on TrueNAS SCALE: assign the GPU from the app's
+# Resources/GPU screen (Electric Eel+) instead of editing compose — full
+# walkthrough incl. V100/Volta specifics: docs/GPU_SETUP.md in the repo.
     # deploy:
     #   resources:
     #     reservations:

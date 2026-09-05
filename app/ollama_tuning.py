@@ -525,6 +525,28 @@ def _best_ctx_fitting(weights_mb: int, budget_mb: float, params_b: float, kv_typ
     return best
 
 
+def _volta_note(hardware: dict) -> Optional[str]:
+    """One advisory note when the detected GPU is a Volta-class card (V100 /
+    TITAN V). Ollama still officially supports Volta (compute capability
+    7.0) and flash attention + q8_0 KV cache both work on it, but NVIDIA's
+    CUDA 13 toolkit dropped Volta — so a future Ollama release that moves
+    to CUDA 13 builds would stop working on this card, and the fix is
+    pinning the last CUDA 12 image tag (see docs/GPU_SETUP.md). Detection
+    is name-based best-effort: it only runs when nd-world's own container
+    can see nvidia-smi, so a card hidden behind the ollama-only GPU
+    passthrough (the normal setup) simply produces no note."""
+    for g in hardware.get("gpus") or []:
+        name = str(g.get("name") or "")
+        if "v100" in name.lower() or "volta" in name.lower() or "titan v" in name.lower():
+            return (
+                "Volta-class GPU detected: flash attention and q8_0 KV cache are "
+                "supported and recommended, but CUDA 13 dropped Volta — if a future "
+                "Ollama update stops detecting this GPU, pin the last CUDA 12-based "
+                "ollama image tag (see docs/GPU_SETUP.md in the repo)."
+            )
+    return None
+
+
 def recommend_settings(*, model: str, hardware: dict, parameter_size: str = "", size_bytes: Optional[int] = None) -> dict:
     """A starting-point settings bundle for `model` given already-detected
     `hardware` (detect_hardware()'s own return shape). Never raises — an
@@ -579,6 +601,9 @@ def recommend_settings(*, model: str, hardware: dict, parameter_size: str = "", 
                 "This model barely fits — even the smallest context size is tight. "
                 "Consider a smaller model or a more aggressive quantization."
             )
+        volta = _volta_note(hardware)
+        if volta:
+            notes.append(volta)
         server = {"OLLAMA_FLASH_ATTENTION": "1", "OLLAMA_NUM_PARALLEL": "1", "OLLAMA_KEEP_ALIVE": "30m",
                   "OLLAMA_MAX_LOADED_MODELS": "2" if vram_total_mb >= 24576 else "1"}
         if chosen_kv != "f16":
@@ -591,9 +616,13 @@ def recommend_settings(*, model: str, hardware: dict, parameter_size: str = "", 
             "num_gpu": 999, "num_batch": 512, "num_ctx": chosen_ctx,
         }, "server": server, "notes": notes}
 
-    return {**base, "fit": "partial_gpu", "per_request": {"num_ctx": 4096}, "server": {
-        "OLLAMA_KEEP_ALIVE": "5m", "OLLAMA_MAX_LOADED_MODELS": "1",
-    }, "notes": [
+    partial_notes = [
         "Only part of this model fits — Ollama will split it across GPU and RAM "
         "automatically and run slower. Leave GPU layers blank.",
-    ]}
+    ]
+    volta = _volta_note(hardware)
+    if volta:
+        partial_notes.append(volta)
+    return {**base, "fit": "partial_gpu", "per_request": {"num_ctx": 4096}, "server": {
+        "OLLAMA_KEEP_ALIVE": "5m", "OLLAMA_MAX_LOADED_MODELS": "1",
+    }, "notes": partial_notes}

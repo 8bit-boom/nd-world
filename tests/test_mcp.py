@@ -24,7 +24,9 @@ from app import auth as auth_module
 from app.database import SessionLocal, engine
 from app.database import _migrate as _db_migrate
 from app.main import app
-from app.models import ApiToken, Base, Entity, Fact, Quest, User, World, WorldMembership
+from app.models import (
+    ApiToken, Base, Entity, Fact, GameSession, Quest, RandomTable, User, World, WorldMembership,
+)
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD
 
@@ -271,3 +273,200 @@ async def test_mcp_update_and_delete_fact_gm_only():
 
     deleted = _result(await _call(gm_token, "delete_fact", {"fact_id": fact_id}))
     assert deleted["deleted"] == fact_id
+
+
+# ── Entity CRUD / notes / rules / sessions / tables / quests ────────────────
+# (the feat/ai-everywhere expansion — see docs/AI_EVERYWHERE_AUDIT.md)
+
+async def test_mcp_entity_full_crud_roundtrip():
+    _reset_db()
+    ids = _seed()
+    gm_token = _issue_token(ids["gm_id"], "gm")
+
+    created = _result(await _call(gm_token, "create_entity", {
+        "world_id": ids["world_a_id"], "kind": "location", "name": "The Spire",
+        "summary": "a haunted cathedral", "body": "# The Spire\nVery tall.",
+        "tags": "city, ruin", "visible_to_players": False,
+    }))
+    entity_id = created["id"]
+
+    got = _result(await _call(gm_token, "get_entity", {"entity_id": entity_id}))
+    assert got["name"] == "The Spire"
+    assert got["body"].startswith("# The Spire")
+    assert got["visible_to_players"] is False
+
+    updated = _result(await _call(gm_token, "update_entity", {
+        "entity_id": entity_id, "summary": "an EMPTY cathedral", "visible_to_players": True,
+    }))
+    assert updated["updated"] is True
+    got2 = _result(await _call(gm_token, "get_entity", {"entity_id": entity_id}))
+    assert got2["summary"] == "an EMPTY cathedral"
+    # Only the passed fields changed.
+    assert got2["name"] == "The Spire"
+    assert got2["body"].startswith("# The Spire")
+
+    deleted = _result(await _call(gm_token, "delete_entity", {"entity_id": entity_id}))
+    assert deleted["deleted"] == entity_id
+
+
+async def test_mcp_create_entity_rejects_bad_kind():
+    _reset_db()
+    ids = _seed()
+    gm_token = _issue_token(ids["gm_id"], "gm")
+    res = await _call(gm_token, "create_entity", {
+        "world_id": ids["world_a_id"], "kind": "spaceship", "name": "Nope",
+    })
+    assert res.isError
+
+
+async def test_mcp_player_cannot_write_entities():
+    _reset_db()
+    ids = _seed()
+    player_token = _issue_token(ids["player_id"], "player")
+    res = await _call(player_token, "create_entity", {
+        "world_id": ids["world_a_id"], "kind": "item", "name": "Sneaky sword",
+    })
+    assert res.isError
+
+
+async def test_mcp_player_get_entity_respects_visibility():
+    _reset_db()
+    ids = _seed()
+    gm_token = _issue_token(ids["gm_id"], "gm")
+    player_token = _issue_token(ids["player_id"], "player")
+    hidden = _result(await _call(gm_token, "create_entity", {
+        "world_id": ids["world_a_id"], "kind": "item", "name": "Secret sword",
+        "visible_to_players": False,
+    }))
+    public = _result(await _call(gm_token, "create_entity", {
+        "world_id": ids["world_a_id"], "kind": "item", "name": "Public sword",
+        "visible_to_players": True,
+    }))
+
+    ok = _result(await _call(player_token, "get_entity", {"entity_id": public["id"]}))
+    assert ok["name"] == "Public sword"
+
+    denied = await _call(player_token, "get_entity", {"entity_id": hidden["id"]})
+    assert denied.isError
+
+
+async def test_mcp_create_note():
+    _reset_db()
+    ids = _seed()
+    gm_token = _issue_token(ids["gm_id"], "gm")
+    created = _result(await _call(gm_token, "create_note", {
+        "world_id": ids["world_a_id"], "name": "Cult research",
+        "body": "The violet flame metabolizes moonlight.",
+    }))
+    got = _result(await _call(gm_token, "get_entity", {"entity_id": created["id"]}))
+    assert got["kind"] == "note"
+    assert "violet flame" in got["body"]
+
+
+async def test_mcp_get_rules_gm_full_player_gm_stripped():
+    _reset_db()
+    ids = _seed()
+    gm_token = _issue_token(ids["gm_id"], "gm")
+    player_token = _issue_token(ids["player_id"], "player")
+    db = SessionLocal()
+    try:
+        w = db.get(World, ids["world_a_id"])
+        w.rules_md = (
+            "# Rules\n\nPublic rule text.\n\n:::gm\nSecret GM rule.\n:::\n\n"
+            ":::note\nA visible note.\n:::\n"
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    gm_rules = _result(await _call(gm_token, "get_rules", {"world_id": ids["world_a_id"]}))
+    assert "Secret GM rule." in gm_rules["rules_md"]
+
+    player_rules = _result(await _call(player_token, "get_rules", {"world_id": ids["world_a_id"]}))
+    assert "Secret GM rule." not in player_rules["rules_md"]
+    assert "Public rule text." in player_rules["rules_md"]
+
+
+async def test_mcp_sessions_publish_boundary():
+    _reset_db()
+    ids = _seed()
+    gm_token = _issue_token(ids["gm_id"], "gm")
+    player_token = _issue_token(ids["player_id"], "player")
+    db = SessionLocal()
+    try:
+        s1 = GameSession(world_id=ids["world_a_id"], title="The Moonfall", session_num=1,
+                         summary="GM-only summary with secrets",
+                         player_summary="Published player recap.",
+                         player_summary_published=True)
+        s2 = GameSession(world_id=ids["world_a_id"], title="Unpublished", session_num=2,
+                         summary="Not out yet", player_summary="draft")
+        db.add_all([s1, s2])
+        db.commit()
+        sid1, sid2 = s1.id, s2.id
+    finally:
+        db.close()
+
+    sessions = _result(await _call(player_token, "list_sessions", {"world_id": ids["world_a_id"]}))
+    assert [s["title"] for s in sessions] == ["Unpublished", "The Moonfall"]  # newest first
+
+    got = _result(await _call(player_token, "get_session", {"session_id": sid1}))
+    assert got["player_summary"] == "Published player recap."
+    assert "GM-only" not in json.dumps(got)
+
+    got2 = _result(await _call(player_token, "get_session", {"session_id": sid2}))
+    assert got2["player_summary"] == ""
+    assert "No recap has been published" in got2["note"]
+
+    gm_got = _result(await _call(gm_token, "get_session", {"session_id": sid2}))
+    assert gm_got["summary"] == "Not out yet"
+
+
+async def test_mcp_tables_gm_only():
+    _reset_db()
+    ids = _seed()
+    gm_token = _issue_token(ids["gm_id"], "gm")
+    player_token = _issue_token(ids["player_id"], "player")
+    db = SessionLocal()
+    try:
+        t = RandomTable(world_id=ids["world_a_id"], name="Road encounters", slug="road-encounters-test",
+                        entries_json=json.dumps([{"label": "Mercenaries", "weight": 1},
+                                                 {"label": "Shrine", "weight": 1}]))
+        db.add(t)
+        db.commit()
+        tid = t.id
+    finally:
+        db.close()
+
+    denied = await _call(player_token, "list_tables", {"world_id": ids["world_a_id"]})
+    assert denied.isError
+
+    tables = _result(await _call(gm_token, "list_tables", {"world_id": ids["world_a_id"]}))
+    assert tables[0]["name"] == "Road encounters"
+    assert tables[0]["entry_count"] == 2
+
+    rolled = _result(await _call(gm_token, "roll_table", {"table_id": tid, "times": 3}))
+    assert len(rolled["results"]) == 3
+    assert set(rolled["results"]) <= {"Mercenaries", "Shrine"}
+
+
+async def test_mcp_quest_create_update():
+    _reset_db()
+    ids = _seed()
+    gm_token = _issue_token(ids["gm_id"], "gm")
+    player_token = _issue_token(ids["player_id"], "player")
+
+    denied = await _call(player_token, "create_quest", {
+        "world_id": ids["world_a_id"], "title": "Sneaky",
+    })
+    assert denied.isError
+
+    created = _result(await _call(gm_token, "create_quest", {
+        "world_id": ids["world_a_id"], "title": "Break the siege",
+        "summary": "The Lamrossa are surrounded.", "visible_to_players": False,
+    }))
+    assert created["status"] == "active"
+
+    updated = _result(await _call(gm_token, "update_quest", {
+        "quest_id": created["id"], "status": "complete",
+    }))
+    assert updated["status"] == "complete"

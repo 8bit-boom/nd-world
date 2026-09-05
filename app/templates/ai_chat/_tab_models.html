@@ -40,6 +40,12 @@
           <option value="">— use system default —</option>
         </select>
       </label>
+      <label style="display:flex;align-items:center;gap:.6rem;font-size:.82rem;color:var(--text-dim)">
+        <span style="width:70px;flex-shrink:0">Assist</span>
+        <select id="mp-default-assist" class="ig-select" style="flex:1" onchange="mpSetDefault('assist', this.value)">
+          <option value="">— use system default —</option>
+        </select>
+      </label>
     </div>
     <div id="mp-defaults-status" style="font-size:.7rem;color:var(--text-dim);margin-top:.4rem;min-height:1em"></div>
   </div>

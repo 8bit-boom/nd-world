@@ -36,6 +36,11 @@ PURPOSE_LABELS = {
     "facts_parse": "Facts",
     # Same deal: filename="Session Log recap" (create_session_log_recap_job).
     "session_log_recap": "Session Log recap",
+    # Same deal: create_assist_job seeds filename="AI assist · <surface>",
+    # but the chip needs a stable label regardless of which surface started
+    # the job.
+    "ai_assist": "AI Assist",
+    "world_summary": "World Summary",
 }
 
 

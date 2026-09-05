@@ -464,6 +464,16 @@ skipped by default; `bash scripts/setup.sh` asks whether to enable them, or set
 All three are sizeable downloads and Ollama in particular wants a decent CPU/GPU, so
 it's worth leaving any of them off you don't plan to use.
 
+### GPU acceleration (incl. the Tesla V100)
+
+Ollama and whisper.cpp both run much faster with an NVIDIA GPU — see
+**[docs/GPU_SETUP.md](docs/GPU_SETUP.md)** for the full walkthrough: host
+driver + nvidia-container-toolkit setup, the ready-made
+`docker-compose.gpu.yml` override, TrueNAS SCALE GPU assignment, model
+recommendations by VRAM (16 GB vs 32 GB V100), the flash-attention /
+q8_0-KV / single-parallel tuning set, and the CUDA 13 / driver-580
+caveats specific to Volta cards.
+
 ### Ollama (chat)
 
 Ollama is defined in both `docker-compose.yml` and `truenas-compose.yml` behind the

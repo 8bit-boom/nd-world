@@ -56,6 +56,19 @@
 <a href="/worlds/{{ world.id }}/home/edit" class="home-edit-link">✏ Customize this page</a>
 {% endif %}
 
+{# GM + GM-Assistant: the AI world-summary card (job-backed, cached until
+   Regenerate — see app/routers/ai.py's /api/ai/world-summary routes). #}
+{% if can_edit(request) %}
+<section id="world-ai-summary-card" style="border:1px solid var(--border);border-radius:8px;padding:.9rem 1.1rem;background:var(--bg2);margin-bottom:1.1rem">
+  <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem;flex-wrap:wrap">
+    <span style="font-size:.8rem;color:var(--neon);font-weight:700;letter-spacing:.06em">🤖 WORLD SUMMARY</span>
+    <span id="was-generated" style="font-size:.72rem;color:var(--text-dim)"></span>
+    <button type="button" id="was-btn" class="ig-btn" style="margin-left:auto" onclick="wasAction()">✨ Generate</button>
+  </div>
+  <div id="was-body" style="font-size:.85rem;color:var(--text);white-space:pre-wrap;max-height:280px;overflow:auto">Loading…</div>
+</section>
+{% endif %}
+
 <section class="dashboard" id="dashboard-dropzone">
   {% for k in kinds if k not in hidden_kinds %}
   <a href="{{ ('/kind/' + k)|wq }}" class="dash-card kind-{{ k }}">
@@ -376,5 +389,40 @@ function switchQuickLinksTab(i) {
   }
 })();
 {% endif %}
+
+// ── AI world summary card ─────────────────────────────────────────────
+// Cached on the newest done world_summary job until Regenerate is
+// clicked (deliberately no staleness — the card labels its snapshot).
+async function wasLoad() {
+  const body = document.getElementById('was-body');
+  const btn = document.getElementById('was-btn');
+  const gen = document.getElementById('was-generated');
+  try {
+    const d = await (await fetch('/api/ai/world-summary')).json();
+    if (d.pending) { body.textContent = 'Generating…'; btn.style.display = 'none'; setTimeout(wasLoad, 3000); return; }
+    if (d.error) { body.textContent = 'Last generation failed: ' + d.error; btn.textContent = '↻ Retry'; return; }
+    if (d.recap) {
+      body.textContent = d.recap;
+      btn.textContent = '↻ Regenerate';
+      btn.style.display = '';
+      gen.textContent = d.generated_at ? ('generated ' + d.generated_at.replace('T', ' ').slice(0, 16)) : '';
+    } else {
+      body.textContent = 'No summary yet — generate one for a quick AI digest of where the campaign stands.';
+      btn.textContent = '✨ Generate';
+      btn.style.display = '';
+    }
+  } catch (e) { body.textContent = '(summary unavailable)'; }
+}
+async function wasAction() {
+  const btn = document.getElementById('was-btn');
+  btn.disabled = true;
+  try {
+    await fetch('/api/ai/world-summary', { method: 'POST' });
+    document.getElementById('was-body').textContent = 'Generating…';
+    btn.style.display = 'none';
+    setTimeout(wasLoad, 3000);
+  } catch (e) { btn.disabled = false; }
+}
+if (document.getElementById('world-ai-summary-card')) wasLoad();
 </script>
 {% endblock %}

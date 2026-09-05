@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import '_ai_assist_panel.html' as _aa %}
 {% block title %}{{ 'Edit' if tbl else 'New' }} Table — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div style="max-width:760px;margin:0 auto;padding:1.5rem 1rem">
@@ -46,6 +47,7 @@
         <h2 style="color:var(--neon);font-size:.95rem;margin:0">Entries</h2>
         <button type="button" onclick="addEntry()" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.3rem .75rem;font-size:.78rem;border-radius:3px;cursor:pointer">+ Add Entry</button>
       </div>
+      {{ _aa.ai_assist_panel('tbl', '✨ AI assist — generate entries') }}
       <div id="entries-list" style="display:flex;flex-direction:column;gap:.5rem;min-height:40px"></div>
       <p id="no-entries-msg" style="color:var(--text-dim);font-size:.8rem;text-align:center;padding:.5rem;font-style:italic;display:none">No entries yet.</p>
       <input type="hidden" name="entries_json" id="entries-json-input"/>
@@ -134,5 +136,33 @@ function syncHidden() {
 document.getElementById('tbl-form').addEventListener('submit', syncHidden);
 
 renderEntries();
+</script>
+<script src="/static/js/ai-assist.js"></script>
+<script>
+// ✨ AI assist — the table_entries op returns {entries:[{text,weight}]};
+// Append appends them to the editor's own _entries model (label is this
+// editor's field name for what the engine calls text) and re-renders, so
+// nothing reaches the saved table without a review pass over the rows.
+ndAiAssist('tbl', {
+  ops: ['table_entries', 'custom'],
+  surface: 'table-form',
+  metaSelectors: { name: 'input[name="name"]', summary: 'input[name="description"]' },
+  onData: (data, ui) => {
+    const rows = (data.entries || []).map(e => ({ label: e.text, weight: e.weight }));
+    ui.resultData.innerHTML = '';
+    ui.resultActions.innerHTML = '';
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ig-btn';
+    b.textContent = '⬇ Append ' + rows.length + ' entries';
+    b.onclick = () => { _entries.push(...rows); renderEntries(); ui.setStatus('Appended — review weights & labels before saving.', '#4f4'); };
+    ui.resultActions.appendChild(b);
+    const list = document.createElement('div');
+    list.style.cssText = 'max-height:220px;overflow:auto;font-size:.8rem;color:var(--text)';
+    rows.forEach(r => { const d = document.createElement('div'); d.textContent = '· ' + r.label + '  (w:' + r.weight + ')'; list.appendChild(d); });
+    ui.resultData.appendChild(list);
+    ui.setStatus('Draft entries ready — review, then Append.', 'var(--text-dim)');
+  },
+});
 </script>
 {% endblock %}

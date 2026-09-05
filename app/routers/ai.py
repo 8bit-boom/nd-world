@@ -15,10 +15,12 @@ from pydantic import BaseModel
 from typing import List, Optional
 from pathlib import Path as _Path
 from .. import ai as _ai
+from .. import ai_assist as _ai_assist
 from .. import audio_jobs as _audio_jobs
 from .. import chat_jobs as _chat_jobs
 from .. import image_jobs as _image_jobs
 from .. import ollama_tuning as _tuning
+from .. import retrieval as _retrieval
 from ..constants import KINDS
 from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx, can_edit_content
@@ -413,6 +415,204 @@ async def api_entity_from_text(
     except ValueError as exc:
         raise HTTPException(502, str(exc))
     return draft
+
+
+# ── AI Assist (the shared ✨ panel embedded in every editor surface) ────────
+#
+# One interactive endpoint + a durable-job variant for big content, both
+# thin wrappers over app/ai_assist.run_assist (see its module docstring for
+# the op registry and the free-text/structured output contracts). The
+# interactive route is capped (ai_assist.MAX_INTERACTIVE_CHARS) so a huge
+# body can't turn it into the reverse-proxy-timeout trap that motivated
+# background jobs everywhere else; surfaces with legitimately large
+# content (the rules editor above all) configure their panel to use the
+# job variant instead.
+
+class AssistBody(BaseModel):
+    op: str
+    # Which page invoked the panel — never changes behavior, but rides
+    # along onto the job row (and the log) so a GM reading the Background
+    # Jobs page can tell an entity-form improve from a rules rewrite.
+    surface: str = ""
+    kind: str = ""
+    name: str = ""
+    summary: str = ""
+    body: str = ""
+    tags: str = ""
+    instruction: str = ""
+    lang: str = ""
+    model: str = ""
+    think: bool = False
+    use_rag: bool = False
+    rag_entity_limit: Optional[int] = None
+    rag_notes_limit: Optional[int] = None
+
+
+def _assist_world_context(body: AssistBody, db, world) -> str:
+    if not body.use_rag:
+        return ""
+    # The content being worked on is the best relevance signal — same
+    # convention the job engine applies to transcript-based RAG
+    # (audio_jobs._build_rag_context caps query length itself).
+    query = "\n".join(x for x in (body.name, body.summary, body.body, body.instruction) if x)
+    context, _non_notes, _notes = _retrieval.smart_world_context(
+        db, world.id, query,
+        entity_limit=body.rag_entity_limit if body.rag_entity_limit is not None else 15,
+        notes_limit=body.rag_notes_limit if body.rag_notes_limit is not None else 5,
+    )
+    return context
+
+
+def _assist_meta(body: AssistBody) -> str:
+    return _ai_assist.compose_meta({
+        "Kind": body.kind,
+        "Name": body.name,
+        "Current summary": body.summary,
+        "Tags": body.tags,
+    })
+
+
+@router.post("/assist")
+async def api_ai_assist(
+    body: AssistBody, request: Request, db=Depends(get_db), active_world: str = Cookie(None),
+):
+    """Run one AI-assist operation interactively (short editorial ops on
+    editor content — see app/ai_assist). Content drafting, so a
+    GM-Assistant may call it too (can_edit tier)."""
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    content = body.body or body.summary or ""
+    if len(content) > _ai_assist.MAX_INTERACTIVE_CHARS:
+        raise HTTPException(
+            400,
+            f"That content is too large for a quick assist ({len(content)} chars > "
+            f"{_ai_assist.MAX_INTERACTIVE_CHARS}) — use the background-job variant.",
+        )
+    # Empty-string model = the "assist" surface default (Models tab), same
+    # per-surface convention chat/ask_ai/recap follow.
+    model = body.model or _ai.get_defaults().get("assist", "")
+    try:
+        result = await _ai_assist.run_assist(
+            body.op,
+            content=content, meta=_assist_meta(body), instruction=body.instruction,
+            model=model, think=body.think, lang=body.lang,
+            world_context=_assist_world_context(body, db, world),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if result.get("mode") == "text" and _ai.is_failure_sentinel(result.get("text", "")):
+        # generate_chat never raises on an Ollama-side failure — it returns
+        # its sentinel string. 502 it here so the panel shows an error
+        # instead of pasting "[AI unavailable: …]" into an editor field.
+        raise HTTPException(502, result["text"])
+    return result
+
+
+@router.post("/assist-job")
+async def api_ai_assist_job_create(
+    body: AssistBody, request: Request, db=Depends(get_db), active_world: str = Cookie(None),
+):
+    """The durable-job variant — same op registry, no size cap, no HTTP
+    timeout to respect (the same reason every other long AI op became a
+    job). Returns {job_id} immediately; poll GET /api/ai/assist-job/{id}."""
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    user = getattr(request.state, "user", None)
+    try:
+        job_id = _audio_jobs.create_assist_job(
+            world.id,
+            op=body.op, surface=body.surface or "assist",
+            content=body.body, meta=_assist_meta(body),
+            instruction=body.instruction, lang=body.lang,
+            model=body.model or _ai.get_defaults().get("assist", ""),
+            think=body.think, use_rag=body.use_rag,
+            rag_entity_limit=body.rag_entity_limit, rag_notes_limit=body.rag_notes_limit,
+            created_by_user_id=user.id if user else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"job_id": job_id}
+
+
+@router.get("/assist-job/{job_id}")
+def api_ai_assist_job_status(
+    job_id: int, request: Request, db=Depends(get_db), active_world: str = Cookie(None),
+):
+    """Poll an assist job. Done rows return the run_assist result shape
+    ({mode, text|data, model}) under "result" — identical to the
+    interactive route's payload, so a panel can consume both without
+    branching."""
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    job = db.get(AudioJob, job_id)
+    if not job or job.purpose != "ai_assist" or (world and job.world_id != world.id):
+        raise HTTPException(404)
+    out = {"id": job.id, "status": job.status, "error": job.error or ""}
+    if job.status == "done" and job.result_json:
+        try:
+            out["result"] = _json.loads(job.result_json)
+        except Exception:
+            out["result"] = {"op": "?", "mode": "text", "text": job.result_json}
+    return out
+
+
+# ── Dashboard world summary ─────────────────────────────────────────────────
+#
+# One cached AI digest of the whole campaign (entities, open quests, recent
+# facts/sessions) for the dashboard's GM card. Deliberately NO staleness
+# machinery: a done row is reused until someone clicks Regenerate — world
+# state changes constantly, and tying freshness to entity/fact timestamps
+# would re-run the job on nearly every dashboard visit for content that is
+# inherently a "how it looked when generated" snapshot (the card labels it
+# with the generation time).
+
+@router.post("/world-summary")
+async def api_world_summary_create(
+    request: Request, db=Depends(get_db), active_world: str = Cookie(None),
+):
+    """Start (or return the already-running/finished) world-summary job for
+    the active world. Always creates a fresh job — the "reuse the cached
+    one" decision belongs to the GET below, so a Regenerate click is just
+    this POST. async def deliberately: the creator hands the job to
+    asyncio.create_task, which needs the request's running loop (a sync
+    def route runs in FastAPI's threadpool, where there isn't one)."""
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    user = getattr(request.state, "user", None)
+    job_id = _audio_jobs.create_world_summary_job(
+        world.id, created_by_user_id=user.id if user else None,
+    )
+    return {"job_id": job_id, "pending": True}
+
+
+@router.get("/world-summary")
+def api_world_summary_get(request: Request, db=Depends(get_db), active_world: str = Cookie(None)):
+    """Latest world-summary state: {recap, generated_at} from the newest
+    done job, {"pending": true} while one runs, {"recap": ""} when there
+    has never been one (the card then shows a Generate button)."""
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    job = (
+        db.query(AudioJob)
+        .filter(AudioJob.world_id == world.id, AudioJob.purpose == "world_summary")
+        .order_by(AudioJob.id.desc())
+        .first()
+    )
+    if not job:
+        return {"recap": ""}
+    if job.status in ("pending", "transcribing", "summarizing"):
+        return {"pending": True}
+    if job.status == "error":
+        return {"recap": "", "error": job.error or "generation failed"}
+    return {"recap": job.recap or "", "generated_at": job.finished_at.isoformat() if job.finished_at else None}
 
 
 # ── Saved chat conversations (ai_chat.html's History sidebar) ──────────────

@@ -1,0 +1,43 @@
+# ── NVIDIA GPU override for nd-world's bundled AI stack ─────────────────────
+#
+# Layer ON TOP of the main compose file to give the "ollama" (and GPU
+# whisper) services an NVIDIA GPU:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# TrueNAS SCALE users: don't use this file — assign the GPU from the app's
+# Resources/GPU screen instead (see docs/GPU_SETUP.md §TrueNAS).
+#
+# Host prerequisites (full walkthrough: docs/GPU_SETUP.md):
+#   - NVIDIA driver 550 or newer (the 580 branch is the LAST to support
+#     Volta cards like the V100 — see the guide before ever upgrading past it)
+#   - nvidia-container-toolkit installed and the "nvidia" runtime registered
+#
+# Volta (V100) owners: CUDA 13 dropped Volta. Current Ollama images still
+# ship CUDA 12 and work fine; if a future update stops seeing your GPU,
+# pin the last CUDA 12 tag (e.g. image: ollama/ollama:0.12.x) instead of
+# tracking :latest — details in docs/GPU_SETUP.md.
+
+services:
+  ollama:
+    image: ollama/ollama:latest   # V100 owners: pin here if a CUDA 13 update breaks it
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Optional: GPU-accelerated Whisper transcription. Uncomment to switch
+  # the whisper service from CPU to the CUDA build (requires the whisper
+  # profile: COMPOSE_PROFILES=whisper in .env).
+  #whisper:
+  #  image: ghcr.io/ggml-org/whisper.cpp:main-cuda
+  #  deploy:
+  #    resources:
+  #      reservations:
+  #        devices:
+  #          - driver: nvidia
+  #            count: all
+  #            capabilities: [gpu]

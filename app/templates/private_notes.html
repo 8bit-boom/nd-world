@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import '_ai_assist_panel.html' as _aa %}
 {% block title %}Notes — {{ target_user.display_name }} — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div class="pn-layout">
@@ -41,6 +42,7 @@
         </div>
         <div class="pn-field">
           <label>Note <small>(Markdown supported)</small></label>
+          {{ _aa.ai_assist_panel('pvn', '✨ AI assist — note') }}
           <textarea name="content" required placeholder="Write a private note for this player..." data-fmt></textarea>
         </div>
         <button type="submit" class="btn-primary">Add Note</button>
@@ -158,6 +160,15 @@ document.addEventListener('keydown', e => {
     const inp = document.getElementById('pn-search');
     if (inp) { e.preventDefault(); inp.focus(); inp.select(); }
   }
+});
+</script>
+<script src="/static/js/ai-assist.js"></script>
+<script>
+ndAiAssist('pvn', {
+  ops: ['improve', 'expand', 'translate', 'custom'],
+  surface: 'private-note',
+  contentSelector: 'textarea[name="content"]',
+  metaSelectors: { name: 'input[name="title"]' },
 });
 </script>
 {% endblock %}

@@ -581,9 +581,17 @@ def _is_assistant_safe(method: str, path: str) -> bool:
         "/api/ai/entity-from-text",
         "/api/ai/save-note",
         "/api/ai/world-context-smart",
+        "/api/ai/assist",
+        "/api/ai/assist-job",
+        "/api/ai/world-summary",
     ):
         return True
     if path == "/api/ai/world-context" and method == "GET":
+        return True
+    if method == "GET" and (path == "/api/ai/world-summary" or re.match(r"^/api/ai/assist-job/\d+$", path)):
+        # Assist-job polling + the world-summary read — the write side of
+        # both is in the POST list above; without these, a GM-Assistant's
+        # panel could START an assist job but never watch it finish.
         return True
     return False
 
@@ -2921,39 +2929,15 @@ def ai_world_context_smart(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         return {"context": "", "count": 0, "notes": 0, "entities": []}
-    entities = _retrieval.find_relevant_entities(db, world.id, body.query, limit=body.limit)
-    notes = [e for e in entities if e.kind == "note"]
-    non_notes = [e for e in entities if e.kind != "note"]
-    # A query in a different language/script than the World's entity names
-    # (e.g. a Russian chat question against English-named characters) has
-    # no literal text overlap for find_relevant_entities' keyword search to
-    # match, so it comes back empty even though there ARE relevant entities
-    # to reference — the same gap app.audio_jobs._build_rag_context's own
-    # top-up already closes for the job/transcript RAG path (see its
-    # docstring); without this here too, a non-English chat question would
-    # silently get a context with notes but no characters/places at all.
-    if body.limit > 0 and len(non_notes) < body.limit:
-        seen_ids = {e.id for e in entities}
-        topup_q = db.query(Entity).filter(Entity.world_id == world.id, Entity.kind != "note")
-        if seen_ids:
-            topup_q = topup_q.filter(~Entity.id.in_(seen_ids))
-        topup = topup_q.order_by(Entity.kind, Entity.name).limit(body.limit - len(non_notes)).all()
-        non_notes = non_notes + topup
-    # Also search notes separately if notes_limit > 0
-    if body.notes_limit > 0:
-        note_entities = (
-            db.query(Entity)
-            .filter(Entity.world_id == world.id, Entity.kind == "note")
-            .order_by(Entity.updated_at.desc())
-            .limit(body.notes_limit)
-            .all()
-        )
-        seen_ids = {e.id for e in entities}
-        extra_notes = [e for e in note_entities if e.id not in seen_ids]
-        notes = notes + extra_notes
+    # The retrieval half lives in _retrieval.smart_world_context now (shared
+    # with the AI-assist panel's RAG — see its docstring for the top-up and
+    # guaranteed-notes behavior this route has always applied).
+    context, non_notes, notes = _retrieval.smart_world_context(
+        db, world.id, body.query, entity_limit=body.limit, notes_limit=body.notes_limit,
+    )
     combined = non_notes + notes
     return {
-        "context": _retrieval.format_context_from_entities(combined),
+        "context": context,
         "count": len(non_notes),
         "notes": len(notes),
         # What actually got retrieved, for the RAG transparency panel (see
