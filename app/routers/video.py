@@ -22,6 +22,8 @@ from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Reque
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
+from .. import ai as _ai_module
+from .. import audio_jobs as _audio_jobs
 from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx, can_edit_content
 from ..models import VideoAlbum, VideoClip
@@ -162,16 +164,27 @@ def _descendant_albums(db: Session, root_id: int) -> list:
     return result
 
 
-def _delete_clip_file(clip: VideoClip) -> None:
+def _resolve_upload_path(url: Optional[str]) -> Optional[Path]:
+    """Resolves a "/uploads/..." URL back to its real path under
+    _UPLOADS_DIR, with the same traversal check _delete_clip_file always
+    applied inline — factored out so audio_transcribe below (which reads
+    clip.file_url rather than deleting it) doesn't duplicate it. None if
+    the URL is missing/malformed or doesn't resolve to a file that
+    actually exists."""
+    if not url or not url.startswith("/uploads/"):
+        return None
     root = _UPLOADS_DIR.resolve()
+    try:
+        path = (root / url[len("/uploads/"):]).resolve()
+    except (OSError, RuntimeError):
+        return None
+    return path if path.is_relative_to(root) and path.is_file() else None
+
+
+def _delete_clip_file(clip: VideoClip) -> None:
     for url in (clip.file_url, clip.poster_url):
-        if not url or not url.startswith("/uploads/"):
-            continue
-        try:
-            path = (root / url[len("/uploads/"):]).resolve()
-        except (OSError, RuntimeError):
-            continue
-        if path.is_relative_to(root) and path.is_file():
+        path = _resolve_upload_path(url)
+        if path:
             path.unlink()
 
 
@@ -657,6 +670,42 @@ async def video_edit(
     db.commit()
     dest = f"/video/albums/{clip.album_id}" if clip.album_id else "/video"
     return RedirectResponse(dest, status_code=303)
+
+
+@router.post("/video/{clip_id}/transcribe")
+async def video_transcribe(
+    clip_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Generate an AI transcript + WebVTT subtitle track for one clip via
+    Whisper (see app.ai.transcribe_audio_with_subtitles — it works directly
+    on a video file too, since whisper.cpp shells out to ffmpeg to decode
+    the audio track from any container it's given). Mirrors app/routers/
+    audio.py's audio_transcribe exactly — same world-level glossary/
+    language/denoise settings, same "synchronous, not a background job"
+    rationale, same "re-running overwrites" behavior."""
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    clip = _clip_or_404(db, world.id, clip_id)
+    path = _resolve_upload_path(clip.file_url)
+    if not path:
+        raise HTTPException(404, "Clip file not found")
+    glossary = _audio_jobs._glossary_for_world(world.id)
+    language = _audio_jobs._whisper_language_for_world(world.id)
+    denoise = _audio_jobs._denoise_for_world(world.id)
+    try:
+        transcript, vtt = await _ai_module.transcribe_audio_with_subtitles(
+            path, glossary=glossary, language=language, denoise=denoise,
+        )
+    except _ai_module.WhisperError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not transcript:
+        raise HTTPException(400, "Whisper transcribed this clip successfully but found no speech in it.")
+    clip.transcript = transcript
+    clip.subtitles_vtt = vtt
+    db.commit()
+    return JSONResponse({"ok": True})
 
 
 @router.post("/video/{clip_id}/delete")

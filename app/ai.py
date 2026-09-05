@@ -3429,6 +3429,176 @@ async def transcribe_audio(path: Path, glossary: str = "", language: str = "", o
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+# ── Transcript + subtitles (library clips) ──────────────────────────────────
+# transcribe_audio above only ever requests response_format="json" (plain
+# text, no timings) — fine for a session recap, but a subtitle track needs
+# per-segment start/end times, which whisper.cpp only attaches when asked
+# for response_format="verbose_json" (see examples/server/server.cpp).
+# Rather than bolt segment support onto transcribe_audio's own
+# checkpoint/resume machinery (built for multi-hour session recordings
+# surviving a server restart — see its docstring), transcribe_audio_with_
+# subtitles below is a simpler sibling for app/routers/audio.py's and
+# video.py's "Generate transcript & subtitles" action on a library clip:
+# same chunking for long clips, but no checkpoint/resume — a GM/assistant
+# clip-transcribe click is a bounded, attended action, not a durable
+# background job, so losing progress on a server restart just means
+# clicking the button again.
+
+def _format_vtt_timestamp(seconds: float) -> str:
+    """WebVTT cue timestamp: HH:MM:SS.mmm — WebVTT requires the hours
+    component (unlike SRT, which allows omitting it)."""
+    total_ms = round(max(0.0, seconds) * 1000)
+    hours, rem_ms = divmod(total_ms, 3600_000)
+    minutes, rem_ms = divmod(rem_ms, 60_000)
+    secs, ms = divmod(rem_ms, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{ms:03d}"
+
+
+def _segments_to_vtt(segments: list) -> str:
+    """Render Whisper segments ({"start", "end", "text"}, seconds) as a
+    WebVTT track — what a <track kind="subtitles"> src expects. Always
+    returns at least the bare header, a valid (if caption-less) track
+    rather than an empty file some browsers reject."""
+    lines = ["WEBVTT", ""]
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        lines.append(f"{_format_vtt_timestamp(seg['start'])} --> {_format_vtt_timestamp(seg['end'])}")
+        lines.append(text)
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _collapse_repeated_segments(segments: list, min_repeat: int = 4) -> list:
+    """Segment-level counterpart to _collapse_repeated_transcript_lines,
+    for the subtitle track: a whisper.cpp repetition-loop run (see that
+    function's docstring) shows up here as several consecutive segments
+    with identical text. Collapsing a run to one entry spanning the run's
+    own start-to-end keeps the subtitle timeline gap-free instead of
+    leaving a hole where the discarded duplicates used to be."""
+    out = []
+    i, n = 0, len(segments)
+    while i < n:
+        j = i
+        while j < n and segments[j]["text"] == segments[i]["text"]:
+            j += 1
+        if j - i >= min_repeat:
+            out.append({"start": segments[i]["start"], "end": segments[j - 1]["end"], "text": segments[i]["text"]})
+        else:
+            out.extend(segments[i:j])
+        i = j
+    return out
+
+
+async def _transcribe_one_file_verbose(path: Path, glossary: str, language: str, denoise: bool = False) -> tuple:
+    """Same whisper.cpp /inference call as _transcribe_one_file, but with
+    response_format="verbose_json" so the response also carries a
+    "segments" array of {start, end (seconds), text} entries — what a
+    subtitle track needs and the plain-text response can't provide. Kept
+    separate from _transcribe_one_file (rather than a mode flag on it) so
+    every other caller — which only ever wants the plain text — doesn't pay
+    for parsing a heavier response it doesn't use. Returns (text,
+    segments); raises WhisperError exactly like _transcribe_one_file."""
+    url = effective_whisper_url()
+    if not url:
+        raise WhisperError("Whisper isn't configured (no Whisper URL set) — see the AI page's 🎙 Whisper tab.")
+    if not path.is_file():
+        raise WhisperError(f"Audio file not found: {path.name}")
+    send_path = path
+    if denoise:
+        send_path = await denoise_audio_file(path)
+    data = {
+        "response_format": "verbose_json",
+        "language": language.strip() or "auto",
+        "beam_size": "5",
+        "entropy_thold": "2.6",
+    }
+    if glossary.strip():
+        data["prompt"] = glossary.strip()
+        data["carry_initial_prompt"] = "true"
+    try:
+        try:
+            async with _httpx.AsyncClient(timeout=WHISPER_TIMEOUT_SECONDS) as c:
+                with send_path.open("rb") as f:
+                    r = await c.post(
+                        f"{url}/inference",
+                        files={"file": (send_path.name, f, "application/octet-stream")},
+                        data=data,
+                    )
+        except (_httpx.TimeoutException, TimeoutError) as exc:
+            _log.warning("whisper transcription timed out: %s", exc)
+            raise WhisperError(f"Whisper timed out after {WHISPER_TIMEOUT_SECONDS}s — the clip may be too long, or the server is overloaded.") from exc
+        except Exception as exc:
+            _log.warning("whisper transcription unreachable: %s: %s", type(exc).__name__, exc)
+            raise WhisperError(f"Could not reach Whisper: {type(exc).__name__}: {exc}") from exc
+        if r.status_code != 200:
+            _log.warning("whisper transcription failed: HTTP %s: %s", r.status_code, r.text[:300])
+            raise WhisperError(f"Whisper returned HTTP {r.status_code}: {r.text[:200]}")
+        try:
+            body = r.json()
+            text = (body.get("text") or "").strip()
+            segments = [
+                {"start": float(s.get("start", 0.0)), "end": float(s.get("end", 0.0)), "text": (s.get("text") or "").strip()}
+                for s in (body.get("segments") or [])
+                if (s.get("text") or "").strip()
+            ]
+            return text, segments
+        except Exception as exc:
+            _log.warning("whisper returned an unreadable response: %s", exc)
+            raise WhisperError(f"Whisper returned an unreadable response: {exc}") from exc
+    finally:
+        if send_path != path:
+            send_path.unlink(missing_ok=True)
+
+
+async def transcribe_audio_with_subtitles(path: Path, glossary: str = "", language: str = "", denoise: bool = False) -> tuple:
+    """Transcribe `path` (audio OR video — ffmpeg, which whisper.cpp shells
+    out to for any non-WAV input, decodes a video container's audio track
+    the same as a plain audio file) into both a plain transcript and a
+    WebVTT subtitle track in one Whisper pass per chunk, via
+    _transcribe_one_file_verbose. Long clips are split the same way
+    transcribe_audio splits them (_split_audio_into_chunks/
+    WHISPER_CHUNK_SECONDS); each chunk's segment timestamps are offset by
+    the real (ffprobe-measured) duration of every chunk before it, so the
+    subtitle timeline stays correct across chunk boundaries. See this
+    module's own "Transcript + subtitles" section comment for why this
+    doesn't share transcribe_audio's checkpoint/resume support.
+
+    Returns (plain_text, vtt_text) — both collapsed against a
+    whisper.cpp repetition-loop run first (_collapse_repeated_transcript_
+    lines / _collapse_repeated_segments). Raises WhisperError exactly like
+    transcribe_audio; the caller decides what an empty transcript means
+    (no error — a genuinely silent/captionless clip transcribes fine)."""
+    duration = await _probe_audio_duration(path)
+    if not duration or duration <= _WHISPER_CHUNK_MIN_DURATION:
+        text, segments = await _transcribe_one_file_verbose(path, glossary, language, denoise)
+        return _collapse_repeated_transcript_lines(text), _segments_to_vtt(_collapse_repeated_segments(segments))
+
+    chunks, tmpdir = await _split_audio_into_chunks(path, WHISPER_CHUNK_SECONDS)
+    try:
+        if len(chunks) == 1:
+            text, segments = await _transcribe_one_file_verbose(chunks[0], glossary, language, denoise)
+            return _collapse_repeated_transcript_lines(text), _segments_to_vtt(_collapse_repeated_segments(segments))
+
+        parts = []
+        all_segments = []
+        offset = 0.0
+        for chunk_path in chunks:
+            text, segments = await _transcribe_one_file_verbose(chunk_path, glossary, language, denoise)
+            parts.append(text)
+            all_segments.extend({"start": s["start"] + offset, "end": s["end"] + offset, "text": s["text"]} for s in segments)
+            chunk_duration = await _probe_audio_duration(chunk_path)
+            offset += chunk_duration if chunk_duration else WHISPER_CHUNK_SECONDS
+        plain_text = _collapse_repeated_transcript_lines("\n".join(p for p in parts if p))
+        vtt_text = _segments_to_vtt(_collapse_repeated_segments(all_segments))
+        return plain_text, vtt_text
+    finally:
+        if tmpdir:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 # ── Whisper model download ──────────────────────────────────────────────────
 # nd-world's own container and the "whisper" Compose service both mount the
 # same host directory (see docker-compose.yml/truenas-compose.yml), just at

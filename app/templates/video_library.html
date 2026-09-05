@@ -136,12 +136,20 @@
             {% if can_edit(request) and not c.visible_to_players %}<span class="video-clip-hidden-tag">hidden from players</span>{% endif %}
           </div>
           {% if c.description %}<div class="video-clip-desc">{{ c.description }}</div>{% endif %}
+          {% if c.transcript %}
+          <button type="button" class="btn-cancel" style="font-size:.68rem;padding:.15rem .5rem;margin-top:.3rem" onclick="videoToggleTranscript({{ c.id }})">📝 Transcript</button>
+          <pre id="video-transcript-{{ c.id }}" class="video-clip-transcript" style="display:none">{{ c.transcript }}</pre>
+          {% endif %}
         </div>
         <video controls preload="{{ 'none' if c.poster_url else 'metadata' }}" src="{{ c.file_url }}"
                {% if c.poster_url %}poster="{{ c.poster_url }}"{% endif %}
-               style="width:100%;max-width:360px;border-radius:4px;background:#000"></video>
+               style="width:100%;max-width:360px;border-radius:4px;background:#000">
+          {% if c.subtitles_vtt %}<track kind="subtitles" label="Auto-generated" default src="data:text/vtt;charset=utf-8,{{ c.subtitles_vtt|urlencode }}">{% endif %}
+        </video>
         {% if can_edit(request) %}
         <div class="video-clip-actions">
+          <button type="button" class="btn-cancel" id="video-transcribe-btn-{{ c.id }}" title="Generate an AI transcript + subtitles via Whisper"
+                  style="font-size:.75rem;padding:.25rem .6rem" onclick="videoTranscribe({{ c.id }})">🎙{{ ' Re-transcribe' if c.transcript else ' Transcribe' }}</button>
           <button type="button" class="btn-cancel" style="font-size:.75rem;padding:.25rem .6rem" onclick="videoToggleEdit({{ c.id }})">✏ Edit</button>
           <form method="post" action="{{ ('/video/' + c.id|string + '/delete')|wq }}" onsubmit="return confirm('Delete this clip? This can\'t be undone.');" style="display:inline">
             <button type="submit" class="btn-cancel" style="font-size:.75rem;padding:.25rem .6rem;border-color:#a33;color:#e07">🗑 Delete</button>
@@ -196,6 +204,7 @@
 .video-clip-desc { font-size:.78rem; color:var(--text-dim); margin-top:.15rem; }
 .video-clip-actions { display:flex; gap:.4rem; flex-shrink:0; }
 .video-clip-edit-form { flex-basis:100%; margin-top:.5rem; padding-top:.6rem; border-top:1px solid var(--border); }
+.video-clip-transcript { white-space:pre-wrap; word-break:break-word; font-family:inherit; font-size:.8rem; color:var(--text-dim); background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.5rem .6rem; margin:.3rem 0 0; max-height:240px; overflow:auto; }
 </style>
 <script src="/static/js/file-dropzone.js"></script>
 <script>
@@ -338,6 +347,34 @@ async function videoUploadChunked(file, opts) {
   if (opts.name) fd.append('name', opts.name);
   const res = await fetch('/video/upload/complete', { method: 'POST', body: fd });
   if (!res.ok) throw await videoUploadErrorFrom(res);
+}
+
+// ── AI transcript + subtitles ────────────────────────────────────────────────
+// Unlike audio_library.html's own version of this button, no custom caption
+// wiring is needed here — a <video>'s embedded <track kind="subtitles"
+// default> already gets a native caption overlay and CC toggle from the
+// browser itself.
+
+function videoToggleTranscript(id) {
+  const el = document.getElementById('video-transcript-' + id);
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function videoTranscribe(id) {
+  const btn = document.getElementById('video-transcribe-btn-' + id);
+  if (!btn) return;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Transcribing…';
+  try {
+    const res = await fetch('/video/' + id + '/transcribe', { method: 'POST' });
+    if (!res.ok) throw await videoUploadErrorFrom(res);
+    window.location.reload();
+  } catch (err) {
+    alert((err && err.message) || 'Transcription failed.');
+    btn.disabled = false;
+    btn.textContent = original;
+  }
 }
 </script>
 {% endblock %}

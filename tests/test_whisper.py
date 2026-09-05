@@ -1510,3 +1510,100 @@ async def test_transcribe_partial_transcript_on_whisper_error_includes_the_resum
         await ai_module.transcribe_audio(f, resume=resume)
     assert "part 0 from before the restart" in exc_info.value.partial_transcript
     assert "part 1" in exc_info.value.partial_transcript
+
+
+# ── transcribe_audio_with_subtitles()'s chunking orchestration ─────────────
+# Sibling to transcribe_audio, for callers (app/routers/audio.py, video.py)
+# that also need a WebVTT subtitle track — reuses the same _probe_audio_
+# duration/_split_audio_into_chunks helpers tested above, but calls
+# _transcribe_one_file_verbose (response_format="verbose_json") instead of
+# _transcribe_one_file, and has no checkpoint/resume support (see its own
+# docstring for why).
+
+@pytest.mark.asyncio
+async def test_transcribe_with_subtitles_skips_chunking_for_short_clip(tmp_path, monkeypatch):
+    async def fake_probe(path):
+        return 60.0
+
+    async def fake_transcribe_one_verbose(path, glossary, language, denoise=False):
+        return "short clip text", [{"start": 0.0, "end": 1.0, "text": "short clip text"}]
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file_verbose", fake_transcribe_one_verbose)
+
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"x")
+    text, vtt = await ai_module.transcribe_audio_with_subtitles(f)
+    assert text == "short clip text"
+    assert "WEBVTT" in vtt
+    assert "short clip text" in vtt
+    assert "00:00:00.000 --> 00:00:01.000" in vtt
+
+
+@pytest.mark.asyncio
+async def test_transcribe_with_subtitles_offsets_segments_across_chunks(tmp_path, monkeypatch):
+    chunk_paths = [tmp_path / "c1.mp3", tmp_path / "c2.mp3"]
+    for p in chunk_paths:
+        p.write_bytes(b"x")
+
+    async def fake_probe(path):
+        # Called once up front for the whole file (returns "long"), then
+        # once per chunk afterward (each chunk is really 100s) — the
+        # per-chunk offset math is exactly what this test is checking.
+        return 3600.0 if path not in chunk_paths else 100.0
+
+    async def fake_split(path, chunk_seconds):
+        return chunk_paths, None
+
+    async def fake_transcribe_one_verbose(path, glossary, language, denoise=False):
+        i = chunk_paths.index(path)
+        return f"part {i}", [{"start": 5.0, "end": 10.0, "text": f"part {i}"}]
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_split_audio_into_chunks", fake_split)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file_verbose", fake_transcribe_one_verbose)
+
+    f = tmp_path / "long.mp3"
+    f.write_bytes(b"x")
+    text, vtt = await ai_module.transcribe_audio_with_subtitles(f)
+    assert text == "part 0\npart 1"
+    # Chunk 0's cue keeps its own timing; chunk 1's is offset by chunk 0's
+    # real (100s) duration, not by WHISPER_CHUNK_SECONDS.
+    assert "00:00:05.000 --> 00:00:10.000" in vtt
+    assert "00:01:45.000 --> 00:01:50.000" in vtt
+
+
+@pytest.mark.asyncio
+async def test_transcribe_with_subtitles_collapses_repetition_loop_in_segments(tmp_path, monkeypatch):
+    async def fake_probe(path):
+        return 60.0
+
+    async def fake_transcribe_one_verbose(path, glossary, language, denoise=False):
+        segments = [{"start": float(i), "end": float(i + 1), "text": "loop"} for i in range(6)]
+        return "\n".join(s["text"] for s in segments), segments
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file_verbose", fake_transcribe_one_verbose)
+
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"x")
+    text, vtt = await ai_module.transcribe_audio_with_subtitles(f)
+    assert text == "loop"  # _collapse_repeated_transcript_lines already covers the plain-text side
+    assert vtt.count("-->") == 1  # the 6 identical segments collapsed into a single cue
+
+
+@pytest.mark.asyncio
+async def test_transcribe_with_subtitles_propagates_whisper_error(tmp_path, monkeypatch):
+    async def fake_probe(path):
+        return 60.0
+
+    async def failing_transcribe_one_verbose(path, glossary, language, denoise=False):
+        raise ai_module.WhisperError("boom")
+
+    monkeypatch.setattr(ai_module, "_probe_audio_duration", fake_probe)
+    monkeypatch.setattr(ai_module, "_transcribe_one_file_verbose", failing_transcribe_one_verbose)
+
+    f = tmp_path / "clip.mp3"
+    f.write_bytes(b"x")
+    with pytest.raises(ai_module.WhisperError):
+        await ai_module.transcribe_audio_with_subtitles(f)

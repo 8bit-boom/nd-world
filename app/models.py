@@ -764,6 +764,17 @@ class AudioClip(Base):
     visible_to_players = Column(Boolean, default=True)
     album_id = Column(Integer, ForeignKey("audio_albums.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # AI-generated via Whisper (see app.ai.transcribe_audio_with_subtitles and
+    # POST /audio/{id}/transcribe) — both blank until a GM/assistant clicks
+    # "Transcribe". transcript is the plain text (shown as a collapsible
+    # block to anyone who can already see the clip); subtitles_vtt is a
+    # WebVTT track built from Whisper's segment timestamps, embedded as a
+    # data: URI on the clip's <audio> element so a <track> can drive live
+    # captions via the browser's own TextTrack API (audio has no visual
+    # surface to render a native caption overlay onto, unlike video).
+    # Re-running "Transcribe" overwrites both.
+    transcript = Column(Text, default="")
+    subtitles_vtt = Column(Text, default="")
 
 
 class VideoAlbum(Base):
@@ -801,6 +812,13 @@ class VideoClip(Base):
     visible_to_players = Column(Boolean, default=True)
     album_id = Column(Integer, ForeignKey("video_albums.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Same AI-generated pair as AudioClip's own transcript/subtitles_vtt —
+    # see that class's docstring. Here subtitles_vtt also drives a real
+    # native <track kind="subtitles"> on the <video> element (a video DOES
+    # have a surface to render captions on, unlike audio), on top of the
+    # same collapsible transcript block.
+    transcript = Column(Text, default="")
+    subtitles_vtt = Column(Text, default="")
 
 
 class PageAlbum(Base):

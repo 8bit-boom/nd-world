@@ -539,7 +539,7 @@ def _is_assistant_safe(method: str, path: str) -> bool:
     # management; GETs and the read-only player view are already player-safe.
     if method == "POST" and (path.startswith("/audio/albums/")
                              or path in ("/audio/upload", "/audio/upload/chunk", "/audio/upload/complete")
-                             or re.match(r"^/audio/\d+/(edit|delete)$", path)):
+                             or re.match(r"^/audio/\d+/(edit|delete|transcribe)$", path)):
         return True
     if path == "/api/audio/clips" and method == "GET":
         # Session-page "choose from Audio Library" picker JSON.
@@ -548,7 +548,7 @@ def _is_assistant_safe(method: str, path: str) -> bool:
     # preferences — a world upload-policy setting) stays GM-only.
     if method == "POST" and (path.startswith("/video/albums/")
                              or path in ("/video/upload", "/video/upload/chunk", "/video/upload/complete")
-                             or re.match(r"^/video/\d+/(edit|delete)$", path)):
+                             or re.match(r"^/video/\d+/(edit|delete|transcribe)$", path)):
         return True
     # Background jobs — the unified view over every durable transcription job
     # (session recordings above all): assistants upload session recordings

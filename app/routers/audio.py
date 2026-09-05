@@ -22,6 +22,8 @@ from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Reque
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
+from .. import ai as _ai_module
+from .. import audio_jobs as _audio_jobs
 from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx, can_edit_content
 from ..models import AudioAlbum, AudioClip
@@ -161,15 +163,25 @@ def _descendant_albums(db: Session, root_id: int) -> list:
     return result
 
 
-def _delete_clip_file(clip: AudioClip) -> None:
+def _clip_abs_path(clip: AudioClip) -> Optional[Path]:
+    """Resolves clip.file_url back to its real path under _UPLOADS_DIR, the
+    same safe-resolve _delete_clip_file already does — factored out so
+    audio_transcribe below (which reads the file rather than deleting it)
+    doesn't duplicate the traversal check. None if the URL is missing/
+    malformed or doesn't resolve to a file that actually exists."""
     if not clip.file_url or not clip.file_url.startswith("/uploads/"):
-        return
+        return None
     root = _UPLOADS_DIR.resolve()
     try:
         path = (root / clip.file_url[len("/uploads/"):]).resolve()
     except (OSError, RuntimeError):
-        return
-    if path.is_relative_to(root) and path.is_file():
+        return None
+    return path if path.is_relative_to(root) and path.is_file() else None
+
+
+def _delete_clip_file(clip: AudioClip) -> None:
+    path = _clip_abs_path(clip)
+    if path:
         path.unlink()
 
 
@@ -485,6 +497,45 @@ async def audio_edit(
     db.commit()
     dest = f"/audio/albums/{clip.album_id}" if clip.album_id else "/audio"
     return RedirectResponse(dest, status_code=303)
+
+
+@router.post("/audio/{clip_id}/transcribe")
+async def audio_transcribe(
+    clip_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Generate an AI transcript + WebVTT subtitle track for one clip via
+    Whisper (see app.ai.transcribe_audio_with_subtitles) — honors the same
+    world-level glossary/language/denoise settings as every other Whisper
+    call in the app (Settings > AI page's Whisper tab). Synchronous, not a
+    background job: a soundboard/ambiance clip is bounded by
+    _effective_audio_bytes and typically much shorter than a session
+    recording, the class of upload the background-job system exists for
+    (see app/audio_jobs.py) — one blocking request here is an acceptable
+    trade for not needing a second job-polling UI just for this. Re-running
+    overwrites whatever transcript/subtitles the clip already had."""
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    clip = _clip_or_404(db, world.id, clip_id)
+    path = _clip_abs_path(clip)
+    if not path:
+        raise HTTPException(404, "Clip file not found")
+    glossary = _audio_jobs._glossary_for_world(world.id)
+    language = _audio_jobs._whisper_language_for_world(world.id)
+    denoise = _audio_jobs._denoise_for_world(world.id)
+    try:
+        transcript, vtt = await _ai_module.transcribe_audio_with_subtitles(
+            path, glossary=glossary, language=language, denoise=denoise,
+        )
+    except _ai_module.WhisperError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not transcript:
+        raise HTTPException(400, "Whisper transcribed this clip successfully but found no speech in it.")
+    clip.transcript = transcript
+    clip.subtitles_vtt = vtt
+    db.commit()
+    return JSONResponse({"ok": True})
 
 
 @router.post("/audio/{clip_id}/delete")

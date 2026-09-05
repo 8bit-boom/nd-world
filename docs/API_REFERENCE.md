@@ -501,6 +501,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/audio/upload` | GM / Assistant | Uploads one audio clip (single request, up to `MAX_AUDIO_UPLOAD_BYTES`). |
 | POST | `/audio/upload/chunk`, `/audio/upload/complete` | GM / Assistant | Client-split large-upload pair (see `app/uploads.py`) for a clip too big for a single request behind a reverse proxy's body-size cap. |
 | POST | `/audio/{clip_id}/edit` | GM / Assistant | Updates a clip's name/description/visibility/album. |
+| POST | `/audio/{clip_id}/transcribe` | GM / Assistant | Generates an AI transcript + WebVTT subtitle track via Whisper (`app.ai.transcribe_audio_with_subtitles`), honoring the world's glossary/language/denoise settings. Synchronous; overwrites any existing transcript/subtitles. |
 | POST | `/audio/{clip_id}/delete` | GM / Assistant | Deletes a clip and its file. |
 | GET | `/api/audio/clips` | Player | JSON clip listing for the soundboard/picker UIs, visibility-filtered. |
 
@@ -519,6 +520,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/video/upload` | GM / Assistant | Uploads one video clip (single request, up to `MAX_VIDEO_UPLOAD_BYTES`); converts to AV1 if the world has opted in, then generates a poster frame best-effort. |
 | POST | `/video/upload/chunk`, `/video/upload/complete` | GM / Assistant | Client-split large-upload pair, same as the Audio Library's. |
 | POST | `/video/{clip_id}/edit` | GM / Assistant | Updates a clip's name/description/visibility/album. |
+| POST | `/video/{clip_id}/transcribe` | GM / Assistant | Generates an AI transcript + WebVTT subtitle track via Whisper — same as the Audio Library's, and works directly on the video file (ffmpeg decodes its audio track). |
 | POST | `/video/{clip_id}/delete` | GM / Assistant | Deletes a clip and its file (and poster, if one was generated). |
 
 ## Gallery (Images)
