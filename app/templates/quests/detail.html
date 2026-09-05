@@ -81,11 +81,17 @@
       {% if quest %}
       <a href="#" onclick="event.preventDefault(); if(confirm('Delete this quest?')) document.getElementById('del-form').submit();"
          style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Delete</a>
-      <form id="del-form" method="post" action="/quests/{{ quest.id }}/delete" style="display:none"></form>
       {% endif %}
       <button type="submit" style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Save Quest</button>
     </div>
   </form>
+  {% if quest %}
+  <!-- Deliberately NOT nested inside the edit/save form above — a form
+       inside another form is invalid HTML; browsers silently drop the
+       inner one from the parsed DOM, which made this Delete button a
+       no-op (document.getElementById('del-form') returned null). -->
+  <form id="del-form" method="post" action="/quests/{{ quest.id }}/delete" style="display:none"></form>
+  {% endif %}
 
   {% if quest and quest.sub_quests %}
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-top:1.5rem">

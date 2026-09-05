@@ -12,7 +12,7 @@ from app import ai as ai_module
 from app.database import SessionLocal
 from app.models import AudioJob, Fact, GameSession, World
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, assert_no_nested_forms, login
 
 
 def _poll_until_terminal(client, url, timeout=5.0):
@@ -968,6 +968,22 @@ def test_live_audio_download_with_nothing_saved_is_400(client, seed):
     r = client.get(f"/api/sessions/{session_id}/live-audio/download")
     assert r.status_code == 400
     assert "No raw audio saved" in r.json()["detail"]
+
+
+def test_session_detail_delete_form_is_not_nested_inside_edit_form(client, seed):
+    """Regression test: the hidden #del-form the Delete confirm-dialog link
+    submits used to be written INSIDE the page's main edit/save <form> —
+    invalid HTML, silently dropped by every browser's parser, which made
+    the Delete button here a complete no-op even though POST /sessions/
+    {id}/delete itself (see the test right below) works fine when hit
+    directly. See assert_no_nested_forms's own docstring (tests/conftest.py)
+    for why pytest's TestClient can't catch this class of bug on its own."""
+    session_id = _make_session(seed.world_a)
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.get(f"/sessions/{session_id}")
+    assert r.status_code == 200
+    assert 'id="del-form"' in r.text
+    assert_no_nested_forms(r.text)
 
 
 def test_session_delete_removes_raw_audio_tree(client, seed, monkeypatch):

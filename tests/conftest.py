@@ -190,3 +190,46 @@ def login(c, email, password):
     r = c.post("/login", data={"email": email, "password": password, "next": "/"}, follow_redirects=False)
     assert r.status_code == 303, f"login failed for {email}: {r.status_code} {r.text[:300]}"
     return c
+
+
+def assert_no_nested_forms(html_text: str) -> None:
+    """A <form> nested inside another <form> is invalid HTML — browsers
+    silently drop the inner <form> START tag from the parsed DOM entirely
+    (it never becomes a real element), which is exactly how several
+    "Delete" buttons across this app (Sessions, Entity Templates, Quests,
+    Random Tables) went quietly non-functional: each page's hidden
+    #del-form (the JS-submit target for a confirm() dialog) was written
+    inside the page's main edit/save <form>, so document.getElementById
+    ('del-form').submit() always ran against a null element. pytest's
+    TestClient never renders/parses HTML the way a browser does, so this
+    class of bug is invisible to a plain status-code/response-text
+    assertion — this walks the actual tag tree with html.parser to catch
+    a repeat, on this page or a new one."""
+    import html.parser
+
+    class _FormNestingChecker(html.parser.HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.depth = 0
+            self.max_depth = 0
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "form":
+                self.depth += 1
+                self.max_depth = max(self.max_depth, self.depth)
+
+        def handle_startendtag(self, tag, attrs):
+            # Only for a genuinely self-closed <form ... /> — guarded on
+            # `tag` since pages have plenty of OTHER self-closing tags
+            # (<input ... />) that must never touch this counter.
+            if tag == "form":
+                self.handle_starttag(tag, attrs)
+                self.depth -= 1
+
+        def handle_endtag(self, tag):
+            if tag == "form":
+                self.depth -= 1
+
+    checker = _FormNestingChecker()
+    checker.feed(html_text)
+    assert checker.max_depth <= 1, "a <form> is nested inside another <form> — browsers drop the inner one"

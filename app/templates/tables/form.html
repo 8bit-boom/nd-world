@@ -59,11 +59,17 @@
       <a href="/tables/{{ tbl.id }}/delete"
          onclick="event.preventDefault(); if(confirm('Delete this table?')) document.getElementById('del-form').submit();"
          style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.5rem 1.1rem;font-size:.85rem;border-radius:3px;text-decoration:none">Delete</a>
-      <form id="del-form" method="post" action="/tables/{{ tbl.id }}/delete" style="display:none"></form>
       {% endif %}
       <button type="submit" style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Save Table</button>
     </div>
   </form>
+  {% if tbl and not tbl.is_builtin %}
+  <!-- Deliberately NOT nested inside the edit/save form above — a form
+       inside another form is invalid HTML; browsers silently drop the
+       inner one from the parsed DOM, which made this Delete button a
+       no-op (document.getElementById('del-form') returned null). -->
+  <form id="del-form" method="post" action="/tables/{{ tbl.id }}/delete" style="display:none"></form>
+  {% endif %}
 </div>
 
 <style>
