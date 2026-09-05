@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import '_ai_assist_panel.html' as _aa %}
 {% block title %}Edit Home Page — {{ edit_world.name }}{% endblock %}
 {% block content %}
 <div class="form-page">
@@ -41,6 +42,7 @@
 
     <div class="form-group">
       <label for="welcome-md">Welcome Message <small>(Markdown, optional)</small></label>
+      {{ _aa.ai_assist_panel('hom', '✨ AI assist — welcome message') }}
       <textarea id="welcome-md" name="home_welcome_md" rows="6" placeholder="Session 12 is next Tuesday — see the Quick Links below for prep notes."
                 style="font-family:var(--font);font-size:.85rem">{{ edit_world.home_welcome_md or '' }}</textarea>
     </div>
@@ -358,5 +360,14 @@ document.getElementById('home-form').addEventListener('submit', function() { syn
 renderAll();
 renderPinned();
 renderHiddenKindsChecklist();
+</script>
+<script src="/static/js/ai-assist.js"></script>
+<script>
+ndAiAssist('hom', {
+  ops: ['improve', 'expand', 'summarize', 'translate', 'custom'],
+  surface: 'home-edit',
+  contentSelector: '#welcome-md',
+  metaSelectors: { name: () => 'Home welcome message' },
+});
 </script>
 {% endblock %}

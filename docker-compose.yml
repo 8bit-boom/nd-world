@@ -137,7 +137,10 @@ services:
         exec ollama serve
     # To pull a model after first start:
     #   docker compose exec ollama ollama pull gemma4:26b
-    # For NVIDIA GPU, uncomment the deploy block below:
+    # For an NVIDIA GPU: docker-compose.gpu.yml in this repo is a ready
+    # override (docker compose -f docker-compose.yml -f docker-compose.gpu.yml
+    # up -d), or uncomment the deploy block below. Full walkthrough,
+    # including V100/Volta specifics: docs/GPU_SETUP.md
     # deploy:
     #   resources:
     #     reservations:

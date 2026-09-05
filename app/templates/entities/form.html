@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import '_ai_assist_panel.html' as _aa %}
 {% block title %}{% if entity %}Edit {{ entity.name }}{% else %}New {{ kind|capitalize }}{% endif %} — N&D World{% endblock %}
 {% block content %}
 <div class="form-page">
@@ -104,6 +105,7 @@
         <button type="button" id="ai-gen-btn" onclick="aiGenerate()" style="background:#1a1a2e;border:1px solid var(--neon);color:var(--neon);border-radius:4px;padding:.3rem .7rem;cursor:pointer;font-size:.82rem">✨ Generate with AI</button>
         <span id="ai-gen-status" style="font-size:.8rem;color:#888"></span>
       </div>
+      {{ _aa.ai_assist_panel('ent') }}
       <textarea name="body" id="body-field" rows="16" placeholder="# History&#10;…" data-fmt>{{ entity.body if entity else '' }}</textarea>
     </div>
 
@@ -516,6 +518,56 @@ async function aiGenerate() {
     btn.disabled = false;
   }
 }
+
+});
+</script>
+<script src="/static/js/ai-assist.js"></script>
+<script>
+// ✨ AI assist panel (shared — see /static/js/ai-assist.js). The suggest op
+// returns {summary, tags, subtype, folder}; each gets an Apply button that
+// fills the matching form field, so nothing is written without a click.
+ndAiAssist('ent', {
+  ops: ['improve', 'expand', 'summarize', 'suggest', 'translate', 'custom'],
+  surface: 'entity-form',
+  contentSelector: '#body-field',
+  metaSelectors: {
+    kind: () => document.getElementById('kind-select').selectedOptions[0].textContent.trim(),
+    name: 'input[name="name"]',
+    summary: 'input[name="summary"]',
+    tags: 'input[name="tags"]',
+  },
+  onData: (data, ui) => {
+    ui.resultData.innerHTML = '';
+    const targets = {
+      summary: document.querySelector('input[name="summary"]'),
+      tags: document.querySelector('input[name="tags"]'),
+      folder: document.querySelector('input[name="folder"]'),
+    };
+    Object.entries(data).forEach(([key, value]) => {
+      if (!value) return;
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;gap:.5rem;align-items:center;margin-bottom:.3rem;font-size:.8rem';
+      const label = document.createElement('span');
+      label.style.color = 'var(--text-dim)';
+      label.textContent = key + ':';
+      const text = document.createElement('span');
+      text.style.color = 'var(--text)';
+      text.textContent = value;
+      row.append(label, text);
+      const el = targets[key];
+      if (el) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'ig-btn';
+        b.textContent = 'Apply ' + key;
+        b.onclick = () => { el.value = value; ui.setStatus('Applied ' + key + '.', '#4f4'); };
+        row.appendChild(b);
+      }
+      ui.resultData.appendChild(row);
+    });
+    ui.setStatus('Suggestions ready — apply the ones you want.', 'var(--text-dim)');
+  },
+});
 </script>
 <script src="/static/js/text-format-toolbar.js"></script>
 <script src="/static/js/file-dropzone.js"></script>

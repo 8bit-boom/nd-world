@@ -147,3 +147,51 @@ def format_context_from_entities(
                 lines.append(f"  {excerpt}")
                 excerpt_total += len(excerpt)
     return "\n".join(lines)
+
+
+def smart_world_context(
+    db: Session, world_id: int, query: str,
+    entity_limit: int = 25, notes_limit: int = 5,
+) -> tuple:
+    """The interactive-RAG half of main.py's /api/ai/world-context-smart
+    (AI Chat's Smart Context panel), factored to this leaf module so the
+    AI-assist routes (app/routers/ai.py — which, like every router, can't
+    import from main.py) get the identical retrieval behavior instead of a
+    drifting second copy. Returns (context, non_notes, notes):
+
+    - find_relevant_entities over the query (FTS5 with ILIKE fallback),
+    - a non-note top-up ordered kind/name when keyword search underfills
+      the entity limit (a query in a different language/script than the
+      World's entity names has no literal overlap for the keyword search
+      to match — the same gap app.audio_jobs._build_rag_context's own
+      top-up closes on the job path),
+    - a guaranteed-most-recent-notes block (ordered updated_at desc) up
+      to notes_limit beyond whatever the search itself surfaced.
+
+    Deliberately unfiltered (user=None) — the same visibility posture the
+    world-context-smart route already established for its GM + assistant
+    callers: this feeds content-editing surfaces, which the auth gate
+    already restricts to those tiers."""
+    entities = find_relevant_entities(db, world_id, query, limit=max(entity_limit, 0))
+    notes = [e for e in entities if e.kind == "note"]
+    non_notes = [e for e in entities if e.kind != "note"]
+    if entity_limit > 0 and len(non_notes) < entity_limit:
+        seen_ids = {e.id for e in entities}
+        topup_q = db.query(Entity).filter(Entity.world_id == world_id, Entity.kind != "note")
+        if seen_ids:
+            topup_q = topup_q.filter(~Entity.id.in_(seen_ids))
+        topup = topup_q.order_by(Entity.kind, Entity.name).limit(entity_limit - len(non_notes)).all()
+        non_notes = non_notes + topup
+    if notes_limit > 0:
+        note_entities = (
+            db.query(Entity)
+            .filter(Entity.world_id == world_id, Entity.kind == "note")
+            .order_by(Entity.updated_at.desc())
+            .limit(notes_limit)
+            .all()
+        )
+        seen_ids = {e.id for e in entities}
+        extra_notes = [e for e in note_entities if e.id not in seen_ids]
+        notes = notes + extra_notes
+    context = format_context_from_entities(non_notes + notes)
+    return context, non_notes, notes

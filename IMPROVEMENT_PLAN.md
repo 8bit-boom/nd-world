@@ -101,6 +101,23 @@ before a change is done**; every new HTTP route needs a row in
 | C3–C5 | If repo goes public: demo world, screenshots, shareable read-only snapshot | P2 | M | S–L |
 | C6/M7 | i18n, plugin architecture — **deferred** until demand exists | — | — | XL |
 
+## Phase 4 — AI everywhere + GPU (feat/ai-everywhere)
+
+Audit: docs/AI_EVERYWHERE_AUDIT.md is the full surface × AI matrix and the
+per-surface recipe for wiring the next one.
+
+| # | Item | Priority | Impact | Effort |
+|---|------|----------|--------|--------|
+| A1 | ✅ Shared AI-assist engine (app/ai_assist.py) — op registry, free-text + structured contracts, sentinel/degensation guards | P1 | H | M |
+| A2 | ✅ Assist routes: interactive (60k cap) + ai_assist job purpose; "assist" default-model surface | P1 | H | M |
+| A3 | ✅ Shared panel macro + ai-assist.js; rollout: entity form/detail/notes, races, professions, quests, tables, rules (job), parties, home, private notes | P1 | H | M |
+| A4 | ✅ Dashboard world-summary card (world_summary job, cached until Regenerate) | P2 | M | S |
+| A5 | ✅ MCP expansion to 20 tools: entity CRUD, notes, rules (gm-stripped for players), sessions (publish boundary), tables+roll, quests CRUD | P1 | H | M |
+| A6 | 🔲 Phase-2 surfaces: schematic scene generation, map overlay suggestions, gallery alt-text, importer text→entity_bulk, rules-RAG Q&A, semantic search, board connection hints (docs/AI_EVERYWHERE_AUDIT.md §5) | P2 | M | L |
+| V1 | ✅ docs/GPU_SETUP.md — NVIDIA GPU walkthrough incl. V100 (16/32GB) model picks, TrueNAS assignment, CUDA-13/driver-580 Volta caveats | P1 | H | S |
+| V2 | ✅ docker-compose.gpu.yml override + compose pointers + ollama_tuning Volta advisory | P1 | M | S |
+| V3 | 🔲 Optional: GPU-aware auto-tuning presets in Settings when ollama /api/ps exposes the GPU name | P3 | L | S |
+
 ## Standing rules
 
 - Keep the single-tenant, self-hosted philosophy — no rate limiting,

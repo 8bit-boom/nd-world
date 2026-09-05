@@ -452,7 +452,11 @@ def reset_hidden() -> None:
 # three surfaces already existed, since those jobs previously only fell
 # back to the single instance-wide default with no way to pin a different
 # model for recap work specifically, unlike every other surface here.
-DEFAULT_SURFACES = ("chat", "ask_ai", "image", "recap")
+# "assist" covers the shared AI-assist engine (app/ai_assist.py) — the
+# expand/improve/summarize/analyze/suggest panel every editor surface
+# embeds — so a GM can pin a fast small model for quick editorial ops
+# while keeping the bigger chat/recap models where depth matters.
+DEFAULT_SURFACES = ("chat", "ask_ai", "image", "recap", "assist")
 
 
 def get_defaults() -> dict:

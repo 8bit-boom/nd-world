@@ -1,0 +1,44 @@
+{# ── Shared AI-assist panel ─────────────────────────────────────────────
+   The ✨ AI panel every editor surface embeds. Rendering only — all
+   behavior lives in /static/js/ai-assist.js, which each page initializes
+   with its own field mapping:
+
+     {% import '_ai_assist_panel.html' as _aa %}
+     {{ _aa.ai_assist_panel('ent') }}
+     <script src="/static/js/ai-assist.js"></script>
+     <script>ndAiAssist('ent', { ops:[...], surface:'entity-form', ... })</script>
+
+   `pid` must be unique per page (element ids hang off it). The op list,
+   where results insert, and whether to use the background-job variant are
+   all per-page config — see ai-assist.js for the full cfg shape. #}
+{% macro ai_assist_panel(pid, title='✨ AI assist') %}
+<div id="{{ pid }}-root" style="border:1px solid var(--border);border-radius:6px;padding:.6rem .8rem;background:var(--bg2);margin:.6rem 0">
+  <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+    <span style="font-size:.78rem;color:var(--neon);font-weight:700;letter-spacing:.03em">{{ title }}</span>
+    <select id="{{ pid }}-op" class="ig-select" style="flex:1;min-width:160px"></select>
+    <button type="button" id="{{ pid }}-run" class="ig-btn" style="white-space:nowrap">▶ Run</button>
+  </div>
+  <input type="text" id="{{ pid }}-instruction" autocomplete="off"
+         placeholder="Optional instruction — required for Custom, target language for Translate"
+         onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('{{ pid }}-run').click();}"
+         style="width:100%;box-sizing:border-box;margin-top:.45rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:.8rem;padding:.32rem .5rem">
+  <details style="margin-top:.4rem">
+    <summary style="font-size:.75rem;color:var(--text-dim);cursor:pointer">⚙ Model · thinking · world context</summary>
+    <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;padding-top:.45rem;font-size:.8rem;color:var(--text-dim)">
+      <select id="{{ pid }}-model" class="ig-select" style="min-width:140px"><option value="">— default model —</option></select>
+      <label style="display:flex;gap:.3rem;align-items:center;cursor:pointer"><input type="checkbox" id="{{ pid }}-think">🧠 Thinking</label>
+      <label style="display:flex;gap:.3rem;align-items:center;cursor:pointer"><input type="checkbox" id="{{ pid }}-rag">🔍 World context (RAG)</label>
+      <span id="{{ pid }}-limits" hidden style="display:flex;gap:.4rem;align-items:center">
+        entities <input type="number" id="{{ pid }}-ent" value="15" min="0" style="width:3.4rem">
+        notes <input type="number" id="{{ pid }}-notes" value="5" min="0" style="width:3.4rem">
+      </span>
+    </div>
+  </details>
+  <div id="{{ pid }}-status" style="font-size:.78rem;margin-top:.45rem;min-height:1em;color:var(--text-dim)"></div>
+  <div id="{{ pid }}-result" hidden style="margin-top:.5rem">
+    <div id="{{ pid }}-result-data"></div>
+    <pre id="{{ pid }}-result-text" style="white-space:pre-wrap;max-height:300px;overflow:auto;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem;font-size:.82rem;margin:0;color:var(--text)"></pre>
+    <div id="{{ pid }}-result-actions" style="display:flex;gap:.4rem;margin-top:.4rem;flex-wrap:wrap"></div>
+  </div>
+</div>
+{% endmacro %}

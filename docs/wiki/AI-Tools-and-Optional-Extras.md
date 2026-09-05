@@ -1,5 +1,7 @@
 # AI Tools & Optional Extras
 
+> 🖥 **GPU acceleration**: Ollama and Whisper run dramatically faster on an NVIDIA GPU — see [docs/GPU_SETUP.md](../GPU_SETUP.md) (driver setup, TrueNAS assignment, V100 model picks and tuning).
+
 *Applies to: GM only.*
 
 All AI features run against a **local Ollama model** you configure — see the

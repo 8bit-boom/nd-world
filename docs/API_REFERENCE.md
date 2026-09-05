@@ -644,6 +644,11 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/ai/save-note` | GM / Assistant | Saves an AI chat response as a note on an entity. |
 | POST | `/api/ai/generate/entity-smart` | GM / Assistant | Generates a full draft entity (name/summary/body) from a prompt, with world context. |
 | POST | `/api/ai/entity-from-text` | GM / Assistant | Turns a pasted/dictated passage into a draft entity. |
+| POST | `/api/ai/assist` | GM / Assistant | One shared AI-assist operation (improve/expand/summarize/analyze/suggest/translate/custom/table_entries/...) on editor content — the ✨ panel every edit form embeds (app/ai_assist.py). Input-capped at 60k chars. |
+| POST | `/api/ai/assist-job` | GM / Assistant | The durable-job variant for big content (rules documents) — returns `{job_id}`. |
+| GET | `/api/ai/assist-job/{job_id}` | GM / Assistant | Poll an assist job; done rows return the run_assist result shape under `result`. |
+| POST | `/api/ai/world-summary` | GM / Assistant | Start (or regenerate) the dashboard's AI world-summary job. |
+| GET | `/api/ai/world-summary` | GM / Assistant | Latest world summary: `{recap, generated_at}`, `{pending: true}`, or empty. |
 | POST | `/api/ai/chat` | GM | Non-streaming chat completion. |
 | POST | `/api/ai/stream` | GM* | Streaming chat completion (SSE) — GM always; a player may if the active world's `players_can_ask_ai` is on. Accepts a per-request `options` (temperature/top_p/etc, clamped) and a `surface` for per-surface default-model fallback; the SSE stream leads with a `note` event if the requested model had to be fuzzy-matched to an available one. |
 | GET | `/api/ai/models` | GM | Lists available/known Ollama models with loaded/builtin flags. |
@@ -802,3 +807,15 @@ Every tool resolves the calling user from the bearer token and applies the exact
 | `search_entities(world_id, query, kind?)` | Player | Keyword search over entities, filtered by visibility. |
 | `list_quests(world_id, status?)` | Player | Lists quests, filtered by `Quest.visible_to_players`. |
 | `ask_chronicler(world_id, question)` | Player | Same filtered RAG chat as `POST /api/chronicler/ask`, callable from a phone conversation. |
+| `get_entity(entity_id)` | Player | Reads one entity in full (body included), visibility-checked like the web UI. |
+| `create_entity(world_id, kind, name, summary?, body?, subtype?, tags?, folder?, visible_to_players?)` | GM | Creates any kind of entity (incl. the world's custom kinds). |
+| `create_note(world_id, name, body, summary?, visible_to_players?)` | GM | Creates a lore note (kind `note`). |
+| `update_entity(entity_id, ...)` | GM | Partially edits an entity — only passed fields change. |
+| `delete_entity(entity_id)` | GM | Deletes an entity. |
+| `get_rules(world_id)` | Player | The world's rules markdown — GM token gets full source, player token gets `:::gm` blocks removed. |
+| `list_sessions(world_id)` | Player | Sessions newest-first; GM rows also flag whether a player recap is published. |
+| `get_session(session_id)` | Player | GM gets the GM summary; a player token gets only the PUBLISHED player summary. |
+| `list_tables(world_id)` | GM | Random tables available to the world (own + built-ins) with entry counts. |
+| `roll_table(table_id, times?)` | GM | Weighted roll, same mechanics as the UI's Roll button. |
+| `create_quest(world_id, title, ...)` | GM | Creates a quest. |
+| `update_quest(quest_id, ...)` | GM | Partially edits a quest. |

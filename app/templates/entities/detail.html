@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import '_ai_assist_panel.html' as _aa %}
 {% block title %}{{ entity.name }} — N&D World{% endblock %}
 {% block content %}
 {% if toc %}
@@ -162,6 +163,7 @@
         <button type="submit" class="btn-add-attr">+ Add note</button>
       </div>
     </form>
+    {{ _aa.ai_assist_panel('entn', '✨ AI assist — note') }}
 
     <details class="conn-section">
       <summary>Import note from file…</summary>
@@ -267,6 +269,10 @@
       </div>
     </div>
   </details>
+  {% endif %}
+
+  {% if can_edit(request) %}
+  {{ _aa.ai_assist_panel('entd', '✨ AI audit & assist') }}
   {% endif %}
 </article>
 {% if toc %}
@@ -620,5 +626,31 @@ document.addEventListener('keydown', e => {
 });
 </script>
 {% endif %}
+<script src="/static/js/ai-assist.js"></script>
+<script>
+// ✨ AI assist panels on the entity detail page. The audit panel works on
+// the RENDERED entity (body seeded below via tojson — it's not a form
+// field here), the note panel on the add-note textarea above.
+const _entdBody = {{ (entity.body or '') | tojson }};
+const _entdMeta = {
+  kind: {{ entity.kind | tojson }},
+  name: {{ entity.name | tojson }},
+  summary: {{ (entity.summary or '') | tojson }},
+  tags: {{ (entity.tags or '') | tojson }},
+};
+ndAiAssist('entd', {
+  ops: ['analyze', 'custom'],
+  surface: 'entity-detail',
+  getContent: () => _entdBody,
+  getMeta: () => _entdMeta,
+  actions: ['copy'],
+});
+ndAiAssist('entn', {
+  ops: ['improve', 'expand', 'translate', 'custom'],
+  surface: 'entity-note',
+  contentSelector: 'form.en-add-form textarea[name="content"]',
+  getMeta: () => ({ kind: _entdMeta.kind, name: _entdMeta.name }),
+});
+</script>
 <script src="/static/js/text-format-toolbar.js"></script>
 {% endblock %}

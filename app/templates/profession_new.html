@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import '_ai_assist_panel.html' as _aa %}
 {% block title %}New Profession — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
 <div class="page-header" style="display:flex;align-items:center;gap:1rem;padding:1.2rem 1.5rem .8rem;border-bottom:1px solid var(--border)">
@@ -42,6 +43,7 @@
 
   <div class="form-field">
     <label>Description (Markdown)</label>
+    {{ _aa.ai_assist_panel('prof', '✨ AI assist') }}
     <textarea name="body" rows="12"
               placeholder="## Core Mechanic&#10;Full profession description, abilities, lore…&#10;&#10;## Special Attributes&#10;Resource tracked, starting value, stat…"></textarea>
   </div>
@@ -80,5 +82,14 @@ function previewImg(input) {
   document.getElementById('preview-img').src = url;
   document.getElementById('preview-wrap').style.display = 'block';
 }
+</script>
+<script src="/static/js/ai-assist.js"></script>
+<script>
+ndAiAssist('prof', {
+  ops: ['expand', 'improve', 'summarize', 'suggest', 'translate', 'custom'],
+  surface: 'profession-new',
+  contentSelector: 'textarea[name="body"]',
+  metaSelectors: { kind: () => 'profession', name: 'input[name="name"]', summary: 'input[name="summary"]' },
+});
 </script>
 {% endblock %}

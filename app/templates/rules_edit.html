@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import '_ai_assist_panel.html' as _aa %}
 {% block title %}Edit Rules — {{ edit_world.name }}{% endblock %}
 {% block content %}
 <div class="form-page">
@@ -27,6 +28,7 @@
 
   <form method="post" action="/worlds/{{ edit_world.id }}/rules/edit" class="entity-form">
     <div class="form-group">
+      {{ _aa.ai_assist_panel('rls', '✨ AI assist — rules document') }}
       <textarea name="rules_md" rows="28" placeholder="# My System&#10;&#10;## Core Mechanic&#10;…" style="font-family:var(--font);font-size:.85rem" data-fmt>{{ edit_world.rules_md or '' }}</textarea>
     </div>
     <div class="form-group">
@@ -129,6 +131,22 @@
     </div>
   </details>
 </div>
+<script src="/static/js/ai-assist.js"></script>
+<script>
+// ✨ AI assist on the rules document — the job variant (cfg.job), since a
+// real rules file dwarfs the interactive cap and a whole-document rewrite
+// against a local model runs for minutes. rules_rewrite honors the
+// instruction ("tighten Part II", "explain the stamina rules more
+// clearly", …); improve/custom also available.
+ndAiAssist('rls', {
+  ops: ['rules_rewrite', 'improve', 'summarize', 'custom'],
+  defaultOp: 'rules_rewrite',
+  surface: 'rules-edit',
+  contentSelector: 'textarea[name="rules_md"]',
+  job: true,
+  actions: ['replace', 'copy'],
+});
+</script>
 <script src="/static/js/text-format-toolbar.js"></script>
 <script src="/static/js/file-dropzone.js"></script>
 {% endblock %}

@@ -998,6 +998,17 @@ class AudioJob(Base):
     # _heal_table_from_model pass, same as every other late-added audio_jobs
     # column.
     audience = Column(String(20), default="")
+    # purpose="ai_assist" only: the JSON blob of everything the op needs
+    # besides the input text (which lives in `transcript` like every other
+    # text-input job) and the shared per-job columns (model/think/use_rag/
+    # rag limits, extra_instructions): {op, surface, meta, instruction,
+    # lang}. Persisted on the row rather than passed to _run_job as a
+    # local so a resume/restart redoes the exact same operation, same
+    # contract every other AudioJob setting follows. Empty for every other
+    # purpose. Existing installs get the column via database._migrate's
+    # _heal_table_from_model pass, same as every other late-added
+    # audio_jobs column.
+    assist_params_json = Column(Text, default="")
     # Only meaningful for purpose="facts_parse": flipped to True by POST
     # /api/facts/bulk once the draft rows on this job's result_json have been
     # reviewed and saved as Facts (the request carries the job_id it came
