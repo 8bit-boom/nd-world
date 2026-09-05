@@ -8,7 +8,7 @@ SUBTYPES = {
     "event": ["corporate war", "outbreak", "disaster", "political", "yellow corruption", "discovery"],
     "item": ["weapon", "armor", "augment", "bio-augmentation", "drone", "husk", "vehicle", "oddity", "metal", "item"],
     "feat": ["common feat", "origin feat", "profession feat", "profession ability", "psy power", "race feat"],
-    "note": ["lore", "session note", "rumor", "prophecy", "theory"],
+    "note": ["lore", "session note", "rumor", "prophecy", "theory", "tale"],
     # Tier, matching the bundled race catalog under app/races/<tier>/*.md.
     "race": ["standard", "advanced", "exceptional"],
     # Tier, matching the bundled profession catalog under app/professions/<tier>/*.md.

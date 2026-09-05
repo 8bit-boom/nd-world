@@ -76,6 +76,44 @@
     </div>
   </div>
 
+  <!-- Facts → Folk tale / song -->
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .5rem">🎵 Turn Facts into a folk tale or song</h2>
+    <p style="font-size:.82rem;color:var(--text-dim);margin:0 0 .8rem">
+      Weaves the logged Facts into an in-world legend, tale, or song a bard or NPC might tell — a piece of flavor lore built from what actually happened, not a recap edit. Pick a session to scope it, or leave blank to draw on every fact in the world.
+    </p>
+    <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
+      <label style="font-size:.82rem;color:var(--text-dim)">Session</label>
+      <select id="tale-session">
+        <option value="">— all facts —</option>
+        {% for s in sessions.values() %}<option value="{{ s.id }}">#{{ s.session_num }} {{ s.title }}</option>{% endfor %}
+      </select>
+      <select id="tale-model" title="Which AI model writes the tale — see the AI page's Models tab" style="font-size:.78rem;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:.25rem .4rem">
+        <option value="">(default model)</option>
+      </select>
+      <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer">
+        <input type="checkbox" id="tale-think" style="width:auto"> 🧠 Thinking
+      </label>
+      <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
+             title="Retrieves relevant World entities/notes and gives the model that context for accuracy (correct names, places) — not extra plot facts to invent.">
+        <input type="checkbox" id="tale-rag-checkbox" style="width:auto"> 🔍 RAG
+      </label>
+      <input type="text" id="tale-instruction" placeholder="Optional style note — e.g. &quot;as a sailor's shanty&quot;"
+             style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
+      <button type="button" id="tale-run-btn" style="background:var(--neon);color:#000;border:none;padding:.4rem 1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Generate</button>
+      <span id="tale-status" style="font-size:.8rem;color:var(--text-dim)"></span>
+    </div>
+    <div id="tale-result-wrap" style="display:none;margin-top:.8rem;padding-top:.8rem;border-top:1px solid var(--border)">
+      <pre id="tale-result-text" style="white-space:pre-wrap;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem .75rem;font-size:.85rem;max-height:320px;overflow:auto;margin:0;font-family:var(--font)"></pre>
+      <div style="display:flex;gap:.5rem;margin-top:.5rem;flex-wrap:wrap;align-items:center">
+        <input type="text" id="tale-name-field" placeholder="Tale name" maxlength="256"
+               style="flex:1;min-width:180px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
+        <button type="button" id="tale-save-btn" onclick="factsSaveTale()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.35rem .8rem;font-size:.8rem;border-radius:3px;cursor:pointer">💾 Save as world lore</button>
+        <span id="tale-save-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+      </div>
+    </div>
+  </div>
+
   <!-- Quick add -->
   <form method="post" action="{{ '/facts/new'|wq }}" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem;margin-bottom:1rem;display:flex;gap:.6rem;flex-wrap:wrap;align-items:flex-end">
     <div class="form-group" style="flex:1;min-width:220px;margin:0">
@@ -577,6 +615,82 @@ document.getElementById('draft-save-btn').addEventListener('click', async () => 
     btn.disabled = false;
   }
 });
+
+// ── Facts → Folk tale / song ─────────────────────────────────────────────
+(async function loadTaleModelOptions() {
+  const sel = document.getElementById('tale-model');
+  try {
+    const res = await fetch('/api/ai/models');
+    if (!res.ok) return;
+    const d = await res.json();
+    (d.models || []).forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label || m.id;
+      sel.appendChild(opt);
+    });
+  } catch (e) { /* picker just stays on "(default model)" */ }
+})();
+
+async function factsGenerateTale() {
+  const status = document.getElementById('tale-status');
+  const runBtn = document.getElementById('tale-run-btn');
+  const resultWrap = document.getElementById('tale-result-wrap');
+  const sessionSel = document.getElementById('tale-session');
+  const sessionOpt = sessionSel.selectedOptions[0];
+  runBtn.disabled = true;
+  status.textContent = 'Weaving a tale…';
+  resultWrap.style.display = 'none';
+  try {
+    const res = await fetch('/api/facts/folk-tale', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        game_session_id: sessionSel.value || null,
+        model: document.getElementById('tale-model').value,
+        think: document.getElementById('tale-think').checked,
+        use_rag: document.getElementById('tale-rag-checkbox').checked,
+        instruction: document.getElementById('tale-instruction').value.trim(),
+      }),
+    });
+    if (!res.ok) throw await ndApiErrorFrom(res);
+    const data = await res.json();
+    document.getElementById('tale-result-text').textContent = data.text || '';
+    const sessionLabel = sessionSel.value && sessionOpt ? sessionOpt.textContent.replace(/^#\d+\s*/, '') : '';
+    document.getElementById('tale-name-field').value = sessionLabel ? ('Tale: ' + sessionLabel) : 'A Tale From the Table';
+    document.getElementById('tale-save-status').textContent = '';
+    resultWrap.style.display = 'block';
+    resultWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    status.textContent = '';
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  } finally {
+    runBtn.disabled = false;
+  }
+}
+document.getElementById('tale-run-btn').addEventListener('click', factsGenerateTale);
+
+async function factsSaveTale() {
+  const btn = document.getElementById('tale-save-btn');
+  const status = document.getElementById('tale-save-status');
+  const name = document.getElementById('tale-name-field').value.trim();
+  const text = document.getElementById('tale-result-text').textContent;
+  if (!text.trim()) return;
+  btn.disabled = true;
+  status.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/ai/save-note', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: name || 'Untitled Tale', content: text, subtype: 'tale' }),
+    });
+    if (!res.ok) throw await ndApiErrorFrom(res);
+    const data = await res.json();
+    status.innerHTML = '✓ Saved — <a href="/entity/' + data.id + '" style="color:var(--neon)">view</a>';
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
 </script>
 <script src="/static/js/text-format-toolbar.js"></script>
 {% endblock %}

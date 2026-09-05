@@ -56,9 +56,15 @@ OP_RULES_REWRITE = "rules_rewrite"
 # assembles the world state and hands it in as `content`). Accepted by
 # run_assist but deliberately not offered by any editor panel.
 OP_WORLD_SUMMARY = "world_summary"
+# Turns a session recap or a joined list of Facts into an in-world folk
+# tale/legend/song — see app/routers/sessions.py's and app/routers/facts.py's
+# own "🎵 folk tale" buttons. Content is the recap/facts text; world_context
+# (RAG) is what keeps names/places consistent with established lore, same as
+# every other op here.
+OP_FOLK_TALE = "folk_tale"
 FREE_TEXT_OPS = {
     OP_EXPAND, OP_IMPROVE, OP_SUMMARIZE, OP_ANALYZE, OP_TRANSLATE,
-    OP_CUSTOM, OP_RULES_REWRITE, OP_WORLD_SUMMARY,
+    OP_CUSTOM, OP_RULES_REWRITE, OP_WORLD_SUMMARY, OP_FOLK_TALE,
 }
 
 # Structured ops — result is JSON the surface applies field-by-field.
@@ -139,6 +145,22 @@ _WORLD_SUMMARY_SYSTEM = _BASE_SYSTEM + (
     "state digest: a few short paragraphs covering where the story stands, "
     "the important people and places, and the open threads a GM should keep "
     "in mind. Do not invent facts beyond the digest. Output only the summary."
+)
+
+_FOLK_TALE_SYSTEM = _BASE_SYSTEM + (
+    " Turn the supplied session recap or facts into a short in-world folk "
+    "tale, legend, or song that NPCs in this world might tell or sing about "
+    "the party's deeds — the way real oral tradition immortalizes notable "
+    "events. Write as an in-world narrator would (a bard, a tavern "
+    "storyteller, a chronicler): evocative and a little larger-than-life, "
+    "with a clear opening and closing the way a told-and-retold story has. "
+    "If verse or a ballad structure fits the world's tone, use it (refrains, "
+    "rhyme, or repeated lines); otherwise write vivid narrative prose. Use "
+    "the same named characters, places and factions the source material and "
+    "any supplied world lore establish — invent color and turns of phrase, "
+    "not new plot facts. Keep it to a few short paragraphs or verses; this "
+    "is a piece of in-world flavor text, not a chapter. Output only the "
+    "tale/song text, no preamble or explanation."
 )
 
 _SUGGEST_SYSTEM = _BASE_SYSTEM + (
@@ -347,6 +369,7 @@ async def run_assist(
         OP_CUSTOM: _CUSTOM_SYSTEM,
         OP_RULES_REWRITE: _RULES_REWRITE_SYSTEM,
         OP_WORLD_SUMMARY: _WORLD_SUMMARY_SYSTEM,
+        OP_FOLK_TALE: _FOLK_TALE_SYSTEM,
     }
     system = system_by_op[op]
     if op == OP_TRANSLATE:
@@ -355,7 +378,7 @@ async def run_assist(
         # For translate the instruction box holds the language, not a task —
         # don't ship it twice ("GM instruction: Spanish" reads as noise).
         user = _compose_user(meta, content)
-    if op in (OP_EXPAND, OP_IMPROVE, OP_SUMMARIZE, OP_TRANSLATE, OP_RULES_REWRITE, OP_WORLD_SUMMARY):
+    if op in (OP_EXPAND, OP_IMPROVE, OP_SUMMARIZE, OP_TRANSLATE, OP_RULES_REWRITE, OP_WORLD_SUMMARY, OP_FOLK_TALE):
         _require_content(op, content)
     elif op in (OP_ANALYZE,) and not user.strip():
         raise ValueError("Nothing to analyze — add a name or some content first.")

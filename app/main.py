@@ -2951,6 +2951,11 @@ def ai_world_context_smart(
 class _SaveNoteBody(BaseModel):
     title: str
     content: str
+    # Optional — e.g. "tale" for a folk-tale/song saved from the Sessions or
+    # Facts page's 🎵 button (see app.ai_assist's folk_tale op). Blank for
+    # every pre-existing caller (the King in Yellow easter egg), which just
+    # leaves Entity.subtype NULL exactly as before this field existed.
+    subtype: str = ""
 
 
 @app.post("/api/ai/save-note")
@@ -2966,6 +2971,7 @@ def ai_save_note(
     note = Entity(
         world_id=world.id,
         kind="note",
+        subtype=body.subtype.strip()[:64] or None,
         name=body.title,
         body=body.content,
         summary=body.content[:120],

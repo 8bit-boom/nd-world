@@ -47,6 +47,7 @@
           <button type="button" class="ai-recap-btn" onclick="aiExpandNotes()">✨ Expand notes into recap</button>
           <button type="button" class="ai-recap-btn" onclick="aiCondenseRecap()">✂ Condense recap</button>
           <button type="button" class="ai-recap-btn" onclick="aiCondenseRecapFit()" title="Temporarily sizes the model's context window to fit this whole pasted summary (then reverts) — use for a long summary the normal context would truncate">📏 Condense (fit context)</button>
+          <button type="button" class="ai-recap-btn" onclick="aiFolkTale()" title="Turns the Summary above into an in-world folk tale, legend, or song a bard/NPC might tell — a piece of flavor lore, not a recap edit, so it doesn't touch the Summary field itself">🎵 Turn into folk tale/song</button>
           {% if gsession %}
           <button type="button" class="ai-recap-btn" onclick="aiSummarizeFromFacts()">📎 Summarize from Facts</button>
           {% if gsession.summary %}
@@ -72,6 +73,17 @@
                    style="width:50px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.2rem .35rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
           </label>
           <span id="ai-recap-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+        </div>
+
+        <div id="tale-result-wrap" style="display:none;margin-top:.7rem;padding-top:.7rem;border-top:1px solid var(--border)">
+          <div style="font-size:.72rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:.35rem">🎵 Folk tale / song — not saved yet</div>
+          <pre id="tale-result-text" style="white-space:pre-wrap;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem .75rem;font-size:.85rem;max-height:320px;overflow:auto;margin:0;font-family:var(--font)"></pre>
+          <div style="display:flex;gap:.5rem;margin-top:.5rem;flex-wrap:wrap;align-items:center">
+            <input type="text" id="tale-name-field" placeholder="Tale name" maxlength="256"
+                   style="flex:1;min-width:180px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
+            <button type="button" class="ai-recap-btn" id="tale-save-btn" onclick="aiSaveTale()">💾 Save as world lore</button>
+            <span id="tale-save-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+          </div>
         </div>
 
         {% if gsession %}
@@ -501,6 +513,67 @@ function aiCondenseRecapFit() {
   const recap = document.getElementById('summary-field').value.trim();
   if (!recap) { alert('Nothing to condense yet.'); return; }
   aiStartCondenseJob(recap, true);
+}
+
+// ── Folk tale / song — a piece of in-world flavor lore, not a recap edit,
+// so (unlike Expand/Condense/Summarize above) the result never touches the
+// Summary field itself. Runs through the shared AI-assist engine (app.
+// ai_assist's folk_tale op via POST /api/ai/assist) rather than a
+// session-specific route — the Summary text is the only input it needs.
+const SESSION_TITLE = {{ (gsession.title if gsession else '')|tojson }};
+
+async function aiFolkTale() {
+  const summary = document.getElementById('summary-field').value.trim();
+  if (!summary) { alert('Write (or generate) a recap first.'); return; }
+  const status = document.getElementById('ai-recap-status');
+  const resultWrap = document.getElementById('tale-result-wrap');
+  status.textContent = 'Weaving a tale…';
+  resultWrap.style.display = 'none';
+  _aiRecapButtons().forEach(b => b.disabled = true);
+  try {
+    const res = await fetch('/api/ai/assist', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        op: 'folk_tale', surface: 'session-recap', body: summary,
+        think: _recapThinkEnabled(), ..._recapRagOptions(),
+      }),
+    });
+    if (!res.ok) throw await ndApiErrorFrom(res);
+    const data = await res.json();
+    document.getElementById('tale-result-text').textContent = data.text || '';
+    document.getElementById('tale-name-field').value = SESSION_TITLE ? ('Tale: ' + SESSION_TITLE) : 'A Tale From the Table';
+    document.getElementById('tale-save-status').textContent = '';
+    resultWrap.style.display = 'block';
+    resultWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    status.textContent = '';
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  } finally {
+    _aiRecapButtons().forEach(b => b.disabled = false);
+  }
+}
+
+async function aiSaveTale() {
+  const btn = document.getElementById('tale-save-btn');
+  const status = document.getElementById('tale-save-status');
+  const name = document.getElementById('tale-name-field').value.trim();
+  const text = document.getElementById('tale-result-text').textContent;
+  if (!text.trim()) return;
+  btn.disabled = true;
+  status.textContent = 'Saving…';
+  try {
+    const res = await fetch('/api/ai/save-note', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: name || 'Untitled Tale', content: text, subtype: 'tale' }),
+    });
+    if (!res.ok) throw await ndApiErrorFrom(res);
+    const data = await res.json();
+    status.innerHTML = '✓ Saved — <a href="/entity/' + data.id + '" style="color:var(--neon)">view</a>';
+  } catch (e) {
+    status.textContent = 'Failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 {% if gsession %}

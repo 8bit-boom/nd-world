@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from .. import ai as _ai_module
+from .. import ai_assist as _ai_assist
 from .. import audio_jobs as _audio_jobs
 from ..database import get_db
 from ..deps import get_world_ctx
@@ -227,6 +228,53 @@ async def api_facts_parse(request: Request, db: Session = Depends(get_db), activ
     except ValueError as exc:
         raise HTTPException(502, str(exc))
     return {"facts": facts}
+
+
+@router.post("/api/facts/folk-tale")
+async def api_facts_folk_tale(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Turns this world's logged Facts into an in-world folk tale/legend/song
+    via app.ai_assist's folk_tale op (see app/routers/sessions.py's sibling
+    button, which works from a session's Summary field instead — this one is
+    for when the GM has logged Facts but never wrote a prose recap).
+    game_session_id, if given, scopes to just that session's facts; omitted
+    or blank uses every Fact in the world, oldest first, same ordering the
+    session-log recap pipeline reads facts in. Synchronous like
+    /api/facts/parse above — a joined Facts list is short GM-editorial
+    content, not a long transcript, so a job's create/poll round-trip isn't
+    worth it here either."""
+    body = await request.json()
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    game_session_id = body.get("game_session_id")
+    q = db.query(Fact).filter(Fact.world_id == world.id)
+    if game_session_id:
+        q = q.filter(Fact.game_session_id == int(game_session_id))
+    facts = q.order_by(Fact.created_at).all()
+    if not facts:
+        raise HTTPException(400, "No facts logged yet" + (" for that session" if game_session_id else "") + ".")
+    content = "\n".join(f"- {f.content}" for f in facts)
+    instruction = str(body.get("instruction", "")).strip()
+    model = str(body.get("model", "")).strip()
+    think = bool(body.get("think", False))
+    use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
+    world_context = ""
+    if use_rag:
+        world_context = _audio_jobs._build_rag_context(
+            world.id, content,
+            rag_entity_limit if rag_entity_limit is not None else _audio_jobs._DEFAULT_RAG_ENTITY_LIMIT,
+            rag_notes_limit if rag_notes_limit is not None else _audio_jobs._DEFAULT_RAG_NOTES_LIMIT,
+        )
+    try:
+        result = await _ai_assist.run_assist(
+            "folk_tale", content=content, instruction=instruction,
+            model=model, think=think, world_context=world_context,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if _ai_module.is_failure_sentinel(result.get("text", "")):
+        raise HTTPException(502, result["text"])
+    return result
 
 
 @router.post("/api/facts/parse-job")

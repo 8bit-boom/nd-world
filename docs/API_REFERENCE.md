@@ -342,6 +342,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/facts/{fact_id}/delete` | GM | Deletes a fact. |
 | POST | `/api/facts/parse` | GM | AI: turns a rough recap paste into draft facts (content + suggested visibility) via the local model — returned for review, **not written to the DB**. Blocking; prefer `parse-job` for long input. |
 | POST | `/api/facts/parse-job` | GM | AI: the same parse as `/api/facts/parse` but as a durable background job — body `{text, game_session_id?, model?}`, returns `{job_id}` immediately; poll `/api/audio-jobs/{id}` (`result_json` holds the finished draft array). |
+| POST | `/api/facts/folk-tale` | GM | AI: weaves this world's logged Facts (optionally scoped to one `game_session_id`) into an in-world folk tale/legend/song via `app.ai_assist`'s `folk_tale` op — same response shape as `/api/ai/assist`. Blocking (a joined Facts list is short editorial content). |
 | GET | `/api/facts/last-parse` | GM | The latest finished facts-parse job's draft for the active world — `{job_id, created_at, facts}`; 404 when there's none yet. Powers the Facts page's "Restore last parse". |
 | POST | `/api/facts/bulk` | GM | Bulk-inserts facts — the recap-review UI's "Confirm & Save" action. Duplicate content (world-scoped, case/punctuation-blind) is skipped, not re-inserted — response is `{created, skipped_duplicates}`. |
 | POST | `/api/facts/from-job/{job_id}` | GM | Confirms (or dismisses) the Facts a finished `session_recap` job auto-drafted from its transcript (`AudioJob.pending_facts_json`) — body `{facts}` may be an edited/trimmed subset (or `[]` to dismiss without saving); uses the job's own session automatically. Same dedup rule as `/api/facts/bulk`; response is `{created, skipped_duplicates}`. |
@@ -643,7 +644,7 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/ai` | GM | AI chat page (Chat / Image Gen / Models / Whisper / Starred tabs). |
 | GET | `/api/ai/world-context` | GM / Assistant | Keyword-search RAG context (relevant entities) for the current chat, unfiltered by player visibility. |
 | POST | `/api/ai/world-context-smart` | GM / Assistant | Same, backed by an FTS5 full-text index over entity name/summary/body/tags (falls back to plain `LIKE` if FTS5 is unavailable) — also returns `entities` (what was actually retrieved, for the RAG transparency panel/pinning). |
-| POST | `/api/ai/save-note` | GM / Assistant | Saves an AI chat response as a note on an entity. |
+| POST | `/api/ai/save-note` | GM / Assistant | Saves AI-generated text as a new `note` Entity — body `{title, content, subtype?}` (`subtype` is optional, e.g. `"tale"` for a saved folk-tale/song). |
 | POST | `/api/ai/generate/entity-smart` | GM / Assistant | Generates a full draft entity (name/summary/body) from a prompt, with world context. |
 | POST | `/api/ai/entity-from-text` | GM / Assistant | Turns a pasted/dictated passage into a draft entity. |
 | POST | `/api/ai/assist` | GM / Assistant | One shared AI-assist operation (improve/expand/summarize/analyze/suggest/translate/custom/table_entries/...) on editor content — the ✨ panel every edit form embeds (app/ai_assist.py). Input-capped at 60k chars. |
