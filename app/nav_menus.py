@@ -56,6 +56,7 @@ STATIC_CATALOG = [
     {"id": "ai", "label": "AI Chat", "icon": "🤖", "href": "/ai", "exact": True, "gm_only": True},
     {"id": "imagestudio", "label": "Image Studio", "icon": "🎨", "href": "/imagestudio", "exact": True, "gm_only": True},
     {"id": "editor", "label": "Content Editor", "icon": "🛠", "href": "/editor", "exact": True, "gm_only": True},
+    {"id": "code_assist", "label": "Code Assist", "icon": "🧩", "href": "/tools/code-assist", "exact": True, "gm_only": True},
 
     {"id": "chronicler", "label": "Chronicler", "icon": "📜", "href": "/chronicler", "exact": True, "gm_only": False},
     {"id": "dice", "label": "Dice", "icon": "🎲", "href": "/dice", "exact": True, "gm_only": False},
@@ -90,7 +91,7 @@ DEFAULT_NAV_MENUS = [
                   "facts", "calendar", "images", "import", "export", "background_jobs",
                   "dreamlands", "king-in-yellow"]},
     {"id": "menu_ai_tools", "label": "AI Tools", "icon": "🤖",
-     "item_ids": ["ai", "imagestudio", "editor"]},
+     "item_ids": ["ai", "imagestudio", "editor", "code_assist"]},
 ]
 
 

@@ -75,6 +75,7 @@ from .routers import gallery as _gallery_router_module
 from .routers import video as _video_router_module
 from .routers.pages import router as pages_router, _delete_doc_file as _delete_page_doc_file
 from .routers.character_sheets import router as character_sheets_router
+from .routers.code_assist import router as code_assist_router
 from .routers.nav_menus_admin import router as nav_menus_admin_router
 from .routers.dice import router as dice_router
 from .routers.backups import router as backups_router
@@ -153,6 +154,7 @@ app.include_router(audio_jobs_router)
 app.include_router(video_router)
 app.include_router(character_sheets_router)
 app.include_router(pages_router)
+app.include_router(code_assist_router)
 app.include_router(nav_menus_admin_router)
 app.include_router(dice_router)
 app.include_router(backups_router)

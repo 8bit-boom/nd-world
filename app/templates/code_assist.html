@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}Code Assist — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="form-page">
+  <h1>🧩 Code Assist</h1>
+  <div style="background:rgba(255,190,0,.08);border:1px solid #ffbe00;color:#ffbe00;padding:.7rem 1rem;border-radius:6px;font-size:.85rem;margin-bottom:1rem;line-height:1.5">
+    <strong>Preview only.</strong> This drafts a change to one of nd-world's own source
+    files and shows you a diff — it never writes anything to disk, and nothing here
+    restarts or rebuilds the app. Review the diff, then apply it yourself (paste it into
+    your editor, or hand it to whatever manages this deployment's source).
+  </div>
+
+  <div class="form-group">
+    <label for="ca-file">File to edit</label>
+    <input id="ca-file" list="ca-file-list" placeholder="e.g. app/routers/races.py" autocomplete="off">
+    <datalist id="ca-file-list">
+      {% for f in files %}<option value="{{ f }}"></option>{% endfor %}
+    </datalist>
+  </div>
+
+  <div class="form-group">
+    <label for="ca-instruction">Describe the change</label>
+    <textarea id="ca-instruction" rows="4" placeholder="e.g. Add a docstring to the _foo() function explaining what it does"></textarea>
+  </div>
+
+  <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:1rem">
+    <div class="form-group" style="margin:0">
+      <label for="ca-model" style="margin-bottom:.2rem">Model</label>
+      <select id="ca-model" style="max-width:280px"><option value="">— server default —</option></select>
+    </div>
+    <label style="display:flex;align-items:center;gap:.4rem;font-size:.85rem;color:var(--text-dim)">
+      <input type="checkbox" id="ca-think"> 🧠 Thinking
+    </label>
+  </div>
+
+  <button type="button" id="ca-generate" class="btn-save">✨ Generate preview</button>
+  <span id="ca-status" style="font-size:.85rem;color:var(--text-dim);margin-left:.6rem"></span>
+
+  <div id="ca-result" style="display:none;margin-top:1.5rem">
+    <h2 style="font-size:.95rem;color:var(--text-dim)">Diff for <code id="ca-result-file"></code></h2>
+    <div style="margin-bottom:.5rem">
+      <button type="button" id="ca-copy-diff" class="btn-cancel">📋 Copy diff</button>
+      <button type="button" id="ca-copy-file" class="btn-cancel">📋 Copy full revised file</button>
+    </div>
+    <pre id="ca-diff" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;font-size:.78rem;overflow-x:auto;white-space:pre;line-height:1.5"></pre>
+  </div>
+</div>
+<script>
+(function () {
+  const fileEl = document.getElementById('ca-file');
+  const instructionEl = document.getElementById('ca-instruction');
+  const modelEl = document.getElementById('ca-model');
+  const thinkEl = document.getElementById('ca-think');
+  const genBtn = document.getElementById('ca-generate');
+  const statusEl = document.getElementById('ca-status');
+  const resultEl = document.getElementById('ca-result');
+  const resultFileEl = document.getElementById('ca-result-file');
+  const diffEl = document.getElementById('ca-diff');
+  let lastRevised = '';
+
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+  fetch('/api/ai/models').then(r => r.json()).then(data => {
+    const models = data.models || [];
+    modelEl.innerHTML = '<option value="">— server default —</option>' + models.map(m =>
+      `<option value="${esc(m.id)}">${esc(m.label || m.id)}</option>`
+    ).join('');
+  }).catch(() => {});
+
+  function diffLineHtml(line) {
+    let color = 'inherit';
+    if (line.startsWith('+') && !line.startsWith('+++')) color = '#4f4';
+    else if (line.startsWith('-') && !line.startsWith('---')) color = '#f66';
+    else if (line.startsWith('@@')) color = '#6cf';
+    return `<span style="color:${color}">${esc(line)}</span>`;
+  }
+
+  async function pollJob(jobId) {
+    const started = Date.now();
+    const MAX_MS = 40 * 60 * 1000;
+    while (Date.now() - started < MAX_MS) {
+      await new Promise(r => setTimeout(r, 3000));
+      let d;
+      try {
+        const res = await fetch('/tools/code-assist/generate/' + jobId);
+        if (res.status === 404) throw new Error('job disappeared');
+        d = await res.json();
+      } catch (e) {
+        statusEl.textContent = 'Polling failed (' + e.message + ') — retrying…';
+        continue;
+      }
+      if (d.status === 'done') {
+        lastRevised = d.revised || '';
+        resultFileEl.textContent = d.file || fileEl.value;
+        diffEl.innerHTML = (d.diff || '(no changes)').split('\n').map(diffLineHtml).join('\n');
+        resultEl.style.display = '';
+        statusEl.textContent = 'Done (' + (d.model || '') + ').';
+        return;
+      }
+      if (d.status === 'error') {
+        statusEl.textContent = 'Failed: ' + (d.error || 'unknown error');
+        return;
+      }
+      statusEl.textContent = 'Working…';
+    }
+    statusEl.textContent = 'Timed out waiting — check the Background Jobs page.';
+  }
+
+  genBtn.addEventListener('click', async () => {
+    if (!fileEl.value.trim()) { statusEl.textContent = 'Pick a file first.'; return; }
+    if (!instructionEl.value.trim()) { statusEl.textContent = 'Describe the change first.'; return; }
+    resultEl.style.display = 'none';
+    genBtn.disabled = true;
+    statusEl.textContent = 'Submitting…';
+    try {
+      const res = await fetch('/tools/code-assist/generate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: new URLSearchParams({
+          file: fileEl.value.trim(), instruction: instructionEl.value,
+          model: modelEl.value, think: thinkEl.checked ? 'true' : 'false',
+        }),
+      });
+      if (!res.ok) throw await ndApiErrorFrom(res);
+      const data = await res.json();
+      statusEl.textContent = 'Working…';
+      await pollJob(data.job_id);
+    } catch (err) {
+      statusEl.textContent = '⚠ ' + (err && err.message ? err.message : 'Failed to start');
+    } finally {
+      genBtn.disabled = false;
+    }
+  });
+
+  document.getElementById('ca-copy-diff').addEventListener('click', () => {
+    navigator.clipboard && navigator.clipboard.writeText(diffEl.textContent || '');
+  });
+  document.getElementById('ca-copy-file').addEventListener('click', () => {
+    navigator.clipboard && navigator.clipboard.writeText(lastRevised);
+  });
+})();
+</script>
+{% endblock %}

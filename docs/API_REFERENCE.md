@@ -710,6 +710,16 @@ worlds they've been invited into (`WorldMembership`).
 
 \* GM always; a player may if the active world's `players_can_ask_ai` is on (same axis `/api/ai/stream` uses) — these routes back the per-entity "Ask AI" / "Talk as this NPC" panel, not the GM-only `/ai` World Chat page.
 
+## Code Assist
+
+`app/routers/code_assist.py` — GM-only (deliberately not GM-Assistant, unlike the content-editing AI-assist ops above: this touches application source, not campaign content), **preview-only**: drafts a change to one of nd-world's own source files with a coding-capable Ollama model and shows a diff, but never writes to disk or restarts anything. Reading is sandboxed to the `app/` and `static/` directories the Dockerfile actually ships (extension-allowlisted, path-traversal- and symlink-escape-hardened).
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/tools/code-assist` | GM | The panel: file picker, change instruction, model/thinking, diff preview. |
+| POST | `/tools/code-assist/generate` | GM | Starts a background job (`op=code_edit` via `app/ai_assist.py`) — body `file`, `instruction`, `model`, `think`; returns `{job_id}`. |
+| GET | `/tools/code-assist/generate/{job_id}` | GM | Poll one job: `{status: "pending"}`, `{status: "error", error}`, or `{status: "done", file, original, revised, diff, model}` (diff computed server-side with `difflib` against the file content actually sent to the model). |
+
 ## AI — Image Generation
 
 `app/routers/ai.py` (prefix `/api/ai/imagegen`) — SwarmUI/ComfyUI-backed image generation, tag autocomplete, and a starred-image gallery.

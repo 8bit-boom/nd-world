@@ -56,6 +56,18 @@ OP_RULES_REWRITE = "rules_rewrite"
 # assembles the world state and hands it in as `content`). Accepted by
 # run_assist but deliberately not offered by any editor panel.
 OP_WORLD_SUMMARY = "world_summary"
+# Drafts a change to nd-world's OWN source code — see app/routers/
+# code_assist.py, the only caller. `content` is one file's current text,
+# `meta` names the file, `instruction` is the GM's description of the
+# desired change. Deliberately asks for the COMPLETE revised file rather
+# than a diff: a coding model reliably rewrites a whole file, but
+# hand-formatting a correct unified-diff hunk (line numbers, context
+# lines) is a much easier place for it to go subtly wrong — the caller
+# diffs the before/after itself with difflib, which is always byte-exact
+# regardless of how well the model would have formatted a diff. This is a
+# preview-only op: nothing calling run_assist with this op ever writes
+# the result back to disk.
+OP_CODE_EDIT = "code_edit"
 # Turns a session recap or a joined list of Facts into an in-world folk
 # tale/legend/song — see app/routers/sessions.py's and app/routers/facts.py's
 # own "🎵 folk tale" buttons. Content is the recap/facts text; world_context
@@ -64,7 +76,7 @@ OP_WORLD_SUMMARY = "world_summary"
 OP_FOLK_TALE = "folk_tale"
 FREE_TEXT_OPS = {
     OP_EXPAND, OP_IMPROVE, OP_SUMMARIZE, OP_ANALYZE, OP_TRANSLATE,
-    OP_CUSTOM, OP_RULES_REWRITE, OP_WORLD_SUMMARY, OP_FOLK_TALE,
+    OP_CUSTOM, OP_RULES_REWRITE, OP_WORLD_SUMMARY, OP_FOLK_TALE, OP_CODE_EDIT,
 }
 
 # Structured ops — result is JSON the surface applies field-by-field.
@@ -161,6 +173,23 @@ _FOLK_TALE_SYSTEM = _BASE_SYSTEM + (
     "not new plot facts. Keep it to a few short paragraphs or verses; this "
     "is a piece of in-world flavor text, not a chapter. Output only the "
     "tale/song text, no preamble or explanation."
+)
+
+# Not built on _BASE_SYSTEM (that's framed around RPG editorial content —
+# entities, notes, rules) since this op edits application source instead.
+_CODE_EDIT_SYSTEM = (
+    "You are a careful software engineer editing nd-world's own source code "
+    "(a FastAPI + Jinja2 + SQLAlchemy web application). You will be given "
+    "the CURRENT, COMPLETE contents of one file, plus a GM's description of "
+    "a desired change. Output the COMPLETE REVISED file — the entire file "
+    "with the change applied — and nothing else: no explanation, no markdown "
+    "code fence, no diff syntax. Preserve everything not related to the "
+    "requested change exactly as it is, including comments, whitespace, "
+    "and unrelated code. If the requested change cannot reasonably be made "
+    "to this file alone (e.g. it needs a change in a different file too), "
+    "still output the complete file — applying whatever part of the change "
+    "genuinely belongs here — and start your response with a single line "
+    "'# NOTE: <what else needs to change and where>' before the file content."
 )
 
 _SUGGEST_SYSTEM = _BASE_SYSTEM + (
@@ -370,6 +399,7 @@ async def run_assist(
         OP_RULES_REWRITE: _RULES_REWRITE_SYSTEM,
         OP_WORLD_SUMMARY: _WORLD_SUMMARY_SYSTEM,
         OP_FOLK_TALE: _FOLK_TALE_SYSTEM,
+        OP_CODE_EDIT: _CODE_EDIT_SYSTEM,
     }
     system = system_by_op[op]
     if op == OP_TRANSLATE:
@@ -378,10 +408,15 @@ async def run_assist(
         # For translate the instruction box holds the language, not a task —
         # don't ship it twice ("GM instruction: Spanish" reads as noise).
         user = _compose_user(meta, content)
-    if op in (OP_EXPAND, OP_IMPROVE, OP_SUMMARIZE, OP_TRANSLATE, OP_RULES_REWRITE, OP_WORLD_SUMMARY, OP_FOLK_TALE):
+    if op == OP_CODE_EDIT and not instruction.strip():
+        raise ValueError("The code_edit operation needs an instruction — describe the change to make.")
+    if op in (OP_EXPAND, OP_IMPROVE, OP_SUMMARIZE, OP_TRANSLATE, OP_RULES_REWRITE,
+              OP_WORLD_SUMMARY, OP_FOLK_TALE, OP_CODE_EDIT):
         _require_content(op, content)
     elif op in (OP_ANALYZE,) and not user.strip():
         raise ValueError("Nothing to analyze — add a name or some content first.")
-    system = _ai_module._with_world_context(system, world_context)
+    # code_edit never gets RAG lore — irrelevant to editing application source.
+    if op != OP_CODE_EDIT:
+        system = _ai_module._with_world_context(system, world_context)
     text = await _free_text_call(system, user or "(empty draft)", m, think)
     return {"op": op, "mode": "text", "text": text, "model": m}
