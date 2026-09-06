@@ -33,7 +33,7 @@ from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_
 from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html
 from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_overlay,
-                           parse_rules_overlay, restore_blocks, split_rules_sections)
+                           restore_blocks, split_rules_sections, suggest_tabs_overlay)
 from .templating import templates
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll, CharacterSheet
@@ -2215,6 +2215,34 @@ async def world_rules_import(world_id: int, file: UploadFile = File(...), db: Se
         w.rules_json = json.dumps(parsed)
     db.commit()
     return RedirectResponse("/rules", status_code=303)
+
+
+@app.post("/worlds/{world_id}/rules/overlay/suggest")
+def world_rules_overlay_suggest(world_id: int, rules_md: str = Form(""), db: Session = Depends(get_db)):
+    """Build a starting tabs overlay from the GM's CURRENT (possibly unsaved)
+    rules_md textarea content — not World.rules_md — so a GM can try this
+    before committing to Save, the same way the AI-assist panel on this page
+    already operates against the live textarea rather than the stored value.
+    See rules_render.suggest_tabs_overlay for why this exists: hand-listing
+    every chapter slug under its Part in a large document is what actually
+    produced the reported "rules page loses all its content" bug."""
+    w = db.get(World, world_id)
+    if not w:
+        raise HTTPException(404)
+    md = html.unescape(rules_md)
+    md = _RULES_LEGACY_ANCHOR_RE.sub("", md)
+    if not md.strip():
+        raise HTTPException(400, "Markdown is empty — nothing to build tabs from")
+    skeleton, blocks = extract_blocks(md)
+    content, _ = _rules_toc(render_md(skeleton))
+    # is_gm=True: this is a GM-only route (not in _is_player_safe/
+    # _is_assistant_safe), so the suggested overlay may as well cover :::gm
+    # blocks' headings too — apply_rules_overlay's own players_visible
+    # filtering still applies at render/save time regardless of what this
+    # suggestion includes.
+    content = restore_blocks(content, blocks, is_gm=True)
+    sections = split_rules_sections(content)
+    return JSONResponse(suggest_tabs_overlay(sections))
 
 # ── Schematics ────────────────────────────────────────────────────────────────
 

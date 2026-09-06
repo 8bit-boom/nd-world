@@ -395,6 +395,86 @@ def test_rules_import_both_md_and_overlay(client, seed):
         db.close()
 
 
+# ── overlay auto-builder ("🪄 Auto-build tabs from headings") ─────────────────
+
+def test_rules_overlay_suggest_builds_tabs_from_posted_markdown(client, seed):
+    """Works off the POSTed rules_md — NOT the stored World.rules_md — so a
+    GM can try it before Save, same as the AI-assist panel on this page
+    already operates against the live textarea rather than the DB value."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    md = (
+        "## Part One\n\nintro text\n\n"
+        "### 1. Chapter One\n\nbody one\n\n"
+        "### 2. Chapter Two\n\nbody two\n\n"
+        "## Part Two\n\nother intro\n"
+    )
+    r = client.post(f"/worlds/{seed.world_a.id}/rules/overlay/suggest", data={"rules_md": md})
+    assert r.status_code == 200
+    assert r.json() == {
+        "tabs": [
+            {"label": "Part One", "sections": ["part-one", "1-chapter-one", "2-chapter-two"]},
+            {"label": "Part Two", "sections": ["part-two"]},
+        ],
+    }
+
+    db = SessionLocal()
+    try:
+        w = db.query(World).filter(World.id == seed.world_a.id).first()
+        assert w.rules_md is None  # unaffected by a call to the suggester
+    finally:
+        db.close()
+
+
+def test_rules_overlay_suggest_rejects_blank_markdown(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(f"/worlds/{seed.world_a.id}/rules/overlay/suggest", data={"rules_md": "   "})
+    assert r.status_code == 400
+
+
+def test_rules_overlay_suggest_is_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.post(f"/worlds/{seed.world_a.id}/rules/overlay/suggest",
+                     data={"rules_md": "## X\n\nbody"})
+    assert r.status_code == 403
+
+
+def test_rules_overlay_suggest_output_fixes_the_reported_missing_chapters_bug(client, seed):
+    """End-to-end regression test for the reported bug: a hand-written tab
+    overlay that lists only a Part's own slug (e.g. "part-iii-equipment-
+    economy") shows nothing but that Part's intro paragraph, because every
+    chapter nested under it silently lands in the catch-all "More" tab
+    instead. Saving the SUGGESTED overlay must not have that problem."""
+    md = (
+        "## Part III — Equipment & Economy\n\nMoney and gear.\n\n"
+        "### 22. Currency\n\nCoins and marks.\n\n"
+        "### 23. Weapons\n\nSwords and guns.\n"
+    )
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    suggested = client.post(f"/worlds/{seed.world_a.id}/rules/overlay/suggest",
+                             data={"rules_md": md}).json()
+    r = client.post(f"/worlds/{seed.world_a.id}/rules/edit",
+                     data={"rules_md": md, "rules_json": json.dumps(suggested)},
+                     follow_redirects=False)
+    assert r.status_code == 303
+
+    r = client.get("/rules")
+    assert r.status_code == 200
+    assert ">More</button>" not in r.text  # nothing left over to catch
+    assert "22. Currency" in r.text
+    assert "Coins and marks." in r.text
+    assert "23. Weapons" in r.text
+    assert "Swords and guns." in r.text
+
+
+def test_rules_edit_page_has_auto_build_tabs_button(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    html = client.get(f"/worlds/{seed.world_a.id}/rules/edit").text
+    assert 'id="rules-overlay-suggest-btn"' in html
+    assert "/rules/overlay/suggest" in html
+
+
 def test_rules_edit_page_ships_the_overlay_guide(client, seed):
     """The editor teaches the overlay workflow: slug discovery from the TOC,
     the two top-level keys, the apply paths (textarea or import box), and a
@@ -418,5 +498,6 @@ def test_rules_overlay_docs_exist_and_cover_the_schema():
         "part-ii-races-optional-systems",
         "Import from JSON",
         "players_visible: false",
+        "Auto-build tabs from headings",
     ):
         assert needle in doc, f"docs/RULES_OVERLAY.md is missing: {needle}"

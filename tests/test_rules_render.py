@@ -16,6 +16,7 @@ from app.rules_render import (
     parse_rules_overlay,
     render_rules_markdown,
     split_rules_sections,
+    suggest_tabs_overlay,
 )
 
 
@@ -235,6 +236,40 @@ def test_overlay_fully_hidden_tab_falls_back_to_flat_for_players():
     # in the trailing "More" tab — visibility filtering doesn't change grouping.
     _, panes_gm = apply_rules_overlay(SECTIONS, overlay, is_gm=True)
     assert [p["id"] for p in panes_gm] == ["x", "more"]
+
+
+# ── overlay suggester ─────────────────────────────────────────────────────────
+
+def test_suggest_tabs_overlay_groups_nested_headings_with_their_top_level_parent():
+    # SECTIONS = [preamble, alpha(l2), beta(l2), gamma(l3)] — gamma is nested
+    # under beta (the nearest preceding shallower heading), so it must ride
+    # along into beta's tab rather than needing to be listed by hand.
+    assert suggest_tabs_overlay(SECTIONS) == {
+        "tabs": [
+            {"label": "Alpha", "sections": ["alpha"]},
+            {"label": "Beta", "sections": ["beta", "gamma"]},
+        ],
+    }
+
+
+def test_suggest_tabs_overlay_no_id_bearing_sections_returns_no_tabs():
+    preamble_only = [{"id": None, "level": 0, "title": "", "html": "<p>x</p>"}]
+    assert suggest_tabs_overlay(preamble_only) == {"tabs": []}
+
+
+def test_suggest_tabs_overlay_round_trips_with_no_leftovers_in_more():
+    """This is the actual fix for the reported bug: hand-building a tab
+    overlay by listing only a Part's own slug loses every chapter nested
+    beneath it to the catch-all "More" tab (see
+    test_overlay_tabs_group_sections_with_trailing_more, where listing only
+    "beta" strands gamma in "more" even though gamma is beta's own chapter).
+    The auto-built overlay must not have that problem: every section lands
+    in a real tab, and no "more" pane is produced at all."""
+    overlay, err = parse_rules_overlay(json.dumps(suggest_tabs_overlay(SECTIONS)))
+    assert err is None
+    _, panes = apply_rules_overlay(SECTIONS, overlay, is_gm=True)
+    assert [p["id"] for p in panes] == ["alpha", "beta"]
+    assert [s["id"] for s in panes[1]["sections"]] == ["beta", "gamma"]
 
 
 # ── splitter ─────────────────────────────────────────────────────────────────

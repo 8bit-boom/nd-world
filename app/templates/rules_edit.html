@@ -37,6 +37,19 @@
         visibility, tabs); never included in <code>/rules/download.md</code>. Blank = no overlay.
         Invalid JSON is rejected on save with the parse error.
       </label>
+      <div style="margin-bottom:.5rem">
+        <button type="button" id="rules-overlay-suggest-btn" class="btn-cancel" style="font-size:.78rem">
+          🪄 Auto-build tabs from headings
+        </button>
+        <span id="rules-overlay-suggest-status" style="font-size:.78rem;color:var(--text-dim);margin-left:.5rem"></span>
+        <p style="font-size:.78rem;color:var(--text-dim);margin:.3rem 0 0">
+          Groups every top-level (<code>##</code>) heading in the markdown above with all the
+          <code>###</code> chapters nested under it into its own tab — the safe way to build tabs
+          for a long document. Listing only a Part's own slug by hand (like the cheatsheet example
+          below) does <strong>not</strong> pull its chapters along; they'd silently land in the
+          catch-all "More" tab instead.
+        </p>
+      </div>
       <textarea id="rules-json-input" name="rules_json" rows="14" style="font-family:monospace;font-size:.8rem" placeholder='{
   "sections": {
     "races-optional-systems": {"icon": "🧬", "title": "Races & Optional Systems", "players_visible": true, "order": 2}
@@ -145,6 +158,32 @@ ndAiAssist('rls', {
   contentSelector: 'textarea[name="rules_md"]',
   job: true,
   actions: ['replace', 'copy'],
+});
+
+document.getElementById('rules-overlay-suggest-btn').addEventListener('click', async () => {
+  const mdEl = document.querySelector('textarea[name="rules_md"]');
+  const jsonEl = document.getElementById('rules-json-input');
+  const statusEl = document.getElementById('rules-overlay-suggest-status');
+  if (jsonEl.value.trim() && !confirm(
+    'Replace the current rules.json overlay with an auto-built one that groups every ' +
+    'top-level heading (and its nested chapters) into its own tab?'
+  )) {
+    return;
+  }
+  statusEl.textContent = 'Building…';
+  try {
+    const res = await fetch('{{ ("/worlds/" ~ edit_world.id ~ "/rules/overlay/suggest")|wq }}', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: new URLSearchParams({rules_md: mdEl.value}),
+    });
+    if (!res.ok) throw await ndApiErrorFrom(res);
+    const overlay = await res.json();
+    jsonEl.value = JSON.stringify(overlay, null, 2);
+    statusEl.textContent = `Built ${overlay.tabs.length} tab(s) — review below, then Save.`;
+  } catch (err) {
+    statusEl.textContent = '⚠ ' + (err && err.message ? err.message : 'Failed to build overlay');
+  }
 });
 </script>
 <script src="/static/js/text-format-toolbar.js"></script>

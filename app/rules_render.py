@@ -501,3 +501,38 @@ def apply_rules_overlay(sections: list, overlay, is_gm: bool):
     if preambles:
         panes[0]["sections"] = preambles + panes[0]["sections"]
     return flat, panes
+
+
+def suggest_tabs_overlay(sections: list) -> dict:
+    """Build a starting {"tabs": [...]} overlay that groups every top-level
+    heading (the shallowest level present — "##" on a typical document) with
+    every heading nested beneath it, one tab per top-level heading.
+
+    Exists because apply_rules_overlay's tab membership is flat and per-slug
+    — "every slug may appear in exactly one tab" (docs/RULES_OVERLAY.md) —
+    with no notion of heading hierarchy: listing only a Part's own slug in a
+    tab does NOT pull its chapters along, they instead fall through to the
+    catch-all "More" tab. That is fine for a short, hand-authored document
+    (see rules_edit.html's own worked example, which lists every slug
+    explicitly), but enumerating every chapter slug by hand for a
+    Part/Chapter document with dozens of chapters is tedious and easy to get
+    wrong — a real, reported bug was exactly this: a tab listing only
+    "part-iii-equipment-economy" rendered nothing but that Part's own intro
+    paragraph, with every one of its chapters silently buried in "More".
+    This function does the enumeration programmatically instead, so the
+    result can never suffer that mistake; the GM can still hand-edit the
+    returned JSON (rename tabs, move a chapter elsewhere, add icons/order)
+    before saving it as the world's rules.json overlay."""
+    body = [s for s in sections if s["id"]]
+    if not body:
+        return {"tabs": []}
+    top_level = min(s["level"] for s in body)
+    tabs = []
+    current = None
+    for s in body:
+        if current is None or s["level"] <= top_level:
+            current = {"label": s["title"] or s["id"], "sections": [s["id"]]}
+            tabs.append(current)
+        else:
+            current["sections"].append(s["id"])
+    return {"tabs": tabs}

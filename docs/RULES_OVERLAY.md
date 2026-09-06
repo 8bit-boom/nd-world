@@ -13,7 +13,11 @@ without an overlay.
 1. Open your Rules page and hover/copy the TOC links: each entry's link is
    `#<section-slug>` — e.g. `## Part II — Races & Optional Systems` becomes
    the slug `part-ii-races-optional-systems` (lowercase, everything
-   non-alphanumeric collapsed to `-`).
+   non-alphanumeric collapsed to `-`). For a `tabs` overlay on a document
+   with more than a few chapters, skip this and click **"🪄 Auto-build tabs from headings"**
+   on the Rules edit page instead — it reads off every slug for you,
+   correctly grouped (see the warning below on why doing this by hand is
+   easy to get wrong for a large document).
 2. Write a JSON object with a `sections` map (slug → `{icon, title,
    players_visible, order}`) and/or a `tabs` list. Only include the
    sections you actually want to change.
@@ -55,6 +59,18 @@ overlay that doesn't validate shows a warning banner on the edit page.
 - Every slug may appear in exactly one tab. Sections listed in no tab land
   in a trailing **"More"** tab. With no `tabs` at all, the page renders as
   one continuous flow and `order` does the arranging.
+
+  **⚠️ Tabs have no notion of heading hierarchy — listing a Part's own slug
+  does NOT pull its chapters along.** For a Part/Chapter document, listing
+  only `"part-iii-equipment-economy"` in a tab renders nothing but that
+  Part's own intro paragraph; every `###` chapter nested beneath it (which
+  is its OWN separate slug) silently falls through to "More" instead. For a
+  document with more than a handful of chapters, use the **"🪄 Auto-build tabs from headings"**
+  button on the Rules edit page instead of listing slugs by hand — it groups
+  every top-level heading with all of the chapters nested under it into one
+  tab each, so nothing gets left behind. Hand-list slugs (as the worked
+  example below does) only for a short document, or once you're deliberately
+  fine-tuning the auto-built result.
 - `players_visible: false` is the data-driven equivalent of a `:::gm`
   directive block: the section is removed from the page server-side for
   non-GM viewers (never CSS-hidden), and the TOC is built from the final

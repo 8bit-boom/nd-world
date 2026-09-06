@@ -604,6 +604,7 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/worlds/{world_id}/rules/edit` | GM | Rules edit form (raw Markdown + `rules_json` overlay textarea, with a directives/overlay cheatsheet; shows why a stored overlay is being ignored, if it is). |
 | POST | `/worlds/{world_id}/rules/edit` | GM | Saves rules Markdown plus the optional `rules_json` overlay (blank clears it; invalid JSON or wrong shape → 400 with the parse error). |
 | POST | `/worlds/{world_id}/rules/import` | GM | Imports rules from a JSON file shaped `{"rules_md": "...markdown..."}`. |
+| POST | `/worlds/{world_id}/rules/overlay/suggest` | GM | Builds a starting `rules.json` `tabs` overlay from the POSTed (not yet saved) `rules_md`: one tab per top-level heading, with every nested chapter's slug included automatically — the "🪄 Auto-build tabs from headings" button on the edit page. |
 
 ## Search
 
