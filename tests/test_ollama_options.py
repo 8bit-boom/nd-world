@@ -1417,6 +1417,41 @@ def test_hardware_route_passes_saved_gpu_preset(client, seed, tmp_path, monkeypa
     assert captured["gpu_preset"] == "v100_16gb"
 
 
+def test_hardware_route_preset_query_param_overrides_saved_value(client, seed, tmp_path, monkeypatch):
+    """The `preset` query param lets the settings page live-preview a preset
+    the GM has picked in the dropdown but not yet saved — it must win over
+    whatever's actually persisted in AppSettings.ollama_gpu_preset."""
+    import app.ollama_tuning as tuning_module
+    monkeypatch.setattr(tuning_module, "OLLAMA_CONFIG_DIR", tmp_path)
+    captured = {}
+
+    async def fake_detect(vram_override_mb=None, gpu_preset=""):
+        captured["gpu_preset"] = gpu_preset
+        return {"cpu_model": "", "cpu_cores": None, "cpu_affinity": None, "ram_total_mb": None,
+                "ram_available_mb": None, "gpus": [], "vram_total_mb": None, "vram_source": "none",
+                "vram_is_lower_bound": False, "notes": []}
+    monkeypatch.setattr(tuning_module, "detect_hardware", fake_detect)
+
+    async def fake_installed():
+        return []
+    monkeypatch.setattr(ai_module, "installed_models_detail", fake_installed)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/settings/system", data={
+        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+        "ollama_gpu_preset": "",
+    }, follow_redirects=False)
+
+    r = client.get("/api/ai/hardware", params={"preset": "v100_16gb"})
+    assert r.status_code == 200
+    assert captured["gpu_preset"] == "v100_16gb"
+
+    # Omitting the param falls back to the saved (still blank) value.
+    r = client.get("/api/ai/hardware")
+    assert r.status_code == 200
+    assert captured["gpu_preset"] == ""
+
+
 def test_hardware_route_survives_unreachable_ollama(client, seed, monkeypatch):
     async def fake_installed():
         return []

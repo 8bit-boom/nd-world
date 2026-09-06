@@ -618,6 +618,7 @@ function ndCopyRestartCmd() {
 
   let loaded = false;
   let currentModels = [];
+  const presetSelect = document.getElementById('ollama-gpu-preset');
 
   function fmtMb(mb) {
     if (mb == null) return '?';
@@ -712,10 +713,10 @@ function ndCopyRestartCmd() {
 
   modelSelect.addEventListener('change', renderRecommendation);
 
-  window.ndLoadHardwarePanel = function () {
-    if (loaded) return;
-    loaded = true;
-    fetch('/api/ai/hardware').then(res => {
+  function fetchHardware() {
+    const preset = presetSelect ? presetSelect.value : '';
+    const url = '/api/ai/hardware' + (preset ? '?preset=' + encodeURIComponent(preset) : '');
+    fetch(url).then(res => {
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return res.json();
     }).then(data => {
@@ -727,7 +728,18 @@ function ndCopyRestartCmd() {
       summaryEl.textContent = '⚠ Couldn\'t load hardware info: ' + err.message;
       if (pmoModelSelect) pmoModelSelect.innerHTML = '<option value="">— couldn\'t load models —</option>';
     });
+  }
+
+  window.ndLoadHardwarePanel = function () {
+    if (loaded) return;
+    loaded = true;
+    fetchHardware();
   };
+
+  // Live-preview: re-fetch (passing the not-yet-saved preset value) so
+  // picking a preset updates "Detected hardware" immediately, instead of
+  // requiring a form save + page reload to see any change.
+  if (presetSelect) presetSelect.addEventListener('change', () => { loaded = true; fetchHardware(); });
 
   if ({{ 'true' if active_tab == 'system' else 'false' }}) window.ndLoadHardwarePanel();
 })();

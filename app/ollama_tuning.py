@@ -54,9 +54,12 @@ Hardware detection (detect_hardware) and the settings recommendation engine
 not a fleet-management VRAM planner. CPU core count and system RAM are
 reliably readable from nd-world's own container (they reflect the host, not
 the container, since /proc is a fresh view of the same kernel). GPU/VRAM
-is the honest gap: nd-world's own container isn't normally given GPU
-passthrough (only the ollama/swarmui services are, in docker-compose.yml),
-so detection falls back through nvidia-smi -> AMD sysfs -> a GM-entered
+is the honest gap: nd-world's own container doesn't get GPU passthrough by
+default (only the ollama/swarmui services do, in docker-compose.yml) —
+docker-compose.gpu.yml can optionally give this container minimal,
+utility-only access too (see docs/GPU_SETUP.md), just enough for
+nvidia-smi to resolve here without granting real CUDA compute — so
+detection falls back through nvidia-smi -> AMD sysfs -> a GM-entered
 manual override -> a lower-bound inferred from whatever Ollama already has
 loaded (app.ai.resident_models()) -> "unknown". recommend_settings then
 picks one of a handful of coarse tiers (full_gpu/partial_gpu/cpu_only/

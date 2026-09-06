@@ -1,7 +1,8 @@
 # ── NVIDIA GPU override for nd-world's bundled AI stack ─────────────────────
 #
 # Layer ON TOP of the main compose file to give the "ollama" (and GPU
-# whisper) services an NVIDIA GPU:
+# whisper) services an NVIDIA GPU, plus minimal (nvidia-smi-only) access to
+# nd-world's own container so its hardware detector can see the real card:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 #
@@ -28,6 +29,23 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+  # nd-world's own app container never runs AI inference itself (it talks
+  # to Ollama over HTTP) — this block is scoped to the `utility` capability
+  # ONLY (not `compute`), so it grants just enough for `nvidia-smi` to work
+  # inside the container, letting Settings > System > "Detected hardware"
+  # auto-detect your real card instead of falling back to a GM-entered VRAM
+  # override or hardware preset. It never gets a real CUDA context.
+  world:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: utility
 
   # Optional: GPU-accelerated Whisper transcription. Uncomment to switch
   # the whisper service from CPU to the CUDA build (requires the whisper

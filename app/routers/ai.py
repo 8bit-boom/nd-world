@@ -1193,17 +1193,23 @@ async def ai_resident_models():
 
 
 @router.get("/hardware")
-async def ai_hardware(request: Request, db=Depends(get_db)):
+async def ai_hardware(request: Request, db=Depends(get_db), preset: Optional[str] = None):
     """Detected host CPU/RAM/GPU plus a suggested settings bundle per
     installed model — backs the "Detected hardware" panel on Settings >
     System. GM-only (this path isn't in main._is_player_safe, but the
     explicit check here matches every other route in this router). Never
     502s: unreachable Ollama or an undetectable GPU come back as empty
     lists / null with an explanatory note in `hardware.notes`, since this
-    panel is advisory and must not error the whole settings page."""
+    panel is advisory and must not error the whole settings page.
+
+    `preset` optionally overrides the saved `ollama_gpu_preset` for this
+    call only (never persisted) — lets the settings page live-preview what
+    a preset would show as soon as it's picked, without requiring a form
+    save + reload first."""
     _require_gm(request)
     settings = get_app_settings(db)
-    hardware = await _tuning.detect_hardware(settings.ollama_vram_override_mb, settings.ollama_gpu_preset or "")
+    effective_preset = preset if preset is not None else (settings.ollama_gpu_preset or "")
+    hardware = await _tuning.detect_hardware(settings.ollama_vram_override_mb, effective_preset)
     models = await _ai.installed_models_detail()
     return {
         "hardware": hardware,

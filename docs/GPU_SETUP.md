@@ -5,9 +5,14 @@ whisper.cpp for transcription) a real GPU — with a dedicated section for
 the **Tesla V100**, the Volta-era datacenter card that is now the
 cheapest way to get serious local-LLM performance.
 
-nd-world's own container never needs the GPU — it talks to Ollama over
-HTTP (`OLLAMA_URL`). Only the `ollama` (and optionally `whisper`) service
-gets GPU access.
+nd-world's own container never needs the GPU for AI inference — it talks
+to Ollama over HTTP (`OLLAMA_URL`). Only the `ollama` (and optionally
+`whisper`) service needs full GPU access. `docker-compose.gpu.yml` also
+optionally gives nd-world's own container minimal, `utility`-only GPU
+access (no real CUDA compute) — just enough for `nvidia-smi` to work
+inside it, so Settings → System's "Detected hardware" panel can
+auto-detect your real card instead of relying on a manual VRAM override or
+hardware preset.
 
 ---
 
@@ -81,9 +86,10 @@ docker compose exec ollama ollama pull gemma4:26b
 docker compose logs ollama | grep -i "inference compute"   # should say CUDA / 0
 ```
 
-`docker-compose.gpu.yml` (in this repo) contains exactly this: the
-NVIDIA device reservation for `ollama`, plus a commented CUDA whisper
-switch.
+`docker-compose.gpu.yml` (in this repo) contains exactly this: the NVIDIA
+device reservation for `ollama`, a matching `utility`-only reservation for
+`world` (nd-world's own container, so its hardware detector can see the
+card — see above), plus a commented CUDA whisper switch.
 
 ### TrueNAS SCALE (Electric Eel / Fangtooth)
 
@@ -117,10 +123,13 @@ switch.
 3. **Verify**: shell into the ollama container (`docker exec -it <ollama> nvidia-smi`)
    — it must list the V100 — then check `docker logs <ollama>` for
    `inference compute` detection on startup.
-4. The nd-world **app container itself still gets no GPU** — that's by
-   design. Settings → System's "Detected hardware" panel may therefore
-   show no GPU; set **Ollama VRAM (MB)** to `16384`/`32768` manually so
-   the tuning recommendations size correctly.
+4. The nd-world **app container itself gets no GPU by default** on
+   TrueNAS's own GPU screen (it assigns full access per-app, not the
+   `utility`-only scoping `docker-compose.gpu.yml` uses for plain Docker
+   hosts — see step 2 above). Settings → System's "Detected hardware"
+   panel may therefore show no GPU; if you don't want to also assign the
+   GPU to nd-world's own app, just set **Ollama VRAM (MB)** to
+   `16384`/`32768` manually so the tuning recommendations size correctly.
 
 ### Separate GPU box
 
