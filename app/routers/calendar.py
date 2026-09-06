@@ -23,6 +23,41 @@ DEFAULT_MONTHS = [
     ]
 ]
 DEFAULT_DAYS_PER_WEEK = 7
+
+# Built-in calendar presets a GM can one-click apply from the config page
+# (app/templates/calendar/config.html's "Apply preset" control) instead of
+# hand-typing months/moons — same "starter, not a straitjacket" spirit as
+# the Rules page's "Auto-build tabs from headings" button: applying a
+# preset only fills in the form fields, the GM still reviews and clicks
+# Save themselves.
+#
+# "hunt_in_the_moonlight" is the Moonfall Calendar from the bundled Hunt in
+# the Moonlight rules (ch. 31): 13 months of 25 days each (325-day year),
+# five 5-day weeks per month, and a single Moon whose 25-day shape cycle
+# is fixed to line up exactly with the month length (the source's own
+# canon note on this: "This calendar fixes the lunar cycle at exactly 25
+# days"). The Moon's rich Color mechanic (ch. 32-33 — Red/Violet/Green/
+# Blue/White/Black/Pink/Teal/Amber/Grey/Yellow, per-month scheduled
+# Moonshifts, phase-based intensity, Bleeding Moon) is GM/dice-table
+# content this calendar widget has no mechanism to encode (moons[] here
+# has one static display color, not a day-by-day color schedule) — the
+# preset's color is left at Grey, which happens to double as the source's
+# own "ordinary, nothing-special" default state.
+CALENDAR_PRESETS = {
+    "hunt_in_the_moonlight": {
+        "label": "Hunt in the Moonlight — Moonfall Calendar",
+        "era_name": "After the Last Flight",
+        "days_per_week": 5,
+        "months": [
+            {"name": n, "days": 25} for n in [
+                "Ashwake", "Rainscar", "Blackbloom", "Cinderfast", "Hollowtide",
+                "Gildfall", "Veilwane", "Glassfrost", "Emberwane", "Nightroot",
+                "Palevigil", "Thawblood", "Last Lantern",
+            ]
+        ],
+        "moons": [{"name": "The Moon", "cycle_days": 25, "offset": 0, "color": "#888888"}],
+    },
+}
 # 1..60 — a week of 1 degenerates to "every day starts a new row" (still
 # renders fine), and 60 is generous headroom past any real-world calendar
 # convention while still keeping the week-row grid a sane width.
@@ -253,6 +288,7 @@ def calendar_config_form(request: Request, db: Session = Depends(get_db), active
     config = json.loads(cal.config_json or "{}") or _default_config()
     return templates.TemplateResponse("calendar/config.html", {
         "request": request, "world": world, "worlds": worlds, "config": config,
+        "calendar_presets": CALENDAR_PRESETS,
     })
 
 

@@ -3,6 +3,24 @@
 {% block content %}
 <div class="form-page">
   <h1>⚙ Calendar Settings</h1>
+  {% if calendar_presets %}
+  <div class="form-group" style="display:flex;align-items:flex-end;gap:.6rem;flex-wrap:wrap;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.7rem .9rem">
+    <div style="flex:1;min-width:220px">
+      <label for="cal-preset-select">Start from a preset</label>
+      <select id="cal-preset-select">
+        <option value="">— choose a preset —</option>
+        {% for key, preset in calendar_presets.items() %}
+        <option value="{{ key }}">{{ preset.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="button" id="cal-preset-apply" class="btn-cancel">Apply preset</button>
+  </div>
+  <p style="font-size:.78rem;color:var(--text-dim);margin:.3rem 0 1rem">
+    Fills in Era Name, Days per Week, Months and Moons below for review — nothing is saved until
+    you click Save.
+  </p>
+  {% endif %}
   <form method="post" action="/calendar/config" id="cal-config-form" class="entity-form">
     <div class="form-group">
       <label>Era Name</label>
@@ -66,7 +84,7 @@ function renderMonths() {
     `;
     list.appendChild(row);
   });
-  syncHidden();
+  syncMonthsHidden();
 }
 
 function updateMonth(i, key, val) {
@@ -114,5 +132,21 @@ function syncMoonsHidden() {
 document.getElementById('cal-config-form').addEventListener('submit', () => { syncMonthsHidden(); syncMoonsHidden(); });
 renderMonths();
 renderMoons();
+
+const _presets = {{ calendar_presets | default({}) | tojson }};
+const presetApplyBtn = document.getElementById('cal-preset-apply');
+if (presetApplyBtn) {
+  presetApplyBtn.addEventListener('click', () => {
+    const key = document.getElementById('cal-preset-select').value;
+    const preset = _presets[key];
+    if (!preset) return;
+    document.querySelector('[name="era_name"]').value = preset.era_name || '';
+    document.querySelector('[name="days_per_week"]').value = preset.days_per_week || 7;
+    _months = JSON.parse(JSON.stringify(preset.months || []));
+    _moons = JSON.parse(JSON.stringify(preset.moons || []));
+    renderMonths();
+    renderMoons();
+  });
+}
 </script>
 {% endblock %}

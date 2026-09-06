@@ -31,6 +31,7 @@ from app.database import SessionLocal
 from app.models import CalendarDayIcon, CalendarEvent, Entity, GameSession, Party, PlayerCharacter, WorldCalendar
 from app.routers.calendar import (
     _days_per_week, _DEFAULT_MOON_COLOR, _DEFAULT_MOON_CYCLE_DAYS, _moon_phase_for_day, DEFAULT_DAYS_PER_WEEK,
+    CALENDAR_PRESETS,
 )
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
@@ -538,3 +539,57 @@ def test_calendar_month_grid_no_moons_configured_renders_no_moon_swatches(client
     login(client, seed.gm.email, GM_PASSWORD)
     page = client.get("/calendar").text
     assert 'class="cal-moon"' not in page
+
+
+# ── Built-in calendar presets ────────────────────────────────────────────
+
+def test_calendar_config_page_lists_builtin_presets(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    page = client.get("/calendar/config").text
+    assert 'id="cal-preset-select"' in page
+    assert "Hunt in the Moonlight — Moonfall Calendar" in page
+    assert "hunt_in_the_moonlight" in page
+
+
+def test_hunt_in_the_moonlight_preset_shape():
+    """The preset's own data — the canon 13-months-of-25-days, five 5-day
+    weeks, moon cycle fixed to 25 days (ch. 31's own canon note)."""
+    preset = CALENDAR_PRESETS["hunt_in_the_moonlight"]
+    assert preset["days_per_week"] == 5
+    assert len(preset["months"]) == 13
+    assert all(m["days"] == 25 for m in preset["months"])
+    assert sum(m["days"] for m in preset["months"]) == 325
+    assert preset["months"][0]["name"] == "Ashwake"
+    assert preset["months"][-1]["name"] == "Last Lantern"
+    assert len(preset["moons"]) == 1
+    assert preset["moons"][0]["cycle_days"] == 25
+
+
+def test_applying_hunt_in_the_moonlight_preset_via_config_save(client, seed):
+    """Simulates what the page's "Apply preset" JS produces — POSTing the
+    preset's own months/moons/era_name/days_per_week — and confirms it
+    round-trips through the save route exactly as any hand-typed config
+    would (no special-casing needed; the preset just fills the same
+    fields a GM could type by hand)."""
+    preset = CALENDAR_PRESETS["hunt_in_the_moonlight"]
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/calendar/config", data={
+        "era_name": preset["era_name"], "current_day": "1",
+        "days_per_week": str(preset["days_per_week"]),
+        "months_json": json.dumps(preset["months"]),
+        "moons_json": json.dumps(preset["moons"]),
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    saved = _get_config(seed.world_a.id)
+    assert saved["era_name"] == "After the Last Flight"
+    assert saved["days_per_week"] == 5
+    assert len(saved["months"]) == 13
+    assert sum(m["days"] for m in saved["months"]) == 325
+    assert saved["moons"][0]["cycle_days"] == 25
+
+    # And the resulting calendar actually renders the custom months/week.
+    page = client.get("/calendar?year=1&month=0").text
+    assert "Ashwake" in page
+    assert "grid-template-columns:repeat(5, 1fr)" in page
