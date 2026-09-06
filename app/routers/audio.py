@@ -548,7 +548,62 @@ def audio_delete(
         raise HTTPException(404)
     clip = _clip_or_404(db, world.id, clip_id)
     dest = f"/audio/albums/{clip.album_id}" if clip.album_id else "/audio"
+    # Don't leave players' floating widget pointing at a file that's about
+    # to stop existing — clearing (rather than leaving stale) also matches
+    # how a broadcast normally ends, via /audio/now-playing/stop below.
+    if world.now_playing_url == clip.file_url:
+        _clear_now_playing(world)
     _delete_clip_file(clip)
     db.delete(clip)
     db.commit()
     return RedirectResponse(dest, status_code=303)
+
+
+def _clear_now_playing(world) -> None:
+    world.now_playing_url = None
+    world.now_playing_label = None
+    world.now_playing_loop = False
+    world.now_playing_version = (world.now_playing_version or 0) + 1
+
+
+@router.post("/audio/{clip_id}/play-for-players")
+def audio_play_for_players(
+    clip_id: int, request: Request, loop: Optional[str] = Form(None),
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """Push a clip to every player's screen to auto-play in a persistent
+    floating widget that survives page navigation — see GET /api/spotlight
+    (main.py) for the poller that picks this up (shared with the image
+    Spotlight broadcast) and app/templates/base.html for where it's shown.
+    Only a clip already visible to players may be broadcast to them —
+    broadcasting a hidden clip would leak its existence/audio."""
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    clip = _clip_or_404(db, world.id, clip_id)
+    if not clip.visible_to_players:
+        raise HTTPException(400, "Only a clip visible to players can be played for them")
+    world.now_playing_url = clip.file_url
+    world.now_playing_label = clip.name[:256]
+    world.now_playing_loop = bool(loop)
+    world.now_playing_version = (world.now_playing_version or 0) + 1
+    db.commit()
+    from .. import main as _main_module  # deferred — see gallery.py's own use of this pattern
+    _main_module._spotlight_cache.clear()
+    return {"ok": True}
+
+
+@router.post("/audio/now-playing/stop")
+def audio_now_playing_stop(
+    request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    _clear_now_playing(world)
+    db.commit()
+    from .. import main as _main_module
+    _main_module._spotlight_cache.clear()
+    return {"ok": True}

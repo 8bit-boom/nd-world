@@ -1195,6 +1195,17 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
 .spotlight-banner button { background: none; border: 1px solid var(--border); color: var(--text-dim); font-size: .78rem; padding: .2rem .6rem; border-radius: 3px; cursor: pointer; margin-left: auto; }
 .spotlight-banner button:hover { border-color: var(--neon); color: var(--neon); }
 
+/* Persistent "Now Playing" floating widget (base.html) — present on every
+   page so a GM-broadcast track keeps playing across navigation, unlike the
+   page-local pop-out mini-player on /audio (#audio-mini-player). Bottom-left
+   so the two never visually collide on /audio itself. */
+#nd-now-playing { position:fixed; bottom:1rem; left:1rem; z-index:500; background:var(--bg2); border:1px solid var(--neon); border-radius:6px; padding:.6rem .8rem; box-shadow:0 4px 16px rgba(0,0,0,.4); display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; max-width:380px; }
+#nd-now-playing-name { font-size:.82rem; font-weight:600; color:var(--neon); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:180px; }
+#nd-now-playing audio { max-width:200px; height:32px; }
+#nd-now-playing-tap { background:none; border:1px solid var(--neon); color:var(--neon); font-size:.78rem; padding:.2rem .6rem; border-radius:3px; cursor:pointer; }
+#nd-now-playing-close { background:none; border:none; color:var(--text-dim); font-size:1rem; cursor:pointer; padding:0 .1rem; line-height:1; }
+#nd-now-playing-close:hover { color:var(--text); }
+
 /* ── Image upload ── */
 .current-image {
   display: flex;

@@ -130,6 +130,12 @@
   <button type="button" onclick="ndSpotlightClear()">Stop</button>
 </div>
 {% endif %}
+{% if world and world.now_playing_url and can_edit(request) %}
+<div class="spotlight-banner">
+  🎵 Playing for players: <strong>{{ world.now_playing_label or 'a track' }}</strong>
+  <button type="button" onclick="ndNowPlayingStop()">Stop</button>
+</div>
+{% endif %}
 <script>
 (function(){
   var dot=document.getElementById('ai-dot');
@@ -441,6 +447,16 @@ function ndToggleAttachMic(btnId, attachments) {
   <img id="lightbox-img" src="" alt=""/>
 </div>
 
+<!-- Persistent "Now Playing" widget — present on every page (unlike the
+     page-local pop-out mini-player on /audio) so a GM-broadcast track keeps
+     playing as the viewer navigates between pages. See the poller below. -->
+<div id="nd-now-playing" style="display:none">
+  <div id="nd-now-playing-name"></div>
+  <audio id="nd-now-playing-audio" preload="auto"></audio>
+  <button type="button" id="nd-now-playing-tap" style="display:none" onclick="ndNowPlayingTapToPlay()">▶ Tap to play</button>
+  <button type="button" id="nd-now-playing-close" title="Hide (doesn't stop it for others)" onclick="ndNowPlayingDismiss()">✕</button>
+</div>
+
 <script>
 let _lightboxReturnFocus = null;
 function openLightbox(src, alt) {
@@ -478,6 +494,9 @@ document.addEventListener('keydown', e => {
                             // already-active spotlight as "new" and shows
                             // it — landing on a page mid-broadcast re-syncs
                             // you to what's currently being shown.
+  let seenAudioVersion = null;  // same idea, for the "Now Playing" audio
+                                 // broadcast below — tracked separately
+                                 // since the two broadcasts change independently.
   // A GM who just sent/cleared the spotlight reloads their own page
   // (ndSendSpotlight/ndSpotlightClear below) to refresh the status banner —
   // without this, their own poller would immediately reopen the very
@@ -486,10 +505,15 @@ document.addEventListener('keydown', e => {
   // tick after it, so it only ever suppresses that one reload's own echo —
   // every other page load still re-syncs to the current broadcast.
   let suppressOnce = false;
+  let suppressAudioOnce = false;
   try {
     if (sessionStorage.getItem('nd_spotlight_suppress_once') === '1') {
       suppressOnce = true;
       sessionStorage.removeItem('nd_spotlight_suppress_once');
+    }
+    if (sessionStorage.getItem('nd_now_playing_suppress_once') === '1') {
+      suppressAudioOnce = true;
+      sessionStorage.removeItem('nd_now_playing_suppress_once');
     }
   } catch (e) {}
 
@@ -500,11 +524,18 @@ document.addEventListener('keydown', e => {
       if (!res.ok) return;
       data = await res.json();
     } catch (e) { return; }
-    if (data.version === seenVersion) return;
-    seenVersion = data.version;
-    if (suppressOnce) { suppressOnce = false; return; }
-    if (data.image_url) openLightbox(data.image_url, data.label || '');
-    else closeLightbox();
+    if (data.version !== seenVersion) {
+      seenVersion = data.version;
+      if (suppressOnce) { suppressOnce = false; }
+      else if (data.image_url) { openLightbox(data.image_url, data.label || ''); }
+      else { closeLightbox(); }
+    }
+    if (data.audio_version !== seenAudioVersion) {
+      seenAudioVersion = data.audio_version;
+      if (suppressAudioOnce) { suppressAudioOnce = false; }
+      else if (data.audio_url) { ndNowPlayingShow(data.audio_url, data.audio_label || '', !!data.audio_loop); }
+      else { ndNowPlayingHide(); }
+    }
   }
   pollSpotlight();
   setInterval(pollSpotlight, 4000);
@@ -517,6 +548,56 @@ function ndSpotlightSuppressNextPoll() {
 async function ndSpotlightClear() {
   await fetch('/images/spotlight/clear', { method: 'POST' });
   ndSpotlightSuppressNextPoll();
+  location.reload();
+}
+
+// "Now Playing" — a GM-broadcast audio clip that auto-plays in the
+// floating widget above (app/routers/audio.py's POST /audio/{id}/play-
+// for-players), shared with the image Spotlight's poller. Unlike the
+// lightbox, this widget persists across page navigation since it lives
+// in base.html rather than a single page's own DOM.
+function ndNowPlayingShow(url, label, loop) {
+  const box = document.getElementById('nd-now-playing');
+  const audioEl = document.getElementById('nd-now-playing-audio');
+  const tapBtn = document.getElementById('nd-now-playing-tap');
+  document.getElementById('nd-now-playing-name').textContent = label || 'Now playing';
+  audioEl.loop = !!loop;
+  audioEl.src = url;
+  audioEl.style.display = '';
+  tapBtn.style.display = 'none';
+  box.style.display = 'flex';
+  const playPromise = audioEl.play();
+  if (playPromise && playPromise.catch) {
+    playPromise.catch(() => {
+      // Autoplay blocked by the browser (no prior user interaction with
+      // this page yet this session) — fall back to a manual play button
+      // rather than silently playing nothing.
+      audioEl.style.display = 'none';
+      tapBtn.style.display = '';
+    });
+  }
+}
+function ndNowPlayingTapToPlay() {
+  const audioEl = document.getElementById('nd-now-playing-audio');
+  audioEl.style.display = '';
+  document.getElementById('nd-now-playing-tap').style.display = 'none';
+  audioEl.play().catch(() => {});
+}
+function ndNowPlayingHide() {
+  const audioEl = document.getElementById('nd-now-playing-audio');
+  audioEl.pause();
+  audioEl.removeAttribute('src');
+  document.getElementById('nd-now-playing').style.display = 'none';
+}
+function ndNowPlayingDismiss() {
+  // Local-only — hides/pauses for this viewer without stopping it for
+  // anyone else. Reappears on the next page load or the next real change,
+  // same as dismissing the image Spotlight lightbox.
+  ndNowPlayingHide();
+}
+async function ndNowPlayingStop() {
+  await fetch('/audio/now-playing/stop', { method: 'POST' });
+  try { sessionStorage.setItem('nd_now_playing_suppress_once', '1'); } catch (e) {}
   location.reload();
 }
 </script>

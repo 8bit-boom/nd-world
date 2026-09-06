@@ -540,8 +540,9 @@ def _is_assistant_safe(method: str, path: str) -> bool:
     # Audio library — clip upload (incl. the chunked pair) and album/clip
     # management; GETs and the read-only player view are already player-safe.
     if method == "POST" and (path.startswith("/audio/albums/")
-                             or path in ("/audio/upload", "/audio/upload/chunk", "/audio/upload/complete")
-                             or re.match(r"^/audio/\d+/(edit|delete|transcribe)$", path)):
+                             or path in ("/audio/upload", "/audio/upload/chunk", "/audio/upload/complete",
+                                         "/audio/now-playing/stop")
+                             or re.match(r"^/audio/\d+/(edit|delete|transcribe|play-for-players)$", path)):
         return True
     if path == "/api/audio/clips" and method == "GET":
         # Session-page "choose from Audio Library" picker JSON.
@@ -4283,10 +4284,16 @@ _spotlight_cache: dict[tuple, tuple[float, dict]] = {}
 def api_spotlight(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     """Polled every 4s by base.html's spotlight poller (both GM and
     players) — reports the image, if any, a GM has pushed to the world via
-    POST /images/spotlight (app/routers/gallery.py). world=None (no active
-    world, or the active_world cookie points at a world this user can't
-    access — get_world_ctx already filters that out silently) is not an
-    error here since this is polled unconditionally on every page."""
+    POST /images/spotlight (app/routers/gallery.py), and (audio_* fields)
+    the clip, if any, pushed via POST /audio/{id}/play-for-players
+    (app/routers/audio.py) to auto-play in every viewer's persistent
+    floating widget. Both broadcasts share this one endpoint/cache/poller
+    rather than each running their own — they're the same "GM pushes media
+    to every player's screen" mechanism, just for images vs. audio.
+    world=None (no active world, or the active_world cookie points at a
+    world this user can't access — get_world_ctx already filters that out
+    silently) is not an error here since this is polled unconditionally on
+    every page."""
     user = getattr(request.state, "user", None)
     cache_key = (user.id if user else None, resolve_world_slug(request, active_world))
     now = time.monotonic()
@@ -4296,12 +4303,19 @@ def api_spotlight(request: Request, db: Session = Depends(get_db), active_world:
 
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
-        result = {"version": 0, "image_url": None, "label": None}
+        result = {
+            "version": 0, "image_url": None, "label": None,
+            "audio_version": 0, "audio_url": None, "audio_label": None, "audio_loop": False,
+        }
     else:
         result = {
             "version": world.spotlight_version or 0,
             "image_url": world.spotlight_image_url,
             "label": world.spotlight_label,
+            "audio_version": world.now_playing_version or 0,
+            "audio_url": world.now_playing_url,
+            "audio_label": world.now_playing_label,
+            "audio_loop": bool(world.now_playing_loop),
         }
     _spotlight_cache[cache_key] = (now, result)
     return result

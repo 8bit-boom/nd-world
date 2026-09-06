@@ -120,6 +120,10 @@
                   style="font-size:.75rem;padding:.25rem .5rem" onclick="audioToggleLoop({{ c.id }}, this)">🔁 Loop</button>
           <button type="button" class="btn-cancel" title="Pop out into a floating mini-player" data-clip-name="{{ c.name }}"
                   style="font-size:.75rem;padding:.25rem .5rem" onclick="audioPopOut({{ c.id }}, this.dataset.clipName)">⇱ Pop out</button>
+          {% if can_edit(request) and c.visible_to_players %}
+          <button type="button" class="btn-cancel" title="Auto-play this clip for every player, on every page, until stopped" data-clip-name="{{ c.name }}"
+                  style="font-size:.75rem;padding:.25rem .5rem" onclick="audioPlayForPlayers({{ c.id }}, this.dataset.clipName)">📤 Play for players</button>
+          {% endif %}
         </div>
         {% if can_edit(request) %}
         <div class="audio-clip-actions">
@@ -378,6 +382,20 @@ function audioMiniPlayerReturn() {
   if (audio && origSlot) origSlot.insertBefore(audio, origSlot.firstChild);
   document.getElementById('audio-mini-player').style.display = 'none';
   _audioPoppedId = null;
+}
+
+// Push a clip to every player's screen — see base.html's "Now Playing"
+// floating widget (persists across page navigation, unlike the pop-out
+// mini-player above) and app/routers/audio.py's POST /audio/{id}/play-
+// for-players. Reuses this clip's own Loop toggle state as the broadcast's
+// loop flag rather than adding a second control for the same idea.
+async function audioPlayForPlayers(id, name) {
+  const audio = document.getElementById('audio-el-' + id);
+  const loop = audio ? audio.loop : false;
+  const body = new URLSearchParams();
+  if (loop) body.set('loop', '1');
+  await fetch('/audio/' + id + '/play-for-players', { method: 'POST', body });
+  location.reload();
 }
 
 // ── AI transcript + subtitles ────────────────────────────────────────────────

@@ -503,7 +503,9 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/audio/upload/chunk`, `/audio/upload/complete` | GM / Assistant | Client-split large-upload pair (see `app/uploads.py`) for a clip too big for a single request behind a reverse proxy's body-size cap. |
 | POST | `/audio/{clip_id}/edit` | GM / Assistant | Updates a clip's name/description/visibility/album. |
 | POST | `/audio/{clip_id}/transcribe` | GM / Assistant | Generates an AI transcript + WebVTT subtitle track via Whisper (`app.ai.transcribe_audio_with_subtitles`), honoring the world's glossary/language/denoise settings. Synchronous; overwrites any existing transcript/subtitles. |
-| POST | `/audio/{clip_id}/delete` | GM / Assistant | Deletes a clip and its file. |
+| POST | `/audio/{clip_id}/delete` | GM / Assistant | Deletes a clip and its file. If it's the clip currently playing for players (below), clears that broadcast too. |
+| POST | `/audio/{clip_id}/play-for-players` | GM / Assistant | Pushes a clip (must already be `visible_to_players`) to every player's screen to auto-play in a persistent floating widget that survives page navigation — same broadcast mechanism as the image Spotlight (`/images/spotlight`), reported via `GET /api/spotlight`'s `audio_*` fields. Optional `loop` form field. |
+| POST | `/audio/now-playing/stop` | GM / Assistant | Stops the current "play for players" broadcast for everyone. |
 | GET | `/api/audio/clips` | Player | JSON clip listing for the soundboard/picker UIs, visibility-filtered. |
 
 ## Video Library
@@ -611,7 +613,7 @@ worlds they've been invited into (`WorldMembership`).
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/search` | Player | Full-text search across entity names, tags, summaries, and body text, filtered to what the caller may see. |
-| GET | `/api/spotlight` | Player | Current spotlight image + version counter — polled by every open tab so a GM's broadcast pops up for players too. |
+| GET | `/api/spotlight` | Player | Current spotlight image + version counter, plus the `audio_*` "Now Playing" broadcast fields (`/audio/{id}/play-for-players`) — polled by every open tab so a GM's broadcast pops up for players too. |
 
 ## Import / Export
 

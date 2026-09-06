@@ -260,6 +260,18 @@ class World(Base):
     spotlight_image_url = Column(String(512), nullable=True)
     spotlight_label = Column(String(256), nullable=True)
     spotlight_version = Column(Integer, default=0)
+    # The audio clip currently pushed to players to auto-play in a
+    # persistent floating widget that survives page navigation (base.html),
+    # or NULL when nothing is playing. Set by POST /audio/{id}/play-for-
+    # players, cleared by POST /audio/now-playing/stop (both requiring
+    # can_edit_content — see app/routers/audio.py). now_playing_version
+    # increments on every set/clear, same distinct-change-detection idea as
+    # spotlight_version — GET /api/spotlight reports both broadcasts
+    # together since they share the same poll-every-4s infrastructure.
+    now_playing_url = Column(String(512), nullable=True)
+    now_playing_label = Column(String(256), nullable=True)
+    now_playing_loop = Column(Boolean, default=False)
+    now_playing_version = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     entities = relationship("Entity", back_populates="world", cascade="all, delete-orphan")

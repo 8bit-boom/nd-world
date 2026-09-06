@@ -1033,7 +1033,10 @@ def test_api_spotlight_default_shape_before_anything_sent(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/api/spotlight")
     assert r.status_code == 200
-    assert r.json() == {"version": 0, "image_url": None, "label": None}
+    assert r.json() == {
+        "version": 0, "image_url": None, "label": None,
+        "audio_version": 0, "audio_url": None, "audio_label": None, "audio_loop": False,
+    }
 
 
 def test_album_page_has_send_to_players_button(client, seed):
@@ -1090,7 +1093,7 @@ def test_sender_suppresses_own_reopened_popup(client, seed):
     r = client.get("/")
     assert "function ndSpotlightSuppressNextPoll()" in r.text
     assert "nd_spotlight_suppress_once" in r.text
-    assert "if (suppressOnce) { suppressOnce = false; return; }" in r.text
+    assert "if (suppressOnce) { suppressOnce = false; }" in r.text
     assert "ndSpotlightSuppressNextPoll();\n  location.reload();" in r.text  # from ndSpotlightClear
 
 
