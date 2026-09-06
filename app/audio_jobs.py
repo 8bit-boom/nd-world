@@ -709,6 +709,27 @@ def _recap_instructions_for_world(world_id: int) -> str:
         db.close()
 
 
+def _format_session_rewards(xp_awarded: int, loot_items: list) -> str:
+    """A deterministic — never AI-generated — "Rewards" footer for the
+    Facts-based session recap. GameSession.xp_awarded/loot_json are
+    GM-entered structured fields the summarize call never sees (only
+    Fact.content reaches summarize_session_from_facts), so reporting them
+    accurately means computing this separately rather than trusting the
+    model to notice, count, or total them up from prose it was never
+    given in the first place. Returns "" (nothing to append) when there's
+    neither XP nor loot to report, so a session with no rewards yet gets
+    no empty/awkward section."""
+    lines = []
+    if xp_awarded:
+        lines.append(f"- **XP awarded:** {xp_awarded}")
+    if loot_items:
+        item_strs = [f"{it.get('name', '?')} ×{it.get('qty', 1)}" for it in loot_items]
+        lines.append(f"- **Loot given:** {', '.join(item_strs)}")
+    if not lines:
+        return ""
+    return "## Rewards\n" + "\n".join(lines)
+
+
 # Caps for the world-summary digest (purpose="world_summary") — generous
 # enough that a real campaign's shape comes through, tight enough that one
 # digest can't blow the model's context before the summarize call even
@@ -1520,6 +1541,11 @@ async def _run_job(job_id: int) -> None:
                     q = q.filter(Fact.visible_to_players.isnot(False))
                 facts = q.order_by(Fact.created_at).all()
                 world_instructions = _recap_instructions_for_world(gs.world_id)
+                xp_awarded = gs.xp_awarded or 0
+                try:
+                    loot_items = _json.loads(gs.loot_json or "[]")
+                except (TypeError, ValueError):
+                    loot_items = []
             finally:
                 db2.close()
             if not facts:
@@ -1569,6 +1595,16 @@ async def _run_job(job_id: int) -> None:
             if _looks_like_failure(recap) or _ai_module.is_thinking_starved_sentinel(recap):
                 _set(status="error", error=recap, finished_at=datetime.utcnow(), checkpoint_json="")
                 return
+            # Appended after (not woven into) the AI prose — see
+            # _format_session_rewards' own docstring for why this has to be
+            # computed from the structured fields rather than trusted to the
+            # model. Same for both audiences: XP/loot awarded is shared
+            # campaign state, not GM-secret, and this recap is often the
+            # first place a player actually sees it (the Loot/XP panel
+            # itself lives on the GM-only Session page).
+            rewards = _format_session_rewards(xp_awarded, loot_items)
+            if rewards:
+                recap = recap + "\n\n" + rewards
             _set(status="done", result_json=_json.dumps({"recap": recap}),
                  finished_at=datetime.utcnow(), checkpoint_json="")
         elif purpose == "ai_assist":

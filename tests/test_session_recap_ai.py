@@ -1995,6 +1995,86 @@ def test_session_log_recap_job_carries_model_think_and_rag(client, seed, monkeyp
     assert build_calls == [(seed.world_a.id, "Public fact", 6, 3)]
 
 
+# ── Rewards footer (XP/loot) ─────────────────────────────────────────────────
+#
+# GameSession.xp_awarded/loot_json are GM-entered structured fields the
+# summarize call never sees (only Fact.content reaches summarize_session_
+# from_facts) — a deterministic "## Rewards" block computed from those
+# fields is appended after the AI-generated prose, so the count is never
+# left to model inference.
+
+def test_session_log_recap_includes_xp_and_loot_rewards(client, seed, monkeypatch):
+    import json
+
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "The party explored the ruins."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "Public fact", True)
+    db = SessionLocal()
+    try:
+        gs = db.get(GameSession, session_id)
+        gs.xp_awarded = 300
+        gs.loot_json = json.dumps([{"name": "+1 Sword", "qty": 1}, {"name": "Potion of Healing", "qty": 2}])
+        db.commit()
+    finally:
+        db.close()
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap")
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
+    r2 = client.post(f"/api/session-log/{session_id}/recap")
+    recap = r2.json()["recap"]
+    assert "The party explored the ruins." in recap
+    assert "## Rewards" in recap
+    assert "XP awarded:** 300" in recap
+    assert "+1 Sword ×1" in recap
+    assert "Potion of Healing ×2" in recap
+
+
+def test_session_log_recap_omits_rewards_section_when_none_awarded(client, seed, monkeypatch):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "Nothing much happened."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    session_id = _make_session(seed.world_a)  # xp_awarded=0, loot_json default "[]"
+    _add_fact(seed.world_a, session_id, "Public fact", True)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap")
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
+    r2 = client.post(f"/api/session-log/{session_id}/recap")
+    recap = r2.json()["recap"]
+    assert recap == "Nothing much happened."
+    assert "Rewards" not in recap
+
+
+def test_session_log_recap_rewards_visible_to_players_too(client, seed, monkeypatch):
+    """XP/loot awarded is shared campaign state, not GM-secret — and the
+    Loot/XP panel itself lives on the GM-only Session page, so this recap
+    is often the first place a player actually sees the total."""
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+        return "The party regrouped at the tavern."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "Public fact", True)
+    db = SessionLocal()
+    try:
+        gs = db.get(GameSession, session_id)
+        gs.xp_awarded = 150
+        db.commit()
+    finally:
+        db.close()
+
+    _login_player_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap")
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
+    r2 = client.post(f"/api/session-log/{session_id}/recap")
+    assert "XP awarded:** 150" in r2.json()["recap"]
+
+
 def test_session_log_recap_rag_is_gm_only(client, seed, monkeypatch):
     """A player's use_rag is forced off server-side: _build_rag_context is
     not visibility-filtered, so player-enabled RAG could pull GM-only lore
