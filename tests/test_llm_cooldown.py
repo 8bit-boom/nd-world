@@ -98,7 +98,7 @@ def test_session_log_recap_second_call_from_same_player_is_rate_limited(client, 
     _add_fact(seed.world_a.id, session_id_1, "The party arrived.")
     _add_fact(seed.world_a.id, session_id_2, "The party left.")
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "A recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 

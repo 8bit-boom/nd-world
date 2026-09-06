@@ -255,7 +255,7 @@ def test_summarize_from_facts_falls_back_to_recap_surface_default(client, seed, 
 
     captured = {}
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, **kwargs):
         captured["model"] = model
         return "Woven recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
@@ -273,7 +273,7 @@ def test_session_log_recap_falls_back_to_recap_surface_default(client, seed, mon
 
     captured = {}
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         captured["model"] = model
         return "A narrated recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)

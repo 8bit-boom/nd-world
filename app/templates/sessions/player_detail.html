@@ -63,6 +63,48 @@
       </button>
       {% endif %}
     </div>
+    {% if request.state.user and request.state.user.is_gm %}
+    <!-- Same Condense-style length-target/steering knobs the Sessions
+         page's Condense settings offer — GM-only alongside RAG/Regenerate
+         above, since these are generation-tuning controls rather than
+         reader preferences (unlike model/Thinking, which players can also
+         set). Sent on every poll POST just like the row above, so a
+         different setting is a different cached artifact — see the
+         route's own _session_log_recap_q comment. -->
+    <details style="margin-top:.5rem">
+      <summary style="cursor:pointer;font-size:.75rem;color:var(--text-dim)">Recap settings (optional)</summary>
+      <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-top:.4rem">
+        <label style="font-size:.75rem;color:var(--text-dim);display:flex;align-items:center;gap:.3rem">
+          Min tokens
+          <input type="number" id="recap-min-tokens" min="1" placeholder="none"
+                 value="{{ recap_defaults.min_tokens or '' }}"
+                 title="Ask the model to keep the recap at least this many tokens — best-effort only, Ollama has no hard minimum-length option"
+                 style="width:75px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+        </label>
+        <label style="font-size:.75rem;color:var(--text-dim);display:flex;align-items:center;gap:.3rem">
+          Max tokens
+          <input type="number" id="recap-max-tokens" min="1" placeholder="none"
+                 value="{{ recap_defaults.max_tokens or '' }}"
+                 title="Hard cap on the recap's length (Ollama's num_predict) — enforced only when 🧠 Thinking is off, since hidden reasoning would otherwise compete with the visible answer for that same budget; with Thinking on it's a soft target instead, same as Min tokens"
+                 style="width:75px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+        </label>
+        <label style="font-size:.75rem;color:var(--text-dim);display:flex;align-items:center;gap:.3rem">
+          Strictness
+          <select id="recap-strictness"
+                  title="How hard the Min/Max tokens and extra instructions are enforced. Guideline = best-effort wording (the model is asked nicely). Firm = the min/max/extra instructions become mandatory prompt requirements. Strict = Firm, plus one automatic re-run if the result lands outside the token range (estimated, 15% tolerance)."
+                  style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+            <option value="guideline" {% if recap_defaults.strictness == 'guideline' %}selected{% endif %}>Guideline (best effort)</option>
+            <option value="firm" {% if recap_defaults.strictness == 'firm' %}selected{% endif %}>Firm requirement</option>
+            <option value="strict" {% if recap_defaults.strictness == 'strict' %}selected{% endif %}>Strict + auto-retry</option>
+          </select>
+        </label>
+        <input type="text" id="recap-extra-instructions" placeholder="Extra instructions for this recap (optional)…"
+               value="{{ recap_defaults.extra_instructions or '' }}"
+               title="One-off notes for this recap specifically, e.g. &quot;keep character names&quot; — added to (not replacing) the world's standing recap instructions"
+               style="flex:1;min-width:220px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:var(--font);font-size:.78rem;border-radius:3px;box-sizing:border-box">
+      </div>
+    </details>
+    {% endif %}
   </div>
 </div>
 
@@ -96,12 +138,23 @@ function recapRequestOptions() {
   const ragBox = document.getElementById('recap-rag-checkbox');
   const entityEl = document.getElementById('recap-rag-entity-limit');
   const notesEl = document.getElementById('recap-rag-notes-limit');
+  // GM-only fields (see the template's own comment) — absent entirely for
+  // a player, so these all fall back to blank/default, same as the server
+  // treats an omitted field.
+  const minEl = document.getElementById('recap-min-tokens');
+  const maxEl = document.getElementById('recap-max-tokens');
+  const strictnessSel = document.getElementById('recap-strictness');
+  const instructionsEl = document.getElementById('recap-extra-instructions');
   return {
     model: modelSel ? modelSel.value : '',
     think: thinkBox ? thinkBox.checked : true,
     use_rag: !!(ragBox && ragBox.checked),
     rag_entity_limit: (entityEl && entityEl.value.trim() !== '') ? parseInt(entityEl.value, 10) : null,
     rag_notes_limit: (notesEl && notesEl.value.trim() !== '') ? parseInt(notesEl.value, 10) : null,
+    min_tokens: (minEl && minEl.value.trim() !== '') ? parseInt(minEl.value, 10) : null,
+    max_tokens: (maxEl && maxEl.value.trim() !== '') ? parseInt(maxEl.value, 10) : null,
+    strictness: strictnessSel ? strictnessSel.value : 'guideline',
+    extra_instructions: instructionsEl ? instructionsEl.value.trim() : '',
   };
 }
 

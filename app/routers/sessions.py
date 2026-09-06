@@ -1468,6 +1468,10 @@ def session_log_detail(session_id: int, request: Request, db: Session = Depends(
         "rag_notes_limit": (
             last_job.rag_notes_limit if last_job.rag_notes_limit is not None else _audio_jobs._DEFAULT_RAG_NOTES_LIMIT
         ) if last_job else _audio_jobs._DEFAULT_RAG_NOTES_LIMIT,
+        "extra_instructions": (last_job.extra_instructions or "") if last_job else "",
+        "min_tokens": (last_job.min_tokens if last_job else None),
+        "max_tokens": (last_job.max_tokens if last_job else None),
+        "strictness": (last_job.condense_strictness or "guideline") if last_job else "guideline",
     }
     return templates.TemplateResponse("sessions/player_detail.html", {
         "request": request, "world": world, "worlds": worlds, "gsession": gs,
@@ -1538,6 +1542,12 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
     model = str(body.get("model", "")).strip()
     think = _think_from_body(body)
     use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
+    # Same Condense-style customization (a one-off note plus soft/firm
+    # length targets), reusing Condense's own body parsers verbatim — see
+    # their docstrings for the validation/"blank means unset" rules.
+    min_tokens, max_tokens = _condense_token_bounds(body)
+    strictness = _condense_strictness(body)
+    extra_instructions = str(body.get("extra_instructions", "")).strip()
     if audience != "gm" and use_rag:
         # RAG is GM-only on this surface, enforced server-side (the template
         # hides the checkbox from players, but this page serves players and
@@ -1615,6 +1625,17 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
             == (rag_entity_limit if rag_entity_limit is not None else _audio_jobs._DEFAULT_RAG_ENTITY_LIMIT),
             func.coalesce(AudioJob.rag_notes_limit, _audio_jobs._DEFAULT_RAG_NOTES_LIMIT)
             == (rag_notes_limit if rag_notes_limit is not None else _audio_jobs._DEFAULT_RAG_NOTES_LIMIT),
+            # Same reasoning extends to the Condense-style customization
+            # below: a recap generated under a different length target or
+            # one-off instruction is a different artifact too. 0 is a safe
+            # "unset" sentinel for min/max_tokens (create_session_log_recap_job
+            # only ever stores a real value >= 1, same as Condense's own
+            # column), and NULL condense_strictness (a pre-feature row)
+            # reads as "guideline", matching _run_job's own fallback.
+            func.coalesce(AudioJob.extra_instructions, "") == extra_instructions,
+            func.coalesce(AudioJob.min_tokens, 0) == (min_tokens or 0),
+            func.coalesce(AudioJob.max_tokens, 0) == (max_tokens or 0),
+            func.coalesce(AudioJob.condense_strictness, "guideline") == strictness,
         )
 
     # Fresh-cache check BEFORE the cooldown gate: serving an already-done
@@ -1682,5 +1703,7 @@ async def api_session_log_recap(session_id: int, request: Request, db: Session =
         created_by_user_id=user.id if user else None,
         model=model, think=think,
         use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
+        extra_instructions=extra_instructions, min_tokens=min_tokens, max_tokens=max_tokens,
+        strictness=strictness,
     )
     return {"pending": True, "job_id": job_id}

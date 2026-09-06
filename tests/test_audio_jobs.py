@@ -2298,7 +2298,7 @@ def test_resume_marks_error_when_the_audio_file_is_gone_and_no_transcript(client
 async def test_resume_interrupted_jobs_resumes_session_log_recap_without_transcript_or_audio(
     client, seed, monkeypatch,
 ):
-    async def fake_summarize_from_facts(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize_from_facts(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "A woven recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize_from_facts)
 
@@ -4136,7 +4136,7 @@ _FACTS_PARSE_DRAFT = [
 
 @pytest.mark.asyncio
 async def test_create_facts_parse_job_runs_to_completion(client, seed, monkeypatch):
-    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None, **kwargs):
         assert "tavern" in raw_text
         return [dict(f) for f in _FACTS_PARSE_DRAFT]
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
@@ -4155,7 +4155,7 @@ async def test_create_facts_parse_job_runs_to_completion(client, seed, monkeypat
 async def test_create_facts_parse_job_empty_result_is_done_not_error(client, seed, monkeypatch):
     """Out-of-character chatter parses to zero facts — that's a SUCCESS the
     Facts page's UI explains, not a failure: the model did its job."""
-    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None, **kwargs):
         return []
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
 
@@ -4172,7 +4172,7 @@ async def test_create_facts_parse_job_valueerror_marks_error(client, seed, monke
     down, malformed JSON — see its docstring), already worded for a GM; the
     job must carry that message in job.error, the same text the synchronous
     /api/facts/parse maps to HTTP 502."""
-    async def failing_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+    async def failing_parse(raw_text, model="", think=False, world_context="", on_progress=None, **kwargs):
         raise ValueError("Could not parse facts from that recap — try rephrasing it.")
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", failing_parse)
 
@@ -4189,7 +4189,7 @@ async def test_create_facts_parse_job_never_transcribes(client, seed, monkeypatc
     async def fail_if_called(*a, **kw):
         raise AssertionError("facts_parse jobs must never transcribe")
     monkeypatch.setattr(ai_module, "transcribe_audio", fail_if_called)
-    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None, **kwargs):
         return []
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
 
@@ -4219,7 +4219,7 @@ async def test_create_facts_parse_job_reports_chunk_progress_and_clears_when_don
     progress_reported = asyncio.Event()
     release_parse = asyncio.Event()
 
-    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None, **kwargs):
         on_progress(2, 3)
         progress_reported.set()
         await release_parse.wait()
@@ -4250,7 +4250,7 @@ async def test_create_facts_parse_job_reports_chunk_progress_and_clears_when_don
 
 @pytest.mark.asyncio
 async def test_create_facts_parse_job_persists_think_and_rag_options(client, seed, monkeypatch):
-    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None, **kwargs):
         return [dict(f) for f in _FACTS_PARSE_DRAFT]
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
 
@@ -4271,7 +4271,7 @@ async def test_create_facts_parse_job_persists_think_and_rag_options(client, see
 async def test_create_facts_parse_job_use_rag_passes_world_context_and_think_through(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None, **kwargs):
         captured.update(raw_text=raw_text, model=model, think=think, world_context=world_context)
         return []
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
@@ -4301,7 +4301,7 @@ async def test_create_facts_parse_job_use_rag_passes_world_context_and_think_thr
 async def test_create_facts_parse_job_use_rag_off_never_retrieves(client, seed, monkeypatch):
     captured = {}
 
-    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None, **kwargs):
         captured["world_context"] = world_context
         return []
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)

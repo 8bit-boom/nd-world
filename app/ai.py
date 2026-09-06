@@ -1215,15 +1215,19 @@ async def _parse_facts_chat_call(m: str, messages: list[dict], think: bool, opti
     return resp
 
 
-def _facts_parse_chunk_plan(raw_text: str, think: bool, world_context_tokens: int) -> tuple[int, int]:
+def _facts_parse_chunk_plan(raw_text: str, think: bool, world_context_tokens: int, extra_instructions: str = "") -> tuple[int, int]:
     """parse_facts_from_recap's chunk sizing, factored pure so tests can
     force tiny chunks by stubbing it the way _transcript_chunk_char_budget
     used to be stubbed. Returns (chunk_chars, reserve_tokens): the per-chunk
     INPUT char budget for _split_transcript_into_chunks, and the token
     reserve (everything a chunk call carries besides the chunk text itself —
-    _chunk_reserve_tokens over _RECAP_SYSTEM, plus the RAG lore and the JSON
-    response room) that the per-call num_ctx pin adds back on top of each
-    chunk's estimated tokens.
+    _chunk_reserve_tokens over _RECAP_SYSTEM plus any `extra_instructions`
+    (the Facts page's own one-off steering note, folded in via
+    _with_instructions same as every other recap function here — a long
+    note is real system-prompt tokens too and must be reserved for, not
+    just the base prompt), plus the RAG lore and the JSON response room)
+    that the per-call num_ctx pin adds back on top of each chunk's
+    estimated tokens.
 
     The old sizing worked the other way around and had the window first: it
     derived the chunk size from an ASSUMED window (the GM's configured
@@ -1256,8 +1260,13 @@ def _facts_parse_chunk_plan(raw_text: str, think: bool, world_context_tokens: in
     the world_context reserve is dropped with a warning and the (clamped)
     oversized-window pin carries the call: Ollama truncates rather than
     erroring, which degrades one parse instead of failing it mid-paste."""
+    # extra_instructions folds into the SAME system string every chunk call
+    # actually sends (see parse_facts_from_recap) so its own token cost is
+    # reserved for too — a long GM note is real system-prompt tokens, not
+    # free text riding along outside the budget this function computes.
+    system_for_sizing = _with_instructions(_RECAP_SYSTEM, extra_instructions)
     reserve_tokens = _chunk_reserve_tokens(
-        _RECAP_SYSTEM, think, world_context_tokens + _FACTS_PARSE_RESPONSE_RESERVE_TOKENS,
+        system_for_sizing, think, world_context_tokens + _FACTS_PARSE_RESPONSE_RESERVE_TOKENS,
     )
     if reserve_tokens >= MAX_AUTO_NUM_CTX:
         _log.warning(
@@ -1266,7 +1275,7 @@ def _facts_parse_chunk_plan(raw_text: str, think: bool, world_context_tokens: in
             "for it, context may overflow",
             world_context_tokens, reserve_tokens, MAX_AUTO_NUM_CTX,
         )
-        reserve_tokens = _chunk_reserve_tokens(_RECAP_SYSTEM, think, _FACTS_PARSE_RESPONSE_RESERVE_TOKENS)
+        reserve_tokens = _chunk_reserve_tokens(system_for_sizing, think, _FACTS_PARSE_RESPONSE_RESERVE_TOKENS)
     chars_per_token = _chars_per_token_estimate(raw_text)
     target_input_tokens = _facts_parse_target_input_tokens(think)
     chunk_input_tokens = min(target_input_tokens, MAX_AUTO_NUM_CTX - reserve_tokens)
@@ -1283,7 +1292,10 @@ def _facts_parse_chunk_plan(raw_text: str, think: bool, world_context_tokens: in
     return chunk_input_tokens * chars_per_token, reserve_tokens
 
 
-async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = False, world_context: str = "", on_progress=None) -> list[dict]:
+async def parse_facts_from_recap(
+    raw_text: str, model: str = "", think: bool = False, world_context: str = "",
+    extra_instructions: str = "", on_progress=None,
+) -> list[dict]:
     """Turn a rough GM recap into draft facts via the local model, using
     Ollama's JSON-schema-constrained `format` — see ollama.AsyncClient.chat's
     `format` parameter. Raises ValueError ONLY when every chunk failed (see
@@ -1343,15 +1355,24 @@ async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = F
     adding RAG grows each call's pinned window instead of shrinking the
     chunks. The lore rides in the user message, not the system prompt,
     because the extraction instructions already live in _RECAP_SYSTEM and
-    the lore is context FOR the text being split, not a behavior change."""
+    the lore is context FOR the text being split, not a behavior change.
+
+    `extra_instructions` is the Facts page's own one-off steering note (e.g.
+    "only extract facts about the Thornwood Syndicate", "ignore combat
+    mechanics talk") — same _with_instructions convention every other recap
+    function here uses, folded into _RECAP_SYSTEM once up front and sent
+    identically on every chunk (so instruction adherence doesn't fade out
+    on a later chunk of a long paste). Its own token cost is reserved for
+    via _facts_parse_chunk_plan, same as the base system prompt."""
     m = model or effective_ollama_model()
+    system = _with_instructions(_RECAP_SYSTEM, extra_instructions)
     # Same len // chars-per-token estimate _transcript_chunk_char_budget
     # applies to its `system` arg — the lore rides EVERY chunk call, so its
     # cost is part of every chunk's reserve, not just the first one's.
     world_context_tokens = (
         len(world_context) // _chars_per_token_estimate(world_context)
     ) if world_context else 0
-    chunk_chars, reserve_tokens = _facts_parse_chunk_plan(raw_text, think, world_context_tokens)
+    chunk_chars, reserve_tokens = _facts_parse_chunk_plan(raw_text, think, world_context_tokens, extra_instructions)
     chunks = _split_transcript_into_chunks(raw_text, chunk_chars)
     _log.info("parse_facts_from_recap: model=%s chunking into %d part(s) (%d chars total)", m, len(chunks), len(raw_text))
     merged_facts: list[dict] = []
@@ -1364,7 +1385,7 @@ async def parse_facts_from_recap(raw_text: str, model: str = "", think: bool = F
         if on_progress:
             on_progress(i + 1, len(chunks))
         messages = [
-            {"role": "system", "content": _RECAP_SYSTEM},
+            {"role": "system", "content": system},
             {"role": "user", "content": _with_world_context(chunk, world_context)},
         ]
         # THE window pin (the ONE rule, see _facts_parse_chunk_plan):
@@ -1655,7 +1676,11 @@ def _recap_num_predict_default_if_unbounded(opts: dict) -> None:
         opts["num_predict"] = _RECAP_NUM_PREDICT_DEFAULT
 
 
-async def summarize_session_from_facts(facts: list[str], model: str = "", extra_instructions: str = "", think: bool = True, world_context: str = "") -> str:
+async def summarize_session_from_facts(
+    facts: list[str], model: str = "", extra_instructions: str = "", think: bool = True,
+    world_context: str = "", min_tokens: int | None = None, max_tokens: int | None = None,
+    strictness: str = "guideline",
+) -> str:
     """Weave a list of discrete session facts (see the Facts feature, which
     logs these per-session) into a readable narrative recap. `extra_instructions`
     is a GM's steering (e.g. World.recap_instructions — "write in Spanish"),
@@ -1669,6 +1694,16 @@ async def summarize_session_from_facts(facts: list[str], model: str = "", extra_
     The recap is generated FROM the session's facts, so the retrieved lore
     is purely supplementary reference material (spelling an established
     name right), never a second content source — the framing text says so.
+
+    `min_tokens`/`max_tokens`/`strictness` are condense_recap's own
+    length-target/steering knobs, given the Session Log recap the same
+    customization the Condense feature already has — see condense_recap's
+    own docstring for the full guideline-vs-firm/strict rationale and the
+    max_tokens/think num_predict interaction, both shared verbatim via
+    _strictness_base_system/_length_target_addendum. Unlike condense_recap,
+    there's no `options` passthrough or expanded-thinking retry rung here
+    (this function has never had either), so the num_predict merge below is
+    a shorter version of condense_recap's own.
 
     Also sizes num_ctx via _ctx_override_if_needed — a fact-heavy session
     (the player session-log route sends every fact, uncapped) could
@@ -1689,10 +1724,19 @@ async def summarize_session_from_facts(facts: list[str], model: str = "", extra_
     machinery already set a num_predict."""
     if not facts:
         return ""
+    _validate_strictness(strictness)
     bullet_list = "\n".join(f"- {f}" for f in facts)
-    system = _with_world_context(_with_instructions(_SUMMARIZE_FACTS_SYSTEM, extra_instructions), world_context)
+    base_system = _strictness_base_system(_SUMMARIZE_FACTS_SYSTEM, strictness, extra_instructions)
+    system = _with_world_context(_with_instructions(base_system, extra_instructions), world_context)
+    system += _length_target_addendum(
+        min_tokens, max_tokens, strictness, _chars_per_token_estimate(bullet_list),
+        noun="session recap", source_noun="facts",
+    )
     thinking_opts = _thinking_num_predict_override(think)
-    opts = dict(thinking_opts)
+    opts = {}
+    if max_tokens and not think:
+        opts["num_predict"] = max_tokens
+    opts.update(thinking_opts)
     _recap_num_predict_default_if_unbounded(opts)
     # `thinking_opts` (not "num_predict" in opts — the guard just guaranteed
     # that is now always true) preserves the pre-guard reserve semantics:
@@ -1880,6 +1924,70 @@ _CONDENSE_RECAP_SYSTEM = (
     "commentary."
 )
 
+# Shared by every recap function with a strictness/length-target knob
+# (condense_recap, summarize_session_from_facts) — factored out once two
+# callers needed the identical wording/behavior, rather than the "different
+# reimplementation of the other" carve-out app.audio_jobs uses for its own
+# purpose-specific job-runner branches (those differ in real ways; this
+# doesn't).
+_STRICT_COMPLIANCE_NOTE = "\n\nTreat the extra instructions below as binding requirements, not suggestions."
+
+
+def _validate_strictness(strictness: str) -> None:
+    if strictness not in ("guideline", "firm", "strict"):
+        raise ValueError(f"strictness must be guideline, firm, or strict, got {strictness!r}")
+
+
+def _strictness_base_system(base_system: str, strictness: str, extra_instructions: str) -> str:
+    """For "firm"/"strict" strictness with a non-blank extra_instructions,
+    appends a compliance line telling the model those instructions are
+    binding — see condense_recap's own docstring for why a model told a
+    length is mandatory otherwise still treats a softer instruction as
+    license to undershoot. Must run BEFORE _with_instructions folds
+    extra_instructions in, so the compliance line's "below" is literally
+    true."""
+    if strictness in ("firm", "strict") and (extra_instructions or "").strip():
+        return base_system + _STRICT_COMPLIANCE_NOTE
+    return base_system
+
+
+def _length_target_addendum(
+    min_tokens: int | None, max_tokens: int | None, strictness: str,
+    chars_per_token: int, noun: str, source_noun: str,
+) -> str:
+    """Builds the trailing "Length target/requirements for the {noun}: ..."
+    system-prompt addition for min_tokens/max_tokens — see condense_recap's
+    own docstring for the full guideline-vs-firm/strict wording rationale.
+    `source_noun` names what the model should pull more detail from to
+    reach a min_tokens floor (e.g. "recap" for condense, "facts" for a
+    facts-based session recap). Returns "" when neither bound is set."""
+    length_notes = []
+    if min_tokens:
+        if strictness == "guideline":
+            length_notes.append(
+                f"at least ~{min_tokens} tokens (~{min_tokens * chars_per_token} characters) — "
+                "don't cut it any shorter than that even if you could say it in fewer words"
+            )
+        else:
+            length_notes.append(
+                f"REQUIRED: the {noun} MUST be at least ~{min_tokens} tokens "
+                f"(~{min_tokens * chars_per_token} characters) — a shorter output is a failed "
+                f"request; expand with specific detail (scene beats, names, consequences) from "
+                f"the {source_noun} to reach it"
+            )
+    if max_tokens:
+        if strictness == "guideline":
+            length_notes.append(f"no more than ~{max_tokens} tokens (~{max_tokens * chars_per_token} characters)")
+        else:
+            length_notes.append(
+                f"REQUIRED: stay at or below ~{max_tokens} tokens (~{max_tokens * chars_per_token} "
+                "characters); trim detail rather than exceeding it"
+            )
+    if not length_notes:
+        return ""
+    heading = "Length target" if strictness == "guideline" else "Length requirements"
+    return f"\n\n{heading} for the {noun}: " + " and ".join(length_notes) + "."
+
 
 async def condense_recap(
     recap: str, model: str = "", options: dict = None, think: bool = True,
@@ -1971,52 +2079,13 @@ async def condense_recap(
     lands outside the requested range — see app.audio_jobs._run_job.
     Anything else raises ValueError, so a typo'd caller fails fast
     instead of silently degrading to best-effort."""
-    if strictness not in ("guideline", "firm", "strict"):
-        raise ValueError(f"strictness must be guideline, firm, or strict, got {strictness!r}")
-    # "firm"/"strict" upgrade the GM's own extra instructions from
-    # suggestions to requirements. The compliance line sits between the
-    # base system prompt and _with_instructions' GM block so its "below"
-    # is literally true — the instructions it binds are the very next
-    # thing the model reads.
-    if strictness in ("firm", "strict") and (extra_instructions or "").strip():
-        base_system = (
-            _CONDENSE_RECAP_SYSTEM
-            + "\n\nTreat the extra instructions below as binding requirements, not suggestions."
-        )
-    else:
-        base_system = _CONDENSE_RECAP_SYSTEM
+    _validate_strictness(strictness)
+    base_system = _strictness_base_system(_CONDENSE_RECAP_SYSTEM, strictness, extra_instructions)
     system = _with_world_context(_with_instructions(base_system, extra_instructions), world_context)
-    chars_per_token = _chars_per_token_estimate(recap)
-    length_notes = []
-    if min_tokens:
-        if strictness == "guideline":
-            length_notes.append(
-                f"at least ~{min_tokens} tokens (~{min_tokens * chars_per_token} characters) — "
-                "don't cut it any shorter than that even if you could say it in fewer words"
-            )
-        else:
-            length_notes.append(
-                f"REQUIRED: the condensed recap MUST be at least ~{min_tokens} tokens "
-                f"(~{min_tokens * chars_per_token} characters) — a shorter output is a failed "
-                "request; expand with specific detail (scene beats, names, consequences) from "
-                "the recap to reach it"
-            )
-    if max_tokens:
-        if strictness == "guideline":
-            length_notes.append(f"no more than ~{max_tokens} tokens (~{max_tokens * chars_per_token} characters)")
-        else:
-            length_notes.append(
-                f"REQUIRED: stay at or below ~{max_tokens} tokens (~{max_tokens * chars_per_token} "
-                "characters); trim detail rather than exceeding it"
-            )
-    if length_notes:
-        # "guideline" keeps its original soft "Length target" heading; a
-        # mandatory wording under a "target" header would read as
-        # self-contradicting, so firm/strict get the stronger noun too.
-        if strictness == "guideline":
-            system += "\n\nLength target for the condensed recap: " + " and ".join(length_notes) + "."
-        else:
-            system += "\n\nLength requirements for the condensed recap: " + " and ".join(length_notes) + "."
+    system += _length_target_addendum(
+        min_tokens, max_tokens, strictness, _chars_per_token_estimate(recap),
+        noun="condensed recap", source_noun="recap",
+    )
     opts = dict(options) if options else {}
     if max_tokens and not think:
         opts["num_predict"] = max_tokens

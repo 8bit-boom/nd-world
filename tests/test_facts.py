@@ -111,7 +111,7 @@ def test_facts_scoped_to_active_world(client, seed):
 
 
 def test_api_facts_parse_returns_draft_without_saving(client, seed, monkeypatch):
-    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None, **kwargs):
         assert "tavern" in raw_text
         return [
             {"content": "The party visited the tavern.", "visible_to_players": True},
@@ -134,7 +134,7 @@ def test_api_facts_parse_returns_draft_without_saving(client, seed, monkeypatch)
 
 
 def test_api_facts_parse_surfaces_model_failure(client, seed, monkeypatch):
-    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None, **kwargs):
         raise ValueError("Could not parse facts from that recap — try rephrasing it.")
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
 
@@ -357,7 +357,7 @@ def test_api_facts_parse_accepts_model_think_and_rag_options(client, seed, monke
     instead of silently ignoring them."""
     captured = {}
 
-    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None, **kwargs):
         captured["model"] = model
         captured["think"] = think
         captured["world_context"] = world_context
@@ -403,7 +403,7 @@ def _login_gm(client, seed):
 
 
 def test_api_facts_parse_job_creates_job_and_returns_id(client, seed, monkeypatch):
-    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None, **kwargs):
         return [
             {"content": "The party visited the tavern.", "visible_to_players": True},
             {"content": "Elyra is secretly a cult agent.", "visible_to_players": False},
@@ -711,7 +711,7 @@ async def test_parse_facts_from_recap_defaults_to_clean_json_and_bare_text(monke
 
 
 def test_api_facts_parse_job_round_trips_model_think_and_rag(client, seed, monkeypatch):
-    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None):
+    async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None, **kwargs):
         return []
     monkeypatch.setattr(ai_module, "parse_facts_from_recap", fake_parse)
 

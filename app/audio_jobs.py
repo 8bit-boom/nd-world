@@ -322,6 +322,7 @@ def create_facts_parse_job(
     model: str = "", created_by_user_id: Optional[int] = None,
     think: bool = False, use_rag: bool = False,
     rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
+    extra_instructions: str = "",
 ) -> int:
     """Parse `text` (a GM's rough recap, or a whole transcript pasted from a
     job's "📋 Extract facts" hand-off) into draft facts as a durable
@@ -351,6 +352,15 @@ def create_facts_parse_job(
     condense/summarize purposes already use, so the runner reads them back
     unchanged on a resume, same as every other per-job setting here.
 
+    `extra_instructions` is the same Condense-style one-off steering note
+    (e.g. "only extract facts about the Thornwood Syndicate") on the same
+    generic `extra_instructions` column every other purpose uses — threaded
+    into parse_facts_from_recap's own system prompt (see its docstring),
+    not min_tokens/max_tokens/strictness: a facts parse's output is a JSON
+    array of discrete facts, not length-controllable prose, so a length
+    target has no natural meaning here the way it does for Condense/Session
+    Log recap.
+
     Raises ValueError on blank text — checked synchronously up front so the
     route maps it to a clean HTTP 400 rather than a job that errors mid-run
     with a message about empty input the GM can't connect to the button they
@@ -365,6 +375,7 @@ def create_facts_parse_job(
             model=model or None,
             think=think, use_rag=use_rag,
             rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
+            extra_instructions=extra_instructions.strip() or None,
             transcript=text, audio_path="", delete_after=False,
         )
         db.add(job)
@@ -384,6 +395,8 @@ def create_session_log_recap_job(
     world_id: int, session_id: int, audience: str, created_by_user_id: Optional[int] = None,
     model: str = "", think: bool = True, use_rag: bool = False,
     rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
+    extra_instructions: str = "", min_tokens: Optional[int] = None, max_tokens: Optional[int] = None,
+    strictness: str = "guideline",
 ) -> int:
     """Synthesize a Session Log page's recap (one summarize_session_from_facts
     call — see _run_job's session_log_recap branch) as a durable background
@@ -411,9 +424,22 @@ def create_session_log_recap_job(
     AudioJob columns every other purpose uses — the polling route keys its
     fresh-cache match on them too (a recap generated with a different
     model/think/RAG is a different artifact and must never be served for
-    this request), so they have to live on the row, not just the call."""
+    this request), so they have to live on the row, not just the call.
+
+    `extra_instructions`/`min_tokens`/`max_tokens`/`strictness` give Session
+    Log the same Condense-style customization (a one-off GM note plus soft/
+    firm length targets — see condense_recap's own docstring for the full
+    rationale) on the same generic AudioJob columns Condense already uses;
+    no new columns were needed. Validated here (not just inside
+    summarize_session_from_facts) so a bogus strictness fails at job
+    creation, same reasoning as create_condense_job's own validation.
+    Threaded into the polling route's fresh-cache match too, for the same
+    reason model/think/RAG are: a recap generated under a different length
+    target/instruction is a different artifact."""
     if audience not in ("gm", "players"):
         raise ValueError(f"audience must be 'gm' or 'players', got {audience!r}")
+    if strictness not in ("guideline", "firm", "strict"):
+        raise ValueError(f"strictness must be guideline, firm, or strict, got {strictness!r}")
     db = SessionLocal()
     try:
         job = AudioJob(
@@ -431,6 +457,8 @@ def create_session_log_recap_job(
             model=model or _ai_module.get_defaults().get("recap", ""),
             think=think, use_rag=use_rag,
             rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
+            extra_instructions=extra_instructions.strip() or None,
+            min_tokens=min_tokens, max_tokens=max_tokens, condense_strictness=strictness,
             audio_path="", delete_after=False,
         )
         db.add(job)
@@ -1484,8 +1512,12 @@ async def _run_job(job_id: int) -> None:
                     # World lore to the parse's user message for name accuracy —
                     # parse_facts_from_recap frames it with the same
                     # _with_world_context wording condense_recap uses.
+                    # extra_instructions: the Facts page's own one-off steering
+                    # note (same Condense-style field, this purpose's own
+                    # column already read into scope above).
                     facts = await _ai_module.parse_facts_from_recap(
                         transcript, model=model, think=think, world_context=world_context,
+                        extra_instructions=extra_instructions,
                         on_progress=_on_progress,
                     )
                 except ValueError as exc:
@@ -1540,7 +1572,17 @@ async def _run_job(job_id: int) -> None:
                 if audience != "gm":
                     q = q.filter(Fact.visible_to_players.isnot(False))
                 facts = q.order_by(Fact.created_at).all()
-                world_instructions = _recap_instructions_for_world(gs.world_id)
+                # World-level standing preference always applies; `extra_
+                # instructions` (the row's own field, same column every
+                # other purpose uses) is this recap's one-off GM note — see
+                # _combined_recap_instructions' own docstring. Session Log's
+                # own "Extra instructions"/min/max-tokens/strictness fields
+                # persist on these same generic AudioJob columns, so no new
+                # columns were needed to give this purpose the same
+                # customization Condense already has.
+                instructions = _combined_recap_instructions(
+                    _recap_instructions_for_world(gs.world_id), extra_instructions,
+                )
                 xp_awarded = gs.xp_awarded or 0
                 try:
                     loot_items = _json.loads(gs.loot_json or "[]")
@@ -1576,11 +1618,14 @@ async def _run_job(job_id: int) -> None:
             # NULL on pre-feature rows already read as True at the top of
             # this function); world_context: RAG-retrieved lore, framed as
             # supplementary reference by summarize_session_from_facts itself.
+            # min_tokens/max_tokens/strictness: same Condense-style length-
+            # target knobs, now available on Session Log's own settings UI.
             async with _ai_module.ollama_job_semaphore:
                 recap = await _ai_module.summarize_session_from_facts(
                     [f.content for f in facts], model=model,
-                    extra_instructions=world_instructions,
+                    extra_instructions=instructions,
                     think=think, world_context=world_context,
+                    min_tokens=min_tokens, max_tokens=max_tokens, strictness=strictness,
                 )
             # generate_chat never raises on an Ollama-side failure — it
             # returns a failure-sentinel STRING instead, and there's no
@@ -1595,6 +1640,43 @@ async def _run_job(job_id: int) -> None:
             if _looks_like_failure(recap) or _ai_module.is_thinking_starved_sentinel(recap):
                 _set(status="error", error=recap, finished_at=datetime.utcnow(), checkpoint_json="")
                 return
+            # Same "strict" auto-retry-once-on-violation the condense branch
+            # applies (~above) — see its own comment for the full rationale.
+            # There's no thinking-ladder rung to reuse here (this purpose is
+            # always a single call), so the retry just re-runs the same call
+            # with the violation noted as an extra instruction.
+            if (
+                strictness == "strict" and (min_tokens or max_tokens)
+                and not _looks_like_failure(recap)
+                and not _ai_module.is_thinking_starved_sentinel(recap)
+            ):
+                est_tokens = -(-len(recap) // _ai_module._chars_per_token_estimate(recap))
+                below = min_tokens and est_tokens < min_tokens * 0.85
+                above = max_tokens and est_tokens > max_tokens * 1.15
+                if below or above:
+                    if below:
+                        violation_note = (
+                            f"Your previous draft was ~{est_tokens} tokens; the requirement is at least "
+                            f"~{min_tokens} tokens. Expand it with more specific detail from the facts."
+                        )
+                    else:
+                        violation_note = (
+                            f"Your previous draft was ~{est_tokens} tokens; the requirement is at most "
+                            f"~{max_tokens} tokens. Trim it to fit."
+                        )
+                    _log.warning(
+                        "session_log_recap job %s: strict length check failed (estimated ~%s tokens vs min=%s max=%s) — one strict retry",
+                        job_id, est_tokens, min_tokens, max_tokens,
+                    )
+                    async with _ai_module.ollama_job_semaphore:
+                        retry_recap = await _ai_module.summarize_session_from_facts(
+                            [f.content for f in facts], model=model,
+                            extra_instructions=_combined_recap_instructions(instructions, violation_note),
+                            think=think, world_context=world_context,
+                            min_tokens=min_tokens, max_tokens=max_tokens, strictness=strictness,
+                        )
+                    if not _looks_like_failure(retry_recap) and not _ai_module.is_thinking_starved_sentinel(retry_recap):
+                        recap = retry_recap
             # Appended after (not woven into) the AI prose — see
             # _format_session_rewards' own docstring for why this has to be
             # computed from the structured fields rather than trusted to the

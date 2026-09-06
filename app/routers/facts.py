@@ -203,6 +203,7 @@ async def api_facts_parse(request: Request, db: Session = Depends(get_db), activ
     # job variants without changing anything else.
     model = str(body.get("model", "")).strip()
     think = bool(body.get("think", False))
+    extra_instructions = str(body.get("extra_instructions", "")).strip()
     use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
     world_context = ""
     if use_rag:
@@ -224,6 +225,7 @@ async def api_facts_parse(request: Request, db: Session = Depends(get_db), activ
     try:
         facts = await _ai_module.parse_facts_from_recap(
             text, model=model, think=think, world_context=world_context,
+            extra_instructions=extra_instructions,
         )
     except ValueError as exc:
         raise HTTPException(502, str(exc))
@@ -310,6 +312,7 @@ async def api_facts_parse_job(request: Request, db: Session = Depends(get_db), a
         created_by_user_id=user.id if user else None,
         think=bool(body.get("think", False)),
         use_rag=use_rag, rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
+        extra_instructions=str(body.get("extra_instructions", "")).strip(),
     )
     return {"job_id": job_id}
 

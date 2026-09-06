@@ -241,7 +241,7 @@ def test_summarize_from_facts_gm(client, seed, monkeypatch):
 
     captured = {}
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, **kwargs):
         captured["facts"] = facts
         captured["think"] = think
         return "Woven recap."
@@ -1167,7 +1167,7 @@ def test_player_recap_excludes_gm_only_facts_and_raw_summary(client, seed, monke
 
     captured = {}
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         captured["facts"] = facts
         return "A narrated recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
@@ -1204,7 +1204,7 @@ def test_gm_recap_includes_gm_only_facts(client, seed, monkeypatch):
 
     captured = {}
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         captured["facts"] = facts
         return "Full recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
@@ -1258,7 +1258,7 @@ def test_session_log_recap_done_job_is_served_without_a_second_one(client, seed,
     session_id = _make_session(seed.world_a)
     _add_fact(seed.world_a, session_id, "A fact", True)
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "A woven recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -1287,7 +1287,7 @@ def test_session_log_recap_fact_edit_forces_a_new_job_durable_rule(client, seed,
 
     calls = []
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         calls.append(1)
         return "recap #" + str(len(calls))
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
@@ -1323,7 +1323,7 @@ def test_session_log_recap_freshness_survives_module_state_reset(client, seed, m
     session_id = _make_session(seed.world_a)
     fact_id = _add_fact(seed.world_a, session_id, "A fact", True)
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "A recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -1357,7 +1357,7 @@ def test_session_log_recap_stale_done_row_ignores_other_worlds_fact_edits(client
     session_b = _make_session(seed.world_b, title="B", num=1)
     _add_fact(seed.world_b, session_b, "B fact", True)
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "A recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -1388,7 +1388,7 @@ def test_session_log_recap_failure_sentinel_becomes_an_error_job_not_a_cached_do
     sentinel lands as status=error (mirroring the condense/session_recap
     branches), the route never serves it, and the poll gets a {"failed":
     true} payload carrying the error text."""
-    async def failing_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def failing_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "[AI unavailable: ConnectError: ollama is down]"
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", failing_summarize)
 
@@ -1424,7 +1424,7 @@ def test_session_log_recap_thinking_starved_sentinel_is_an_error_too(client, see
     failure, not a recap — this branch has no thinking-retry ladder to
     climb, so erroring (and letting the poller surface it) is the only
     honest outcome."""
-    async def starving_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def starving_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return ('[empty response from llama3.1 — the model produced only hidden "thinking" '
                 'output but no final answer]')
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", starving_summarize)
@@ -1446,7 +1446,7 @@ def test_session_log_recap_error_backoff_blocks_new_jobs_for_60s_then_expires(cl
     Once the errored row is older than the window (simulated here by
     backdating its created_at — same clock the comparison reads), a POST
     creates a fresh job again."""
-    async def failing_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def failing_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "[AI error: Ollama 500: boom]"
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", failing_summarize)
 
@@ -1478,7 +1478,7 @@ def test_session_log_recap_error_backoff_blocks_new_jobs_for_60s_then_expires(cl
     finally:
         db.close()
 
-    async def recovered_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def recovered_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "A recovered recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", recovered_summarize)
 
@@ -1496,7 +1496,7 @@ def test_session_log_recap_force_skips_the_fresh_cache(client, seed, monkeypatch
     cached done one — the whole point of the button."""
     calls = []
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         calls.append(1)
         return f"recap #{len(calls)}"
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
@@ -1521,7 +1521,7 @@ def test_session_log_recap_force_skips_the_error_backoff(client, seed, monkeypat
     """force must also bypass _RECAP_ERROR_BACKOFF_SECONDS — a GM retrying
     right after a failure shouldn't have to wait out the poll-loop-spam
     guard that window exists for."""
-    async def failing_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def failing_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "[AI error: Ollama 500: boom]"
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", failing_summarize)
 
@@ -1540,7 +1540,7 @@ def test_session_log_recap_force_skips_the_error_backoff(client, seed, monkeypat
     }
     assert _recap_job_count(session_id) == 1
 
-    async def recovered_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def recovered_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "Recovered."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", recovered_summarize)
 
@@ -1556,7 +1556,7 @@ def test_session_log_recap_force_ignored_for_a_player(client, seed, monkeypatch)
     player, who has no Regenerate button to click in the first place."""
     calls = []
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         calls.append(1)
         return f"recap #{len(calls)}"
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
@@ -1583,7 +1583,7 @@ def test_session_log_recap_done_job_with_different_rag_limits_forces_a_new_job(c
     session_id = _make_session(seed.world_a)
     _add_fact(seed.world_a, session_id, "A fact", True)
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "A recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -1628,7 +1628,7 @@ def test_session_log_page_defaults_the_pickers_when_no_job_exists_yet(client, se
 
 
 def test_session_log_page_seeds_pickers_from_the_last_job_for_this_audience(client, seed, monkeypatch):
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "A recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -1652,7 +1652,7 @@ def test_session_log_page_seeds_pickers_from_the_last_job_for_this_audience(clie
 def test_session_log_page_picker_defaults_are_scoped_per_audience(client, seed, monkeypatch):
     """A GM's own last config must not leak into a player's picker
     defaults, and vice versa — each audience gets its OWN last job."""
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "A recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -1716,7 +1716,7 @@ def test_blocking_summarize_from_facts_flags_failure_sentinels(client, seed, mon
     session_id = _make_session(seed.world_a)
     _add_fact(seed.world_a, session_id, "A fact", True)
 
-    async def failing_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def failing_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "[AI unavailable: ConnectError: nope]"
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", failing_summarize)
 
@@ -1725,7 +1725,7 @@ def test_blocking_summarize_from_facts_flags_failure_sentinels(client, seed, mon
     assert r.status_code == 200
     assert r.json() == {"recap": "[AI unavailable: ConnectError: nope]", "recap_failed": True}
 
-    async def good_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def good_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "A woven recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", good_summarize)
     r2 = client.post(f"/api/sessions/{session_id}/ai/summarize-from-facts")
@@ -1738,7 +1738,7 @@ def test_session_log_recap_poll_while_pending_dedups_into_one_job(client, seed, 
     onto the SAME job, not stack a duplicate generation per poll."""
     import asyncio
 
-    async def slow_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def slow_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         await asyncio.sleep(30)  # still "generating" when the second POST lands
         return "late recap"
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", slow_summarize)
@@ -1763,7 +1763,7 @@ def test_session_log_recap_poll_while_pending_does_not_hit_cooldown(client, seed
     exactly the players the background job exists to stop hanging."""
     import asyncio
 
-    async def slow_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def slow_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         await asyncio.sleep(30)
         return "late recap"
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", slow_summarize)
@@ -1784,7 +1784,7 @@ def test_session_log_recap_cooldown_applies_when_creating_for_a_second_session(c
     (different sessions, nothing cached or in flight) within the cooldown
     window still 429 — same contract the synchronous route had, just
     enforced at creation time."""
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "A recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -1952,7 +1952,7 @@ def test_session_log_recap_job_carries_model_think_and_rag(client, seed, monkeyp
 
     captured = {}
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         captured.update(model=model, think=think, world_context=world_context)
         return "A narrated recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
@@ -1995,6 +1995,111 @@ def test_session_log_recap_job_carries_model_think_and_rag(client, seed, monkeyp
     assert build_calls == [(seed.world_a.id, "Public fact", 6, 3)]
 
 
+# ── Condense-style customization (min/max tokens, strictness, extra
+# instructions) — same knobs create_condense_job already offers, given to
+# Session Log recap too. ───────────────────────────────────────────────────
+
+def test_session_log_recap_job_carries_min_max_tokens_strictness_and_extra_instructions(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
+        captured.update(extra_instructions=extra_instructions, **kwargs)
+        return "A narrated recap."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "Public fact", True)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(f"/api/session-log/{session_id}/recap", json={
+        "min_tokens": 50, "max_tokens": 200, "strictness": "firm",
+        "extra_instructions": "keep character names",
+    })
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+
+    db = SessionLocal()
+    try:
+        job = db.get(AudioJob, job_id)
+        assert job.min_tokens == 50
+        assert job.max_tokens == 200
+        assert job.condense_strictness == "firm"
+        assert job.extra_instructions == "keep character names"
+    finally:
+        db.close()
+    assert _wait_recap_job_done(job_id) == "done"
+    assert captured["min_tokens"] == 50
+    assert captured["max_tokens"] == 200
+    assert captured["strictness"] == "firm"
+    assert captured["extra_instructions"] == "keep character names"
+
+
+def test_session_log_recap_route_rejects_bogus_strictness(client, seed):
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(f"/api/session-log/{session_id}/recap", json={"strictness": "extreme"})
+    assert r.status_code == 400
+
+
+@pytest.mark.parametrize("body", [{"min_tokens": "not-a-number"}, {"max_tokens": -1}, {"min_tokens": 500, "max_tokens": 100}])
+def test_session_log_recap_route_rejects_invalid_token_bounds(client, seed, body):
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(f"/api/session-log/{session_id}/recap", json=body)
+    assert r.status_code == 400
+
+
+def test_session_log_recap_done_job_with_different_min_max_or_strictness_forces_a_new_job(client, seed, monkeypatch):
+    """Same "different config = different artifact" rule model/think/RAG
+    already get — a recap generated under one length target/strictness must
+    not be served for a request asking for a different one."""
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    calls = []
+
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
+        calls.append(kwargs.get("min_tokens"))
+        return "A recap."
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post(f"/api/session-log/{session_id}/recap", json={"min_tokens": 50})
+    assert _wait_recap_job_done(r1.json()["job_id"]) == "done"
+    r2 = client.post(f"/api/session-log/{session_id}/recap", json={"min_tokens": 100})
+    assert r2.json()["pending"] is True
+    assert r2.json()["job_id"] != r1.json()["job_id"]
+    assert len(calls) == 2
+
+
+def test_session_log_recap_strict_mode_retries_a_too_short_recap_once(client, seed, monkeypatch):
+    """Mirrors create_condense_job's own strict-mode auto-retry: a "strict"
+    request whose result lands under min_tokens gets one automatic re-run
+    with the violation noted, same as Condense's own ladder."""
+    session_id = _make_session(seed.world_a)
+    _add_fact(seed.world_a, session_id, "A fact", True)
+
+    calls = []
+
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
+        calls.append(extra_instructions)
+        if len(calls) == 1:
+            return "short"
+        return "a much longer recap that should pass the retry's length check comfortably now"
+    monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r = client.post(f"/api/session-log/{session_id}/recap", json={
+        "min_tokens": 1000, "strictness": "strict",
+    })
+    job_id = r.json()["job_id"]
+    assert _wait_recap_job_done(job_id) == "done"
+    assert len(calls) == 2
+    assert "requirement is at least" in calls[1]
+
+
 # ── Rewards footer (XP/loot) ─────────────────────────────────────────────────
 #
 # GameSession.xp_awarded/loot_json are GM-entered structured fields the
@@ -2006,7 +2111,7 @@ def test_session_log_recap_job_carries_model_think_and_rag(client, seed, monkeyp
 def test_session_log_recap_includes_xp_and_loot_rewards(client, seed, monkeypatch):
     import json
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "The party explored the ruins."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -2034,7 +2139,7 @@ def test_session_log_recap_includes_xp_and_loot_rewards(client, seed, monkeypatc
 
 
 def test_session_log_recap_omits_rewards_section_when_none_awarded(client, seed, monkeypatch):
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "Nothing much happened."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -2054,7 +2159,7 @@ def test_session_log_recap_rewards_visible_to_players_too(client, seed, monkeypa
     """XP/loot awarded is shared campaign state, not GM-secret — and the
     Loot/XP panel itself lives on the GM-only Session page, so this recap
     is often the first place a player actually sees the total."""
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "The party regrouped at the tavern."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -2091,7 +2196,7 @@ def test_session_log_recap_rag_is_gm_only(client, seed, monkeypatch):
 
     monkeypatch.setattr(_audio_jobs, "_build_rag_context", fake_build_rag_context)
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "A narrated recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -2148,7 +2253,7 @@ def test_session_log_recap_done_job_with_different_model_forces_a_new_job(client
 
     calls = []
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         calls.append(model)
         return "recap by " + (model or "default")
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
@@ -2176,7 +2281,7 @@ def test_session_log_recap_done_job_with_different_think_or_rag_forces_a_new_job
     session_id = _make_session(seed.world_a)
     _add_fact(seed.world_a, session_id, "A fact", True)
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "A recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -2533,7 +2638,7 @@ def test_unpublished_session_falls_back_to_facts_recap(client, seed, monkeypatch
     session_id = _make_session(seed.world_a)
     _add_fact(seed.world_a, session_id, "A fact", True)
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "A facts-woven recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 
@@ -2576,7 +2681,7 @@ def test_session_log_list_shows_recap_markers(client, seed, monkeypatch):
     session_id = _make_session(seed.world_a)
     _add_fact(seed.world_a, session_id, "A fact with content", True)
 
-    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context=""):
+    async def fake_summarize(facts, model="", extra_instructions="", think=True, world_context="", **kwargs):
         return "A facts-woven recap."
     monkeypatch.setattr(ai_module, "summarize_session_from_facts", fake_summarize)
 

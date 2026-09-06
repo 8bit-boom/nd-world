@@ -58,6 +58,9 @@
         <input type="number" id="parse-rag-notes-limit" min="0" value="5"
                style="width:50px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.2rem .35rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
       </label>
+      <input type="text" id="parse-extra-instructions" placeholder="Extra instructions for this parse (optional)…"
+             title="One-off steering for this parse, e.g. &quot;only extract facts about the Thornwood Syndicate&quot; or &quot;ignore combat mechanics talk&quot;"
+             style="flex:1;min-width:220px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:var(--font);font-size:.78rem;border-radius:3px;box-sizing:border-box">
       <button type="button" id="parse-btn" style="background:var(--neon);color:#000;border:none;padding:.4rem 1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Parse with AI</button>
       <button type="button" id="restore-parse-btn" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .8rem;font-size:.8rem;border-radius:3px;cursor:pointer"
               title="Reload the draft from your most recent finished parse — the draft is saved on the server, so it survives a page reload">Restore last parse</button>
@@ -458,12 +461,14 @@ function parseModelOptions() {
   const ragBox = document.getElementById('parse-rag-checkbox');
   const entityEl = document.getElementById('parse-rag-entity-limit');
   const notesEl = document.getElementById('parse-rag-notes-limit');
+  const instructionsEl = document.getElementById('parse-extra-instructions');
   return {
     model: modelSel ? modelSel.value : '',
     think: !!(thinkBox && thinkBox.checked),
     use_rag: !!(ragBox && ragBox.checked),
     rag_entity_limit: (entityEl && entityEl.value.trim() !== '') ? parseInt(entityEl.value, 10) : null,
     rag_notes_limit: (notesEl && notesEl.value.trim() !== '') ? parseInt(notesEl.value, 10) : null,
+    extra_instructions: instructionsEl ? instructionsEl.value.trim() : '',
   };
 }
 
