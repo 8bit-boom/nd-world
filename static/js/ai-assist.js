@@ -100,6 +100,26 @@ function ndAiAssist(pid, cfg) {
     el.selectionStart = el.selectionEnd = at;
   }
 
+  // Every panel gets a Clear button on its result, regardless of cfg.actions
+  // — this component holds no server-side state for a Run's result (no
+  // restore-on-reload the way the dashboard's World Summary widget has), so
+  // Clear is purely a local reset: hide the result box and wipe it back to
+  // empty, nothing to delete on the server.
+  function addClearButton() {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ig-btn';
+    b.textContent = '🗑 Clear';
+    b.onclick = () => {
+      resultEl.hidden = true;
+      resultText.textContent = '';
+      resultData.innerHTML = '';
+      resultActions.innerHTML = '';
+      setStatus('', '');
+    };
+    resultActions.appendChild(b);
+  }
+
   function showTextResult(text) {
     resultData.innerHTML = '';
     resultText.textContent = text;
@@ -137,6 +157,7 @@ function ndAiAssist(pid, cfg) {
       }
       resultActions.appendChild(b);
     });
+    addClearButton();
     resultEl.hidden = false;
     resultEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
@@ -146,6 +167,7 @@ function ndAiAssist(pid, cfg) {
     resultActions.innerHTML = '';
     if (cfg.onData) {
       cfg.onData(data, { resultData, resultActions, setStatus });
+      addClearButton();
       resultEl.hidden = false;
       return;
     }
@@ -163,6 +185,7 @@ function ndAiAssist(pid, cfg) {
     b.textContent = '📋 Copy JSON';
     b.onclick = () => navigator.clipboard.writeText(JSON.stringify(data, null, 2));
     resultActions.appendChild(b);
+    addClearButton();
     resultEl.hidden = false;
   }
 

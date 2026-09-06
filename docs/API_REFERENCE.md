@@ -650,8 +650,9 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/ai/assist` | GM / Assistant | One shared AI-assist operation (improve/expand/summarize/analyze/suggest/translate/custom/table_entries/...) on editor content — the ✨ panel every edit form embeds (app/ai_assist.py). Input-capped at 60k chars. |
 | POST | `/api/ai/assist-job` | GM / Assistant | The durable-job variant for big content (rules documents) — returns `{job_id}`. |
 | GET | `/api/ai/assist-job/{job_id}` | GM / Assistant | Poll an assist job; done rows return the run_assist result shape under `result`. |
-| POST | `/api/ai/world-summary` | GM / Assistant | Start (or regenerate) the dashboard's AI world-summary job. |
+| POST | `/api/ai/world-summary` | GM / Assistant | Start (or regenerate) the dashboard's AI world-summary job. Optional body: `model`, `think` (default true), `use_rag`, `rag_entity_limit`, `rag_notes_limit`. |
 | GET | `/api/ai/world-summary` | GM / Assistant | Latest world summary: `{recap, generated_at}`, `{pending: true}`, or empty. |
+| DELETE | `/api/ai/world-summary` | GM / Assistant | Deletes every saved world-summary job for the active world — a real reset, not just clearing the card's display. |
 | POST | `/api/ai/chat` | GM | Non-streaming chat completion. |
 | POST | `/api/ai/stream` | GM* | Streaming chat completion (SSE) — GM always; a player may if the active world's `players_can_ask_ai` is on. Accepts a per-request `options` (temperature/top_p/etc, clamped) and a `surface` for per-surface default-model fallback; the SSE stream leads with a `note` event if the requested model had to be fuzzy-matched to an available one. |
 | GET | `/api/ai/models` | GM | Lists available/known Ollama models with loaded/builtin flags. |

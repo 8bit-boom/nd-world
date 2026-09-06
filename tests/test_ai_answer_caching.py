@@ -76,32 +76,44 @@ def _recap_job_count(session_id):
 
 
 # ── Chronicler /api/chronicler/ask ──────────────────────────────────────────
+#
+# Chronicler streams its answer over SSE now (see app/routers/chronicler.py's
+# chronicler_ask docstring — a blocking JSON response risked Cloudflare's
+# ~100s HTTP 524 origin timeout on a slow/thinking model), so these mock
+# app.ai.stream_chat (an async generator) instead of generate_chat, and
+# assert on the SSE response text instead of a JSON body — same convention
+# tests/test_ai_stream.py already uses for /api/ai/stream's identical
+# plumbing.
+
+async def _fake_resolve_model(requested):
+    return requested or "fake-model", None
+
+
+def _patch_stream_chat(monkeypatch, calls, answer="An answer."):
+    from app import ai as ai_module
+
+    async def fake_stream_chat(messages, system="", model="", options=None, think=False):
+        calls.append(1)
+        yield answer
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", fake_stream_chat)
+
 
 def test_chronicler_repeated_question_hits_cache(client, seed, monkeypatch):
     calls = []
-
-    async def fake_generate_chat(messages, system="", model="", options=None):
-        calls.append(1)
-        return "An answer."
-    from app import ai as ai_module
-    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    _patch_stream_chat(monkeypatch, calls)
 
     _login_gm_in(client, seed, seed.world_a)
     r1 = client.post("/api/chronicler/ask", json={"question": "Who is Elyra?"})
     r2 = client.post("/api/chronicler/ask", json={"question": "Who is Elyra?"})
     assert r1.status_code == 200 and r2.status_code == 200
-    assert r1.json() == r2.json()
+    assert r1.text == r2.text
     assert len(calls) == 1
 
 
 def test_chronicler_question_is_case_insensitive_for_caching(client, seed, monkeypatch):
     calls = []
-
-    async def fake_generate_chat(messages, system="", model="", options=None):
-        calls.append(1)
-        return "An answer."
-    from app import ai as ai_module
-    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    _patch_stream_chat(monkeypatch, calls)
 
     _login_gm_in(client, seed, seed.world_a)
     client.post("/api/chronicler/ask", json={"question": "Who is Elyra?"})
@@ -111,12 +123,7 @@ def test_chronicler_question_is_case_insensitive_for_caching(client, seed, monke
 
 def test_chronicler_different_question_is_not_cached(client, seed, monkeypatch):
     calls = []
-
-    async def fake_generate_chat(messages, system="", model="", options=None):
-        calls.append(1)
-        return "An answer."
-    from app import ai as ai_module
-    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    _patch_stream_chat(monkeypatch, calls)
 
     _login_gm_in(client, seed, seed.world_a)
     client.post("/api/chronicler/ask", json={"question": "Who is Elyra?"})
@@ -132,12 +139,7 @@ def test_chronicler_cache_is_per_user_not_shared_across_players(client, seed, mo
     player A's context would be a real content-leak risk, not just a
     caching nuance."""
     calls = []
-
-    async def fake_generate_chat(messages, system="", model="", options=None):
-        calls.append(1)
-        return "An answer."
-    from app import ai as ai_module
-    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    _patch_stream_chat(monkeypatch, calls)
 
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)

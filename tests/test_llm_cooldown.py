@@ -52,10 +52,21 @@ def test_check_llm_cooldown_respects_a_custom_window():
     check_llm_cooldown(999903, seconds=0)
 
 
+def _patch_chronicler_stream(monkeypatch):
+    """Chronicler streams its answer over SSE (app.ai.stream_chat), not
+    generate_chat — see app/routers/chronicler.py's chronicler_ask
+    docstring."""
+    async def fake_resolve_model(requested):
+        return requested or "fake-model", None
+
+    async def fake_stream_chat(messages, system="", model="", options=None, think=False):
+        yield "An answer."
+    monkeypatch.setattr(ai_module, "resolve_model", fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", fake_stream_chat)
+
+
 def test_chronicler_ask_second_call_from_same_player_is_rate_limited(client, seed, monkeypatch):
-    async def fake_generate_chat(messages, system="", model="", options=None):
-        return "An answer."
-    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    _patch_chronicler_stream(monkeypatch)
 
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
@@ -66,9 +77,7 @@ def test_chronicler_ask_second_call_from_same_player_is_rate_limited(client, see
 
 
 def test_chronicler_ask_gm_is_never_rate_limited(client, seed, monkeypatch):
-    async def fake_generate_chat(messages, system="", model="", options=None):
-        return "An answer."
-    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    _patch_chronicler_stream(monkeypatch)
 
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)

@@ -482,3 +482,163 @@ def test_world_summary_routes_cache_until_regenerate(client, seed, monkeypatch):
         time.sleep(0.02)
     assert data["recap"] == "State of the world."
     assert data.get("generated_at")
+
+
+@pytest.mark.asyncio
+async def test_world_summary_job_threads_model_and_think(client, seed, monkeypatch):
+    db = SessionLocal()
+    try:
+        db.add(Entity(world_id=seed.world_a.id, kind="location", name="The Spire", visible_to_players=True))
+        db.commit()
+    finally:
+        db.close()
+    captured = {}
+
+    async def fake_run_assist(op, **kwargs):
+        captured["model"] = kwargs.get("model")
+        captured["think"] = kwargs.get("think")
+        return {"op": op, "mode": "text", "text": "ok", "model": "m"}
+
+    monkeypatch.setattr(audio_jobs_module._ai_assist, "run_assist", fake_run_assist)
+    job_id = audio_jobs_module.create_world_summary_job(seed.world_a.id, model="llama3:latest", think=False)
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["model"] == "llama3:latest"
+    assert captured["think"] is False
+
+
+@pytest.mark.asyncio
+async def test_world_summary_job_use_rag_builds_world_context(client, seed, monkeypatch):
+    """RAG is opt-in for the world summary (it defaults off — the digest
+    already lists entities/quests/facts by name) and, when it IS on,
+    queries against the assembled state_text itself (the same convention
+    the ai_assist purpose's own RAG uses) since there's no separate short
+    question to query on here."""
+    db = SessionLocal()
+    try:
+        db.add(Entity(world_id=seed.world_a.id, kind="location", name="The Spire", visible_to_players=True))
+        db.commit()
+    finally:
+        db.close()
+    captured = {}
+
+    async def fake_run_assist(op, **kwargs):
+        captured["world_context"] = kwargs.get("world_context")
+        return {"op": op, "mode": "text", "text": "ok", "model": "m"}
+
+    def fake_build_rag_context(world_id, query, entity_limit, notes_limit, **kw):
+        captured["rag_query"] = query
+        captured["entity_limit"] = entity_limit
+        captured["notes_limit"] = notes_limit
+        return "## Relevant lore\n- The Spire: a haunted cathedral"
+
+    monkeypatch.setattr(audio_jobs_module._ai_assist, "run_assist", fake_run_assist)
+    monkeypatch.setattr(audio_jobs_module, "_build_rag_context", fake_build_rag_context)
+    job_id = audio_jobs_module.create_world_summary_job(
+        seed.world_a.id, use_rag=True, rag_entity_limit=7, rag_notes_limit=3,
+    )
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["world_context"] == "## Relevant lore\n- The Spire: a haunted cathedral"
+    assert "The Spire" in captured["rag_query"]  # queried on the state_text digest itself
+    assert captured["entity_limit"] == 7
+    assert captured["notes_limit"] == 3
+
+
+@pytest.mark.asyncio
+async def test_world_summary_job_rag_off_by_default(client, seed, monkeypatch):
+    db = SessionLocal()
+    try:
+        db.add(Entity(world_id=seed.world_a.id, kind="location", name="The Spire", visible_to_players=True))
+        db.commit()
+    finally:
+        db.close()
+    captured = {}
+
+    async def fake_run_assist(op, **kwargs):
+        captured["world_context"] = kwargs.get("world_context")
+        return {"op": op, "mode": "text", "text": "ok", "model": "m"}
+
+    def fail_if_called(*a, **kw):
+        raise AssertionError("_build_rag_context should not be called when use_rag=False")
+
+    monkeypatch.setattr(audio_jobs_module._ai_assist, "run_assist", fake_run_assist)
+    monkeypatch.setattr(audio_jobs_module, "_build_rag_context", fail_if_called)
+    job_id = audio_jobs_module.create_world_summary_job(seed.world_a.id)
+    job = await _await_terminal(job_id)
+    assert job.status == "done", job.error
+    assert captured["world_context"] == ""
+
+
+def test_world_summary_create_accepts_settings_body(client, seed, monkeypatch):
+    captured = {}
+
+    def fake_create(world_id, **kwargs):
+        captured.update(kwargs)
+        db = SessionLocal()
+        try:
+            job = AudioJob(world_id=world_id, purpose="world_summary", filename="World summary",
+                            status="done", recap="ok", audio_path="")
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+            return job.id
+        finally:
+            db.close()
+
+    monkeypatch.setattr(audio_jobs_module, "create_world_summary_job", fake_create)
+    _login_gm(client, seed)
+    r = client.post("/api/ai/world-summary", json={
+        "model": "llama3:latest", "think": False, "use_rag": True,
+        "rag_entity_limit": 9, "rag_notes_limit": 2,
+    })
+    assert r.status_code == 200
+    assert captured["model"] == "llama3:latest"
+    assert captured["think"] is False
+    assert captured["use_rag"] is True
+    assert captured["rag_entity_limit"] == 9
+    assert captured["rag_notes_limit"] == 2
+
+
+def test_world_summary_clear_deletes_all_jobs_for_world(client, seed, monkeypatch):
+    async def fake_run_assist(op, **kwargs):
+        return {"op": op, "mode": "text", "text": "State of the world.", "model": "m"}
+
+    monkeypatch.setattr(audio_jobs_module._ai_assist, "run_assist", fake_run_assist)
+    db = SessionLocal()
+    try:
+        db.add(Entity(world_id=seed.world_a.id, kind="note", name="Lore", body="stuff", visible_to_players=True))
+        db.commit()
+    finally:
+        db.close()
+    _login_gm(client, seed)
+
+    r = client.post("/api/ai/world-summary")
+    assert r.status_code == 200
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not client.get("/api/ai/world-summary").json().get("pending"):
+            break
+        time.sleep(0.02)
+    assert client.get("/api/ai/world-summary").json()["recap"] == "State of the world."
+
+    r = client.delete("/api/ai/world-summary")
+    assert r.status_code == 200
+
+    db = SessionLocal()
+    try:
+        remaining = db.query(AudioJob).filter(
+            AudioJob.world_id == seed.world_a.id, AudioJob.purpose == "world_summary",
+        ).count()
+        assert remaining == 0
+    finally:
+        db.close()
+    assert client.get("/api/ai/world-summary").json() == {"recap": ""}
+
+
+def test_world_summary_clear_requires_can_edit(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.delete("/api/ai/world-summary")
+    assert r.status_code == 403

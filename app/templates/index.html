@@ -63,8 +63,41 @@
   <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem;flex-wrap:wrap">
     <span style="font-size:.8rem;color:var(--neon);font-weight:700;letter-spacing:.06em">🤖 WORLD SUMMARY</span>
     <span id="was-generated" style="font-size:.72rem;color:var(--text-dim)"></span>
-    <button type="button" id="was-btn" class="ig-btn" style="margin-left:auto" onclick="wasAction()">✨ Generate</button>
+    <div style="margin-left:auto;display:flex;gap:.4rem">
+      <button type="button" id="was-clear-btn" onclick="wasClear()" hidden
+              style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.3rem .7rem;font-size:.78rem;border-radius:3px;cursor:pointer"
+              title="Deletes the saved summary from the server — not just clearing this card's display">🗑 Clear</button>
+      <button type="button" id="was-btn" class="ig-btn" onclick="wasAction()">✨ Generate</button>
+    </div>
   </div>
+  <details style="margin-bottom:.5rem">
+    <summary style="cursor:pointer;font-size:.75rem;color:var(--text-dim)">⚙ Model · thinking · world context</summary>
+    <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-top:.4rem">
+      <label style="font-size:.75rem;color:var(--text-dim);display:flex;align-items:center;gap:.3rem">
+        Model
+        <select id="was-model" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .4rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+          <option value="">(default)</option>
+        </select>
+      </label>
+      <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer">
+        <input type="checkbox" id="was-think-checkbox" checked> 🧠 Thinking
+      </label>
+      <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
+             title="Retrieves relevant World entities/notes and gives the model that context for accuracy — the digest already lists entities/quests/facts by name, so this mainly helps the model fill in detail about them.">
+        <input type="checkbox" id="was-rag-checkbox"> 🔍 RAG
+      </label>
+      <label id="was-rag-entity-wrap" hidden style="font-size:.75rem;color:var(--text-dim);display:flex;align-items:center;gap:.3rem">
+        Entities
+        <input type="number" id="was-rag-entity-limit" min="0" value="15"
+               style="width:50px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.2rem .35rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+      </label>
+      <label id="was-rag-notes-wrap" hidden style="font-size:.75rem;color:var(--text-dim);display:flex;align-items:center;gap:.3rem">
+        Notes
+        <input type="number" id="was-rag-notes-limit" min="0" value="5"
+               style="width:50px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.2rem .35rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+      </label>
+    </div>
+  </details>
   <div id="was-body" style="font-size:.85rem;color:var(--text);white-space:pre-wrap;max-height:280px;overflow:auto">Loading…</div>
 </section>
 {% endif %}
@@ -393,23 +426,46 @@ function switchQuickLinksTab(i) {
 // ── AI world summary card ─────────────────────────────────────────────
 // Cached on the newest done world_summary job until Regenerate is
 // clicked (deliberately no staleness — the card labels its snapshot).
+const _wasModelSel = document.getElementById('was-model');
+if (_wasModelSel) {
+  fetch('/api/ai/models').then(r => r.json()).then(d => {
+    (d.models || []).forEach(m => {
+      const o = document.createElement('option');
+      o.value = m.id;
+      o.textContent = (m.label || m.id) + (m.loaded ? '  ●' : '');
+      _wasModelSel.appendChild(o);
+    });
+  }).catch(() => {});
+}
+const _wasRagCb = document.getElementById('was-rag-checkbox');
+if (_wasRagCb) {
+  _wasRagCb.addEventListener('change', () => {
+    document.getElementById('was-rag-entity-wrap').hidden = !_wasRagCb.checked;
+    document.getElementById('was-rag-notes-wrap').hidden = !_wasRagCb.checked;
+  });
+}
+
 async function wasLoad() {
   const body = document.getElementById('was-body');
   const btn = document.getElementById('was-btn');
+  const clearBtn = document.getElementById('was-clear-btn');
   const gen = document.getElementById('was-generated');
   try {
     const d = await (await fetch('/api/ai/world-summary')).json();
-    if (d.pending) { body.textContent = 'Generating…'; btn.style.display = 'none'; setTimeout(wasLoad, 3000); return; }
-    if (d.error) { body.textContent = 'Last generation failed: ' + d.error; btn.textContent = '↻ Retry'; return; }
+    if (d.pending) { body.textContent = 'Generating…'; btn.style.display = 'none'; clearBtn.hidden = true; setTimeout(wasLoad, 3000); return; }
+    if (d.error) { body.textContent = 'Last generation failed: ' + d.error; btn.textContent = '↻ Retry'; btn.style.display = ''; clearBtn.hidden = true; return; }
     if (d.recap) {
       body.textContent = d.recap;
       btn.textContent = '↻ Regenerate';
       btn.style.display = '';
+      clearBtn.hidden = false;
       gen.textContent = d.generated_at ? ('generated ' + d.generated_at.replace('T', ' ').slice(0, 16)) : '';
     } else {
       body.textContent = 'No summary yet — generate one for a quick AI digest of where the campaign stands.';
       btn.textContent = '✨ Generate';
       btn.style.display = '';
+      clearBtn.hidden = true;
+      gen.textContent = '';
     }
   } catch (e) { body.textContent = '(summary unavailable)'; }
 }
@@ -417,11 +473,32 @@ async function wasAction() {
   const btn = document.getElementById('was-btn');
   btn.disabled = true;
   try {
-    await fetch('/api/ai/world-summary', { method: 'POST' });
+    await fetch('/api/ai/world-summary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: _wasModelSel ? _wasModelSel.value : '',
+        think: !!document.getElementById('was-think-checkbox')?.checked,
+        use_rag: !!_wasRagCb?.checked,
+        rag_entity_limit: parseInt(document.getElementById('was-rag-entity-limit')?.value, 10) || null,
+        rag_notes_limit: parseInt(document.getElementById('was-rag-notes-limit')?.value, 10) || null,
+      }),
+    });
     document.getElementById('was-body').textContent = 'Generating…';
     btn.style.display = 'none';
+    document.getElementById('was-clear-btn').hidden = true;
     setTimeout(wasLoad, 3000);
   } catch (e) { btn.disabled = false; }
+}
+async function wasClear() {
+  const clearBtn = document.getElementById('was-clear-btn');
+  clearBtn.disabled = true;
+  try {
+    await fetch('/api/ai/world-summary', { method: 'DELETE' });
+    await wasLoad();
+  } finally {
+    clearBtn.disabled = false;
+  }
 }
 if (document.getElementById('world-ai-summary-card')) wasLoad();
 </script>

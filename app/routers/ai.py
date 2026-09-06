@@ -570,16 +570,30 @@ def api_ai_assist_job_status(
 # inherently a "how it looked when generated" snapshot (the card labels it
 # with the generation time).
 
+class WorldSummaryCreateBody(BaseModel):
+    model: str = ""
+    think: bool = True
+    use_rag: bool = False
+    rag_entity_limit: Optional[int] = None
+    rag_notes_limit: Optional[int] = None
+
+
 @router.post("/world-summary")
 async def api_world_summary_create(
-    request: Request, db=Depends(get_db), active_world: str = Cookie(None),
+    request: Request, body: WorldSummaryCreateBody = WorldSummaryCreateBody(),
+    db=Depends(get_db), active_world: str = Cookie(None),
 ):
     """Start (or return the already-running/finished) world-summary job for
     the active world. Always creates a fresh job — the "reuse the cached
     one" decision belongs to the GET below, so a Regenerate click is just
     this POST. async def deliberately: the creator hands the job to
     asyncio.create_task, which needs the request's running loop (a sync
-    def route runs in FastAPI's threadpool, where there isn't one)."""
+    def route runs in FastAPI's threadpool, where there isn't one).
+
+    Body defaults to an empty WorldSummaryCreateBody() rather than being
+    required — the widget's plain "✨ Generate"/"↻ Regenerate" button (no
+    settings expanded) posts no body at all, same as before this model/
+    think/RAG settings row existed."""
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
@@ -587,6 +601,8 @@ async def api_world_summary_create(
     user = getattr(request.state, "user", None)
     job_id = _audio_jobs.create_world_summary_job(
         world.id, created_by_user_id=user.id if user else None,
+        model=body.model, think=body.think, use_rag=body.use_rag,
+        rag_entity_limit=body.rag_entity_limit, rag_notes_limit=body.rag_notes_limit,
     )
     return {"job_id": job_id, "pending": True}
 
@@ -613,6 +629,26 @@ def api_world_summary_get(request: Request, db=Depends(get_db), active_world: st
     if job.status == "error":
         return {"recap": "", "error": job.error or "generation failed"}
     return {"recap": job.recap or "", "generated_at": job.finished_at.isoformat() if job.finished_at else None}
+
+
+@router.delete("/world-summary")
+def api_world_summary_clear(request: Request, db=Depends(get_db), active_world: str = Cookie(None)):
+    """Deletes every world_summary AudioJob row for the active world — a
+    real reset, not just clearing the card's display: the next GET has
+    nothing to serve (back to "no summary yet", same as a world that never
+    generated one) until a fresh Generate/Regenerate click. Deletes every
+    row, not just the newest done one, so a stale pending/error row left
+    behind by an earlier crash can't resurface after the visible one is
+    cleared."""
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    db.query(AudioJob).filter(
+        AudioJob.world_id == world.id, AudioJob.purpose == "world_summary",
+    ).delete()
+    db.commit()
+    return {"ok": True}
 
 
 # ── Saved chat conversations (ai_chat.html's History sidebar) ──────────────
@@ -1167,7 +1203,7 @@ async def ai_hardware(request: Request, db=Depends(get_db)):
     panel is advisory and must not error the whole settings page."""
     _require_gm(request)
     settings = get_app_settings(db)
-    hardware = await _tuning.detect_hardware(settings.ollama_vram_override_mb)
+    hardware = await _tuning.detect_hardware(settings.ollama_vram_override_mb, settings.ollama_gpu_preset or "")
     models = await _ai.installed_models_detail()
     return {
         "hardware": hardware,

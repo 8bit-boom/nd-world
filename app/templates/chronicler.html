@@ -25,6 +25,23 @@
   <h1 class="chron-header">📜 The Chronicler</h1>
   <p class="chron-sub">Ask about what's happened so far in {{ world.name if world else 'this world' }} — answers are drawn only from logged facts and lore you're allowed to see.</p>
 
+  {% if request.state.user and request.state.user.is_gm %}
+  <details style="margin-bottom:.8rem">
+    <summary style="cursor:pointer;font-size:.78rem;color:var(--text-dim)">⚙ Model &amp; thinking (GM only)</summary>
+    <div style="display:flex;align-items:center;gap:.9rem;flex-wrap:wrap;padding:.5rem 0 0">
+      <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-dim)">
+        Model
+        <select id="chron-model" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+          <option value="">(default)</option>
+        </select>
+      </label>
+      <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--text-dim)">
+        <input type="checkbox" id="chron-think"/> Thinking
+      </label>
+    </div>
+  </details>
+  {% endif %}
+
   <div class="chron-messages" id="chron-messages">
     <div class="chron-msg chron-msg--assistant">
       <div class="chron-bubble">Greetings, traveler. Ask me about the campaign so far, and I shall tell you what is known.</div>
@@ -64,6 +81,20 @@ function chronAdd(role, text, thinking) {
 window.chronKey = function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); chronSend(); } };
 window.chronResize = function (el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 140) + 'px'; };
 
+// Model picker (GM only — see the settings <details> above) — same
+// read-only catalog fetch the AI-assist panels use.
+const _chronModelSel = document.getElementById('chron-model');
+if (_chronModelSel) {
+  fetch('/api/ai/models').then(r => r.json()).then(d => {
+    (d.models || []).forEach(m => {
+      const o = document.createElement('option');
+      o.value = m.id;
+      o.textContent = (m.label || m.id) + (m.loaded ? '  ●' : '');
+      _chronModelSel.appendChild(o);
+    });
+  }).catch(() => {});
+}
+
 window.chronSend = async function () {
   const inp = document.getElementById('chron-input');
   const btn = document.getElementById('chron-send');
@@ -74,16 +105,49 @@ window.chronSend = async function () {
   chronAdd('user', question);
   btn.disabled = true;
   const bubble = chronAdd('assistant', '…', true);
+  let raw = '';
   try {
+    // Streamed over SSE (not one blocking JSON response) so a slow or
+    // Thinking-enabled model doesn't run past a reverse proxy's idle-byte
+    // timeout (Cloudflare's HTTP 524) — see chronicler_ask's own docstring.
     const res = await fetch('/api/chronicler/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({
+        question,
+        model: _chronModelSel ? _chronModelSel.value : '',
+        think: !!document.getElementById('chron-think')?.checked,
+      }),
     });
     if (!res.ok) throw await ndApiErrorFrom(res);
-    const data = await res.json();
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let sseBuffer = '';
+    let gotAny = false;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sseBuffer += dec.decode(value, { stream: true });
+      const parts = sseBuffer.split('\n\n');
+      sseBuffer = parts.pop(); // keep partial last frame
+      for (const part of parts) {
+        if (!part.startsWith('data:')) continue;
+        const chunk = part.slice(5).trim();
+        if (chunk === '[DONE]') continue;
+        try {
+          const obj = JSON.parse(chunk);
+          if (obj.token) {
+            raw += obj.token;
+            gotAny = true;
+            bubble.parentElement.classList.remove('chron-thinking');
+            bubble.innerHTML = _chronMdToHtml(raw);
+            document.getElementById('chron-messages').scrollTop = 999999;
+          }
+        } catch (_) { /* ignore a malformed frame */ }
+      }
+    }
     bubble.parentElement.classList.remove('chron-thinking');
-    bubble.innerHTML = _chronMdToHtml(data.answer || '(no answer)');
+    bubble.innerHTML = _chronMdToHtml(gotAny ? raw : '(no answer)');
   } catch (e) {
     bubble.parentElement.classList.remove('chron-thinking');
     bubble.innerHTML = _chronEscHtml('Error: ' + e.message);

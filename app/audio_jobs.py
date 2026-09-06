@@ -498,7 +498,11 @@ def create_assist_job(
     return job_id
 
 
-def create_world_summary_job(world_id: int, *, created_by_user_id: Optional[int] = None) -> int:
+def create_world_summary_job(
+    world_id: int, *, created_by_user_id: Optional[int] = None,
+    model: str = "", think: bool = True, use_rag: bool = False,
+    rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
+) -> int:
     """Generate the dashboard's AI world summary as a durable background
     job — the campaign-state digest is assembled at run time (see
     _run_job's world_summary branch: entity roster, open quests, recent
@@ -507,13 +511,24 @@ def create_world_summary_job(world_id: int, *, created_by_user_id: Optional[int]
     the session_recap purposes put there) and the polling route caches on
     the newest done row until a Regenerate click POSTs a new job — no
     staleness watermark by design (world state changes constantly; the
-    card labels the snapshot with its generation time instead)."""
+    card labels the snapshot with its generation time instead).
+
+    `think` defaults to True (unlike every other purpose here) — the
+    dashboard widget's own Thinking checkbox defaults checked, matching how
+    it shipped before this parameter existed (world_summary jobs were
+    always created with think implicitly True via _run_job's own default
+    handling). `use_rag`/rag_*_limit are optional lore-grounding, same
+    shape as the ai_assist purpose's own — see _run_job's world_summary
+    branch for how the RAG query is built (the assembled state_text itself,
+    since a world summary has no separate "content" input to query on)."""
     db = SessionLocal()
     try:
         job = AudioJob(
             world_id=world_id, purpose="world_summary", filename="World summary", status="pending",
             created_by_user_id=created_by_user_id,
-            model=_ai_module.get_defaults().get("assist", "") or None,
+            model=model or (_ai_module.get_defaults().get("assist", "") or None),
+            think=think, use_rag=use_rag,
+            rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
             audio_path="", delete_after=False,
         )
         db.add(job)
@@ -1181,10 +1196,13 @@ async def _run_job(job_id: int) -> None:
             # own docstring for the query-length cap this relies on). For
             # purpose="facts_parse" the "transcript" is the pasted recap
             # text (create_facts_parse_job stores it there), so the same
-            # convention carries over unchanged. purpose="ai_assist" builds
-            # its own RAG in its branch below (a content-less op needs the
-            # meta+instruction fallback as its query); world_summary never
-            # uses RAG — its input already IS the world.
+            # convention carries over unchanged. purpose="ai_assist" and
+            # purpose="world_summary" both build their own RAG in their
+            # branches below instead of here — ai_assist because a
+            # content-less op needs the meta+instruction fallback as its
+            # query, world_summary because its query text (the assembled
+            # campaign-state digest) doesn't exist yet at this point in the
+            # function (see _world_summary_state_text, called further down).
             # pinned_entity_ids/pinned_pc_ids: whatever the GM checked in
             # this session's own "Entities Featured" picker (see _session_
             # featured_picks) — guaranteed inclusion regardless of what the
@@ -1604,9 +1622,20 @@ async def _run_job(job_id: int) -> None:
                 _set(status="error", error="This world has no content to summarize yet.",
                      finished_at=datetime.utcnow(), checkpoint_json="")
                 return
+            # Same "query on the input itself" convention as the ai_assist
+            # branch above (no separate short question here either) — the
+            # already-assembled state_text IS the best signal for which
+            # lore excerpts are relevant to it.
+            if use_rag and world_id:
+                world_context = _build_rag_context(
+                    world_id, state_text,
+                    rag_entity_limit if rag_entity_limit is not None else _DEFAULT_RAG_ENTITY_LIMIT,
+                    rag_notes_limit if rag_notes_limit is not None else _DEFAULT_RAG_NOTES_LIMIT,
+                )
             async with _ai_module.ollama_job_semaphore:
                 result = await _ai_assist.run_assist(
                     _ai_assist.OP_WORLD_SUMMARY, content=state_text, model=model, think=think,
+                    world_context=world_context,
                 )
             if _looks_like_failure(result.get("text", "")) or _ai_module.is_thinking_starved_sentinel(result.get("text", "")):
                 _set(status="error", error=result.get("text", ""), finished_at=datetime.utcnow(), checkpoint_json="")
