@@ -10,6 +10,14 @@
   day panel — same upload/delete/world-scoping shape as every other
   file-backed model in this app (see tests/test_gallery.py's own
   _png_file for the fake-image convention this mirrors).
+- A "has-content" marker class on any day cell with events or icons, plus
+  a client-side "only show days with content" filter toggle that dims
+  (never removes, to keep the week-grid alignment intact) the rest.
+- Moons: config.moons ([{name, cycle_days, offset, color}], empty by
+  default — opt-in). _moon_phase_for_day derives a phase purely from the
+  absolute day number (decoupled from the calendar's own custom month
+  structure, same as current_day itself), rendered on the month grid as
+  a small circle whose lit portion is tinted with the moon's own color.
 
 The whole /calendar surface is GM-only (not listed in main.py's
 _is_player_safe at all — every route here, GET included, 403s a player),
@@ -17,12 +25,21 @@ same as before this feature existed.
 """
 import io
 import json
+import re
 
 from app.database import SessionLocal
 from app.models import CalendarDayIcon, CalendarEvent, Entity, GameSession, Party, PlayerCharacter, WorldCalendar
-from app.routers.calendar import _days_per_week, DEFAULT_DAYS_PER_WEEK
+from app.routers.calendar import (
+    _days_per_week, _DEFAULT_MOON_COLOR, _DEFAULT_MOON_CYCLE_DAYS, _moon_phase_for_day, DEFAULT_DAYS_PER_WEEK,
+)
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+
+
+def _cell_class_for_day(page: str, day_num: int) -> str:
+    m = re.search(rf'<div class="([^"]*)" data-day="{day_num}">', page)
+    assert m, f"day {day_num} cell not found in page"
+    return m.group(1)
 
 _PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 1000
 
@@ -348,3 +365,176 @@ def test_calendar_icons_are_world_scoped(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     page = client.get("/calendar?year=1&month=0").text
     assert 'class="cal-icon"' not in page
+
+
+# ── "Which days have content" indicator + filter toggle ─────────────────
+
+def test_calendar_month_grid_marks_days_with_content(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/api/calendar/events", json={"day": 5, "title": "Ambush"})
+    page = client.get("/calendar?year=1&month=0").text
+    assert "has-content" in _cell_class_for_day(page, 5)
+    assert "has-content" not in _cell_class_for_day(page, 6)
+
+
+def test_calendar_month_grid_marks_days_with_icons_too(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/api/calendar/days/8/icons", files=_png_file())
+    page = client.get("/calendar?year=1&month=0").text
+    assert "has-content" in _cell_class_for_day(page, 8)
+
+
+def test_calendar_month_grid_has_filter_toggle(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    page = client.get("/calendar").text
+    assert 'id="filter-empty-cb"' in page
+    assert 'id="cal-grid"' in page
+    assert "filter-empty" in page  # the CSS rule that dims non-content cells
+
+
+# ── Moon phases: pure function ───────────────────────────────────────────
+#
+# cycle_days=8 gives exact, floating-point-friendly quarter points (t = 0,
+# .25, .5, .75) instead of needing near-equality assertions.
+
+def test_moon_phase_new_moon_at_cycle_start():
+    phase = _moon_phase_for_day({"cycle_days": 8, "offset": 0}, day_num=1)
+    assert phase["phase_name"] == "New Moon"
+    assert phase["illum_pct"] == 0
+    assert phase["waxing"] is True
+
+
+def test_moon_phase_first_quarter_is_waxing():
+    phase = _moon_phase_for_day({"cycle_days": 8, "offset": 0}, day_num=3)
+    assert phase["phase_name"] == "First Quarter"
+    assert phase["illum_pct"] == 50
+    assert phase["waxing"] is True
+
+
+def test_moon_phase_full_moon_at_cycle_midpoint():
+    phase = _moon_phase_for_day({"cycle_days": 8, "offset": 0}, day_num=5)
+    assert phase["phase_name"] == "Full Moon"
+    assert phase["illum_pct"] == 100
+
+
+def test_moon_phase_last_quarter_is_waning():
+    phase = _moon_phase_for_day({"cycle_days": 8, "offset": 0}, day_num=7)
+    assert phase["phase_name"] == "Last Quarter"
+    assert phase["illum_pct"] == 50
+    assert phase["waxing"] is False
+
+
+def test_moon_phase_wraps_around_to_a_new_cycle():
+    phase = _moon_phase_for_day({"cycle_days": 8, "offset": 0}, day_num=9)
+    assert phase["phase_name"] == "New Moon"
+
+
+def test_moon_phase_offset_shifts_which_day_is_new_moon():
+    # Same math a day-5/offset-0 full moon would produce, shifted 4 days
+    # earlier so day 5 itself lands back on New Moon.
+    phase = _moon_phase_for_day({"cycle_days": 8, "offset": 4}, day_num=5)
+    assert phase["phase_name"] == "New Moon"
+
+
+def test_moon_phase_defaults_when_fields_missing():
+    phase = _moon_phase_for_day({}, day_num=1)
+    assert phase["name"] == "Moon"
+    assert phase["color"] == _DEFAULT_MOON_COLOR
+
+
+def test_moon_phase_clamps_nonpositive_cycle_days():
+    """cycle_days <= 0 must not raise (mod-by-zero) or explode the day
+    grid — clamped to 1, which degenerates to "always new moon" instead of
+    crashing the whole calendar page."""
+    phase = _moon_phase_for_day({"cycle_days": -5}, day_num=42)
+    assert phase["illum_pct"] == 0
+
+
+# ── Moon phases: config save/round-trip ──────────────────────────────────
+
+def test_calendar_config_save_persists_moons(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/calendar/config", data={
+        "era_name": "Year 1", "current_day": "1", "days_per_week": "7", "months_json": "[]",
+        "moons_json": json.dumps([{"name": "Silversheen", "cycle_days": 30, "offset": 2, "color": "#aabbcc"}]),
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    assert _get_config(seed.world_a.id)["moons"] == [
+        {"name": "Silversheen", "cycle_days": 30, "offset": 2, "color": "#aabbcc"},
+    ]
+
+
+def test_calendar_config_save_missing_moons_json_defaults_to_empty(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/calendar/config", data={
+        "era_name": "Year 1", "current_day": "1", "days_per_week": "7", "months_json": "[]",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    assert _get_config(seed.world_a.id)["moons"] == []
+
+
+def test_calendar_config_save_empty_moons_json_clears_existing_moons(client, seed):
+    """Unlike months (which can never go to zero — the month editor's own
+    Remove button refuses to drop below one row), a GM CAN remove every
+    moon they've added, so an explicit empty save has to actually clear
+    them rather than being treated as "no moons field submitted, leave
+    the old ones alone"."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/calendar/config", data={
+        "era_name": "Year 1", "current_day": "1", "days_per_week": "7", "months_json": "[]",
+        "moons_json": json.dumps([{"name": "Moon", "cycle_days": 29, "offset": 0, "color": "#cccccc"}]),
+    })
+    assert len(_get_config(seed.world_a.id)["moons"]) == 1
+
+    client.post("/calendar/config", data={
+        "era_name": "Year 1", "current_day": "1", "days_per_week": "7", "months_json": "[]",
+        "moons_json": "[]",
+    })
+    assert _get_config(seed.world_a.id)["moons"] == []
+
+
+def test_calendar_config_save_garbage_moon_value_no_ops_the_whole_update(client, seed):
+    """A field that fails int() inside the list comprehension raises,
+    caught by the same outer try/except months_json already relies on —
+    the whole moons update is silently skipped (previous value survives)
+    rather than 500ing the page or half-applying a corrupt entry. Not a
+    new inconsistency: months_json has always worked this way."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    good_moon = {"name": "Moon", "cycle_days": 30, "offset": 0, "color": "#cccccc"}
+    client.post("/calendar/config", data={
+        "era_name": "Year 1", "current_day": "1", "days_per_week": "7", "months_json": "[]",
+        "moons_json": json.dumps([good_moon]),
+    })
+    r = client.post("/calendar/config", data={
+        "era_name": "Year 1", "current_day": "1", "days_per_week": "7", "months_json": "[]",
+        "moons_json": json.dumps([{"name": "Moon", "cycle_days": "not-a-number"}]),
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    assert _get_config(seed.world_a.id)["moons"] == [good_moon]
+
+
+# ── Moon phases: month-grid rendering ─────────────────────────────────────
+
+def test_calendar_month_grid_renders_moon_phase_indicator(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/calendar/config", data={
+        "era_name": "Year 1", "current_day": "1", "days_per_week": "7", "months_json": "[]",
+        "moons_json": json.dumps([{"name": "Blood Moon", "cycle_days": 8, "offset": 0, "color": "#ff0000"}]),
+    })
+    page = client.get("/calendar?year=1&month=0").text
+    assert 'class="cal-moon"' in page
+    assert "#ff0000" in page
+    assert "Blood Moon:" in page  # the swatch's title tooltip names the moon + phase
+
+
+def test_calendar_month_grid_no_moons_configured_renders_no_moon_swatches(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    page = client.get("/calendar").text
+    assert 'class="cal-moon"' not in page

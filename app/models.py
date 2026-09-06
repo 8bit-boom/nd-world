@@ -1376,13 +1376,18 @@ class TrustedDevice(Base):
 
 
 class WorldCalendar(Base):
-    """One custom in-world calendar per world — era name, current day, and
-    configurable month lengths. Lazily created on first /calendar visit."""
+    """One custom in-world calendar per world — era name, current day,
+    configurable month lengths, and optional moons. Lazily created on
+    first /calendar visit."""
     __tablename__ = "world_calendars"
 
     id = Column(Integer, primary_key=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, unique=True, index=True)
-    config_json = Column(Text, default="{}")  # {era_name, current_day, months:[{name,days}]}
+    # {era_name, current_day, months:[{name,days}], days_per_week,
+    # moons:[{name,cycle_days,offset,color}]} — see app.routers.calendar's
+    # _moon_phase_for_day for how a moon's phase is derived from current_day
+    # alone (deliberately decoupled from the custom month structure).
+    config_json = Column(Text, default="{}")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 

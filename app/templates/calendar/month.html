@@ -19,6 +19,10 @@
   <div style="display:flex;gap:.6rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap">
     <input id="advance-days" type="number" value="1" style="width:70px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
     <button type="button" id="advance-btn" style="background:var(--neon);color:#000;border:none;padding:.45rem 1rem;font-size:.82rem;font-weight:bold;border-radius:3px;cursor:pointer">⏭ Advance Days</button>
+    <label style="display:flex;align-items:center;gap:.35rem;font-size:.8rem;color:var(--text-dim);cursor:pointer;margin-left:.4rem"
+           title="Dims days with no events or icons, so a busy campaign's planned days stand out at a glance">
+      <input type="checkbox" id="filter-empty-cb"/> Only show days with content
+    </label>
   </div>
 
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
@@ -27,13 +31,23 @@
     <a href="{{ ('/calendar?year=' + next_year|string + '&month=' + next_month|string)|wq }}" style="color:var(--text-dim);text-decoration:none;font-size:.85rem">{{ months[next_month].name }} →</a>
   </div>
 
-  <div class="cal-grid" style="grid-template-columns:repeat({{ days_per_week }}, 1fr)">
+  <div class="cal-grid" id="cal-grid" style="grid-template-columns:repeat({{ days_per_week }}, 1fr)">
     {% for _ in lead_pad %}
     <div class="cal-cell cal-cell-pad"></div>
     {% endfor %}
     {% for d in days %}
-    <div class="cal-cell {% if d.is_current %}today{% endif %}" data-day="{{ d.day_num }}">
-      <div class="cal-daynum">{{ d.dom }}</div>
+    <div class="cal-cell {% if d.is_current %}today{% endif %} {% if d.events or d.icons %}has-content{% endif %}" data-day="{{ d.day_num }}">
+      <div class="cal-daynum-row">
+        <span class="cal-daynum">{{ d.dom }}</span>
+        {% if d.moons %}
+        <span class="cal-moons">
+          {% for m in d.moons %}
+          <span class="cal-moon" title="{{ m.name }}: {{ m.phase_name }} ({{ m.illum_pct }}% lit)"
+                style="background:linear-gradient({% if m.waxing %}90deg{% else %}270deg{% endif %}, #1a1a2e {{ m.dark_pct }}%, {{ m.color }} {{ m.dark_pct }}%)"></span>
+          {% endfor %}
+        </span>
+        {% endif %}
+      </div>
       {% if d.icons %}
       <div class="cal-icons">
         {% for ic in d.icons %}
@@ -53,15 +67,23 @@
 
 <style>
 .cal-grid { display:grid; gap:.4rem; }
-.cal-cell { background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.4rem; min-height:60px; cursor:pointer; display:flex; flex-direction:column; gap:.2rem; }
+.cal-cell { background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.4rem; min-height:60px; cursor:pointer; display:flex; flex-direction:column; gap:.2rem; transition:opacity .15s; }
 .cal-cell:hover { border-color:var(--neon); }
 .cal-cell.today { border-color:var(--neon); box-shadow:0 0 0 1px var(--neon); }
 .cal-cell-pad { background:transparent; border-color:transparent; cursor:default; }
+.cal-daynum-row { display:flex; align-items:center; justify-content:space-between; gap:.25rem; }
 .cal-daynum { font-size:.8rem; color:var(--text-dim); }
 .cal-cell.today .cal-daynum { color:var(--neon); font-weight:bold; }
+.cal-moons { display:flex; gap:.15rem; flex-shrink:0; }
+.cal-moon { width:13px; height:13px; border-radius:50%; flex-shrink:0; border:1px solid rgba(255,255,255,.2); }
 .cal-icons { display:flex; flex-wrap:wrap; gap:.15rem; }
 .cal-icon { width:18px; height:18px; object-fit:cover; border-radius:3px; }
 .cal-event { font-size:.68rem; padding:.1rem .3rem; border-radius:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* "Only show days with content" — dims rather than removes empty cells,
+   since removing them would collapse the week-grid alignment every other
+   day in the row depends on. */
+.cal-grid.filter-empty .cal-cell:not(.has-content):not(.cal-cell-pad) { opacity:.22; }
+.cal-grid.filter-empty .cal-cell.today:not(.has-content) { opacity:.55; }
 </style>
 
 <script>
@@ -194,5 +216,21 @@ document.getElementById('advance-btn').addEventListener('click', async () => {
   });
   window.location.reload();
 });
+
+// "Only show days with content" — a per-viewer display preference, not
+// campaign data, so it's remembered in localStorage rather than saved to
+// the calendar's own config (every GM/device gets their own toggle state).
+(function () {
+  const cb = document.getElementById('filter-empty-cb');
+  const grid = document.getElementById('cal-grid');
+  let remembered = false;
+  try { remembered = localStorage.getItem('nd-cal-filter-empty') === '1'; } catch (_) {}
+  cb.checked = remembered;
+  grid.classList.toggle('filter-empty', remembered);
+  cb.addEventListener('change', () => {
+    grid.classList.toggle('filter-empty', cb.checked);
+    try { localStorage.setItem('nd-cal-filter-empty', cb.checked ? '1' : '0'); } catch (_) {}
+  });
+})();
 </script>
 {% endblock %}

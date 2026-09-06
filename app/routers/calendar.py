@@ -1,4 +1,5 @@
 import json
+import math
 import os
 from pathlib import Path
 
@@ -38,8 +39,22 @@ _ICON_SUBDIR = "calendar_icons"
 _MAX_ICONS_PER_DAY = 24
 
 
+
+# Moons are opt-in worldbuilding flavor (unlike months, a calendar works
+# fine with zero configured) — empty by default, unlike DEFAULT_MONTHS.
+_MOON_PHASE_NAMES = (
+    "New Moon", "Waxing Crescent", "First Quarter", "Waxing Gibbous",
+    "Full Moon", "Waning Gibbous", "Last Quarter", "Waning Crescent",
+)
+_DEFAULT_MOON_COLOR = "#cccccc"
+_DEFAULT_MOON_CYCLE_DAYS = 29
+
+
 def _default_config() -> dict:
-    return {"era_name": "Year 1", "current_day": 1, "months": DEFAULT_MONTHS, "days_per_week": DEFAULT_DAYS_PER_WEEK}
+    return {
+        "era_name": "Year 1", "current_day": 1, "months": DEFAULT_MONTHS,
+        "days_per_week": DEFAULT_DAYS_PER_WEEK, "moons": [],
+    }
 
 
 def _days_per_week(config: dict) -> int:
@@ -78,6 +93,44 @@ def _get_or_create_calendar(db: Session, world_id: int) -> WorldCalendar:
 
 def _months_of(config: dict) -> list:
     return config.get("months") or DEFAULT_MONTHS
+
+
+def _moons_of(config: dict) -> list:
+    moons = config.get("moons")
+    return moons if isinstance(moons, list) else []
+
+
+def _moon_phase_for_day(moon: dict, day_num: int) -> dict:
+    """One moon's phase on one absolute day — a pure function of day_num
+    (the calendar's linear day-count, see WorldCalendar's own docstring)
+    and the moon's own cycle_days/offset, deliberately decoupled from the
+    custom month structure the same way current_day itself already is:
+    a moon's cycle rarely lines up evenly with a GM's custom month
+    lengths, so anchoring it to months would drift the phase in ways a
+    GM can't reason about. `offset` shifts which day counts as this
+    moon's "day zero" (new moon) — lets a GM line up a specific campaign
+    day with a full moon without renumbering the whole calendar.
+
+    illum: 0.0 (new) -> 1.0 (full) -> 0.0 (new), via the standard
+    sinusoidal approximation (real orbital mechanics aren't the point
+    here — a smooth, symmetric waxing/waning curve is). `dark_pct` is
+    handed to the template as a CSS gradient split point so the moon
+    swatch's lit portion is tinted with the moon's own color instead of
+    a fixed white, without the template needing to know any of this
+    math itself."""
+    cycle = max(1, int(moon.get("cycle_days") or _DEFAULT_MOON_CYCLE_DAYS))
+    offset = int(moon.get("offset") or 0)
+    t = ((day_num - 1 - offset) % cycle) / cycle
+    illum = (1 - math.cos(2 * math.pi * t)) / 2
+    phase_idx = round(t * 8) % 8
+    return {
+        "name": moon.get("name") or "Moon",
+        "color": moon.get("color") or _DEFAULT_MOON_COLOR,
+        "phase_name": _MOON_PHASE_NAMES[phase_idx],
+        "illum_pct": round(illum * 100),
+        "dark_pct": round((1 - illum) * 100),
+        "waxing": t < 0.5,
+    }
 
 
 def _resolve_date(config: dict, day_num: int):
@@ -145,9 +198,11 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
     for ic in icons:
         icons_by_day.setdefault(ic.day, []).append({"id": ic.id, "image_url": ic.image_url, "label": ic.label})
 
+    moons = _moons_of(config)
     days = [{"day_num": month_start + i, "dom": i + 1, "is_current": (month_start + i) == current_day,
              "events": events_by_day.get(month_start + i, []),
-             "icons": icons_by_day.get(month_start + i, [])} for i in range(month["days"])]
+             "icons": icons_by_day.get(month_start + i, []),
+             "moons": [_moon_phase_for_day(m, month_start + i) for m in moons]} for i in range(month["days"])]
 
     # Weeks run continuously across the whole calendar (day 1 always starts
     # week-column 0), not reset per month — a month's first day lands
@@ -216,6 +271,24 @@ async def calendar_config_save(request: Request, db: Session = Depends(get_db), 
         months = json.loads(raw_months)
         if isinstance(months, list) and months:
             config["months"] = [{"name": m.get("name") or "Month", "days": max(1, int(m.get("days") or 1))} for m in months]
+    except Exception:
+        pass
+    raw_moons = str(form.get("moons_json", "[]") or "[]")
+    try:
+        moons = json.loads(raw_moons)
+        if isinstance(moons, list):
+            # Unlike months, an empty list is valid here — a GM removing
+            # every moon they'd added should actually clear them, not fall
+            # back to keeping the previous ones.
+            config["moons"] = [
+                {
+                    "name": (m.get("name") or "Moon").strip()[:64] or "Moon",
+                    "cycle_days": max(1, int(m.get("cycle_days") or _DEFAULT_MOON_CYCLE_DAYS)),
+                    "offset": int(m.get("offset") or 0),
+                    "color": str(m.get("color") or _DEFAULT_MOON_COLOR)[:16],
+                }
+                for m in moons
+            ]
     except Exception:
         pass
     cal.config_json = json.dumps(config)

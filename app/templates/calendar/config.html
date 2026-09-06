@@ -24,6 +24,13 @@
       <input type="hidden" name="months_json" id="months-json-input"/>
     </div>
 
+    <div class="form-group">
+      <label>Moons <small>(optional — shown as small colored phase indicators on the month grid)</small></label>
+      <div id="moons-list" style="display:flex;flex-direction:column;gap:.4rem"></div>
+      <button type="button" onclick="addMoon()" class="btn-cancel" style="align-self:flex-start;margin-top:.5rem">+ Add Moon</button>
+      <input type="hidden" name="moons_json" id="moons-json-input"/>
+    </div>
+
     <div class="form-actions">
       <button type="submit" class="btn-save">Save</button>
       <a href="{{ '/calendar'|wq }}" class="btn-cancel">Cancel</a>
@@ -35,6 +42,10 @@
 .month-row { display:grid; grid-template-columns:2fr 100px 32px; gap:.4rem; align-items:center; background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.5rem .65rem; }
 .month-row input { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.3rem .5rem; font-family:var(--font); font-size:.82rem; border-radius:3px; width:100%; }
 .month-del { background:none; border:none; color:#c44; font-size:1.1rem; cursor:pointer; padding:0 .1rem; line-height:1; }
+.moon-row { display:grid; grid-template-columns:2fr 90px 44px 90px 32px; gap:.4rem; align-items:center; background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.5rem .65rem; }
+.moon-row input[type="text"], .moon-row input[type="number"] { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.3rem .5rem; font-family:var(--font); font-size:.82rem; border-radius:3px; width:100%; }
+.moon-row input[type="color"] { width:100%; height:28px; background:var(--bg3); border:1px solid var(--border); border-radius:3px; padding:2px; }
+.moon-del { background:none; border:none; color:#c44; font-size:1.1rem; cursor:pointer; padding:0 .1rem; line-height:1; }
 </style>
 
 <script>
@@ -60,16 +71,48 @@ function renderMonths() {
 
 function updateMonth(i, key, val) {
   _months[i][key] = key === 'days' ? (parseInt(val, 10) || 1) : val;
-  syncHidden();
+  syncMonthsHidden();
 }
 function removeMonth(i) { if (_months.length > 1) { _months.splice(i, 1); renderMonths(); } }
 function addMonth() { _months.push({ name: '', days: 30 }); renderMonths(); }
 
-function syncHidden() {
+function syncMonthsHidden() {
   document.getElementById('months-json-input').value = JSON.stringify(_months);
 }
 
-document.getElementById('cal-config-form').addEventListener('submit', syncHidden);
+let _moons = {{ config.moons | default([]) | tojson }};
+
+function renderMoons() {
+  const list = document.getElementById('moons-list');
+  list.innerHTML = '';
+  _moons.forEach((m, i) => {
+    const row = document.createElement('div');
+    row.className = 'moon-row';
+    row.innerHTML = `
+      <input type="text" placeholder="Moon name" value="${esc(m.name||'')}" oninput="updateMoon(${i},'name',this.value)"/>
+      <input type="number" min="1" placeholder="Cycle (days)" value="${m.cycle_days ?? 29}" title="How many days from one full moon to the next" oninput="updateMoon(${i},'cycle_days',this.value)"/>
+      <input type="color" value="${esc(m.color || '#cccccc')}" title="Moon color" oninput="updateMoon(${i},'color',this.value)"/>
+      <input type="number" placeholder="Offset" value="${m.offset ?? 0}" title="Shifts which day counts as a new moon — lets you line up a specific campaign day with a full moon" oninput="updateMoon(${i},'offset',this.value)"/>
+      <button type="button" class="moon-del" onclick="removeMoon(${i})" title="Remove">✕</button>
+    `;
+    list.appendChild(row);
+  });
+  syncMoonsHidden();
+}
+
+function updateMoon(i, key, val) {
+  _moons[i][key] = (key === 'cycle_days' || key === 'offset') ? (parseInt(val, 10) || 0) : val;
+  syncMoonsHidden();
+}
+function removeMoon(i) { _moons.splice(i, 1); renderMoons(); }
+function addMoon() { _moons.push({ name: '', cycle_days: 29, offset: 0, color: '#cccccc' }); renderMoons(); }
+
+function syncMoonsHidden() {
+  document.getElementById('moons-json-input').value = JSON.stringify(_moons);
+}
+
+document.getElementById('cal-config-form').addEventListener('submit', () => { syncMonthsHidden(); syncMoonsHidden(); });
 renderMonths();
+renderMoons();
 </script>
 {% endblock %}
