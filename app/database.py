@@ -651,6 +651,7 @@ def _migrate():
                 ("ollama_use_mmap", "VARCHAR(8) DEFAULT ''"),
                 ("ollama_server_env_json", "TEXT DEFAULT '{}'"),
                 ("ollama_vram_override_mb", "INTEGER"),
+                ("ollama_gpu_preset", "VARCHAR(32) DEFAULT ''"),
                 ("ollama_model_overrides_json", "TEXT DEFAULT '{}'"),
                 # Upload size limits (Settings > System's "Upload limits") —
                 # deliberately NO DEFAULT clause, so existing installs' rows

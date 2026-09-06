@@ -273,6 +273,79 @@ async def test_detect_hardware_never_raises_on_this_real_machine():
     assert isinstance(hw["notes"], list)
 
 
+# ── GPU presets (plan settings for a card not physically installed yet) ────
+
+@pytest.mark.asyncio
+async def test_gpu_preset_used_when_no_real_gpu_detected(monkeypatch):
+    async def fake_nvidia():
+        return []
+    monkeypatch.setattr(tuning, "_detect_nvidia_gpus", fake_nvidia)
+    monkeypatch.setattr(tuning, "_detect_amd_gpus", lambda: [])
+
+    hw = await tuning.detect_hardware(gpu_preset="v100_16gb")
+    assert hw["vram_total_mb"] == 16384
+    assert hw["vram_source"] == "preset"
+    assert hw["gpus"] == [{"vendor": "nvidia", "name": "NVIDIA Tesla V100 16GB", "vram_mb": 16384}]
+    assert any("simulating" in n.lower() for n in hw["notes"])
+
+
+@pytest.mark.asyncio
+async def test_manual_override_wins_over_preset(monkeypatch):
+    async def fake_nvidia():
+        return []
+    monkeypatch.setattr(tuning, "_detect_nvidia_gpus", fake_nvidia)
+    monkeypatch.setattr(tuning, "_detect_amd_gpus", lambda: [])
+
+    hw = await tuning.detect_hardware(vram_override_mb=12000, gpu_preset="v100_16gb")
+    assert hw["vram_total_mb"] == 12000
+    assert hw["vram_source"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_real_detection_wins_over_preset(monkeypatch):
+    async def fake_nvidia():
+        return [{"vendor": "nvidia", "name": "RTX 4090", "vram_mb": 24564}]
+    monkeypatch.setattr(tuning, "_detect_nvidia_gpus", fake_nvidia)
+
+    hw = await tuning.detect_hardware(gpu_preset="v100_16gb")
+    assert hw["vram_total_mb"] == 24564
+    assert hw["vram_source"] == "nvidia-smi"
+
+
+@pytest.mark.asyncio
+async def test_unknown_preset_key_is_ignored(monkeypatch):
+    async def fake_nvidia():
+        return []
+    monkeypatch.setattr(tuning, "_detect_nvidia_gpus", fake_nvidia)
+    monkeypatch.setattr(tuning, "_detect_amd_gpus", lambda: [])
+
+    async def fake_resident():
+        return []
+    monkeypatch.setattr(ai_module, "resident_models", fake_resident)
+
+    hw = await tuning.detect_hardware(gpu_preset="not-a-real-preset")
+    assert hw["vram_total_mb"] is None
+    assert hw["vram_source"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_v100_preset_triggers_volta_advisory_note(monkeypatch):
+    """The preset's synthesized `gpus` entry must be indistinguishable from
+    a real nvidia-smi reading as far as recommend_settings' own
+    architecture-aware advice is concerned — a GM planning for a V100
+    should see the same Volta/CUDA-13 note a physically-installed one
+    would produce."""
+    async def fake_nvidia():
+        return []
+    monkeypatch.setattr(tuning, "_detect_nvidia_gpus", fake_nvidia)
+    monkeypatch.setattr(tuning, "_detect_amd_gpus", lambda: [])
+
+    hw = await tuning.detect_hardware(gpu_preset="v100_16gb")
+    note = tuning._volta_note(hw)
+    assert note is not None
+    assert "volta" in note.lower()
+
+
 # ── GET /api/ai/hardware route ──────────────────────────────────────────────
 # (route itself is added in a later task; these are placeholders removed
 # once that route exists — see tests/test_ollama_options.py-style route

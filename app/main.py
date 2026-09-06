@@ -3151,6 +3151,7 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "ollama_form_prefix": _tuning.FORM_PREFIX,
         "ollama_model_overrides": ollama_model_overrides,
         "ollama_thinking_failures": _ai_module._model_thinking_failures,
+        "gpu_presets": _tuning.GPU_PRESETS,
     }
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -3238,6 +3239,7 @@ def settings_system_save(
     ollama_main_gpu: str = Form(""),
     ollama_use_mmap: str = Form(""),
     ollama_vram_override_mb: str = Form(""),
+    ollama_gpu_preset: str = Form(""),
     ollama_srv_flash_attention: str = Form(""),
     ollama_srv_kv_cache_type: str = Form(""),
     ollama_srv_num_parallel: str = Form(""),
@@ -3342,6 +3344,10 @@ def settings_system_save(
     if ollama_use_mmap not in ("0", "1"):
         ollama_use_mmap = ""
 
+    ollama_gpu_preset = ollama_gpu_preset.strip()
+    if ollama_gpu_preset and ollama_gpu_preset not in _tuning.GPU_PRESETS:
+        ollama_gpu_preset = ""
+
     # Server-level ("Bucket A") Ollama tuning — genuinely process-level
     # settings Ollama only reads at start, written to a shared-volume env
     # file for the ollama container's entrypoint to source; see
@@ -3376,6 +3382,7 @@ def settings_system_save(
         setattr(settings, field, val)
     settings.ollama_keep_alive = ollama_keep_alive
     settings.ollama_use_mmap = ollama_use_mmap
+    settings.ollama_gpu_preset = ollama_gpu_preset
     settings.ollama_server_env_json = json.dumps(srv_values)
     db.commit()
     _clear_app_settings_flags_cache()

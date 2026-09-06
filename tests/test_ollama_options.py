@@ -1124,6 +1124,59 @@ def test_use_mmap_tristate(client, seed):
     assert "use_mmap" not in ai_module.effective_ollama_options()
 
 
+def test_gpu_preset_saves_and_reflects_on_page(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/settings/system", data={
+        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+        "ollama_gpu_preset": "v100_16gb",
+    }, follow_redirects=False)
+
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        assert settings.ollama_gpu_preset == "v100_16gb"
+    finally:
+        db.close()
+
+    page = client.get("/settings?tab=system")
+    assert 'value="v100_16gb" selected' in page.text
+
+
+def test_gpu_preset_unknown_key_falls_back_to_none(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/settings/system", data={
+        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+        "ollama_gpu_preset": "not-a-real-preset",
+    }, follow_redirects=False)
+    assert r.status_code in (302, 303)
+
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        assert settings.ollama_gpu_preset == ""
+    finally:
+        db.close()
+
+
+def test_gpu_preset_blank_clears_it(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/settings/system", data={
+        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+        "ollama_gpu_preset": "v100_16gb",
+    }, follow_redirects=False)
+    client.post("/settings/system", data={
+        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+        "ollama_gpu_preset": "",
+    }, follow_redirects=False)
+
+    db = SessionLocal()
+    try:
+        settings = db.query(AppSettings).first()
+        assert settings.ollama_gpu_preset == ""
+    finally:
+        db.close()
+
+
 def test_main_gpu_zero_is_sent(client, seed):
     """Guards the is-not-None-vs-truthiness bug: main_gpu=0 is a real,
     meaningful value (the first GPU), not "unset" — it must survive the
@@ -1307,7 +1360,7 @@ def test_hardware_route_gm_only(client, seed):
 def test_hardware_route_shape(client, seed, monkeypatch):
     import app.ollama_tuning as tuning_module
 
-    async def fake_detect(vram_override_mb=None):
+    async def fake_detect(vram_override_mb=None, gpu_preset=""):
         return {"cpu_model": "Test CPU", "cpu_cores": 8, "cpu_affinity": 8, "ram_total_mb": 16384,
                 "ram_available_mb": 8192, "gpus": [], "vram_total_mb": None, "vram_source": "none",
                 "vram_is_lower_bound": False, "notes": ["no gpu"]}
@@ -1329,6 +1382,32 @@ def test_hardware_route_shape(client, seed, monkeypatch):
     assert body["models"][0]["model"] == "llama3.1:8b"
     assert "recommendation" in body["models"][0]
     assert body["models"][0]["recommendation"]["fit"] in ("full_gpu", "partial_gpu", "cpu_only", "unknown")
+
+
+def test_hardware_route_passes_saved_gpu_preset(client, seed, monkeypatch):
+    import app.ollama_tuning as tuning_module
+    captured = {}
+
+    async def fake_detect(vram_override_mb=None, gpu_preset=""):
+        captured["gpu_preset"] = gpu_preset
+        return {"cpu_model": "", "cpu_cores": None, "cpu_affinity": None, "ram_total_mb": None,
+                "ram_available_mb": None, "gpus": [], "vram_total_mb": None, "vram_source": "none",
+                "vram_is_lower_bound": False, "notes": []}
+    monkeypatch.setattr(tuning_module, "detect_hardware", fake_detect)
+
+    async def fake_installed():
+        return []
+    monkeypatch.setattr(ai_module, "installed_models_detail", fake_installed)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/settings/system", data={
+        "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
+        "ollama_gpu_preset": "v100_16gb",
+    }, follow_redirects=False)
+
+    r = client.get("/api/ai/hardware")
+    assert r.status_code == 200
+    assert captured["gpu_preset"] == "v100_16gb"
 
 
 def test_hardware_route_survives_unreachable_ollama(client, seed, monkeypatch):

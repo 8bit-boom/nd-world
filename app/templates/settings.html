@@ -346,6 +346,15 @@
           <label for="ollama-vram-override-mb">VRAM override (MB) — only if the card above wasn't detected</label>
           <input id="ollama-vram-override-mb" type="number" step="1" min="0" name="ollama_vram_override_mb" value="{{ settings.ollama_vram_override_mb if settings.ollama_vram_override_mb is not none else '' }}" placeholder="e.g. 24576 for a 24 GB card" style="max-width:220px">
         </div>
+        <div class="form-group" style="margin-top:.5rem">
+          <label for="ollama-gpu-preset">Hardware preset — plan settings for a card you haven't installed yet</label>
+          <select id="ollama-gpu-preset" name="ollama_gpu_preset" style="max-width:280px">
+            <option value="">— none / auto-detect —</option>
+            {% for key, preset in gpu_presets.items() %}
+            <option value="{{ key }}" {% if settings.ollama_gpu_preset == key %}selected{% endif %}>{{ preset.name }} ({{ preset.vram_mb // 1024 }} GB)</option>
+            {% endfor %}
+          </select>
+        </div>
         <div class="form-group" style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-top:.6rem">
           <label for="hw-model" style="margin:0">Recommend settings for</label>
           <select id="hw-model" style="max-width:280px"><option value="">— no models detected —</option></select>

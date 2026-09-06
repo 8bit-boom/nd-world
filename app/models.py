@@ -1549,6 +1549,14 @@ class AppSettings(Base):
     # see the GPU (the normal case — only the ollama/swarmui services get GPU
     # passthrough in docker-compose.yml). Blank/None = rely on auto-detection.
     ollama_vram_override_mb = Column(Integer, nullable=True)
+    # A key into app.ollama_tuning.GPU_PRESETS ("" = none) — lets a GM plan
+    # settings for a card they haven't installed yet (nvidia-smi obviously
+    # can't detect hardware that isn't physically there). When set and no
+    # real GPU was actually detected, detect_hardware() synthesizes a `gpus`
+    # entry from the preset so recommend_settings' architecture-aware advice
+    # (e.g. the Volta/V100 note) applies the same as it would for a real
+    # detected card of that name.
+    ollama_gpu_preset = Column(String(32), default="")
     # Per-model overrides for the core "Bucket C" fields above — a GM-editable
     # JSON dict {model_id: {field: value, ...}} keyed by exactly the same
     # option names effective_ollama_options() builds (see

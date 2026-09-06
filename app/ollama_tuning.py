@@ -388,17 +388,35 @@ def _detect_amd_gpus(pattern: str = "/sys/class/drm/card*/device/mem_info_vram_t
     return gpus
 
 
-async def detect_hardware(vram_override_mb: Optional[int] = None) -> dict:
+# Hand-picked cards a GM might want to plan settings for BEFORE physically
+# installing them — nvidia-smi obviously can't detect hardware that isn't
+# there yet. Keyed by AppSettings.ollama_gpu_preset; `name` is matched by
+# _volta_note the same way a real nvidia-smi-reported name would be, so
+# picking "NVIDIA Tesla V100 16GB" here gets the identical Volta/CUDA-13
+# advisory a physically-detected V100 would.
+GPU_PRESETS = {
+    "v100_16gb": {"name": "NVIDIA Tesla V100 16GB", "vram_mb": 16384},
+}
+
+
+async def detect_hardware(vram_override_mb: Optional[int] = None, gpu_preset: str = "") -> dict:
     """Best-effort snapshot of the host's CPU/RAM/GPU, for the "Detected
     hardware" panel on Settings > System and as recommend_settings()'s
     input. Never raises — every sub-detector swallows its own failures.
 
     vram_total_mb resolution order: a GM-entered override always wins
     (real knowledge beats guessing); then nvidia-smi; then AMD sysfs; then
-    a LOWER BOUND inferred from whatever's already loaded in Ollama right
-    now (app.ai.resident_models(), the same call the existing VRAM cockpit
-    uses) — genuinely useful signal, just not the true total; then None,
-    with a note explaining why and pointing at the manual field."""
+    `gpu_preset` (a card the GM plans to install but nvidia-smi can't see
+    yet — see GPU_PRESETS); then a LOWER BOUND inferred from whatever's
+    already loaded in Ollama right now (app.ai.resident_models(), the same
+    call the existing VRAM cockpit uses) — genuinely useful signal, just
+    not the true total; then None, with a note explaining why and pointing
+    at the manual field.
+
+    gpu_preset sits below real detection (a genuinely installed card always
+    wins over a "planned" one) but above the Ollama-resident lower bound —
+    a GM's own stated plan is more informative than inferring from whatever
+    happens to be loaded right now."""
     notes: list[str] = []
     cpu_model, cpu_cores = _read_proc_cpuinfo()
     try:
@@ -421,6 +439,19 @@ async def detect_hardware(vram_override_mb: Optional[int] = None) -> dict:
     elif gpus:
         vram_total_mb = sum(g["vram_mb"] for g in gpus if g.get("vram_mb"))
         vram_source = f"{gpus[0]['vendor']}-{'smi' if gpus[0]['vendor'] == 'nvidia' else 'sysfs'}"
+    elif gpu_preset and gpu_preset in GPU_PRESETS:
+        preset = GPU_PRESETS[gpu_preset]
+        # Synthesize a `gpus` entry (not just a bare vram_total_mb) so
+        # _volta_note's name-based match fires the same way it would for a
+        # physically-detected card of this name.
+        gpus = [{"vendor": "nvidia", "name": preset["name"], "vram_mb": preset["vram_mb"]}]
+        vram_total_mb = preset["vram_mb"]
+        vram_source = "preset"
+        notes.append(
+            f"Simulating {preset['name']} — no physical GPU was detected here, so "
+            "this is a planning preset for a card you intend to install, not a real "
+            "reading. Switch to \"none\" once the card is in and being auto-detected."
+        )
     else:
         try:
             from . import ai as _ai_module
