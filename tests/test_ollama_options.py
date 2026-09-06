@@ -1124,7 +1124,9 @@ def test_use_mmap_tristate(client, seed):
     assert "use_mmap" not in ai_module.effective_ollama_options()
 
 
-def test_gpu_preset_saves_and_reflects_on_page(client, seed):
+def test_gpu_preset_saves_and_reflects_on_page(client, seed, tmp_path, monkeypatch):
+    import app.ollama_tuning as tuning_module
+    monkeypatch.setattr(tuning_module, "OLLAMA_CONFIG_DIR", tmp_path)
     login(client, seed.gm.email, GM_PASSWORD)
     client.post("/settings/system", data={
         "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
@@ -1142,7 +1144,9 @@ def test_gpu_preset_saves_and_reflects_on_page(client, seed):
     assert 'value="v100_16gb" selected' in page.text
 
 
-def test_gpu_preset_unknown_key_falls_back_to_none(client, seed):
+def test_gpu_preset_unknown_key_falls_back_to_none(client, seed, tmp_path, monkeypatch):
+    import app.ollama_tuning as tuning_module
+    monkeypatch.setattr(tuning_module, "OLLAMA_CONFIG_DIR", tmp_path)
     login(client, seed.gm.email, GM_PASSWORD)
     r = client.post("/settings/system", data={
         "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
@@ -1158,7 +1162,9 @@ def test_gpu_preset_unknown_key_falls_back_to_none(client, seed):
         db.close()
 
 
-def test_gpu_preset_blank_clears_it(client, seed):
+def test_gpu_preset_blank_clears_it(client, seed, tmp_path, monkeypatch):
+    import app.ollama_tuning as tuning_module
+    monkeypatch.setattr(tuning_module, "OLLAMA_CONFIG_DIR", tmp_path)
     login(client, seed.gm.email, GM_PASSWORD)
     client.post("/settings/system", data={
         "ollama_model": "", "ollama_url": "", "swarmui_external_url": "",
@@ -1384,8 +1390,9 @@ def test_hardware_route_shape(client, seed, monkeypatch):
     assert body["models"][0]["recommendation"]["fit"] in ("full_gpu", "partial_gpu", "cpu_only", "unknown")
 
 
-def test_hardware_route_passes_saved_gpu_preset(client, seed, monkeypatch):
+def test_hardware_route_passes_saved_gpu_preset(client, seed, tmp_path, monkeypatch):
     import app.ollama_tuning as tuning_module
+    monkeypatch.setattr(tuning_module, "OLLAMA_CONFIG_DIR", tmp_path)
     captured = {}
 
     async def fake_detect(vram_override_mb=None, gpu_preset=""):
