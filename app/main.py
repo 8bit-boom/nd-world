@@ -593,6 +593,15 @@ def _is_assistant_safe(method: str, path: str) -> bool:
         # both is in the POST list above; without these, a GM-Assistant's
         # panel could START an assist job but never watch it finish.
         return True
+    if method == "DELETE" and path == "/api/ai/world-summary":
+        # The widget's own "🗑 Clear" button is inside the same can_edit-
+        # gated section as the rest of the card (see app/templates/
+        # index.html) — no separate is_gm check — so an assistant clicking
+        # it must reach the route, not silently 403. The route itself
+        # scopes the delete to the caller's own audience tier (see
+        # app.routers.ai._world_summary_audience_filter), so this can't
+        # let an assistant wipe the GM's separately-cached digest.
+        return True
     return False
 
 

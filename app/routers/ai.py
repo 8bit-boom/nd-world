@@ -593,35 +593,72 @@ async def api_world_summary_create(
     Body defaults to an empty WorldSummaryCreateBody() rather than being
     required — the widget's plain "✨ Generate"/"↻ Regenerate" button (no
     settings expanded) posts no body at all, same as before this model/
-    think/RAG settings row existed."""
+    think/RAG settings row existed.
+
+    `audience` is never client-supplied — computed here from the actual
+    caller (GM vs GM-Assistant) and passed to create_world_summary_job,
+    which stores it so the GET below can serve each tier its own cached
+    digest instead of whichever was generated most recently by anyone (see
+    _world_summary_state_text's own docstring for what "players" excludes).
+    RAG is force-disabled for a non-GM caller for the same reason the
+    Session Log recap route disables it for players: _build_rag_context
+    retrieves world entities/notes WITHOUT the per-entity visibility
+    filter, so an assistant-enabled RAG could pull GM-only lore straight
+    back into the digest the deterministic-text filtering just removed."""
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
     user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
+    audience = "gm" if is_gm else "players"
+    use_rag = body.use_rag and is_gm
     job_id = _audio_jobs.create_world_summary_job(
         world.id, created_by_user_id=user.id if user else None,
-        model=body.model, think=body.think, use_rag=body.use_rag,
+        model=body.model, think=body.think, use_rag=use_rag,
         rag_entity_limit=body.rag_entity_limit, rag_notes_limit=body.rag_notes_limit,
+        audience=audience,
     )
     return {"job_id": job_id, "pending": True}
+
+
+def _world_summary_audience_filter(query, is_gm: bool):
+    """Scopes a world_summary AudioJob query to the caller's own tier — a
+    GM must never be served (or asked to delete) an assistant's filtered
+    "players" digest, and an assistant must never be served a GM's
+    secrets-included one (see _world_summary_state_text's docstring for
+    what "players" excludes). A blank AudioJob.audience ("" — the column's
+    own default) is a row created before this scoping existed, back when
+    every world_summary job was unconditionally secrets-included; treated
+    as GM-tier here (so a GM's pre-existing cached digest isn't silently
+    lost by this change) and never matched for an assistant, since a blank
+    row might contain exactly the secrets this scoping exists to hide."""
+    if is_gm:
+        return query.filter(AudioJob.audience.in_(("gm", "")))
+    return query.filter(AudioJob.audience == "players")
 
 
 @router.get("/world-summary")
 def api_world_summary_get(request: Request, db=Depends(get_db), active_world: str = Cookie(None)):
     """Latest world-summary state: {recap, generated_at} from the newest
     done job, {"pending": true} while one runs, {"recap": ""} when there
-    has never been one (the card then shows a Generate button)."""
+    has never been one (the card then shows a Generate button).
+
+    Scoped to the caller's own audience tier (see
+    _world_summary_audience_filter) — without this, whichever tier
+    happened to generate the most recent digest for this world would be
+    served to EVERY viewer regardless of who's actually looking, handing a
+    GM's secrets-included summary straight to an assistant."""
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
-    job = (
-        db.query(AudioJob)
-        .filter(AudioJob.world_id == world.id, AudioJob.purpose == "world_summary")
-        .order_by(AudioJob.id.desc())
-        .first()
-    )
+    user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
+    job = _world_summary_audience_filter(
+        db.query(AudioJob).filter(AudioJob.world_id == world.id, AudioJob.purpose == "world_summary"),
+        is_gm,
+    ).order_by(AudioJob.id.desc()).first()
     if not job:
         return {"recap": ""}
     if job.status in ("pending", "transcribing", "summarizing"):
@@ -633,20 +670,26 @@ def api_world_summary_get(request: Request, db=Depends(get_db), active_world: st
 
 @router.delete("/world-summary")
 def api_world_summary_clear(request: Request, db=Depends(get_db), active_world: str = Cookie(None)):
-    """Deletes every world_summary AudioJob row for the active world — a
+    """Deletes every world_summary AudioJob row for the active world IN THE
+    CALLER'S OWN AUDIENCE TIER (see _world_summary_audience_filter) — a
     real reset, not just clearing the card's display: the next GET has
     nothing to serve (back to "no summary yet", same as a world that never
     generated one) until a fresh Generate/Regenerate click. Deletes every
-    row, not just the newest done one, so a stale pending/error row left
-    behind by an earlier crash can't resurface after the visible one is
-    cleared."""
+    matching row, not just the newest done one, so a stale pending/error
+    row left behind by an earlier crash can't resurface after the visible
+    one is cleared. Scoped rather than deleting every row for the world so
+    an assistant clicking Clear can't also wipe out the GM's own
+    separately-cached, secrets-included digest."""
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
-    db.query(AudioJob).filter(
-        AudioJob.world_id == world.id, AudioJob.purpose == "world_summary",
-    ).delete()
+    user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
+    _world_summary_audience_filter(
+        db.query(AudioJob).filter(AudioJob.world_id == world.id, AudioJob.purpose == "world_summary"),
+        is_gm,
+    ).delete(synchronize_session=False)
     db.commit()
     return {"ok": True}
 

@@ -46,6 +46,54 @@ def test_add_builtin_race_creates_entity_in_active_world(client, seed):
         db.close()
 
 
+def test_add_builtin_race_response_carries_entity_card_data(client, seed):
+    """The response's `entity` payload is what races.html's own addBuiltin()
+    JS uses to insert a card into the tier grid without a page reload — see
+    the route's own docstring for why {"ok": true} alone isn't enough."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.post("/races/add-builtin", json={"slug": "dwarf", "tier": "standard"})
+    assert r.status_code == 200
+    data = r.json()["entity"]
+    assert "dwarf" in data["name"].lower()
+    assert data["tier"] == "standard"
+    assert isinstance(data["id"], int)
+    assert "body_html" in data
+
+    # Re-adding the same (already-added) race returns the SAME entity's
+    # data rather than erroring or creating a duplicate.
+    r2 = client.post("/races/add-builtin", json={"slug": "dwarf", "tier": "standard"})
+    assert r2.json()["entity"]["id"] == data["id"]
+
+
+def test_races_page_race_card_links_to_generic_entity_edit(client, seed):
+    """A race becomes a normal Entity(kind="race") row — the catalog page
+    itself must offer a way to edit it, not just view (the read-only modal)
+    or delete it. Reuses the generic /entity/{id}/edit form rather than a
+    race-specific one, same as every other entity kind."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/races/add-builtin", json={"slug": "dwarf", "tier": "standard"})
+
+    db = SessionLocal()
+    try:
+        ent = db.query(Entity).filter(
+            Entity.world_id == seed.world_a.id, Entity.kind == "race", Entity.name.ilike("%dwarf%")
+        ).first()
+        race_id = ent.id
+    finally:
+        db.close()
+
+    r = client.get("/races")
+    assert r.status_code == 200
+    assert f"/entity/{race_id}/edit" in r.text
+
+    # And the generic edit route actually works for a race entity.
+    r2 = client.get(f"/entity/{race_id}/edit")
+    assert r2.status_code == 200
+
+
 def test_add_builtin_race_is_gm_only(client, seed):
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)

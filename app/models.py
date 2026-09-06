@@ -1004,12 +1004,18 @@ class AudioJob(Base):
     # database._migrate's _heal_table_from_model pass, same as every other
     # late-added audio_jobs column.
     result_json = Column(Text, default="")
-    # purpose="session_log_recap" only: which fact-visibility filter produced
-    # this job's result_json — "gm" (every fact, secret or not) or "players"
-    # (only visible_to_players, same boundary the synchronous session-log
-    # recap route applied per-caller). The recap genuinely differs between
-    # the two, so the (session, audience) pair — not the session alone — is
-    # what a fresh/stale/in-flight job lookup keys on. Persisted (not just a
+    # purpose="session_log_recap" and purpose="world_summary": which
+    # visibility filter produced this job's result — "gm" (every
+    # entity/quest/fact, secret or not) or "players" (only
+    # visible_to_players, same boundary a non-GM caller gets everywhere
+    # else in this app — see _entity_view_gate's `not (user and
+    # user.is_gm)` check). Both purposes are shown to GM + GM-Assistant,
+    # and an assistant is treated like a player for SEEING secrets, so
+    # this is what keeps a GM's secrets-included artifact and an
+    # assistant's filtered one as separate cached rows instead of
+    # whichever was generated most recently being served to everyone (see
+    # app.audio_jobs._world_summary_state_text and
+    # app.routers.sessions._session_log_recap_q). Persisted (not just a
     # call-time argument) so the polling route can find the right job back
     # after a reload, same as game_session_id/model above. Empty for every
     # other purpose. Existing installs get the column via database._migrate's

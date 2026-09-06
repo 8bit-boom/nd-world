@@ -530,6 +530,7 @@ def create_world_summary_job(
     world_id: int, *, created_by_user_id: Optional[int] = None,
     model: str = "", think: bool = True, use_rag: bool = False,
     rag_entity_limit: Optional[int] = None, rag_notes_limit: Optional[int] = None,
+    audience: str = "gm",
 ) -> int:
     """Generate the dashboard's AI world summary as a durable background
     job — the campaign-state digest is assembled at run time (see
@@ -548,7 +549,20 @@ def create_world_summary_job(
     handling). `use_rag`/rag_*_limit are optional lore-grounding, same
     shape as the ai_assist purpose's own — see _run_job's world_summary
     branch for how the RAG query is built (the assembled state_text itself,
-    since a world summary has no separate "content" input to query on)."""
+    since a world summary has no separate "content" input to query on).
+
+    `audience` ("gm" or "players") reuses AudioJob.audience — the exact
+    same column/semantics session_log_recap uses to keep a GM's
+    secrets-included recap and a non-GM's filtered one as separate cached
+    artifacts. The widget is shown to GM + GM-Assistant (see app/routers/
+    ai.py's _require_can_edit), but an assistant is treated like a player
+    for SEEING GM-only secrets everywhere else in this app (e.g.
+    _entity_view_gate's `not (user and user.is_gm)` check) — so "gm" here
+    means the real GM specifically, and "players" covers an assistant
+    generating/viewing their own filtered digest. See
+    _world_summary_state_text's own docstring for what gets excluded."""
+    if audience not in ("gm", "players"):
+        raise ValueError(f"audience must be 'gm' or 'players', got {audience!r}")
     db = SessionLocal()
     try:
         job = AudioJob(
@@ -557,6 +571,7 @@ def create_world_summary_job(
             model=model or (_ai_module.get_defaults().get("assist", "") or None),
             think=think, use_rag=use_rag,
             rag_entity_limit=rag_entity_limit, rag_notes_limit=rag_notes_limit,
+            audience=audience,
             audio_path="", delete_after=False,
         )
         db.add(job)
@@ -769,40 +784,39 @@ _SUMMARY_FACT_LIMIT = 40
 _SUMMARY_SESSION_LIMIT = 10
 
 
-def _world_summary_state_text(world_id: int) -> str:
+def _world_summary_state_text(world_id: int, audience: str = "gm") -> str:
     """The deterministic campaign-state digest behind the dashboard's world
     summary — assembled fresh at run time (never cached on the row) so a
     Regenerate after play always reflects the world as it stands. One
     line per entity/quest/fact/session, ordered so the newest material
-    lands last (recency reads better to a model than alphabetization);
-    GM-facing by design (the card is GM/assistant-only), so no visibility
-    filtering — secrets included, exactly like the GM's own dashboard."""
+    lands last (recency reads better to a model than alphabetization).
+
+    The widget is shown to GM + GM-Assistant, but an assistant is treated
+    like a player for SEEING GM-only secrets everywhere else in this app
+    (_entity_view_gate's own `not (user and user.is_gm)` check is the
+    canonical example) — so `audience="gm"` includes everything, same as
+    before this parameter existed, while `audience="players"` (an
+    assistant's own digest) excludes any Entity/Quest/Fact explicitly
+    marked visible_to_players=False, matching that same cut. GameSession
+    rows have no per-row visibility flag anywhere in this app (a session's
+    `summary` is GM planning prose with no secrecy toggle to filter by),
+    so they're included for both audiences unchanged — not a gap specific
+    to this function."""
     db = SessionLocal()
     try:
         world = db.get(World, world_id)
         if not world:
             return ""
-        entities = (
-            db.query(Entity)
-            .filter(Entity.world_id == world_id)
-            .order_by(Entity.updated_at.desc())
-            .limit(_SUMMARY_ENTITY_LIMIT)
-            .all()
-        )
-        quests = (
-            db.query(Quest)
-            .filter(Quest.world_id == world_id)
-            .order_by(Quest.updated_at.desc())
-            .limit(_SUMMARY_QUEST_LIMIT)
-            .all()
-        )
-        facts = (
-            db.query(Fact)
-            .filter(Fact.world_id == world_id)
-            .order_by(Fact.created_at.desc())
-            .limit(_SUMMARY_FACT_LIMIT)
-            .all()
-        )
+        entity_q = db.query(Entity).filter(Entity.world_id == world_id)
+        quest_q = db.query(Quest).filter(Quest.world_id == world_id)
+        fact_q = db.query(Fact).filter(Fact.world_id == world_id)
+        if audience != "gm":
+            entity_q = entity_q.filter(Entity.visible_to_players.isnot(False))
+            quest_q = quest_q.filter(Quest.visible_to_players.isnot(False))
+            fact_q = fact_q.filter(Fact.visible_to_players.isnot(False))
+        entities = entity_q.order_by(Entity.updated_at.desc()).limit(_SUMMARY_ENTITY_LIMIT).all()
+        quests = quest_q.order_by(Quest.updated_at.desc()).limit(_SUMMARY_QUEST_LIMIT).all()
+        facts = fact_q.order_by(Fact.created_at.desc()).limit(_SUMMARY_FACT_LIMIT).all()
         sessions = (
             db.query(GameSession)
             .filter(GameSession.world_id == world_id)
@@ -1735,7 +1749,7 @@ async def _run_job(job_id: int) -> None:
             # recap purposes; the polling route caches on this done row
             # until a Regenerate click.
             _set(status="summarizing")
-            state_text = _world_summary_state_text(world_id)
+            state_text = _world_summary_state_text(world_id, audience)
             if not state_text.strip():
                 _set(status="error", error="This world has no content to summarize yet.",
                      finished_at=datetime.utcnow(), checkpoint_json="")

@@ -36,12 +36,17 @@
 .race-card-name { font-size:.95rem; font-weight:700; color:var(--text); margin-bottom:.15rem; }
 .race-card-summary { font-size:.75rem; color:var(--text-dim); line-height:1.5;
   display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
-.race-card-del {
-  position:absolute; top:.35rem; right:.4rem; background:rgba(0,0,0,.7);
-  border:none; border-radius:3px; color:#666; font-size:.72rem; cursor:pointer;
-  padding:.15rem .35rem; line-height:1; opacity:0; transition:opacity .12s,color .12s;
+.race-card-actions {
+  position:absolute; top:.35rem; right:.4rem; display:flex; gap:.25rem;
+  opacity:0; transition:opacity .12s;
 }
-.race-card:hover .race-card-del { opacity:1; }
+.race-card:hover .race-card-actions { opacity:1; }
+.race-card-edit, .race-card-del {
+  background:rgba(0,0,0,.7); border:none; border-radius:3px; color:#999;
+  font-size:.72rem; cursor:pointer; padding:.15rem .35rem; line-height:1.4;
+  text-decoration:none; transition:color .12s;
+}
+.race-card-edit:hover { color:var(--neon); }
 .race-card-del:hover { color:#c44; }
 
 /* Available builtin panel */
@@ -142,9 +147,12 @@
       <div class="race-card-summary">{{ e.summary }}</div>
       {% endif %}
     </div>
-    <form action="/races/{{ e.id }}/delete" method="post" onsubmit="event.stopPropagation();return confirm('Remove {{ e.name }} from this world?')">
-      <button type="submit" class="race-card-del" onclick="event.stopPropagation()">✕</button>
-    </form>
+    <div class="race-card-actions">
+      <a href="{{ ('/entity/' ~ e.id ~ '/edit')|wq }}" class="race-card-edit" title="Edit {{ e.name }}" onclick="event.stopPropagation()">✎</a>
+      <form action="/races/{{ e.id }}/delete" method="post" onsubmit="event.stopPropagation();return confirm('Remove {{ e.name }} from this world?')">
+        <button type="submit" class="race-card-del" onclick="event.stopPropagation()">✕</button>
+      </form>
+    </div>
   </div>
   {% else %}
   <p style="color:var(--text-dim);padding:.5rem 0;font-size:.85rem">No {{ tier }} races yet.</p>
@@ -191,6 +199,7 @@
 
 <!-- Entity race data for modal (from DB) -->
 <script>
+const WORLD_SLUG = {{ world.slug | tojson }};
 const ENTITY_RACES = {
   {% for e in world_races %}
   {{ e.id }}: {
@@ -215,6 +224,7 @@ const ENTITY_RACES = {
       <div id="race-modal-meta">
         <h2 id="race-modal-title">—</h2>
         <div id="race-modal-tier"></div>
+        <a id="race-modal-edit" href="#" style="display:none;font-size:.78rem;color:var(--text-dim);border:1px solid var(--border);border-radius:3px;padding:.2rem .5rem;width:fit-content;text-decoration:none;margin-top:.3rem">✎ Edit</a>
       </div>
     </div>
     <div id="race-modal-body" class="prose"></div>
@@ -244,6 +254,9 @@ function openEntityRace(id) {
   document.getElementById('race-modal-tier').innerHTML =
     `<span class="tier-badge ${r.tier}">${r.tier}</span>`;
   document.getElementById('race-modal-body').innerHTML = r.body_html || '<p style="color:var(--text-dim)">No description.</p>';
+  const editLink = document.getElementById('race-modal-edit');
+  editLink.href = `/entity/${id}/edit?w=${encodeURIComponent(WORLD_SLUG)}`;
+  editLink.style.display = '';
   document.getElementById('race-modal').classList.add('open');
   document.body.style.overflow = 'hidden';
 }
@@ -262,6 +275,46 @@ function toggleAvailable() {
   arr.textContent = open ? '▸' : '▾';
 }
 
+function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+
+// Inserts a card for a just-added race into its tier's grid and registers
+// it in ENTITY_RACES/bumps the tab badge — without this, a built-in race
+// added via the AJAX "+ Add" button (unlike "+ Add all", which does a
+// full-page redirect) stayed invisible in the Standard/Advanced/Exceptional
+// tabs until a manual reload, even though it was already saved.
+function _addRaceCardToGrid(entity) {
+  ENTITY_RACES[entity.id] = {
+    name: entity.name, tier: entity.tier, image_url: entity.image_url, body_html: entity.body_html,
+  };
+  const grid = document.getElementById('tier-' + entity.tier);
+  if (!grid) return;
+  const emptyNote = grid.querySelector('p');
+  if (emptyNote) emptyNote.remove();
+  const card = document.createElement('div');
+  card.className = 'race-card';
+  card.setAttribute('onclick', `openEntityRace(${entity.id})`);
+  const img = entity.image_url
+    ? `<img class="race-card-img" src="${esc(entity.image_url)}" alt="${esc(entity.name)}" loading="lazy"/>`
+    : `<div class="race-card-placeholder">🧬</div>`;
+  const summary = entity.summary ? `<div class="race-card-summary">${esc(entity.summary)}</div>` : '';
+  card.innerHTML = `
+    ${img}
+    <div class="race-card-body">
+      <div class="race-card-name">${esc(entity.name)}</div>
+      ${summary}
+    </div>
+    <div class="race-card-actions">
+      <a href="/entity/${entity.id}/edit?w=${encodeURIComponent(WORLD_SLUG)}" class="race-card-edit" title="Edit ${esc(entity.name)}" onclick="event.stopPropagation()">✎</a>
+      <form action="/races/${entity.id}/delete" method="post" onsubmit="event.stopPropagation();return confirm('Remove ${esc(entity.name)} from this world?')">
+        <button type="submit" class="race-card-del" onclick="event.stopPropagation()">✕</button>
+      </form>
+    </div>
+  `;
+  grid.appendChild(card);
+  const badge = document.querySelector(`#tab-${entity.tier} .tier-badge`);
+  if (badge) badge.textContent = String((parseInt(badge.textContent, 10) || 0) + 1);
+}
+
 async function addBuiltin(slug, tier, btn) {
   btn.disabled = true;
   btn.textContent = '…';
@@ -272,9 +325,11 @@ async function addBuiltin(slug, tier, btn) {
       body: JSON.stringify({slug, tier}),
     });
     if (r.ok) {
+      const data = await r.json();
       const card = document.getElementById('avail-' + slug + '-' + tier);
       if (card) { card.style.opacity = '.35'; card.style.pointerEvents = 'none'; }
       btn.textContent = '✓';
+      if (data.entity) _addRaceCardToGrid(data.entity);
     } else {
       btn.textContent = '!'; btn.disabled = false;
     }

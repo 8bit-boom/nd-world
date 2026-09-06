@@ -178,6 +178,14 @@ async def races_new(
 
 @router.post("/races/add-builtin")
 async def races_add_builtin(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Adds one built-in race into the active world. Returns the resulting
+    Entity's card data ({id, name, tier, image_url, summary, body_html}) —
+    not just {"ok": True} — so the page's own AJAX handler (addBuiltin in
+    races.html) can insert a matching card into the world's tier grid and
+    update ENTITY_RACES/the tab badge count itself, instead of leaving the
+    new race invisible until a manual reload (the "Add all" button's own
+    full-page redirect doesn't have this problem — only this one-at-a-time
+    AJAX path did)."""
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
@@ -188,17 +196,26 @@ async def races_add_builtin(request: Request, db: Session = Depends(get_db), act
     race = next((r for r in builtin if r["slug"] == slug and r["tier"] == tier), None)
     if not race:
         raise HTTPException(404, "Built-in race not found")
-    exists = db.query(Entity).filter(
+    entity = db.query(Entity).filter(
         Entity.world_id == world.id, Entity.kind == "race", Entity.name == race["name"]
     ).first()
-    if not exists:
-        db.add(Entity(
+    if not entity:
+        entity = Entity(
             world_id=world.id, kind="race", subtype=race["tier"],
             name=race["name"], summary=race["summary"] or None,
             body=race["raw"] or None, image_url=race["image_url"] or None,
-        ))
+        )
+        db.add(entity)
         db.commit()
-    return JSONResponse({"ok": True})
+        db.refresh(entity)
+    return JSONResponse({
+        "ok": True,
+        "entity": {
+            "id": entity.id, "name": entity.name, "tier": entity.subtype or "standard",
+            "image_url": entity.image_url or "", "summary": entity.summary or "",
+            "body_html": render_md(entity.body) if entity.body else "",
+        },
+    })
 
 
 @router.post("/races/add-all-builtin")

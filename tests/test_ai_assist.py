@@ -18,7 +18,7 @@ from app import ai_assist as assist_module
 from app import audio_jobs as audio_jobs_module
 from app.auth import hash_password as _auth_hash
 from app.database import SessionLocal
-from app.models import AudioJob, Entity, User, WorldMembership
+from app.models import AudioJob, Entity, Fact, Quest, User, WorldMembership
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -642,3 +642,204 @@ def test_world_summary_clear_requires_can_edit(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.delete("/api/ai/world-summary")
     assert r.status_code == 403
+
+
+# ── Audience scoping (GM-only secrets must not reach a GM-Assistant) ───────
+#
+# The widget is shown to GM + GM-Assistant (can_edit), but an assistant is
+# treated like a player for SEEING GM-only secrets everywhere else in this
+# app (_entity_view_gate's own `not (user and user.is_gm)` check) — these
+# tests confirm the world summary follows that same boundary instead of
+# baking every secret into whatever digest happens to be cached most
+# recently, regardless of who's actually looking at the card.
+
+def _login_assistant(client, seed):
+    email, password = _make_assistant(seed)
+    login(client, email, password)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+
+def test_world_summary_state_text_excludes_gm_only_content_for_players_audience():
+    db = SessionLocal()
+    try:
+        from app.models import World
+        world = World(name="Secrets World", slug="secrets-world")
+        db.add(world)
+        db.commit()
+        db.refresh(world)
+        db.add(Entity(world_id=world.id, kind="character", name="Public Ally", summary="a friend",
+                       visible_to_players=True))
+        db.add(Entity(world_id=world.id, kind="character", name="Hidden Villain", summary="the true traitor",
+                       visible_to_players=False))
+        db.add(Quest(world_id=world.id, title="Open Quest", summary="known to all", visible_to_players=True))
+        db.add(Quest(world_id=world.id, title="Secret Plot", summary="the GM's own plan", visible_to_players=False))
+        db.add(Fact(world_id=world.id, content="A public fact", visible_to_players=True))
+        db.add(Fact(world_id=world.id, content="A GM-only secret fact", visible_to_players=False))
+        db.commit()
+        world_id = world.id
+    finally:
+        db.close()
+
+    gm_text = audio_jobs_module._world_summary_state_text(world_id, "gm")
+    for needle in ("Public Ally", "Hidden Villain", "Open Quest", "Secret Plot", "A public fact", "A GM-only secret fact"):
+        assert needle in gm_text
+
+    players_text = audio_jobs_module._world_summary_state_text(world_id, "players")
+    assert "Public Ally" in players_text and "Hidden Villain" not in players_text
+    assert "Open Quest" in players_text and "Secret Plot" not in players_text
+    assert "A public fact" in players_text and "A GM-only secret fact" not in players_text
+
+
+def test_world_summary_create_uses_gm_audience_for_a_real_gm(client, seed, monkeypatch):
+    captured = {}
+
+    def fake_create(world_id, **kwargs):
+        captured.update(kwargs)
+        db = SessionLocal()
+        try:
+            job = AudioJob(world_id=world_id, purpose="world_summary", filename="World summary",
+                            status="done", recap="ok", audio_path="")
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+            return job.id
+        finally:
+            db.close()
+
+    monkeypatch.setattr(audio_jobs_module, "create_world_summary_job", fake_create)
+    _login_gm(client, seed)
+    r = client.post("/api/ai/world-summary")
+    assert r.status_code == 200
+    assert captured["audience"] == "gm"
+
+
+def test_world_summary_create_uses_players_audience_and_disables_rag_for_an_assistant(client, seed, monkeypatch):
+    captured = {}
+
+    def fake_create(world_id, **kwargs):
+        captured.update(kwargs)
+        db = SessionLocal()
+        try:
+            job = AudioJob(world_id=world_id, purpose="world_summary", filename="World summary",
+                            status="done", recap="ok", audio_path="")
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+            return job.id
+        finally:
+            db.close()
+
+    monkeypatch.setattr(audio_jobs_module, "create_world_summary_job", fake_create)
+    _login_assistant(client, seed)
+    r = client.post("/api/ai/world-summary", json={"use_rag": True, "rag_entity_limit": 20})
+    assert r.status_code == 200
+    assert captured["audience"] == "players"
+    # RAG is force-disabled server-side for a non-GM caller — _build_rag_context
+    # has no visibility filter of its own, so letting an assistant's RAG
+    # through would leak GM-only lore straight back into the digest the
+    # audience-scoped state_text just excluded it from.
+    assert captured["use_rag"] is False
+
+
+def test_world_summary_get_never_serves_a_gms_secrets_included_digest_to_an_assistant(client, seed, monkeypatch):
+    captured_content = []
+
+    async def fake_run_assist(op, **kwargs):
+        content = kwargs.get("content", "")
+        captured_content.append(content)
+        return {"op": op, "mode": "text", "text": "Digest: " + content, "model": "m"}
+
+    monkeypatch.setattr(audio_jobs_module._ai_assist, "run_assist", fake_run_assist)
+    db = SessionLocal()
+    try:
+        db.add(Entity(world_id=seed.world_a.id, kind="character", name="Hidden Villain",
+                       summary="the true traitor", visible_to_players=False))
+        db.commit()
+    finally:
+        db.close()
+
+    _login_gm(client, seed)
+    r = client.post("/api/ai/world-summary")
+    assert r.status_code == 200
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not client.get("/api/ai/world-summary").json().get("pending"):
+            break
+        time.sleep(0.02)
+    gm_recap = client.get("/api/ai/world-summary").json()
+    assert "Hidden Villain" in gm_recap["recap"]
+
+    # An assistant loading the same card must NOT see the GM's cached,
+    # secrets-included digest — their own tier has no summary yet.
+    _login_assistant(client, seed)
+    assert client.get("/api/ai/world-summary").json() == {"recap": ""}
+
+    # Generating one as the assistant produces a separate artifact that
+    # never saw the GM-only entity in the first place.
+    r = client.post("/api/ai/world-summary")
+    assert r.status_code == 200
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not client.get("/api/ai/world-summary").json().get("pending"):
+            break
+        time.sleep(0.02)
+    assistant_recap = client.get("/api/ai/world-summary").json()
+    assert "Hidden Villain" not in assistant_recap["recap"]
+
+    # And the GM's own cached digest is untouched by the assistant's run.
+    _login_gm(client, seed)
+    assert client.get("/api/ai/world-summary").json()["recap"] == gm_recap["recap"]
+
+
+def test_world_summary_clear_is_scoped_to_callers_own_audience(client, seed, monkeypatch):
+    async def fake_run_assist(op, **kwargs):
+        return {"op": op, "mode": "text", "text": "ok", "model": "m"}
+
+    monkeypatch.setattr(audio_jobs_module._ai_assist, "run_assist", fake_run_assist)
+    db = SessionLocal()
+    try:
+        db.add(Entity(world_id=seed.world_a.id, kind="note", name="Lore", body="stuff", visible_to_players=True))
+        db.commit()
+    finally:
+        db.close()
+
+    _login_gm(client, seed)
+    client.post("/api/ai/world-summary")
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not client.get("/api/ai/world-summary").json().get("pending"):
+            break
+        time.sleep(0.02)
+    assert client.get("/api/ai/world-summary").json()["recap"] == "ok"
+
+    # An assistant clicking Clear (on a card that has no summary of their
+    # own yet) must not be able to wipe the GM's separately-cached digest.
+    _login_assistant(client, seed)
+    r = client.delete("/api/ai/world-summary")
+    assert r.status_code == 200
+
+    _login_gm(client, seed)
+    assert client.get("/api/ai/world-summary").json()["recap"] == "ok"
+
+
+def test_world_summary_legacy_blank_audience_row_reads_as_gm_not_assistant(client, seed):
+    """A row created before this audience scoping existed has
+    AudioJob.audience == "" (the column's own default) — it represents the
+    old unconditional "secrets included" behavior, so it must still surface
+    for the GM (no silently-lost cached digest from this change) but must
+    NEVER be served to an assistant, since it might contain exactly the
+    secrets this scoping exists to hide."""
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=seed.world_a.id, purpose="world_summary", filename="World summary",
+                        status="done", recap="a legacy secrets-included digest", audio_path="")
+        db.add(job)
+        db.commit()
+    finally:
+        db.close()
+
+    _login_gm(client, seed)
+    assert client.get("/api/ai/world-summary").json()["recap"] == "a legacy secrets-included digest"
+
+    _login_assistant(client, seed)
+    assert client.get("/api/ai/world-summary").json() == {"recap": ""}
