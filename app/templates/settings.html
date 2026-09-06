@@ -667,24 +667,63 @@ function ndCopyRestartCmd() {
     ).join('');
   }
 
+  // Reads the actual on-page field this recommendation key would write to
+  // (by its "name" attribute) so the preview can show what's THERE right
+  // now next to what "Apply" would change it to — every per-request and
+  // server-tuning field shares the same id/label pairing convention
+  // ("ollama-..."/"ollama-srv-..." ids each with their own <label for>),
+  // so this one lookup covers both groups without a separate mapping.
+  function fieldPreview(name) {
+    const field = document.querySelector(`[name="${name}"]`);
+    if (!field) return null;
+    const label = field.id ? document.querySelector(`label[for="${field.id}"]`) : null;
+    let current;
+    if (field.value !== '') {
+      current = field.tagName === 'SELECT'
+        ? (field.options[field.selectedIndex] ? field.options[field.selectedIndex].textContent.trim() : field.value)
+        : field.value;
+    } else {
+      current = field.tagName === 'SELECT' ? '— default —' : (field.placeholder || '— unset —');
+    }
+    return { label: label ? label.textContent.trim() : name, current: String(current) };
+  }
+
   function renderRecommendation() {
     const model = modelSelect.value;
     const entry = currentModels.find(m => m.model === model);
     if (!entry || !entry.recommendation) { recEl.innerHTML = ''; applyBtn.style.display = 'none'; return; }
     const rec = entry.recommendation;
-    const chips = (obj, label) => {
+    // Diff preview — shows what's on the page NOW next to what "Apply"
+    // would set it to, so a GM can see the effect before committing to it
+    // instead of finding out only after clicking Apply (and Save, for the
+    // server-tuning half).
+    const diffSection = (obj, label, nameFor) => {
       const keys = Object.keys(obj || {});
       if (!keys.length) return '';
-      return `<div style="margin-top:.3rem"><strong style="font-size:.76rem;color:var(--text-dim)">${label}:</strong> ` +
-        keys.map(k => `<code style="background:var(--bg3);padding:.15rem .4rem;border-radius:3px;margin-right:.3rem;font-size:.76rem">${esc(k)}=${esc(obj[k])}</code>`).join('') +
-        `</div>`;
+      const rows = keys.map((k, i) => {
+        const name = nameFor(k);
+        const preview = name ? fieldPreview(name) : null;
+        const fieldLabel = preview ? preview.label : k;
+        const recommended = String(obj[k]);
+        const changed = !preview || preview.current !== recommended;
+        const border = i < keys.length - 1 ? 'border-bottom:1px dashed var(--border);' : '';
+        return `<div style="display:flex;justify-content:space-between;gap:.6rem;font-size:.76rem;padding:.2rem 0;${border}">` +
+          `<span style="color:var(--text-dim)">${esc(fieldLabel)}</span>` +
+          `<span>${changed && preview ? `<code style="opacity:.6;text-decoration:line-through">${esc(preview.current)}</code> → ` : ''}` +
+          `<code style="background:var(--bg3);padding:.1rem .35rem;border-radius:3px">${esc(recommended)}</code></span>` +
+          `</div>`;
+      }).join('');
+      return `<div style="margin-top:.4rem"><strong style="font-size:.76rem;color:var(--text-dim)">${label} — preview:</strong>${rows}</div>`;
     };
     recEl.innerHTML =
       `<div style="font-size:.8rem">Fit: <strong>${esc(rec.fit)}</strong>` +
       (rec.params_b ? ` — ~${rec.params_b}B params` : '') +
       (rec.weights_mb ? `, ${fmtMb(rec.weights_mb)} on disk` : '') + `</div>` +
-      chips(rec.per_request, 'Per-request') +
-      chips(rec.server, 'Server (needs restart)') +
+      diffSection(rec.per_request, 'Per-request', k => `ollama_${k}`) +
+      diffSection(rec.server, 'Server (needs restart)', k => {
+        const suffix = OLLAMA_SRV_SUFFIX[k];
+        return suffix ? `${SRV_FORM_PREFIX}${suffix}` : null;
+      }) +
       (rec.notes && rec.notes.length ? `<div style="font-size:.76rem;color:var(--text-dim);font-style:italic;margin-top:.3rem">${rec.notes.map(esc).join('<br>')}</div>` : '');
     const hasAny = Object.keys(rec.per_request || {}).length || Object.keys(rec.server || {}).length;
     applyBtn.style.display = hasAny ? '' : 'none';
