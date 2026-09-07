@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Calendar Agenda — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div style="max-width:900px;margin:0 auto;padding:1.5rem 1rem">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
+    <div>
+      <h1 style="color:var(--neon);font-size:1.3rem;margin:0">📋 {{ era_name }} — Agenda</h1>
+      <div style="color:var(--text-dim);font-size:.82rem;margin-top:.2rem">Every day with an event or icon pinned to it, across the whole calendar.</div>
+    </div>
+    <a href="{{ '/calendar'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Back to Calendar</a>
+  </div>
+
+  {% if truncated %}
+  <div style="background:#3a2a10;border:1px solid #a86;border-radius:6px;padding:.6rem 1rem;margin-bottom:1rem;font-size:.82rem;color:#fc8">
+    ⚠ This world has more days with content than can be listed at once — showing the earliest {{ rows|length }}.
+  </div>
+  {% endif %}
+
+  <div class="form-group" style="max-width:320px">
+    <input id="agenda-filter" placeholder="Filter by title, note, or link…" style="width:100%"/>
+  </div>
+
+  {% if rows %}
+  <div style="overflow-x:auto">
+    <table class="stat-table" id="agenda-table">
+      <thead><tr>
+        <th class="col-name">Date</th>
+        <th>Events</th>
+        <th>Icons</th>
+      </tr></thead>
+      <tbody>
+        {% for row in rows %}
+        <tr data-search="{{ row.month_name }} {{ row.dom }} {{ row.year }} {% for e in row.events %}{{ e.title }} {{ e.notes }} {{ e.entity_label }} {{ e.session_label }} {{ e.character_label }} {{ e.party_label }} {% endfor %}{% for ic in row.icons %}{{ ic.label }} {% endfor %}">
+          <td class="col-name">
+            <a href="{{ ('/calendar?year=' + row.year|string + '&month=' + row.month_idx|string + '&day=' + row.day_num|string)|wq }}"
+               style="color:var(--neon);font-weight:bold;text-decoration:none">{{ row.month_name }} {{ row.dom }}, Year {{ row.year }}</a>
+          </td>
+          <td>
+            {% if row.events %}
+            <div style="display:flex;flex-direction:column;gap:.25rem">
+              {% for e in row.events %}
+              <div style="font-size:.82rem">
+                <span style="border-left:3px solid {{ e.color }};padding-left:.4rem">{{ e.title }}</span>
+                {% if e.notes %}<span style="color:var(--text-dim)"> — {{ e.notes }}</span>{% endif %}
+                {% if e.entity_label %}<span style="color:var(--text-dim);font-size:.76rem"> · 🔗 {{ e.entity_label }}</span>{% endif %}
+                {% if e.session_label %}<span style="color:var(--text-dim);font-size:.76rem"> · 🎲 {{ e.session_label }}</span>{% endif %}
+                {% if e.character_label %}<span style="color:var(--text-dim);font-size:.76rem"> · 🧑 {{ e.character_label }}</span>{% endif %}
+                {% if e.party_label %}<span style="color:var(--text-dim);font-size:.76rem"> · 👥 {{ e.party_label }}</span>{% endif %}
+              </div>
+              {% endfor %}
+            </div>
+            {% else %}<span style="color:var(--text-dim);font-style:italic">—</span>{% endif %}
+          </td>
+          <td>
+            {% if row.icons %}
+            <div style="display:flex;flex-wrap:wrap;gap:.2rem">
+              {% for ic in row.icons %}
+              <img src="{{ ic.image_url }}" title="{{ ic.label }}" alt="{{ ic.label }}" style="width:20px;height:20px;object-fit:cover;border-radius:3px"/>
+              {% endfor %}
+            </div>
+            {% else %}<span style="color:var(--text-dim);font-style:italic">—</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p style="color:var(--text-dim);font-style:italic">No days with events or icons yet — pin something on the <a href="{{ '/calendar'|wq }}" style="color:var(--neon)">Calendar</a> to see it here.</p>
+  {% endif %}
+</div>
+<script>
+(function () {
+  const input = document.getElementById('agenda-filter');
+  if (!input) return;
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    document.querySelectorAll('#agenda-table tbody tr').forEach(row => {
+      row.style.display = row.dataset.search.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+})();
+</script>
+{% endblock %}

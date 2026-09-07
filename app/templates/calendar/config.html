@@ -27,8 +27,16 @@
       <input name="era_name" value="{{ config.era_name or '' }}" placeholder="e.g. Year 1, Cycle 447"/>
     </div>
     <div class="form-group">
-      <label>Current Day <small>(absolute day count from campaign start)</small></label>
-      <input type="number" name="current_day" value="{{ config.current_day or 1 }}" min="1"/>
+      <label>Current Day <small>(pick a year, month and day — no need to compute an absolute day count)</small></label>
+      <div style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+        <select id="cd-month" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .5rem;font-family:var(--font);font-size:.82rem;border-radius:3px"></select>
+        <input type="number" id="cd-dom" min="1" value="{{ cur_dom }}" title="Day of month"
+               style="width:70px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
+        <span style="color:var(--text-dim);font-size:.82rem">Year</span>
+        <input type="number" id="cd-year" min="1" value="{{ cur_year }}"
+               style="width:90px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
+      </div>
+      <input type="hidden" name="current_day" id="current-day-hidden" value="{{ config.current_day or 1 }}"/>
     </div>
     <div class="form-group">
       <label>Days per Week <small>(how many days the month grid wraps at)</small></label>
@@ -68,6 +76,7 @@
 
 <script>
 let _months = {{ config.months | tojson }};
+let _cdMonthIdx = {{ cur_month_idx }};
 
 function esc(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
@@ -85,6 +94,39 @@ function renderMonths() {
     list.appendChild(row);
   });
   syncMonthsHidden();
+  renderCurrentDayPicker();
+}
+
+// The "Current Day" picker below has its own select (mirrors _months by
+// name, kept in sync whenever a month is added/removed/renamed) instead of
+// asking a GM to compute an absolute day count by hand — see
+// computeAbsoluteDay/syncCurrentDayHidden for the inverse of
+// app.routers.calendar._resolve_date this performs client-side.
+function renderCurrentDayPicker() {
+  if (_cdMonthIdx >= _months.length) _cdMonthIdx = Math.max(0, _months.length - 1);
+  const select = document.getElementById('cd-month');
+  select.innerHTML = _months.map((m, i) =>
+    `<option value="${i}" ${i === _cdMonthIdx ? 'selected' : ''}>${esc(m.name || 'Month ' + (i + 1))}</option>`
+  ).join('');
+  const domInput = document.getElementById('cd-dom');
+  const maxDays = (_months[_cdMonthIdx] && _months[_cdMonthIdx].days) || 30;
+  domInput.max = maxDays;
+  if (parseInt(domInput.value, 10) > maxDays) domInput.value = maxDays;
+  syncCurrentDayHidden();
+}
+
+function computeAbsoluteDay(year, monthIdx, dom) {
+  const total = _months.reduce((s, m) => s + (m.days || 1), 0) || 1;
+  let start = (Math.max(1, year) - 1) * total + 1;
+  for (let i = 0; i < monthIdx; i++) start += (_months[i].days || 1);
+  return Math.max(1, start + (dom - 1));
+}
+
+function syncCurrentDayHidden() {
+  const monthIdx = parseInt(document.getElementById('cd-month').value, 10) || 0;
+  const dom = parseInt(document.getElementById('cd-dom').value, 10) || 1;
+  const year = parseInt(document.getElementById('cd-year').value, 10) || 1;
+  document.getElementById('current-day-hidden').value = computeAbsoluteDay(year, monthIdx, dom);
 }
 
 function updateMonth(i, key, val) {
@@ -129,7 +171,16 @@ function syncMoonsHidden() {
   document.getElementById('moons-json-input').value = JSON.stringify(_moons);
 }
 
-document.getElementById('cal-config-form').addEventListener('submit', () => { syncMonthsHidden(); syncMoonsHidden(); });
+document.getElementById('cd-month').addEventListener('change', (e) => {
+  _cdMonthIdx = parseInt(e.target.value, 10) || 0;
+  renderCurrentDayPicker();
+});
+document.getElementById('cd-dom').addEventListener('input', syncCurrentDayHidden);
+document.getElementById('cd-year').addEventListener('input', syncCurrentDayHidden);
+
+document.getElementById('cal-config-form').addEventListener('submit', () => {
+  syncMonthsHidden(); syncMoonsHidden(); syncCurrentDayHidden();
+});
 renderMonths();
 renderMoons();
 

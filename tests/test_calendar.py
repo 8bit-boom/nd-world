@@ -33,7 +33,7 @@ from app.database import SessionLocal, engine
 from app.models import CalendarDayIcon, CalendarEvent, Entity, GameSession, Party, PlayerCharacter, WorldCalendar
 from app.routers.calendar import (
     _days_per_week, _DEFAULT_MOON_COLOR, _DEFAULT_MOON_CYCLE_DAYS, _MAX_CALENDAR_PICKER_ROWS,
-    _moon_phase_for_day, DEFAULT_DAYS_PER_WEEK, CALENDAR_PRESETS,
+    _moon_phase_for_day, _resolve_date, DEFAULT_DAYS_PER_WEEK, CALENDAR_PRESETS,
 )
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
@@ -651,6 +651,196 @@ def test_applying_hunt_in_the_moonlight_preset_via_config_save(client, seed):
     page = client.get("/calendar?year=1&month=0").text
     assert "Ashwake" in page
     assert "grid-template-columns:repeat(5, 1fr)" in page
+
+
+# ── Moon phases: crescent/gibbous rendering (lit_offset_pct) ──────────────
+#
+# The swatch itself is two same-size circles (a dark base + a lit disc
+# slid sideways by lit_offset_pct) clipped to a circle — see
+# _moon_phase_for_day's own docstring and .cal-moon/.cal-moon-lit in
+# calendar/month.html. 0% offset = full overlap (full moon), ±100% = no
+# overlap (new moon); sign follows `waxing` (right for waxing, left for
+# waning) so the crescent visibly grows/shrinks on the correct side.
+
+def test_moon_phase_lit_offset_is_zero_at_full_moon():
+    phase = _moon_phase_for_day({"cycle_days": 8, "offset": 0}, day_num=5)
+    assert phase["phase_name"] == "Full Moon"
+    assert phase["lit_offset_pct"] == 0
+
+
+def test_moon_phase_lit_offset_is_positive_percent_when_waxing():
+    phase = _moon_phase_for_day({"cycle_days": 8, "offset": 0}, day_num=3)
+    assert phase["phase_name"] == "First Quarter"
+    assert phase["waxing"] is True
+    assert phase["lit_offset_pct"] == phase["dark_pct"] == 50
+
+
+def test_moon_phase_lit_offset_is_negative_percent_when_waning():
+    phase = _moon_phase_for_day({"cycle_days": 8, "offset": 0}, day_num=7)
+    assert phase["phase_name"] == "Last Quarter"
+    assert phase["waxing"] is False
+    assert phase["lit_offset_pct"] == -phase["dark_pct"] == -50
+
+
+def test_moon_phase_lit_offset_is_full_width_at_new_moon():
+    phase = _moon_phase_for_day({"cycle_days": 8, "offset": 0}, day_num=1)
+    assert phase["phase_name"] == "New Moon"
+    assert abs(phase["lit_offset_pct"]) == 100
+
+
+def test_calendar_month_grid_renders_two_circle_moon_swatch(client, seed):
+    """The swatch markup itself — a .cal-moon wrapper containing a
+    .cal-moon-lit disc positioned via lit_offset_pct, not the old diagonal
+    gradient split."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/calendar/config", data={
+        "era_name": "Year 1", "current_day": "1", "days_per_week": "7", "months_json": "[]",
+        "moons_json": json.dumps([{"name": "Blood Moon", "cycle_days": 8, "offset": 0, "color": "#ff0000"}]),
+    })
+    page = client.get("/calendar?year=1&month=0").text
+    assert 'class="cal-moon"' in page
+    assert 'class="cal-moon-lit"' in page
+    assert "background:#ff0000;transform:translateX(" in page
+
+
+# ── Friendly Year/Month/Day "set current day" (docs request: current-day
+# selection should take a real date, not an absolute day count) ──────────
+
+def test_set_date_computes_absolute_day_from_year_month_dom(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    # Default months: 12 x 30-day months (360-day year). Year 2, month
+    # index 1 (Thawmoon), day-of-month 5 -> 360 (all of year 1) + 30
+    # (Frostwake) + 5 = 395.
+    r = client.post("/api/calendar/set-date", json={"year": 2, "month_idx": 1, "dom": 5})
+    assert r.status_code == 200
+    data = r.json()
+    assert data == {"current_day": 395, "year": 2, "month_idx": 1, "dom": 5}
+    assert _get_config(seed.world_a.id)["current_day"] == 395
+
+
+def test_set_date_round_trips_through_resolve_date(client, seed):
+    """Whatever set-date computes, _resolve_date must read back into the
+    exact same (year, month_idx, dom) triple — the two are meant to be
+    exact inverses of each other."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/calendar/set-date", json={"year": 5, "month_idx": 7, "dom": 12})
+    absolute_day = r.json()["current_day"]
+    config = _get_config(seed.world_a.id)
+    year, month_idx, dom = _resolve_date(config, absolute_day)
+    assert (year, month_idx, dom) == (5, 7, 12)
+
+
+def test_set_date_clamps_out_of_range_month_and_dom(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/calendar/set-date", json={"year": 1, "month_idx": 999, "dom": 999})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["month_idx"] == 11  # clamped to the last of 12 default months
+    assert data["dom"] == 30  # clamped to that month's day count
+
+
+def test_set_date_clamps_nonpositive_year(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/calendar/set-date", json={"year": -5, "month_idx": 0, "dom": 1})
+    assert r.status_code == 200
+    assert r.json()["year"] == 1
+
+
+def test_set_date_is_gm_or_assistant_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/calendar/set-date", json={"year": 1, "month_idx": 0, "dom": 1})
+    assert r.status_code == 403
+
+
+def test_config_page_renders_current_day_ymd_picker(client, seed):
+    """docs request: setting the current day should take a year/month/day,
+    not an absolute day count typed by hand — the config page now exposes
+    a month <select> + day/year number inputs, with a hidden current_day
+    input the page's own JS computes from them before submit."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/api/calendar/set-date", json={"year": 3, "month_idx": 2, "dom": 9})
+    page = client.get("/calendar/config").text
+    assert 'id="cd-month"' in page
+    assert re.search(r'id="cd-dom"[^>]*value="9"', page)
+    assert re.search(r'id="cd-year"[^>]*value="3"', page)
+    assert 'id="current-day-hidden"' in page
+    assert "function computeAbsoluteDay(" in page
+
+
+# ── Agenda view: "days with content" across the whole calendar ───────────
+
+def test_agenda_lists_days_with_events_sorted_and_links_to_month_view(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/api/calendar/events", json={"day": 400, "title": "Far Future Fest"})
+    client.post("/api/calendar/events", json={"day": 5, "title": "Founding Day"})
+
+    page = client.get("/calendar/agenda").text
+    assert "Founding Day" in page
+    assert "Far Future Fest" in page
+    # Chronological, so the earlier day's row appears first in the HTML.
+    assert page.index("Founding Day") < page.index("Far Future Fest")
+    assert "day=5" in page
+    assert "day=400" in page
+
+
+def test_agenda_includes_icon_only_days(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/calendar/days/42/icons", files=_png_file(), data={"label": "Blood Moon Rising"})
+    assert r.status_code == 200
+    page = client.get("/calendar/agenda").text
+    assert "Blood Moon Rising" in page
+    assert "day=42" in page
+
+
+def test_agenda_omits_days_with_no_content(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/api/calendar/events", json={"day": 5, "title": "Founding Day"})
+    page = client.get("/calendar/agenda").text
+    assert "day=5" in page
+    assert "day=6" not in page
+
+
+def test_agenda_empty_state_when_nothing_pinned(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    page = client.get("/calendar/agenda").text
+    assert "No days with events or icons yet" in page
+
+
+def test_agenda_is_world_scoped(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post("/api/calendar/events", json={"day": 5, "title": "Only In World A"})
+
+    client.cookies.set("active_world", seed.world_b.slug)
+    page = client.get("/calendar/agenda").text
+    assert "Only In World A" not in page
+
+
+def test_agenda_is_gm_or_assistant_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/calendar/agenda")
+    assert r.status_code == 403
+
+
+def test_calendar_month_view_links_to_agenda_and_supports_day_jump(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    page = client.get("/calendar").text
+    assert re.search(r'href="[^"]*/calendar/agenda[^"]*"', page)
+    assert "new URLSearchParams(window.location.search).get('day')" in page
+    assert 'id="set-date-btn"' in page
 
 
 # ── N+1 fix + picker cap (docs/AUDIT_PLAN_NEXT.md item 12) ──────────────────

@@ -398,6 +398,7 @@ worlds they've been invited into (`WorldMembership`).
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/calendar` | GM / Assistant | Calendar view with logged events. |
+| GET | `/calendar/agenda` | GM / Assistant | Every day with an event or icon pinned to it, across the whole calendar, sorted chronologically — the "days with content" table, since a many-year calendar can't be browsed month by month to find what's on it. |
 | GET | `/calendar/config` | GM / Assistant | Calendar configuration form (month names/lengths, starting date). |
 | POST | `/calendar/config` | GM / Assistant | Saves calendar configuration. |
 | POST | `/api/calendar/events` | GM / Assistant | Adds an event on a given in-world date. |
@@ -405,6 +406,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/calendar/days/{day}/icons` | GM / Assistant | Attaches weather/condition icons to a calendar day. |
 | POST | `/api/calendar/icons/{icon_id}/delete` | GM / Assistant | Removes a day icon. |
 | POST | `/api/calendar/advance` | GM / Assistant | Advances the in-world "current date" by N days. |
+| POST | `/api/calendar/set-date` | GM / Assistant | Sets the in-world "current date" directly from a (year, month, day-of-month) triple instead of an absolute day count. |
 
 ## Maps
 

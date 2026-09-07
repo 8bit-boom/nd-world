@@ -148,23 +148,33 @@ def _moon_phase_for_day(moon: dict, day_num: int) -> dict:
 
     illum: 0.0 (new) -> 1.0 (full) -> 0.0 (new), via the standard
     sinusoidal approximation (real orbital mechanics aren't the point
-    here — a smooth, symmetric waxing/waning curve is). `dark_pct` is
-    handed to the template as a CSS gradient split point so the moon
-    swatch's lit portion is tinted with the moon's own color instead of
-    a fixed white, without the template needing to know any of this
-    math itself."""
+    here — a smooth, symmetric waxing/waning curve is). `dark_pct` and
+    `lit_offset_pct` are handed to the template as CSS knobs so the moon
+    swatch renders as an actual crescent/gibbous shape (two same-size
+    circles — a dark one and a lit one — overlapping inside a clipped
+    circular frame, the same trick most flat-icon moon-phase glyphs use)
+    instead of a diagonal color split, without the template needing to
+    know any of this math itself. lit_offset_pct is how far (as a % of
+    the swatch's own width) the lit circle is slid sideways off the dark
+    one: 0% = fully overlapping (full moon), ±100% = no overlap at all
+    (new moon) — positive slides right (waxing, lit crescent grows on
+    the right), negative slides left (waning, lit crescent shrinks on
+    the left)."""
     cycle = max(1, int(moon.get("cycle_days") or _DEFAULT_MOON_CYCLE_DAYS))
     offset = int(moon.get("offset") or 0)
     t = ((day_num - 1 - offset) % cycle) / cycle
     illum = (1 - math.cos(2 * math.pi * t)) / 2
     phase_idx = round(t * 8) % 8
+    waxing = t < 0.5
+    dark_pct = round((1 - illum) * 100)
     return {
         "name": moon.get("name") or "Moon",
         "color": moon.get("color") or _DEFAULT_MOON_COLOR,
         "phase_name": _MOON_PHASE_NAMES[phase_idx],
         "illum_pct": round(illum * 100),
-        "dark_pct": round((1 - illum) * 100),
-        "waxing": t < 0.5,
+        "dark_pct": dark_pct,
+        "waxing": waxing,
+        "lit_offset_pct": dark_pct if waxing else -dark_pct,
     }
 
 
@@ -185,6 +195,14 @@ def _resolve_date(config: dict, day_num: int):
 
 
 _MAX_CALENDAR_PICKER_ROWS = 500
+
+# The Agenda view (all days with content, across the whole calendar — see
+# calendar_agenda) queries events/icons unbounded by month, unlike every
+# other query in this file. Capped for the same reason
+# _MAX_CALENDAR_PICKER_ROWS is: a mature, decades-long campaign can rack up
+# thousands of rows, and loading all of them on every visit would make the
+# one page meant to make a huge calendar navigable slow to load itself.
+_MAX_AGENDA_ROWS = 1000
 
 
 def _month_start_day(months: list, year: int, month_idx: int) -> int:
@@ -326,6 +344,59 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
     })
 
 
+@router.get("/calendar/agenda", response_class=HTMLResponse)
+def calendar_agenda(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Every day in the whole calendar that has an event or icon pinned to
+    it, sorted chronologically — the answer to "a 427-year calendar can't
+    be browsed month by month to find what's on it." Each row links back
+    into the month view (?year=&month=&day=), which auto-opens that day's
+    panel on load (see month.html's own script)."""
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    world_id = world.id
+    cal = _get_or_create_calendar(db, world_id)
+    config = json.loads(cal.config_json or "{}") or _default_config()
+    months = _months_of(config)
+
+    events = db.query(CalendarEvent).options(
+        joinedload(CalendarEvent.entity), joinedload(CalendarEvent.session),
+        joinedload(CalendarEvent.character), joinedload(CalendarEvent.party),
+    ).filter(CalendarEvent.world_id == world_id).order_by(CalendarEvent.day).limit(_MAX_AGENDA_ROWS).all()
+    icons = db.query(CalendarDayIcon).filter(
+        CalendarDayIcon.world_id == world_id
+    ).order_by(CalendarDayIcon.day).limit(_MAX_AGENDA_ROWS).all()
+
+    by_day: dict = {}
+    for e in events:
+        by_day.setdefault(e.day, {"events": [], "icons": []})["events"].append({
+            "id": e.id, "title": e.title, "notes": e.notes, "color": e.color,
+            "entity_label": (e.entity.name if e.entity else None),
+            "session_label": (f"#{e.session.session_num} {e.session.title}" if e.session else None),
+            "character_label": (e.character.name if e.character else None),
+            "party_label": (e.party.name if e.party else None),
+        })
+    for ic in icons:
+        by_day.setdefault(ic.day, {"events": [], "icons": []})["icons"].append(
+            {"image_url": ic.image_url, "label": ic.label}
+        )
+
+    rows = []
+    for day_num in sorted(by_day.keys()):
+        year, month_idx, dom = _resolve_date(config, day_num)
+        rows.append({
+            "day_num": day_num, "year": year, "month_idx": month_idx,
+            "month_name": months[month_idx]["name"], "dom": dom,
+            "events": by_day[day_num]["events"], "icons": by_day[day_num]["icons"],
+        })
+
+    return templates.TemplateResponse("calendar/agenda.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "era_name": config.get("era_name", "Year"), "rows": rows,
+        "truncated": len(events) >= _MAX_AGENDA_ROWS or len(icons) >= _MAX_AGENDA_ROWS,
+    })
+
+
 @router.get("/calendar/config", response_class=HTMLResponse)
 def calendar_config_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
@@ -334,9 +405,12 @@ def calendar_config_form(request: Request, db: Session = Depends(get_db), active
     world_id = world.id
     cal = _get_or_create_calendar(db, world_id)
     config = json.loads(cal.config_json or "{}") or _default_config()
+    current_day = max(1, _safe_int(config.get("current_day"), 1))
+    cur_year, cur_month_idx, cur_dom = _resolve_date(config, current_day)
     return templates.TemplateResponse("calendar/config.html", {
         "request": request, "world": world, "worlds": worlds, "config": config,
         "calendar_presets": CALENDAR_PRESETS,
+        "cur_year": cur_year, "cur_month_idx": cur_month_idx, "cur_dom": cur_dom,
     })
 
 
@@ -432,6 +506,35 @@ async def calendar_advance(request: Request, db: Session = Depends(get_db), acti
     cal.config_json = json.dumps(config)
     db.commit()
     year, month_idx, dom = _resolve_date(config, config["current_day"])
+    return {"current_day": config["current_day"], "year": year, "month_idx": month_idx, "dom": dom}
+
+
+@router.post("/api/calendar/set-date")
+async def calendar_set_date(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Set the campaign's current day directly from a (year, month, day-of-
+    month) triple instead of an absolute day count — the friendly
+    counterpart to /api/calendar/advance's relative move. Nobody can hold
+    "day 140658" in their head, but "Palevigil 8, Year 433" is exactly what
+    the calendar already displays, so this is the inverse of _resolve_date:
+    given the triple a GM actually thinks in, computes the absolute day
+    _resolve_date would derive it back into. Out-of-range input is clamped
+    rather than rejected — same "never 500 on a stray value" spirit as
+    _safe_int — since a slightly-off month/day picked via a stale <select>
+    is a UI hiccup, not something worth a hard error."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    world_id = world.id
+    cal = _get_or_create_calendar(db, world_id)
+    body = await request.json()
+    config = json.loads(cal.config_json or "{}") or _default_config()
+    months = _months_of(config)
+    year = max(1, _safe_int(body.get("year"), 1))
+    month_idx = max(0, min(len(months) - 1, _safe_int(body.get("month_idx"), 0)))
+    dom = max(1, min(months[month_idx]["days"], _safe_int(body.get("dom"), 1)))
+    config["current_day"] = _month_start_day(months, year, month_idx) + dom - 1
+    cal.config_json = json.dumps(config)
+    db.commit()
     return {"current_day": config["current_day"], "year": year, "month_idx": month_idx, "dom": dom}
 
 

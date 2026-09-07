@@ -9,20 +9,35 @@
         Today: {{ months[cur_month_idx].name }} {{ cur_dom }}, Year {{ cur_year }} <span style="opacity:.6">(day {{ current_day }})</span>
       </div>
     </div>
-    <a href="{{ '/calendar/config'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">⚙ Configure</a>
+    <div style="display:flex;gap:.9rem;align-items:center">
+      <a href="{{ '/calendar/agenda'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">📋 Agenda</a>
+      <a href="{{ '/calendar/config'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">⚙ Configure</a>
+    </div>
   </div>
 
   {% if request.query_params.get('saved') %}
   <div style="background:#1a3a1a;border:1px solid #4f4;color:#4f4;padding:.6rem 1rem;border-radius:4px;margin-bottom:1rem;font-size:.85rem">Calendar settings saved.</div>
   {% endif %}
 
-  <div style="display:flex;gap:.6rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap">
+  <div style="display:flex;gap:.6rem;align-items:center;margin-bottom:.6rem;flex-wrap:wrap">
     <input id="advance-days" type="number" value="1" style="width:70px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
     <button type="button" id="advance-btn" style="background:var(--neon);color:#000;border:none;padding:.45rem 1rem;font-size:.82rem;font-weight:bold;border-radius:3px;cursor:pointer">⏭ Advance Days</button>
     <label style="display:flex;align-items:center;gap:.35rem;font-size:.8rem;color:var(--text-dim);cursor:pointer;margin-left:.4rem"
            title="Dims days with no events or icons, so a busy campaign's planned days stand out at a glance">
       <input type="checkbox" id="filter-empty-cb"/> Only show days with content
     </label>
+  </div>
+
+  <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap">
+    <span style="font-size:.8rem;color:var(--text-dim)">Set today:</span>
+    <select id="set-date-month" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .5rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
+      {% for m in months %}<option value="{{ loop.index0 }}" {% if loop.index0 == cur_month_idx %}selected{% endif %}>{{ m.name }}</option>{% endfor %}
+    </select>
+    <input id="set-date-dom" type="number" min="1" max="{{ months[cur_month_idx].days }}" value="{{ cur_dom }}" title="Day of month"
+           style="width:60px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
+    <input id="set-date-year" type="number" min="1" value="{{ cur_year }}" title="Year"
+           style="width:85px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
+    <button type="button" id="set-date-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem .9rem;font-size:.82rem;border-radius:3px;cursor:pointer">📌 Set as Today</button>
   </div>
 
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
@@ -42,8 +57,9 @@
         {% if d.moons %}
         <span class="cal-moons">
           {% for m in d.moons %}
-          <span class="cal-moon" title="{{ m.name }}: {{ m.phase_name }} ({{ m.illum_pct }}% lit)"
-                style="background:linear-gradient({% if m.waxing %}90deg{% else %}270deg{% endif %}, #1a1a2e {{ m.dark_pct }}%, {{ m.color }} {{ m.dark_pct }}%)"></span>
+          <span class="cal-moon" title="{{ m.name }}: {{ m.phase_name }} ({{ m.illum_pct }}% lit)">
+            <span class="cal-moon-lit" style="background:{{ m.color }};transform:translateX({{ m.lit_offset_pct }}%)"></span>
+          </span>
           {% endfor %}
         </span>
         {% endif %}
@@ -74,8 +90,14 @@
 .cal-daynum-row { display:flex; align-items:center; justify-content:space-between; gap:.25rem; }
 .cal-daynum { font-size:.8rem; color:var(--text-dim); }
 .cal-cell.today .cal-daynum { color:var(--neon); font-weight:bold; }
-.cal-moons { display:flex; gap:.15rem; flex-shrink:0; }
-.cal-moon { width:13px; height:13px; border-radius:50%; flex-shrink:0; border:1px solid rgba(255,255,255,.2); }
+.cal-moons { display:flex; gap:.2rem; flex-shrink:0; }
+/* Real crescent/gibbous shapes via the classic "two overlapping circles"
+   trick: .cal-moon is a dark disc clipped to a circle; .cal-moon-lit is a
+   same-size lit disc slid sideways by lit_offset_pct (a % of its own
+   width) so only the overlapping sliver shows through the clip — 0% =
+   full overlap (full moon), ±100% = no overlap (new moon). */
+.cal-moon { width:15px; height:15px; border-radius:50%; flex-shrink:0; border:1px solid rgba(255,255,255,.25); background:var(--bg3); position:relative; overflow:hidden; }
+.cal-moon-lit { position:absolute; inset:0; border-radius:50%; }
 .cal-icons { display:flex; flex-wrap:wrap; gap:.15rem; }
 .cal-icon { width:18px; height:18px; object-fit:cover; border-radius:3px; }
 .cal-event { font-size:.68rem; padding:.1rem .3rem; border-radius:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -87,6 +109,7 @@
 </style>
 
 <script>
+const MONTH_DAYS = {{ months | map(attribute='days') | list | tojson }};
 const ENTITIES = {{ entities | tojson }};
 const SESSIONS = {{ sessions | tojson }};
 const CHARACTERS = {{ characters | tojson }};
@@ -216,6 +239,40 @@ document.getElementById('advance-btn').addEventListener('click', async () => {
   });
   window.location.reload();
 });
+
+// "Set today" — a friendly Year/Month/Day picker in place of hand-computing
+// an absolute day count, the same one-line-per-field convenience "Advance
+// Days" already offers for relative moves.
+document.getElementById('set-date-month').addEventListener('change', () => {
+  const monthIdx = parseInt(document.getElementById('set-date-month').value, 10) || 0;
+  const domInput = document.getElementById('set-date-dom');
+  const maxDays = MONTH_DAYS[monthIdx] || 30;
+  domInput.max = maxDays;
+  if (parseInt(domInput.value, 10) > maxDays) domInput.value = maxDays;
+});
+document.getElementById('set-date-btn').addEventListener('click', async () => {
+  const month_idx = parseInt(document.getElementById('set-date-month').value, 10) || 0;
+  const dom = parseInt(document.getElementById('set-date-dom').value, 10) || 1;
+  const year = parseInt(document.getElementById('set-date-year').value, 10) || 1;
+  const res = await fetch('/api/calendar/set-date', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ year, month_idx, dom }),
+  });
+  if (!res.ok) { alert('Could not set date.'); return; }
+  const d = await res.json();
+  window.location.href = `${window.location.pathname}?year=${d.year}&month=${d.month_idx}`;
+});
+
+// Jump-to-day — the Agenda page links here with ?day=N so a GM doesn't have
+// to re-find the day they just clicked from the "days with content" table.
+(function () {
+  const dayNum = parseInt(new URLSearchParams(window.location.search).get('day'), 10);
+  if (!dayNum) return;
+  const cell = document.querySelector(`.cal-cell[data-day="${dayNum}"]`);
+  if (!cell) return;
+  cell.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  openDayPanel(dayNum);
+})();
 
 // "Only show days with content" — a per-viewer display preference, not
 // campaign data, so it's remembered in localStorage rather than saved to
