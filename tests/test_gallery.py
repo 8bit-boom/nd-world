@@ -1119,6 +1119,12 @@ def test_base_html_poller_present_for_gm_and_player(client, seed):
         r = client.get("/")
         assert "pollSpotlight" in r.text
         assert "openLightbox(data.image_url, data.label" in r.text
+        # docs/AUDIT_PLAN_NEXT.md item 13: the poller must go through the
+        # shared visibility-aware ndPoll helper, not a bare setInterval that
+        # keeps firing at full cadence in a backgrounded tab.
+        assert '<script src="/static/js/nd-poll.js"></script>' in r.text
+        assert "ndPoll(pollSpotlight, 4000)" in r.text
+        assert "setInterval(pollSpotlight, 4000)" not in r.text
 
 
 # ── GET /api/gallery/browse — lazy album browsing for the shared picker ────

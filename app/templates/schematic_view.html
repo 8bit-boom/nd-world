@@ -266,8 +266,7 @@ async function poll() {
     redraw();
   } catch (e) { /* transient network error — try again next tick */ }
 }
-setInterval(poll, 4000);
-
 redraw();
+ndPoll(poll, 4000);
 </script>
 {% endblock %}

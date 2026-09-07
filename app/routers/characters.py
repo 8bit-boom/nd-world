@@ -693,6 +693,9 @@ def character_delete(pc_id: int, request: Request, db: Session = Depends(get_db)
         raise HTTPException(404)
     if not _can_manage_character(_current_user(request), pc):
         raise HTTPException(403)
+    db.query(CharacterSheet).filter(CharacterSheet.player_character_id == pc.id).update(
+        {"player_character_id": None}, synchronize_session=False,
+    )
     db.delete(pc)
     db.commit()
     return RedirectResponse("/characters", status_code=303)
@@ -759,6 +762,9 @@ def character_retire_to_npc(pc_id: int, request: Request, db: Session = Depends(
         visible_to_players=True,
     )
     db.add(entity)
+    db.query(CharacterSheet).filter(CharacterSheet.player_character_id == pc.id).update(
+        {"player_character_id": None}, synchronize_session=False,
+    )
     db.delete(pc)
     db.commit()
     db.refresh(entity)

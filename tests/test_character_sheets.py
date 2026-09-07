@@ -685,3 +685,45 @@ def test_per_world_sheet_cap_is_enforced(client, seed, monkeypatch):
     r = client.post("/pages/sheets/new", data={"template_id": str(did)})
     assert r.status_code == 400
     assert "maximum of 1" in r.json()["detail"]
+
+
+# ── PC deletion nulls the link instead of leaving it dangling (item 10) ─────
+
+def test_character_delete_nulls_linked_sheets(client, seed):
+    did = _add_doc(seed.world_a.id, name="Template", is_character_sheet_template=True, visible_to_players=True)
+    pc_id = _add_pc(seed.world_a.id, seed.player_a.id, name="Hero")
+    sheet_id = _add_sheet(seed.world_a.id, did, seed.player_a.id, player_character_id=pc_id)
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/characters/{pc_id}/delete", follow_redirects=False)
+    assert r.status_code == 303
+
+    db = SessionLocal()
+    try:
+        assert db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first() is None
+        sheet = db.get(CharacterSheet, sheet_id)
+        assert sheet is not None, "the sheet itself must survive PC deletion, only the link should clear"
+        assert sheet.player_character_id is None
+    finally:
+        db.close()
+
+
+def test_retire_to_npc_nulls_linked_sheets(client, seed):
+    did = _add_doc(seed.world_a.id, name="Template", is_character_sheet_template=True, visible_to_players=True)
+    pc_id = _add_pc(seed.world_a.id, seed.player_a.id, name="Elowen Vex")
+    sheet_id = _add_sheet(seed.world_a.id, did, seed.player_a.id, player_character_id=pc_id)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/characters/{pc_id}/retire-to-npc", follow_redirects=False)
+    assert r.status_code == 303
+
+    db = SessionLocal()
+    try:
+        assert db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first() is None
+        sheet = db.get(CharacterSheet, sheet_id)
+        assert sheet is not None
+        assert sheet.player_character_id is None
+    finally:
+        db.close()

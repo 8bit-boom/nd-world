@@ -11,6 +11,7 @@ catalog is reference content to start from, not something a GM is required
 to use.
 """
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -69,7 +70,16 @@ def _upload_profession_image(file: Optional[UploadFile], db: Optional[Session] =
     return f"/uploads/professions/{dest.name}"
 
 
+@lru_cache(maxsize=1)
 def _load_builtin_professions() -> list[dict]:
+    """The bundled profession catalog: read-only files under
+    app/professions/, byte-identical for the life of the process (they only
+    change on an image rebuild) — memoized so every /professions page view
+    and every add-builtin call doesn't re-read and re-render all of them
+    from scratch. Callers only ever read fields off the returned dicts
+    (professions_page filters into a new list, races_add_builtin/
+    races_add_all_builtin-equivalents only read) — never mutate the cached
+    list or its dicts in place."""
     professions = []
     for tier in _PROFESSION_TIERS:
         tier_dir = _PROFESSIONS_DIR / tier

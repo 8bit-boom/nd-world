@@ -5,6 +5,7 @@ writes, player-safe reads, no cross-world reach). Mirrors test_races.py.
 """
 from app.database import SessionLocal
 from app.models import Entity
+from app.routers import professions as professions_module
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -153,3 +154,19 @@ def test_profession_delete_rejects_entity_from_other_world(client, seed):
         assert db.query(Entity).filter(Entity.id == profession_id).first() is not None
     finally:
         db.close()
+
+
+def test_builtin_profession_catalog_is_memoized(client, seed):
+    """docs/AUDIT_PLAN_NEXT.md item 14: re-reading and re-rendering every
+    bundled markdown file on every /professions view is pure waste for
+    content that's byte-identical for the life of the process."""
+    professions_module._load_builtin_professions.cache_clear()
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    client.get("/professions")
+    assert professions_module._load_builtin_professions.cache_info().misses == 1
+    client.get("/professions")
+    info = professions_module._load_builtin_professions.cache_info()
+    assert info.misses == 1, "second /professions view re-read the catalog from disk"
+    assert info.hits >= 1

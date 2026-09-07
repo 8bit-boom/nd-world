@@ -20,6 +20,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import ai as _ai_module
@@ -196,19 +197,26 @@ def _visible_clips_query(db: Session, request: Request, world_id: int, album_id)
 
 
 def _sub_album_counts(db: Session, album_ids: list) -> dict:
-    return {aid: db.query(VideoAlbum).filter(VideoAlbum.parent_id == aid).count() for aid in album_ids}
+    if not album_ids:
+        return {}
+    rows = (
+        db.query(VideoAlbum.parent_id, func.count(VideoAlbum.id))
+        .filter(VideoAlbum.parent_id.in_(album_ids))
+        .group_by(VideoAlbum.parent_id)
+        .all()
+    )
+    return dict(rows)
 
 
 def _clip_counts(db: Session, request: Request, album_ids: list) -> dict:
     """Clip count per album, respecting the viewer's own visibility — a
     player never sees a count that includes clips they can't play."""
-    result = {}
-    for aid in album_ids:
-        q = db.query(VideoClip).filter(VideoClip.album_id == aid)
-        if not _is_gm(request):
-            q = q.filter(VideoClip.visible_to_players.is_(True))
-        result[aid] = q.count()
-    return result
+    if not album_ids:
+        return {}
+    q = db.query(VideoClip.album_id, func.count(VideoClip.id)).filter(VideoClip.album_id.in_(album_ids))
+    if not _is_gm(request):
+        q = q.filter(VideoClip.visible_to_players.is_(True))
+    return dict(q.group_by(VideoClip.album_id).all())
 
 
 async def _convert_video(src: Path, dest_dir: Path, max_height: Optional[int], bitrate_kbps: Optional[int]) -> Optional[Path]:

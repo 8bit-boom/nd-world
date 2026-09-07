@@ -27,11 +27,13 @@ import io
 import json
 import re
 
-from app.database import SessionLocal
+from sqlalchemy import event
+
+from app.database import SessionLocal, engine
 from app.models import CalendarDayIcon, CalendarEvent, Entity, GameSession, Party, PlayerCharacter, WorldCalendar
 from app.routers.calendar import (
-    _days_per_week, _DEFAULT_MOON_COLOR, _DEFAULT_MOON_CYCLE_DAYS, _moon_phase_for_day, DEFAULT_DAYS_PER_WEEK,
-    CALENDAR_PRESETS,
+    _days_per_week, _DEFAULT_MOON_COLOR, _DEFAULT_MOON_CYCLE_DAYS, _MAX_CALENDAR_PICKER_ROWS,
+    _moon_phase_for_day, DEFAULT_DAYS_PER_WEEK, CALENDAR_PRESETS,
 )
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
@@ -649,3 +651,93 @@ def test_applying_hunt_in_the_moonlight_preset_via_config_save(client, seed):
     page = client.get("/calendar?year=1&month=0").text
     assert "Ashwake" in page
     assert "grid-template-columns:repeat(5, 1fr)" in page
+
+
+# ── N+1 fix + picker cap (docs/AUDIT_PLAN_NEXT.md item 12) ──────────────────
+
+class _QueryCounter:
+    def __init__(self):
+        self.count = 0
+
+    def __enter__(self):
+        event.listen(engine, "before_cursor_execute", self._on_execute)
+        return self
+
+    def __exit__(self, *exc):
+        event.remove(engine, "before_cursor_execute", self._on_execute)
+
+    def _on_execute(self, conn, cursor, statement, parameters, context, executemany):
+        self.count += 1
+
+
+def _seed_fully_linked_events(world_id, n):
+    db = SessionLocal()
+    try:
+        for i in range(n):
+            entity = Entity(world_id=world_id, kind="character", name=f"NPC {i}")
+            session = GameSession(world_id=world_id, session_num=i + 1, title=f"Session {i}")
+            character = PlayerCharacter(world_id=world_id, name=f"Hero {i}")
+            party = Party(world_id=world_id, name=f"Party {i}")
+            db.add_all([entity, session, character, party])
+            db.flush()
+            db.add(CalendarEvent(
+                world_id=world_id, day=i + 1, title=f"Event {i}",
+                entity_id=entity.id, session_id=session.id,
+                character_id=character.id, party_id=party.id,
+            ))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_calendar_view_query_count_does_not_scale_with_event_count(client, seed):
+    """Every linked relationship (entity/session/character/party) used to be
+    a separate lazy-loaded query per event — with 20 fully-linked events
+    that's up to 80 extra SELECTs. The joinedload fix folds them into the
+    events query itself via SQL JOINs, so the query count stays the same
+    regardless of how many events (or how many are linked) exist — compare
+    a small world against a much larger one rather than asserting a magic
+    constant, since the fixed per-request overhead (auth, world context,
+    calendar config, icons, the four picker lists) isn't zero either."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    # Warm-up, uncounted: the very first hit does one-time work (creating
+    # the WorldCalendar row, populating short-TTL caches) that would
+    # otherwise pollute the "small" measurement below and make it look
+    # bigger than "large" for reasons that have nothing to do with events.
+    client.get("/calendar")
+
+    _seed_fully_linked_events(seed.world_a.id, 2)
+    with _QueryCounter() as small:
+        r_small = client.get("/calendar")
+    assert r_small.status_code == 200
+
+    _seed_fully_linked_events(seed.world_a.id, 20)
+    with _QueryCounter() as large:
+        r_large = client.get("/calendar")
+    assert r_large.status_code == 200
+    assert "Event 0" in r_large.text
+    assert "NPC 0" in r_large.text  # the linked-entity label actually rendered
+
+    assert large.count == small.count, (
+        f"query count scaled with event count: {small.count} -> {large.count}"
+    )
+
+
+def test_calendar_picker_lists_are_capped(client, seed, monkeypatch):
+    import app.routers.calendar as calendar_module
+    monkeypatch.setattr(calendar_module, "_MAX_CALENDAR_PICKER_ROWS", 3)
+    db = SessionLocal()
+    try:
+        for i in range(6):
+            db.add(Entity(world_id=seed.world_a.id, kind="character", name=f"Picker NPC {i}"))
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/calendar")
+    assert r.status_code == 200
+    names_present = sum(1 for i in range(6) if f"Picker NPC {i}" in r.text)
+    assert names_present == 3, f"expected exactly the capped 3 rows, found {names_present}"

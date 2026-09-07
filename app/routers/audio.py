@@ -20,6 +20,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import ai as _ai_module
@@ -193,19 +194,26 @@ def _visible_clips_query(db: Session, request: Request, world_id: int, album_id)
 
 
 def _sub_album_counts(db: Session, album_ids: list) -> dict:
-    return {aid: db.query(AudioAlbum).filter(AudioAlbum.parent_id == aid).count() for aid in album_ids}
+    if not album_ids:
+        return {}
+    rows = (
+        db.query(AudioAlbum.parent_id, func.count(AudioAlbum.id))
+        .filter(AudioAlbum.parent_id.in_(album_ids))
+        .group_by(AudioAlbum.parent_id)
+        .all()
+    )
+    return dict(rows)
 
 
 def _clip_counts(db: Session, request: Request, album_ids: list) -> dict:
     """Clip count per album, respecting the viewer's own visibility — a
     player never sees a count that includes clips they can't play."""
-    result = {}
-    for aid in album_ids:
-        q = db.query(AudioClip).filter(AudioClip.album_id == aid)
-        if not _is_gm(request):
-            q = q.filter(AudioClip.visible_to_players.is_(True))
-        result[aid] = q.count()
-    return result
+    if not album_ids:
+        return {}
+    q = db.query(AudioClip.album_id, func.count(AudioClip.id)).filter(AudioClip.album_id.in_(album_ids))
+    if not _is_gm(request):
+        q = q.filter(AudioClip.visible_to_players.is_(True))
+    return dict(q.group_by(AudioClip.album_id).all())
 
 
 @router.get("/api/audio/clips")

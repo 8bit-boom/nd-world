@@ -5,6 +5,7 @@ reads, no cross-world reach).
 """
 from app.database import SessionLocal
 from app.models import Entity
+from app.routers import races as races_module
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -203,3 +204,19 @@ def test_race_delete_rejects_entity_from_other_world(client, seed):
         assert db.query(Entity).filter(Entity.id == race_id).first() is not None
     finally:
         db.close()
+
+
+def test_builtin_race_catalog_is_memoized(client, seed):
+    """docs/AUDIT_PLAN_NEXT.md item 14: re-reading and re-rendering all 17+
+    bundled markdown files on every /races view is pure waste for content
+    that's byte-identical for the life of the process."""
+    races_module._load_builtin_races.cache_clear()
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    client.get("/races")
+    assert races_module._load_builtin_races.cache_info().misses == 1
+    client.get("/races")
+    info = races_module._load_builtin_races.cache_info()
+    assert info.misses == 1, "second /races view re-read the catalog from disk"
+    assert info.hits >= 1

@@ -8,7 +8,7 @@ from sqlalchemy import event
 
 from app.database import SessionLocal, engine
 from app.gallery import discover_world_images
-from app.models import Entity, EntityNote
+from app.models import AudioAlbum, AudioClip, Entity, EntityNote, PageAlbum, PageDoc, VideoAlbum, VideoClip
 
 from .conftest import GM_PASSWORD, login
 
@@ -124,3 +124,80 @@ def test_over_the_batch_threshold_ships_the_remainder_as_json(client, seed, monk
     # the server-rendered batch or the embedded JSON for the rest.
     for i in range(5):
         assert f"/uploads/portrait{i}.png" in r.text
+
+
+# ── /audio, /video, /pages: per-album COUNT-loop fix (docs/AUDIT_PLAN_NEXT.md
+# item 11) — _sub_album_counts/_clip_counts/_doc_counts used to run one query
+# per album; a single GROUP BY should keep the library index page's query
+# count flat as the album count grows. ────────────────────────────────────
+
+def _seed_audio_albums(world_id, n):
+    db = SessionLocal()
+    try:
+        for i in range(n):
+            album = AudioAlbum(world_id=world_id, name=f"Album {i}")
+            db.add(album)
+            db.flush()
+            db.add(AudioClip(world_id=world_id, name=f"Clip {i}", file_url=f"/uploads/audio/{i}.mp3",
+                              album_id=album.id, visible_to_players=True))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_audio_library_query_count_does_not_scale_with_album_count(client, seed):
+    _seed_audio_albums(seed.world_a.id, 20)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    with _QueryCounter() as counter:
+        r = client.get("/audio")
+    assert r.status_code == 200
+    assert counter.count <= 10, f"expected O(1) queries, got {counter.count}"
+
+
+def _seed_video_albums(world_id, n):
+    db = SessionLocal()
+    try:
+        for i in range(n):
+            album = VideoAlbum(world_id=world_id, name=f"Album {i}")
+            db.add(album)
+            db.flush()
+            db.add(VideoClip(world_id=world_id, name=f"Clip {i}", file_url=f"/uploads/video/{i}.mp4",
+                              album_id=album.id, visible_to_players=True))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_video_library_query_count_does_not_scale_with_album_count(client, seed):
+    _seed_video_albums(seed.world_a.id, 20)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    with _QueryCounter() as counter:
+        r = client.get("/video")
+    assert r.status_code == 200
+    assert counter.count <= 10, f"expected O(1) queries, got {counter.count}"
+
+
+def _seed_page_albums(world_id, n):
+    db = SessionLocal()
+    try:
+        for i in range(n):
+            album = PageAlbum(world_id=world_id, name=f"Album {i}")
+            db.add(album)
+            db.flush()
+            db.add(PageDoc(world_id=world_id, name=f"Doc {i}", file_url=f"/uploads/pages/{i}.html",
+                            album_id=album.id, visible_to_players=True))
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_pages_library_query_count_does_not_scale_with_album_count(client, seed):
+    _seed_page_albums(seed.world_a.id, 20)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    with _QueryCounter() as counter:
+        r = client.get("/pages")
+    assert r.status_code == 200
+    assert counter.count <= 10, f"expected O(1) queries, got {counter.count}"

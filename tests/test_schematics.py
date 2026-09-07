@@ -177,6 +177,18 @@ def test_player_view_no_background_image_element_when_unset(client, seed):
     assert 'id="bg-image"' not in r.text
 
 
+def test_player_view_poller_is_visibility_aware(client, seed):
+    """docs/AUDIT_PLAN_NEXT.md item 13: the battle-map poller must go
+    through the shared ndPoll helper, not a bare setInterval that keeps
+    firing at full cadence in a backgrounded tab."""
+    s = _make_schematic(seed.world_a.id, "poller-check")
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.get(f"/maps/schematic/{s.slug}/view")
+    assert r.status_code == 200
+    assert "ndPoll(poll, 4000)" in r.text
+    assert "setInterval(poll, 4000)" not in r.text
+
+
 def test_hidden_element_never_reaches_player_payload(client, seed):
     elements = [
         {"id": "shape1", "type": "rect", "x": 0, "y": 0, "w": 10, "h": 10},

@@ -23,6 +23,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -152,7 +153,6 @@ def _sheet_counts_by_template(db: Session, doc_ids: list) -> dict:
     case used in the delete routes themselves)."""
     if not doc_ids:
         return {}
-    from sqlalchemy import func
     rows = (
         db.query(CharacterSheet.template_id, func.count(CharacterSheet.id))
         .filter(CharacterSheet.template_id.in_(doc_ids))
@@ -182,19 +182,26 @@ def _visible_docs_query(db: Session, request: Request, world_id: int, album_id):
 
 
 def _sub_album_counts(db: Session, album_ids: list) -> dict:
-    return {aid: db.query(PageAlbum).filter(PageAlbum.parent_id == aid).count() for aid in album_ids}
+    if not album_ids:
+        return {}
+    rows = (
+        db.query(PageAlbum.parent_id, func.count(PageAlbum.id))
+        .filter(PageAlbum.parent_id.in_(album_ids))
+        .group_by(PageAlbum.parent_id)
+        .all()
+    )
+    return dict(rows)
 
 
 def _doc_counts(db: Session, request: Request, album_ids: list) -> dict:
     """Page count per album, respecting the viewer's own visibility — a
     player never sees a count that includes pages they can't open."""
-    result = {}
-    for aid in album_ids:
-        q = db.query(PageDoc).filter(PageDoc.album_id == aid)
-        if not _is_gm(request):
-            q = q.filter(PageDoc.visible_to_players.is_(True))
-        result[aid] = q.count()
-    return result
+    if not album_ids:
+        return {}
+    q = db.query(PageDoc.album_id, func.count(PageDoc.id)).filter(PageDoc.album_id.in_(album_ids))
+    if not _is_gm(request):
+        q = q.filter(PageDoc.visible_to_players.is_(True))
+    return dict(q.group_by(PageDoc.album_id).all())
 
 
 @router.get("/pages", response_class=HTMLResponse)

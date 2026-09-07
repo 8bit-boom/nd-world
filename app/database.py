@@ -14,6 +14,34 @@ from .models import (
 _log = logging.getLogger("nd.db")
 
 
+# Every table healed generically via _heal_table_from_model (column/FK/index
+# list derived straight from the model, see that function's own docstring) —
+# a single source of truth so a new world-scoped model's table can't be added
+# to app.main._WORLD_DELETE_MODELS without a matching entry here, checked by
+# tests/test_heal_table.py's cross-check against _WORLD_DELETE_MODELS. Tables
+# absent from this tuple either predate _heal_table_from_model and still have
+# their own hand-typed ALTER TABLE logic elsewhere in _migrate() (entities,
+# schematics, player_characters, sheet_templates, world_memberships,
+# random_tables — see _BESPOKE_HEALED_TABLES in that test), or aren't
+# world-scoped models at all (users, worlds, app_settings, ...).
+_GENERICALLY_HEALED_TABLES = (
+    "combat_sessions", "parties", "quests", "game_sessions",
+    "world_calendars", "calendar_events", "image_albums",
+    "audio_jobs", "image_jobs", "chat_jobs", "chat_sessions",
+    "prompt_presets", "page_docs", "audio_clips", "video_clips",
+    "character_sheets", "page_albums", "audio_albums",
+    "video_albums", "calendar_day_icons", "dice_rolls",
+    # These five predate _heal_table_from_model too, but — unlike the
+    # bespoke-healed tables above — never gained any migration logic at all:
+    # a column added to any of these models today would work on a fresh
+    # install and crash every existing one with "no such column", completely
+    # silently. All are simple enough (no multi-column indexes, no
+    # unique=True column lacking a matching index=True) for the generic
+    # column/FK/index deriving to heal correctly.
+    "invite_codes", "private_notes", "invest_boards", "facts", "entity_templates",
+)
+
+
 def get_app_settings(db):
     """The single instance-wide settings row, created lazily on first use.
     Always a live ORM object bound to `db` — callers routinely mutate the
@@ -923,12 +951,7 @@ def _migrate():
         # — it heals in via ALTER TABLE ADD COLUMN like everything else in
         # this function, not create_all() (which never alters an existing
         # table).
-        for _table in (
-            "combat_sessions", "parties", "quests", "game_sessions",
-            "world_calendars", "calendar_events", "image_albums",
-            "audio_jobs", "image_jobs", "chat_jobs", "chat_sessions",
-            "prompt_presets", "page_docs", "audio_clips", "video_clips",
-        ):
+        for _table in _GENERICALLY_HEALED_TABLES:
             _heal_table_from_model(conn, _table)
 
 def _seed():

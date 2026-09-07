@@ -16,6 +16,7 @@
   {% if request.state.user and request.state.user.is_gm %}
   <script src="/static/js/nd-logger.js"></script>
   {% endif %}
+  <script src="/static/js/nd-poll.js"></script>
   <link rel="stylesheet" href="/static/style.css?v={{ asset_v('style.css') }}"/>
   <script src="/static/js/command-palette.js" defer></script>
   {% if world %}
@@ -537,8 +538,7 @@ document.addEventListener('keydown', e => {
       else { ndNowPlayingHide(); }
     }
   }
-  pollSpotlight();
-  setInterval(pollSpotlight, 4000);
+  ndPoll(pollSpotlight, 4000);
 })();
 
 function ndSpotlightSuppressNextPoll() {

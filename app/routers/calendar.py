@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx
@@ -184,6 +184,9 @@ def _resolve_date(config: dict, day_num: int):
     return year, month_idx, remaining + 1
 
 
+_MAX_CALENDAR_PICKER_ROWS = 500
+
+
 def _month_start_day(months: list, year: int, month_idx: int) -> int:
     total = sum(m["days"] for m in months) or 1
     return (year - 1) * total + sum(m["days"] for m in months[:month_idx]) + 1
@@ -240,7 +243,10 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
     month_start = _month_start_day(months, year, month_idx)
     month_end = month_start + month["days"] - 1
 
-    events = db.query(CalendarEvent).filter(
+    events = db.query(CalendarEvent).options(
+        joinedload(CalendarEvent.entity), joinedload(CalendarEvent.session),
+        joinedload(CalendarEvent.character), joinedload(CalendarEvent.party),
+    ).filter(
         CalendarEvent.world_id == world_id, CalendarEvent.day >= month_start, CalendarEvent.day <= month_end
     ).order_by(CalendarEvent.day).all()
     events_by_day: dict = {}
@@ -282,19 +288,31 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
     next_year = year if next_month < len(months) else year + 1
     next_month = next_month if next_month < len(months) else 0
 
-    entities = [{"id": e.id, "name": e.name} for e in db.query(Entity).filter(Entity.world_id == world_id).order_by(Entity.name).all()]
+    # Populate the "link this event to…" dropdowns — capped rather than
+    # loading every row in the world on every month view (a mature campaign's
+    # entity list alone can run into the thousands). A world past this cap
+    # just can't pick one of the overflow rows when creating a NEW event;
+    # existing events' linked-item labels are unaffected, since those come
+    # from the joinedload above, not from these lists.
+    entities = [
+        {"id": e.id, "name": e.name}
+        for e in db.query(Entity).filter(Entity.world_id == world_id)
+        .order_by(Entity.name).limit(_MAX_CALENDAR_PICKER_ROWS).all()
+    ]
     sessions = [
         {"id": s.id, "label": f"#{s.session_num} {s.title}"}
         for s in db.query(GameSession).filter(GameSession.world_id == world_id)
-        .order_by(GameSession.session_num.desc()).all()
+        .order_by(GameSession.session_num.desc()).limit(_MAX_CALENDAR_PICKER_ROWS).all()
     ]
     characters = [
         {"id": c.id, "name": c.name}
-        for c in db.query(PlayerCharacter).filter(PlayerCharacter.world_id == world_id).order_by(PlayerCharacter.name).all()
+        for c in db.query(PlayerCharacter).filter(PlayerCharacter.world_id == world_id)
+        .order_by(PlayerCharacter.name).limit(_MAX_CALENDAR_PICKER_ROWS).all()
     ]
     parties = [
         {"id": p.id, "name": p.name}
-        for p in db.query(Party).filter(Party.world_id == world_id).order_by(Party.name).all()
+        for p in db.query(Party).filter(Party.world_id == world_id)
+        .order_by(Party.name).limit(_MAX_CALENDAR_PICKER_ROWS).all()
     ]
 
     return templates.TemplateResponse("calendar/month.html", {

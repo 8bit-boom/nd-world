@@ -162,3 +162,34 @@ def test_random_tables_rebuild_restores_foreign_key_and_index(tmp_path, monkeypa
     assert "FOREIGN KEY (world_id) REFERENCES worlds(id)" in schema
     assert any(name == "ix_random_tables_world_id" for (name,) in indexes)
     assert rows == [(1, 1, "Loot Table")], "rebuild lost data"
+
+
+# Tables backing a app.main._WORLD_DELETE_MODELS model that predate
+# _heal_table_from_model and still heal via their own hand-typed ALTER TABLE
+# logic elsewhere in _migrate() (see the table-by-table comments in
+# _migrate() for each), rather than through _GENERICALLY_HEALED_TABLES.
+# Deliberately hardcoded and reviewed by hand — the whole point of this test
+# is to make growing this set a conscious decision, not a silent omission.
+_BESPOKE_HEALED_TABLES = {
+    "entities", "schematics", "player_characters", "sheet_templates",
+    "world_memberships", "random_tables",
+}
+
+
+def test_every_world_delete_model_table_is_migration_healed():
+    """docs/AUDIT_PLAN_NEXT.md item 9: a table backing a model in
+    app.main._WORLD_DELETE_MODELS (every model world_delete cascades into)
+    that isn't healed anywhere — neither generically nor via bespoke logic —
+    silently breaks every existing install, with no error until a column is
+    actually missing at query time, the next time that model gains a column.
+    This doesn't re-derive *what* each table's columns should be (that's
+    _heal_table_from_model's job) — it only guards that every such table is
+    healed by *something*."""
+    import app.main as main_module
+
+    healed = set(database_module._GENERICALLY_HEALED_TABLES) | _BESPOKE_HEALED_TABLES
+    missing = [
+        model.__tablename__ for model in main_module._WORLD_DELETE_MODELS
+        if model.__tablename__ not in healed
+    ]
+    assert not missing, f"tables with no migration healing at all: {missing}"

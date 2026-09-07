@@ -1423,7 +1423,9 @@ class CalendarEvent(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
-    day = Column(Integer, nullable=False)
+    # Range-queried on every /calendar render (day BETWEEN month_start AND
+    # month_end) — indexed for the same reason CalendarDayIcon.day already is.
+    day = Column(Integer, nullable=False, index=True)
     title = Column(String(256), nullable=False)
     notes = Column(Text, default="")
     entity_id = Column(Integer, ForeignKey("entities.id"), nullable=True, index=True)
