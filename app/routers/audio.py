@@ -492,6 +492,13 @@ async def audio_edit(
         clip.name = name
     clip.description = description.strip()[:_MAX_DESCRIPTION]
     clip.visible_to_players = bool(visible_to_players)
+    # A GM who broadcasts a clip and then hides it must not keep playing it
+    # for players — this is the exact "GM hides something and it stays
+    # visible" failure the visible_to_players model exists to prevent.
+    if not clip.visible_to_players and world.now_playing_url == clip.file_url:
+        _clear_now_playing(world)
+        from .. import main as _main_module
+        _main_module._spotlight_cache.clear()
     album_id = (album_id or "").strip()
     clip.album_id = _album_or_404(db, world.id, int(album_id)).id if album_id.isdigit() else None
     db.commit()

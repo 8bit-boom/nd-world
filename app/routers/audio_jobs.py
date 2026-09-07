@@ -17,14 +17,17 @@ from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from .. import ai as _ai_module
+from .. import ai_assist as _ai_assist
 from .. import audio_jobs as _audio_jobs
 from ..database import get_db
 from ..deps import get_world_ctx, paginate, can_edit_content
 from ..models import AudioJob
 from ..templating import templates
+from .ai import _world_summary_audience_filter
 
 router = APIRouter()
 
@@ -52,6 +55,56 @@ def _require_can_edit(request: Request) -> None:
     them), so this replaces the old GM-only gate wholesale."""
     if not can_edit_content(request):
         raise HTTPException(403)
+
+
+def _is_gm_caller(request: Request) -> bool:
+    user = getattr(request.state, "user", None)
+    return bool(user and user.is_gm)
+
+
+def _job_visible_to(query, is_gm: bool):
+    """Every /api/audio-jobs list/read route must apply this for a non-GM
+    caller (a GM-Assistant), or two GM-only surfaces that happen to be
+    stored as AudioJob rows leak straight through this shared endpoint:
+
+    - A GM-tier World Summary digest. Reuses `_world_summary_audience_filter`
+      (app/routers/ai.py) — via a subquery of visible ids, since that
+      function's own contract assumes a query already scoped to
+      purpose == "world_summary", not this endpoint's mixed-purpose one —
+      rather than re-deriving the audience rule here a second time.
+    - A Code Assist job (purpose == "ai_assist" with assist_params_json's
+      "op" == ai_assist.OP_CODE_EDIT — a GM asking a coding model to draft a
+      patch to nd-world's own source, deliberately excluded from every
+      permission tier below GM). Its op lives inside a JSON text column, not
+      a directly filterable one, so this only handles the World Summary half
+      in SQL; callers must ALSO drop hidden ai_assist rows themselves — see
+      `_is_hidden_code_assist_job`.
+    """
+    if is_gm:
+        return query
+    db = query.session
+    visible_world_summary_ids = _world_summary_audience_filter(
+        db.query(AudioJob.id).filter(AudioJob.purpose == "world_summary"), is_gm,
+    )
+    return query.filter(or_(AudioJob.purpose != "world_summary", AudioJob.id.in_(visible_world_summary_ids)))
+
+
+def _is_hidden_code_assist_job(job: AudioJob) -> bool:
+    if job.purpose != "ai_assist":
+        return False
+    try:
+        params = json.loads(job.assist_params_json or "{}")
+    except ValueError:
+        params = {}
+    return params.get("op") == _ai_assist.OP_CODE_EDIT
+
+
+def _job_hidden_from_assistant(job: AudioJob) -> bool:
+    """True if `job` must read as not-found for a non-GM caller — see
+    `_job_visible_to`'s docstring for why these two purposes need it."""
+    if job.purpose == "world_summary":
+        return job.audience != "players"
+    return _is_hidden_code_assist_job(job)
 
 
 def _job_to_dict(job: AudioJob) -> dict:
@@ -176,7 +229,9 @@ def api_audio_job_list(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    is_gm = _is_gm_caller(request)
     base_q = db.query(AudioJob).filter(AudioJob.world_id == world.id)
+    base_q = _job_visible_to(base_q, is_gm)
     if purpose:
         base_q = base_q.filter(AudioJob.purpose == purpose)
     if status:
@@ -188,6 +243,12 @@ def api_audio_job_list(
         base_q = base_q.filter(AudioJob.game_session_id == game_session_id)
     base_q = base_q.order_by(AudioJob.created_at.desc())
     jobs, page, total_pages = paginate(base_q, page)
+    if not is_gm:
+        # ai_assist/code_edit rows can't be excluded in the query above (see
+        # _job_visible_to) — rare enough in practice that dropping them from
+        # an already-paginated page (rather than re-querying) is an
+        # acceptable trade-off; see docs/AUDIT_PLAN_NEXT.md item 1.
+        jobs = [j for j in jobs if not _is_hidden_code_assist_job(j)]
     return {"jobs": [_job_to_dict(j) for j in jobs], "page": page, "total_pages": total_pages}
 
 
@@ -198,7 +259,7 @@ def api_audio_job_status(job_id: int, request: Request, db: Session = Depends(ge
     if not world:
         raise HTTPException(404)
     job = db.query(AudioJob).filter(AudioJob.id == job_id, AudioJob.world_id == world.id).first()
-    if not job:
+    if not job or (not _is_gm_caller(request) and _job_hidden_from_assistant(job)):
         raise HTTPException(404)
     return _job_to_dict(job)
 
@@ -219,7 +280,7 @@ def api_audio_job_download_transcript(job_id: int, request: Request, db: Session
     if not world:
         raise HTTPException(404)
     job = db.query(AudioJob).filter(AudioJob.id == job_id, AudioJob.world_id == world.id).first()
-    if not job:
+    if not job or (not _is_gm_caller(request) and _job_hidden_from_assistant(job)):
         raise HTTPException(404)
     if not job.transcript:
         raise HTTPException(404, "This job has no transcript yet")
@@ -236,7 +297,7 @@ def api_audio_job_download_recap(job_id: int, request: Request, db: Session = De
     if not world:
         raise HTTPException(404)
     job = db.query(AudioJob).filter(AudioJob.id == job_id, AudioJob.world_id == world.id).first()
-    if not job:
+    if not job or (not _is_gm_caller(request) and _job_hidden_from_assistant(job)):
         raise HTTPException(404)
     if not job.recap:
         raise HTTPException(404, "This job has no recap yet")

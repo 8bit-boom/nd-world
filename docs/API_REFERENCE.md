@@ -773,11 +773,11 @@ jobs](DEPLOYMENT.md#updating-without-losing-in-flight-jobs) for what
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/background-jobs` | GM / Assistant | The standalone Background Jobs page. |
-| GET | `/api/audio-jobs` | GM / Assistant | Every job for the active world, any purpose, most recent first. Optional filters: `purpose`, `status` (an exact status, or `running` = any in-progress phase), `game_session_id`. |
-| GET | `/api/audio-jobs/{job_id}` | GM / Assistant | Poll one job. |
+| GET | `/api/audio-jobs` | GM / Assistant | Every job for the active world, any purpose, most recent first. Optional filters: `purpose`, `status` (an exact status, or `running` = any in-progress phase), `game_session_id`. Tier-scoped: a GM-Assistant never sees a GM-tier World Summary digest (`purpose=world_summary`) or a Code Assist job's source/diff (`purpose=ai_assist`, `op=code_edit`), both of which are GM-only content that happens to be stored as `AudioJob` rows. |
+| GET | `/api/audio-jobs/{job_id}` | GM / Assistant | Poll one job. 404s for a GM-Assistant on a GM-tier World Summary or Code Assist job (see above). |
 | POST | `/api/audio-jobs/{job_id}/cancel` | GM / Assistant | Cancels an in-progress job. |
-| GET | `/api/audio-jobs/{job_id}/transcript.md` | GM / Assistant | Downloads a finished job's transcript as a Markdown file. |
-| GET | `/api/audio-jobs/{job_id}/recap.md` | GM / Assistant | Downloads a finished job's AI recap as a Markdown file. |
+| GET | `/api/audio-jobs/{job_id}/transcript.md` | GM / Assistant | Downloads a finished job's transcript as a Markdown file. Same tier scoping as the detail route. |
+| GET | `/api/audio-jobs/{job_id}/recap.md` | GM / Assistant | Downloads a finished job's AI recap as a Markdown file. Same tier scoping as the detail route. |
 | DELETE | `/api/audio-jobs/{job_id}` | GM / Assistant | Deletes a finished job (400 if still in progress — cancel first). |
 | POST | `/api/audio-jobs/{job_id}/resummarize` | GM / Assistant | Re-runs just the summarization step against the job's already-saved transcript, optionally with a different model/instructions — no re-upload or re-transcription needed. Always a fresh pass, not a continuation of an interrupted attempt (see the next row for that). |
 | POST | `/api/audio-jobs/{job_id}/resume` | GM / Assistant | Continue a job interrupted by a server restart (`status: "interrupted"`) from its saved checkpoint — a true resume, picking up from the exact chunk it left off on. Always resets the auto-resume attempt counter, since a manual click is a deliberate decision, not another automatic retry. 400 if the job isn't in the `"interrupted"` state, or if there's nothing left to resume from (audio gone, no transcript). |

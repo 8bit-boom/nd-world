@@ -103,6 +103,39 @@ def test_deleting_the_broadcasting_clip_clears_now_playing(client, seed):
     assert _world(seed.world_a.id).now_playing_url is None
 
 
+def test_hiding_the_broadcasting_clip_clears_now_playing(client, seed):
+    """Regression: a GM who broadcasts a clip and then un-ticks 'visible to
+    players' must not keep playing it for players — the exact 'GM hides
+    something and it stays visible' failure visible_to_players exists to
+    prevent (docs/AUDIT_PLAN_NEXT.md item 2)."""
+    cid = _add_clip(seed.world_a.id, name="Tavern Ambiance")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post(f"/audio/{cid}/play-for-players")
+    version_after_send = _world(seed.world_a.id).now_playing_version
+
+    r = client.post(f"/audio/{cid}/edit", data={"name": "Tavern Ambiance"}, follow_redirects=False)
+    assert r.status_code == 303
+    w = _world(seed.world_a.id)
+    assert w.now_playing_url is None
+    assert w.now_playing_version == version_after_send + 1
+
+
+def test_editing_a_non_broadcasting_clip_leaves_now_playing_untouched(client, seed):
+    broadcasting = _add_clip(seed.world_a.id, name="Tavern Ambiance")
+    other = _add_clip(seed.world_a.id, name="Rainstorm", file_url="/uploads/audio/rain.mp3")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post(f"/audio/{broadcasting}/play-for-players")
+    version_after_send = _world(seed.world_a.id).now_playing_version
+
+    r = client.post(f"/audio/{other}/edit", data={"name": "Rainstorm", "visible_to_players": ""}, follow_redirects=False)
+    assert r.status_code == 303
+    w = _world(seed.world_a.id)
+    assert w.now_playing_url == "/uploads/audio/x.mp3"
+    assert w.now_playing_version == version_after_send
+
+
 def test_play_for_players_and_stop_are_gm_or_assistant_only(client, seed):
     cid = _add_clip(seed.world_a.id, name="Tavern Ambiance")
     login(client, seed.player_a.email, PLAYER_PASSWORD)

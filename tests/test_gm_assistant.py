@@ -12,10 +12,12 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import text
 
+import json
+
 from app.database import SessionLocal
 from app.deps import can_edit_content
 from app.main import _is_assistant_safe
-from app.models import WorldMembership
+from app.models import AudioJob, WorldMembership
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -487,3 +489,87 @@ def test_can_edit_content_helper():
     # request): False, never an AttributeError.
     assert can_edit_content(SimpleNamespace(state=SimpleNamespace(user=None))) is False
     assert can_edit_content(req(is_gm=False, has_flag=False)) is False
+
+
+# ── /api/audio-jobs tier scoping (docs/AUDIT_PLAN_NEXT.md item 1) ──────────────
+# _require_can_edit alone admits a GM-Assistant to every route in
+# app/routers/audio_jobs.py, but two purposes stored as plain AudioJob rows are
+# GM-only content: a "world_summary" job with a GM-tier audience (see
+# app/routers/ai.py's _world_summary_audience_filter), and an "ai_assist" job
+# whose assist_params_json.op is Code Assist's OP_CODE_EDIT (a GM asking a
+# coding model to draft a patch to nd-world's own source — deliberately absent
+# from _is_assistant_safe, see app/routers/code_assist.py's own docstring).
+
+def _add_job(world_id, **kw):
+    db = SessionLocal()
+    try:
+        job = AudioJob(world_id=world_id, purpose=kw.pop("purpose", "session_recap"), **kw)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        return job.id
+    finally:
+        db.close()
+
+
+def test_assistant_cannot_read_gm_tier_world_summary_via_audio_jobs(client, seed):
+    gm_job_id = _add_job(
+        seed.world_a.id, purpose="world_summary", audience="gm",
+        status="done", recap="TOP SECRET GM DIGEST", filename="World summary",
+    )
+    players_job_id = _add_job(
+        seed.world_a.id, purpose="world_summary", audience="players",
+        status="done", recap="Public-safe digest", filename="World summary",
+    )
+    _make_assistant(seed, seed.player_a)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    _switch_world(client, seed.world_a.slug)
+
+    r = client.get("/api/audio-jobs")
+    assert r.status_code == 200
+    ids = [j["id"] for j in r.json()["jobs"]]
+    assert gm_job_id not in ids
+    assert players_job_id in ids
+
+    assert client.get(f"/api/audio-jobs/{gm_job_id}").status_code == 404
+    assert client.get(f"/api/audio-jobs/{players_job_id}").status_code == 200
+    assert client.get(f"/api/audio-jobs/{gm_job_id}/recap.md").status_code == 404
+
+    # The GM's own read is unaffected — sees both tiers.
+    login(client, seed.gm.email, GM_PASSWORD)
+    _switch_world(client, seed.world_a.slug)
+    r = client.get("/api/audio-jobs")
+    ids = [j["id"] for j in r.json()["jobs"]]
+    assert gm_job_id in ids and players_job_id in ids
+    assert client.get(f"/api/audio-jobs/{gm_job_id}").status_code == 200
+
+
+def test_assistant_cannot_read_code_assist_job_via_audio_jobs(client, seed):
+    code_job_id = _add_job(
+        seed.world_a.id, purpose="ai_assist", status="done", filename="AI assist · code_assist",
+        transcript="def top_secret_source(): ...", result_json=json.dumps({"text": "revised", "model": "x"}),
+        assist_params_json=json.dumps({"op": "code_edit", "surface": "code_assist", "meta": "", "instruction": "", "lang": ""}),
+    )
+    other_assist_job_id = _add_job(
+        seed.world_a.id, purpose="ai_assist", status="done", filename="AI assist · assist",
+        transcript="some entity body", result_json=json.dumps({"text": "revised", "model": "x"}),
+        assist_params_json=json.dumps({"op": "improve", "surface": "assist", "meta": "", "instruction": "", "lang": ""}),
+    )
+    _make_assistant(seed, seed.player_a)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    _switch_world(client, seed.world_a.slug)
+
+    r = client.get("/api/audio-jobs")
+    assert r.status_code == 200
+    ids = [j["id"] for j in r.json()["jobs"]]
+    assert code_job_id not in ids
+    assert other_assist_job_id in ids
+
+    assert client.get(f"/api/audio-jobs/{code_job_id}").status_code == 404
+    assert client.get(f"/api/audio-jobs/{code_job_id}/transcript.md").status_code == 404
+    assert client.get(f"/api/audio-jobs/{other_assist_job_id}").status_code == 200
+
+    # The GM's own read is unaffected.
+    login(client, seed.gm.email, GM_PASSWORD)
+    _switch_world(client, seed.world_a.slug)
+    assert client.get(f"/api/audio-jobs/{code_job_id}").status_code == 200

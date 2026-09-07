@@ -50,10 +50,19 @@ _log = logging.getLogger("nd.code_assist")
 _INSTALL_ROOT = Path(__file__).resolve().parent.parent.parent
 _ALLOWED_ROOTS = [(_INSTALL_ROOT / "app").resolve(), (_INSTALL_ROOT / "static").resolve()]
 _ALLOWED_EXTS = {".py", ".html", ".js", ".css", ".md", ".txt"}
-# Generous for any real source file in this codebase (the largest, main.py,
-# is well under this); a bound so a mistaken/huge path can't be read into
-# memory unbounded.
-_MAX_FILE_BYTES = 300_000
+# A coding model is asked for the COMPLETE revised file (see OP_CODE_EDIT's
+# system prompt) and generation is capped by the same output-budget logic
+# every free-text op uses (_recap_num_predict_default_if_unbounded) — a
+# local model has no realistic chance of faithfully re-emitting a large
+# file (main.py alone is ~260 KB) in full before hitting that cap, and a
+# truncated response renders as a clean-looking diff proposing to delete
+# most of the file (see the truncation_warning check below). Lowered from
+# an earlier 300 KB, which admitted files no local model could round-trip.
+_MAX_FILE_BYTES = 80_000
+# Below this fraction of the original file's length, the model's "revised"
+# response is treated as likely truncated rather than a deliberate large
+# deletion — see code_assist_status's truncation_warning.
+_TRUNCATION_RATIO_THRESHOLD = 0.9
 
 
 def _resolve_safe_path(rel: str) -> Path:
@@ -128,7 +137,12 @@ async def code_assist_generate(
     except (OSError, UnicodeDecodeError):
         raise HTTPException(400, "Could not read that file as text")
     if len(content.encode("utf-8")) > _MAX_FILE_BYTES:
-        raise HTTPException(400, f"File too large to preview here (over {_MAX_FILE_BYTES // 1000} KB)")
+        raise HTTPException(
+            400,
+            f"File too large to preview here (over {_MAX_FILE_BYTES // 1000} KB) — "
+            "a local coding model can't reliably re-emit a file this large in full, "
+            "so the result would likely be a truncated, misleading diff.",
+        )
     relpath = str(path.relative_to(_INSTALL_ROOT))
     user = getattr(request.state, "user", None)
     job_id = create_assist_job(
@@ -179,7 +193,24 @@ def code_assist_status(
         original.splitlines(keepends=True), revised.splitlines(keepends=True),
         fromfile=file_label, tofile=f"{file_label} (AI suggested)",
     ))
+    # A short/truncated "revised" is a NORMAL outcome here, not exotic: the
+    # model is asked for the complete file, generation is capped by the
+    # same output-budget logic every free-text op uses, and a truncation
+    # renders as a clean-looking diff whose tail is thousands of deleted
+    # lines — with the panel's entire safety story being "a GM reviews the
+    # diff", that's worth flagging rather than presenting silently. Ratio,
+    # not absolute length, since a genuinely large deletion is legitimate.
+    revised_ratio = len(revised) / max(1, len(original))
+    truncation_warning = None
+    if revised_ratio < _TRUNCATION_RATIO_THRESHOLD:
+        pct = round(revised_ratio * 100)
+        truncation_warning = (
+            f"The model returned only about {pct}% of the file's length — it likely ran "
+            "out of output budget rather than intentionally deleting this much. Try a "
+            "smaller file or a model with more headroom before applying this diff."
+        )
     return {
         "status": "done", "file": file_label, "original": original,
         "revised": revised, "diff": diff, "model": result.get("model") or job.model or "",
+        "truncation_warning": truncation_warning,
     }

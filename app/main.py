@@ -741,6 +741,7 @@ def _rules_toc(html_str: str, levels: str = "23"):
     # structure (and its author's hand-typed "Contents" list, if it has
     # one) actually says the top level is.
     toc = []
+    seen: dict[str, int] = {}
     def _repl(m):
         lvl, inner = m.group(1), m.group(2)
         # html.unescape: the heading's inner HTML can carry entities ("&amp;"
@@ -750,6 +751,18 @@ def _rules_toc(html_str: str, levels: str = "23"):
         # here means auto-escape re-encodes exactly once for display.
         text = html.unescape(re.sub(r'<[^>]+>', '', inner))
         slug = re.sub(r'[^\w]+', '-', text.lower()).strip('-') or 'sec'
+        # Two headings with the same text (common in long GM-authored
+        # documents — repeated "Overview"/"Hooks" subsections under each
+        # chapter) would otherwise collide on the same id, so the second
+        # TOC link scrolls to the first heading. Only the SECOND and later
+        # occurrence gets a numeric suffix — the first keeps the bare slug,
+        # so every existing rules overlay/section-id reference (which was
+        # only ever written against a first occurrence, ids being unique
+        # until now) keeps working unchanged.
+        count = seen.get(slug, 0)
+        seen[slug] = count + 1
+        if count:
+            slug = f"{slug}-{count}"
         toc.append({'level': int(lvl), 'text': text, 'id': slug})
         return f'<h{lvl} id="{slug}">{inner}</h{lvl}>'
     html_str = re.sub(rf'<h([{levels}])>(.*?)</h\1>', _repl, html_str, flags=re.DOTALL)
@@ -837,19 +850,10 @@ def get_active_world(request: Request, db: Session, active_world: str = Cookie(N
     return q.order_by(World.id).first()
 
 
-def _filter_visible_entities(q, request: Request):
-    """Restrict an Entity query to visible_to_players rows for non-GM viewers,
-    plus any hidden entities specifically shared with this player."""
-    user = getattr(request.state, "user", None)
-    if not (user and user.is_gm):
-        if user:
-            shared = q.session.query(entity_player_access.c.entity_id).filter(
-                entity_player_access.c.user_id == user.id
-            )
-            q = q.filter(or_(Entity.visible_to_players.isnot(False), Entity.id.in_(shared)))
-        else:
-            q = q.filter(Entity.visible_to_players.isnot(False))
-    return q
+# Moved to app/deps.py so routers can apply it without importing main.py
+# back (main.py imports every router) — re-exported here under its old name
+# since this module still has many call sites of its own.
+_filter_visible_entities = deps.filter_visible_entities
 
 
 def _kind_counts(db: Session, world: Optional[World], request: Request) -> dict:

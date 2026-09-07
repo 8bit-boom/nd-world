@@ -189,18 +189,46 @@ def _month_start_day(months: list, year: int, month_idx: int) -> int:
     return (year - 1) * total + sum(m["days"] for m in months[:month_idx]) + 1
 
 
+def _safe_int(value, default: int) -> int:
+    """int(value), falling back to `default` on anything that isn't a clean
+    integer — a bare int(...) on a query param or form field 500s the whole
+    request on a malformed value (e.g. /calendar?year=x) instead of just
+    ignoring it, which every other route in this app treats as a 400 at
+    worst, never a 500."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _event_or_404(db: Session, world_id: int, event_id: int) -> CalendarEvent:
+    ev = db.query(CalendarEvent).filter(CalendarEvent.id == event_id, CalendarEvent.world_id == world_id).first()
+    if not ev:
+        raise HTTPException(404)
+    return ev
+
+
+def _icon_or_404(db: Session, world_id: int, icon_id: int) -> CalendarDayIcon:
+    icon = db.query(CalendarDayIcon).filter(CalendarDayIcon.id == icon_id, CalendarDayIcon.world_id == world_id).first()
+    if not icon:
+        raise HTTPException(404)
+    return icon
+
+
 @router.get("/calendar", response_class=HTMLResponse)
 def calendar_view(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
-    world_id = world.id if world else 1
+    if not world:
+        raise HTTPException(404)
+    world_id = world.id
     cal = _get_or_create_calendar(db, world_id)
     config = json.loads(cal.config_json or "{}") or _default_config()
     months = _months_of(config)
     current_day = int(config.get("current_day", 1))
     cur_year, cur_month_idx, cur_dom = _resolve_date(config, current_day)
 
-    year = int(request.query_params.get("year", cur_year))
-    month_idx = int(request.query_params.get("month", cur_month_idx))
+    year = _safe_int(request.query_params.get("year"), cur_year)
+    month_idx = _safe_int(request.query_params.get("month"), cur_month_idx)
     if month_idx < 0:
         month_idx = len(months) - 1
         year -= 1
@@ -283,7 +311,9 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
 @router.get("/calendar/config", response_class=HTMLResponse)
 def calendar_config_form(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
-    world_id = world.id if world else 1
+    if not world:
+        raise HTTPException(404)
+    world_id = world.id
     cal = _get_or_create_calendar(db, world_id)
     config = json.loads(cal.config_json or "{}") or _default_config()
     return templates.TemplateResponse("calendar/config.html", {
@@ -295,12 +325,14 @@ def calendar_config_form(request: Request, db: Session = Depends(get_db), active
 @router.post("/calendar/config")
 async def calendar_config_save(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, _ = get_world_ctx(request, db, active_world)
-    world_id = world.id if world else 1
+    if not world:
+        raise HTTPException(404)
+    world_id = world.id
     cal = _get_or_create_calendar(db, world_id)
     form = await request.form()
     config = json.loads(cal.config_json or "{}") or _default_config()
     config["era_name"] = str(form.get("era_name", "")).strip() or "Year"
-    config["current_day"] = max(1, int(form.get("current_day") or 1))
+    config["current_day"] = max(1, _safe_int(form.get("current_day"), 1))
     config["days_per_week"] = _days_per_week({"days_per_week": form.get("days_per_week")})
     raw_months = str(form.get("months_json", "[]") or "[]")
     try:
@@ -335,7 +367,9 @@ async def calendar_config_save(request: Request, db: Session = Depends(get_db), 
 @router.post("/api/calendar/events")
 async def calendar_event_add(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, _ = get_world_ctx(request, db, active_world)
-    world_id = world.id if world else 1
+    if not world:
+        raise HTTPException(404)
+    world_id = world.id
     body = await request.json()
     ev = CalendarEvent(
         world_id=world_id, day=int(body.get("day", 1)),
@@ -354,10 +388,13 @@ async def calendar_event_add(request: Request, db: Session = Depends(get_db), ac
 
 
 @router.post("/api/calendar/events/{event_id}/delete")
-def calendar_event_delete(event_id: int, db: Session = Depends(get_db)):
-    ev = db.query(CalendarEvent).filter(CalendarEvent.id == event_id).first()
-    if not ev:
+def calendar_event_delete(
+    event_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
         raise HTTPException(404)
+    ev = _event_or_404(db, world.id, event_id)
     db.delete(ev)
     db.commit()
     return {"ok": True}
@@ -366,7 +403,9 @@ def calendar_event_delete(event_id: int, db: Session = Depends(get_db)):
 @router.post("/api/calendar/advance")
 async def calendar_advance(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, _ = get_world_ctx(request, db, active_world)
-    world_id = world.id if world else 1
+    if not world:
+        raise HTTPException(404)
+    world_id = world.id
     cal = _get_or_create_calendar(db, world_id)
     body = await request.json()
     delta = int(body.get("days", 1))
@@ -387,7 +426,9 @@ async def calendar_day_icon_add(
     the same day, rendered like emoji stickers on the month grid (see
     _ICON_ALLOWED_EXTS/day.icons in calendar/month.html)."""
     world, _ = get_world_ctx(request, db, active_world)
-    world_id = world.id if world else 1
+    if not world:
+        raise HTTPException(404)
+    world_id = world.id
     ext = Path(file.filename or "").suffix.lower()
     if ext not in _ICON_ALLOWED_EXTS:
         raise HTTPException(400, "Unsupported image type")
@@ -417,10 +458,13 @@ async def calendar_day_icon_add(
 
 
 @router.post("/api/calendar/icons/{icon_id}/delete")
-def calendar_day_icon_delete(icon_id: int, db: Session = Depends(get_db)):
-    icon = db.query(CalendarDayIcon).filter(CalendarDayIcon.id == icon_id).first()
-    if not icon:
+def calendar_day_icon_delete(
+    icon_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
         raise HTTPException(404)
+    icon = _icon_or_404(db, world.id, icon_id)
     _delete_icon_file(icon)
     db.delete(icon)
     db.commit()

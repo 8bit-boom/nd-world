@@ -8,11 +8,12 @@ import time
 from typing import Optional
 
 from fastapi import HTTPException, Request
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from . import auth
 from .constants import KINDS, KIND_ICONS, SUBTYPES
-from .models import World
+from .models import Entity, World, entity_player_access
 
 
 def resolve_world_slug(request: Request, cookie_value: Optional[str]) -> Optional[str]:
@@ -179,3 +180,23 @@ def check_llm_cooldown(user_id: int, seconds: float = _LLM_COOLDOWN_SECONDS) -> 
     if last is not None and now - last < seconds:
         raise HTTPException(429, "Please wait a few seconds before asking again.")
     _llm_cooldowns[user_id] = now
+
+
+def filter_visible_entities(q, request: Request):
+    """Restrict an Entity query to visible_to_players rows for non-GM
+    viewers, plus any hidden entities specifically shared with this player.
+    Lives here (rather than only in main.py, which every router already
+    imports it from for backward compatibility) so routers can apply it
+    directly without importing main.py back — every player-facing entity
+    list in the app must go through this or an equivalent per-entity
+    filter; a query that skips it leaks GM-only content to players."""
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        if user:
+            shared = q.session.query(entity_player_access.c.entity_id).filter(
+                entity_player_access.c.user_id == user.id
+            )
+            q = q.filter(or_(Entity.visible_to_players.isnot(False), Entity.id.in_(shared)))
+        else:
+            q = q.filter(Entity.visible_to_players.isnot(False))
+    return q

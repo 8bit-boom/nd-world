@@ -62,6 +62,47 @@ def test_headings_get_ids_and_toc_links_match(client, seed):
     assert 'href="#part-two"' in r.text
 
 
+_DUPLICATE_HEADINGS_BODY = """# Part I
+
+## Overview
+First chapter's overview.
+
+## Hooks
+First chapter's hooks.
+
+# Part II
+
+## Overview
+Second chapter's overview — a different heading with the same text.
+
+## Hooks
+Second chapter's hooks.
+"""
+
+
+def test_duplicate_headings_get_unique_ids(client, seed):
+    """Regression: _rules_toc built each heading's id from its text with no
+    uniqueness pass, so two "## Overview" headings under different "# Part"
+    chapters collided on the same id and the second TOC link scrolled to
+    the first heading instead (docs/AUDIT_PLAN_NEXT.md item 5)."""
+    eid = _add_entity(seed.world_a.id, name="Long Doc", body=_DUPLICATE_HEADINGS_BODY, visible_to_players=True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get(f"/entity/{eid}")
+    assert r.status_code == 200
+    # The first occurrence of each duplicate keeps its bare slug, and the
+    # second gets a distinct, non-colliding one — both as the actual
+    # heading tag (not just a substring match, since split_rules_sections'
+    # data-section-id="<slug>" attribute would otherwise also match a bare
+    # "overview" search).
+    assert '<h2 id="overview">' in r.text
+    assert '<h2 id="hooks">' in r.text
+    assert '<h2 id="overview-1">' in r.text
+    assert '<h2 id="hooks-1">' in r.text
+    # Both TOC links exist and point at their own distinct heading.
+    assert 'href="#overview"' in r.text
+    assert 'href="#overview-1"' in r.text
+
+
 def test_body_split_into_sections_for_search(client, seed):
     eid = _add_entity(seed.world_a.id, name="Player's Guide", body=_LONG_BODY, visible_to_players=True)
     login(client, seed.gm.email, GM_PASSWORD)

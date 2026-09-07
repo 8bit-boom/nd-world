@@ -180,6 +180,31 @@ def test_generate_and_poll_round_trip(client, seed, fixture_file, monkeypatch):
     # Nothing was ever written back to the real file on disk.
     on_disk = (code_assist_module._INSTALL_ROOT / fixture_file).read_text(encoding="utf-8")
     assert on_disk == _FIXTURE_CONTENT
+    # A full-length, deliberate rewrite carries no truncation warning.
+    assert data["truncation_warning"] is None
+
+
+def test_truncated_response_carries_a_warning(client, seed, fixture_file, monkeypatch):
+    """Regression: a model that ran out of output budget mid-file returns a
+    short 'revised' text, which renders as a clean-looking diff proposing
+    to delete most of the file with no indication anything went wrong
+    (docs/AUDIT_PLAN_NEXT.md item 8)."""
+    async def fake_run_assist(op, **kwargs):
+        # Original fixture is 3 lines; this "revised" text is a small
+        # fraction of that length — simulates a model that stopped writing
+        # partway through, not a deliberate near-total deletion.
+        return {"op": op, "mode": "text", "text": "line one\n", "model": "coder-model"}
+
+    monkeypatch.setattr(audio_jobs_module._ai_assist, "run_assist", fake_run_assist)
+    _login_gm(client, seed)
+
+    r = client.post("/tools/code-assist/generate",
+                     data={"file": fixture_file, "instruction": "do it", "think": "false"})
+    job_id = r.json()["job_id"]
+    data = _await_done_or_error(client, job_id)
+    assert data["status"] == "done", data
+    assert data["truncation_warning"] is not None
+    assert "ran out of output budget" in data["truncation_warning"]
 
 
 def test_generate_sentinel_failure_becomes_error_status(client, seed, fixture_file, monkeypatch):

@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db, get_app_settings
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, filter_visible_entities
 from ..imaging import convert_image, make_thumbnail
 from ..models import Entity
 from ..rendering import render_md
@@ -124,10 +124,19 @@ def races_page(request: Request, db: Session = Depends(get_db), active_world: st
     world_races = []
     names_in_world = set()
     if world:
-        world_races = db.query(Entity).filter(
+        # Dedup against the FULL catalog (including hidden races — the
+        # "already added" check is bookkeeping, not content, and a race the
+        # GM later hides shouldn't reappear as an available builtin). What's
+        # actually rendered below (world_races/world_by_tier) is filtered
+        # for the viewer, since it inlines each race's full body into the
+        # page for a player-safe route.
+        all_world_races = db.query(Entity).filter(
             Entity.world_id == world.id, Entity.kind == "race"
+        ).all()
+        names_in_world = {e.name for e in all_world_races if e.name}
+        world_races = filter_visible_entities(
+            db.query(Entity).filter(Entity.world_id == world.id, Entity.kind == "race"), request,
         ).order_by(Entity.subtype, Entity.name).all()
-        names_in_world = {e.name for e in world_races if e.name}
 
     available_builtin = [r for r in builtin if r["name"] not in names_in_world]
     available_by_tier = {t: [r for r in available_builtin if r["tier"] == t] for t in _RACE_TIERS}

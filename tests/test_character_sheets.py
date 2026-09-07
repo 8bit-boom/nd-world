@@ -13,6 +13,7 @@ import pytest
 
 from app.database import SessionLocal
 from app.models import CharacterSheet, PageDoc, PlayerCharacter, User, WorldMembership
+from app.routers import character_sheets as character_sheets_module
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -575,3 +576,112 @@ def test_migration_heals_missing_is_character_sheet_template_column(tmp_path):
     val = raw.execute("SELECT is_character_sheet_template FROM page_docs WHERE id=1").fetchone()[0]
     assert not val
     raw.close()
+
+
+# ── Deleting a template with filled sheets (docs/AUDIT_PLAN_NEXT.md item 6) ───
+
+def test_deleting_a_sheet_template_with_filled_sheets_is_refused(client, seed):
+    did = _add_doc(seed.world_a.id, name="Template", is_character_sheet_template=True)
+    _add_sheet(seed.world_a.id, did, seed.player_a.id, name="Kira's Sheet")
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.post(f"/pages/{did}/delete")
+    assert r.status_code == 400
+    db = SessionLocal()
+    try:
+        assert db.get(PageDoc, did) is not None
+    finally:
+        db.close()
+
+
+def test_deleting_a_template_with_no_sheets_still_works(client, seed):
+    did = _add_doc(seed.world_a.id, name="Unused Template", is_character_sheet_template=True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    r = client.post(f"/pages/{did}/delete", follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        assert db.get(PageDoc, did) is None
+    finally:
+        db.close()
+
+
+def test_deleting_an_album_containing_a_template_with_sheets_is_refused(client, seed):
+    from app.models import PageAlbum
+    db = SessionLocal()
+    try:
+        album = PageAlbum(world_id=seed.world_a.id, name="Sheets Folder")
+        db.add(album)
+        db.commit()
+        db.refresh(album)
+        album_id = album.id
+    finally:
+        db.close()
+    did = _add_doc(seed.world_a.id, name="Template", is_character_sheet_template=True, album_id=album_id)
+    _add_sheet(seed.world_a.id, did, seed.player_a.id, name="Kira's Sheet")
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/pages/albums/{album_id}/delete")
+    assert r.status_code == 400
+    db = SessionLocal()
+    try:
+        assert db.get(PageDoc, did) is not None
+        assert db.get(PageAlbum, album_id) is not None
+    finally:
+        db.close()
+
+
+def test_pages_library_shows_sheet_count_next_to_template_badge(client, seed):
+    did = _add_doc(seed.world_a.id, name="Template", is_character_sheet_template=True, visible_to_players=True)
+    _add_sheet(seed.world_a.id, did, seed.player_a.id, name="Kira's Sheet")
+    _add_sheet(seed.world_a.id, did, seed.player_a.id, name="Second Sheet")
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/pages")
+    assert r.status_code == 200
+    assert "2 sheets built from this" in r.text
+
+
+# ── Sheet count ceilings (docs/AUDIT_PLAN_NEXT.md item 7) ─────────────────────
+
+def test_per_player_sheet_cap_is_enforced(client, seed, monkeypatch):
+    monkeypatch.setattr(character_sheets_module, "_MAX_SHEETS_PER_PLAYER", 2)
+    did = _add_doc(seed.world_a.id, name="Template", is_character_sheet_template=True, visible_to_players=True)
+    _add_sheet(seed.world_a.id, did, seed.player_a.id, name="Sheet 1")
+    _add_sheet(seed.world_a.id, did, seed.player_a.id, name="Sheet 2")
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/pages/sheets/new", data={"template_id": str(did)})
+    assert r.status_code == 400
+    assert "maximum of 2" in r.json()["detail"]
+
+
+def test_per_player_sheet_cap_does_not_affect_other_players(client, seed, monkeypatch):
+    monkeypatch.setattr(character_sheets_module, "_MAX_SHEETS_PER_PLAYER", 1)
+    did = _add_doc(seed.world_a.id, name="Template", is_character_sheet_template=True, visible_to_players=True)
+    _add_sheet(seed.world_a.id, did, seed.player_a.id, name="Sheet 1")
+
+    other = _second_player_in_world(seed.world_a.id)
+    login(client, other.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/pages/sheets/new", data={"template_id": str(did)}, follow_redirects=False)
+    assert r.status_code == 303
+
+
+def test_per_world_sheet_cap_is_enforced(client, seed, monkeypatch):
+    monkeypatch.setattr(character_sheets_module, "_MAX_SHEETS_PER_WORLD", 1)
+    did = _add_doc(seed.world_a.id, name="Template", is_character_sheet_template=True, visible_to_players=True)
+    _add_sheet(seed.world_a.id, did, seed.player_a.id, name="Sheet 1")
+
+    other = _second_player_in_world(seed.world_a.id)
+    login(client, other.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/pages/sheets/new", data={"template_id": str(did)})
+    assert r.status_code == 400
+    assert "maximum of 1" in r.json()["detail"]

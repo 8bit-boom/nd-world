@@ -40,6 +40,14 @@ _MAX_NAME = 256
 # push per save — same "best-effort cap, not a precise budget" spirit as
 # pages.py's own _MAX_PAGE_BYTES.
 _MAX_SHEET_DATA_BYTES = 256 * 1024
+# Every other player-writable create route in the app has a ceiling
+# (_MAX_DOCS_PER_WORLD, _MAX_CLIPS_PER_WORLD, _MAX_ALBUMS_PER_WORLD, ...);
+# this is the only one without one — a scripted or stuck-retry client could
+# otherwise grow the SQLite file without bound. Per-player is the one that
+# actually stops a single misbehaving client; per-world is a backstop
+# against many players doing it at once.
+_MAX_SHEETS_PER_PLAYER = 50
+_MAX_SHEETS_PER_WORLD = 500
 
 
 def _is_gm(request: Request) -> bool:
@@ -189,6 +197,14 @@ async def character_sheets_new(request: Request, db: Session = Depends(get_db), 
         raise HTTPException(404)
     if not doc.is_character_sheet_template:
         raise HTTPException(400, "This page isn't a character sheet template")
+    player_sheet_count = db.query(CharacterSheet).filter(
+        CharacterSheet.world_id == world.id, CharacterSheet.owner_user_id == user.id,
+    ).count()
+    if player_sheet_count >= _MAX_SHEETS_PER_PLAYER:
+        raise HTTPException(400, f"You already have the maximum of {_MAX_SHEETS_PER_PLAYER} character sheets.")
+    world_sheet_count = db.query(CharacterSheet).filter(CharacterSheet.world_id == world.id).count()
+    if world_sheet_count >= _MAX_SHEETS_PER_WORLD:
+        raise HTTPException(400, f"This world already has the maximum of {_MAX_SHEETS_PER_WORLD} character sheets.")
     pc = _owned_pc_or_400(db, world.id, user.id, form.get("player_character_id"))
     sheet = CharacterSheet(
         world_id=world.id, template_id=doc.id, owner_user_id=user.id,

@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..deps import get_world_ctx, can_edit_content
-from ..models import PageAlbum, PageDoc
+from ..models import CharacterSheet, PageAlbum, PageDoc
 from ..templating import templates
 from ..uploads import (
     copy_upload_bounded,
@@ -144,6 +144,36 @@ def _delete_doc_file(doc: PageDoc) -> None:
         path.unlink()
 
 
+def _sheet_counts_by_template(db: Session, doc_ids: list) -> dict:
+    """{template_id: filled-sheet count} for the given docs — one GROUP BY
+    query, not one COUNT per doc — used to show the GM how many player
+    sheets a template already has before they try to delete it (see
+    _sheets_referencing_count, which this mirrors for the single-count
+    case used in the delete routes themselves)."""
+    if not doc_ids:
+        return {}
+    from sqlalchemy import func
+    rows = (
+        db.query(CharacterSheet.template_id, func.count(CharacterSheet.id))
+        .filter(CharacterSheet.template_id.in_(doc_ids))
+        .group_by(CharacterSheet.template_id)
+        .all()
+    )
+    return dict(rows)
+
+
+def _sheets_referencing_count(db: Session, doc_ids: list) -> int:
+    """How many CharacterSheet rows are built from any of these templates —
+    see pages_delete/pages_album_delete: deleting a PageDoc that's still
+    someone's sheet template would silently orphan the player's filled-in
+    data (data_json survives, but CharacterSheet.template_id is a non-null
+    FK to page_docs.id with no DB-level FK enforcement, so the row would
+    just point at nothing — no route can render or export it anymore)."""
+    if not doc_ids:
+        return 0
+    return db.query(CharacterSheet).filter(CharacterSheet.template_id.in_(doc_ids)).count()
+
+
 def _visible_docs_query(db: Session, request: Request, world_id: int, album_id):
     q = db.query(PageDoc).filter(PageDoc.world_id == world_id, PageDoc.album_id == album_id)
     if not _is_gm(request):
@@ -185,6 +215,7 @@ def pages_library(request: Request, db: Session = Depends(get_db), active_world:
         "album": None, "albums": albums, "breadcrumb": [],
         "sub_album_counts": _sub_album_counts(db, album_ids),
         "doc_counts": _doc_counts(db, request, album_ids),
+        "sheet_counts": _sheet_counts_by_template(db, [d.id for d in docs]),
         "max_page_mb": _MAX_PAGE_BYTES // (1024 * 1024),
     })
 
@@ -204,6 +235,7 @@ def pages_album_detail(album_id: int, request: Request, db: Session = Depends(ge
         "album": album, "albums": albums, "breadcrumb": _breadcrumb(db, album),
         "sub_album_counts": _sub_album_counts(db, album_ids),
         "doc_counts": _doc_counts(db, request, album_ids),
+        "sheet_counts": _sheet_counts_by_template(db, [d.id for d in docs]),
         "max_page_mb": _MAX_PAGE_BYTES // (1024 * 1024),
     })
 
@@ -304,7 +336,17 @@ def pages_album_delete(album_id: int, request: Request, db: Session = Depends(ge
     all_album_ids = [album.id] + [d.id for d in descendants]
 
     # Each page is an owned file (not a shared URL), so a deleted folder
-    # takes its pages — and their files — with it.
+    # takes its pages — and their files — with it. But refuse the whole
+    # thing if any page in the folder (or a sub-folder) is still someone's
+    # sheet template — see _sheets_referencing_count's docstring.
+    doc_ids = [row[0] for row in db.query(PageDoc.id).filter(PageDoc.album_id.in_(all_album_ids)).all()]
+    sheet_count = _sheets_referencing_count(db, doc_ids)
+    if sheet_count:
+        raise HTTPException(
+            400,
+            f"{sheet_count} player character sheet{'s' if sheet_count != 1 else ''} "
+            "are built from a template in this folder — delete those first.",
+        )
     docs = db.query(PageDoc).filter(PageDoc.album_id.in_(all_album_ids)).all()
     for doc in docs:
         _delete_doc_file(doc)
@@ -454,6 +496,13 @@ def pages_delete(doc_id: int, request: Request, db: Session = Depends(get_db), a
     if not world:
         raise HTTPException(404)
     doc = _doc_or_404(db, world.id, doc_id)
+    sheet_count = _sheets_referencing_count(db, [doc.id])
+    if sheet_count:
+        raise HTTPException(
+            400,
+            f"{sheet_count} player character sheet{'s' if sheet_count != 1 else ''} "
+            "are built from this template — delete those first.",
+        )
     dest = f"/pages/albums/{doc.album_id}" if doc.album_id else "/pages"
     _delete_doc_file(doc)
     db.delete(doc)

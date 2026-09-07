@@ -109,7 +109,7 @@
         <div class="pages-doc-info">
           <div class="pages-doc-name">
             {{ d.name }}
-            {% if d.is_character_sheet_template %}<span class="pages-doc-sheet-tag">🧬 sheet template</span>{% endif %}
+            {% if d.is_character_sheet_template %}<span class="pages-doc-sheet-tag">🧬 sheet template{% if sheet_counts.get(d.id) %} · {{ sheet_counts[d.id] }} sheet{{ 's' if sheet_counts[d.id] != 1 else '' }} built from this{% endif %}</span>{% endif %}
             {% if can_edit(request) and not d.visible_to_players %}<span class="pages-doc-hidden-tag">hidden from players</span>{% endif %}
           </div>
           {% if d.description %}<div class="pages-doc-desc">{{ d.description }}</div>{% endif %}

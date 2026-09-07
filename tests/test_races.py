@@ -9,6 +9,44 @@ from app.models import Entity
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
 
+def _add_race(world_id, **kw):
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=world_id, kind="race", name=kw.pop("name", "Secret Race"),
+                    subtype=kw.pop("subtype", "standard"), body=kw.pop("body", ""), **kw)
+        db.add(e)
+        db.commit()
+        db.refresh(e)
+        return e.id
+    finally:
+        db.close()
+
+
+def test_hidden_race_not_shown_to_players(client, seed):
+    """Regression: races_page queried Entity with no visibility filter at
+    all, so a race the GM marked hidden was still fully inlined (name +
+    rendered body) into the player-safe /races page's JS object
+    (docs/AUDIT_PLAN_NEXT.md item 3)."""
+    _add_race(seed.world_a.id, name="Secret Deep Ones", body="Forbidden lore text",
+              visible_to_players=False)
+    _add_race(seed.world_a.id, name="Common Folk", body="Ordinary lore", visible_to_players=True)
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/races")
+    assert r.status_code == 200
+    assert "Secret Deep Ones" not in r.text
+    assert "Forbidden lore text" not in r.text
+    assert "Common Folk" in r.text
+
+    # The GM still sees both.
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/races")
+    assert "Secret Deep Ones" in r.text
+    assert "Common Folk" in r.text
+
+
 def test_races_page_lists_builtin_catalog(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)

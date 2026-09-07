@@ -38,6 +38,7 @@
 
   <div id="ca-result" style="display:none;margin-top:1.5rem">
     <h2 style="font-size:.95rem;color:var(--text-dim)">Diff for <code id="ca-result-file"></code></h2>
+    <div id="ca-truncation-warning" style="display:none;background:#3a2a10;border:1px solid #a86;border-radius:6px;padding:.7rem 1rem;margin-bottom:.8rem;font-size:.85rem;color:#fc8"></div>
     <div style="margin-bottom:.5rem">
       <button type="button" id="ca-copy-diff" class="btn-cancel">📋 Copy diff</button>
       <button type="button" id="ca-copy-file" class="btn-cancel">📋 Copy full revised file</button>
@@ -56,6 +57,8 @@
   const resultEl = document.getElementById('ca-result');
   const resultFileEl = document.getElementById('ca-result-file');
   const diffEl = document.getElementById('ca-diff');
+  const truncationWarningEl = document.getElementById('ca-truncation-warning');
+  const copyDiffBtn = document.getElementById('ca-copy-diff');
   let lastRevised = '';
 
   function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
@@ -93,6 +96,14 @@
         lastRevised = d.revised || '';
         resultFileEl.textContent = d.file || fileEl.value;
         diffEl.innerHTML = (d.diff || '(no changes)').split('\n').map(diffLineHtml).join('\n');
+        if (d.truncation_warning) {
+          truncationWarningEl.textContent = '⚠ ' + d.truncation_warning;
+          truncationWarningEl.style.display = '';
+          copyDiffBtn.style.opacity = '0.5';
+        } else {
+          truncationWarningEl.style.display = 'none';
+          copyDiffBtn.style.opacity = '';
+        }
         resultEl.style.display = '';
         statusEl.textContent = 'Done (' + (d.model || '') + ').';
         return;

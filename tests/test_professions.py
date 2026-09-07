@@ -9,6 +9,43 @@ from app.models import Entity
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
 
+def _add_profession(world_id, **kw):
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=world_id, kind="profession", name=kw.pop("name", "Secret Profession"),
+                    subtype=kw.pop("subtype", "standard"), body=kw.pop("body", ""), **kw)
+        db.add(e)
+        db.commit()
+        db.refresh(e)
+        return e.id
+    finally:
+        db.close()
+
+
+def test_hidden_profession_not_shown_to_players(client, seed):
+    """Regression: professions_page queried Entity with no visibility filter
+    at all (mirrors test_races.py's races equivalent — see
+    docs/AUDIT_PLAN_NEXT.md item 3)."""
+    _add_profession(seed.world_a.id, name="Secret Assassin", body="Forbidden lore text",
+                     visible_to_players=False)
+    _add_profession(seed.world_a.id, name="Common Laborer", body="Ordinary lore", visible_to_players=True)
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/professions")
+    assert r.status_code == 200
+    assert "Secret Assassin" not in r.text
+    assert "Forbidden lore text" not in r.text
+    assert "Common Laborer" in r.text
+
+    # The GM still sees both.
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/professions")
+    assert "Secret Assassin" in r.text
+    assert "Common Laborer" in r.text
+
+
 def test_professions_page_lists_builtin_catalog(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)

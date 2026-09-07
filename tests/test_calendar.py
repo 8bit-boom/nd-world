@@ -242,6 +242,26 @@ def test_calendar_icon_delete_unknown_id_404s(client, seed):
     assert client.post("/api/calendar/icons/999999/delete").status_code == 404
 
 
+def test_calendar_icon_delete_rejects_icon_from_other_world(client, seed):
+    """Regression: calendar_day_icon_delete looked up an icon by id alone,
+    with no world_id check — a GM-Assistant scoped to world A could delete
+    (and remove the file for) any day icon in world B by id
+    (docs/AUDIT_PLAN_NEXT.md item 4)."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_b.slug)
+    r = client.post("/api/calendar/days/4/icons", files=_png_file())
+    icon_id = r.json()["id"]
+
+    client.cookies.set("active_world", seed.world_a.slug)
+    r2 = client.post(f"/api/calendar/icons/{icon_id}/delete")
+    assert r2.status_code == 404
+    db = SessionLocal()
+    try:
+        assert db.get(CalendarDayIcon, icon_id) is not None
+    finally:
+        db.close()
+
+
 # ── CalendarEvent: linking to entity/session/character/party ────────────
 
 def test_calendar_event_add_is_gm_only(client, seed):
@@ -354,6 +374,42 @@ def test_calendar_event_delete(client, seed):
 def test_calendar_event_delete_unknown_id_404s(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     assert client.post("/api/calendar/events/999999/delete").status_code == 404
+
+
+def test_calendar_event_delete_rejects_event_from_other_world(client, seed):
+    """Regression: calendar_event_delete looked up an event by id alone,
+    with no world_id check — a GM-Assistant scoped to world A could delete
+    any calendar event in world B by id (docs/AUDIT_PLAN_NEXT.md item 4)."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_b.slug)
+    r = client.post("/api/calendar/events", json={"day": 1, "title": "World B Secret"})
+    event_id = r.json()["id"]
+
+    client.cookies.set("active_world", seed.world_a.slug)
+    r2 = client.post(f"/api/calendar/events/{event_id}/delete")
+    assert r2.status_code == 404
+    db = SessionLocal()
+    try:
+        assert db.get(CalendarEvent, event_id) is not None
+    finally:
+        db.close()
+
+
+def test_calendar_view_rejects_non_integer_year_and_month_query_params(client, seed):
+    """Regression: /calendar?year=x used a bare int() on the query param,
+    which raised an unhandled ValueError -> HTTP 500 for any non-numeric
+    value (docs/AUDIT_PLAN_NEXT.md item 4)."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get("/calendar?year=not-a-number").status_code == 200
+    assert client.get("/calendar?month=not-a-number").status_code == 200
+
+
+def test_calendar_config_save_rejects_non_integer_current_day(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/calendar/config", data={"era_name": "Year 1", "current_day": "not-a-number"}, follow_redirects=False)
+    assert r.status_code == 303
 
 
 def test_calendar_icons_are_world_scoped(client, seed):

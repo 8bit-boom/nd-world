@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db, get_app_settings
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, filter_visible_entities
 from ..imaging import convert_image, make_thumbnail
 from ..models import Entity
 from ..rendering import render_md
@@ -126,10 +126,18 @@ def professions_page(request: Request, db: Session = Depends(get_db), active_wor
     world_professions = []
     names_in_world = set()
     if world:
-        world_professions = db.query(Entity).filter(
+        # Dedup against the FULL catalog (including hidden professions —
+        # see races.py's races_page, which this mirrors, for why). What's
+        # actually rendered below (world_professions/world_by_tier) is
+        # filtered for the viewer, since it inlines each profession's full
+        # body into the page for a player-safe route.
+        all_world_professions = db.query(Entity).filter(
             Entity.world_id == world.id, Entity.kind == "profession"
+        ).all()
+        names_in_world = {e.name for e in all_world_professions if e.name}
+        world_professions = filter_visible_entities(
+            db.query(Entity).filter(Entity.world_id == world.id, Entity.kind == "profession"), request,
         ).order_by(Entity.subtype, Entity.name).all()
-        names_in_world = {e.name for e in world_professions if e.name}
 
     available_builtin = [p for p in builtin if p["name"] not in names_in_world]
     available_by_tier = {t: [p for p in available_builtin if p["tier"] == t] for t in _PROFESSION_TIERS}
