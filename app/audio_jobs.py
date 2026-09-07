@@ -2073,8 +2073,16 @@ def resume_interrupted_jobs() -> int:
             # transcript by design (see start_resume_job's own docstring)
             # and re-reads this session's Facts fresh from the DB on every
             # run, so it's exempt from the check below the same way
-            # start_resume_job exempts it.
-            if job.purpose != "session_log_recap" and not job.transcript and (
+            # start_resume_job exempts it. purpose="ai_assist" needs the
+            # same exemption for its content-less ops (table_entries works
+            # off assist_params_json's meta/instruction alone — an empty
+            # transcript is legitimate there, not a lost upload), and
+            # purpose="world_summary" assembles its input fresh from the DB
+            # at run time; without this, an interrupted job of either
+            # purpose was mislabeled "please re-upload" at boot instead of
+            # auto-resuming (the same single-phase carve-out
+            # start_resume_job carries — the two must never disagree).
+            if job.purpose not in ("session_log_recap", "ai_assist", "world_summary") and not job.transcript and (
                 not job.audio_path or not Path(job.audio_path).is_file()
             ):
                 job.status = "error"

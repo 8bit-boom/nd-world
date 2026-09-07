@@ -336,20 +336,23 @@ async function igGenerate() {
 
   // Inline wait: poll the job to done and render the results exactly where
   // the blocking path used to put them (same cards, same history).
+  // Cancel lives NEXT TO ig-progress-text (its own element in the row),
+  // never inside it: igPollProgress rewrites that span's textContent with
+  // the live percent every 1.2s, which used to wipe a nested button and
+  // made Cancel flicker in and out of existence while generating.
   const progressText = document.getElementById('ig-progress-text');
+  const progressRow = progressText ? progressText.parentElement : null;
   const cancelBtn = document.createElement('button');
   cancelBtn.type = 'button';
   cancelBtn.className = 'nd-job-use-btn';
-  cancelBtn.style.marginLeft = '.5rem';
+  cancelBtn.style.marginLeft = '.6rem';
   cancelBtn.textContent = 'Cancel';
   cancelBtn.onclick = async () => {
     cancelBtn.disabled = true;
+    cancelBtn.textContent = 'Cancelling…';
     try { await fetch('/api/ai/imagegen/jobs/' + jobId + '/cancel', { method: 'POST' }); } catch (e) { /* the poll reports it */ }
   };
-  if (progressText) {
-    progressText.textContent = 'Queued…';
-    progressText.appendChild(cancelBtn);
-  }
+  if (progressRow) progressRow.appendChild(cancelBtn);
 
   const started = Date.now();
   const MAX_MS = 60 * 60 * 1000;  // hard inline cap; the jobs panel outlives it
@@ -375,10 +378,10 @@ async function igGenerate() {
       }
       if (job.status === 'error') throw new Error(job.error || 'Generation failed');
       if (job.status === 'cancelled') throw new Error('Generation cancelled');
-      if (progressText) {
-        progressText.textContent = job.status === 'generating' ? 'Generating…' : 'Queued…';
-        progressText.appendChild(cancelBtn);
-      }
+      // progress text: ComfyUI has no live percent (see _igIsComfyUI), so
+      // say so once; for SwarmUI igPollProgress owns the span (live %) —
+      // writing "Queued/Generating" here too would fight it every 1.5s.
+      if (progressText && _igIsComfyUI) progressText.textContent = 'no live progress';
     }
     throw new Error('Still generating after an hour — check the Background jobs list below.');
   } catch (e) {
@@ -387,6 +390,7 @@ async function igGenerate() {
   } finally {
     clearInterval(_igProgressTimer);
     _igProgressTimer = null;
+    cancelBtn.remove();
     if (progressWrap) progressWrap.style.display = 'none';
     btn.disabled = false;
     status.style.display = 'none';

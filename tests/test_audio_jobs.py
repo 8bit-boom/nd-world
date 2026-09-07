@@ -2336,6 +2336,62 @@ async def test_resume_interrupted_jobs_resumes_session_log_recap_without_transcr
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_resume_interrupted_jobs_resumes_ai_assist_and_world_summary_without_transcript_or_audio(
+    client, seed, monkeypatch,
+):
+    """Boot-time auto-resume must treat purpose="ai_assist" (content-less
+    ops like table_entries work off assist_params_json alone) and
+    purpose="world_summary" (input assembled fresh at run time) like
+    session_log_recap: no transcript and no audio is their NORMAL shape,
+    not a lost upload — before the carve-out an interrupted job of either
+    purpose was mislabeled "please re-upload" at boot instead of resuming
+    (the same disagreement start_resume_job's single_phase list already
+    fixed for the manual-resume path)."""
+    async def fake_run_assist(op, **kwargs):
+        return {"op": op, "mode": "data", "data": {"entries": []}, "model": "m"}
+    monkeypatch.setattr(audio_jobs._ai_assist, "run_assist", fake_run_assist)
+
+    def _no_state(world_id):
+        return "# world\n- [note] Lore"
+
+    monkeypatch.setattr(audio_jobs, "_world_summary_state_text", _no_state)
+
+    ids = []
+    db = SessionLocal()
+    try:
+        db.add_all([
+            AudioJob(
+                world_id=seed.world_a.id, purpose="ai_assist", status="interrupted",
+                filename="AI assist · table-form", assist_params_json=json.dumps({
+                    "op": "table_entries", "surface": "table-form", "meta": "Name: Road encounters",
+                    "instruction": "", "lang": "",
+                }),
+                transcript="", audio_path="", delete_after=False,
+                error="Paused by a server restart",
+            ),
+            AudioJob(
+                world_id=seed.world_a.id, purpose="world_summary", status="interrupted",
+                filename="World summary", audio_path="", delete_after=False,
+                error="Paused by a server restart",
+            ),
+        ])
+        db.commit()
+        for j in db.query(AudioJob).filter(AudioJob.status == "interrupted").all():
+            ids.append(j.id)
+    finally:
+        db.close()
+    assert len(ids) == 2
+
+    resumed = audio_jobs.resume_interrupted_jobs()
+    assert resumed == 2
+
+    for job_id in ids:
+        job = await _await_terminal(job_id)
+        assert job.status == "done", job.error
+        assert job.resumed_count == 1
+
+
 async def test_start_resume_job_resumes_session_log_recap_without_transcript_or_audio(client, seed):
     db = SessionLocal()
     try:
