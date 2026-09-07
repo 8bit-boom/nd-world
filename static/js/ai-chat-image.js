@@ -296,13 +296,23 @@ async function igGenerate() {
     // broken, so show an indeterminate "working" state instead of a real
     // percentage nothing will ever move.
     if (track) track.style.display = _igIsComfyUI ? 'none' : 'block';
-    document.getElementById('ig-progress-text').textContent = _igIsComfyUI ? 'Generating… (ComfyUI reports no progress)' : '';
+    document.getElementById('ig-progress-text').textContent = 'Queued…';
   }
   if (!_igIsComfyUI) _igProgressTimer = setInterval(igPollProgress, 1200);
 
+  // Generate runs as a durable image JOB, not the old blocking
+  // /api/ai/imagegen/generate call: a cold backend (model loading after a
+  // SwarmUI update/restart) easily exceeds the Cloudflare tunnel's ~100s
+  // ceiling, and the blocking request died with "Server error 524" while
+  // SwarmUI happily finished the image anyway — result visible only in
+  // SwarmUI's own history, never in nd-world. The job engine is immune
+  // (no HTTP request is held open), survives tab closes and server
+  // restarts, and the jobs panel below mirrors the whole lifecycle. The
+  // blocking route stays up as a documented API; no UI flow uses it.
+  const body = _igBuildBody(prompt);
+  let jobId = null;
   try {
-    const body = _igBuildBody(prompt);
-    const r = await fetch('/api/ai/imagegen/generate', {
+    const r = await fetch('/api/ai/imagegen/jobs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -312,20 +322,67 @@ async function igGenerate() {
       try { detail = (await r.json()).detail || ''; } catch (e) { /* non-JSON error body */ }
       throw new Error(detail || `Server error ${r.status}`);
     }
-    const data = await r.json();
-    if (data.error) throw new Error(data.error);
-
-    const urls = data.urls && data.urls.length ? data.urls : (data.url ? [data.url] : []);
-    if (!urls.length) throw new Error('No images returned');
-    _igLastUrls = urls;
-    igSaveToHistory(urls, body);
-    _igRenderResultCards(urls, body, grid);
-    results.style.display = 'block';
+    jobId = (await r.json()).job_id;
   } catch (e) {
-    const msg = e.message || String(e);
-    err.textContent = '❌ ' + (msg.toLowerCase().includes('networkerror') || msg.toLowerCase().includes('fetch')
-      ? 'Cannot reach image generation service. Is SwarmUI/ComfyUI running and configured?'
-      : msg);
+    err.textContent = '❌ ' + (e.message || e);
+    err.style.display = 'block';
+    clearInterval(_igProgressTimer);
+    _igProgressTimer = null;
+    if (progressWrap) progressWrap.style.display = 'none';
+    btn.disabled = false;
+    status.style.display = 'none';
+    return;
+  }
+
+  // Inline wait: poll the job to done and render the results exactly where
+  // the blocking path used to put them (same cards, same history).
+  const progressText = document.getElementById('ig-progress-text');
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'nd-job-use-btn';
+  cancelBtn.style.marginLeft = '.5rem';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = async () => {
+    cancelBtn.disabled = true;
+    try { await fetch('/api/ai/imagegen/jobs/' + jobId + '/cancel', { method: 'POST' }); } catch (e) { /* the poll reports it */ }
+  };
+  if (progressText) {
+    progressText.textContent = 'Queued…';
+    progressText.appendChild(cancelBtn);
+  }
+
+  const started = Date.now();
+  const MAX_MS = 60 * 60 * 1000;  // hard inline cap; the jobs panel outlives it
+  try {
+    while (Date.now() - started < MAX_MS) {
+      await new Promise(r => setTimeout(r, 1500));
+      let job;
+      try {
+        const r = await fetch('/api/ai/imagegen/jobs/' + jobId);
+        if (r.status === 404) throw new Error('job disappeared');
+        job = await r.json();
+      } catch (e) {
+        // Transient poll hiccup (network blip) — keep waiting rather than
+        // aborting a healthy generation; the jobs panel is the backstop.
+        continue;
+      }
+      if (job.status === 'done' && (job.urls || []).length) {
+        igSaveToHistory(job.urls, body);
+        _igLastUrls = job.urls;
+        _igRenderResultCards(job.urls, body, grid);
+        results.style.display = 'block';
+        return;
+      }
+      if (job.status === 'error') throw new Error(job.error || 'Generation failed');
+      if (job.status === 'cancelled') throw new Error('Generation cancelled');
+      if (progressText) {
+        progressText.textContent = job.status === 'generating' ? 'Generating…' : 'Queued…';
+        progressText.appendChild(cancelBtn);
+      }
+    }
+    throw new Error('Still generating after an hour — check the Background jobs list below.');
+  } catch (e) {
+    err.textContent = '❌ ' + (e.message || e);
     err.style.display = 'block';
   } finally {
     clearInterval(_igProgressTimer);
@@ -333,6 +390,7 @@ async function igGenerate() {
     if (progressWrap) progressWrap.style.display = 'none';
     btn.disabled = false;
     status.style.display = 'none';
+    igLoadJobs();
   }
 }
 

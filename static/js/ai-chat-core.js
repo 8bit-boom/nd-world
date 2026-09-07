@@ -754,19 +754,40 @@ async function illustrateMessage(text, bubble, btn) {
     if (!imgPrompt || imgPrompt.startsWith('[AI ')) throw new Error(imgPrompt || 'Could not write an image prompt');
 
     btn.textContent = '🎨 Generating…';
-    const genRes = await fetch('/api/ai/imagegen/generate', {
+    // Via the durable image-job engine, not the blocking /generate route:
+    // a cold SwarmUI (model loading after an update) exceeds the Cloudflare
+    // tunnel's ~100s ceiling, and the blocking call died with "Server error
+    // 524" while SwarmUI finished the image anyway. Job rows also survive
+    // tab closes; the Image Gen tab's jobs panel shows the same row.
+    const jobRes = await fetch('/api/ai/imagegen/jobs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt: imgPrompt }),
     });
-    if (!genRes.ok) {
+    if (!jobRes.ok) {
       let detail = '';
-      try { detail = (await genRes.json()).detail || ''; } catch (e) { /* non-JSON error body */ }
-      throw new Error(detail || `Server error ${genRes.status}`);
+      try { detail = (await jobRes.json()).detail || ''; } catch (e) { /* non-JSON error body */ }
+      throw new Error(detail || `Server error ${jobRes.status}`);
     }
-    const genData = await genRes.json();
-    if (genData.error) throw new Error(genData.error);
-    const url = genData.url || (genData.urls && genData.urls[0]) || '';
+    const jobId = (await jobRes.json()).job_id;
+    let url = '';
+    const started = Date.now();
+    for (;;) {
+      await new Promise(r => setTimeout(r, 1500));
+      let job;
+      try {
+        const r = await fetch('/api/ai/imagegen/jobs/' + jobId);
+        if (r.status === 404) throw new Error('job disappeared');
+        job = await r.json();
+      } catch (e) {
+        if (Date.now() - started > 60 * 60 * 1000) throw new Error('Image job polling timed out — check the Image Gen tab.');
+        continue;  // transient poll hiccup — keep waiting
+      }
+      if (job.status === 'done') { url = (job.urls && job.urls[0]) || ''; break; }
+      if (job.status === 'error') throw new Error(job.error || 'Image generation failed');
+      if (job.status === 'cancelled') throw new Error('Image generation cancelled');
+      if (Date.now() - started > 60 * 60 * 1000) throw new Error('Image job still running after an hour — check the Image Gen tab.');
+    }
     if (!url) throw new Error('No image returned — is an image generation backend configured and running?');
 
     const card = document.createElement('div');
