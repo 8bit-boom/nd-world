@@ -87,6 +87,7 @@ function igClearCN() {
     await igReloadModels();
     igRenderLoras();
     igRenderPresets();
+    igLoadTemplates();
     igUpdateCfgWarning();
     igLoadSamplersSchedulers();
     igLoadLoras();
@@ -585,6 +586,14 @@ async function igReloadModels() {
   } catch (e) {
     // Leave whatever was already in the dropdown — this is a refresh, not
     // the initial load, so a transient fetch failure shouldn't blank it.
+  }
+  // The model just changed (initial load or refresh) — refresh the
+  // template picker's "(suggested)" marker to match, and keep following
+  // manual model swaps from here on.
+  igRenderTemplates();
+  if (!sel.dataset.tmplWired) {
+    sel.dataset.tmplWired = '1';
+    sel.addEventListener('change', igRenderTemplates);
   }
 }
 
@@ -1272,6 +1281,106 @@ function igUpdateCfgWarning() {
   const warn = document.getElementById('ig-cfg-warning');
   if (!el || !warn) return;
   warn.hidden = !(parseFloat(el.value) <= 2);
+}
+
+// ── Model templates (built-in, per model family) ────────────────────────────
+// Served by GET /api/ai/imagegen/model-templates (app/imagegen_templates.py,
+// settings follow SwarmUI's Model Support doc). Applying one: merges the
+// template's style tags around the current prompt (only tags not already
+// present), replaces the negative prompt, and sets the recommended
+// steps/CFG/sampler/scheduler. The picker marks the template matching the
+// currently-selected backend model as "(suggested)".
+
+let _igTemplates = [];
+
+async function igLoadTemplates() {
+  const sel = document.getElementById('ig-tmpl-sel');
+  if (!sel) return;
+  try {
+    const d = await fetch('/api/ai/imagegen/model-templates').then(r => r.json());
+    _igTemplates = d.templates || [];
+  } catch (e) { _igTemplates = []; }
+  igRenderTemplates();
+}
+
+function igSuggestedTemplate() {
+  const modelSel = document.getElementById('ig-model');
+  const name = modelSel ? (modelSel.value || '') : '';
+  if (!name) return null;
+  const lower = name.toLowerCase();
+  return _igTemplates.find(t => (t.match || []).some(k => lower.includes(k))) || null;
+}
+
+function igRenderTemplates() {
+  const sel = document.getElementById('ig-tmpl-sel');
+  if (!sel) return;
+  const suggested = igSuggestedTemplate();
+  sel.innerHTML = '';
+  const head = document.createElement('option');
+  head.value = '';
+  head.textContent = suggested
+    ? `📦 Model template — suggested: ${suggested.label}`
+    : '📦 Model template — pick your model family…';
+  sel.appendChild(head);
+  _igTemplates.forEach(t => {
+    const o = document.createElement('option');
+    o.value = t.id;
+    o.textContent = t.label;
+    sel.appendChild(o);
+  });
+  if (suggested) sel.value = suggested.id;
+}
+
+// Add `tags` (comma-separated) into `current` (comma-separated prompt
+// text) without duplicating any tag already present — prefix tags go to
+// the front, suffix tags to the end.
+function _igMergeTags(current, prefix, suffix) {
+  const parts = (current || '').split(',').map(s => s.trim()).filter(Boolean);
+  const have = new Set(parts.map(s => s.toLowerCase()));
+  const addFront = (prefix || '').split(',').map(s => s.trim()).filter(Boolean)
+    .filter(s => !have.has(s.toLowerCase()));
+  const addBack = (suffix || '').split(',').map(s => s.trim()).filter(Boolean)
+    .filter(s => !have.has(s.toLowerCase()));
+  return [...addFront, ...parts, ...addBack].join(', ');
+}
+
+async function igApplyTemplate() {
+  const sel = document.getElementById('ig-tmpl-sel');
+  const note = document.getElementById('ig-tmpl-note');
+  const t = _igTemplates.find(x => x.id === sel?.value);
+  if (!t) return;
+  const promptEl = document.getElementById('ig-prompt');
+  if (promptEl) {
+    const current = promptEl.value.trim();
+    // An empty box gets the example (so the intended shape is obvious);
+    // existing text keeps the GM's subject and gains the style tags.
+    promptEl.value = current
+      ? _igMergeTags(current, t.prefix, t.suffix)
+      : (t.example_prompt || _igMergeTags('', t.prefix, t.suffix));
+    autoResize(promptEl);
+  }
+  const set = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined && val !== null && val !== '') el.value = val; };
+  set('ig-negative', t.negative || '');
+  set('ig-steps', t.steps);
+  set('ig-cfg', t.cfg);
+  // Sampler/scheduler only when the backend offers that option.
+  if (t.sampler) {
+    const s = document.getElementById('ig-sampler');
+    if (s && [...s.options].some(o => o.value === t.sampler)) s.value = t.sampler;
+  }
+  if (t.scheduler) {
+    const s = document.getElementById('ig-scheduler');
+    if (s && [...s.options].some(o => o.value === t.scheduler)) s.value = t.scheduler;
+  }
+  const stepsVal = document.getElementById('ig-steps-val');
+  if (stepsVal && t.steps) stepsVal.textContent = t.steps;
+  const cfgVal = document.getElementById('ig-cfg-val');
+  if (cfgVal && t.cfg != null) cfgVal.textContent = t.cfg;
+  igUpdateCfgWarning();
+  if (note) {
+    note.textContent = '📦 ' + t.label + ' — ' + t.note;
+    note.hidden = false;
+  }
 }
 
 // ── Prompt Presets ─────────────────────────────────────────────────────────────// GM-editable, per-world, server-side (see /api/ai/prompt-presets?scope=image)

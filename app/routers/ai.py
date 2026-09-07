@@ -19,6 +19,7 @@ from .. import ai_assist as _ai_assist
 from .. import audio_jobs as _audio_jobs
 from .. import chat_jobs as _chat_jobs
 from .. import image_jobs as _image_jobs
+from .. import imagegen_templates as _ig_templates
 from .. import ollama_tuning as _tuning
 from .. import retrieval as _retrieval
 from ..constants import KINDS
@@ -2389,6 +2390,17 @@ def _imagegen_params(body: ImagegenBody, uploads_dir: _Path) -> dict:
 
 def _imagegen_uploads_dir() -> _Path:
     return _Path(_os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+
+
+@router.get("/imagegen/model-templates")
+async def ai_imagegen_model_templates():
+    """Built-in per-model prompt/generation templates (see
+    app/imagegen_templates.py) — prompt scaffolding + recommended
+    negative/steps/CFG/sampler per model family (Anima, Krea 2, SDXL,
+    Pony, Z-Image, Flux, ...). Static content versioned with the app, so
+    read-only and safe for any authenticated caller; applied client-side
+    by the Image tab's template picker."""
+    return {"templates": _ig_templates.TEMPLATES}
 
 
 @router.post("/imagegen/generate")

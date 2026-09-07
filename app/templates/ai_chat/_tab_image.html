@@ -369,6 +369,15 @@
         </div>
       </div>
 
+      <!-- Model templates (built-in, app-versioned — see app/imagegen_templates.py) -->
+      <div id="ig-tmpl-row" style="display:flex;gap:.28rem;align-items:center">
+        <select id="ig-tmpl-sel" class="ig-select" style="flex:1;font-size:.76rem">
+          <option value="">📦 Model template — pick your model family…</option>
+        </select>
+        <button class="ig-btn" onclick="igApplyTemplate()" style="font-size:.72rem;padding:.22rem .45rem;white-space:nowrap" title="Apply the selected template: prompt scaffolding + negative + recommended steps/CFG/sampler">↩ Apply</button>
+      </div>
+      <div id="ig-tmpl-note" hidden style="font-size:.7rem;color:var(--text-dim);line-height:1.35;margin-top:.15rem"></div>
+
       <!-- Prompt Presets -->
       <div id="ig-preset-row" style="display:flex;gap:.28rem;align-items:center">
         <select id="ig-preset-sel" class="ig-select" style="flex:1;font-size:.76rem">
