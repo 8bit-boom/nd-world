@@ -170,3 +170,29 @@ def test_builtin_profession_catalog_is_memoized(client, seed):
     info = professions_module._load_builtin_professions.cache_info()
     assert info.misses == 1, "second /professions view re-read the catalog from disk"
     assert info.hits >= 1
+
+
+def test_player_never_sees_gm_only_profession_controls(client, seed):
+    """docs/AUDIT_PLAN_NEXT.md item 20: the page rendered a full GM toolbar
+    (New Profession, per-profession delete, built-in Add buttons) with no
+    can_edit(request) guard — every button 403s for a player who clicks it.
+    Cosmetic only (the server-side gate already denies the POSTs), but the
+    controls must not render at all."""
+    prof_id = _add_profession(seed.world_a.id, name="Common Trade", visible_to_players=True)
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/professions")
+    assert r.status_code == 200
+    assert "+ New Profession" not in r.text
+    assert f'/professions/{prof_id}/delete' not in r.text
+    assert "Add built-in professions" not in r.text
+    assert "/professions/add-all-builtin" not in r.text
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/professions")
+    assert "+ New Profession" in r.text
+    assert f'/professions/{prof_id}/delete' in r.text
+    assert "Add built-in professions" in r.text
+    assert "/professions/add-all-builtin" in r.text

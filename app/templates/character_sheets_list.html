@@ -18,10 +18,17 @@
         <div class="pages-doc-row">
           <div class="pages-doc-info">
             <div class="pages-doc-name">{{ s.name }}</div>
-            {% if s.player_character_id %}<div class="pages-doc-desc">🔗 linked to a character</div>{% endif %}
+            <div class="pages-doc-desc">
+              {% if s.template_id in template_names %}from {{ template_names[s.template_id] }}{% else %}template deleted{% endif %}
+              {% if s.player_character_id and s.player_character_id in pc_names %}&middot; 🔗 {{ pc_names[s.player_character_id] }}{% endif %}
+            </div>
           </div>
           <a class="btn-save" style="text-decoration:none;white-space:nowrap" href="{{ ('/pages/sheets/' + s.id|string)|wq }}">✏ Open</a>
           <a class="btn-cancel" style="text-decoration:none;white-space:nowrap;font-size:.75rem;padding:.25rem .6rem" href="{{ ('/pages/sheets/' + s.id|string + '/download')|wq }}">⬇ Download</a>
+          <form method="post" action="{{ ('/pages/sheets/' + s.id|string + '/delete')|wq }}"
+                onsubmit="return confirm('Delete this character sheet? This can\'t be undone.');" style="display:inline">
+            <button type="submit" class="btn-cancel" style="font-size:.75rem;padding:.25rem .6rem;border-color:#a33;color:#e07">🗑 Delete</button>
+          </form>
         </div>
         {% endfor %}
       </div>
@@ -38,10 +45,17 @@
         <div class="pages-doc-row">
           <div class="pages-doc-info">
             <div class="pages-doc-name">{{ s.name }}</div>
-            {% if s.player_character_id %}<div class="pages-doc-desc">🔗 linked to a character</div>{% endif %}
+            <div class="pages-doc-desc">
+              {% if s.template_id in template_names %}from {{ template_names[s.template_id] }}{% else %}template deleted{% endif %}
+              {% if s.player_character_id and s.player_character_id in pc_names %}&middot; 🔗 {{ pc_names[s.player_character_id] }}{% endif %}
+            </div>
           </div>
           <a class="btn-save" style="text-decoration:none;white-space:nowrap" href="{{ ('/pages/sheets/' + s.id|string)|wq }}">✏ Open</a>
           <a class="btn-cancel" style="text-decoration:none;white-space:nowrap;font-size:.75rem;padding:.25rem .6rem" href="{{ ('/pages/sheets/' + s.id|string + '/download')|wq }}">⬇ Download</a>
+          <form method="post" action="{{ ('/pages/sheets/' + s.id|string + '/delete')|wq }}"
+                onsubmit="return confirm('Delete this character sheet? This can\'t be undone.');" style="display:inline">
+            <button type="submit" class="btn-cancel" style="font-size:.75rem;padding:.25rem .6rem;border-color:#a33;color:#e07">🗑 Delete</button>
+          </form>
         </div>
         {% endfor %}
       </div>

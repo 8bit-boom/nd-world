@@ -513,6 +513,34 @@ def test_gm_sees_every_sheet_grouped_by_owner(client, seed):
     assert "TheirsNotMine" in r.text
 
 
+def test_list_page_shows_real_pc_and_template_names_and_a_delete_button(client, seed):
+    """Regression: the list page showed the literal text "🔗 linked to a
+    character" for every linked sheet regardless of which character it was
+    (character_sheets_list never resolved the PC/template names), and had
+    no delete affordance at all — a player had to open a sheet just to
+    remove it (docs/AUDIT_PLAN_NEXT.md item 21)."""
+    did = _add_doc(seed.world_a.id, name="Blank Sheet", is_character_sheet_template=True, visible_to_players=True)
+    pc_id = _add_pc(seed.world_a.id, seed.player_a.id, name="Kira Stormwright")
+    sid = _add_sheet(seed.world_a.id, did, seed.player_a.id, name="Kira's Sheet", player_character_id=pc_id)
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/pages/sheets")
+    assert r.status_code == 200
+    assert "linked to a character" not in r.text
+    assert "from Blank Sheet" in r.text
+    assert "🔗 Kira Stormwright" in r.text
+    assert f'/pages/sheets/{sid}/delete' in r.text
+
+    r = client.post(f"/pages/sheets/{sid}/delete", follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        assert db.get(CharacterSheet, sid) is None
+    finally:
+        db.close()
+
+
 # ── PlayerCharacter integration panel ───────────────────────────────────
 
 def test_pc_detail_page_lists_linked_sheet(client, seed):

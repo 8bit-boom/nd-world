@@ -250,3 +250,20 @@ def test_now_playing_widget_present_on_every_page_for_gm_and_player(client, seed
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/")
     assert 'id="nd-now-playing"' in r.text
+
+
+def test_now_playing_widget_has_volume_control_and_persists_dismissal(client, seed):
+    """docs/AUDIT_PLAN_NEXT.md item 22: the widget had no volume control,
+    and dismissing it was all-or-nothing with no memory across navigation —
+    a player who dismissed a track got it back at full volume from the top
+    on their very next page load, contradicting the dismiss button's own
+    tooltip ("Hide (doesn't stop it for others)")."""
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/")
+    assert 'id="nd-now-playing-volume"' in r.text
+    assert 'type="range"' in r.text
+    assert "function ndNowPlayingSetVolume(" in r.text
+    assert "nd_now_playing_volume" in r.text
+    assert "nd_now_playing_dismissed_version" in r.text
+    assert "box.dataset.audioVersion" in r.text

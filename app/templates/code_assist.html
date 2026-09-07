@@ -6,8 +6,10 @@
   <div style="background:rgba(255,190,0,.08);border:1px solid #ffbe00;color:#ffbe00;padding:.7rem 1rem;border-radius:6px;font-size:.85rem;margin-bottom:1rem;line-height:1.5">
     <strong>Preview only.</strong> This drafts a change to one of nd-world's own source
     files and shows you a diff — it never writes anything to disk, and nothing here
-    restarts or rebuilds the app. Review the diff, then apply it yourself (paste it into
-    your editor, or hand it to whatever manages this deployment's source).
+    restarts or rebuilds the app. To apply it: save the diff to a file (e.g.
+    <code>patch.diff</code>), then from your nd-world checkout run
+    <code>git apply patch.diff</code> — or download the revised file below and use it
+    to replace the original by hand.
   </div>
 
   <div class="form-group">
@@ -39,11 +41,16 @@
   <div id="ca-result" style="display:none;margin-top:1.5rem">
     <h2 style="font-size:.95rem;color:var(--text-dim)">Diff for <code id="ca-result-file"></code></h2>
     <div id="ca-truncation-warning" style="display:none;background:#3a2a10;border:1px solid #a86;border-radius:6px;padding:.7rem 1rem;margin-bottom:.8rem;font-size:.85rem;color:#fc8"></div>
-    <div style="margin-bottom:.5rem">
+    <div style="margin-bottom:.5rem;display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+      <button type="button" id="ca-view-diff" class="btn-save" style="font-size:.8rem">Diff</button>
+      <button type="button" id="ca-view-full" class="btn-cancel" style="font-size:.8rem">Full revised file</button>
+      <span style="flex:1;min-width:.5rem"></span>
       <button type="button" id="ca-copy-diff" class="btn-cancel">📋 Copy diff</button>
       <button type="button" id="ca-copy-file" class="btn-cancel">📋 Copy full revised file</button>
+      <button type="button" id="ca-download-file" class="btn-cancel">⬇ Download revised file</button>
     </div>
     <pre id="ca-diff" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;font-size:.78rem;overflow-x:auto;white-space:pre;line-height:1.5"></pre>
+    <pre id="ca-full" style="display:none;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;font-size:.78rem;overflow-x:auto;white-space:pre;line-height:1.5"></pre>
   </div>
 </div>
 <script>
@@ -57,8 +64,11 @@
   const resultEl = document.getElementById('ca-result');
   const resultFileEl = document.getElementById('ca-result-file');
   const diffEl = document.getElementById('ca-diff');
+  const fullFileEl = document.getElementById('ca-full');
   const truncationWarningEl = document.getElementById('ca-truncation-warning');
   const copyDiffBtn = document.getElementById('ca-copy-diff');
+  const viewDiffBtn = document.getElementById('ca-view-diff');
+  const viewFullBtn = document.getElementById('ca-view-full');
   let lastRevised = '';
 
   function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
@@ -76,6 +86,33 @@
     else if (line.startsWith('-') && !line.startsWith('---')) color = '#f66';
     else if (line.startsWith('@@')) color = '#6cf';
     return `<span style="color:${color}">${esc(line)}</span>`;
+  }
+
+  function showDiffView() {
+    diffEl.style.display = '';
+    fullFileEl.style.display = 'none';
+    viewDiffBtn.className = 'btn-save';
+    viewFullBtn.className = 'btn-cancel';
+  }
+  function showFullFileView() {
+    diffEl.style.display = 'none';
+    fullFileEl.style.display = '';
+    viewDiffBtn.className = 'btn-cancel';
+    viewFullBtn.className = 'btn-save';
+  }
+  viewDiffBtn.addEventListener('click', showDiffView);
+  viewFullBtn.addEventListener('click', showFullFileView);
+
+  // The job id lives in the URL hash (not just in memory) so a reload —
+  // navigating away mid-generation and coming back, or just refreshing —
+  // resumes polling the same AudioJob row instead of losing the result,
+  // even though the row itself already survives on /background-jobs.
+  function setJobHash(jobId) {
+    try { history.replaceState(null, '', '#job=' + jobId); } catch (e) {}
+  }
+  function getJobIdFromHash() {
+    const m = location.hash.match(/^#job=(\d+)$/);
+    return m ? m[1] : null;
   }
 
   async function pollJob(jobId) {
@@ -96,6 +133,8 @@
         lastRevised = d.revised || '';
         resultFileEl.textContent = d.file || fileEl.value;
         diffEl.innerHTML = (d.diff || '(no changes)').split('\n').map(diffLineHtml).join('\n');
+        fullFileEl.textContent = lastRevised;
+        showDiffView();
         if (d.truncation_warning) {
           truncationWarningEl.textContent = '⚠ ' + d.truncation_warning;
           truncationWarningEl.style.display = '';
@@ -134,6 +173,7 @@
       });
       if (!res.ok) throw await ndApiErrorFrom(res);
       const data = await res.json();
+      setJobHash(data.job_id);
       statusEl.textContent = 'Working…';
       await pollJob(data.job_id);
     } catch (err) {
@@ -149,6 +189,25 @@
   document.getElementById('ca-copy-file').addEventListener('click', () => {
     navigator.clipboard && navigator.clipboard.writeText(lastRevised);
   });
+  document.getElementById('ca-download-file').addEventListener('click', () => {
+    if (!lastRevised) return;
+    const filename = (resultFileEl.textContent || 'revised.txt').split('/').pop() || 'revised.txt';
+    const blob = new Blob([lastRevised], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
+  const resumeId = getJobIdFromHash();
+  if (resumeId) {
+    statusEl.textContent = 'Resuming…';
+    pollJob(resumeId);
+  }
 })();
 </script>
 {% endblock %}

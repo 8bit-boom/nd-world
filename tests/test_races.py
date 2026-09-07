@@ -220,3 +220,31 @@ def test_builtin_race_catalog_is_memoized(client, seed):
     info = races_module._load_builtin_races.cache_info()
     assert info.misses == 1, "second /races view re-read the catalog from disk"
     assert info.hits >= 1
+
+
+def test_player_never_sees_gm_only_race_controls(client, seed):
+    """docs/AUDIT_PLAN_NEXT.md item 20: the page rendered a full GM toolbar
+    (New Race, per-race Edit/delete, built-in Add buttons) with no
+    can_edit(request) guard — every button 403s for a player who clicks it.
+    Cosmetic only (the server-side gate already denies the POSTs), but the
+    controls must not render at all."""
+    race_id = _add_race(seed.world_a.id, name="Common Folk", visible_to_players=True)
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/races")
+    assert r.status_code == 200
+    assert "+ New Race" not in r.text
+    assert f'/races/{race_id}/delete' not in r.text
+    assert f'/entity/{race_id}/edit' not in r.text
+    assert "Add built-in races" not in r.text
+    assert "/races/add-all-builtin" not in r.text
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/races")
+    assert "+ New Race" in r.text
+    assert f'/races/{race_id}/delete' in r.text
+    assert f'/entity/{race_id}/edit' in r.text
+    assert "Add built-in races" in r.text
+    assert "/races/add-all-builtin" in r.text

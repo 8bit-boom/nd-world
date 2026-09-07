@@ -103,7 +103,9 @@
   {% if request.query_params.get('added') %}
   <span style="color:#4f4;font-size:.8rem">✓ Added {{ request.query_params.get('added') }} professions</span>
   {% endif %}
+  {% if can_edit(request) %}
   <a href="{{ '/professions/new'|wq }}" class="btn-new" style="margin-left:auto">+ New Profession</a>
+  {% endif %}
   {% else %}
   <span style="color:#888;font-size:.82rem">Select a world first</span>
   {% endif %}
@@ -142,9 +144,11 @@
       <div class="profession-card-summary">{{ e.summary }}</div>
       {% endif %}
     </div>
+    {% if can_edit(request) %}
     <form action="/professions/{{ e.id }}/delete" method="post" onsubmit="event.stopPropagation();return confirm('Remove {{ e.name }} from this world?')">
       <button type="submit" class="profession-card-del" onclick="event.stopPropagation()">✕</button>
     </form>
+    {% endif %}
   </div>
   {% else %}
   <p style="color:var(--text-dim);padding:.5rem 0;font-size:.85rem">No {{ tier }} professions yet.</p>
@@ -153,7 +157,7 @@
 {% endfor %}
 
 <!-- Available built-in professions -->
-{% if available_builtin %}
+{% if can_edit(request) and available_builtin %}
 <div class="available-section">
   <div class="available-header" onclick="toggleAvailable()">
     <h3>📚 Add built-in professions <span style="font-size:.75rem;color:#555">({{ available_builtin|length }} available)</span></h3>

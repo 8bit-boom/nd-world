@@ -108,7 +108,9 @@
   {% if request.query_params.get('added') %}
   <span style="color:#4f4;font-size:.8rem">✓ Added {{ request.query_params.get('added') }} races</span>
   {% endif %}
+  {% if can_edit(request) %}
   <a href="{{ '/races/new'|wq }}" class="btn-new" style="margin-left:auto">+ New Race</a>
+  {% endif %}
   {% else %}
   <span style="color:#888;font-size:.82rem">Select a world first</span>
   {% endif %}
@@ -147,12 +149,14 @@
       <div class="race-card-summary">{{ e.summary }}</div>
       {% endif %}
     </div>
+    {% if can_edit(request) %}
     <div class="race-card-actions">
       <a href="{{ ('/entity/' ~ e.id ~ '/edit')|wq }}" class="race-card-edit" title="Edit {{ e.name }}" onclick="event.stopPropagation()">✎</a>
       <form action="/races/{{ e.id }}/delete" method="post" onsubmit="event.stopPropagation();return confirm('Remove {{ e.name }} from this world?')">
         <button type="submit" class="race-card-del" onclick="event.stopPropagation()">✕</button>
       </form>
     </div>
+    {% endif %}
   </div>
   {% else %}
   <p style="color:var(--text-dim);padding:.5rem 0;font-size:.85rem">No {{ tier }} races yet.</p>
@@ -161,7 +165,7 @@
 {% endfor %}
 
 <!-- Available built-in races -->
-{% if available_builtin %}
+{% if can_edit(request) and available_builtin %}
 <div class="available-section">
   <div class="available-header" onclick="toggleAvailable()">
     <h3>📚 Add built-in races <span style="font-size:.75rem;color:#555">({{ available_builtin|length }} available)</span></h3>

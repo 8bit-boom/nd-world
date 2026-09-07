@@ -118,6 +118,23 @@ def test_code_assist_page_loads_for_gm(client, seed):
     assert "Preview only" in r.text
 
 
+def test_code_assist_page_has_diff_usability_controls(client, seed):
+    """docs/AUDIT_PLAN_NEXT.md item 23: a concrete apply recipe (git apply),
+    a download button for the revised file, a diff/full-file view toggle,
+    and job-id-in-URL-hash resume logic so a reload doesn't lose an
+    in-flight or completed generation."""
+    _login_gm(client, seed)
+    r = client.get("/tools/code-assist")
+    assert r.status_code == 200
+    assert "git apply patch.diff" in r.text
+    assert 'id="ca-view-diff"' in r.text
+    assert 'id="ca-view-full"' in r.text
+    assert 'id="ca-download-file"' in r.text
+    assert "function getJobIdFromHash(" in r.text
+    assert "function setJobHash(" in r.text
+    assert "history.replaceState(null, '', '#job=' + jobId)" in r.text
+
+
 # ── Generate validation ──────────────────────────────────────────────────────
 
 def test_generate_requires_instruction(client, seed, fixture_file):

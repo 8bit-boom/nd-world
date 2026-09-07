@@ -160,6 +160,19 @@ def character_sheets_list(request: Request, db: Session = Depends(get_db), activ
         q = q.filter(CharacterSheet.owner_user_id == user.id if user else False)
     sheets = q.order_by(CharacterSheet.updated_at.desc()).all()
 
+    # Batch-loaded name maps — one query each, not per row — so the list
+    # can show "🔗 Kira" and "from Blank Sheet" instead of the useless
+    # literal "🔗 linked to a character" every row previously showed
+    # regardless of which character or template it actually was.
+    pc_ids = {s.player_character_id for s in sheets if s.player_character_id}
+    template_ids = {s.template_id for s in sheets if s.template_id}
+    pc_names = {
+        pc.id: pc.name for pc in db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all()
+    } if pc_ids else {}
+    template_names = {
+        d.id: d.name for d in db.query(PageDoc).filter(PageDoc.id.in_(template_ids)).all()
+    } if template_ids else {}
+
     owners = []
     if is_gm:
         # Grouped by owner for GM oversight — a flat list of every
@@ -177,6 +190,7 @@ def character_sheets_list(request: Request, db: Session = Depends(get_db), activ
     return templates.TemplateResponse("character_sheets_list.html", {
         "request": request, "world": world, "worlds": worlds,
         "sheets": sheets, "owners": owners, "is_gm": is_gm,
+        "pc_names": pc_names, "template_names": template_names,
     })
 
 

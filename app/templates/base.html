@@ -454,6 +454,7 @@ function ndToggleAttachMic(btnId, attachments) {
 <div id="nd-now-playing" style="display:none">
   <div id="nd-now-playing-name"></div>
   <audio id="nd-now-playing-audio" preload="auto"></audio>
+  <input type="range" id="nd-now-playing-volume" min="0" max="1" step="0.05" title="Volume" oninput="ndNowPlayingSetVolume(this.value)"/>
   <button type="button" id="nd-now-playing-tap" style="display:none" onclick="ndNowPlayingTapToPlay()">▶ Tap to play</button>
   <button type="button" id="nd-now-playing-close" title="Hide (doesn't stop it for others)" onclick="ndNowPlayingDismiss()">✕</button>
 </div>
@@ -483,6 +484,15 @@ document.addEventListener('keydown', e => {
 
 {% if world and request.state.user %}
 <script>
+// Now Playing localStorage/sessionStorage key names — declared up top since
+// pollSpotlight below (which runs immediately on page load, via ndPoll)
+// already needs _ND_NOW_PLAYING_DISMISSED_KEY before the rest of the "Now
+// Playing" code further down in this same script block has executed.
+const _ND_NOW_PLAYING_VOLUME_KEY = 'nd_now_playing_volume';
+const _ND_NOW_PLAYING_DISMISSED_KEY = 'nd_now_playing_dismissed_version';
+const _ND_NOW_PLAYING_POSITION_URL_KEY = 'nd_now_playing_position_url';
+const _ND_NOW_PLAYING_POSITION_TIME_KEY = 'nd_now_playing_position_time';
+
 // GM "Spotlight" — send an album image to every player as a popup
 // (app/routers/gallery.py's POST /images/spotlight). Reuses the lightbox
 // above rather than a separate modal. Polls the same way the schematic
@@ -533,8 +543,11 @@ document.addEventListener('keydown', e => {
     }
     if (data.audio_version !== seenAudioVersion) {
       seenAudioVersion = data.audio_version;
+      let dismissedVersion = null;
+      try { dismissedVersion = sessionStorage.getItem(_ND_NOW_PLAYING_DISMISSED_KEY); } catch (e) {}
       if (suppressAudioOnce) { suppressAudioOnce = false; }
-      else if (data.audio_url) { ndNowPlayingShow(data.audio_url, data.audio_label || '', !!data.audio_loop); }
+      else if (data.audio_url && dismissedVersion === String(data.audio_version)) { /* dismissed by this viewer — stays hidden until a new broadcast */ }
+      else if (data.audio_url) { ndNowPlayingShow(data.audio_url, data.audio_label || '', !!data.audio_loop, data.audio_version); }
       else { ndNowPlayingHide(); }
     }
   }
@@ -556,13 +569,66 @@ async function ndSpotlightClear() {
 // for-players), shared with the image Spotlight's poller. Unlike the
 // lightbox, this widget persists across page navigation since it lives
 // in base.html rather than a single page's own DOM.
-function ndNowPlayingShow(url, label, loop) {
+//
+// Volume persists across sessions/tabs (localStorage); dismissal and
+// playback position persist only across navigation within this tab
+// (sessionStorage) — a dismissal is per-viewer and per-broadcast (a NEW
+// track, i.e. a new audio_version, still gets through), and resuming
+// mid-track only makes sense within the same still-running broadcast.
+// (Key names are declared near the top of this script block, ahead of
+// the pollSpotlight IIFE that also needs them.)
+
+(function() {
+  const audioEl = document.getElementById('nd-now-playing-audio');
+  const volumeEl = document.getElementById('nd-now-playing-volume');
+  let savedVolume = 1;
+  try {
+    const raw = localStorage.getItem(_ND_NOW_PLAYING_VOLUME_KEY);
+    if (raw !== null) savedVolume = parseFloat(raw);
+  } catch (e) {}
+  if (!(savedVolume >= 0 && savedVolume <= 1)) savedVolume = 1;
+  audioEl.volume = savedVolume;
+  volumeEl.value = String(savedVolume);
+
+  // Best-effort resume point for whatever's currently loaded, saved right
+  // before the page unloads (a navigation, a tab close) — pagehide fires
+  // reliably for both, unlike beforeunload on mobile Safari.
+  window.addEventListener('pagehide', () => {
+    if (!audioEl.src) return;
+    try {
+      sessionStorage.setItem(_ND_NOW_PLAYING_POSITION_URL_KEY, audioEl.currentSrc || audioEl.src);
+      sessionStorage.setItem(_ND_NOW_PLAYING_POSITION_TIME_KEY, String(audioEl.currentTime));
+    } catch (e) {}
+  });
+})();
+
+function ndNowPlayingSetVolume(v) {
+  const vol = parseFloat(v);
+  if (!(vol >= 0 && vol <= 1)) return;
+  document.getElementById('nd-now-playing-audio').volume = vol;
+  try { localStorage.setItem(_ND_NOW_PLAYING_VOLUME_KEY, String(vol)); } catch (e) {}
+}
+
+function ndNowPlayingShow(url, label, loop, version) {
   const box = document.getElementById('nd-now-playing');
   const audioEl = document.getElementById('nd-now-playing-audio');
   const tapBtn = document.getElementById('nd-now-playing-tap');
   document.getElementById('nd-now-playing-name').textContent = label || 'Now playing';
+  box.dataset.audioVersion = version == null ? '' : String(version);
   audioEl.loop = !!loop;
+  audioEl.volume = document.getElementById('nd-now-playing-volume').valueAsNumber;
   audioEl.src = url;
+  // Resume where this exact track left off last time it was loaded in
+  // this tab, if we have a saved position for it — a fresh/different
+  // track (or no saved position at all) just starts from the top.
+  try {
+    if (sessionStorage.getItem(_ND_NOW_PLAYING_POSITION_URL_KEY) === url) {
+      const savedTime = parseFloat(sessionStorage.getItem(_ND_NOW_PLAYING_POSITION_TIME_KEY));
+      if (savedTime > 0) {
+        audioEl.addEventListener('loadedmetadata', () => { audioEl.currentTime = savedTime; }, { once: true });
+      }
+    }
+  } catch (e) {}
   audioEl.style.display = '';
   tapBtn.style.display = 'none';
   box.style.display = 'flex';
@@ -590,9 +656,15 @@ function ndNowPlayingHide() {
   document.getElementById('nd-now-playing').style.display = 'none';
 }
 function ndNowPlayingDismiss() {
-  // Local-only — hides/pauses for this viewer without stopping it for
-  // anyone else. Reappears on the next page load or the next real change,
-  // same as dismissing the image Spotlight lightbox.
+  // Hides/pauses for this viewer without stopping it for anyone else.
+  // Persisted for the rest of this tab's session so it doesn't reappear
+  // on the very next navigation — pollSpotlight checks this same key and
+  // skips ndNowPlayingShow for a version already dismissed, but a NEW
+  // broadcast (a different audio_version) always gets through.
+  const version = document.getElementById('nd-now-playing').dataset.audioVersion;
+  if (version) {
+    try { sessionStorage.setItem(_ND_NOW_PLAYING_DISMISSED_KEY, version); } catch (e) {}
+  }
   ndNowPlayingHide();
 }
 async function ndNowPlayingStop() {
