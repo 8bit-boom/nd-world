@@ -87,6 +87,7 @@ function igClearCN() {
     await igReloadModels();
     igRenderLoras();
     igRenderPresets();
+    igUpdateCfgWarning();
     igLoadSamplersSchedulers();
     igLoadLoras();
     igLoadUpscalers();
@@ -261,6 +262,19 @@ function _igRenderResultCards(urls, body, grid) {
       actions.appendChild(portraitBtn);
     }
     card.appendChild(img);
+    // One glanceable line of what actually produced THIS image — when a
+    // result doesn't match the prompt, the first questions are always
+    // "what model/cfg/steps was that?" (low CFG and danbooru-tag models
+    // being the usual culprits). Bound at render time, not read live.
+    const meta = document.createElement('div');
+    meta.className = 'ig-result-card-meta';
+    meta.style.cssText = 'font-size:.68rem;color:var(--text-dim);margin-top:.25rem;line-height:1.3;word-break:break-word';
+    meta.textContent = [
+      (body.prompt || '').slice(0, 80) + ((body.prompt || '').length > 80 ? '…' : ''),
+      'model: ' + (body.model || '(backend default)'),
+      'cfg: ' + body.cfg, 'steps: ' + body.steps, 'seed: ' + body.seed,
+    ].join(' · ');
+    card.appendChild(meta);
     card.appendChild(actions);
     grid.appendChild(card);
   });
@@ -1249,8 +1263,18 @@ async function igSendToImg2Img(url) {
   }
 }
 
-// ── Prompt Presets ─────────────────────────────────────────────────────────────
-// GM-editable, per-world, server-side (see /api/ai/prompt-presets?scope=image)
+// CFG ≤ 2 is a real foot-gun on regular checkpoints (the model mostly
+// ignores the prompt; only Turbo/Lightning/distilled models want it) and
+// it silently persists via Reuse/presets — surface it right under the
+// slider instead of letting a random-looking result be the first sign.
+function igUpdateCfgWarning() {
+  const el = document.getElementById('ig-cfg');
+  const warn = document.getElementById('ig-cfg-warning');
+  if (!el || !warn) return;
+  warn.hidden = !(parseFloat(el.value) <= 2);
+}
+
+// ── Prompt Presets ─────────────────────────────────────────────────────────────// GM-editable, per-world, server-side (see /api/ai/prompt-presets?scope=image)
 // — previously localStorage-only, so presets vanished on a different browser
 // while every other saved thing in this app (starred images, audio jobs,
 // model config) lives server-side; also shares its backing table with
@@ -1476,6 +1500,7 @@ function igReuseParams(idx) {
     if (stepsVal && p.steps) stepsVal.textContent = p.steps;
     const cfgVal = document.getElementById('ig-cfg-val');
     if (cfgVal && p.cfg) cfgVal.textContent = p.cfg;
+    igUpdateCfgWarning();
     document.querySelector('.ig-main')?.scrollTo({top: 0, behavior: 'smooth'});
   } catch(e) { alert('Could not load parameters: ' + e.message); }
 }
@@ -1820,7 +1845,11 @@ async function igLoadStarred() {
         set('ig-model', img.model); set('ig-seed', img.seed);
         if (img.params) { set('ig-width', img.params.width); set('ig-height', img.params.height);
           set('ig-steps', img.params.steps); set('ig-cfg', img.params.cfg);
-          set('ig-sampler', img.params.sampler); }
+          set('ig-sampler', img.params.sampler);
+          const stepsEl = document.getElementById('ig-steps-val'), cfgEl = document.getElementById('ig-cfg-val');
+          if (stepsEl && img.params.steps) stepsEl.textContent = img.params.steps;
+          if (cfgEl && img.params.cfg) cfgEl.textContent = img.params.cfg;
+          igUpdateCfgWarning(); }
       };
       const unstarBtn = document.createElement('button');
       unstarBtn.textContent = '✕ Unstar'; unstarBtn.style.color = '#c44'; unstarBtn.style.borderColor = '#c44';

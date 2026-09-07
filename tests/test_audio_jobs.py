@@ -2352,7 +2352,7 @@ async def test_resume_interrupted_jobs_resumes_ai_assist_and_world_summary_witho
         return {"op": op, "mode": "data", "data": {"entries": []}, "model": "m"}
     monkeypatch.setattr(audio_jobs._ai_assist, "run_assist", fake_run_assist)
 
-    def _no_state(world_id):
+    def _no_state(world_id, audience="gm"):
         return "# world\n- [note] Lore"
 
     monkeypatch.setattr(audio_jobs, "_world_summary_state_text", _no_state)
