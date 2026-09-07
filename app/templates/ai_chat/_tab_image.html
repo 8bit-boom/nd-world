@@ -369,14 +369,17 @@
         </div>
       </div>
 
-      <!-- Model templates (built-in, app-versioned — see app/imagegen_templates.py) -->
-      <div id="ig-tmpl-row" style="display:flex;gap:.28rem;align-items:center">
-        <select id="ig-tmpl-sel" class="ig-select" style="flex:1;font-size:.76rem">
+      <!-- Model templates (built-in + your own — see app/imagegen_templates.py) -->
+      <div id="ig-tmpl-row" style="display:flex;gap:.28rem;align-items:center;flex-wrap:wrap">
+        <select id="ig-tmpl-sel" class="ig-select" style="flex:1;min-width:160px;font-size:.76rem">
           <option value="">📦 Model template — pick your model family…</option>
         </select>
         <button class="ig-btn" onclick="igApplyTemplate()" style="font-size:.72rem;padding:.22rem .45rem;white-space:nowrap" title="Apply the selected template: prompt scaffolding + negative + recommended steps/CFG/sampler">↩ Apply</button>
+        <button class="ig-btn" onclick="igSaveTemplate()" style="font-size:.72rem;padding:.22rem .45rem;border-color:var(--neon);color:var(--neon);white-space:nowrap" title="Save the CURRENT prompt/negative/settings as your own reusable template">💾 Save as template</button>
+        <button class="ig-btn" id="ig-tmpl-del" onclick="igDeleteTemplate()" hidden style="font-size:.72rem;padding:.22rem .38rem;color:#c44;border-color:#c44" title="Delete the selected custom template">✕</button>
       </div>
       <div id="ig-tmpl-note" hidden style="font-size:.7rem;color:var(--text-dim);line-height:1.35;margin-top:.15rem"></div>
+      <div id="ig-tmpl-guide" hidden style="font-size:.7rem;color:var(--text-dim);line-height:1.4;margin:.25rem 0 0;padding:.4rem .55rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px"></div>
 
       <!-- Prompt Presets -->
       <div id="ig-preset-row" style="display:flex;gap:.28rem;align-items:center">

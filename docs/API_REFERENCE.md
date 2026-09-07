@@ -732,6 +732,8 @@ worlds they've been invited into (`WorldMembership`).
 |---|---|---|---|
 | GET | `/api/ai/imagegen/status` | GM | Backend (SwarmUI/ComfyUI) connectivity status. |
 | GET | `/api/ai/imagegen/model-templates` | GM | Built-in per-model prompt/generation templates (app/imagegen_templates.py): prompt scaffolding, negative, and recommended steps/CFG/sampler for each model family (Anima, Krea 2, SDXL, Pony, Z-Image, Flux, ...), with settings following SwarmUI's Model Support doc. |
+| POST | `/api/ai/imagegen/model-templates/custom` | GM | Save (upsert by label) one of this world's OWN model templates — current prompt as example, negative, steps/CFG/sampler/scheduler, optional match keywords for the suggested-marker. |
+| DELETE | `/api/ai/imagegen/model-templates/custom/{template_id}` | GM | Delete one of this world's custom model templates. |
 | POST | `/api/ai/imagegen/models/download` | GM | Streams a checkpoint/VAE/text-encoder/etc. from a direct URL into SwarmUI's own Models folder (SSE progress) — only works when nd-world and SwarmUI share the model volume (the bundled "swarmui" Compose service does by default). The final `"status": "done"` event includes `model_list_refreshed` (bool) — whether nd-world was able to make SwarmUI rescan its Models folder so the file shows up in `/api/ai/imagegen/models` etc. immediately; if `false`, SwarmUI needs a restart to notice it. |
 | GET | `/api/ai/imagegen/models/downloaded` | GM | Lists files nd-world can see under the shared SwarmUI models directory, plus suggested subfolder names. |
 | DELETE | `/api/ai/imagegen/models/downloaded` | GM | Deletes a previously-downloaded file (`?subfolder=&filename=`). Response includes `model_list_refreshed` (bool), same meaning as the download route. |

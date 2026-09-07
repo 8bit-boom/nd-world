@@ -1318,16 +1318,26 @@ class PromptPreset(Base):
     Prompt Presets (scope="image", `text`/`negative` loaded straight into
     the generation form) — replacing the previous hardcoded generic-fantasy
     quick prompts and the image presets' localStorage-only storage (which
-    vanished on a different browser, unlike everything else in this app)."""
+    vanished on a different browser, unlike everything else in this app).
+    scope="image_template" rows are the GM's OWN Image Gen model templates
+    (see app/imagegen_templates.py for the built-ins): generation params
+    live in params_json, `text` carries the example prompt and `negative`
+    the negative — same shape the built-ins use, so the picker applies
+    both identically."""
     __tablename__ = "prompt_presets"
 
     id = Column(Integer, primary_key=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
-    scope = Column(String(16), nullable=False)  # "chat" | "image"
+    scope = Column(String(16), nullable=False)  # "chat" | "image" | "image_template"
     label = Column(String(128), nullable=False)
     icon = Column(String(8), default="")  # chat only — an emoji on the quick-prompt button
-    text = Column(Text, default="")  # chat: inserted prompt text; image: the positive prompt
-    negative = Column(Text, default="")  # image only
+    text = Column(Text, default="")  # chat: inserted prompt text; image: the positive prompt; image_template: the example prompt
+    negative = Column(Text, default="")  # image/image_template only
+    # image_template only: the rest of the template — {match, prefix, suffix,
+    # steps, cfg, sampler, scheduler, note, guide}. Empty for chat/image
+    # presets. Healed in via database._migrate's generic pass like every
+    # other late-added prompt_presets column.
+    params_json = Column(Text, default="")
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 

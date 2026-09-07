@@ -1283,15 +1283,17 @@ function igUpdateCfgWarning() {
   warn.hidden = !(parseFloat(el.value) <= 2);
 }
 
-// ── Model templates (built-in, per model family) ────────────────────────────
-// Served by GET /api/ai/imagegen/model-templates (app/imagegen_templates.py,
-// settings follow SwarmUI's Model Support doc). Applying one: merges the
-// template's style tags around the current prompt (only tags not already
-// present), replaces the negative prompt, and sets the recommended
-// steps/CFG/sampler/scheduler. The picker marks the template matching the
-// currently-selected backend model as "(suggested)".
+// ── Model templates (built-in + your own) ───────────────────────────────────
+// Served by GET /api/ai/imagegen/model-templates: `templates` are the
+// app's built-ins (app/imagegen_templates.py — SwarmUI-doc settings plus
+// each family's official prompting guide), `custom` are this world's own
+// (PromptPreset scope="image_template" rows saved via 💾 below). Both
+// share one shape, so apply/suggest logic handles them identically.
+// Applying merges the template's tags around the current prompt (deduped),
+// replaces the negative, and sets steps/CFG/sampler/scheduler.
 
 let _igTemplates = [];
+let _igCustomTemplates = [];
 
 async function igLoadTemplates() {
   const sel = document.getElementById('ig-tmpl-sel');
@@ -1299,8 +1301,13 @@ async function igLoadTemplates() {
   try {
     const d = await fetch('/api/ai/imagegen/model-templates').then(r => r.json());
     _igTemplates = d.templates || [];
-  } catch (e) { _igTemplates = []; }
+    _igCustomTemplates = d.custom || [];
+  } catch (e) { _igTemplates = []; _igCustomTemplates = []; }
   igRenderTemplates();
+}
+
+function _igAllTemplates() {
+  return [..._igCustomTemplates, ..._igTemplates];
 }
 
 function igSuggestedTemplate() {
@@ -1308,7 +1315,12 @@ function igSuggestedTemplate() {
   const name = modelSel ? (modelSel.value || '') : '';
   if (!name) return null;
   const lower = name.toLowerCase();
-  return _igTemplates.find(t => (t.match || []).some(k => lower.includes(k))) || null;
+  // Custom templates win over built-ins: a GM's own match keyword is a
+  // deliberate override of whatever the app ships.
+  return _igAllTemplates().find(t => {
+    if ((t.exclude || []).some(k => lower.includes(k))) return false;
+    return (t.match || []).some(k => lower.includes(k));
+  }) || null;
 }
 
 function igRenderTemplates() {
@@ -1319,16 +1331,38 @@ function igRenderTemplates() {
   const head = document.createElement('option');
   head.value = '';
   head.textContent = suggested
-    ? `📦 Model template — suggested: ${suggested.label}`
+    ? `📦 Suggested for ${suggested.label}`
     : '📦 Model template — pick your model family…';
   sel.appendChild(head);
+  if (_igCustomTemplates.length) {
+    const grp = document.createElement('optgroup');
+    grp.label = '⭐ Your templates';
+    _igCustomTemplates.forEach(t => {
+      const o = document.createElement('option');
+      o.value = t.id; o.textContent = t.label + (t === suggested ? ' ⬅' : '');
+      grp.appendChild(o);
+    });
+    sel.appendChild(grp);
+  }
+  const grpB = document.createElement('optgroup');
+  grpB.label = '📦 Built-in model templates';
   _igTemplates.forEach(t => {
     const o = document.createElement('option');
-    o.value = t.id;
-    o.textContent = t.label;
-    sel.appendChild(o);
+    o.value = t.id; o.textContent = t.label + (t === suggested ? ' ⬅' : '');
+    grpB.appendChild(o);
   });
+  sel.appendChild(grpB);
   if (suggested) sel.value = suggested.id;
+  // The delete button exists only for a selected CUSTOM template.
+  const delBtn = document.getElementById('ig-tmpl-del');
+  if (delBtn) delBtn.hidden = !(sel.value || '').startsWith('custom-');
+  if (!sel.dataset.delWired) {
+    sel.dataset.delWired = '1';
+    sel.addEventListener('change', () => {
+      const b = document.getElementById('ig-tmpl-del');
+      if (b) b.hidden = !sel.value.startsWith('custom-');
+    });
+  }
 }
 
 // Add `tags` (comma-separated) into `current` (comma-separated prompt
@@ -1347,7 +1381,8 @@ function _igMergeTags(current, prefix, suffix) {
 async function igApplyTemplate() {
   const sel = document.getElementById('ig-tmpl-sel');
   const note = document.getElementById('ig-tmpl-note');
-  const t = _igTemplates.find(x => x.id === sel?.value);
+  const guide = document.getElementById('ig-tmpl-guide');
+  const t = _igAllTemplates().find(x => x.id === sel?.value);
   if (!t) return;
   const promptEl = document.getElementById('ig-prompt');
   if (promptEl) {
@@ -1378,12 +1413,68 @@ async function igApplyTemplate() {
   if (cfgVal && t.cfg != null) cfgVal.textContent = t.cfg;
   igUpdateCfgWarning();
   if (note) {
-    note.textContent = '📦 ' + t.label + ' — ' + t.note;
+    note.textContent = (t.custom ? '⭐ ' : '📦 ') + t.label + ' — ' + t.note;
     note.hidden = false;
+  }
+  if (guide) {
+    if (t.guide) { guide.textContent = '📝 ' + t.guide; guide.hidden = false; }
+    else guide.hidden = true;
   }
 }
 
-// ── Prompt Presets ─────────────────────────────────────────────────────────────// GM-editable, per-world, server-side (see /api/ai/prompt-presets?scope=image)
+// 💾 Save the CURRENT Image Gen state (prompt as the example, negative,
+// steps/CFG/sampler/scheduler, optional match keyword) as a reusable
+// custom template — the GM's own equivalent of the built-ins, stored
+// per-world server-side so it survives browsers.
+async function igSaveTemplate() {
+  const label = prompt('Template name (e.g. "My Anima noir style"):');
+  if (!label) return;
+  const match = prompt('Optional: model-name keywords that should suggest this template, comma-separated (e.g. "anima, illustrious"). Leave empty for none:', '') || '';
+  const val = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+  const num = (id) => { const v = parseFloat(val(id)); return isNaN(v) ? null : v; };
+  try {
+    const res = await fetch('/api/ai/imagegen/model-templates/custom', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        label: label.trim(),
+        match,
+        example_prompt: val('ig-prompt').trim(),
+        negative: val('ig-negative'),
+        steps: num('ig-steps'), cfg: num('ig-cfg'),
+        sampler: val('ig-sampler'), scheduler: val('ig-scheduler'),
+        note: 'Saved ' + new Date().toLocaleDateString(),
+      }),
+    });
+    if (!res.ok) {
+      let detail = ''; try { detail = (await res.json()).detail || ''; } catch (e) {}
+      throw new Error(detail || ('Server error ' + res.status));
+    }
+    await igLoadTemplates();
+    const note = document.getElementById('ig-tmpl-note');
+    if (note) { note.textContent = '⭐ Saved "' + label.trim() + '" — select it any time under "Your templates".'; note.hidden = false; }
+  } catch (e) {
+    alert('Could not save template: ' + (e.message || e));
+  }
+}
+
+async function igDeleteTemplate() {
+  const sel = document.getElementById('ig-tmpl-sel');
+  const id = (sel?.value || '');
+  if (!id.startsWith('custom-')) return;
+  const t = _igCustomTemplates.find(x => x.id === id);
+  if (!t || !confirm(`Delete your template "${t.label}"?`)) return;
+  try {
+    const res = await fetch('/api/ai/imagegen/model-templates/custom/' + id.slice('custom-'.length), { method: 'DELETE' });
+    if (!res.ok) throw new Error('Server error ' + res.status);
+    await igLoadTemplates();
+  } catch (e) {
+    alert('Could not delete template: ' + (e.message || e));
+  }
+}
+
+// ── Prompt Presets ─────────────────────────────────────────────────────────────
+// GM-editable, per-world, server-side (see /api/ai/prompt-presets?scope=image)
 // — previously localStorage-only, so presets vanished on a different browser
 // while every other saved thing in this app (starred images, audio jobs,
 // model config) lives server-side; also shares its backing table with
