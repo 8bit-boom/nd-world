@@ -20,13 +20,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
+from .. import media_albums
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx, can_edit_content
+from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit
 from ..models import AudioAlbum, AudioClip
 from ..templating import templates
 from ..uploads import copy_upload_bounded, effective_upload_bytes, unique_upload_filename
@@ -38,10 +38,7 @@ _MAX_DESCRIPTION = 512
 _MAX_CLIPS_PER_WORLD = 300
 _MAX_ALBUMS_PER_WORLD = 100
 _MAX_ALBUM_NAME = 120
-# Duplicated locally rather than imported from main.py — main.py imports this
-# router, so the reverse would be circular (same rationale as gallery.py's
-# own local _UPLOADS_DIR copy).
-_UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+_UPLOADS_DIR = media_albums.UPLOADS_DIR
 _ALLOWED_EXTS = {".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus", ".webm", ".aac"}
 # Audio runs longer than a portrait image, so give it more room than the
 # generic 20 MB upload default — still bounded so a batch of uploads can't
@@ -98,24 +95,6 @@ def _sweep_stale_chunk_sessions() -> None:
             pass
 
 
-def _is_gm(request: Request) -> bool:
-    user = getattr(request.state, "user", None)
-    return bool(user and user.is_gm)
-
-
-def _require_can_edit(request: Request) -> None:
-    """The write-side gate for clip/album content: a GM, or a GM-Assistant
-    (WorldMembership.role == "assistant") — same tier the auth_gate's
-    _is_assistant_safe already enforced on the way in; this re-check keeps
-    each handler safe on its own (every route in this router is content
-    write-side, so this replaces the old GM-only gate wholesale). Deliberately
-    NOT used by the visibility filters below (_visible_clips_query/
-    _clip_counts): an assistant SEES what a player sees, per the role's whole
-    premise."""
-    if not can_edit_content(request):
-        raise HTTPException(403)
-
-
 def _clip_or_404(db: Session, world_id: int, clip_id: int) -> AudioClip:
     clip = db.get(AudioClip, clip_id)
     if not clip or clip.world_id != world_id:
@@ -131,37 +110,11 @@ def _album_or_404(db: Session, world_id: int, album_id: int) -> AudioAlbum:
 
 
 def _breadcrumb(db: Session, album: AudioAlbum) -> list:
-    """Root-to-current chain of parent albums (not including `album`
-    itself). Capped at 50 hops as cheap insurance against a corrupted
-    parent_id chain — normal nesting never gets remotely this deep since
-    _MAX_ALBUMS_PER_WORLD bounds the whole tree per world anyway."""
-    chain = []
-    current = album
-    for _ in range(50):
-        if not current.parent_id:
-            break
-        parent = db.get(AudioAlbum, current.parent_id)
-        if not parent:
-            break
-        chain.append(parent)
-        current = parent
-    chain.reverse()
-    return chain
+    return media_albums.breadcrumb(db, AudioAlbum, album)
 
 
 def _descendant_albums(db: Session, root_id: int) -> list:
-    """Every AudioAlbum nested (at any depth) under root_id, for cascade
-    delete — deleting a folder removes its sub-albums (and their clips)
-    with it."""
-    result = []
-    frontier = [root_id]
-    while frontier:
-        children = db.query(AudioAlbum).filter(AudioAlbum.parent_id.in_(frontier)).all()
-        if not children:
-            break
-        result.extend(children)
-        frontier = [c.id for c in children]
-    return result
+    return media_albums.descendant_albums(db, AudioAlbum, root_id)
 
 
 def _clip_abs_path(clip: AudioClip) -> Optional[Path]:
@@ -194,26 +147,13 @@ def _visible_clips_query(db: Session, request: Request, world_id: int, album_id)
 
 
 def _sub_album_counts(db: Session, album_ids: list) -> dict:
-    if not album_ids:
-        return {}
-    rows = (
-        db.query(AudioAlbum.parent_id, func.count(AudioAlbum.id))
-        .filter(AudioAlbum.parent_id.in_(album_ids))
-        .group_by(AudioAlbum.parent_id)
-        .all()
-    )
-    return dict(rows)
+    return media_albums.sub_album_counts(db, AudioAlbum, album_ids)
 
 
 def _clip_counts(db: Session, request: Request, album_ids: list) -> dict:
     """Clip count per album, respecting the viewer's own visibility — a
     player never sees a count that includes clips they can't play."""
-    if not album_ids:
-        return {}
-    q = db.query(AudioClip.album_id, func.count(AudioClip.id)).filter(AudioClip.album_id.in_(album_ids))
-    if not _is_gm(request):
-        q = q.filter(AudioClip.visible_to_players.is_(True))
-    return dict(q.group_by(AudioClip.album_id).all())
+    return media_albums.child_counts(db, AudioClip, album_ids, visible_only=not _is_gm(request))
 
 
 @router.get("/api/audio/clips")

@@ -252,3 +252,69 @@ async def test_poll_route_404s_for_a_job_under_a_different_world(client, seed, f
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get(f"/tools/code-assist/generate/{job_id}")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_status_404s_when_no_active_world(seed, fixture_file, monkeypatch):
+    """Regression: code_assist_status used to skip the world check entirely
+    when the caller had no active world — `(world and job.world_id !=
+    world.id)` is trivially False (skips) when world is None — contradicting
+    its own docstring that job.world_id must match the caller's active
+    world (docs/AUDIT_PLAN_NEXT.md item 19). A GM always resolves to SOME
+    world via get_world_ctx's own first-accessible-world fallback as long
+    as any World row exists anywhere, so world=None isn't reachable through
+    a real HTTP request in this test environment — this calls the route
+    directly with get_world_ctx monkeypatched to isolate the exact case."""
+    from types import SimpleNamespace
+
+    from app.database import SessionLocal
+
+    async def fake_run_assist(op, **kwargs):
+        return {"op": op, "mode": "text", "text": "x", "model": "m"}
+
+    monkeypatch.setattr(audio_jobs_module._ai_assist, "run_assist", fake_run_assist)
+    monkeypatch.setattr(code_assist_module, "get_world_ctx", lambda request, db, active_world: (None, []))
+    job_id = audio_jobs_module.create_assist_job(
+        seed.world_a.id, op="code_edit", surface="code_assist",
+        content=_FIXTURE_CONTENT, meta=f"File: {fixture_file}", instruction="do it",
+    )
+    db = SessionLocal()
+    try:
+        request = SimpleNamespace(state=SimpleNamespace(user=None))
+        with pytest.raises(Exception) as exc_info:
+            code_assist_module.code_assist_status(job_id, request, db, None)
+        assert getattr(exc_info.value, "status_code", None) == 404
+    finally:
+        db.close()
+
+
+def test_list_source_files_prunes_pycache_and_dotdirs_and_is_capped(monkeypatch):
+    monkeypatch.setattr(code_assist_module, "_MAX_LISTED_FILES", 3)
+    code_assist_module._list_source_files.cache_clear()
+    try:
+        files = code_assist_module._list_source_files()
+        assert len(files) == 3
+        assert not any("__pycache__" in f for f in files)
+        assert not any(part.startswith(".") for f in files for part in Path(f).parts)
+    finally:
+        code_assist_module._list_source_files.cache_clear()
+
+
+def test_list_source_files_is_memoized(monkeypatch):
+    code_assist_module._list_source_files.cache_clear()
+    calls = {"n": 0}
+    real_walk = code_assist_module.os.walk
+
+    def counting_walk(*a, **kw):
+        calls["n"] += 1
+        return real_walk(*a, **kw)
+
+    monkeypatch.setattr(code_assist_module.os, "walk", counting_walk)
+    try:
+        code_assist_module._list_source_files()
+        first = calls["n"]
+        assert first > 0
+        code_assist_module._list_source_files()
+        assert calls["n"] == first, "second call re-walked the filesystem"
+    finally:
+        code_assist_module._list_source_files.cache_clear()

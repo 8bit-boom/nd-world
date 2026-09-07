@@ -12,6 +12,7 @@ from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Reque
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
+from .. import media_albums
 from ..database import get_app_settings, get_db
 from ..deps import get_world_ctx
 from ..gallery import all_world_image_urls, discover_world_images, image_display_name
@@ -39,10 +40,7 @@ _MAX_IMAGES_PER_ALBUM = 500
 # image data either way, just not all forced into the DOM at once.
 _GALLERY_INITIAL_BATCH = 200
 
-# Duplicated locally rather than imported from main.py — main.py imports
-# this router, so the reverse would be circular (same rationale as every
-# other router's local _UPLOADS_DIR copy, e.g. home_content.py).
-_UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+_UPLOADS_DIR = media_albums.UPLOADS_DIR
 _ALLOWED_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"}
 
 # Album uploads get their own, much higher total cap than MAX_UPLOAD_BYTES:
@@ -135,37 +133,11 @@ def _album_or_404(db: Session, world_id: int, album_id: int) -> ImageAlbum:
 
 
 def _breadcrumb(db: Session, album: ImageAlbum) -> list:
-    """Root-to-current chain of parent albums (not including `album`
-    itself). Capped at 50 hops as cheap insurance against a corrupted
-    parent_id chain — normal nesting never gets remotely this deep since
-    _MAX_ALBUMS_PER_WORLD bounds the whole tree per world anyway."""
-    chain = []
-    current = album
-    for _ in range(50):
-        if not current.parent_id:
-            break
-        parent = db.get(ImageAlbum, current.parent_id)
-        if not parent:
-            break
-        chain.append(parent)
-        current = parent
-    chain.reverse()
-    return chain
+    return media_albums.breadcrumb(db, ImageAlbum, album)
 
 
 def _descendant_albums(db: Session, root_id: int) -> list:
-    """Every ImageAlbum nested (at any depth) under root_id, for cascade
-    delete — deleting a folder/album removes its sub-albums with it (the
-    images themselves are just URLs and are never deleted)."""
-    result = []
-    frontier = [root_id]
-    while frontier:
-        children = db.query(ImageAlbum).filter(ImageAlbum.parent_id.in_(frontier)).all()
-        if not children:
-            break
-        result.extend(children)
-        frontier = [c.id for c in children]
-    return result
+    return media_albums.descendant_albums(db, ImageAlbum, root_id)
 
 
 def _move_target_options(db: Session, world_id: int, album: ImageAlbum) -> list:

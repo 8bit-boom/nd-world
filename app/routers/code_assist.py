@@ -30,6 +30,8 @@ this touches the application's own source, not campaign content.
 import difflib
 import json
 import logging
+import os
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
@@ -63,6 +65,13 @@ _MAX_FILE_BYTES = 80_000
 # response is treated as likely truncated rather than a deliberate large
 # deletion — see code_assist_status's truncation_warning.
 _TRUNCATION_RATIO_THRESHOLD = 0.9
+# Hard cap on the file picker's datalist — _list_source_files' walk is
+# otherwise unbounded by design (bounded only by whatever's on disk under
+# the two allowed roots, e.g. if static/ ever grows a generated-asset
+# subdirectory). Generous relative to this repo's actual file count, just
+# a sanity ceiling, not a target.
+_MAX_LISTED_FILES = 2000
+_SKIP_DIR_NAMES = {"__pycache__"}
 
 
 def _resolve_safe_path(rel: str) -> Path:
@@ -89,17 +98,28 @@ def _resolve_safe_path(rel: str) -> Path:
     return candidate
 
 
+@lru_cache(maxsize=1)
 def _list_source_files() -> list[str]:
     """Every allowlisted-extension file under the two readable roots, as
     paths relative to the install root (e.g. "app/routers/races.py") —
-    backs the file picker's datalist."""
+    backs the file picker's datalist. Memoized: the source tree is
+    immutable in a running container, so there's nothing to invalidate on.
+    Prunes __pycache__/dotdirs during the walk (not just filtering results
+    after) and hard-caps the result at _MAX_LISTED_FILES — the walk is
+    otherwise unbounded by design, bounded only by whatever's on disk
+    under these two roots."""
     out = []
     for root in _ALLOWED_ROOTS:
         if not root.exists():
             continue
-        for p in sorted(root.rglob("*")):
-            if p.is_file() and p.suffix.lower() in _ALLOWED_EXTS:
-                out.append(str(p.relative_to(_INSTALL_ROOT)))
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIR_NAMES and not d.startswith("."))
+            for name in sorted(filenames):
+                p = Path(dirpath) / name
+                if p.suffix.lower() in _ALLOWED_EXTS:
+                    out.append(str(p.relative_to(_INSTALL_ROOT)))
+                    if len(out) >= _MAX_LISTED_FILES:
+                        return out
     return out
 
 
@@ -167,7 +187,9 @@ def code_assist_status(
     concurrent edit) and diffs it against the model's revised text."""
     world, _ = get_world_ctx(request, db, active_world)
     job = db.get(AudioJob, job_id)
-    if not job or job.purpose != "ai_assist" or (world and job.world_id != world.id):
+    if not job or job.purpose != "ai_assist":
+        raise HTTPException(404)
+    if not world or job.world_id != world.id:
         raise HTTPException(404)
     try:
         params = json.loads(job.assist_params_json or "{}")

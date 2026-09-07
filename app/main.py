@@ -537,6 +537,19 @@ def _is_assistant_safe(method: str, path: str) -> bool:
                              or path.startswith("/pages/albums/")
                              or re.match(r"^/pages/\d+/(edit|delete)$", path)):
         return True
+    # Race/Profession catalogs — a convenience layer over the exact same
+    # Entity(kind="race"|"profession") rows the generic path above already
+    # lets an assistant create/delete (POST /new, POST /entity/{id}/delete);
+    # gating this wrapper more strictly than the path it wraps would be an
+    # arbitrary inconsistency, not a deliberate policy (docs/AUDIT_PLAN_NEXT.md
+    # item 16).
+    if method == "POST" and (
+        path in ("/races/new", "/races/add-builtin", "/races/add-all-builtin")
+        or re.match(r"^/races/\d+/delete$", path)
+        or path in ("/professions/new", "/professions/add-builtin", "/professions/add-all-builtin")
+        or re.match(r"^/professions/\d+/delete$", path)
+    ):
+        return True
     # Audio library — clip upload (incl. the chunked pair) and album/clip
     # management; GETs and the read-only player view are already player-safe.
     if method == "POST" and (path.startswith("/audio/albums/")

@@ -12,7 +12,17 @@ player sees a read-only view of whatever clips the GM has left
 visible_to_players=True. Upload/edit/delete/album-management/settings
 stay GM-only, enforced in each handler rather than via _is_player_safe,
 since that allowlist can't express "GET is fine, POST isn't" for a
-single path."""
+single path.
+
+One more real difference from audio.py: this router has no "broadcast to
+players" mechanism analogous to Audio's "Play for players" (World.
+now_playing_*, see audio.py's own comment near that feature and
+base.html's floating Now Playing widget). This is deliberate, not an
+oversight — a floating background-audio widget is a natural fit for a
+track a GM starts and leaves running, but there's no equivalent
+lightweight UI for pushing a full video to every player's screen (that's
+closer to Images' Spotlight, a full takeover popup, than to a persistent
+corner widget) — see docs/AUDIT_PLAN_NEXT.md item 17."""
 import logging
 import os
 from pathlib import Path
@@ -20,13 +30,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
+from .. import media_albums
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx, can_edit_content
+from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit
 from ..models import VideoAlbum, VideoClip
 from ..templating import templates
 from ..uploads import (
@@ -44,10 +54,7 @@ _MAX_DESCRIPTION = 512
 _MAX_CLIPS_PER_WORLD = 100  # lower than audio's 300 — bounds worst-case disk to a few hundred GB/world at _MAX_VIDEO_BYTES each
 _MAX_ALBUMS_PER_WORLD = 100
 _MAX_ALBUM_NAME = 120
-# Duplicated locally rather than imported from main.py — main.py imports this
-# router, so the reverse would be circular (same rationale as audio.py's own
-# local _UPLOADS_DIR copy).
-_UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+_UPLOADS_DIR = media_albums.UPLOADS_DIR
 # Extensions stored exactly as uploaded: every mainstream browser plays
 # these containers natively, so they only ever face the optional AV1 pass
 # (a world's space-saving choice), never a mandatory conversion.
@@ -94,26 +101,8 @@ _log = logging.getLogger(__name__)
 _DEFAULT_VIDEO_BITRATE_KBPS = 2000
 
 
-def _is_gm(request: Request) -> bool:
-    user = getattr(request.state, "user", None)
-    return bool(user and user.is_gm)
-
-
 def _require_gm(request: Request) -> None:
     if not _is_gm(request):
-        raise HTTPException(403)
-
-
-def _require_can_edit(request: Request) -> None:
-    """The write-side gate for clip/album content: a GM, or a GM-Assistant
-    (WorldMembership.role == "assistant") — same tier the auth_gate's
-    _is_assistant_safe already enforced on the way in; this re-check keeps
-    each handler safe on its own. _require_gm above stays for the one
-    genuinely administrative route in this router (POST /video/settings —
-    the world's AV1 upload-policy preferences). Deliberately NOT used by the
-    visibility filters below (_visible_clips_query/_clip_counts): an
-    assistant SEES what a player sees, per the role's whole premise."""
-    if not can_edit_content(request):
         raise HTTPException(403)
 
 
@@ -132,37 +121,11 @@ def _album_or_404(db: Session, world_id: int, album_id: int) -> VideoAlbum:
 
 
 def _breadcrumb(db: Session, album: VideoAlbum) -> list:
-    """Root-to-current chain of parent albums (not including `album`
-    itself). Capped at 50 hops as cheap insurance against a corrupted
-    parent_id chain — normal nesting never gets remotely this deep since
-    _MAX_ALBUMS_PER_WORLD bounds the whole tree per world anyway."""
-    chain = []
-    current = album
-    for _ in range(50):
-        if not current.parent_id:
-            break
-        parent = db.get(VideoAlbum, current.parent_id)
-        if not parent:
-            break
-        chain.append(parent)
-        current = parent
-    chain.reverse()
-    return chain
+    return media_albums.breadcrumb(db, VideoAlbum, album)
 
 
 def _descendant_albums(db: Session, root_id: int) -> list:
-    """Every VideoAlbum nested (at any depth) under root_id, for cascade
-    delete — deleting a folder removes its sub-albums (and their clips)
-    with it."""
-    result = []
-    frontier = [root_id]
-    while frontier:
-        children = db.query(VideoAlbum).filter(VideoAlbum.parent_id.in_(frontier)).all()
-        if not children:
-            break
-        result.extend(children)
-        frontier = [c.id for c in children]
-    return result
+    return media_albums.descendant_albums(db, VideoAlbum, root_id)
 
 
 def _resolve_upload_path(url: Optional[str]) -> Optional[Path]:
@@ -197,26 +160,13 @@ def _visible_clips_query(db: Session, request: Request, world_id: int, album_id)
 
 
 def _sub_album_counts(db: Session, album_ids: list) -> dict:
-    if not album_ids:
-        return {}
-    rows = (
-        db.query(VideoAlbum.parent_id, func.count(VideoAlbum.id))
-        .filter(VideoAlbum.parent_id.in_(album_ids))
-        .group_by(VideoAlbum.parent_id)
-        .all()
-    )
-    return dict(rows)
+    return media_albums.sub_album_counts(db, VideoAlbum, album_ids)
 
 
 def _clip_counts(db: Session, request: Request, album_ids: list) -> dict:
     """Clip count per album, respecting the viewer's own visibility — a
     player never sees a count that includes clips they can't play."""
-    if not album_ids:
-        return {}
-    q = db.query(VideoClip.album_id, func.count(VideoClip.id)).filter(VideoClip.album_id.in_(album_ids))
-    if not _is_gm(request):
-        q = q.filter(VideoClip.visible_to_players.is_(True))
-    return dict(q.group_by(VideoClip.album_id).all())
+    return media_albums.child_counts(db, VideoClip, album_ids, visible_only=not _is_gm(request))
 
 
 async def _convert_video(src: Path, dest_dir: Path, max_height: Optional[int], bitrate_kbps: Optional[int]) -> Optional[Path]:

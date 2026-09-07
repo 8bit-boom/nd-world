@@ -56,8 +56,7 @@ CASES = [
     ("GET", "/quests", False),
     ("GET", "/parties", False),
     ("GET", "/combat", False),
-    ("GET", "/races/new", False),
-    ("POST", "/professions/new", False),
+    ("GET", "/races/new", False),  # the manual custom-race creation FORM page
     ("GET", "/handouts", False),
     ("GET", "/entity-templates", False),  # structural templates, not content
     ("GET", "/characters/templates", False),
@@ -93,6 +92,20 @@ CASES = [
     ("POST", "/kind/character/bulk-delete", True),
     ("POST", "/api/entities/bulk-folder", True),
     ("POST", "/folders/rename", True),
+    # Race/Profession catalogs — the create/delete convenience routes are the
+    # same tier as the generic Entity CRUD they wrap (docs/AUDIT_PLAN_NEXT.md
+    # item 16): an assistant could already do this via POST /new + POST
+    # /entity/{id}/delete, so gating the wrapper more strictly would be an
+    # arbitrary inconsistency. The manual-creation FORM page (GET /races/new,
+    # tested False above) stays GM-only — only the mutating routes widen.
+    ("POST", "/races/new", True),
+    ("POST", "/races/add-builtin", True),
+    ("POST", "/races/add-all-builtin", True),
+    ("POST", "/races/5/delete", True),
+    ("POST", "/professions/new", True),
+    ("POST", "/professions/add-builtin", True),
+    ("POST", "/professions/add-all-builtin", True),
+    ("POST", "/professions/5/delete", True),
     ("GET", "/sessions", True),
     ("POST", "/sessions/new", True),
     ("POST", "/sessions/5/edit", True),
@@ -322,6 +335,45 @@ def test_assistant_can_create_content_but_not_admin(client, seed):
     db = SessionLocal()
     try:
         assert db.query(Fact).filter(Fact.content == "Assistant logged this.").count() == 1
+    finally:
+        db.close()
+
+
+def test_assistant_can_manage_race_and_profession_catalogs(client, seed):
+    """Race/Profession catalog create/delete is the same content tier as the
+    generic Entity CRUD it wraps (docs/AUDIT_PLAN_NEXT.md item 16) — an
+    assistant can already create Entity(kind="race") via POST /new, so the
+    dedicated catalog routes must not be stricter."""
+    _make_assistant(seed, seed.player_a)
+    login(client, "player-a@test.local", PLAYER_PASSWORD)
+    _switch_world(client, seed.world_a.slug)
+
+    from app.models import Entity
+
+    r = client.post("/races/new", data={"name": "Assistant Race", "tier": "standard"}, follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        race = db.query(Entity).filter(Entity.kind == "race", Entity.name == "Assistant Race").first()
+        assert race is not None
+        race_id = race.id
+    finally:
+        db.close()
+
+    r = client.post(f"/races/{race_id}/delete", follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        assert db.query(Entity).filter(Entity.id == race_id).first() is None
+    finally:
+        db.close()
+
+    r = client.post("/professions/new", data={"name": "Assistant Profession", "tier": "standard"}, follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        prof = db.query(Entity).filter(Entity.kind == "profession", Entity.name == "Assistant Profession").first()
+        assert prof is not None
     finally:
         db.close()
 

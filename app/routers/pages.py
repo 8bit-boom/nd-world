@@ -26,8 +26,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from .. import media_albums
 from ..database import get_db
-from ..deps import get_world_ctx, can_edit_content
+from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit
 from ..models import CharacterSheet, PageAlbum, PageDoc
 from ..templating import templates
 from ..uploads import (
@@ -44,10 +45,7 @@ _MAX_DESCRIPTION = 512
 _MAX_DOCS_PER_WORLD = 200
 _MAX_ALBUMS_PER_WORLD = 100
 _MAX_ALBUM_NAME = 120
-# Duplicated locally rather than imported from main.py — main.py imports this
-# router, so the reverse would be circular (same rationale as audio.py's/
-# video.py's own local _UPLOADS_DIR copy).
-_UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+_UPLOADS_DIR = media_albums.UPLOADS_DIR
 _ALLOWED_EXTS = {".html", ".htm"}
 # A self-contained HTML page (embedded fonts/images as data URIs) can run
 # well past a plain text page but nowhere near audio/video territory —
@@ -67,24 +65,6 @@ _CHUNKS_ROOT = _UPLOADS_DIR / "pages" / "_chunks"
 _log = logging.getLogger(__name__)
 
 
-def _is_gm(request: Request) -> bool:
-    user = getattr(request.state, "user", None)
-    return bool(user and user.is_gm)
-
-
-def _require_can_edit(request: Request) -> None:
-    """The write-side gate for page/album content: a GM, or a GM-Assistant
-    (WorldMembership.role == "assistant") — same tier the auth_gate's
-    _is_assistant_safe already enforced on the way in; this re-check keeps
-    each handler safe on its own (every route in this router is content
-    write-side, so this replaces the old GM-only gate wholesale). Deliberately
-    NOT used by the visibility filters below (_visible_docs_query/
-    _doc_counts, or page_viewer's hidden-page 404): an assistant SEES what a
-    player sees, per the role's whole premise."""
-    if not can_edit_content(request):
-        raise HTTPException(403)
-
-
 def _doc_or_404(db: Session, world_id: int, doc_id: int) -> PageDoc:
     doc = db.get(PageDoc, doc_id)
     if not doc or doc.world_id != world_id:
@@ -100,37 +80,11 @@ def _album_or_404(db: Session, world_id: int, album_id: int) -> PageAlbum:
 
 
 def _breadcrumb(db: Session, album: PageAlbum) -> list:
-    """Root-to-current chain of parent albums (not including `album`
-    itself). Capped at 50 hops as cheap insurance against a corrupted
-    parent_id chain — normal nesting never gets remotely this deep since
-    _MAX_ALBUMS_PER_WORLD bounds the whole tree per world anyway."""
-    chain = []
-    current = album
-    for _ in range(50):
-        if not current.parent_id:
-            break
-        parent = db.get(PageAlbum, current.parent_id)
-        if not parent:
-            break
-        chain.append(parent)
-        current = parent
-    chain.reverse()
-    return chain
+    return media_albums.breadcrumb(db, PageAlbum, album)
 
 
 def _descendant_albums(db: Session, root_id: int) -> list:
-    """Every PageAlbum nested (at any depth) under root_id, for cascade
-    delete — deleting a folder removes its sub-albums (and their pages)
-    with it."""
-    result = []
-    frontier = [root_id]
-    while frontier:
-        children = db.query(PageAlbum).filter(PageAlbum.parent_id.in_(frontier)).all()
-        if not children:
-            break
-        result.extend(children)
-        frontier = [c.id for c in children]
-    return result
+    return media_albums.descendant_albums(db, PageAlbum, root_id)
 
 
 def _delete_doc_file(doc: PageDoc) -> None:
@@ -182,26 +136,13 @@ def _visible_docs_query(db: Session, request: Request, world_id: int, album_id):
 
 
 def _sub_album_counts(db: Session, album_ids: list) -> dict:
-    if not album_ids:
-        return {}
-    rows = (
-        db.query(PageAlbum.parent_id, func.count(PageAlbum.id))
-        .filter(PageAlbum.parent_id.in_(album_ids))
-        .group_by(PageAlbum.parent_id)
-        .all()
-    )
-    return dict(rows)
+    return media_albums.sub_album_counts(db, PageAlbum, album_ids)
 
 
 def _doc_counts(db: Session, request: Request, album_ids: list) -> dict:
     """Page count per album, respecting the viewer's own visibility — a
     player never sees a count that includes pages they can't open."""
-    if not album_ids:
-        return {}
-    q = db.query(PageDoc.album_id, func.count(PageDoc.id)).filter(PageDoc.album_id.in_(album_ids))
-    if not _is_gm(request):
-        q = q.filter(PageDoc.visible_to_players.is_(True))
-    return dict(q.group_by(PageDoc.album_id).all())
+    return media_albums.child_counts(db, PageDoc, album_ids, visible_only=not _is_gm(request))
 
 
 @router.get("/pages", response_class=HTMLResponse)

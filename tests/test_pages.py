@@ -664,3 +664,14 @@ def test_nav_shows_pages_link_to_everyone(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/")
     assert 'data-ql-ref="/pages"' in r.text
+
+
+def test_pages_sheets_route_is_not_shadowed_by_pages_doc_id_route(client, seed):
+    """/pages/sheets only resolves correctly because character_sheets_router
+    is registered in app/main.py BEFORE pages_router — pages.py's own
+    GET /pages/{doc_id} route would otherwise match "sheets" as a doc_id
+    path segment first and 422 (docs/AUDIT_PLAN_NEXT.md item 18). Nothing
+    else pins this ordering dependency."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get("/pages/sheets").status_code != 422

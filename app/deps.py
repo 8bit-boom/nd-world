@@ -50,6 +50,27 @@ def can_edit_content(request: Request) -> bool:
     return bool(user and (user.is_gm or getattr(request.state, "is_assistant", False)))
 
 
+def is_gm(request: Request) -> bool:
+    """True if this request's logged-in user is a GM — used by the media
+    library routers (audio/video/pages) to decide whether a visibility
+    filter applies, distinct from can_edit_content (which also admits a
+    GM-Assistant)."""
+    user = getattr(request.state, "user", None)
+    return bool(user and user.is_gm)
+
+
+def require_can_edit(request: Request) -> None:
+    """The write-side gate for content the media library routers manage
+    (clips/pages/albums): a GM, or a GM-Assistant (WorldMembership.role ==
+    "assistant") — same tier auth_gate's _is_assistant_safe already
+    enforced on the way in; this re-check keeps each handler safe on its
+    own. Deliberately NOT used by visibility filters/counts elsewhere in
+    those routers — an assistant SEES what a player sees, per the role's
+    whole premise."""
+    if not can_edit_content(request):
+        raise HTTPException(403)
+
+
 def get_world_ctx(request: Request, db: Session, active_world: Optional[str]):
     """The active world plus the world-switcher list, filtered to what this
     viewer may access — GMs see every world, players only the ones they're a
