@@ -185,17 +185,56 @@ to your VRAM; the benchmark button measures real tok/s after any change.
 
 ## 6. Whisper on the GPU
 
-Switch the optional whisper service to the CUDA build (already
-commented in `docker-compose.gpu.yml`):
+**The prebuilt `ghcr.io/ggml-org/whisper.cpp:main-cuda` image does NOT
+work on a V100.** Its own build compiles for
+`CMAKE_CUDA_ARCHITECTURES='75;80;86;90'` — Turing and newer only, which
+skips Volta (sm_70) entirely. This guide previously said "whisper.cpp's
+CUDA build supports Volta," which is true of the *project* but not of
+that *specific prebuilt image* — worth calling out explicitly since it's
+an easy image to reach for and it fails silently rather than refusing to
+start (whisper-server just never finds a usable GPU kernel).
+
+Build the bundled Volta-targeted image instead (already commented in
+`docker-compose.gpu.yml`) — a source build of whisper.cpp with
+`GGML_CUDA=ON` and `CMAKE_CUDA_ARCHITECTURES=70` pinned for the V100:
 
 ```yaml
 whisper:
-  image: ghcr.io/ggml-org/whisper.cpp:main-cuda
+  build: ./docker/whisper-cuda
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
 ```
 
-whisper.cpp's CUDA build supports Volta. A V100 transcribes
-`whisper-large-v3-turbo` several times faster than a typical NAS CPU —
-worth it if you record sessions.
+(TrueNAS SCALE: use the git-context `build:` line already commented in
+`truenas-compose.yml` instead, same as the CPU AVX-512 fix.)
+
+If you ever add a newer card alongside the V100, widen
+`CMAKE_CUDA_ARCHITECTURES` in `docker/whisper-cuda/Dockerfile` (e.g.
+`"70;75;80;86"`) rather than switching to the prebuilt image — mixing
+"prebuilt for everything else, source build just for the V100" isn't
+worth the complexity when one build covers both.
+
+**Model file format:** only `ggml-*.bin` files (whisper.cpp's own
+format) work here — **not** `.gguf` files, even ones named
+"whisper-*-gguf" on Hugging Face. whisper.cpp does not read the GGUF
+container format at all (confirmed by its own maintainer); this project
+already hit that exact wall once in production (a GGUF file loaded into
+`WHISPER_MODELS_DIR` made whisper-server crash-loop with "invalid model
+data (bad magic)"), which is why `_looks_like_ggml()` in `app/ai.py` now
+refuses to hand one to `/load` at all. For the accuracy of `large-v3` at
+roughly half the size/VRAM, use `ggml-large-v3-q8_0.bin` instead — it's
+in the Models tab's "⬇ Download Whisper Model" list (Whisper tab on the
+AI page), fetched from the same official `ggerganov/whisper.cpp` repo as
+every other listed model.
+
+A V100 transcribes `whisper-large-v3-turbo` (or the more accurate
+`ggml-large-v3-q8_0.bin` above, once GPU-accelerated) several times
+faster than a typical NAS CPU — worth it if you record sessions.
 
 ## 7. V100 hardware notes (used cards)
 

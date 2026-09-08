@@ -230,8 +230,14 @@ services:
       - >-
         exec whisper-server --host 0.0.0.0 --port 8080 --convert
         -m "/models/$(cat /models/active-model.txt 2>/dev/null || echo '${WHISPER_MODEL_FILE:-ggml-large-v3-turbo.bin}')"
-    # For NVIDIA GPU, use ghcr.io/ggml-org/whisper.cpp:main-cuda above instead
-    # and uncomment the deploy block below:
+    # For NVIDIA GPU: Turing or newer, use ghcr.io/ggml-org/whisper.cpp:
+    # main-cuda above instead. For Volta (V100, sm_70) specifically, that
+    # prebuilt image does NOT work — its own build targets
+    # CMAKE_CUDA_ARCHITECTURES='75;80;86;90', which starts at Turing and
+    # skips Volta entirely, so whisper-server never finds a usable GPU
+    # kernel on a V100 — build docker/whisper-cuda instead (a source build
+    # pinned to sm_70; see its own Dockerfile and docs/GPU_SETUP.md §6).
+    # Either way, uncomment the deploy block below:
     # deploy:
     #   resources:
     #     reservations:

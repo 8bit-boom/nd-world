@@ -234,8 +234,16 @@ services:
       net.ix-portals.whisper.port: "8080"
       net.ix-portals.whisper.path: "/"
       net.ix-portals.whisper.host: ""
-    # For NVIDIA GPU, use ghcr.io/ggml-org/whisper.cpp:main-cuda above instead
-    # and uncomment the deploy block below:
+    # For NVIDIA GPU: Turing or newer, use ghcr.io/ggml-org/whisper.cpp:
+    # main-cuda above instead. For Volta (V100, sm_70) specifically, that
+    # prebuilt image does NOT work — its own build targets
+    # CMAKE_CUDA_ARCHITECTURES='75;80;86;90', which starts at Turing and
+    # skips Volta entirely, so whisper-server never finds a usable GPU
+    # kernel on a V100 — build the Volta-targeted image from the repo
+    # instead (same git-context build pattern as the CPU fix above):
+    # build: https://github.com/8bit-boom/nd-world.git#main:docker/whisper-cuda
+    # See docker/whisper-cuda/Dockerfile and docs/GPU_SETUP.md §6.
+    # Either way, uncomment the deploy block below:
     # deploy:
     #   resources:
     #     reservations:

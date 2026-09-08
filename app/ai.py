@@ -3721,6 +3721,18 @@ WHISPER_KNOWN_MODELS = [
     {"filename": "ggml-medium.bin", "label": "Medium", "size": "1.5 GiB"},
     {"filename": "ggml-medium.en.bin", "label": "Medium (English only)", "size": "1.5 GiB"},
     {"filename": "ggml-large-v3.bin", "label": "Large v3", "size": "2.9 GiB"},
+    # NOT "ggml-large-v3-q8_0.gguf" — a real file at that name exists on
+    # third-party HF repos, but it's in the GGUF container format, which
+    # whisper.cpp does not read (confirmed by its maintainer, and by this
+    # project's own prior incident — see _looks_like_ggml's docstring
+    # below, which exists specifically to reject one before it reaches
+    # whisper.cpp's /load and wedges the server). This is the real ggml
+    # .bin equivalent, straight from whisper.cpp's own official repo —
+    # same large-v3 accuracy as the row above at roughly half the size/RAM
+    # (8-bit quantization vs the row above's fp16), a good pick once GPU
+    # VRAM is limited or a CUDA build makes large-v3 fast enough to be
+    # worth the accuracy over Large v3 Turbo below.
+    {"filename": "ggml-large-v3-q8_0.bin", "label": "Large v3 (quantized, q8_0)", "size": "~1.6 GiB"},
     {"filename": "ggml-large-v3-turbo.bin", "label": "Large v3 Turbo", "size": "1.5 GiB"},
     {"filename": "ggml-large-v3-turbo-q5_0.bin", "label": "Large v3 Turbo (quantized)", "size": "547 MiB"},
 ]

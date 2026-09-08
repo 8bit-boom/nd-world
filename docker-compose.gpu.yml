@@ -48,10 +48,20 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: utility
 
   # Optional: GPU-accelerated Whisper transcription. Uncomment to switch
-  # the whisper service from CPU to the CUDA build (requires the whisper
-  # profile: COMPOSE_PROFILES=whisper in .env).
+  # the whisper service from CPU to CUDA (requires the whisper profile:
+  # COMPOSE_PROFILES=whisper in .env).
+  #
+  # V100 (Volta, sm_70) owners: the prebuilt ghcr.io/ggml-org/whisper.cpp:
+  # main-cuda image does NOT work here — its own build only targets
+  # CMAKE_CUDA_ARCHITECTURES='75;80;86;90' (Turing and newer), skipping
+  # Volta entirely, so whisper-server never finds a usable GPU kernel on
+  # this card. Build the bundled Volta-targeted image instead — that's
+  # what's uncommented below (see docker/whisper-cuda/Dockerfile and
+  # docs/GPU_SETUP.md §6). Turing-or-newer owners can skip the build and
+  # use `image: ghcr.io/ggml-org/whisper.cpp:main-cuda` instead — faster
+  # to pull, no reason to build from source on those cards.
   #whisper:
-  #  image: ghcr.io/ggml-org/whisper.cpp:main-cuda
+  #  build: ./docker/whisper-cuda
   #  deploy:
   #    resources:
   #      reservations:
