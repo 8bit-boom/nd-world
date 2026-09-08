@@ -79,22 +79,65 @@ def _bump_recap_content_touch(world) -> None:
     world.recap_content_touch = datetime.utcnow()
 
 
+def _fact_groups(db: Session, world_id: int, sessions: dict) -> list:
+    """Buckets every Fact in the world by its game_session — the flat,
+    single reverse-chronological list this used to build became unusable
+    once a world had more than one session's worth of facts logged: every
+    row repeated the same session label, and there was no way to tell
+    where one session's facts ended and the next began (see the reported
+    "pain to deal with" — a single Facts page mixing every session at
+    once). Each session's own facts are ordered chronologically (oldest
+    first, `created_at`/`id` ascending) so they read as that session's
+    story in the order it happened/was parsed, rather than the old
+    world-wide newest-first order, which interleaved unrelated sessions
+    and often read backwards within any one of them (climax before setup)
+    purely because of insertion timing. A "No session" bucket — newest
+    first, since those are unfiled and more likely to need attention —
+    comes first when non-empty; the rest follow with the most recent
+    session first, oldest last."""
+    facts = (
+        db.query(Fact)
+        .filter(Fact.world_id == world_id)
+        .order_by(Fact.created_at.asc(), Fact.id.asc())
+        .all()
+    )
+    by_session: dict = {}
+    unsessioned = []
+    for f in facts:
+        if f.game_session_id and f.game_session_id in sessions:
+            by_session.setdefault(f.game_session_id, []).append(f)
+        else:
+            unsessioned.append(f)
+    groups = []
+    if unsessioned:
+        groups.append({
+            "session": None, "label": "🗂 No session",
+            "facts": list(reversed(unsessioned)),
+        })
+    for sid, fl in sorted(
+        by_session.items(),
+        key=lambda kv: (sessions[kv[0]].session_num or 0, sessions[kv[0]].id),
+        reverse=True,
+    ):
+        s = sessions[sid]
+        groups.append({
+            "session": s, "label": f"#{s.session_num} {s.title}", "facts": fl,
+        })
+    return groups
+
+
 @router.get("/facts", response_class=HTMLResponse)
 def facts_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
     world_id = world.id if world else 1
-    facts = (
-        db.query(Fact)
-        .filter(Fact.world_id == world_id)
-        .order_by(Fact.created_at.desc())
-        .all()
-    )
     sessions = {
         s.id: s for s in db.query(GameSession).filter(GameSession.world_id == world_id).all()
     }
+    groups = _fact_groups(db, world_id, sessions)
     return templates.TemplateResponse("facts/list.html", {
         "request": request, "world": world, "worlds": worlds,
-        "facts": facts, "sessions": sessions,
+        "groups": groups, "sessions": sessions,
+        "fact_count": sum(len(g["facts"]) for g in groups),
     })
 
 

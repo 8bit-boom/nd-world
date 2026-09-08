@@ -137,39 +137,59 @@
     <button type="submit" class="btn-primary">+ Add</button>
   </form>
 
-  <!-- Existing facts -->
-  {% if facts %}
-  <div style="display:flex;flex-direction:column;gap:.5rem">
-    {% for f in facts %}
-    <div class="en-note{% if not f.visible_to_players %} en-hidden{% endif %}" style="background:var(--bg2)">
-      <div class="en-note-content rendered-md" id="fact-view-{{ f.id }}">{{ f.content | md | safe }}</div>
-      <form id="fact-edit-{{ f.id }}" method="post" action="{{ ('/facts/' ~ f.id ~ '/edit')|wq }}" style="display:none;margin-top:.4rem">
-        <textarea name="content" rows="2" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px" data-fmt>{{ f.content }}</textarea>
-        <div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem">
-          <select name="game_session_id">
-            <option value="">— none —</option>
-            {% for s in sessions.values() %}<option value="{{ s.id }}" {% if f.game_session_id == s.id %}selected{% endif %}>#{{ s.session_num }} {{ s.title }}</option>{% endfor %}
-          </select>
-          <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem">
-            <input type="checkbox" name="visible_to_players" value="1" {% if f.visible_to_players %}checked{% endif %} style="width:auto">
-            Visible to players
-          </label>
-          <button type="submit" class="en-btn">Save</button>
-          <button type="button" class="en-btn" onclick="toggleFactEdit({{ f.id }})">Cancel</button>
-        </div>
-      </form>
-      <div class="en-note-footer">
-        <span class="en-note-date">{{ f.created_at.strftime('%Y-%m-%d %H:%M') if f.created_at else '' }}</span>
-        {% if f.game_session_id and sessions.get(f.game_session_id) %}
-        <span class="en-note-date">#{{ sessions[f.game_session_id].session_num }} {{ sessions[f.game_session_id].title }}</span>
+  <!-- Existing facts, grouped by session -->
+  {% if groups %}
+  <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.7rem;flex-wrap:wrap">
+    <input type="text" id="facts-search" placeholder="🔍 Search facts…" oninput="factsSearch(this.value)"
+           style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px">
+    <span id="facts-search-count" style="display:none;font-size:.78rem;color:var(--text-dim)"></span>
+    <button type="button" class="en-btn" onclick="factsSetAllGroups(true)">Expand all</button>
+    <button type="button" class="en-btn" onclick="factsSetAllGroups(false)">Collapse all</button>
+    <span style="font-size:.78rem;color:var(--text-dim)">{{ fact_count }} fact{{ 's' if fact_count != 1 else '' }} in {{ groups|length }} session{{ 's' if groups|length != 1 else '' }}</span>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:.6rem">
+    {% for group in groups %}
+    <details class="facts-group" data-facts-group {% if loop.first %}open{% endif %}
+              style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.15rem .9rem">
+      <summary style="cursor:pointer;padding:.6rem 0;font-size:.9rem;color:var(--neon);font-weight:600;list-style:none;display:flex;align-items:center;gap:.5rem">
+        <span>{{ group.label }}</span>
+        <span data-facts-group-count style="font-size:.75rem;color:var(--text-dim);font-weight:normal">({{ group.facts|length }})</span>
+        {% if group.session %}
+        <a href="{{ ('/sessions/' ~ group.session.id)|wq }}" onclick="event.stopPropagation()"
+           style="margin-left:auto;font-size:.75rem;color:var(--text-dim);text-decoration:none">Open session →</a>
         {% endif %}
-        <span class="en-note-vis">{% if f.visible_to_players %}👁 visible to players{% else %}🔒 GM only{% endif %}</span>
-        <button type="button" class="en-btn" onclick="toggleFactEdit({{ f.id }})">Edit</button>
-        <form action="{{ ('/facts/' ~ f.id ~ '/delete')|wq }}" method="post" class="en-inline-form" onsubmit="return confirm('Delete this fact?')">
-          <button type="submit" class="en-btn en-btn-del">Delete</button>
-        </form>
+      </summary>
+      <div style="display:flex;flex-direction:column;gap:.5rem;padding-bottom:.75rem">
+        {% for f in group.facts %}
+        <div class="en-note" data-facts-card{% if not f.visible_to_players %} en-hidden{% endif %} style="background:var(--bg3)">
+          <div class="en-note-content rendered-md" id="fact-view-{{ f.id }}">{{ f.content | md | safe }}</div>
+          <form id="fact-edit-{{ f.id }}" method="post" action="{{ ('/facts/' ~ f.id ~ '/edit')|wq }}" style="display:none;margin-top:.4rem">
+            <textarea name="content" rows="2" style="width:100%;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px" data-fmt>{{ f.content }}</textarea>
+            <div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem">
+              <select name="game_session_id">
+                <option value="">— none —</option>
+                {% for s in sessions.values() %}<option value="{{ s.id }}" {% if f.game_session_id == s.id %}selected{% endif %}>#{{ s.session_num }} {{ s.title }}</option>{% endfor %}
+              </select>
+              <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem">
+                <input type="checkbox" name="visible_to_players" value="1" {% if f.visible_to_players %}checked{% endif %} style="width:auto">
+                Visible to players
+              </label>
+              <button type="submit" class="en-btn">Save</button>
+              <button type="button" class="en-btn" onclick="toggleFactEdit({{ f.id }})">Cancel</button>
+            </div>
+          </form>
+          <div class="en-note-footer">
+            <span class="en-note-date">{{ f.created_at.strftime('%Y-%m-%d %H:%M') if f.created_at else '' }}</span>
+            <span class="en-note-vis">{% if f.visible_to_players %}👁 visible to players{% else %}🔒 GM only{% endif %}</span>
+            <button type="button" class="en-btn" onclick="toggleFactEdit({{ f.id }})">Edit</button>
+            <form action="{{ ('/facts/' ~ f.id ~ '/delete')|wq }}" method="post" class="en-inline-form" onsubmit="return confirm('Delete this fact?')">
+              <button type="submit" class="en-btn en-btn-del">Delete</button>
+            </form>
+          </div>
+        </div>
+        {% endfor %}
       </div>
-    </div>
+    </details>
     {% endfor %}
   </div>
   {% else %}
@@ -184,6 +204,54 @@ function toggleFactEdit(id) {
   const editing = form.style.display !== 'none';
   form.style.display = editing ? 'none' : 'block';
   view.style.display = editing ? '' : 'none';
+}
+
+function factsSetAllGroups(open) {
+  document.querySelectorAll('[data-facts-group]').forEach(g => { g.open = open; });
+}
+
+// Filters fact cards across every session group by content text — hides a
+// card that doesn't match, hides a whole group once every one of its cards
+// is hidden (an empty disclosure triangle is worse than no group at all),
+// and force-opens any group that still has a visible match so the GM never
+// has to manually expand a collapsed session just to see why it matched.
+// Clearing the box restores every card AND each group's own open/closed
+// state from before the search started, rather than leaving everything
+// expanded.
+let _factsPreSearchOpen = null;
+function factsSearch(v) {
+  const q = (v || '').trim().toLowerCase();
+  const groups = Array.from(document.querySelectorAll('[data-facts-group]'));
+  const countEl = document.getElementById('facts-search-count');
+  if (!q) {
+    document.querySelectorAll('[data-facts-card]').forEach(c => { c.style.display = ''; });
+    groups.forEach(g => {
+      g.style.display = '';
+      if (_factsPreSearchOpen && _factsPreSearchOpen.has(g)) g.open = _factsPreSearchOpen.get(g);
+    });
+    _factsPreSearchOpen = null;
+    if (countEl) { countEl.style.display = 'none'; countEl.textContent = ''; }
+    return;
+  }
+  if (!_factsPreSearchOpen) {
+    _factsPreSearchOpen = new Map(groups.map(g => [g, g.open]));
+  }
+  let totalMatches = 0;
+  groups.forEach(group => {
+    let groupMatches = 0;
+    group.querySelectorAll('[data-facts-card]').forEach(card => {
+      const hit = card.textContent.toLowerCase().indexOf(q) >= 0;
+      card.style.display = hit ? '' : 'none';
+      if (hit) groupMatches++;
+    });
+    group.style.display = groupMatches ? '' : 'none';
+    if (groupMatches) group.open = true;
+    totalMatches += groupMatches;
+  });
+  if (countEl) {
+    countEl.style.display = '';
+    countEl.textContent = totalMatches === 1 ? '1 fact matches' : totalMatches + ' facts match';
+  }
 }
 
 let draftFacts = [];

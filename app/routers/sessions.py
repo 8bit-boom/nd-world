@@ -395,6 +395,15 @@ def session_delete(session_id: int, db: Session = Depends(get_db)):
     if not gs:
         raise HTTPException(404)
     db.query(CombatSession).filter(CombatSession.game_session_id == session_id).update({"game_session_id": None})
+    # Facts are content in their own right (the whole point of the feature
+    # is outliving any one session's page) — unlike CombatSession above,
+    # deleting the session must not delete these, only unlink them. Without
+    # this a fact's game_session_id pointed at a row that no longer
+    # existed: harmless (the Facts page's session grouping already treats
+    # an unresolvable id as "no session" defensively — see _fact_groups in
+    # app/routers/facts.py), but it left genuinely dangling data instead of
+    # the fact just moving to the "No session" bucket outright.
+    db.query(Fact).filter(Fact.game_session_id == session_id).update({"game_session_id": None})
     # The opt-in raw-recording archive (uploads/live/<session_id>/, written
     # by api_live_transcript_append) is keyed by this session id and
     # referenced by nothing else once the row is gone — delete it with the
