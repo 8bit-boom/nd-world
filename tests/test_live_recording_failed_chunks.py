@@ -72,11 +72,17 @@ def test_backlog_is_shown_while_still_recording(client, seed):
 
 def test_summarize_in_background_button_is_wired(client, seed):
     """docs/DYNAMIC_THINKING_AND_PIPELINE_PLAN.md Part 2 item 3.2: the
-    Live Recording panel's "Summarize in Background" button must call the
-    job-create route (not the blocking one) and refresh the shared jobs
-    panel afterward."""
+    Live Recording panel's summarize buttons must lead to the job-create
+    route (not the blocking one) and refresh the shared jobs panel
+    afterward. Since the durability audit, BOTH buttons go through
+    summarizeLiveTranscript() -> aiStartLiveTranscriptJob(): the plain
+    button used to fire the blocking route inline, which 524'd at the
+    Cloudflare tunnel on a multi-hour transcript with all work lost."""
     page = _get_page(client, seed)
-    assert 'onclick="aiStartLiveTranscriptJob()"' in page
+    assert 'onclick="summarizeLiveTranscript()"' in page
+    assert 'onclick="summarizeLiveTranscript(true)"' in page
+    assert "function summarizeLiveTranscript()" in page
+    assert "aiStartLiveTranscriptJob();" in page
     assert "async function aiStartLiveTranscriptJob()" in page
     body = page.split("async function aiStartLiveTranscriptJob()", 1)[1][:1200]
     assert "/ai/summarize-live-transcript-job" in body

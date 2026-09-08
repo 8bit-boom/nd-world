@@ -273,8 +273,8 @@
     <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem">
       <button type="button" id="live-record-btn" class="ai-recap-btn" onclick="toggleLiveRecording()">🔴 Start Recording</button>
       <button type="button" class="ai-recap-btn" onclick="summarizeLiveTranscript()">✨ Summarize transcript</button>
-      <button type="button" class="ai-recap-btn" onclick="aiStartLiveTranscriptJob()"
-              title="Process in the background instead — keeps running even if you close this tab, with the same checkpointing/RAG/retry protection a long uploaded recording gets. Best for a multi-hour transcript, where summarizing inline in one request risks timing out.">🔒 Summarize in Background</button>
+      <button type="button" class="ai-recap-btn" onclick="summarizeLiveTranscript(true)"
+              title="Keeps running even if you close this tab, with the same checkpointing/RAG/retry protection a long uploaded recording gets. Best for a multi-hour transcript, where summarizing inline in one request risks timing out.">🔒 Summarize in Background</button>
       <button type="button" class="ai-recap-btn" onclick="clearLiveTranscript()">🗑 Clear transcript</button>
       <a id="live-transcript-download-link" class="ai-recap-btn" href="{{ ('/sessions/' + gsession.id|string + '/transcript.md')|wq }}" style="display:none;text-decoration:none">⬇ Download .md</a>
       <span id="live-record-status" style="font-size:.78rem;color:var(--text-dim)"></span>
@@ -1485,8 +1485,16 @@ async function clearLiveTranscript() {
   liveSetTranscriptDisplay(data.transcript);
 }
 
+// Both live-transcript summarize buttons run the DURABLE JOB now (via
+// aiStartLiveTranscriptJob below) — the old plain button fired the
+// blocking .../summarize-live-transcript route inline, and a multi-hour
+// transcript against a slow local model blew past the Cloudflare tunnel's
+// ~100s ceiling: "Server error 524" with all the work lost. The job gets
+// session_recap's checkpointing/RAG/retry-ladder protection and shows up
+// in the session's job panel like every other recap job; the blocking
+// route stays up as a documented API.
 function summarizeLiveTranscript() {
-  aiRunRecap(`/api/sessions/${SESSION_ID}/ai/summarize-live-transcript`, {});
+  aiStartLiveTranscriptJob();
 }
 
 // Same durable-background-job treatment Condense already gets

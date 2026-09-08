@@ -19,6 +19,7 @@ from .. import ai_assist as _ai_assist
 from .. import audio_jobs as _audio_jobs
 from .. import chat_jobs as _chat_jobs
 from .. import image_jobs as _image_jobs
+from .. import imagegen_templates as _ig_templates
 from .. import ollama_tuning as _tuning
 from .. import retrieval as _retrieval
 from ..constants import KINDS
@@ -2389,6 +2390,133 @@ def _imagegen_params(body: ImagegenBody, uploads_dir: _Path) -> dict:
 
 def _imagegen_uploads_dir() -> _Path:
     return _Path(_os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
+
+
+def _custom_template_to_dict(preset) -> dict:
+    """A PromptPreset scope='image_template' row → the same shape the
+    built-in templates use (see app/imagegen_templates.py's field list),
+    so the picker's apply logic handles both without branching."""
+    try:
+        params = _json.loads(preset.params_json or "{}")
+    except Exception:
+        params = {}
+    return {
+        "id": f"custom-{preset.id}",
+        "label": preset.label,
+        "match": params.get("match") or [],
+        "exclude": params.get("exclude") or [],
+        "prefix": params.get("prefix") or "",
+        "suffix": params.get("suffix") or "",
+        "example_prompt": preset.text or "",
+        "negative": preset.negative or "",
+        "steps": params.get("steps"),
+        "cfg": params.get("cfg"),
+        "sampler": params.get("sampler") or "",
+        "scheduler": params.get("scheduler") or "",
+        "note": params.get("note") or "Your template.",
+        "guide": params.get("guide") or "",
+        "custom": True,
+    }
+
+
+@router.get("/imagegen/model-templates")
+async def ai_imagegen_model_templates(
+    request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None),
+):
+    """Built-in per-model prompt/generation templates (see
+    app/imagegen_templates.py — SwarmUI-doc settings + each model's
+    official prompting guide) plus this world's CUSTOM templates
+    (scope='image_template' PromptPresets, saved from the picker's 💾
+    button). Both lists are read-only data; applying is client-side."""
+    world, _ = get_world_ctx(request, db, active_world)
+    custom_rows = (
+        db.query(PromptPreset)
+        .filter(PromptPreset.scope == "image_template")
+        .filter(PromptPreset.world_id == (world.id if world else -1))
+        .order_by(PromptPreset.label)
+        .all()
+    ) if world else []
+    return {
+        "templates": _ig_templates.TEMPLATES,
+        "custom": [_custom_template_to_dict(p) for p in custom_rows],
+    }
+
+
+class CustomTemplateBody(BaseModel):
+    label: str
+    match: str = ""
+    prefix: str = ""
+    suffix: str = ""
+    example_prompt: str = ""
+    negative: str = ""
+    steps: Optional[int] = None
+    cfg: Optional[float] = None
+    sampler: str = ""
+    scheduler: str = ""
+    note: str = ""
+    guide: str = ""
+
+
+@router.post("/imagegen/model-templates/custom")
+async def ai_imagegen_custom_template_save(
+    body: CustomTemplateBody, request: Request,
+    db=Depends(get_db), active_world: Optional[str] = Cookie(None),
+):
+    """Save (or overwrite, by label) one of the GM's own Image Gen model
+    templates for the active world. Everything except the label is
+    optional — a minimal template is just a remembered negative +
+    steps/CFG. `match` is a comma-separated keyword list used for the
+    picker's suggested-marker, same as the built-ins'."""
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    label = body.label.strip()
+    if not label:
+        raise HTTPException(400, "Template name must not be empty")
+    params = {
+        "match": [m.strip().lower() for m in body.match.split(",") if m.strip()],
+        "prefix": body.prefix.strip(),
+        "suffix": body.suffix.strip(),
+        "steps": body.steps,
+        "cfg": body.cfg,
+        "sampler": body.sampler.strip(),
+        "scheduler": body.scheduler.strip(),
+        "note": body.note.strip(),
+        "guide": body.guide.strip(),
+    }
+    row = (
+        db.query(PromptPreset)
+        .filter(PromptPreset.scope == "image_template", PromptPreset.world_id == world.id,
+                PromptPreset.label == label)
+        .first()
+    )
+    if row is None:
+        row = PromptPreset(world_id=world.id, scope="image_template", label=label)
+        db.add(row)
+    row.text = body.example_prompt
+    row.negative = body.negative
+    row.params_json = _json.dumps(params)
+    db.commit()
+    db.refresh(row)
+    return _custom_template_to_dict(row)
+
+
+@router.delete("/imagegen/model-templates/custom/{template_id}")
+async def ai_imagegen_custom_template_delete(
+    template_id: int, request: Request,
+    db=Depends(get_db), active_world: Optional[str] = Cookie(None),
+):
+    """Delete one of this world's custom Image Gen templates (by the row
+    id, which the client knows as the numeric part of its custom-<id>)."""
+    _require_gm(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    row = db.get(PromptPreset, template_id)
+    if not row or row.scope != "image_template" or (world and row.world_id != world.id):
+        raise HTTPException(404)
+    db.delete(row)
+    db.commit()
+    return {"deleted": template_id}
 
 
 @router.post("/imagegen/generate")

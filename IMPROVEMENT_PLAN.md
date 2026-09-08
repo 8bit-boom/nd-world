@@ -96,7 +96,7 @@ before a change is done**; every new HTTP route needs a row in
 | M2/P5 | Test parallelism: per-worker DB_PATH for pytest-xdist, `slow` marker | P2 | M | M |
 | G7 | Content pack versioning + safe re-import | P2 | M | M |
 | G6/G8 | Downtime/world-clock; loot-XP session ledger | P2 | M | S–M |
-| U5–U8 | Mobile player polish; bulk-action consistency; a11y continuation; empty states | P2 | M | S–M |
+| U5–U8 | Mobile player polish (concrete backlog: docs/MOBILE_UI_UX_AUDIT.md — boards touch support, schematic phone layout, iOS recording filenames/flush, settings/world-edit clipping); bulk-action consistency; a11y continuation; empty states | P2 | M | S–M |
 | P6/P7 | AI status polling consolidation; FTS5 everywhere | P2 | M | S |
 | C3–C5 | If repo goes public: demo world, screenshots, shareable read-only snapshot | P2 | M | S–L |
 | C6/M7 | i18n, plugin architecture — **deferred** until demand exists | — | — | XL |

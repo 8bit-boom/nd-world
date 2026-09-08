@@ -87,6 +87,8 @@ function igClearCN() {
     await igReloadModels();
     igRenderLoras();
     igRenderPresets();
+    igLoadTemplates();
+    igUpdateCfgWarning();
     igLoadSamplersSchedulers();
     igLoadLoras();
     igLoadUpscalers();
@@ -261,6 +263,19 @@ function _igRenderResultCards(urls, body, grid) {
       actions.appendChild(portraitBtn);
     }
     card.appendChild(img);
+    // One glanceable line of what actually produced THIS image — when a
+    // result doesn't match the prompt, the first questions are always
+    // "what model/cfg/steps was that?" (low CFG and danbooru-tag models
+    // being the usual culprits). Bound at render time, not read live.
+    const meta = document.createElement('div');
+    meta.className = 'ig-result-card-meta';
+    meta.style.cssText = 'font-size:.68rem;color:var(--text-dim);margin-top:.25rem;line-height:1.3;word-break:break-word';
+    meta.textContent = [
+      (body.prompt || '').slice(0, 80) + ((body.prompt || '').length > 80 ? '…' : ''),
+      'model: ' + (body.model || '(backend default)'),
+      'cfg: ' + body.cfg, 'steps: ' + body.steps, 'seed: ' + body.seed,
+    ].join(' · ');
+    card.appendChild(meta);
     card.appendChild(actions);
     grid.appendChild(card);
   });
@@ -296,13 +311,23 @@ async function igGenerate() {
     // broken, so show an indeterminate "working" state instead of a real
     // percentage nothing will ever move.
     if (track) track.style.display = _igIsComfyUI ? 'none' : 'block';
-    document.getElementById('ig-progress-text').textContent = _igIsComfyUI ? 'Generating… (ComfyUI reports no progress)' : '';
+    document.getElementById('ig-progress-text').textContent = 'Queued…';
   }
   if (!_igIsComfyUI) _igProgressTimer = setInterval(igPollProgress, 1200);
 
+  // Generate runs as a durable image JOB, not the old blocking
+  // /api/ai/imagegen/generate call: a cold backend (model loading after a
+  // SwarmUI update/restart) easily exceeds the Cloudflare tunnel's ~100s
+  // ceiling, and the blocking request died with "Server error 524" while
+  // SwarmUI happily finished the image anyway — result visible only in
+  // SwarmUI's own history, never in nd-world. The job engine is immune
+  // (no HTTP request is held open), survives tab closes and server
+  // restarts, and the jobs panel below mirrors the whole lifecycle. The
+  // blocking route stays up as a documented API; no UI flow uses it.
+  const body = _igBuildBody(prompt);
+  let jobId = null;
   try {
-    const body = _igBuildBody(prompt);
-    const r = await fetch('/api/ai/imagegen/generate', {
+    const r = await fetch('/api/ai/imagegen/jobs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -312,27 +337,79 @@ async function igGenerate() {
       try { detail = (await r.json()).detail || ''; } catch (e) { /* non-JSON error body */ }
       throw new Error(detail || `Server error ${r.status}`);
     }
-    const data = await r.json();
-    if (data.error) throw new Error(data.error);
-
-    const urls = data.urls && data.urls.length ? data.urls : (data.url ? [data.url] : []);
-    if (!urls.length) throw new Error('No images returned');
-    _igLastUrls = urls;
-    igSaveToHistory(urls, body);
-    _igRenderResultCards(urls, body, grid);
-    results.style.display = 'block';
+    jobId = (await r.json()).job_id;
   } catch (e) {
-    const msg = e.message || String(e);
-    err.textContent = '❌ ' + (msg.toLowerCase().includes('networkerror') || msg.toLowerCase().includes('fetch')
-      ? 'Cannot reach image generation service. Is SwarmUI/ComfyUI running and configured?'
-      : msg);
+    err.textContent = '❌ ' + (e.message || e);
     err.style.display = 'block';
-  } finally {
     clearInterval(_igProgressTimer);
     _igProgressTimer = null;
     if (progressWrap) progressWrap.style.display = 'none';
     btn.disabled = false;
     status.style.display = 'none';
+    return;
+  }
+
+  // Inline wait: poll the job to done and render the results exactly where
+  // the blocking path used to put them (same cards, same history).
+  // Cancel lives NEXT TO ig-progress-text (its own element in the row),
+  // never inside it: igPollProgress rewrites that span's textContent with
+  // the live percent every 1.2s, which used to wipe a nested button and
+  // made Cancel flicker in and out of existence while generating.
+  const progressText = document.getElementById('ig-progress-text');
+  const progressRow = progressText ? progressText.parentElement : null;
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'nd-job-use-btn';
+  cancelBtn.style.marginLeft = '.6rem';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = async () => {
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = 'Cancelling…';
+    try { await fetch('/api/ai/imagegen/jobs/' + jobId + '/cancel', { method: 'POST' }); } catch (e) { /* the poll reports it */ }
+  };
+  if (progressRow) progressRow.appendChild(cancelBtn);
+
+  const started = Date.now();
+  const MAX_MS = 60 * 60 * 1000;  // hard inline cap; the jobs panel outlives it
+  try {
+    while (Date.now() - started < MAX_MS) {
+      await new Promise(r => setTimeout(r, 1500));
+      let job;
+      try {
+        const r = await fetch('/api/ai/imagegen/jobs/' + jobId);
+        if (r.status === 404) throw new Error('job disappeared');
+        job = await r.json();
+      } catch (e) {
+        // Transient poll hiccup (network blip) — keep waiting rather than
+        // aborting a healthy generation; the jobs panel is the backstop.
+        continue;
+      }
+      if (job.status === 'done' && (job.urls || []).length) {
+        igSaveToHistory(job.urls, body);
+        _igLastUrls = job.urls;
+        _igRenderResultCards(job.urls, body, grid);
+        results.style.display = 'block';
+        return;
+      }
+      if (job.status === 'error') throw new Error(job.error || 'Generation failed');
+      if (job.status === 'cancelled') throw new Error('Generation cancelled');
+      // progress text: ComfyUI has no live percent (see _igIsComfyUI), so
+      // say so once; for SwarmUI igPollProgress owns the span (live %) —
+      // writing "Queued/Generating" here too would fight it every 1.5s.
+      if (progressText && _igIsComfyUI) progressText.textContent = 'no live progress';
+    }
+    throw new Error('Still generating after an hour — check the Background jobs list below.');
+  } catch (e) {
+    err.textContent = '❌ ' + (e.message || e);
+    err.style.display = 'block';
+  } finally {
+    clearInterval(_igProgressTimer);
+    _igProgressTimer = null;
+    cancelBtn.remove();
+    if (progressWrap) progressWrap.style.display = 'none';
+    btn.disabled = false;
+    status.style.display = 'none';
+    igLoadJobs();
   }
 }
 
@@ -509,6 +586,14 @@ async function igReloadModels() {
   } catch (e) {
     // Leave whatever was already in the dropdown — this is a refresh, not
     // the initial load, so a transient fetch failure shouldn't blank it.
+  }
+  // The model just changed (initial load or refresh) — refresh the
+  // template picker's "(suggested)" marker to match, and keep following
+  // manual model swaps from here on.
+  igRenderTemplates();
+  if (!sel.dataset.tmplWired) {
+    sel.dataset.tmplWired = '1';
+    sel.addEventListener('change', igRenderTemplates);
   }
 }
 
@@ -1187,6 +1272,207 @@ async function igSendToImg2Img(url) {
   }
 }
 
+// CFG ≤ 2 is a real foot-gun on regular checkpoints (the model mostly
+// ignores the prompt; only Turbo/Lightning/distilled models want it) and
+// it silently persists via Reuse/presets — surface it right under the
+// slider instead of letting a random-looking result be the first sign.
+function igUpdateCfgWarning() {
+  const el = document.getElementById('ig-cfg');
+  const warn = document.getElementById('ig-cfg-warning');
+  if (!el || !warn) return;
+  warn.hidden = !(parseFloat(el.value) <= 2);
+}
+
+// ── Model templates (built-in + your own) ───────────────────────────────────
+// Served by GET /api/ai/imagegen/model-templates: `templates` are the
+// app's built-ins (app/imagegen_templates.py — SwarmUI-doc settings plus
+// each family's official prompting guide), `custom` are this world's own
+// (PromptPreset scope="image_template" rows saved via 💾 below). Both
+// share one shape, so apply/suggest logic handles them identically.
+// Applying merges the template's tags around the current prompt (deduped),
+// replaces the negative, and sets steps/CFG/sampler/scheduler.
+
+let _igTemplates = [];
+let _igCustomTemplates = [];
+
+async function igLoadTemplates() {
+  const sel = document.getElementById('ig-tmpl-sel');
+  if (!sel) return;
+  try {
+    const d = await fetch('/api/ai/imagegen/model-templates').then(r => r.json());
+    _igTemplates = d.templates || [];
+    _igCustomTemplates = d.custom || [];
+  } catch (e) { _igTemplates = []; _igCustomTemplates = []; }
+  igRenderTemplates();
+}
+
+function _igAllTemplates() {
+  return [..._igCustomTemplates, ..._igTemplates];
+}
+
+function igSuggestedTemplate() {
+  const modelSel = document.getElementById('ig-model');
+  const name = modelSel ? (modelSel.value || '') : '';
+  if (!name) return null;
+  const lower = name.toLowerCase();
+  // Custom templates win over built-ins: a GM's own match keyword is a
+  // deliberate override of whatever the app ships.
+  return _igAllTemplates().find(t => {
+    if ((t.exclude || []).some(k => lower.includes(k))) return false;
+    return (t.match || []).some(k => lower.includes(k));
+  }) || null;
+}
+
+function igRenderTemplates() {
+  const sel = document.getElementById('ig-tmpl-sel');
+  if (!sel) return;
+  const suggested = igSuggestedTemplate();
+  sel.innerHTML = '';
+  const head = document.createElement('option');
+  head.value = '';
+  head.textContent = suggested
+    ? `📦 Suggested for ${suggested.label}`
+    : '📦 Model template — pick your model family…';
+  sel.appendChild(head);
+  if (_igCustomTemplates.length) {
+    const grp = document.createElement('optgroup');
+    grp.label = '⭐ Your templates';
+    _igCustomTemplates.forEach(t => {
+      const o = document.createElement('option');
+      o.value = t.id; o.textContent = t.label + (t === suggested ? ' ⬅' : '');
+      grp.appendChild(o);
+    });
+    sel.appendChild(grp);
+  }
+  const grpB = document.createElement('optgroup');
+  grpB.label = '📦 Built-in model templates';
+  _igTemplates.forEach(t => {
+    const o = document.createElement('option');
+    o.value = t.id; o.textContent = t.label + (t === suggested ? ' ⬅' : '');
+    grpB.appendChild(o);
+  });
+  sel.appendChild(grpB);
+  if (suggested) sel.value = suggested.id;
+  // The delete button exists only for a selected CUSTOM template.
+  const delBtn = document.getElementById('ig-tmpl-del');
+  if (delBtn) delBtn.hidden = !(sel.value || '').startsWith('custom-');
+  if (!sel.dataset.delWired) {
+    sel.dataset.delWired = '1';
+    sel.addEventListener('change', () => {
+      const b = document.getElementById('ig-tmpl-del');
+      if (b) b.hidden = !sel.value.startsWith('custom-');
+    });
+  }
+}
+
+// Add `tags` (comma-separated) into `current` (comma-separated prompt
+// text) without duplicating any tag already present — prefix tags go to
+// the front, suffix tags to the end.
+function _igMergeTags(current, prefix, suffix) {
+  const parts = (current || '').split(',').map(s => s.trim()).filter(Boolean);
+  const have = new Set(parts.map(s => s.toLowerCase()));
+  const addFront = (prefix || '').split(',').map(s => s.trim()).filter(Boolean)
+    .filter(s => !have.has(s.toLowerCase()));
+  const addBack = (suffix || '').split(',').map(s => s.trim()).filter(Boolean)
+    .filter(s => !have.has(s.toLowerCase()));
+  return [...addFront, ...parts, ...addBack].join(', ');
+}
+
+async function igApplyTemplate() {
+  const sel = document.getElementById('ig-tmpl-sel');
+  const note = document.getElementById('ig-tmpl-note');
+  const guide = document.getElementById('ig-tmpl-guide');
+  const t = _igAllTemplates().find(x => x.id === sel?.value);
+  if (!t) return;
+  const promptEl = document.getElementById('ig-prompt');
+  if (promptEl) {
+    const current = promptEl.value.trim();
+    // An empty box gets the example (so the intended shape is obvious);
+    // existing text keeps the GM's subject and gains the style tags.
+    promptEl.value = current
+      ? _igMergeTags(current, t.prefix, t.suffix)
+      : (t.example_prompt || _igMergeTags('', t.prefix, t.suffix));
+    autoResize(promptEl);
+  }
+  const set = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined && val !== null && val !== '') el.value = val; };
+  set('ig-negative', t.negative || '');
+  set('ig-steps', t.steps);
+  set('ig-cfg', t.cfg);
+  // Sampler/scheduler only when the backend offers that option.
+  if (t.sampler) {
+    const s = document.getElementById('ig-sampler');
+    if (s && [...s.options].some(o => o.value === t.sampler)) s.value = t.sampler;
+  }
+  if (t.scheduler) {
+    const s = document.getElementById('ig-scheduler');
+    if (s && [...s.options].some(o => o.value === t.scheduler)) s.value = t.scheduler;
+  }
+  const stepsVal = document.getElementById('ig-steps-val');
+  if (stepsVal && t.steps) stepsVal.textContent = t.steps;
+  const cfgVal = document.getElementById('ig-cfg-val');
+  if (cfgVal && t.cfg != null) cfgVal.textContent = t.cfg;
+  igUpdateCfgWarning();
+  if (note) {
+    note.textContent = (t.custom ? '⭐ ' : '📦 ') + t.label + ' — ' + t.note;
+    note.hidden = false;
+  }
+  if (guide) {
+    if (t.guide) { guide.textContent = '📝 ' + t.guide; guide.hidden = false; }
+    else guide.hidden = true;
+  }
+}
+
+// 💾 Save the CURRENT Image Gen state (prompt as the example, negative,
+// steps/CFG/sampler/scheduler, optional match keyword) as a reusable
+// custom template — the GM's own equivalent of the built-ins, stored
+// per-world server-side so it survives browsers.
+async function igSaveTemplate() {
+  const label = prompt('Template name (e.g. "My Anima noir style"):');
+  if (!label) return;
+  const match = prompt('Optional: model-name keywords that should suggest this template, comma-separated (e.g. "anima, illustrious"). Leave empty for none:', '') || '';
+  const val = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+  const num = (id) => { const v = parseFloat(val(id)); return isNaN(v) ? null : v; };
+  try {
+    const res = await fetch('/api/ai/imagegen/model-templates/custom', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        label: label.trim(),
+        match,
+        example_prompt: val('ig-prompt').trim(),
+        negative: val('ig-negative'),
+        steps: num('ig-steps'), cfg: num('ig-cfg'),
+        sampler: val('ig-sampler'), scheduler: val('ig-scheduler'),
+        note: 'Saved ' + new Date().toLocaleDateString(),
+      }),
+    });
+    if (!res.ok) {
+      let detail = ''; try { detail = (await res.json()).detail || ''; } catch (e) {}
+      throw new Error(detail || ('Server error ' + res.status));
+    }
+    await igLoadTemplates();
+    const note = document.getElementById('ig-tmpl-note');
+    if (note) { note.textContent = '⭐ Saved "' + label.trim() + '" — select it any time under "Your templates".'; note.hidden = false; }
+  } catch (e) {
+    alert('Could not save template: ' + (e.message || e));
+  }
+}
+
+async function igDeleteTemplate() {
+  const sel = document.getElementById('ig-tmpl-sel');
+  const id = (sel?.value || '');
+  if (!id.startsWith('custom-')) return;
+  const t = _igCustomTemplates.find(x => x.id === id);
+  if (!t || !confirm(`Delete your template "${t.label}"?`)) return;
+  try {
+    const res = await fetch('/api/ai/imagegen/model-templates/custom/' + id.slice('custom-'.length), { method: 'DELETE' });
+    if (!res.ok) throw new Error('Server error ' + res.status);
+    await igLoadTemplates();
+  } catch (e) {
+    alert('Could not delete template: ' + (e.message || e));
+  }
+}
+
 // ── Prompt Presets ─────────────────────────────────────────────────────────────
 // GM-editable, per-world, server-side (see /api/ai/prompt-presets?scope=image)
 // — previously localStorage-only, so presets vanished on a different browser
@@ -1414,6 +1700,7 @@ function igReuseParams(idx) {
     if (stepsVal && p.steps) stepsVal.textContent = p.steps;
     const cfgVal = document.getElementById('ig-cfg-val');
     if (cfgVal && p.cfg) cfgVal.textContent = p.cfg;
+    igUpdateCfgWarning();
     document.querySelector('.ig-main')?.scrollTo({top: 0, behavior: 'smooth'});
   } catch(e) { alert('Could not load parameters: ' + e.message); }
 }
@@ -1758,7 +2045,11 @@ async function igLoadStarred() {
         set('ig-model', img.model); set('ig-seed', img.seed);
         if (img.params) { set('ig-width', img.params.width); set('ig-height', img.params.height);
           set('ig-steps', img.params.steps); set('ig-cfg', img.params.cfg);
-          set('ig-sampler', img.params.sampler); }
+          set('ig-sampler', img.params.sampler);
+          const stepsEl = document.getElementById('ig-steps-val'), cfgEl = document.getElementById('ig-cfg-val');
+          if (stepsEl && img.params.steps) stepsEl.textContent = img.params.steps;
+          if (cfgEl && img.params.cfg) cfgEl.textContent = img.params.cfg;
+          igUpdateCfgWarning(); }
       };
       const unstarBtn = document.createElement('button');
       unstarBtn.textContent = '✕ Unstar'; unstarBtn.style.color = '#c44'; unstarBtn.style.borderColor = '#c44';
