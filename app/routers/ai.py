@@ -24,8 +24,8 @@ from .. import ollama_tuning as _tuning
 from .. import retrieval as _retrieval
 from ..constants import KINDS
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx, can_edit_content
-from ..models import AudioJob, ChatJob, ChatSession, ImageJob, PromptPreset
+from ..deps import get_world_ctx, can_edit_content, check_llm_cooldown
+from ..models import AudioJob, ChatJob, ChatSession, ImageJob, PromptPreset, User
 from ..uploads import (
     copy_upload_bounded, unique_upload_filename, reassemble_upload_chunks, save_upload_chunk,
     effective_upload_bytes,
@@ -2628,6 +2628,174 @@ def api_imagegen_job_delete(job_id: int, request: Request, db=Depends(get_db), a
     job = db.query(ImageJob).filter(ImageJob.id == job_id, ImageJob.world_id == world.id).first()
     if not job:
         raise HTTPException(404)
+    if not _image_jobs.delete_job(job_id):
+        raise HTTPException(400, "Job is still in progress — cancel it first")
+    return {"ok": True}
+
+
+# ── Player-facing image generation (private, per-player) ───────────────────
+# A deliberately narrow slice of Image Studio's own generation surface,
+# opened up per-world via World.players_can_use_image_gen (off by default —
+# see its own docstring in app/models.py): no LoRA/ControlNet/hires-fix/
+# upscaling/batch-size/model-picker knobs, fixed portrait-friendly
+# generation settings, and every route below scopes by
+# ImageJob.created_by_user_id — a plain player only ever sees/manages jobs
+# THEY started (not another player's, not even a GM-Assistant's), while the
+# GM can see everyone's for oversight. This is "private to them and GM" by
+# construction, not just "off by default" — see _player_image_job_or_404.
+
+_MAX_PLAYER_PROMPT_CHARS = 800
+_MAX_PLAYER_NEGATIVE_CHARS = 400
+# Every other player-writable create route in this app has a ceiling
+# (character_sheets.py's _MAX_SHEETS_PER_PLAYER/_MAX_SHEETS_PER_WORLD is the
+# closest analog) — generated images are the heaviest per-row artifact any
+# player-writable route produces, so this one matters even more.
+_MAX_IMAGE_JOBS_PER_PLAYER = 30
+_MAX_IMAGE_JOBS_PER_WORLD = 300
+# Image generation is far heavier per-call than a chat token or a chronicler
+# question — deps.check_llm_cooldown's 3s default (tuned for those) would do
+# nothing to stop a player from queuing a dozen jobs in ten seconds.
+_PLAYER_IMAGEGEN_COOLDOWN_SECONDS = 20.0
+# Nothing here is client-controllable, unlike the GM's own ImagegenBody —
+# fixed to a portrait-friendly aspect. `model` is deliberately left at
+# ImagegenBody's own default ("") so _imagegen_params falls back to the
+# GM's configured "image" surface default, same as the Illustrate button —
+# a player never picks (or learns) which models are installed.
+_PLAYER_IMAGEGEN_FIXED_PARAMS = dict(
+    width=512, height=768, steps=30, cfg=7.0, seed=-1,
+    sampler="euler", scheduler="normal", batch_size=1,
+)
+
+
+def _require_player_image_gen_access(request: Request, db, active_world) -> None:
+    """Same permission shape as the rest of this router's GM/player split —
+    a GM always may, a player only if their world has opted in via
+    World.players_can_use_image_gen (off by default, app/models.py)."""
+    user = getattr(request.state, "user", None)
+    if user and user.is_gm:
+        return
+    world, _ = get_world_ctx(request, db, active_world)
+    if not (world and world.players_can_use_image_gen):
+        raise HTTPException(403)
+
+
+def _player_image_job_or_404(db, world_id: int, job_id: int, request: Request) -> ImageJob:
+    """World-scoped AND owner-scoped in one place, mirroring
+    app/routers/character_sheets.py's _sheet_or_404 — "wrong world" and
+    "not mine" both collapse into the same 404 a caller can't distinguish
+    from "doesn't exist", so a player can't even confirm another player's
+    job id exists by probing it."""
+    job = db.get(ImageJob, job_id)
+    if not job or job.world_id != world_id:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    if not user or (not user.is_gm and job.created_by_user_id != user.id):
+        raise HTTPException(404)
+    return job
+
+
+class PlayerImagegenBody(BaseModel):
+    prompt: str
+    negative: str = ""
+
+
+@router.post("/imagegen/player/generate")
+async def api_imagegen_player_generate(
+    body: PlayerImagegenBody, request: Request,
+    db=Depends(get_db), active_world: Optional[str] = Cookie(None),
+):
+    # async def: image_jobs.create_job calls asyncio.create_task(), which
+    # needs a running loop — same reasoning as the GM's own imagegen/jobs
+    # POST above.
+    _require_player_image_gen_access(request, db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
+    if not is_gm:
+        check_llm_cooldown(user.id, seconds=_PLAYER_IMAGEGEN_COOLDOWN_SECONDS)
+    prompt = body.prompt.strip()[:_MAX_PLAYER_PROMPT_CHARS]
+    if not prompt:
+        raise HTTPException(400, "Prompt is required")
+    negative = body.negative.strip()[:_MAX_PLAYER_NEGATIVE_CHARS]
+    owner_id = user.id if user else None
+    player_job_count = db.query(ImageJob).filter(
+        ImageJob.world_id == world.id, ImageJob.created_by_user_id == owner_id,
+    ).count()
+    if player_job_count >= _MAX_IMAGE_JOBS_PER_PLAYER:
+        raise HTTPException(400, f"You already have the maximum of {_MAX_IMAGE_JOBS_PER_PLAYER} generated images — delete an old one first.")
+    world_job_count = db.query(ImageJob).filter(ImageJob.world_id == world.id).count()
+    if world_job_count >= _MAX_IMAGE_JOBS_PER_WORLD:
+        raise HTTPException(400, f"This world already has the maximum of {_MAX_IMAGE_JOBS_PER_WORLD} generated images.")
+    imagegen_body = ImagegenBody(prompt=prompt, negative=negative, **_PLAYER_IMAGEGEN_FIXED_PARAMS)
+    params = _imagegen_params(imagegen_body, _imagegen_uploads_dir())
+    params["uploads_dir"] = str(params["uploads_dir"])  # JSON-serializable for params_json
+    job_id = _image_jobs.create_job(
+        world_id=world.id, prompt=prompt, params=params, created_by_user_id=owner_id,
+    )
+    return {"job_id": job_id}
+
+
+@router.get("/imagegen/player/jobs/{job_id}")
+def api_imagegen_player_job_status(job_id: int, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_player_image_gen_access(request, db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = _player_image_job_or_404(db, world.id, job_id, request)
+    return _image_job_to_dict(job)
+
+
+@router.get("/imagegen/player/jobs")
+def api_imagegen_player_job_list(request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_player_image_gen_access(request, db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
+    q = db.query(ImageJob).filter(ImageJob.world_id == world.id)
+    if not is_gm:
+        q = q.filter(ImageJob.created_by_user_id == (user.id if user else -1))
+    jobs = q.order_by(ImageJob.created_at.desc()).limit(50).all()
+    if not is_gm:
+        return [_image_job_to_dict(j) for j in jobs]
+    # GM oversight view: batch-load owner display names, one query not per
+    # row (same spirit as character_sheets_list's own owner-name batching).
+    owner_ids = {j.created_by_user_id for j in jobs if j.created_by_user_id}
+    owners = {
+        u.id: (u.display_name or u.email) for u in db.query(User).filter(User.id.in_(owner_ids)).all()
+    } if owner_ids else {}
+    out = []
+    for j in jobs:
+        d = _image_job_to_dict(j)
+        d["owner"] = owners.get(j.created_by_user_id) or "GM"
+        out.append(d)
+    return out
+
+
+@router.post("/imagegen/player/jobs/{job_id}/cancel")
+def api_imagegen_player_job_cancel(job_id: int, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_player_image_gen_access(request, db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = _player_image_job_or_404(db, world.id, job_id, request)
+    if job.status not in _image_jobs.IN_PROGRESS_STATUSES:
+        raise HTTPException(400, "Job is not in progress")
+    if not _image_jobs.cancel_job(job_id):
+        raise HTTPException(400, "Job isn't currently running (it may have just finished)")
+    return {"ok": True}
+
+
+@router.delete("/imagegen/player/jobs/{job_id}")
+def api_imagegen_player_job_delete(job_id: int, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None)):
+    _require_player_image_gen_access(request, db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    job = _player_image_job_or_404(db, world.id, job_id, request)
     if not _image_jobs.delete_job(job_id):
         raise HTTPException(400, "Job is still in progress — cancel it first")
     return {"ok": True}

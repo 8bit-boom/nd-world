@@ -91,12 +91,12 @@ class World(Base):
     # non-entity-scoped chat surface built on the same POST /api/ai/stream
     # every other player-AI toggle shares (see _require_ask_ai_access in
     # app/routers/ai.py, which grants access when EITHER this or
-    # players_can_ask_ai is on). Off by default. This is deliberately the
-    # ceiling of what a player is ever given: the GM's full "/ai" World
-    # Chat page (model/preset/whisper management, chat history, imagegen)
-    # and Image Studio/Content Editor/Code Assist stay GM+Assistant-only
-    # regardless of any player toggle — those manage the world/app itself,
-    # not just talk to a model.
+    # players_can_ask_ai is on). Off by default. The GM's full "/ai" World
+    # Chat page (model/preset/whisper management, chat history) and Content
+    # Editor/Code Assist stay GM+Assistant-only regardless of any player
+    # toggle — those manage the world/app itself, not just talk to a model.
+    # (Image generation has its own narrower player toggle below,
+    # players_can_use_image_gen — Image Studio itself is still GM-only.)
     players_can_use_ai_chat = Column(Boolean, default=False)
     # Whether players may READ the AI-generated World Summary card (home
     # page) once a GM/assistant has generated one — see api_world_summary_get
@@ -106,6 +106,21 @@ class World(Base):
     # produced, filtered through the same secrets-excluding
     # _world_summary_audience_filter an assistant's own view already uses.
     players_can_view_world_summary = Column(Boolean, default=False)
+    # Whether players may use the narrow, player-facing image generation
+    # surface (a lean prompt box, no LoRA/ControlNet/hires-fix/model-picker
+    # knobs — see the "player" ImageJob routes in app/routers/ai.py) to make
+    # their own character art and set it as one of their OWN
+    # PlayerCharacters' portraits. Off by default. Deliberately private:
+    # every one of these routes scopes by ImageJob.created_by_user_id, so a
+    # player only ever sees/manages jobs THEY started — not other players',
+    # and not even a GM-Assistant's — while the GM can see everyone's for
+    # oversight. This is a completely separate, narrower surface from
+    # Image Studio (/imagestudio) itself, which stays GM-only untouched:
+    # no LoRA/ControlNet/upscaling/batch/model choice, fixed generation
+    # settings, and a per-player/per-world job cap (see _MAX_IMAGE_JOBS_*
+    # in app/routers/ai.py) so a single player can't grow the image job
+    # table or the disk without bound.
+    players_can_use_image_gen = Column(Boolean, default=False)
     # Campaign vocabulary (NPC names, places, invented terms) fed to Whisper
     # as an initial-prompt hint on every session-recording transcription, so
     # e.g. "Elyndra" doesn't come back as "Elandra" or "a lender". Per-world,

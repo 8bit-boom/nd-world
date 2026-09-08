@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}Create Art — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<style>
+.pig-wrap { max-width: 900px; margin: 0 auto; }
+.pig-panel { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.1rem; margin-bottom: 1.1rem; }
+.pig-panel textarea, .pig-panel input[type=text] {
+  width: 100%; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); padding: .55rem .8rem; font-size: .9rem; font-family: inherit; resize: vertical;
+}
+.pig-note { font-size: .78rem; color: var(--text-dim); margin: .4rem 0 .8rem; }
+.pig-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .9rem; }
+.pig-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.pig-card img { width: 100%; display: block; aspect-ratio: 2/3; object-fit: cover; background: var(--bg3); }
+.pig-card-body { padding: .6rem .7rem; }
+.pig-card-prompt { font-size: .78rem; color: var(--text-dim); max-height: 3.2em; overflow: hidden; margin-bottom: .5rem; }
+.pig-card-status { font-size: .78rem; margin-bottom: .5rem; }
+.pig-card-owner { font-size: .7rem; color: var(--neon); text-transform: uppercase; letter-spacing: .05em; margin-bottom: .3rem; }
+.pig-card-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.pig-card-actions select { background: var(--bg3); border: 1px solid var(--border); color: var(--text); font-family: var(--font); font-size: .75rem; border-radius: 4px; padding: .2rem .3rem; }
+</style>
+<div class="pig-wrap">
+  <h1 style="font-size:1.3rem;letter-spacing:.06em;color:var(--neon);margin-bottom:.3rem">🎨 Create Art</h1>
+  <p class="pig-note">
+    Make art for your own character — describe what you want and generate. Everything here is private:
+    only you and the GM can see it, never other players.
+  </p>
+  <div class="pig-panel">
+    <div style="margin-bottom:.6rem">
+      <label style="font-size:.75rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.06em">Describe the image</label>
+      <textarea id="pig-prompt" rows="3" maxlength="800" placeholder="A weary elven ranger in patchwork leather armor, forest backdrop, portrait..."></textarea>
+    </div>
+    <details style="margin-bottom:.6rem">
+      <summary style="cursor:pointer;font-size:.75rem;color:var(--text-dim)">⚙ Avoid in the image (optional)</summary>
+      <input type="text" id="pig-negative" maxlength="400" placeholder="blurry, extra limbs, text, watermark..." style="margin-top:.4rem"/>
+    </details>
+    <button type="button" id="pig-generate-btn" class="btn-primary" onclick="pigGenerate()">✨ Generate</button>
+    <span id="pig-generate-status" style="font-size:.78rem;color:var(--text-dim);margin-left:.6rem"></span>
+  </div>
+
+  <h2 style="font-size:1rem;color:var(--text-dim);margin-bottom:.6rem">{% if is_gm %}Everyone's generated images{% else %}Your generated images{% endif %}</h2>
+  <div id="pig-jobs" class="pig-grid"></div>
+  <p id="pig-empty" class="pig-note" hidden>Nothing generated yet — describe an image above to get started.</p>
+</div>
+<script>
+const PIG_OWN_PCS = {{ own_pcs | map(attribute='id') | list | tojson }};
+const PIG_OWN_PC_NAMES = {{ own_pcs | map(attribute='name') | list | tojson }};
+const PIG_IS_GM = {{ is_gm | tojson }};
+let _pigPollTimer = null;
+
+function _pigEsc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function pigGenerate() {
+  const promptEl = document.getElementById('pig-prompt');
+  const btn = document.getElementById('pig-generate-btn');
+  const status = document.getElementById('pig-generate-status');
+  const prompt = promptEl.value.trim();
+  if (!prompt) { status.textContent = 'Describe the image first.'; return; }
+  btn.disabled = true;
+  status.textContent = 'Starting…';
+  try {
+    const r = await fetch('/api/ai/imagegen/player/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, negative: document.getElementById('pig-negative').value.trim() }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { status.textContent = d.detail || ('Error ' + r.status); return; }
+    promptEl.value = '';
+    status.textContent = 'Generating — this can take a minute…';
+    pigLoadJobs();
+    pigSchedulePoll();
+  } catch (e) {
+    status.textContent = 'Error: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function pigSchedulePoll() {
+  if (_pigPollTimer) return;
+  _pigPollTimer = setInterval(pigLoadJobs, 3000);
+}
+
+function pigStopPollIfIdle(jobs) {
+  const anyInProgress = jobs.some(j => j.status === 'pending' || j.status === 'generating');
+  if (!anyInProgress && _pigPollTimer) {
+    clearInterval(_pigPollTimer);
+    _pigPollTimer = null;
+  } else if (anyInProgress) {
+    pigSchedulePoll();
+  }
+}
+
+function pigPcOptions(selectedUrl, jobId) {
+  if (!PIG_OWN_PCS.length) return '';
+  let opts = '<option value="">— set as portrait —</option>';
+  PIG_OWN_PCS.forEach((id, i) => {
+    opts += `<option value="${id}">${_pigEsc(PIG_OWN_PC_NAMES[i])}</option>`;
+  });
+  return `<select onchange="pigSetPortrait(${jobId}, '${selectedUrl}', this)">${opts}</select>`;
+}
+
+async function pigSetPortrait(jobId, url, selectEl) {
+  const pcId = selectEl.value;
+  if (!pcId) return;
+  selectEl.disabled = true;
+  try {
+    const r = await fetch(`/api/characters/${pcId}/portrait-from-url`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_id: jobId, url }),
+    });
+    if (r.ok) {
+      selectEl.outerHTML = '<span style="font-size:.75rem;color:var(--neon)">✓ Set as portrait</span>';
+    } else {
+      const d = await r.json().catch(() => ({}));
+      alert(d.detail || 'Could not set portrait.');
+      selectEl.disabled = false;
+    }
+  } catch (e) {
+    alert('Error: ' + e.message);
+    selectEl.disabled = false;
+  }
+}
+
+async function pigCancelJob(jobId) {
+  await fetch(`/api/ai/imagegen/player/jobs/${jobId}/cancel`, { method: 'POST' });
+  pigLoadJobs();
+}
+
+async function pigDeleteJob(jobId) {
+  if (!confirm('Delete this generated image?')) return;
+  const r = await fetch(`/api/ai/imagegen/player/jobs/${jobId}`, { method: 'DELETE' });
+  if (r.ok) pigLoadJobs();
+}
+
+function pigRenderJob(j) {
+  const url = (j.urls && j.urls[0]) || '';
+  let statusHtml = '';
+  let body = '';
+  if (j.status === 'pending' || j.status === 'generating') {
+    statusHtml = '<span style="color:var(--neon)">⏳ ' + _pigEsc(j.status) + '…</span>';
+    body = `<div class="pig-card-actions"><button type="button" class="btn-cancel" onclick="pigCancelJob(${j.id})">Cancel</button></div>`;
+  } else if (j.status === 'error') {
+    statusHtml = '<span style="color:#e07">✕ ' + _pigEsc(j.error || 'failed') + '</span>';
+    body = `<div class="pig-card-actions"><button type="button" class="btn-cancel" onclick="pigDeleteJob(${j.id})">🗑 Delete</button></div>`;
+  } else if (j.status === 'cancelled' || j.status === 'interrupted') {
+    statusHtml = '<span style="color:var(--text-dim)">' + _pigEsc(j.status) + '</span>';
+    body = `<div class="pig-card-actions"><button type="button" class="btn-cancel" onclick="pigDeleteJob(${j.id})">🗑 Delete</button></div>`;
+  } else {
+    statusHtml = '<span style="color:var(--text-dim)">done</span>';
+    body = `<div class="pig-card-actions">${pigPcOptions(url, j.id)}<button type="button" class="btn-cancel" onclick="pigDeleteJob(${j.id})">🗑</button></div>`;
+  }
+  const ownerLine = (PIG_IS_GM && j.owner) ? `<div class="pig-card-owner">${_pigEsc(j.owner)}</div>` : '';
+  return `<div class="pig-card">
+    ${url ? `<img src="${_pigEsc(url)}" alt="">` : '<div style="aspect-ratio:2/3;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:.78rem">no image</div>'}
+    <div class="pig-card-body">
+      ${ownerLine}
+      <div class="pig-card-status">${statusHtml}</div>
+      <div class="pig-card-prompt">${_pigEsc(j.prompt || '')}</div>
+      ${body}
+    </div>
+  </div>`;
+}
+
+async function pigLoadJobs() {
+  try {
+    const jobs = await (await fetch('/api/ai/imagegen/player/jobs')).json();
+    const box = document.getElementById('pig-jobs');
+    const empty = document.getElementById('pig-empty');
+    if (!jobs.length) {
+      box.innerHTML = '';
+      empty.hidden = false;
+    } else {
+      empty.hidden = true;
+      box.innerHTML = jobs.map(pigRenderJob).join('');
+    }
+    pigStopPollIfIdle(jobs);
+  } catch (e) { /* transient — next poll retries */ }
+}
+
+pigLoadJobs();
+</script>
+{% endblock %}

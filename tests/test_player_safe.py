@@ -116,6 +116,14 @@ CASES = [
     ("POST", "/api/ai/world-summary", False),  # generate/clear stay GM+Assistant only regardless
     ("DELETE", "/api/ai/world-summary", False),
     ("GET", "/ai-chat", True),  # handler still gates on players_can_use_ai_chat
+    ("GET", "/image-gen", True),  # handler still gates on players_can_use_image_gen
+    ("POST", "/api/ai/imagegen/player/generate", True),
+    ("GET", "/api/ai/imagegen/player/jobs", True),
+    ("GET", "/api/ai/imagegen/player/jobs/5", True),
+    ("POST", "/api/ai/imagegen/player/jobs/5/cancel", True),
+    ("DELETE", "/api/ai/imagegen/player/jobs/5", True),
+    ("GET", "/imagestudio", False),  # Image Studio itself stays GM-only, untouched
+    ("POST", "/api/ai/imagegen/generate", False),  # the GM's own full-surface route
     ("POST", "/api/ai/attachments/upload", True),
     ("POST", "/api/ai/attachments/audio-jobs", True),
     ("POST", "/api/ai/attachments/audio-jobs/chunk", True),

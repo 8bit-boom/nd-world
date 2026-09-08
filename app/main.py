@@ -415,12 +415,30 @@ def _is_player_safe(method: str, path: str) -> bool:
         # GM-only; the players_can_ask_ai-gated stream endpoints listed
         # above are the separate, deliberate chat exceptions.
         return True
+    if path == "/api/ai/imagegen/player/generate" and method == "POST":
+        # Player-facing image generation — see the "player" imagegen
+        # routes' own module comment in app/routers/ai.py. Handler-level
+        # gate requires World.players_can_use_image_gen, off by default;
+        # this allowlist only decides "reachable at all".
+        return True
+    if re.match(r"^/api/ai/imagegen/player/jobs(/\d+(/cancel)?)?$", path) and method in ("GET", "POST", "DELETE"):
+        # Poll/list/cancel/delete a player's own generation jobs — the
+        # handler's own "owner or GM" check (_player_image_job_or_404 in
+        # app/routers/ai.py) is what actually keeps one player's jobs
+        # private from another's, matching character_sheets.py's identical
+        # shape for /pages/sheets/*.
+        return True
+    # POST /api/characters/{id}/portrait-from-url (character_set_portrait_
+    # from_job in app/routers/characters.py) needs no separate entry here —
+    # it's already covered by the blanket "/api/characters/" prefix rule
+    # near the top of this function; _can_manage_character is its real gate.
     if method != "GET":
         return False
-    if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log", "/audio", "/video", "/pages", "/ai-chat"):
-        # /ai-chat: reachable at all — the handler's own
-        # players_can_use_ai_chat check (off by default) is the real gate,
-        # same "reachable vs. actually allowed" split as every route here.
+    if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log", "/audio", "/video", "/pages", "/ai-chat", "/image-gen"):
+        # /ai-chat, /image-gen: reachable at all — the handler's own
+        # players_can_use_ai_chat / players_can_use_image_gen check (both
+        # off by default) is the real gate, same "reachable vs. actually
+        # allowed" split as every route here.
         return True
     if path.startswith("/kind/") or path.startswith("/uploads/"):
         return True
@@ -1270,6 +1288,7 @@ def world_edit_post(
     players_can_ask_ai: Optional[str] = Form(None),
     players_can_use_ai_chat: Optional[str] = Form(None),
     players_can_view_world_summary: Optional[str] = Form(None),
+    players_can_use_image_gen: Optional[str] = Form(None),
     hero_style: str = Form("home"),
     db: Session = Depends(get_db),
 ):
@@ -1285,6 +1304,7 @@ def world_edit_post(
     w.players_can_ask_ai = bool(players_can_ask_ai)
     w.players_can_use_ai_chat = bool(players_can_use_ai_chat)
     w.players_can_view_world_summary = bool(players_can_view_world_summary)
+    w.players_can_use_image_gen = bool(players_can_use_image_gen)
     if hero_style in ("off", "home", "everywhere"):
         w.hero_style = hero_style
     db.commit()
@@ -3130,6 +3150,33 @@ def player_ai_chat(request: Request, db: Session = Depends(get_db), active_world
         raise HTTPException(403)
     return templates.TemplateResponse("ai_chat_player.html", {
         "request": request, "world": world, "worlds": worlds,
+    })
+
+@app.get("/image-gen", response_class=HTMLResponse)
+def player_image_gen(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """A lean image-generation page for players — the surface
+    World.players_can_use_image_gen opts into (off by default), so a
+    player can make art for their own PlayerCharacter and set it as their
+    portrait. GM always may. Deliberately its own minimal template rather
+    than Image Studio (/imagestudio, GM-only): no LoRA/ControlNet/
+    hires-fix/upscaling/batch/model-picker knobs — see the "player"
+    imagegen routes in app/routers/ai.py for the fixed generation settings
+    and the ownership scoping that keeps every generated image private to
+    the player who made it (and the GM)."""
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm) and not world.players_can_use_image_gen:
+        raise HTTPException(403)
+    own_pcs = []
+    if user:
+        own_pcs = db.query(PlayerCharacter).filter(
+            PlayerCharacter.world_id == world.id, PlayerCharacter.owner_user_id == user.id,
+        ).order_by(PlayerCharacter.name).all()
+    return templates.TemplateResponse("image_gen_player.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "own_pcs": own_pcs, "is_gm": bool(user and user.is_gm),
     })
 
 @app.get("/imagestudio", response_class=HTMLResponse)

@@ -767,6 +767,22 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/ai/imagegen/update` | GM | Updates the SwarmUI backend in place. |
 | POST | `/api/ai/imagegen/free-memory` | GM | Asks the backend to unload models and free VRAM. |
 
+### Player image generation (`/image-gen`)
+
+A deliberately narrow slice of the above, opened up per-world via `World.players_can_use_image_gen` (off by default): fixed portrait-friendly generation settings (no LoRA/ControlNet/hires-fix/upscaling/batch/model-picker), and every route below scopes by `ImageJob.created_by_user_id` — a player only ever sees/manages jobs THEY started (not another player's, not even a GM-Assistant's); the GM sees everyone's for oversight. Private by construction, not just off by default.
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/image-gen` | GM* | The player-facing image generation page — prompt box, job history, "Set as portrait" per result. |
+| POST | `/api/ai/imagegen/player/generate` | GM* | Starts a generation job from `{prompt, negative}` only — everything else (size/steps/CFG/sampler/model) is fixed server-side. Rate-limited (20s cooldown) and capped per-player/per-world for non-GM callers. |
+| GET | `/api/ai/imagegen/player/jobs` | GM* | Lists the caller's own jobs (GM sees every job in the world, with an `owner` field). |
+| GET | `/api/ai/imagegen/player/jobs/{job_id}` | GM* | Poll one job — 404 (not 403) for anyone but its owner or the GM. |
+| POST | `/api/ai/imagegen/player/jobs/{job_id}/cancel` | GM* | Cancels an in-progress job (owner or GM). |
+| DELETE | `/api/ai/imagegen/player/jobs/{job_id}` | GM* | Deletes a finished job (owner or GM). |
+| POST | `/api/characters/{pc_id}/portrait-from-url` | Player | Sets a `PlayerCharacter`'s portrait from one of the caller's own image-gen job results (validated against that job's `result_urls`, not an arbitrary URL) — owner or GM. |
+
+\* GM always; a player may if the active world's `players_can_use_image_gen` is on.
+
 ## Background Jobs
 
 `app/routers/audio_jobs.py` — a unified view over every durable `AudioJob`

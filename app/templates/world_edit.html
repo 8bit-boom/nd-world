@@ -54,6 +54,11 @@
              style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_view_world_summary %}checked{% endif %}>
       <label for="players-world-summary" style="margin:0">Players can view the AI-generated World Summary (read-only — they can't generate or clear it)</label>
     </div>
+    <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+      <input type="checkbox" id="players-image-gen" name="players_can_use_image_gen" value="1"
+             style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_use_image_gen %}checked{% endif %}>
+      <label for="players-image-gen" style="margin:0">Players can generate images for their own character (private to them and you — other players never see it)</label>
+    </div>
     <div class="form-group">
       <label>Hero banner</label>
       <select name="hero_style" style="width:auto;min-width:220px">

@@ -73,6 +73,8 @@ STATIC_CATALOG = [
     {"id": "character_sheets", "label": "My Character Sheets", "icon": "🧬", "href": "/pages/sheets", "exact": True, "gm_only": False},
     {"id": "ai_chat_player", "label": "Chat with AI", "icon": "🤖", "href": "/ai-chat", "exact": True,
      "condition": "players_can_use_ai_chat", "gm_only": False},
+    {"id": "image_gen_player", "label": "Create Art", "icon": "🎨", "href": "/image-gen", "exact": True,
+     "condition": "players_can_use_image_gen", "gm_only": False},
     {"id": "androidapp", "label": "Android App", "icon": "📱", "href": "/androidapp", "exact": True, "gm_only": False},
 ]
 # Every static item gets the same ql_type/ql_ref defaults so templates and

@@ -794,6 +794,8 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN players_can_use_ai_chat BOOLEAN DEFAULT 0"))
             if "players_can_view_world_summary" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN players_can_view_world_summary BOOLEAN DEFAULT 0"))
+            if "players_can_use_image_gen" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN players_can_use_image_gen BOOLEAN DEFAULT 0"))
             if "theme_json" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN theme_json TEXT"))
             if "hero_style" not in w_cols:

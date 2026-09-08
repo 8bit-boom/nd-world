@@ -23,7 +23,8 @@ from ..deps import get_world_ctx
 from ..imaging import convert_image, make_thumbnail
 from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename
-from ..models import CharacterSheet, Entity, PlayerCharacter, SheetTemplate, User, World, WorldMembership
+from ..models import CharacterSheet, Entity, ImageJob, PlayerCharacter, SheetTemplate, User, World, WorldMembership
+from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -682,6 +683,49 @@ async def character_update(
             pc.portrait_url = url
     db.commit()
     return RedirectResponse(f"/characters/{pc_id}", status_code=303)
+
+
+class SetPortraitFromJobBody(BaseModel):
+    job_id: int
+    url: str
+
+
+@router.post("/api/characters/{pc_id}/portrait-from-url")
+def character_set_portrait_from_job(
+    pc_id: int, body: SetPortraitFromJobBody, request: Request, db: Session = Depends(get_db),
+):
+    """Sets a character's portrait straight from one of the player's OWN
+    generated images (see the "player" image-gen routes in
+    app/routers/ai.py) — the /image-gen page's "Set as portrait" action,
+    without round-tripping through the full character-edit form/multipart
+    upload. Deliberately NOT a bare {image_url} setter like the entity
+    equivalent (api_entity_set_image in main.py, a GM/Assistant-only
+    route): a player calling this must prove the url actually came from a
+    job THEY generated (or, for a GM, any job in the world) by naming its
+    job_id and having the url match one of that job's own result_urls —
+    otherwise a player could set an arbitrary external URL as a portrait
+    the whole party might see."""
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    user = _current_user(request)
+    if not _can_manage_character(user, pc):
+        raise HTTPException(403)
+    job = db.get(ImageJob, body.job_id)
+    if not job or job.world_id != pc.world_id:
+        raise HTTPException(404)
+    if not (user.is_gm or job.created_by_user_id == user.id):
+        raise HTTPException(404)
+    try:
+        result_urls = json.loads(job.result_urls_json or "[]")
+    except ValueError:
+        result_urls = []
+    url = body.url.strip()
+    if url not in result_urls:
+        raise HTTPException(400, "That image isn't a result of the given job")
+    pc.portrait_url = url
+    db.commit()
+    return {"ok": True}
 
 
 # ── Delete ────────────────────────────────────────────────────────────────────
