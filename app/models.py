@@ -87,6 +87,25 @@ class World(Base):
     # dedicated GM "/ai" World Chat page/tools stay GM-only regardless of
     # this toggle; it only governs the focused per-entity chat panel.
     players_can_ask_ai = Column(Boolean, default=False)
+    # Whether players may use the standalone /ai-chat page — a general,
+    # non-entity-scoped chat surface built on the same POST /api/ai/stream
+    # every other player-AI toggle shares (see _require_ask_ai_access in
+    # app/routers/ai.py, which grants access when EITHER this or
+    # players_can_ask_ai is on). Off by default. This is deliberately the
+    # ceiling of what a player is ever given: the GM's full "/ai" World
+    # Chat page (model/preset/whisper management, chat history, imagegen)
+    # and Image Studio/Content Editor/Code Assist stay GM+Assistant-only
+    # regardless of any player toggle — those manage the world/app itself,
+    # not just talk to a model.
+    players_can_use_ai_chat = Column(Boolean, default=False)
+    # Whether players may READ the AI-generated World Summary card (home
+    # page) once a GM/assistant has generated one — see api_world_summary_get
+    # in app/routers/ai.py. Off by default. Generating/regenerating/clearing
+    # the digest (POST/DELETE) stays GM+Assistant only regardless of this
+    # toggle; a player only ever sees whatever the GM/assistant already
+    # produced, filtered through the same secrets-excluding
+    # _world_summary_audience_filter an assistant's own view already uses.
+    players_can_view_world_summary = Column(Boolean, default=False)
     # Campaign vocabulary (NPC names, places, invented terms) fed to Whisper
     # as an initial-prompt hint on every session-recording transcription, so
     # e.g. "Elyndra" doesn't come back as "Elandra" or "a lender". Per-world,

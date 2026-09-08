@@ -647,6 +647,7 @@ worlds they've been invited into (`WorldMembership`).
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/ai` | GM | AI chat page (Chat / Image Gen / Models / Whisper / Starred tabs). |
+| GET | `/ai-chat` | GM* | Standalone, non-entity-scoped chat page for players — GM always; a player may if the active world's `players_can_use_ai_chat` is on. A deliberately lean sibling of `/ai`: no model/preset/session-history/imagegen management, just a chat box against the shared `/api/ai/stream`. |
 | GET | `/api/ai/world-context` | GM / Assistant | Keyword-search RAG context (relevant entities) for the current chat, unfiltered by player visibility. |
 | POST | `/api/ai/world-context-smart` | GM / Assistant | Same, backed by an FTS5 full-text index over entity name/summary/body/tags (falls back to plain `LIKE` if FTS5 is unavailable) — also returns `entities` (what was actually retrieved, for the RAG transparency panel/pinning). |
 | POST | `/api/ai/save-note` | GM / Assistant | Saves AI-generated text as a new `note` Entity — body `{title, content, subtype?}` (`subtype` is optional, e.g. `"tale"` for a saved folk-tale/song). |
@@ -656,7 +657,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/ai/assist-job` | GM / Assistant | The durable-job variant for big content (rules documents) — returns `{job_id}`. |
 | GET | `/api/ai/assist-job/{job_id}` | GM / Assistant | Poll an assist job; done rows return the run_assist result shape under `result`. |
 | POST | `/api/ai/world-summary` | GM / Assistant | Start (or regenerate) the dashboard's AI world-summary job. Optional body: `model`, `think` (default true), `use_rag`, `rag_entity_limit`, `rag_notes_limit`. |
-| GET | `/api/ai/world-summary` | GM / Assistant | Latest world summary: `{recap, generated_at}`, `{pending: true}`, or empty. |
+| GET | `/api/ai/world-summary` | GM / Assistant† | Latest world summary: `{recap, generated_at}`, `{pending: true}`, or empty. |
 | DELETE | `/api/ai/world-summary` | GM / Assistant | Deletes every saved world-summary job for the active world — a real reset, not just clearing the card's display. |
 | POST | `/api/ai/chat` | GM | Non-streaming chat completion. |
 | POST | `/api/ai/stream` | GM* | Streaming chat completion (SSE) — GM always; a player may if the active world's `players_can_ask_ai` is on. Accepts a per-request `options` (temperature/top_p/etc, clamped) and a `surface` for per-surface default-model fallback; the SSE stream leads with a `note` event if the requested model had to be fuzzy-matched to an available one. |
@@ -712,7 +713,9 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/api/ai/ollama/upload/status/{import_id}` | GM | Progress of an in-flight .gguf upload/pull. |
 | GET/POST | `/api/ai/whisper/denoise` | GM | Lists the bundled audio-denoise profiles / enqueues a denoise job for an audio attachment or session recording. |
 
-\* GM always; a player may if the active world's `players_can_ask_ai` is on (same axis `/api/ai/stream` uses) — these routes back the per-entity "Ask AI" / "Talk as this NPC" panel, not the GM-only `/ai` World Chat page.
+\* GM always; a player may if the active world's `players_can_ask_ai` is on (same axis `/api/ai/stream` uses) — these routes back the per-entity "Ask AI" / "Talk as this NPC" panel, not the GM-only `/ai` World Chat page. `/api/ai/stream` and `/api/ai/chat/compact` also open up when `players_can_use_ai_chat` is on instead (either toggle is enough — see `_require_ask_ai_access` in `app/routers/ai.py`), since `/ai-chat` shares the same endpoint.
+
+† GM/Assistant always; a player may READ (GET only) if the active world's `players_can_view_world_summary` is on — generating (POST) and clearing (DELETE) stay GM/Assistant-only regardless.
 
 ## Code Assist
 

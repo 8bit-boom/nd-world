@@ -112,6 +112,10 @@ CASES = [
     ("POST", "/api/ai/chat/compact", True),
     ("GET", "/api/ai/models", True),  # read-only model catalog for the player-facing recap pickers
     ("POST", "/api/ai/models", False),  # GET-only — the rest of /api/ai stays GM-only
+    ("GET", "/api/ai/world-summary", True),  # handler still gates on players_can_view_world_summary
+    ("POST", "/api/ai/world-summary", False),  # generate/clear stay GM+Assistant only regardless
+    ("DELETE", "/api/ai/world-summary", False),
+    ("GET", "/ai-chat", True),  # handler still gates on players_can_use_ai_chat
     ("POST", "/api/ai/attachments/upload", True),
     ("POST", "/api/ai/attachments/audio-jobs", True),
     ("POST", "/api/ai/attachments/audio-jobs/chunk", True),

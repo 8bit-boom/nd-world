@@ -395,6 +395,15 @@ def _is_player_safe(method: str, path: str) -> bool:
         # shares dice. GET and POST both included, deliberately before the
         # GET-only section below.
         return True
+    if method == "GET" and path == "/api/ai/world-summary":
+        # Read-only World Summary digest. Handler-level gate (see
+        # api_world_summary_get in app/routers/ai.py) still requires
+        # World.players_can_view_world_summary, off by default — this
+        # allowlist only decides "reachable at all", same shape as every
+        # other player-writable/readable route above. POST (generate) and
+        # DELETE (clear) are deliberately NOT here — those stay GM+Assistant
+        # only regardless of this toggle.
+        return True
     if method == "GET" and path == "/api/ai/models":
         # Read-only model catalog (ids/labels + which are downloaded) — every
         # player-facing recap surface with a model picker fetches it (the
@@ -408,7 +417,10 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if method != "GET":
         return False
-    if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log", "/audio", "/video", "/pages"):
+    if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log", "/audio", "/video", "/pages", "/ai-chat"):
+        # /ai-chat: reachable at all — the handler's own
+        # players_can_use_ai_chat check (off by default) is the real gate,
+        # same "reachable vs. actually allowed" split as every route here.
         return True
     if path.startswith("/kind/") or path.startswith("/uploads/"):
         return True
@@ -1256,6 +1268,8 @@ def world_edit_post(
     players_can_download_rules: Optional[str] = Form(None),
     players_can_download_entities: Optional[str] = Form(None),
     players_can_ask_ai: Optional[str] = Form(None),
+    players_can_use_ai_chat: Optional[str] = Form(None),
+    players_can_view_world_summary: Optional[str] = Form(None),
     hero_style: str = Form("home"),
     db: Session = Depends(get_db),
 ):
@@ -1269,6 +1283,8 @@ def world_edit_post(
     w.players_can_download_rules = bool(players_can_download_rules)
     w.players_can_download_entities = bool(players_can_download_entities)
     w.players_can_ask_ai = bool(players_can_ask_ai)
+    w.players_can_use_ai_chat = bool(players_can_use_ai_chat)
+    w.players_can_view_world_summary = bool(players_can_view_world_summary)
     if hero_style in ("off", "home", "everywhere"):
         w.hero_style = hero_style
     db.commit()
@@ -3092,6 +3108,28 @@ def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: 
         "request": request, "world": world, "worlds": worlds,
         "kinds": KINDS, "kind_icons": KIND_ICONS,
         "entity_counts": entity_counts, "world_system": world_system,
+    })
+
+@app.get("/ai-chat", response_class=HTMLResponse)
+def player_ai_chat(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """A lean, non-entity-scoped chat page for players — the standalone
+    surface World.players_can_use_ai_chat opts into (off by default). GM
+    always may (they already have the full /ai page above; visiting this
+    one too is harmless). Deliberately its own template rather than
+    ai_chat.html: that page's model/preset/session-history/imagegen
+    tooling is GM administration (see _is_assistant_safe's own docstring
+    in this file), not something to partially expose here. Reuses the
+    same generic POST /api/ai/stream every other player-AI surface shares
+    — see _require_ask_ai_access in app/routers/ai.py for the matching
+    server-side gate."""
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm) and not world.players_can_use_ai_chat:
+        raise HTTPException(403)
+    return templates.TemplateResponse("ai_chat_player.html", {
+        "request": request, "world": world, "worlds": worlds,
     })
 
 @app.get("/imagestudio", response_class=HTMLResponse)

@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}AI Chat — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/css/ai-chat.css">
+<div class="ai-page">
+  <div class="ai-main">
+    <div class="ai-messages" id="ai-messages">
+      <div class="ai-msg ai-msg--assistant"><div class="ai-bubble">Hi! Ask me anything about {{ world.name if world else 'this world' }} — I'm a general-purpose assistant, not tied to any one entity.</div></div>
+    </div>
+    <div class="ai-status-row" style="padding:0 1.2rem;font-size:.75rem;color:var(--text-dim)"><span id="ai-stats"></span></div>
+    <div class="ai-input-bar">
+      <textarea id="ai-input" rows="1" placeholder="Ask something… (Enter to send)" onkeydown="pcKey(event)" oninput="pcResize(this)"></textarea>
+      <button id="ai-send" onclick="pcSend()">Send</button>
+    </div>
+  </div>
+</div>
+<script>
+function _mdToHtml(text) {
+  let h = text
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/```[\s\S]*?```/g, m => '<pre><code>' + m.slice(3,-3).replace(/^\w+\n/,'') + '</code></pre>')
+    .replace(/`([^`\n]+)`/g,'<code>$1</code>')
+    .replace(/\*\*\*(.+?)\*\*\*/g,'<strong><em>$1</em></strong>')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,'<em>$1</em>')
+    .replace(/^### (.+)$/gm,'<h3>$1</h3>').replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/^# (.+)$/gm,'<h1>$1</h1>')
+    .replace(/^[-*] (.+)$/gm,'<li>$1</li>').replace(/(<li>[\s\S]+?<\/li>)/g,'<ul>$1</ul>')
+    .replace(/\n\n/g,'</p><p>').replace(/\n/g,'<br>');
+  return '<p>' + h + '</p>';
+}
+function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+const PC_SYSTEM = (
+  "You are a helpful world-building assistant for a tabletop RPG campaign called "
+  + {{ (world.name if world else "this world") | tojson }}
+  + ". Answer the player's questions helpfully and in a tone that fits the setting. "
+  + "You don't have access to any GM-only secrets — answer from general knowledge and "
+  + "whatever the player tells you in this conversation."
+);
+let pcHistory = [];
+
+function pcResize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 160) + 'px'; }
+function pcKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); pcSend(); } }
+
+function pcAdd(role, text, thinking) {
+  const box = document.getElementById('ai-messages');
+  const w = document.createElement('div');
+  w.className = 'ai-msg ai-msg--' + role + (thinking ? ' ai-thinking' : '');
+  const b = document.createElement('div');
+  b.className = 'ai-bubble';
+  b.innerHTML = role === 'user' ? _escHtml(text) : (thinking ? text : _mdToHtml(text));
+  w.appendChild(b);
+  box.appendChild(w);
+  box.scrollTop = 99999;
+  return b;
+}
+
+async function pcSend() {
+  const inp = document.getElementById('ai-input');
+  const btn = document.getElementById('ai-send');
+  const statsEl = document.getElementById('ai-stats');
+  const text = inp.value.trim();
+  if (!text || btn.disabled) return;
+  inp.value = ''; pcResize(inp);
+  pcAdd('user', text);
+  pcHistory.push({ role: 'user', content: text });
+  btn.disabled = true;
+  const bubble = pcAdd('assistant', '…', true);
+  statsEl.textContent = '⏳ Connecting…';
+  try {
+    const res = await fetch('/api/ai/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: pcHistory, system: PC_SYSTEM, surface: 'ask_ai' }),
+    });
+    if (!res.ok) throw new Error('Server error ' + res.status);
+    bubble.parentElement.classList.remove('ai-thinking');
+    bubble.innerHTML = '';
+    let full = '';
+    let noteText = '';
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n'); buf = parts.pop();
+      for (const p of parts) {
+        if (!p.startsWith('data: ')) continue;
+        const pay = p.slice(6);
+        if (pay === '[DONE]') break;
+        const obj = JSON.parse(pay);
+        if (obj.note) {
+          noteText = obj.note;
+          bubble.innerHTML = `<div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.4rem">ℹ️ ${_escHtml(noteText)}</div>` + _mdToHtml(full);
+          continue;
+        }
+        if (typeof obj.token !== 'string') continue;
+        full += obj.token;
+        bubble.innerHTML = (noteText ? `<div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.4rem">ℹ️ ${_escHtml(noteText)}</div>` : '') + _mdToHtml(full);
+        document.getElementById('ai-messages').scrollTop = 99999;
+      }
+    }
+    statsEl.textContent = '';
+    pcHistory.push({ role: 'assistant', content: full });
+  } catch (e) {
+    statsEl.textContent = '';
+    bubble.parentElement.classList.remove('ai-thinking');
+    bubble.textContent = 'Error: ' + e.message;
+  } finally { btn.disabled = false; inp.focus(); }
+}
+</script>
+{% endblock %}

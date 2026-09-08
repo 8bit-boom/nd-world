@@ -100,6 +100,19 @@
   </details>
   <div id="was-body" style="font-size:.85rem;color:var(--text);white-space:pre-wrap;max-height:280px;overflow:auto">Loading…</div>
 </section>
+{% elif world and world.players_can_view_world_summary %}
+{# Player read-only view — off by default (World.players_can_view_world_summary).
+   No Generate/Regenerate/Clear/settings: a player only ever sees whatever
+   digest the GM/assistant already produced (see api_world_summary_get's
+   docstring in app/routers/ai.py), and the whole card hides itself below
+   if there isn't one yet — there's nothing actionable to show. #}
+<section id="world-ai-summary-card-player" style="border:1px solid var(--border);border-radius:8px;padding:.9rem 1.1rem;background:var(--bg2);margin-bottom:1.1rem" hidden>
+  <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem">
+    <span style="font-size:.8rem;color:var(--neon);font-weight:700;letter-spacing:.06em">🤖 WORLD SUMMARY</span>
+    <span id="was-player-generated" style="font-size:.72rem;color:var(--text-dim)"></span>
+  </div>
+  <div id="was-player-body" style="font-size:.85rem;color:var(--text);white-space:pre-wrap;max-height:280px;overflow:auto"></div>
+</section>
 {% endif %}
 
 <section class="dashboard" id="dashboard-dropzone">
@@ -501,5 +514,24 @@ async function wasClear() {
   }
 }
 if (document.getElementById('world-ai-summary-card')) wasLoad();
+
+// ── Read-only World Summary card (players, World.players_can_view_world_summary) ──
+async function wasPlayerLoad() {
+  const card = document.getElementById('world-ai-summary-card-player');
+  const body = document.getElementById('was-player-body');
+  const gen = document.getElementById('was-player-generated');
+  try {
+    const d = await (await fetch('/api/ai/world-summary')).json();
+    if (d.pending) { card.hidden = false; body.textContent = 'Generating…'; gen.textContent = ''; setTimeout(wasPlayerLoad, 3000); return; }
+    if (d.recap) {
+      card.hidden = false;
+      body.textContent = d.recap;
+      gen.textContent = d.generated_at ? ('generated ' + d.generated_at.replace('T', ' ').slice(0, 16)) : '';
+    } else {
+      card.hidden = true;
+    }
+  } catch (e) { card.hidden = true; }
+}
+if (document.getElementById('world-ai-summary-card-player')) wasPlayerLoad();
 </script>
 {% endblock %}

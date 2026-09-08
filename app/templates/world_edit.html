@@ -44,6 +44,16 @@
              style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_ask_ai %}checked{% endif %}>
       <label for="players-ask-ai" style="margin:0">Players can use the "Ask AI" panel on entity pages</label>
     </div>
+    <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+      <input type="checkbox" id="players-ai-chat" name="players_can_use_ai_chat" value="1"
+             style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_use_ai_chat %}checked{% endif %}>
+      <label for="players-ai-chat" style="margin:0">Players can use a standalone AI Chat page (general-purpose, not tied to an entity)</label>
+    </div>
+    <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+      <input type="checkbox" id="players-world-summary" name="players_can_view_world_summary" value="1"
+             style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_view_world_summary %}checked{% endif %}>
+      <label for="players-world-summary" style="margin:0">Players can view the AI-generated World Summary (read-only — they can't generate or clear it)</label>
+    </div>
     <div class="form-group">
       <label>Hero banner</label>
       <select name="hero_style" style="width:auto;min-width:220px">

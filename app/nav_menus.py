@@ -25,10 +25,14 @@ _MAX_MENU_ICON_LEN = 8
 # the current path exactly, list-style pages matched by prefix. "gm_only"
 # controls both whether a player ever sees the item (grouped or flat) and
 # whether a menu containing only gm_only items disappears entirely for a
-# player. "condition" is an optional key into the settings dict
-# resolve_nav_menus is given — an item with a condition that's False is
-# dropped entirely (not even shown ungrouped), matching the old
-# {% if dreamlands_enabled %} template guards. "ql_type"/"ql_ref" override
+# player. "condition" is either one of the two AppSettings-level flag names
+# resolve_nav_menus is given explicitly (dreamlands_enabled,
+# king_in_yellow_enabled), matching the old {% if dreamlands_enabled %}
+# template guards, or any OTHER string, which resolve_nav_menus' _visible()
+# treats as a per-World boolean column name (getattr(world, condition,
+# False)) — e.g. "players_can_use_ai_chat". Either way, an item whose
+# condition reads False is dropped entirely, not even shown ungrouped.
+# "ql_type"/"ql_ref" override
 # the Quick-Links drag payload for items that aren't a plain url (currently
 # only the dynamic per-kind items built by build_catalog, which drag onto
 # the home page as target_type="kind" rather than target_type="url").
@@ -67,6 +71,8 @@ STATIC_CATALOG = [
     {"id": "video", "label": "Video", "icon": "🎬", "href": "/video", "exact": True, "gm_only": False},
     {"id": "pages", "label": "Pages", "icon": "📄", "href": "/pages", "exact": True, "gm_only": False},
     {"id": "character_sheets", "label": "My Character Sheets", "icon": "🧬", "href": "/pages/sheets", "exact": True, "gm_only": False},
+    {"id": "ai_chat_player", "label": "Chat with AI", "icon": "🤖", "href": "/ai-chat", "exact": True,
+     "condition": "players_can_use_ai_chat", "gm_only": False},
     {"id": "androidapp", "label": "Android App", "icon": "📱", "href": "/androidapp", "exact": True, "gm_only": False},
 ]
 # Every static item gets the same ql_type/ql_ref defaults so templates and
@@ -202,6 +208,15 @@ def resolve_nav_menus(world, dreamlands_enabled: bool, king_in_yellow_enabled: b
             return False
         if cond == "king_in_yellow_enabled" and not king_in_yellow_enabled:
             return False
+        if cond and cond not in ("dreamlands_enabled", "king_in_yellow_enabled"):
+            # Generic fallback: any other condition string names a per-World
+            # boolean column (e.g. "players_can_use_ai_chat") rather than one
+            # of the two AppSettings-level flags threaded in above — see
+            # World.players_can_use_ai_chat in app/models.py, the first item
+            # to use this. Missing/non-bool attribute reads as False, same as
+            # a world that's never opted in.
+            if not getattr(world, cond, False):
+                return False
         if item.get("gm_only") and not is_gm:
             return False
         return True

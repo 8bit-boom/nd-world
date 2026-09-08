@@ -141,14 +141,21 @@ def _require_can_edit(request: Request) -> None:
 
 
 def _require_ask_ai_access(request: Request, db, active_world) -> None:
-    """Same permission shape as the rest of this router's GM/player split —
-    a GM always may, a player only if their world has opted in via
-    World.players_can_ask_ai (off by default, app/models.py)."""
+    """Gates every caller of the shared POST /api/ai/stream (and its
+    /chat/compact sibling) — both the entity detail page's "Ask AI" panel
+    and the standalone /ai-chat page (app/main.py) funnel through here.
+    Same permission shape as the rest of this router's GM/player split — a
+    GM always may, a player only if their world opted into EITHER surface:
+    World.players_can_ask_ai (the entity panel) or players_can_use_ai_chat
+    (the standalone page) — both off by default, app/models.py. Either one
+    is enough since the endpoint itself has no notion of which surface
+    called it; the two toggles just control which UI a GM chooses to
+    expose, not two different levels of model access."""
     user = getattr(request.state, "user", None)
     if user and user.is_gm:
         return
     world, _ = get_world_ctx(request, db, active_world)
-    if not (world and world.players_can_ask_ai):
+    if not (world and (world.players_can_ask_ai or world.players_can_use_ai_chat)):
         raise HTTPException(403)
 
 
@@ -649,11 +656,21 @@ def api_world_summary_get(request: Request, db=Depends(get_db), active_world: st
     _world_summary_audience_filter) — without this, whichever tier
     happened to generate the most recent digest for this world would be
     served to EVERY viewer regardless of who's actually looking, handing a
-    GM's secrets-included summary straight to an assistant."""
-    _require_can_edit(request)
+    GM's secrets-included summary straight to an assistant.
+
+    Read access: GM/GM-Assistant always (_require_can_edit); a plain
+    player only when the world opted into players_can_view_world_summary
+    (off by default) — generating/clearing (POST/DELETE below) stays
+    GM+Assistant only regardless, so a player can only ever read whatever
+    digest the GM/assistant already produced, filtered through the same
+    non-GM audience tier an assistant's own view already uses."""
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
+    if not can_edit_content(request):
+        user = getattr(request.state, "user", None)
+        if not (user and world.players_can_view_world_summary):
+            raise HTTPException(403)
     user = getattr(request.state, "user", None)
     is_gm = bool(user and user.is_gm)
     job = _world_summary_audience_filter(
