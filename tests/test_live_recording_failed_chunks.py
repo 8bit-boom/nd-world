@@ -62,7 +62,7 @@ def test_status_settles_to_a_final_message_once_idle(client, seed):
     assert "function liveRefreshStatus()" in page
     assert "'Stopped — transcript saved.'" in page
     # Called at the end of the upload loop, not just under `if (_liveRecording)`.
-    assert "liveRefreshStatus();" in page.split("async function liveProcessQueue", 1)[1][:2000]
+    assert "liveRefreshStatus();" in page.split("async function liveProcessQueue", 1)[1][:3300]
 
 
 def test_backlog_is_shown_while_still_recording(client, seed):

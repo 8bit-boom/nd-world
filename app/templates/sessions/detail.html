@@ -249,8 +249,10 @@
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">🔴 Live Session Recording <small id="live-transcript-token-count" style="color:var(--text-dim);font-weight:normal"></small></h2>
     <p style="font-size:.8rem;color:var(--text-dim);margin:0 0 .6rem">
       Records in short chunks, each transcribed and saved to this session as it finishes — safe for a
-      multi-hour session, and nothing is lost beyond the current chunk if your browser or connection drops.
-      Leave this tab open and awake for the duration; the recording stops if the tab is closed.
+      multi-hour session, and nothing is lost beyond the current chunk if your browser, mic, or connection drops
+      (a dropped mic reconnects automatically and resumes). Keep this tab open, awake, and in the foreground —
+      a backgrounded tab can lengthen chunks or drop the mic on some devices, and the recording stops entirely
+      if the tab is closed.
     </p>
     <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;margin-bottom:.6rem;font-size:.8rem;color:var(--text-dim)">
       <label style="display:flex;align-items:center;gap:.35rem">Chunk length
@@ -1056,13 +1058,16 @@ function toggleMicRecording() {
     },
   );
   _micRecorder.start().then(started => {
-    if (!started) return;
+    if (!started) return;  // ndMicRecorder already invoked the onError above
     micBtn.textContent = '⏹ Stop';
     _micStartedAt = Date.now();
     _micTimerId = setInterval(() => {
       const secs = Math.floor((Date.now() - _micStartedAt) / 1000);
       micStatus.textContent = `Recording… ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
     }, 500);
+  }).catch(err => {
+    micBtn.textContent = '🎤 Record';
+    micStatus.textContent = 'Mic error: ' + err.message;
   });
 }
 
@@ -1184,6 +1189,13 @@ function liveRefreshStatus() {
     status.appendChild(retryBtn);
     return;
   }
+  // A sticky mic-recovery failure (liveHandleMicFailure gave up) takes
+  // priority over the reassuring default below — cleared only by starting a
+  // fresh recording, so it doesn't get silently overwritten mid-display.
+  if (_liveLastError) {
+    status.textContent = '⚠ ' + _liveLastError;
+    return;
+  }
   status.textContent = _liveRecording ? 'Recording…' : 'Stopped — transcript saved.';
 }
 
@@ -1191,50 +1203,66 @@ function liveRetryFailedChunks() {
   const chunks = _liveFailedChunks;
   _liveFailedChunks = [];
   _liveQueue.push(...chunks);
-  liveProcessQueue();
+  liveProcessQueue().catch(e => console.error('live upload queue', e));
 }
 
 async function liveProcessQueue() {
   if (_liveQueueBusy) return;
   _liveQueueBusy = true;
   const status = document.getElementById('live-record-status');
-  while (_liveQueue.length) {
-    if (_liveRecording && _liveQueue.length > 1) {
-      // A slower-than-realtime Whisper backend was previously invisible
-      // here until chunks started timing out — surface the backlog.
-      status.textContent = `Recording… (${_liveQueue.length} chunk(s) waiting for Whisper)`;
-    }
-    const file = _liveQueue[0];
-    let uploaded = false;
-    for (let attempt = 1; attempt <= 3 && !uploaded; attempt++) {
-      try {
-        const fd = new FormData();
-        fd.append('file', file, file.name);
-        // Raw-audio archive tagging: the checkbox is read at upload time (the
-        // GM can toggle it mid-recording), while recording_id/segment_index
-        // were stamped onto the File at capture time — so a chunk retried
-        // after a failure still lands in its original recording slot, and
-        // the server can overwrite that slot instead of duplicating it.
-        fd.append('save_audio', saveChk && saveChk.checked ? '1' : '');
-        fd.append('recording_id', file.ndRecordingId || '');
-        fd.append('segment_index', String(typeof file.ndSegmentIndex === 'number' ? file.ndSegmentIndex : -1));
-        const res = await fetch(`/api/sessions/${SESSION_ID}/live-transcript/append`, { method: 'POST', body: fd });
-        if (!res.ok) throw await ndApiErrorFrom(res);
-        const data = await res.json();
-        liveSetTranscriptDisplay(data.transcript);
-        uploaded = true;
-      } catch (e) {
-        if (attempt >= 3) {
-          _liveFailedChunks.push(file);
-        } else {
-          await new Promise(r => setTimeout(r, 1500 * attempt));
+  try {
+    while (_liveQueue.length) {
+      if (_liveRecording && _liveQueue.length > 1) {
+        // A slower-than-realtime Whisper backend was previously invisible
+        // here until chunks started timing out — surface the backlog.
+        status.textContent = `Recording… (${_liveQueue.length} chunk(s) waiting for Whisper)`;
+      }
+      const file = _liveQueue[0];
+      let uploaded = false;
+      let transcriptText = null;
+      for (let attempt = 1; attempt <= 3 && !uploaded; attempt++) {
+        try {
+          const fd = new FormData();
+          fd.append('file', file, file.name);
+          // Raw-audio archive tagging: the checkbox is read at upload time (the
+          // GM can toggle it mid-recording), while recording_id/segment_index
+          // were stamped onto the File at capture time — so a chunk retried
+          // after a failure still lands in its original recording slot, and
+          // the server can overwrite that slot instead of duplicating it.
+          fd.append('save_audio', saveChk && saveChk.checked ? '1' : '');
+          fd.append('recording_id', file.ndRecordingId || '');
+          fd.append('segment_index', String(typeof file.ndSegmentIndex === 'number' ? file.ndSegmentIndex : -1));
+          const res = await fetch(`/api/sessions/${SESSION_ID}/live-transcript/append`, { method: 'POST', body: fd });
+          if (!res.ok) throw await ndApiErrorFrom(res);
+          const data = await res.json();
+          transcriptText = data.transcript;
+          uploaded = true;
+        } catch (e) {
+          if (attempt >= 3) {
+            _liveFailedChunks.push(file);
+          } else {
+            await new Promise(r => setTimeout(r, 1500 * attempt));
+          }
         }
       }
+      // Rendering happens OUTSIDE the upload's try above — a display bug
+      // (e.g. ndTokenLabel throwing) must never be mistaken for an upload
+      // failure, which would re-upload a chunk the server already saved and
+      // duplicate its text in the transcript (docs/LIVE_RECORDING_AUDIT.md
+      // items 3 and 4).
+      if (uploaded) {
+        try { liveSetTranscriptDisplay(transcriptText); } catch (e) { /* display-only — the chunk itself is already saved */ }
+      }
+      _liveQueue.shift();
     }
-    _liveQueue.shift();
+  } finally {
+    // In a `finally` so nothing above — an unexpected throw, not just a
+    // caught upload failure — can leave this flag stuck true, which would
+    // silently wedge every future chunk behind the early-return at the top
+    // of this function (docs/LIVE_RECORDING_AUDIT.md item 4).
+    _liveQueueBusy = false;
+    liveRefreshStatus();
   }
-  _liveQueueBusy = false;
-  liveRefreshStatus();
   // The post-stop flush (recording already stopped) is the moment the saved
   // segment count/bytes settle — refresh the raw-audio line then, and only
   // then: drains while still recording fire every chunk, and polling this
@@ -1258,23 +1286,19 @@ function liveStartSegment() {
       segFile.ndRecordingId = _liveRecordingId;
       segFile.ndSegmentIndex = _liveSegmentIndex++;
       _liveQueue.push(segFile);
-      liveProcessQueue();
+      liveProcessQueue().catch(e => console.error('live upload queue', e));
       if (_liveRecording) {
         liveStartSegment();  // immediately pick up the next segment, no gap
       } else {
         liveStopMicStream();  // that was the final segment — release the mic now
       }
     },
-    (err) => {
-      _liveRecording = false;
-      liveStopMicStream();
-      document.getElementById('live-record-btn').textContent = '🔴 Start Recording';
-      document.getElementById('live-record-status').textContent = 'Mic error: ' + err.message;
-    },
+    (err) => liveHandleMicFailure(err),
     _liveMicStream,
   );
   _liveCurrentRecorder.start().then(started => {
-    if (!started) { _liveRecording = false; return; }
+    if (!started) return;  // ndMicRecorder already invoked onError above
+    _liveRecoverAttempts = 0;  // a segment started cleanly — reset the retry ladder
     clearTimeout(_liveChunkTimer);
     // liveChunkSeconds() is read HERE, per segment, not once at recording
     // start — a GM changing the selector mid-recording applies from the
@@ -1282,6 +1306,62 @@ function liveStartSegment() {
     _liveChunkTimer = setTimeout(() => {
       if (_liveCurrentRecorder) _liveCurrentRecorder.stop();
     }, liveChunkSeconds() * 1000);
+  }).catch(err => liveHandleMicFailure(err));
+}
+
+// Bounded re-acquisition ladder for a mic that dies mid-recording (OS-level
+// reclaim, a Bluetooth headset reconnect, a backgrounded tab's capture
+// pipeline being torn down — see docs/LIVE_RECORDING_AUDIT.md item 1). The
+// shared _liveMicStream (see its own comment above) removed the old
+// per-segment getUserMedia call, which was also the only thing that ever
+// recovered a dead mic — this puts recovery back, but only on the failure
+// path, so the no-gap benefit of the shared stream is kept for the common
+// case. Reached from ndMicRecorder's onError (a failed start) and from
+// liveWatchMicTracks (the stream dying mid-segment, not just at a boundary).
+let _liveRecoverAttempts = 0;
+const LIVE_MAX_RECOVER_ATTEMPTS = 3;
+let _liveLastError = '';
+
+async function liveHandleMicFailure(err) {
+  if (!_liveRecording) return;  // an ordinary Stop, not a failure — nothing to recover
+  const status = document.getElementById('live-record-status');
+  if (_liveRecoverAttempts >= LIVE_MAX_RECOVER_ATTEMPTS) {
+    _liveRecording = false;
+    clearTimeout(_liveChunkTimer);
+    liveStopMicStream();
+    liveReleaseWakeLock();
+    document.getElementById('live-record-btn').textContent = '🔴 Start Recording';
+    _liveLastError = 'Mic lost and could not be reconnected: ' + (err && err.message ? err.message : err) +
+                      ' — recording stopped. Press Start to resume.';
+    liveRefreshStatus();
+    return;
+  }
+  _liveRecoverAttempts++;
+  status.textContent = `⚠ Mic dropped — reconnecting (${_liveRecoverAttempts}/${LIVE_MAX_RECOVER_ATTEMPTS})…`;
+  liveStopMicStream();  // drop the dead stream before asking for a new one
+  try {
+    _liveMicStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (e) {
+    await new Promise(r => setTimeout(r, 1000 * _liveRecoverAttempts));
+    return liveHandleMicFailure(e);
+  }
+  if (!_liveRecording) { liveStopMicStream(); return; }  // GM pressed Stop while we were reconnecting
+  liveWatchMicTracks();
+  status.textContent = 'Recording… (mic reconnected)';
+  liveStartSegment();
+}
+
+// Detects the mic dying DURING a segment (not just at the next chunk
+// boundary, which could be up to 15 minutes away) by listening for the
+// underlying track ending.
+function liveWatchMicTracks() {
+  if (!_liveMicStream) return;
+  _liveMicStream.getAudioTracks().forEach(t => {
+    t.onended = () => {
+      if (_liveRecording) liveHandleMicFailure(new Error('Microphone disconnected'));
+    };
   });
 }
 
@@ -1303,15 +1383,30 @@ document.addEventListener('visibilitychange', () => {
   if (_liveRecording && document.visibilityState === 'visible') liveAcquireWakeLock();
 });
 
+// Guards the async gap between clicking Start and getUserMedia resolving —
+// without it, a double-click there raced two independent recording chains
+// against a single _liveMicStream/_liveRecordingId (see
+// docs/LIVE_RECORDING_AUDIT.md item 5): one stream leaked (mic left hot,
+// nothing ever released it), the second chain's clearTimeout cancelled the
+// first chain's pending stop (so the first segment never uploaded), and both
+// chains wrote colliding segment_index values into the same recording folder.
+let _liveStarting = false;
+
 async function toggleLiveRecording() {
   const btn = document.getElementById('live-record-btn');
   const status = document.getElementById('live-record-status');
   if (_liveRecording) {
     _liveRecording = false;
     clearTimeout(_liveChunkTimer);
-    if (_liveCurrentRecorder) {
+    // Ask the recorder whether it's actually capturing rather than just
+    // checking it exists — after a failed segment start (see
+    // liveHandleMicFailure) the object can be non-null but its inner
+    // MediaRecorder is null/inactive, so .stop() would silently no-op,
+    // onStop would never fire, and the mic would stay hot forever (item 2).
+    if (_liveCurrentRecorder && _liveCurrentRecorder.isRecording()) {
       _liveCurrentRecorder.stop();  // its onStop (liveStartSegment) releases the mic once the last chunk is captured
     } else {
+      _liveCurrentRecorder = null;
       liveStopMicStream();
     }
     liveReleaseWakeLock();
@@ -1321,12 +1416,16 @@ async function toggleLiveRecording() {
     // queue drain below refreshes it again once the server's count/bytes
     // have actually settled.
     liveRefreshAudioStatus();
+    liveRefreshStatus();
     return;
   }
+  if (_liveStarting) return;
   if (!navigator.mediaDevices || !window.MediaRecorder) {
     status.textContent = 'Microphone recording is not supported in this browser';
     return;
   }
+  _liveStarting = true;
+  btn.disabled = true;
   try {
     // Acquired ONCE here for the whole recording — see _liveMicStream's
     // own comment for why, and ndMicRecorder's own comment (base.html) for
@@ -1336,8 +1435,12 @@ async function toggleLiveRecording() {
     });
   } catch (e) {
     status.textContent = 'Mic error: ' + e.message;
+    btn.disabled = false;
+    _liveStarting = false;
     return;
   }
+  _liveLastError = '';
+  _liveRecoverAttempts = 0;
   _liveRecording = true;
   // One id per recording (not per segment, not per page load) — the server
   // groups a recording's saved raw segments under it, and a fresh recording
@@ -1345,8 +1448,11 @@ async function toggleLiveRecording() {
   _liveRecordingId = ndChunkUploadRandomId();
   _liveSegmentIndex = 0;
   btn.textContent = '⏹ Stop Recording';
+  btn.disabled = false;
+  _liveStarting = false;
   status.textContent = 'Recording…';
   liveAcquireWakeLock();
+  liveWatchMicTracks();
   liveStartSegment();
 }
 
@@ -1410,7 +1516,15 @@ async function aiStartLiveTranscriptJob() {
 }
 
 window.addEventListener('beforeunload', (e) => {
-  if (_liveRecording) { e.preventDefault(); e.returnValue = ''; }
+  // Stop clears _liveRecording immediately, but the final segment can still
+  // be uploading (or retrying, or sitting in _liveFailedChunks waiting for
+  // the GM to click Retry) well after that — closing the tab then loses it
+  // silently, contradicting the panel's own "nothing is lost beyond the
+  // current chunk" promise (docs/LIVE_RECORDING_AUDIT.md item 6).
+  if (_liveRecording || _liveQueue.length || _liveFailedChunks.length || _liveQueueBusy) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
 });
 
 function renderPrep() {

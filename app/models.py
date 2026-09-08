@@ -950,6 +950,16 @@ class GameSession(Base):
     # game_sessions IS in database._migrate's _heal_table_from_model list,
     # so existing installs get this column automatically on next boot.
     live_audio_files_json = Column(Text, default="")
+    # JSON array of "<recording_id>:<segment_index>" keys already folded into
+    # live_transcript — makes /live-transcript/append idempotent per segment,
+    # the same way live_audio_files_json above already is for the raw file.
+    # Without this, the client's 3-attempt retry ladder (a lost response, not
+    # just a lost request — a slow self-hosted Whisper backend behind a proxy
+    # with its own timeout is a realistic way to hit this) re-POSTs a chunk
+    # the server already transcribed and committed, and the second success
+    # duplicates that chunk's text in the transcript. Same
+    # database._migrate heal-list coverage as live_audio_files_json above.
+    live_transcript_segments_json = Column(Text, default="")
     # The GM-curated PLAYER-facing recap for this session — what the Session
     # Log (the player-visible pages) shows. This closes the "two parallel
     # recap worlds" gap: `summary` above has always been the GM's own

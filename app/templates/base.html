@@ -376,14 +376,38 @@ function ndMicRecorder(onStop, onError, existingStream) {
       }
     }
     chunks = [];
-    mediaRecorder = new MediaRecorder(stream);
-    mediaRecorder.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
-    mediaRecorder.onstop = function () {
-      if (ownsStream) stream.getTracks().forEach(function (t) { t.stop(); });
-      var mimeType = mediaRecorder.mimeType || 'audio/webm';
-      onStop(new Blob(chunks, { type: mimeType }), mimeType);
-    };
-    mediaRecorder.start();
+    // Both the constructor and start() are unguarded on purpose in most
+    // MediaRecorder examples, but with a REUSED stream (existingStream — see
+    // this function's own doc above) that stream can have gone inactive
+    // between segments (an OS-level mic reclaim, a Bluetooth reconnect, a
+    // backgrounded tab's capture pipeline being torn down). start() is the
+    // spec's designated thrower for a recording of an inactive stream
+    // (InvalidStateError) — and since this function is `async`, an uncaught
+    // synchronous throw here becomes a REJECTED PROMISE, not an exception the
+    // caller sees, unless it's caught right here. See docs/LIVE_RECORDING_AUDIT.md
+    // item 1 — this is the actual cause of a live recording silently stopping
+    // after one chunk with the UI still claiming "Recording…".
+    try {
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+      mediaRecorder.onstop = function () {
+        if (ownsStream) stream.getTracks().forEach(function (t) { t.stop(); });
+        var mimeType = mediaRecorder.mimeType || 'audio/webm';
+        onStop(new Blob(chunks, { type: mimeType }), mimeType);
+      };
+      // Per spec, an error that ends the stream still fires a final `stop`
+      // afterward, so onStop above still runs and the partial segment still
+      // gets queued — this handler exists purely so the failure is reported
+      // to the caller instead of looking like a clean, ordinary end.
+      mediaRecorder.onerror = function (e) {
+        if (onError) onError((e && e.error) || new Error('Recording error'));
+      };
+      mediaRecorder.start();
+    } catch (e) {
+      mediaRecorder = null;
+      if (onError) onError(e);
+      return false;
+    }
     return true;
   }
 
@@ -432,9 +456,13 @@ function ndToggleAttachMic(btnId, attachments) {
   );
   _ndMicRecorders[btnId] = rec;
   rec.start().then(function (started) {
-    if (!started) return;
+    if (!started) return;  // ndMicRecorder already invoked the onError above
     btn.textContent = '⏺';
     btn.style.color = '#ff2d78';
+  }).catch(function (err) {
+    btn.textContent = '🎤';
+    btn.style.color = '';
+    alert('Microphone error: ' + err.message);
   });
 }
 </script>

@@ -49,7 +49,7 @@ def test_ndmicrecorder_accepts_and_reuses_an_existing_stream(client, seed):
 
 def test_ndmicrecorder_does_not_stop_tracks_it_does_not_own(client, seed):
     page = _get_page(client, seed)
-    body = page.split("function ndMicRecorder(onStop, onError, existingStream)", 1)[1][:1500]
+    body = page.split("function ndMicRecorder(onStop, onError, existingStream)", 1)[1][:2000]
     assert "if (ownsStream) stream.getTracks().forEach" in body
 
 

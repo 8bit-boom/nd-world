@@ -1080,6 +1080,26 @@ def _live_audio_files(gs: GameSession) -> list:
     return [str(p) for p in files] if isinstance(files, list) else []
 
 
+def _live_transcript_segment_key(recording_id: str, segment_index: int) -> str:
+    return f"{recording_id}:{segment_index}"
+
+
+def _live_transcript_segment_keys(gs: GameSession) -> list:
+    """Which (recording_id, segment_index) chunks have already had their text
+    folded into live_transcript, from GameSession.live_transcript_segments_json
+    — makes api_live_transcript_append idempotent per segment, the same way
+    _live_audio_files above already is for the raw file (see that column's
+    own docstring in models.py for why: a lost response to an otherwise-
+    successful upload makes the client's retry ladder re-POST a chunk the
+    server already committed, and an unconditional append would duplicate its
+    text). Tolerant of NULL/blank/corrupt JSON, same as _live_audio_files."""
+    try:
+        keys = json.loads(gs.live_transcript_segments_json or "[]")
+    except ValueError:
+        return []
+    return [str(k) for k in keys] if isinstance(keys, list) else []
+
+
 def _ffmpeg_concat_quote(p: Path) -> str:
     """One `file '<path>'` line for ffmpeg's concat demuxer list file. The
     demuxer parses single-quoted strings shell-style, so an embedded quote
@@ -1152,10 +1172,32 @@ async def api_live_transcript_append(
     if not gs:
         raise HTTPException(404)
     world = db.get(World, gs.world_id)
-    try:
-        chunk_text = (await _transcribe_chunk(file, glossary=_glossary_for_world(world, gs.id), language=_language_for_world(world), denoise=_denoise_for_world(world))).strip()
-    except _ai_module.WhisperError as exc:
-        raise HTTPException(400, str(exc)) from exc
+    # Idempotency: the client sends recording_id/segment_index on EVERY
+    # upload, not just when "Save raw audio" is on, specifically so this
+    # check can run regardless of that setting. A blank/absent pair (an
+    # older client, or a caller that never sends them) just leaves
+    # already_appended False, unchanged from before. See models.py's
+    # live_transcript_segments_json docstring for why this exists: without
+    # it, a client retry after a lost response (not a lost request — the
+    # server already transcribed and committed) would duplicate that
+    # chunk's text.
+    #
+    # This only skips Whisper + the transcript append below, NOT the
+    # raw-audio save further down — that save is independently idempotent
+    # (same-path overwrite, see its own comment) and a retry must still
+    # perform it even when the text side is already settled.
+    seg_key = ""
+    already_appended = False
+    if CHUNK_ID_RE.match(recording_id or "") and segment_index >= 0:
+        seg_key = _live_transcript_segment_key(recording_id, segment_index)
+        already_appended = seg_key in _live_transcript_segment_keys(gs)
+    if already_appended:
+        chunk_text = ""
+    else:
+        try:
+            chunk_text = (await _transcribe_chunk(file, glossary=_glossary_for_world(world, gs.id), language=_language_for_world(world), denoise=_denoise_for_world(world))).strip()
+        except _ai_module.WhisperError as exc:
+            raise HTTPException(400, str(exc)) from exc
     # Raw-audio save runs AFTER transcription, so a Whisper failure (the 400
     # above) leaves nothing half-saved, and the DB row below is committed
     # together with the transcript append as the plan requires. The upload
@@ -1195,6 +1237,10 @@ async def api_live_transcript_append(
     if chunk_text or saved_rel:
         if chunk_text:
             gs.live_transcript = (gs.live_transcript or "") + (" " if gs.live_transcript else "") + chunk_text
+            if seg_key:
+                keys = _live_transcript_segment_keys(gs)
+                keys.append(seg_key)
+                gs.live_transcript_segments_json = json.dumps(keys)
         db.commit()
     # chunk_text can legitimately be "" (a silent segment) — that's not an
     # error, just nothing to append; the client still needs the running
@@ -1263,6 +1309,11 @@ def api_live_transcript_clear(session_id: int, db: Session = Depends(get_db)):
     if not gs:
         raise HTTPException(404)
     gs.live_transcript = ""
+    # Reset alongside the transcript itself — otherwise a fresh recording
+    # that reuses (extremely unlikely, but not impossible) the same
+    # recording_id/segment_index pair as a cleared one could never have its
+    # text appended, per the dedup check in api_live_transcript_append.
+    gs.live_transcript_segments_json = ""
     db.commit()
     return {"transcript": ""}
 
