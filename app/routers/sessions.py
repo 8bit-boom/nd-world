@@ -234,6 +234,15 @@ def session_detail(session_id: int, request: Request, db: Session = Depends(get_
                 npc_selected.append(n["entity_id"])
     party_pc_ids = json.loads(gs.party.member_pc_ids_json or "[]") if gs.party else []
     party_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(party_pc_ids)).all() if party_pc_ids else []
+    # This session's own Facts, oldest first — the embedded Facts panel
+    # below (see facts/list.html's grouped-by-session equivalent) so a GM
+    # can log/review/parse facts without leaving the session page.
+    facts = (
+        db.query(Fact)
+        .filter(Fact.game_session_id == gs.id)
+        .order_by(Fact.created_at.asc(), Fact.id.asc())
+        .all()
+    )
     return templates.TemplateResponse("sessions/detail.html", {
         "request": request, "world": world, "worlds": worlds, "gsession": gs,
         "parties": parties, "next_num": gs.session_num, "linked_combats": linked_combats,
@@ -241,7 +250,7 @@ def session_detail(session_id: int, request: Request, db: Session = Depends(get_
         "npc_candidates_json": _featured_entity_candidates(db, gs.world_id),
         "npc_selected_json": npc_selected,
         "prep": json.loads(gs.prep_json or "[]"), "loot": json.loads(gs.loot_json or "[]"),
-        "npcs": npcs,
+        "npcs": npcs, "facts": facts,
     })
 
 

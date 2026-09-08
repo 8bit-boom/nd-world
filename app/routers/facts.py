@@ -1,4 +1,5 @@
 import json
+import re
 
 from datetime import datetime
 
@@ -126,6 +127,23 @@ def _fact_groups(db: Session, world_id: int, sessions: dict) -> list:
     return groups
 
 
+_NEXT_SESSION_RE = re.compile(r"^/sessions/\d+$")
+
+
+def _safe_next(form_value) -> str:
+    """Whitelist for the plain-form Facts routes' post-action redirect: the
+    Facts page itself ("/facts", the historical/default target) or a
+    specific session's own detail page ("/sessions/{id}") — the only two
+    places these forms are ever rendered from (the standalone Facts page,
+    and the embedded per-session Facts panel added to sessions/detail.html).
+    Anything else (an open redirect via an arbitrary `next` value) falls
+    back to "/facts" rather than being trusted."""
+    value = str(form_value or "")
+    if value == "/facts" or _NEXT_SESSION_RE.match(value):
+        return value
+    return "/facts"
+
+
 @router.get("/facts", response_class=HTMLResponse)
 def facts_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
@@ -146,9 +164,10 @@ async def fact_create(request: Request, db: Session = Depends(get_db), active_wo
     world, _ = get_world_ctx(request, db, active_world)
     form = await request.form()
     user = getattr(request.state, "user", None)
+    next_url = _safe_next(form.get("next"))
     content = str(form.get("content", "")).strip()
     if not content:
-        return RedirectResponse("/facts", status_code=303)
+        return RedirectResponse(next_url, status_code=303)
     session_id = form.get("game_session_id")
     f = Fact(
         world_id=world.id if world else 1,
@@ -166,7 +185,7 @@ async def fact_create(request: Request, db: Session = Depends(get_db), active_wo
     )
     db.add(f)
     db.commit()
-    return RedirectResponse("/facts", status_code=303)
+    return RedirectResponse(next_url, status_code=303)
 
 
 @router.post("/facts/{fact_id}/edit")
@@ -181,6 +200,7 @@ async def fact_edit(fact_id: int, request: Request, db: Session = Depends(get_db
     if not fact or not world or fact.world_id != world.id:
         raise HTTPException(404)
     form = await request.form()
+    next_url = _safe_next(form.get("next"))
     content = str(form.get("content", "")).strip()
     if content:
         fact.content = content
@@ -199,17 +219,19 @@ async def fact_edit(fact_id: int, request: Request, db: Session = Depends(get_db
     # a players-audience recap genuinely differs before/after one.
     fact.updated_at = datetime.utcnow()
     db.commit()
-    return RedirectResponse("/facts", status_code=303)
+    return RedirectResponse(next_url, status_code=303)
 
 
 @router.post("/facts/{fact_id}/delete")
-def fact_delete(
+async def fact_delete(
     fact_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     world, _ = get_world_ctx(request, db, active_world)
     fact = db.get(Fact, fact_id)
     if not fact or not world or fact.world_id != world.id:
         raise HTTPException(404)
+    form = await request.form()
+    next_url = _safe_next(form.get("next"))
     db.delete(fact)
     # A deletion leaves NO Fact row behind to timestamp, so the per-fact
     # half of the recap freshness rule can't see it — without this bump,
@@ -220,7 +242,7 @@ def fact_delete(
     # same scope the recap-instructions watermark already uses.
     _bump_recap_content_touch(world)
     db.commit()
-    return RedirectResponse("/facts", status_code=303)
+    return RedirectResponse(next_url, status_code=303)
 
 
 @router.post("/api/facts/parse")

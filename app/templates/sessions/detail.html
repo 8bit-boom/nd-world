@@ -282,6 +282,117 @@
     <div id="live-transcript-text" style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.6rem .75rem;font-size:.82rem;color:var(--text-dim);white-space:pre-wrap;max-height:200px;overflow-y:auto">{{ gsession.live_transcript or '(nothing recorded yet)' }}</div>
   </div>
 
+  <!-- Facts — logged directly against this session, or drafted from a
+       recap via the same AI parse pipeline /facts uses (facts-recap-
+       parser.js). Reassigning a fact to a DIFFERENT session stays a
+       /facts-only action — this panel only ever creates/edits facts
+       scoped to the session you're already looking at. -->
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.9rem">
+      <h2 style="color:var(--neon);font-size:.95rem;margin:0">🗒 Facts <span style="font-size:.75rem;color:var(--text-dim);font-weight:normal">({{ facts|length }})</span></h2>
+      <a href="{{ '/facts'|wq }}" style="font-size:.75rem;color:var(--text-dim);text-decoration:none">All sessions →</a>
+    </div>
+
+    <form method="post" action="{{ '/facts/new'|wq }}" style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1rem;padding-bottom:1rem;border-bottom:1px solid var(--border)">
+      <input type="hidden" name="game_session_id" value="{{ gsession.id }}">
+      <input type="hidden" name="next" value="{{ '/sessions/' ~ gsession.id }}">
+      <div class="form-group" style="flex:1;min-width:200px;margin:0">
+        <label>Add a fact directly</label>
+        <input name="content" placeholder="What happened…" required/>
+      </div>
+      <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;margin-bottom:.5rem">
+        <input type="checkbox" name="visible_to_players" value="1" checked style="width:auto">
+        Visible to players
+      </label>
+      <button type="submit" class="btn-primary">+ Add</button>
+    </form>
+
+    <details style="margin-bottom:1rem">
+      <summary style="cursor:pointer;font-size:.85rem;color:var(--neon);font-weight:600;padding:.2rem 0;list-style:none">✨ Turn a recap into facts</summary>
+      <div style="padding-top:.7rem">
+        <textarea id="recap-input" rows="4" placeholder="went to the tavern, met Elyra, she's actually working for the cult, found a strange clock…"
+                  style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .7rem;font-family:var(--font);font-size:.85rem;border-radius:3px"></textarea>
+        <div style="display:flex;align-items:center;gap:.4rem;margin-top:.45rem;flex-wrap:wrap">
+          <span style="font-size:.75rem;color:var(--text-dim)">Templates:</span>
+          <button type="button" class="tpl-btn" data-tpl="standard" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">📄 Standard recap</button>
+          <button type="button" class="tpl-btn" data-tpl="timeline" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">🕐 Timeline</button>
+          <button type="button" class="tpl-btn" data-tpl="combat" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">⚔️ Combat &amp; loot</button>
+          <button type="button" class="tpl-btn" data-tpl="investigation" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.25rem .6rem;font-size:.75rem;border-radius:3px;cursor:pointer">🔍 Investigation</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:.6rem;margin-top:.6rem;flex-wrap:wrap">
+          <select id="parse-model" title="Which AI model parses this recap — see the AI page's Models tab" style="font-size:.78rem;background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:.25rem .4rem">
+            <option value="">(default model)</option>
+          </select>
+          <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer">
+            <input type="checkbox" id="parse-think" style="width:auto"> 🧠 Thinking
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer">
+            <input type="checkbox" id="parse-rag-checkbox" style="width:auto"> 🔍 RAG
+          </label>
+          <label style="font-size:.75rem;color:var(--text-dim);display:inline-flex;align-items:center;gap:.3rem" title="How many relevant World entities to pull in">
+            Entities
+            <input type="number" id="parse-rag-entity-limit" min="0" value="15"
+                   style="width:50px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.2rem .35rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+          </label>
+          <label style="font-size:.75rem;color:var(--text-dim);display:inline-flex;align-items:center;gap:.3rem" title="How many World notes to pull in">
+            Notes
+            <input type="number" id="parse-rag-notes-limit" min="0" value="5"
+                   style="width:50px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.2rem .35rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
+          </label>
+          <input type="text" id="parse-extra-instructions" placeholder="Extra instructions for this parse (optional)…"
+                 style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:var(--font);font-size:.78rem;border-radius:3px;box-sizing:border-box">
+          <button type="button" id="parse-btn" style="background:var(--neon);color:#000;border:none;padding:.4rem 1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Parse with AI</button>
+          <button type="button" id="restore-parse-btn" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .8rem;font-size:.8rem;border-radius:3px;cursor:pointer"
+                  title="Reload the draft from your most recent finished parse for this session">Restore last parse</button>
+          <span id="parse-status" style="font-size:.8rem;color:var(--text-dim)"></span>
+        </div>
+        <div id="draft-panel" style="display:none;margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border)">
+          <h3 style="color:var(--neon);font-size:.85rem;margin:0 0 .6rem">Review before saving</h3>
+          <div id="draft-empty-note" style="display:none;font-size:.82rem;color:var(--text-dim);background:var(--bg3);border:1px dashed var(--border);border-radius:4px;padding:.6rem .8rem;margin-bottom:.6rem"></div>
+          <div id="draft-list" style="display:flex;flex-direction:column;gap:.5rem;margin-bottom:.6rem"></div>
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+            <button type="button" id="draft-add-btn" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.35rem .8rem;font-size:.8rem;border-radius:3px;cursor:pointer">+ Add row</button>
+            <button type="button" id="draft-save-btn" style="background:var(--neon);color:#000;border:none;padding:.4rem 1.1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">Confirm &amp; Save</button>
+            <span id="draft-status" style="font-size:.8rem;color:var(--text-dim)"></span>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    {% if facts %}
+    <div style="display:flex;flex-direction:column;gap:.5rem">
+      {% for f in facts %}
+      <div class="en-note" data-facts-card{% if not f.visible_to_players %} en-hidden{% endif %} style="background:var(--bg3)">
+        <div class="en-note-content rendered-md" id="fact-view-{{ f.id }}">{{ f.content | md | safe }}</div>
+        <form id="fact-edit-{{ f.id }}" method="post" action="{{ ('/facts/' ~ f.id ~ '/edit')|wq }}" style="display:none;margin-top:.4rem">
+          <input type="hidden" name="next" value="{{ '/sessions/' ~ gsession.id }}">
+          <textarea name="content" rows="2" style="width:100%;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px" data-fmt>{{ f.content }}</textarea>
+          <div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem">
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem">
+              <input type="checkbox" name="visible_to_players" value="1" {% if f.visible_to_players %}checked{% endif %} style="width:auto">
+              Visible to players
+            </label>
+            <button type="submit" class="en-btn">Save</button>
+            <button type="button" class="en-btn" onclick="toggleFactEdit({{ f.id }})">Cancel</button>
+          </div>
+        </form>
+        <div class="en-note-footer">
+          <span class="en-note-date">{{ f.created_at.strftime('%Y-%m-%d %H:%M') if f.created_at else '' }}</span>
+          <span class="en-note-vis">{% if f.visible_to_players %}👁 visible to players{% else %}🔒 GM only{% endif %}</span>
+          <button type="button" class="en-btn" onclick="toggleFactEdit({{ f.id }})">Edit</button>
+          <form action="{{ ('/facts/' ~ f.id ~ '/delete')|wq }}" method="post" class="en-inline-form" onsubmit="return confirm('Delete this fact?')">
+            <input type="hidden" name="next" value="{{ '/sessions/' ~ gsession.id }}">
+            <button type="submit" class="en-btn en-btn-del">Delete</button>
+          </form>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="empty-small">No facts logged for this session yet.</p>
+    {% endif %}
+  </div>
+
   <!-- Prep checklist -->
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">✅ Prep Checklist</h2>
@@ -339,6 +450,7 @@
 <script src="/static/js/progress-bar.js"></script>
 <script src="/static/js/audio-jobs.js"></script>
 <script src="/static/js/entity-picker.js"></script>
+<script src="/static/js/facts-recap-parser.js"></script>
 <script>
 // ── AI recap assist — unconditional (works on the New Session form too,
 // where gsession doesn't exist yet, unlike the prep/loot/XP panels below) ──
@@ -346,6 +458,19 @@ let _aiRecapDraft = '';
 ndUpdateTokenCount('summary-field', 'summary-token-count');
 {% if gsession %}
 liveSetTranscriptDisplay({{ (gsession.live_transcript or '')|tojson }});
+
+// ── Embedded Facts panel — see the "🗒 Facts" section below. Shares its
+// Recap→Facts parse/draft-review logic with the standalone /facts page via
+// facts-recap-parser.js (fixedSessionId means every parse/save from this
+// panel is scoped to THIS session, unlike /facts's own session picker).
+function toggleFactEdit(id) {
+  const view = document.getElementById('fact-view-' + id);
+  const form = document.getElementById('fact-edit-' + id);
+  const editing = form.style.display !== 'none';
+  form.style.display = editing ? 'none' : 'block';
+  view.style.display = editing ? '' : 'none';
+}
+ndFactsRecapParser({ fixedSessionId: {{ gsession.id }}, enableHandoff: true }).init();
 {% endif %}
 
 function _aiRecapButtons() { return document.querySelectorAll('.ai-recap-btn'); }

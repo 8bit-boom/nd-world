@@ -407,12 +407,19 @@ function bgRenderJob(job) {
     factsBtn.type = 'button';
     factsBtn.className = 'bg-job-btn';
     factsBtn.textContent = '📋 Extract facts';
-    factsBtn.title = 'Turn this transcript into draft Facts on the Facts page';
+    factsBtn.title = job.game_session_id
+      ? 'Turn this transcript into draft Facts, right on that session\'s own page'
+      : 'Turn this transcript into draft Facts on the Facts page';
     factsBtn.onclick = () => {
       sessionStorage.setItem('nd_facts_handoff', JSON.stringify({
         text: job.transcript, game_session_id: job.game_session_id || '',
       }));
-      window.location.href = '/facts';
+      // A job tied to a known session hands off straight to that session's
+      // own embedded Facts panel (see sessions/detail.html) rather than the
+      // world-wide /facts page — one less click, and the parse lands
+      // exactly where the GM would otherwise have had to pick it from a
+      // <select> anyway.
+      window.location.href = job.game_session_id ? `/sessions/${job.game_session_id}` : '/facts';
     };
     actions.appendChild(factsBtn);
   }

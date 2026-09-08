@@ -402,6 +402,18 @@ def _login_gm(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
 
 
+def _facts_page_and_shared_js(client):
+    """The Recap→Facts parse/draft-review/polling logic that used to live
+    inline in /facts's own <script> block now lives in the shared
+    static/js/facts-recap-parser.js module (see sessions/detail.html's
+    embedded Facts panel, which reuses the same module) — concatenating the
+    page and the script it loads lets the source-slice assertions below
+    keep checking the same behavior regardless of which file it lives in."""
+    html = client.get("/facts").text
+    js = client.get("/static/js/facts-recap-parser.js").text
+    return html + "\n" + js
+
+
 def test_api_facts_parse_job_creates_job_and_returns_id(client, seed, monkeypatch):
     async def fake_parse(raw_text, model="", think=False, world_context="", on_progress=None, **kwargs):
         return [
@@ -531,7 +543,7 @@ def test_facts_page_wires_background_parse_and_restore(client, seed):
     Restore last parse), not the old blocking /api/facts/parse — that route
     is what produced HTTP 524s on long recaps."""
     _login_gm(client, seed)
-    html = client.get("/facts").text
+    html = _facts_page_and_shared_js(client)
     assert "id=\"parse-btn\"" in html
     assert "/api/facts/parse-job" in html
     assert "pollFactsParseJob" in html
@@ -559,7 +571,7 @@ def test_facts_page_poll_resets_deadline_on_progress(client, seed):
     catch can't prefix it), and the message points the GM at Background
     Jobs and Restore last parse."""
     _login_gm(client, seed)
-    html = client.get("/facts").text
+    html = _facts_page_and_shared_js(client)
     assert "lastChunkCurrent" in html  # the last-seen progress marker
     assert "idlePolls = 0" in html  # reset on every observed change
     assert "idlePolls >= MAX_IDLE_POLLS" in html
@@ -577,7 +589,7 @@ def test_facts_page_poll_treats_transient_fetch_failures_as_retries(client, seed
     Also: the parse/restore/draft controls disable while a poll owns the
     page, re-enabled on every exit, and a second parse can't start."""
     _login_gm(client, seed)
-    html = client.get("/facts").text
+    html = _facts_page_and_shared_js(client)
     # The transient-retry ladder.
     assert "MAX_CONSECUTIVE_FETCH_FAILURES" in html
     assert "MAX_BACKOFF_MS = 30000" in html
@@ -585,7 +597,7 @@ def test_facts_page_poll_treats_transient_fetch_failures_as_retries(client, seed
     assert "fetchFailures = 0" in html  # a successful poll resets the ladder
     assert "retrying in" in html  # the backoff status line
     # Only the runner's own terminal verdict fails the parse.
-    assert "if (job.status === 'error') throw new Error(job.error" in html
+    assert 'if (job.status === "error") throw new Error(job.error' in html
     # The soft give-up wording after 10 consecutive failures.
     assert "the parse itself keeps running in the background" in html
     # Busy-state: disable restore + draft controls around the poll, and
@@ -593,7 +605,7 @@ def test_facts_page_poll_treats_transient_fetch_failures_as_retries(client, seed
     assert "_setParseBusyControls(true)" in html
     assert "_setParseBusyControls(false)" in html
     assert "if (btn.disabled) return;" in html
-    assert "'restore-parse-btn', 'draft-add-btn', 'draft-save-btn'" in html
+    assert '"restore-parse-btn", "draft-add-btn", "draft-save-btn"' in html
 
 
 def test_facts_page_wires_job_id_consumption_and_restore_session_preselect(client, seed):
@@ -602,7 +614,7 @@ def test_facts_page_wires_job_id_consumption_and_restore_session_preselect(clien
     restoreLastParse preselects the session the parse ran for plus shows
     its creation date."""
     _login_gm(client, seed)
-    html = client.get("/facts").text
+    html = _facts_page_and_shared_js(client)
     assert "let lastParseJobId = null;" in html
     assert "lastParseJobId = jobId;" in html
     assert "lastParseJobId = data.job_id || null;" in html
@@ -617,7 +629,7 @@ def test_facts_page_ships_recap_templates(client, seed):
     clicking one gets a parser-shaped skeleton (discrete lines the splitter
     turns into one fact each) instead of a blank textarea."""
     _login_gm(client, seed)
-    html = client.get("/facts").text
+    html = _facts_page_and_shared_js(client)
     for key in ("standard", "timeline", "combat", "investigation"):
         assert f'data-tpl="{key}"' in html
     assert "RECAP_TEMPLATES" in html
@@ -755,7 +767,7 @@ def test_facts_page_ships_parse_model_think_and_rag_pickers(client, seed):
     parse-job POST body (via parseModelOptions()) — a picker that renders
     but never sends would silently parse with the defaults instead."""
     _login_gm(client, seed)
-    html = client.get("/facts").text
+    html = _facts_page_and_shared_js(client)
     assert 'id="parse-model"' in html
     assert "(default model)" in html
     assert 'id="parse-think"' in html
