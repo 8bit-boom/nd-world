@@ -35,7 +35,7 @@ from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markd
 from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_overlay,
                            restore_blocks, split_rules_sections, suggest_tabs_overlay)
 from .templating import templates
-from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes
+from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll, CharacterSheet
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
@@ -498,6 +498,9 @@ def _is_assistant_safe(method: str, path: str) -> bool:
     if path == "/api/upload-image" and method == "POST":
         # Rich-text toolbar image upload on entity body/notes fields.
         return True
+    if path == "/api/upload-media" and method == "POST":
+        # Same toolbar's generalized media button — also audio/video.
+        return True
     if method == "POST" and re.match(r"^/api/entity/\d+/image$", path):
         # Image Studio's "Set as portrait" — entity content.
         return True
@@ -870,6 +873,25 @@ def save_upload(file: UploadFile, subdir: str = "", db: Optional[Session] = None
     make_thumbnail(dest)  # best-effort; see app/imaging.py — gallery/list grids fall back to the full image if this fails
     url_path = f"/uploads/{subdir}/{dest.name}" if subdir else f"/uploads/{dest.name}"
     return url_path
+
+
+def save_upload_media(file: UploadFile, subdir: str = "", db: Optional[Session] = None):
+    """Generalized sibling of save_upload for the shared formatting
+    toolbar's media button/drag-drop/paste (app/main.py's /api/upload-media,
+    characters.py's own player-safe equivalent) — an image still goes
+    through save_upload unchanged (same conversion/thumbnail/size-limit
+    behavior as before this feature existed), audio/video goes through
+    uploads.save_inline_av instead (no conversion step for those). Returns
+    (url, kind) — kind is "image"/"audio"/"video" — or (None, None) for an
+    unrecognized extension."""
+    if not file or not file.filename:
+        return None, None
+    ext = Path(file.filename).suffix.lower()
+    if ext in ALLOWED_EXTS:
+        url = save_upload(file, subdir=subdir, db=db)
+        return (url, "image") if url else (None, None)
+    result = save_inline_av(file, UPLOADS_DIR, subdir=subdir)
+    return result if result else (None, None)
 
 # ── World helpers ─────────────────────────────────────────────────────────────
 
@@ -5269,6 +5291,21 @@ async def api_upload_image(file: UploadFile = File(...), db: Session = Depends(g
     if not uploaded:
         raise HTTPException(400, "Unsupported file type")
     return {"url": uploaded}
+
+@app.post("/api/upload-media")
+async def api_upload_media(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Backs the shared formatting toolbar's media button/drag-drop/paste
+    (static/js/text-format-toolbar.js) — accepts image, audio, or video and
+    reports back which one it saved (`kind`) so the client can build the
+    right markdown title marker (see app.rendering._transform_media_tags)
+    without re-deriving it from the extension itself. Superset of
+    /api/upload-image, kept alongside it unchanged rather than replacing it
+    — some caller elsewhere may still expect an image-only 400 on a
+    non-image file."""
+    url, kind = save_upload_media(file, db=db)
+    if not url:
+        raise HTTPException(400, "Unsupported file type")
+    return {"url": url, "kind": kind}
 
 @app.post("/api/import/images")
 async def api_import_images(

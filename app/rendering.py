@@ -41,6 +41,51 @@ def _safe_color(raw: str) -> str | None:
     return None
 
 
+# The shared formatting toolbar's image/audio/video button and drag-drop/
+# paste handlers all insert plain markdown image syntax — ![alt](url) — for
+# every media type, same as before this feature existed; a size change or
+# an audio/video attachment is layered on by putting a marker in the
+# OPTIONAL TITLE slot markdown already supports (![alt](url "TITLE")),
+# rather than inventing a non-standard image syntax markdown2 would choke
+# on. markdown2 passes that title straight through onto the <img> tag it
+# generates (verified: title="size:50" survives safe_mode="escape"
+# unchanged), so this only has to post-process markdown2's own output —
+# same technique _apply_inline_styles already uses for [color=]/[mark]/[u].
+# A title that ISN'T one of these three shapes (a GM's own genuine image
+# tooltip text) is left completely alone.
+#
+# Keep NDFMT_SIZE_TITLE_RE/the "audio"/"video" marker strings here in sync
+# with static/js/text-format-toolbar.js's ndFmtRenderInline — that's the
+# client-side mirror used where there's no server render pass (the
+# investigation board's node body).
+_IMG_TAG_RE = re.compile(r'<img\b[^>]*>')
+_IMG_ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
+_SIZE_TITLE_RE = re.compile(r'^size:(\d{1,3})$')
+_MIN_IMAGE_SIZE_PCT = 10
+_MAX_IMAGE_SIZE_PCT = 300
+
+
+def _transform_media_tags(html: str) -> str:
+    def repl(m):
+        tag = m.group(0)
+        attrs = dict(_IMG_ATTR_RE.findall(tag))
+        title = attrs.get("title", "")
+        src = attrs.get("src", "")
+        if title == "audio":
+            return f'<audio controls preload="metadata" src="{src}"></audio>'
+        if title == "video":
+            return f'<video controls preload="metadata" src="{src}"></video>'
+        size_m = _SIZE_TITLE_RE.match(title)
+        if size_m:
+            pct = max(_MIN_IMAGE_SIZE_PCT, min(_MAX_IMAGE_SIZE_PCT, int(size_m.group(1))))
+            kept = {k: v for k, v in attrs.items() if k != "title"}
+            kept["style"] = f"width:{pct}%"
+            attr_str = " ".join(f'{k}="{v}"' for k, v in kept.items())
+            return f"<img {attr_str}/>"
+        return tag
+    return _IMG_TAG_RE.sub(repl, html)
+
+
 def _apply_inline_styles(html: str) -> str:
     def color_sub(m):
         color = _safe_color(m.group(1))
@@ -66,6 +111,7 @@ def render_md(text):
     # in the browser of anyone who views it (stored XSS). Normal markdown syntax
     # (links, emphasis, tables, ...) is unaffected.
     html = markdown2.markdown(text, extras=["fenced-code-blocks", "tables", "strike"], safe_mode="escape")
+    html = _transform_media_tags(html)
     return _apply_inline_styles(html)
 
 

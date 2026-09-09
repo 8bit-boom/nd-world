@@ -713,6 +713,8 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
 }
 .prose u, .rendered-md u { text-decoration-color: var(--neon); text-underline-offset: 2px; }
 .prose img, .rendered-md img { max-width: 100%; height: auto; border-radius: 4px; margin: .4em 0; display: block; }
+.prose audio, .rendered-md audio { width: 100%; margin: .4em 0; display: block; }
+.prose video, .rendered-md video { max-width: 100%; height: auto; border-radius: 4px; margin: .4em 0; display: block; }
 
 /* ── Relations ── */
 .relations { margin-top: 1.5rem; }
@@ -1558,7 +1560,20 @@ input[type="file"]:hover { border-color: var(--neon); }
   display: flex; align-items: center; flex-wrap: wrap; gap: .3rem;
   padding: .35rem .4rem; margin-bottom: .4rem;
   background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
+  position: relative;
 }
+.fmt-popup {
+  display: none; position: absolute; top: 100%; left: 0; margin-top: .3rem; z-index: 5;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 4px;
+  padding: .3rem; gap: .25rem;
+}
+.fmt-popup.fmt-popup-open { display: flex; }
+.fmt-popup button {
+  background: rgba(255,255,255,.05); border: 1px solid var(--border); color: inherit;
+  padding: .2rem .5rem; border-radius: 3px; cursor: pointer;
+  font-family: var(--font); font-size: .75rem;
+}
+.fmt-popup button:hover { border-color: var(--neon); color: var(--neon); }
 .fmt-btn {
   background: rgba(255,255,255,.05); border: 1px solid var(--border); color: inherit;
   min-width: 1.8rem; padding: .2rem .45rem; border-radius: 3px; cursor: pointer;

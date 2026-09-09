@@ -195,6 +195,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/entity/{entity_id}/notes/{note_id}/toggle` | GM / Assistant | Toggles a note's `visible_to_players` flag. |
 | POST | `/entity/{entity_id}/notes/{note_id}/delete` | GM / Assistant | Deletes a note. |
 | POST | `/api/upload-image` | GM / Assistant | Uploads an image and returns its URL — backs the rich-text formatting toolbar's image button on GM-only fields (entity body/notes). |
+| POST | `/api/upload-media` | GM / Assistant | Superset of `/api/upload-image` — also accepts audio/video (browser-native containers only). Backs the same toolbar's media button/drag-drop/clipboard-paste; response is `{url, kind}` where `kind` is `image`/`audio`/`video`. |
 | POST | `/api/entity/{entity_id}/image` | GM / Assistant | Sets an entity's portrait directly from a URL (Image Studio's "Set as portrait"/"Attach" flow) without the full edit form. |
 
 ## Entity Field Templates
@@ -220,6 +221,7 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/characters/new` | Player | The guided Race → Profession → Stats → Feats → Equipment creation wizard. |
 | GET | `/api/characters/catalog` | Player | Race/profession/feat/equipment catalog JSON that powers the wizard frontend. |
 | POST | `/api/characters/upload-image` | Player | Image upload for the shared rich-text toolbar on player-writable character fields (reuses the portrait-upload pipeline). |
+| POST | `/api/characters/upload-media` | Player | Player-reachable equivalent of `/api/upload-media` — also accepts audio/video for the backstory/notes fields' toolbar. |
 | POST | `/characters/new` | Player | Submits the finished wizard, creating a `PlayerCharacter`. |
 | GET | `/characters/{pc_id}` | Player | Character sheet — stats, HP/Shock/PP/MP tracking, equipment, feats. |
 | POST | `/characters/{pc_id}/owner` | GM | Links (or unlinks) a `PlayerCharacter` to a connected player's account. |

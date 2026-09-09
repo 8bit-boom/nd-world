@@ -22,7 +22,7 @@ from ..database import get_db, get_app_settings
 from ..deps import get_world_ctx
 from ..imaging import convert_image, make_thumbnail
 from ..templating import templates
-from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename
+from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename, save_inline_av
 from ..models import CharacterSheet, Entity, ImageJob, PlayerCharacter, SheetTemplate, User, World, WorldMembership
 from pydantic import BaseModel
 
@@ -367,6 +367,31 @@ async def character_upload_image(file: UploadFile = File(...), db: Session = Dep
     if not uploaded:
         raise HTTPException(400, "Unsupported file type")
     return {"url": uploaded}
+
+
+def _upload_media(file: UploadFile, db: Optional[Session] = None):
+    """Player-reachable sibling of main.py's save_upload_media, same
+    reasoning as _upload_portrait/character_upload_image above — a player
+    editing their own character can't call the GM-only /api/upload-media."""
+    if not file or not file.filename:
+        return None, None
+    ext = Path(file.filename).suffix.lower()
+    if ext in ALLOWED_EXTS:
+        url = _upload_portrait(file, db=db)
+        return (url, "image") if url else (None, None)
+    result = save_inline_av(file, UPLOADS_DIR, subdir="")
+    return result if result else (None, None)
+
+
+@router.post("/api/characters/upload-media")
+async def character_upload_media(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Backs the shared formatting toolbar's media button/drag-drop/paste on
+    the backstory/notes textareas — see api_upload_media (app/main.py) for
+    the GM-only equivalent this mirrors."""
+    url, kind = _upload_media(file, db=db)
+    if not url:
+        raise HTTPException(400, "Unsupported file type")
+    return {"url": url, "kind": kind}
 
 
 @router.post("/characters/new")

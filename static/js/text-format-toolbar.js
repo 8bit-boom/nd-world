@@ -9,9 +9,25 @@
 // [mark]/[u] + bold/italic/strike subset, used only where there's no server
 // round trip to render against (the investigation board's node body).
 //
+// The media button/drag-drop/paste all insert plain ![alt](url) markdown
+// for image, audio, AND video — a size change or an audio/video attachment
+// is layered on by putting a marker in markdown's own optional title slot
+// (![alt](url "TITLE")) rather than a non-standard syntax: "audio"/"video"
+// for those two, "size:NN" (a percent, 10-300) for a resized image. See
+// app/rendering.py's _transform_media_tags for the server-side match of
+// this same logic.
+//
 // Keep the color allowlist and tag regexes here in sync with
 // app/rendering.py's _COLOR_NAMES/_HEX_COLOR_RE/_COLOR_TAG_RE/_MARK_TAG_RE/
-// _U_TAG_RE — they must accept exactly the same syntax.
+// _U_TAG_RE, and the size/audio/video title markers in sync with
+// app/rendering.py's _SIZE_TITLE_RE/"audio"/"video" — they must accept
+// exactly the same syntax.
+
+const NDFMT_AV_TITLES = new Set(["audio", "video"]);
+const NDFMT_SIZE_TITLE_RE = /^size:(\d{1,3})$/;
+const NDFMT_MIN_SIZE_PCT = 10;
+const NDFMT_MAX_SIZE_PCT = 300;
+const NDFMT_RESIZE_PCTS = [50, 75, 100, 150, 200];
 
 const NDFMT_COLORS = [
   { name: "Red", value: "#ff5555" },
@@ -47,7 +63,8 @@ function ndFmtEscapeAttr(s) {
 }
 
 // Only a same-origin upload path or a plain http(s) URL — never javascript:
-// or any other scheme — can end up in a src="..." attribute here.
+// or any other scheme — can end up in a src="..." attribute here. Used for
+// every media type (image/audio/video), not just images.
 function ndFmtSafeImageUrl(raw) {
   const v = (raw || "").trim();
   if (v.startsWith("/uploads/") || /^https?:\/\//i.test(v)) return v;
@@ -56,15 +73,24 @@ function ndFmtSafeImageUrl(raw) {
 
 // Client-side render of the inline-formatting subset only (no headings,
 // lists, tables — those are markdown2's job server-side). Used for the board
-// note card body, which has no server render pass. Images are included (but
-// not full link syntax) since the toolbar's image button writes ![]() here
-// same as everywhere else data-fmt appears.
+// note card body, which has no server render pass. Images/audio/video are
+// included (but not full link syntax) since the toolbar's media button
+// writes ![]() here same as everywhere else data-fmt appears — see the
+// module header comment for the title-slot marker convention this mirrors
+// from app/rendering.py's _transform_media_tags.
 function ndFmtRenderInline(text) {
   let html = ndFmtEscapeHtml(text || "");
-  html = html.replace(/!\[([^\]]{0,300})\]\(([^)\s]{1,2000})\)/g, (_, alt, url) => {
+  html = html.replace(/!\[([^\]]{0,300})\]\(([^)\s]{1,2000})(?:\s+"([^"]{0,20})")?\)/g, (_, alt, url, title) => {
     const safeUrl = ndFmtSafeImageUrl(url);
     if (!safeUrl) return "";
-    return `<img src="${ndFmtEscapeAttr(safeUrl)}" alt="${ndFmtEscapeAttr(alt)}" style="max-width:100%;border-radius:4px;margin:.3em 0;display:block">`;
+    const esc = ndFmtEscapeAttr(safeUrl);
+    if (title === "audio") return `<audio controls preload="metadata" src="${esc}"></audio>`;
+    if (title === "video") return `<video controls preload="metadata" src="${esc}" style="max-width:100%"></video>`;
+    const sizeMatch = title && NDFMT_SIZE_TITLE_RE.exec(title);
+    const style = sizeMatch
+      ? `width:${Math.max(NDFMT_MIN_SIZE_PCT, Math.min(NDFMT_MAX_SIZE_PCT, parseInt(sizeMatch[1], 10)))}%;border-radius:4px;margin:.3em 0;display:block`
+      : "max-width:100%;border-radius:4px;margin:.3em 0;display:block";
+    return `<img src="${esc}" alt="${ndFmtEscapeAttr(alt)}" style="${style}">`;
   });
   html = html.replace(/\*\*(.+?)\*\*/gs, "<strong>$1</strong>");
   html = html.replace(/\*(.+?)\*/gs, "<em>$1</em>");
@@ -92,39 +118,44 @@ function ndFmtWrapSelection(ta, before, after) {
   ta.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-// Uploads through the same /api/upload-image endpoint the entity portrait
-// field already posts to (app/main.py's save_upload — converts to the
-// world's configured format, rejects disallowed extensions). Markdown image
-// syntax is already rendered server-side (app/rendering.py's render_md has
-// no special-casing to disable it) and already special-cased for stripping
-// in card summaries (strip_md), so this button is purely a convenience for
+// Uploads through /api/upload-media — image, audio, or video (app/main.py's
+// save_upload_media: an image converts to the world's configured format and
+// gets a thumbnail same as before this fn accepted anything else; audio/
+// video are saved as-is, see uploads.save_inline_av). Markdown media syntax
+// is already rendered server-side (app/rendering.py's render_md has no
+// special-casing to disable it) and already special-cased for stripping in
+// card summaries (strip_md), so this button is purely a convenience for
 // getting a file onto disk and its URL into the textarea — nothing new to
 // teach the renderer.
 //
-// Shared by both the toolbar button (one file, alt text pulled from the
-// current selection) and drag-and-drop (one or more files, dropped in
-// sequence at `pos` — see ndFmtSetupDragDrop below). Returns the cursor
-// position immediately after the inserted markdown, so a caller inserting
-// several files in a row knows where to place the next one.
+// Shared by the toolbar button (one file, alt text pulled from the current
+// selection), drag-and-drop (one or more files, dropped in sequence at
+// `pos` — see ndFmtSetupDragDrop below), and clipboard paste (ndFmtSetupPaste).
+// Returns the cursor position immediately after the inserted markdown, so a
+// caller inserting several files in a row knows where to place the next one.
 async function ndFmtUploadOneImage(ta, file, start, end, alt) {
   const placeholder = `![Uploading ${file.name}…]()`;
   ta.value = ta.value.slice(0, start) + placeholder + ta.value.slice(end);
   ta.dispatchEvent(new Event("input", { bubbles: true }));
   const fd = new FormData();
   fd.append("file", file);
-  // Which endpoint to POST to is per-textarea (data-fmt-upload) — entity/
-  // rules/board/private-note bodies are GM-only pages so the default
-  // GM-only /api/upload-image is fine, but the character backstory/notes
+  // Which endpoint to POST to is per-textarea (data-fmt-upload-media) —
+  // entity/rules/board/private-note bodies are GM-only pages so the default
+  // GM-only /api/upload-media is fine, but the character backstory/notes
   // fields are player-writable and need the player-safe
-  // /api/characters/upload-image instead (see characters.py).
-  const endpoint = ta.dataset.fmtUpload || "/api/upload-image";
+  // /api/characters/upload-media instead (see characters.py).
+  const endpoint = ta.dataset.fmtUploadMedia || "/api/upload-media";
   let endPos = start + placeholder.length;
   try {
     const res = await fetch(endpoint, { method: "POST", body: fd });
     if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
     const data = await res.json();
     const at = ta.value.indexOf(placeholder);
-    const markdown = `![${alt}](${data.url})`;
+    // Only audio/video get a title marker — a plain image reference stays
+    // exactly the ![alt](url) shape it always was, so every note/entity
+    // saved before this feature existed renders identically.
+    const title = data.kind === "audio" || data.kind === "video" ? ` "${data.kind}"` : "";
+    const markdown = `![${alt}](${data.url}${title})`;
     if (at !== -1) {
       ta.value = ta.value.slice(0, at) + markdown + ta.value.slice(at + placeholder.length);
       endPos = at + markdown.length;
@@ -136,7 +167,7 @@ async function ndFmtUploadOneImage(ta, file, start, end, alt) {
       ta.value = ta.value.slice(0, at) + ta.value.slice(at + placeholder.length);
       endPos = at;
     }
-    alert("Image upload failed: " + e.message);
+    alert("Upload failed: " + e.message);
   } finally {
     ta.focus();
     ta.dispatchEvent(new Event("input", { bubbles: true }));
@@ -147,7 +178,7 @@ async function ndFmtUploadOneImage(ta, file, start, end, alt) {
 function ndFmtInsertImage(ta, btn) {
   const input = document.createElement("input");
   input.type = "file";
-  input.accept = "image/*";
+  input.accept = "image/*,audio/*,video/*";
   input.style.display = "none";
   document.body.appendChild(input);
   input.addEventListener("change", async () => {
@@ -247,17 +278,49 @@ async function ndFmtHandleDroppedFiles(ta, fileList) {
     await ndFmtLoadMdFileIntoTextarea(ta, mdFile);
     return;
   }
-  const images = files.filter((f) => f.type && f.type.startsWith("image/"));
-  if (!images.length) return;
+  const media = files.filter((f) => f.type && /^(image|audio|video)\//.test(f.type));
+  if (!media.length) return;
   let pos = ta.selectionStart;
-  for (const file of images) {
+  for (const file of media) {
     pos = await ndFmtUploadOneImage(ta, file, pos, pos, "");
-    if (images.length > 1) {
+    if (media.length > 1) {
       ta.value = ta.value.slice(0, pos) + "\n" + ta.value.slice(pos);
       pos += 1;
       ta.selectionStart = ta.selectionEnd = pos;
     }
   }
+}
+
+// Ctrl+V/Cmd+V of a screenshot (the common case), or any image/audio/video
+// the OS clipboard exposes as a real File (some file managers put one on
+// the clipboard for "Copy" on a file) — same upload-and-insert path drag-
+// and-drop uses above. Only preventDefault() when a matching file was
+// actually found, so an ordinary text paste (including one that happens to
+// carry a URL/plain string alongside non-file clipboard data) is completely
+// unaffected.
+function ndFmtSetupPaste(ta) {
+  ta.addEventListener("paste", (e) => {
+    const items = Array.from((e.clipboardData && e.clipboardData.items) || []);
+    const files = items
+      .filter((it) => it.kind === "file")
+      .map((it) => it.getAsFile())
+      .filter((f) => f && /^(image|audio|video)\//.test(f.type));
+    if (!files.length) return;
+    e.preventDefault();
+    (async () => {
+      let pos = ta.selectionStart, end = ta.selectionEnd;
+      for (const file of files) {
+        pos = await ndFmtUploadOneImage(ta, file, pos, end, "");
+        end = pos;
+        if (files.length > 1) {
+          ta.value = ta.value.slice(0, pos) + "\n" + ta.value.slice(pos);
+          pos += 1;
+          end = pos;
+          ta.selectionStart = ta.selectionEnd = pos;
+        }
+      }
+    })();
+  });
 }
 
 function ndFmtSetupDragDrop(ta) {
@@ -298,6 +361,59 @@ document.addEventListener("drop", (e) => {
   if (ndFmtHasFiles(e.dataTransfer) && !ndFmtIsFileInputTarget(e.target)) e.preventDefault();
 });
 
+// Matches every ![alt](url ["title"]) occurrence in the textarea — used
+// both to find the one under the cursor (ndFmtFindImageRefAtCursor) and,
+// via ndFmtParseImageRef, to pull it back apart once found.
+const NDFMT_IMAGE_REF_RE = /!\[[^\]]{0,300}\]\([^)\s]{1,2000}(?:\s+"[^"]{0,20}")?\)/g;
+
+// Resize has no selection UI of its own — the user either just inserted an
+// image (cursor lands immediately after it, which this range check treats
+// as "inside" via the <= end comparison) or clicked into an existing
+// reference earlier in the text. Scanning for the occurrence whose range
+// contains the cursor avoids requiring an exact manual selection first.
+function ndFmtFindImageRefAtCursor(ta) {
+  const val = ta.value;
+  const pos = ta.selectionStart;
+  NDFMT_IMAGE_REF_RE.lastIndex = 0;
+  let m;
+  while ((m = NDFMT_IMAGE_REF_RE.exec(val))) {
+    const end = m.index + m[0].length;
+    if (m.index <= pos && pos <= end) return { start: m.index, end, text: m[0] };
+    if (m.index > pos) break;
+  }
+  return null;
+}
+
+function ndFmtParseImageRef(text) {
+  const m = /^!\[([^\]]*)\]\(([^)\s]*)(?:\s+"([^"]*)")?\)$/.exec(text);
+  if (!m) return null;
+  return { alt: m[1], url: m[2], title: m[3] || "" };
+}
+
+// Rewrites the image reference at the cursor with a new size percentage
+// (100% removes the title marker entirely, restoring the plain ![alt](url)
+// shape a never-resized image already has) and re-selects the rewritten
+// text so a second resize click can immediately target the same image.
+function ndFmtSetImageSize(ta, pct) {
+  const ref = ndFmtFindImageRefAtCursor(ta);
+  if (!ref) {
+    alert("Click inside an image reference in the text first, then choose a size.");
+    return;
+  }
+  const parsed = ndFmtParseImageRef(ref.text);
+  if (!parsed || NDFMT_AV_TITLES.has(parsed.title)) {
+    alert("That isn't a resizable image (it may be an audio/video attachment).");
+    return;
+  }
+  const title = pct === 100 ? "" : ` "size:${pct}"`;
+  const rebuilt = `![${parsed.alt}](${parsed.url}${title})`;
+  ta.value = ta.value.slice(0, ref.start) + rebuilt + ta.value.slice(ref.end);
+  ta.focus();
+  ta.selectionStart = ref.start;
+  ta.selectionEnd = ref.start + rebuilt.length;
+  ta.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function ndFmtButton(label, title, onClick) {
   const b = document.createElement("button");
   b.type = "button";
@@ -318,8 +434,28 @@ function ndFmtBuildToolbar(ta) {
   bar.appendChild(ndFmtButton("S", "Strikethrough", () => ndFmtWrapSelection(ta, "~~", "~~")));
   bar.appendChild(ndFmtButton("⬛", "Highlight", () => ndFmtWrapSelection(ta, "[mark]", "[/mark]")));
 
-  const imgBtn = ndFmtButton("🖼", "Insert image", () => ndFmtInsertImage(ta, imgBtn));
+  const imgBtn = ndFmtButton("🖼", "Insert image, audio, or video (or paste/drag one in)", () => ndFmtInsertImage(ta, imgBtn));
   bar.appendChild(imgBtn);
+
+  // Resize has no selection of its own to click — see ndFmtFindImageRefAtCursor's
+  // own comment — so the popup is declared before the button that toggles it.
+  const resizePopup = document.createElement("div");
+  resizePopup.className = "fmt-popup";
+  NDFMT_RESIZE_PCTS.forEach((pct) => {
+    const sizeBtn = document.createElement("button");
+    sizeBtn.type = "button";
+    sizeBtn.textContent = pct + "%";
+    sizeBtn.onclick = () => {
+      ndFmtSetImageSize(ta, pct);
+      resizePopup.classList.remove("fmt-popup-open");
+    };
+    resizePopup.appendChild(sizeBtn);
+  });
+  const resizeBtn = ndFmtButton("📐", "Resize the image at the cursor", () => {
+    resizePopup.classList.toggle("fmt-popup-open");
+  });
+  bar.appendChild(resizeBtn);
+  bar.appendChild(resizePopup);
 
   const importBtn = ndFmtButton("📄 Import .md", "Import a .md file into this field (or drag and drop one onto the text area)", () => ndFmtImportMdFile(ta, importBtn));
   importBtn.classList.add("fmt-btn-labeled");
@@ -358,6 +494,7 @@ function ndFmtInit() {
     ta.dataset.fmtReady = "1";
     ndFmtBuildToolbar(ta);
     ndFmtSetupDragDrop(ta);
+    ndFmtSetupPaste(ta);
   });
 }
 

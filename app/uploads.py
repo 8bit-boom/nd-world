@@ -11,12 +11,33 @@ import time
 import uuid
 from pathlib import Path
 
+from typing import Optional
+
 from fastapi import HTTPException, UploadFile
 
 # 20 MB default. Portraits and entity art are small; this limit exists so an
 # unbounded upload can't fill the /data volume, which would take the whole app
 # down with it (SQLite writes fail once the disk is full).
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+
+# The shared formatting toolbar's media button/drag-drop/paste (app/main.py's
+# save_upload_media, characters.py's _upload_media) accept audio/video too —
+# same extension sets the Audio/Video Library routers already use
+# (app/routers/audio.py's _ALLOWED_EXTS, video.py's _NATIVE_EXTS), so a file
+# that plays fine in the Library also plays fine dropped straight into a
+# note. Deliberately NOT video.py's full _ALLOWED_EXTS (which also admits
+# .mkv/.avi/desktop-only containers ffmpeg transcodes on the way in) — an
+# inline attachment has no transcode step, so accepting one of those would
+# save a file that silently never plays in the <video> tag it's embedded in.
+INLINE_AUDIO_EXTS = {".mp3", ".ogg", ".oga", ".wav", ".m4a", ".flac", ".opus", ".webm", ".aac"}
+INLINE_VIDEO_EXTS = {".mp4", ".m4v", ".webm", ".ogv", ".mov"}
+
+# Reuses the Audio/Video Library's own size-limit env vars rather than a
+# third knob — a GM who already raised MAX_AUDIO_UPLOAD_BYTES for the
+# Library almost certainly wants that same ceiling here too, not a second,
+# separately-configured cap for the same content type.
+MAX_INLINE_AUDIO_BYTES = int(os.environ.get("MAX_AUDIO_UPLOAD_BYTES", str(1024 * 1024 * 1024)))
+MAX_INLINE_VIDEO_BYTES = int(os.environ.get("MAX_VIDEO_UPLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))
 
 # Bulk portrait/art import (/api/import/images) caps how many files one
 # request may carry — a batch this size is already a lot to review in one
@@ -83,6 +104,35 @@ def copy_upload_bounded(file: UploadFile, dest: Path, max_bytes: int = None) -> 
     except Exception:
         dest.unlink(missing_ok=True)
         raise
+
+
+def save_inline_av(file: UploadFile, uploads_dir: Path, subdir: str = "") -> Optional[tuple]:
+    """Saves an audio/video file for the shared formatting toolbar's media
+    button/drag-drop/paste — the non-image sibling of app/main.py's
+    save_upload (which handles images, with format conversion + a
+    thumbnail). No transcoding here: only browser-native containers are
+    accepted (INLINE_AUDIO_EXTS/INLINE_VIDEO_EXTS above), so what's saved
+    is exactly what was uploaded, playable as-is by the <audio>/<video> tag
+    app.rendering's render_md emits for it.
+
+    Returns (url, kind) — kind is "audio" or "video" — or None if the
+    filename's extension isn't a recognized audio/video type, so the
+    caller can fall through to trying its own image-extension path first."""
+    if not file or not file.filename:
+        return None
+    ext = Path(file.filename).suffix.lower()
+    if ext in INLINE_AUDIO_EXTS:
+        kind, max_bytes = "audio", MAX_INLINE_AUDIO_BYTES
+    elif ext in INLINE_VIDEO_EXTS:
+        kind, max_bytes = "video", MAX_INLINE_VIDEO_BYTES
+    else:
+        return None
+    target_dir = uploads_dir / subdir if subdir else uploads_dir
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / unique_upload_filename(file.filename, ext)
+    copy_upload_bounded(file, dest, max_bytes=max_bytes)
+    url = f"/uploads/{subdir}/{dest.name}" if subdir else f"/uploads/{dest.name}"
+    return url, kind
 
 
 def read_upload_bounded(file: UploadFile, max_bytes: int = None) -> bytes:
