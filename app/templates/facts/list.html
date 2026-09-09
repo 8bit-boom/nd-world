@@ -130,6 +130,10 @@
         {% for s in sessions.values() %}<option value="{{ s.id }}">#{{ s.session_num }} {{ s.title }}</option>{% endfor %}
       </select>
     </div>
+    <div class="form-group" style="flex:1;min-width:160px;margin:0">
+      <label>Tags</label>
+      <input name="tags" placeholder="elyra, tavern, plot"/>
+    </div>
     <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;margin-bottom:.5rem">
       <input type="checkbox" name="visible_to_players" value="1" checked style="width:auto">
       Visible to players
@@ -139,8 +143,17 @@
 
   <!-- Existing facts, grouped by session -->
   {% if groups %}
+  {% if top_tags %}
+  <div style="display:flex;flex-wrap:wrap;gap:.4rem .6rem;align-items:center;margin-bottom:.7rem">
+    <span style="font-size:.78rem;color:var(--text-dim)">🏷</span>
+    {% for tag, count in top_tags %}
+    <a href="#" data-facts-tag-chip="{{ tag }}" onclick="event.preventDefault(); factsFilterByTag({{ tag|tojson }})"
+       style="color:var(--neon3);text-decoration:none;padding:.1em .5em;border:1px solid var(--border);border-radius:3px;font-size:.72rem;background:var(--bg3)">{{ tag }} <span style="color:var(--text-dim)">{{ count }}</span></a>
+    {% endfor %}
+  </div>
+  {% endif %}
   <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.7rem;flex-wrap:wrap">
-    <input type="text" id="facts-search" placeholder="🔍 Search facts…" oninput="factsSearch(this.value)"
+    <input type="text" id="facts-search" placeholder="🔍 Search facts or tags…" oninput="factsSearch(this.value)"
            style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px">
     <span id="facts-search-count" style="display:none;font-size:.78rem;color:var(--text-dim)"></span>
     <button type="button" class="en-btn" onclick="factsSetAllGroups(true)">Expand all</button>
@@ -163,13 +176,18 @@
         {% for f in group.facts %}
         <div class="en-note" data-facts-card{% if not f.visible_to_players %} en-hidden{% endif %} style="background:var(--bg3)">
           <div class="en-note-content rendered-md" id="fact-view-{{ f.id }}">{{ f.content | md | safe }}</div>
+          {% if f.tags %}
+          <div class="tags">{% for t in f.tags.split(',') if t.strip() %}<span class="tag">{{ t.strip() }}</span>{% endfor %}</div>
+          {% endif %}
           <form id="fact-edit-{{ f.id }}" method="post" action="{{ ('/facts/' ~ f.id ~ '/edit')|wq }}" style="display:none;margin-top:.4rem">
             <textarea name="content" rows="2" style="width:100%;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px" data-fmt>{{ f.content }}</textarea>
-            <div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem">
+            <div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem;flex-wrap:wrap">
               <select name="game_session_id">
                 <option value="">— none —</option>
                 {% for s in sessions.values() %}<option value="{{ s.id }}" {% if f.game_session_id == s.id %}selected{% endif %}>#{{ s.session_num }} {{ s.title }}</option>{% endfor %}
               </select>
+              <input name="tags" placeholder="tags, comma, separated" value="{{ f.tags or '' }}"
+                     style="flex:1;min-width:140px;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
               <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem">
                 <input type="checkbox" name="visible_to_players" value="1" {% if f.visible_to_players %}checked{% endif %} style="width:auto">
                 Visible to players
@@ -253,6 +271,17 @@ function factsSearch(v) {
     countEl.style.display = '';
     countEl.textContent = totalMatches === 1 ? '1 fact matches' : totalMatches + ' facts match';
   }
+}
+
+// A tag-cloud chip click reuses factsSearch as-is — a tag is rendered as
+// its own <span class="tag"> inside each card, so filtering by the tag's
+// exact text is just a normal (if precise) search, with no separate
+// filter/highlight logic to keep in sync with factsSearch itself.
+function factsFilterByTag(tag) {
+  const input = document.getElementById('facts-search');
+  input.value = tag;
+  factsSearch(tag);
+  input.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 ndFactsRecapParser({ sessionSelectId: 'recap-session', enableHandoff: true }).init();

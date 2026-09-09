@@ -243,6 +243,17 @@ def session_detail(session_id: int, request: Request, db: Session = Depends(get_
         .order_by(Fact.created_at.asc(), Fact.id.asc())
         .all()
     )
+    # This session's own tag cloud — same aggregation facts.py's facts_list
+    # runs world-wide, scoped down to just these already-loaded rows so a
+    # session with 40-50 facts still has a click-to-filter shortcut instead
+    # of scrolling through everything.
+    fact_tag_counts: dict = {}
+    for f in facts:
+        for t in (f.tags or "").split(","):
+            t = t.strip()
+            if t:
+                fact_tag_counts[t] = fact_tag_counts.get(t, 0) + 1
+    fact_top_tags = sorted(fact_tag_counts.items(), key=lambda kv: (-kv[1], kv[0]))
     return templates.TemplateResponse("sessions/detail.html", {
         "request": request, "world": world, "worlds": worlds, "gsession": gs,
         "parties": parties, "next_num": gs.session_num, "linked_combats": linked_combats,
@@ -250,7 +261,7 @@ def session_detail(session_id: int, request: Request, db: Session = Depends(get_
         "npc_candidates_json": _featured_entity_candidates(db, gs.world_id),
         "npc_selected_json": npc_selected,
         "prep": json.loads(gs.prep_json or "[]"), "loot": json.loads(gs.loot_json or "[]"),
-        "npcs": npcs, "facts": facts,
+        "npcs": npcs, "facts": facts, "fact_top_tags": fact_top_tags,
     })
 
 

@@ -2,6 +2,7 @@ import json
 import re
 
 from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -55,6 +56,7 @@ def _create_facts_from_items(db: Session, world_id: int, session_id, author_id, 
         f = Fact(
             world_id=world_id, game_session_id=session_id, content=content,
             visible_to_players=bool(item.get("visible_to_players", True)),
+            tags=_normalize_tags_field(item.get("tags")),
             author_id=author_id,
             # Belt-and-braces alongside the column default — see
             # fact_create's own comment for the freshness-rule reasoning.
@@ -63,6 +65,22 @@ def _create_facts_from_items(db: Session, world_id: int, session_id, author_id, 
         db.add(f)
         created.append(f)
     return created, skipped_duplicates
+
+
+def _normalize_tags_field(value) -> Optional[str]:
+    """Accepts either shape a caller might send — a JSON array (the AI
+    parser's per-fact "tags", the draft-review UI's own list) or a plain
+    comma-separated string (the quick-add/edit forms' text input,
+    Entity.tags' own on-the-wire shape) — and returns the one shape Fact.
+    tags is stored in: a comma-joined string, or None when there's nothing
+    to store. Never raises on a malformed value; unparseable input just
+    yields no tags rather than a 500 on an otherwise-good fact save."""
+    if isinstance(value, list):
+        joined = ", ".join(str(t).strip() for t in value if str(t).strip())
+        return joined or None
+    if isinstance(value, str):
+        return value.strip() or None
+    return None
 
 
 def _bump_recap_content_touch(world) -> None:
@@ -152,10 +170,24 @@ def facts_list(request: Request, db: Session = Depends(get_db), active_world: st
         s.id: s for s in db.query(GameSession).filter(GameSession.world_id == world_id).all()
     }
     groups = _fact_groups(db, world_id, sessions)
+    # Tag cloud — same comma-split/strip/count-and-sort aggregation
+    # app.main's homepage tag cloud runs over Entity.tags, over every fact
+    # already loaded above rather than a second query. A GM with 40-50
+    # facts logged can click a tag chip to filter (factsFilterByTag in
+    # facts/list.html's script) instead of scrolling every card.
+    tag_counts: dict = {}
+    for g in groups:
+        for f in g["facts"]:
+            for t in (f.tags or "").split(","):
+                t = t.strip()
+                if t:
+                    tag_counts[t] = tag_counts.get(t, 0) + 1
+    top_tags = sorted(tag_counts.items(), key=lambda kv: (-kv[1], kv[0]))
     return templates.TemplateResponse("facts/list.html", {
         "request": request, "world": world, "worlds": worlds,
         "groups": groups, "sessions": sessions,
         "fact_count": sum(len(g["facts"]) for g in groups),
+        "top_tags": top_tags,
     })
 
 
@@ -174,6 +206,7 @@ async def fact_create(request: Request, db: Session = Depends(get_db), active_wo
         game_session_id=int(session_id) if session_id else None,
         content=content,
         visible_to_players=form.get("visible_to_players") is not None,
+        tags=_normalize_tags_field(form.get("tags")),
         author_id=user.id if user else None,
         # Belt-and-braces alongside the column default: the session-log
         # recap's freshness rule reads max(coalesce(updated_at, created_at))
@@ -205,7 +238,8 @@ async def fact_edit(fact_id: int, request: Request, db: Session = Depends(get_db
     if content:
         fact.content = content
     fact.visible_to_players = form.get("visible_to_players") is not None
-    # The edit form carries only content + visibility — a missing
+    fact.tags = _normalize_tags_field(form.get("tags"))
+    # The edit form carries only content + visibility + tags — a missing
     # game_session_id must PRESERVE the existing association, not clear it
     # (nulling it here silently un-linked the fact from its session, which
     # the per-session recap staleness rule then read as "no facts"). The

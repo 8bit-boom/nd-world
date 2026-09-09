@@ -300,6 +300,10 @@
         <label>Add a fact directly</label>
         <input name="content" placeholder="What happened…" required/>
       </div>
+      <div class="form-group" style="flex:1;min-width:160px;margin:0">
+        <label>Tags</label>
+        <input name="tags" placeholder="elyra, tavern, plot"/>
+      </div>
       <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;margin-bottom:.5rem">
         <input type="checkbox" name="visible_to_players" value="1" checked style="width:auto">
         Visible to players
@@ -360,14 +364,33 @@
     </details>
 
     {% if facts %}
+    {% if fact_top_tags %}
+    <div style="display:flex;flex-wrap:wrap;gap:.4rem .6rem;align-items:center;margin-bottom:.7rem">
+      <span style="font-size:.78rem;color:var(--text-dim)">🏷</span>
+      {% for tag, count in fact_top_tags %}
+      <a href="#" onclick="event.preventDefault(); sessionFactsFilterByTag({{ tag|tojson }})"
+         style="color:var(--neon3);text-decoration:none;padding:.1em .5em;border:1px solid var(--border);border-radius:3px;font-size:.72rem;background:var(--bg3)">{{ tag }} <span style="color:var(--text-dim)">{{ count }}</span></a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div style="display:flex;align-items:center;gap:.6rem;margin-bottom:.7rem;flex-wrap:wrap">
+      <input type="text" id="session-facts-search" placeholder="🔍 Search this session's facts or tags…" oninput="sessionFactsSearch(this.value)"
+             style="flex:1;min-width:200px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px">
+      <span id="session-facts-search-count" style="display:none;font-size:.78rem;color:var(--text-dim)"></span>
+    </div>
     <div style="display:flex;flex-direction:column;gap:.5rem">
       {% for f in facts %}
       <div class="en-note" data-facts-card{% if not f.visible_to_players %} en-hidden{% endif %} style="background:var(--bg3)">
         <div class="en-note-content rendered-md" id="fact-view-{{ f.id }}">{{ f.content | md | safe }}</div>
+        {% if f.tags %}
+        <div class="tags">{% for t in f.tags.split(',') if t.strip() %}<span class="tag">{{ t.strip() }}</span>{% endfor %}</div>
+        {% endif %}
         <form id="fact-edit-{{ f.id }}" method="post" action="{{ ('/facts/' ~ f.id ~ '/edit')|wq }}" style="display:none;margin-top:.4rem">
           <input type="hidden" name="next" value="{{ '/sessions/' ~ gsession.id }}">
           <textarea name="content" rows="2" style="width:100%;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px" data-fmt>{{ f.content }}</textarea>
-          <div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem">
+          <div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem;flex-wrap:wrap">
+            <input name="tags" placeholder="tags, comma, separated" value="{{ f.tags or '' }}"
+                   style="flex:1;min-width:140px;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
             <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem">
               <input type="checkbox" name="visible_to_players" value="1" {% if f.visible_to_players %}checked{% endif %} style="width:auto">
               Visible to players
@@ -470,6 +493,39 @@ function toggleFactEdit(id) {
   form.style.display = editing ? 'none' : 'block';
   view.style.display = editing ? '' : 'none';
 }
+
+// This panel's own list is already scoped to one session (no groups to
+// collapse/expand the way /facts's world-wide list needs), so filtering is
+// just show/hide by text match — a tag chip click reuses it exactly like
+// /facts's factsFilterByTag does with factsSearch.
+function sessionFactsSearch(v) {
+  const q = (v || '').trim().toLowerCase();
+  const countEl = document.getElementById('session-facts-search-count');
+  const cards = document.querySelectorAll('[data-facts-card]');
+  if (!q) {
+    cards.forEach(c => { c.style.display = ''; });
+    if (countEl) { countEl.style.display = 'none'; countEl.textContent = ''; }
+    return;
+  }
+  let matches = 0;
+  cards.forEach(card => {
+    const hit = card.textContent.toLowerCase().indexOf(q) >= 0;
+    card.style.display = hit ? '' : 'none';
+    if (hit) matches++;
+  });
+  if (countEl) {
+    countEl.style.display = '';
+    countEl.textContent = matches === 1 ? '1 fact matches' : matches + ' facts match';
+  }
+}
+
+function sessionFactsFilterByTag(tag) {
+  const input = document.getElementById('session-facts-search');
+  input.value = tag;
+  sessionFactsSearch(tag);
+  input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
 ndFactsRecapParser({ fixedSessionId: {{ gsession.id }}, enableHandoff: true }).init();
 {% endif %}
 

@@ -946,7 +946,7 @@ async def test_parse_facts_one_failed_chunk_does_not_fail_the_parse(monkeypatch)
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
     facts = await ai_module.parse_facts_from_recap("The party met Elyra at the tavern. " * 6)
     assert len(fake.calls) == 2  # chunk 1 failed, chunk 2 was still asked
-    assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True}]
+    assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True, "tags": ""}]
 
 
 @pytest.mark.asyncio
@@ -2146,7 +2146,7 @@ async def test_parse_facts_think_rejection_uses_prompt_token_for_vouched_model(m
     ai_module.set_ollama_generation_overrides({}, model_overrides={"my-model": {"thinking": True}})
     try:
         facts = await ai_module.parse_facts_from_recap("met Elyra at the tavern", model="my-model", think=True)
-        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True}]
+        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True, "tags": ""}]
         assert "my-model" in ai_module._model_thinking_failures  # still advisory-recorded
         assert "my-model" in ai_module._prompt_token_thinking_models  # fallback armed for next time
         assert len(fake.calls) == 2
@@ -2181,7 +2181,7 @@ async def test_parse_facts_subsequent_calls_reuse_prompt_token_without_failing_r
         assert len(fake.calls) == 2  # the failing probe + the token retry
 
         facts = await ai_module.parse_facts_from_recap("met Elyra again", model="my-model", think=True)
-        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True}]
+        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True, "tags": ""}]
         assert len(fake.calls) == 3  # no second 400 — one think=False call, token included
         assert not fake.calls[2]["think"]
         assert fake.calls[2]["messages"][0]["role"] == "system"
@@ -2205,7 +2205,7 @@ async def test_parse_facts_unvouched_rejection_falls_back_to_plain_think_false(m
     ai_module._model_capabilities_cache["stray-model"] = ["thinking"]
     try:
         facts = await ai_module.parse_facts_from_recap("met Elyra at the tavern", model="stray-model", think=True)
-        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True}]
+        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True, "tags": ""}]
         assert "stray-model" in ai_module._model_thinking_failures
         assert "stray-model" not in ai_module._prompt_token_thinking_models
         assert len(fake.calls) == 2
@@ -2233,7 +2233,7 @@ async def test_parse_facts_think_rejection_recovers_per_chunk(monkeypatch):
     try:
         text = "The party met Elyra at the tavern. " * 6  # two chunks under the forced budget
         facts = await ai_module.parse_facts_from_recap(text, model="my-model", think=True)
-        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True}]
+        assert facts == [{"content": "The party met Elyra at the tavern.", "visible_to_players": True, "tags": ""}]
         # Chunk 1: the failing think=true probe, then the token retry.
         assert fake.calls[0]["think"] is True
         assert fake.calls[1]["think"] is False

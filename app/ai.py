@@ -1037,6 +1037,13 @@ _RECAP_SYSTEM = (
     "or the players wouldn't plausibly know it yet. Split compound sentences into separate "
     "facts where it makes sense. Write each fact as a complete sentence in past tense. Do not "
     "invent details that aren't implied by the recap.\n\n"
+    "For each fact, also set \"tags\": a short list (0-4) of lowercase, single-or-two-word "
+    "keywords to help the GM find this fact later — named characters or creatures it "
+    "involves, the location, and/or a category like combat, loot, investigation, npc, "
+    "plot, or romance. Reuse the same tag spelling for the same person/place/category "
+    "across facts (e.g. always \"elyra\", never \"Elyra\" and \"elyra the enchanter\" in "
+    "different facts) so facts about the same thing can be found together. Leave tags "
+    "empty for a fact with nothing worth tagging rather than inventing one.\n\n"
     "The text may also contain out-of-character discussion — rules questions, setup, table "
     "talk. Ignore out-of-character discussion entirely and extract only facts about what "
     "happened in the story; if a passage contains no in-story events, return an empty facts "
@@ -1055,8 +1062,9 @@ _RECAP_FACTS_SCHEMA = {
                 "properties": {
                     "content": {"type": "string"},
                     "visible_to_players": {"type": "boolean"},
+                    "tags": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["content", "visible_to_players"],
+                "required": ["content", "visible_to_players", "tags"],
             },
         },
     },
@@ -1415,7 +1423,19 @@ async def parse_facts_from_recap(
             if not isinstance(facts, list):
                 raise ValueError
             for f in facts:
-                item = {"content": str(f["content"]), "visible_to_players": bool(f["visible_to_players"])}
+                # Stored (and sent onward) as one comma-joined string, same
+                # shape Fact.tags/Entity.tags persist in — the schema keeps
+                # them a JSON array only because that's what constrains the
+                # model to one tag per element instead of a single run-on
+                # string.
+                raw_tags = f.get("tags") if isinstance(f, dict) else None
+                tags = ", ".join(
+                    t.strip() for t in raw_tags if isinstance(t, str) and t.strip()
+                ) if isinstance(raw_tags, list) else ""
+                item = {
+                    "content": str(f["content"]), "visible_to_players": bool(f["visible_to_players"]),
+                    "tags": tags,
+                }
                 key = _normalized_fact_key(item["content"])
                 if key in seen_keys:
                     continue  # the same event extracted from an adjacent chunk

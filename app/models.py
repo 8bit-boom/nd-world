@@ -1399,6 +1399,13 @@ class Fact(Base):
     game_session_id = Column(Integer, ForeignKey("game_sessions.id"), nullable=True, index=True)
     content = Column(Text, nullable=False)
     visible_to_players = Column(Boolean, default=True)
+    # Comma-separated, same convention as Entity.tags (stored raw, trimmed
+    # only at render/aggregation time) — with 40-50 facts on one session,
+    # grouping by session alone stops being enough; tags let a GM filter by
+    # topic (an NPC name, "combat", "loot") instead of scrolling everything.
+    # The AI recap parser (app.ai.parse_facts_from_recap) suggests these
+    # itself so a GM isn't stuck hand-tagging every fact after the fact.
+    tags = Column(String(512), nullable=True)
     author_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

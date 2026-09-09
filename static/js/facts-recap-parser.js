@@ -144,20 +144,27 @@ function ndFactsRecapParser(opts) {
     list.innerHTML = "";
     draftFacts.forEach((f, i) => {
       const row = document.createElement("div");
-      row.style.cssText = "display:flex;gap:.5rem;align-items:flex-start;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.5rem .6rem";
+      row.style.cssText = "display:flex;flex-direction:column;gap:.35rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.5rem .6rem";
       row.innerHTML = `
-        <textarea rows="2" style="flex:1;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.83rem;border-radius:3px"></textarea>
-        <label style="display:flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);white-space:nowrap;margin-top:.3rem">
-          <input type="checkbox" style="width:auto"> players know
-        </label>
-        <button type="button" style="background:none;border:none;color:#c44;cursor:pointer;font-size:1rem;margin-top:.2rem">✕</button>
+        <div style="display:flex;gap:.5rem;align-items:flex-start">
+          <textarea rows="2" style="flex:1;background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.83rem;border-radius:3px"></textarea>
+          <label style="display:flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);white-space:nowrap;margin-top:.3rem">
+            <input type="checkbox" style="width:auto"> players know
+          </label>
+          <button type="button" style="background:none;border:none;color:#c44;cursor:pointer;font-size:1rem;margin-top:.2rem">✕</button>
+        </div>
+        <input class="draft-tags-input" placeholder="tags, comma, separated"
+               style="background:var(--bg2);border:1px solid var(--border);color:var(--text-dim);padding:.3rem .5rem;font-family:var(--font);font-size:.78rem;border-radius:3px">
       `;
       const ta = row.querySelector("textarea");
       const cb = row.querySelector("input[type=checkbox]");
+      const tagsInput = row.querySelector(".draft-tags-input");
       ta.value = f.content;
       cb.checked = !!f.visible_to_players;
+      tagsInput.value = f.tags || "";
       ta.addEventListener("input", () => { draftFacts[i].content = ta.value; });
       cb.addEventListener("change", () => { draftFacts[i].visible_to_players = cb.checked; });
+      tagsInput.addEventListener("input", () => { draftFacts[i].tags = tagsInput.value; });
       row.querySelector("button").addEventListener("click", () => { draftFacts.splice(i, 1); renderDraft(); });
       list.appendChild(row);
     });
@@ -380,7 +387,10 @@ function ndFactsRecapParser(opts) {
   }
 
   async function saveDraft() {
-    const clean = draftFacts.map((f) => ({ content: (f.content || "").trim(), visible_to_players: !!f.visible_to_players })).filter((f) => f.content);
+    const clean = draftFacts.map((f) => ({
+      content: (f.content || "").trim(), visible_to_players: !!f.visible_to_players,
+      tags: (f.tags || "").trim(),
+    })).filter((f) => f.content);
     if (!clean.length) return;
     const sessionId = getSessionId();
     const btn = document.getElementById("draft-save-btn");
@@ -412,7 +422,7 @@ function ndFactsRecapParser(opts) {
       applyRecapTemplate(btn.dataset.tpl);
     }));
     document.getElementById("draft-add-btn").addEventListener("click", () => {
-      draftFacts.push({ content: "", visible_to_players: true });
+      draftFacts.push({ content: "", visible_to_players: true, tags: "" });
       draftEmptyNote = "";
       renderDraft();
     });

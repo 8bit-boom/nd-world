@@ -554,6 +554,7 @@ function bgRenderFactsReview(job, card) {
   if (!_bgFactsDraftState.has(key)) {
     _bgFactsDraftState.set(key, job.pending_facts.map(f => ({
       content: f.content, visible_to_players: f.visible_to_players !== false,
+      tags: f.tags || '',
     })));
   }
   const draft = _bgFactsDraftState.get(key);
@@ -568,7 +569,9 @@ function bgRenderFactsReview(job, card) {
 
   draft.forEach((f, i) => {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:.4rem;align-items:flex-start;margin-bottom:.3rem';
+    row.style.cssText = 'display:flex;flex-direction:column;gap:.2rem;margin-bottom:.3rem';
+    const mainRow = document.createElement('div');
+    mainRow.style.cssText = 'display:flex;gap:.4rem;align-items:flex-start';
     const ta = document.createElement('textarea');
     ta.value = f.content;
     ta.rows = 1;
@@ -591,7 +594,13 @@ function bgRenderFactsReview(job, card) {
       draft.splice(i, 1);
       bgRefresh();
     };
-    row.append(ta, visLabel, rmBtn);
+    mainRow.append(ta, visLabel, rmBtn);
+    const tagsInput = document.createElement('input');
+    tagsInput.value = f.tags || '';
+    tagsInput.placeholder = 'tags, comma, separated';
+    tagsInput.style.cssText = 'font-size:.74rem;background:var(--bg2);color:var(--text-dim);border:1px solid var(--border);border-radius:3px;padding:.25rem .4rem;font-family:inherit';
+    tagsInput.oninput = () => { f.tags = tagsInput.value; };
+    row.append(mainRow, tagsInput);
     panel.appendChild(row);
   });
 

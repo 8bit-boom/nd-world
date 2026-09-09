@@ -337,10 +337,10 @@ worlds they've been invited into (`WorldMembership`).
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/facts` | GM | Facts list + quick-add form + the recap→facts AI parser panel. |
-| POST | `/facts/new` | GM | Creates a `Fact` (content + `visible_to_players` flag + optional linked session). |
-| POST | `/facts/{fact_id}/edit` | GM | Saves fact edits. |
+| POST | `/facts/new` | GM | Creates a `Fact` (content + `visible_to_players` flag + optional linked session + optional comma-separated `tags`). |
+| POST | `/facts/{fact_id}/edit` | GM | Saves fact edits (including `tags`). |
 | POST | `/facts/{fact_id}/delete` | GM | Deletes a fact. |
-| POST | `/api/facts/parse` | GM | AI: turns a rough recap paste into draft facts (content + suggested visibility) via the local model — returned for review, **not written to the DB**. Blocking; prefer `parse-job` for long input. |
+| POST | `/api/facts/parse` | GM | AI: turns a rough recap paste into draft facts (content + suggested visibility + suggested tags) via the local model — returned for review, **not written to the DB**. Blocking; prefer `parse-job` for long input. |
 | POST | `/api/facts/parse-job` | GM | AI: the same parse as `/api/facts/parse` but as a durable background job — body `{text, game_session_id?, model?}`, returns `{job_id}` immediately; poll `/api/audio-jobs/{id}` (`result_json` holds the finished draft array). |
 | POST | `/api/facts/folk-tale` | GM | AI: weaves this world's logged Facts (optionally scoped to one `game_session_id`) into an in-world folk tale/legend/song via `app.ai_assist`'s `folk_tale` op — same response shape as `/api/ai/assist`. Blocking (a joined Facts list is short editorial content). |
 | GET | `/api/facts/last-parse` | GM | The latest finished facts-parse job's draft for the active world — `{job_id, created_at, facts}`; 404 when there's none yet. Powers the Facts page's "Restore last parse". |
