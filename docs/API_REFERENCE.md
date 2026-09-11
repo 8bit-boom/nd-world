@@ -230,6 +230,9 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/characters/{pc_id}/delete` | Player | Deletes a character. |
 | GET | `/characters/{pc_id}/export.ndc` | Player | Downloads a `.ndc` file — the interchange format also used by NeonDragonsApp and NeonDragonsEditor. |
 | GET | `/characters/{pc_id}/export.foundry.json` | Player | Downloads a Foundry VTT–compatible actor JSON. |
+| GET | `/characters/{pc_id}/export.json` | Player | Downloads a plain JSON dump in the canonical import shape — re-importable via `POST /api/import/execute`, `kind=player_character` (see `docs/IMPORT_JSON_GUIDE.md`). |
+| GET | `/characters/{pc_id}/export.md` | Player | Downloads a human-readable Markdown character sheet. |
+| GET | `/characters/{pc_id}/export.pdf` | Player | Downloads a printable PDF character sheet. |
 | POST | `/api/characters/{pc_id}/hp-async` | Player | Live HP update (character sheet's +/- controls, no page reload). |
 | POST | `/api/characters/{pc_id}/shock` | Player | Live Shock update. |
 | POST | `/api/characters/{pc_id}/pp` | Player | Live Power Points update. |
@@ -655,6 +658,8 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/ai/save-note` | GM / Assistant | Saves AI-generated text as a new `note` Entity — body `{title, content, subtype?}` (`subtype` is optional, e.g. `"tale"` for a saved folk-tale/song). |
 | POST | `/api/ai/generate/entity-smart` | GM / Assistant | Generates a full draft entity (name/summary/body) from a prompt, with world context. |
 | POST | `/api/ai/entity-from-text` | GM / Assistant | Turns a pasted/dictated passage into a draft entity. |
+| POST | `/api/ai/character-from-images` | GM / Assistant | Turns photo(s) of a physical/scanned character sheet into a draft `player_character` (via a vision-capable Ollama model) — multipart `files[]` (up to `MAX_VISION_IMPORT_IMAGES`) + optional `hint`. Draft only; POST the reviewed result to `/api/import/execute`. |
+| POST | `/api/ai/entity-from-images` | GM / Assistant | Turns photo(s) of a document/handout into a draft entity — same shape/contract as `/api/ai/entity-from-text`, vision-based. |
 | POST | `/api/ai/assist` | GM / Assistant | One shared AI-assist operation (improve/expand/summarize/analyze/suggest/translate/custom/table_entries/...) on editor content — the ✨ panel every edit form embeds (app/ai_assist.py). Input-capped at 60k chars. |
 | POST | `/api/ai/assist-job` | GM / Assistant | The durable-job variant for big content (rules documents) — returns `{job_id}`. |
 | GET | `/api/ai/assist-job/{job_id}` | GM / Assistant | Poll an assist job; done rows return the run_assist result shape under `result`. |

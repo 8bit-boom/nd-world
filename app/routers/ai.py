@@ -425,6 +425,63 @@ async def api_entity_from_text(
     return draft
 
 
+async def _read_import_images(files: List[UploadFile]) -> list[bytes]:
+    """Shared validation for the two image-to-draft routes below: image-
+    extension + per-file size checks reusing the same allowlist/cap the chat
+    attachment picker uses (_ATTACH_IMAGE_EXTS/_MAX_ATTACHMENT_BYTES) — this
+    is a one-shot extraction, not a persisted attachment, so files are read
+    into memory and never written to /uploads."""
+    if not files:
+        raise HTTPException(400, "No images provided.")
+    if len(files) > _ai.MAX_VISION_IMPORT_IMAGES:
+        raise HTTPException(400, f"Too many images — limit is {_ai.MAX_VISION_IMPORT_IMAGES} per request.")
+    out = []
+    for f in files:
+        ext = _Path(f.filename or "").suffix.lower()
+        if ext not in _ATTACH_IMAGE_EXTS:
+            raise HTTPException(400, f'"{f.filename}" is not a supported image type.')
+        data = await f.read()
+        if len(data) > _MAX_ATTACHMENT_BYTES:
+            raise HTTPException(400, f'"{f.filename}" is too large (limit {_MAX_ATTACHMENT_BYTES // (1024*1024)} MB).')
+        out.append(data)
+    return out
+
+
+@router.post("/character-from-images")
+async def api_character_from_images(
+    request: Request, files: List[UploadFile] = File(...), hint: str = Form(""),
+):
+    """Draft a PlayerCharacter from photo(s) of a physical/scanned character
+    sheet — the vision sibling of /entity-from-text's draft-then-confirm
+    pattern. Returns the draft without writing anything; the client reviews/
+    edits it, then POSTs the confirmed shape to /api/import/execute
+    (kind=player_character) to actually create it. Content drafting, so a
+    GM-Assistant may call it too (can_edit tier)."""
+    _require_can_edit(request)
+    images = await _read_import_images(files)
+    try:
+        draft = await _ai.parse_character_from_images(images, hint=hint)
+    except ValueError as exc:
+        raise HTTPException(502, str(exc))
+    return draft
+
+
+@router.post("/entity-from-images")
+async def api_entity_from_images(
+    request: Request, files: List[UploadFile] = File(...), hint: str = Form(""),
+):
+    """Draft a world Entity from photo(s) of a document/handout — the vision
+    sibling of /entity-from-text, same draft-then-confirm contract (client
+    reviews, then POSTs to /api/import/execute kind=entity_single)."""
+    _require_can_edit(request)
+    images = await _read_import_images(files)
+    try:
+        draft = await _ai.parse_entity_from_images(images, KINDS, hint=hint)
+    except ValueError as exc:
+        raise HTTPException(502, str(exc))
+    return draft
+
+
 # ── AI Assist (the shared ✨ panel embedded in every editor surface) ────────
 #
 # One interactive endpoint + a durable-job variant for big content, both

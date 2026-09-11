@@ -38,6 +38,38 @@
   </div>
 
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-top:1.5rem">
+    <h2 style="color:var(--neon);font-size:.9rem;margin:0 0 .4rem">📷 Import from Photo (AI)</h2>
+    <p style="color:var(--text-dim);font-size:.82rem;margin:0 0 .8rem">
+      Photograph or scan a physical/handwritten character sheet or handout, upload
+      it here, and an AI reads it into a draft you can review and edit before
+      anything is created. Needs a vision-capable Ollama model — a text-only
+      model will return a mostly-empty draft.
+    </p>
+    <div style="display:flex;gap:1.25rem;flex-wrap:wrap;align-items:center;margin-bottom:.8rem">
+      <label style="font-size:.82rem;color:var(--text-dim);display:flex;align-items:center;gap:.35rem">
+        <input type="radio" name="photo-target" value="character" checked/> Player Character
+      </label>
+      <label style="font-size:.82rem;color:var(--text-dim);display:flex;align-items:center;gap:.35rem">
+        <input type="radio" name="photo-target" value="entity"/> World Entity (NPC, location, item…)
+      </label>
+    </div>
+    <label for="photo-files-input" style="font-size:.82rem;color:var(--text-dim);display:block;margin-bottom:.3rem">
+      Photo(s) — up to {{ max_vision_import_images }}
+    </label>
+    <div class="form-dropzone" data-dropzone>
+      <div class="form-dropzone-hint">Choose files, or drag &amp; drop photos here</div>
+      <input type="file" id="photo-files-input" multiple accept="image/jpeg,image/png,image/gif,image/webp" style="font-size:.8rem"/>
+    </div>
+    <input type="text" id="photo-hint-input" placeholder="Optional hint for the AI (e.g. a note about the game system)"
+      style="width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .7rem;font-size:.82rem;border-radius:3px;margin-top:.75rem"/>
+    <div style="display:flex;gap:.75rem;margin-top:.9rem;align-items:center">
+      <button type="button" id="photo-extract-btn" disabled style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer;opacity:.5">✨ Read Photo(s)</button>
+      <span id="photo-extract-result" aria-live="polite" style="font-size:.85rem;color:var(--text-dim)"></span>
+    </div>
+    <div id="photo-draft-area" style="margin-top:1rem"></div>
+  </div>
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-top:1.5rem">
     <h2 style="color:var(--neon);font-size:.9rem;margin:0 0 .4rem">📦 Bulk JSON Import</h2>
     <p style="color:var(--text-dim);font-size:.82rem;margin:0 0 .8rem">
       Select several JSON files at once — each is analyzed the same way as the
@@ -159,6 +191,8 @@ const SCHEMATICS = JSON.parse({{ schematics_json | tojson }});
 const MAPS = JSON.parse({{ maps_json | tojson }});
 const ENTITIES = JSON.parse({{ entities_json | tojson }});
 const BULK_IMAGE_MAX_FILES = {{ bulk_image_max_files | tojson }};
+const ENTITY_KIND_OPTIONS = JSON.parse({{ kinds_json | tojson }});
+const MAX_VISION_IMPORT_IMAGES = {{ max_vision_import_images | tojson }};
 
 // The server always returns JSON, but a reverse proxy/CDN in front of it can
 // still reject an oversized or slow request before it ever reaches the app
@@ -1017,5 +1051,236 @@ document.getElementById('convert-images-btn').addEventListener('click', async ()
     btn.disabled = false;
   }
 });
+
+// ── Import from Photo (AI) ──────────────────────────────────────────────
+// Two-phase draft-then-confirm flow, same convention as ai-chat-core.js's
+// "Save as entity" (POST .../-from-text|-from-images returns a draft that's
+// never written; the reviewed/edited draft is then POSTed to the existing
+// /api/import/execute, kind=player_character|entity_single — the same route
+// every other import path on this page already uses).
+let selectedPhotoFiles = [];
+
+function updatePhotoExtractBtn() {
+  const btn = document.getElementById('photo-extract-btn');
+  const enabled = selectedPhotoFiles.length > 0 && selectedPhotoFiles.length <= MAX_VISION_IMPORT_IMAGES;
+  btn.disabled = !enabled;
+  btn.style.opacity = enabled ? '1' : '.5';
+}
+
+document.getElementById('photo-files-input').addEventListener('change', (e) => {
+  selectedPhotoFiles = Array.from(e.target.files);
+  const resEl = document.getElementById('photo-extract-result');
+  resEl.style.color = 'var(--text-dim)';
+  resEl.textContent = selectedPhotoFiles.length > MAX_VISION_IMPORT_IMAGES
+    ? `Too many files selected — limit is ${MAX_VISION_IMPORT_IMAGES}.`
+    : '';
+  updatePhotoExtractBtn();
+});
+
+document.getElementById('photo-extract-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('photo-extract-btn');
+  const resEl = document.getElementById('photo-extract-result');
+  const draftArea = document.getElementById('photo-draft-area');
+  const target = document.querySelector('input[name="photo-target"]:checked').value;
+  const hint = document.getElementById('photo-hint-input').value.trim();
+  btn.disabled = true;
+  resEl.style.color = 'var(--text-dim)';
+  resEl.textContent = '✨ Reading photo(s)… this can take a while on a large model.';
+  draftArea.innerHTML = '';
+  try {
+    const fd = new FormData();
+    selectedPhotoFiles.forEach(f => fd.append('files', f));
+    fd.append('hint', hint);
+    const endpoint = target === 'character' ? '/api/ai/character-from-images' : '/api/ai/entity-from-images';
+    const res = await fetch(endpoint, { method: 'POST', body: fd });
+    if (!res.ok) throw await ndApiErrorFrom(res);
+    const draft = await res.json();
+    resEl.textContent = 'Draft ready — review below before creating.';
+    draftArea.appendChild(target === 'character' ? renderCharacterPhotoDraft(draft) : renderEntityPhotoDraft(draft));
+  } catch (e) {
+    resEl.style.color = '#c44';
+    resEl.textContent = 'Failed: ' + (e.message || e);
+  } finally {
+    updatePhotoExtractBtn();
+  }
+});
+
+function photoDraftField(labelText, el) {
+  const wrap = document.createElement('label');
+  wrap.style.cssText = 'display:flex;flex-direction:column;gap:.3rem;font-size:.82rem;color:var(--text-dim)';
+  const span = document.createElement('span');
+  span.textContent = labelText;
+  el.style.cssText = 'background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.45rem .6rem;font-size:.85rem;border-radius:3px;font-family:inherit';
+  wrap.append(span, el);
+  return wrap;
+}
+
+async function submitPhotoDraft(kind, payload, statusEl, createBtn) {
+  createBtn.disabled = true;
+  statusEl.textContent = 'Creating…';
+  statusEl.style.color = 'var(--text-dim)';
+  try {
+    const res = await fetch('/api/import/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ json_text: JSON.stringify(payload), kind }),
+    });
+    if (!res.ok) throw await ndApiErrorFrom(res);
+    const data = await res.json();
+    statusEl.innerHTML = `✓ Created — <a href="${data.redirect}" target="_blank">open</a>`;
+    return true;
+  } catch (e) {
+    statusEl.style.color = '#c44';
+    statusEl.textContent = 'Failed: ' + (e.message || e);
+    createBtn.disabled = false;
+    return false;
+  }
+}
+
+function renderCharacterPhotoDraft(draft) {
+  const card = document.createElement('div');
+  card.style.cssText = 'background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:1rem;display:flex;flex-direction:column;gap:.6rem';
+
+  const nameInput = document.createElement('input');
+  nameInput.value = draft.name || '';
+  const playerInput = document.createElement('input');
+  playerInput.value = draft.player_name || '';
+  const raceInput = document.createElement('input');
+  raceInput.value = draft.race || '';
+  const classInput = document.createElement('input');
+  classInput.value = draft.char_class || '';
+  const levelInput = document.createElement('input');
+  levelInput.type = 'number';
+  levelInput.min = '1'; levelInput.max = '20';
+  levelInput.value = draft.level || 1;
+  const xpInput = document.createElement('input');
+  xpInput.type = 'number';
+  xpInput.min = '0';
+  xpInput.value = draft.xp || 0;
+  const backstoryTa = document.createElement('textarea');
+  backstoryTa.rows = 4;
+  backstoryTa.value = draft.backstory || '';
+  const notesTa = document.createElement('textarea');
+  notesTa.rows = 10;
+  notesTa.value = draft.notes || '';
+
+  const grid = document.createElement('div');
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.6rem';
+  grid.append(
+    photoDraftField('Name', nameInput),
+    photoDraftField('Player name', playerInput),
+    photoDraftField('Race', raceInput),
+    photoDraftField('Class', classInput),
+    photoDraftField('Level', levelInput),
+    photoDraftField('XP', xpInput),
+  );
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:.75rem;align-items:center';
+  const createBtn = document.createElement('button');
+  createBtn.type = 'button';
+  createBtn.textContent = '✓ Create Character';
+  createBtn.style.cssText = 'background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer';
+  const status = document.createElement('span');
+  status.style.cssText = 'font-size:.82rem';
+  createBtn.addEventListener('click', () => {
+    if (!nameInput.value.trim()) { alert('Name is required.'); return; }
+    submitPhotoDraft('player_character', {
+      name: nameInput.value.trim(),
+      player_name: playerInput.value.trim(),
+      race: raceInput.value.trim(),
+      char_class: classInput.value.trim(),
+      level: parseInt(levelInput.value, 10) || 1,
+      xp: parseInt(xpInput.value, 10) || 0,
+      backstory: backstoryTa.value,
+      notes: notesTa.value,
+    }, status, createBtn);
+  });
+  actions.append(createBtn, status);
+
+  card.append(
+    grid,
+    photoDraftField('Backstory', backstoryTa),
+    photoDraftField('Notes (full transcription of the sheet)', notesTa),
+    actions,
+  );
+  return card;
+}
+
+function renderEntityPhotoDraft(draft) {
+  const card = document.createElement('div');
+  card.style.cssText = 'background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:1rem;display:flex;flex-direction:column;gap:.6rem';
+
+  const kindSel = document.createElement('select');
+  ENTITY_KIND_OPTIONS.forEach((k) => {
+    const opt = document.createElement('option');
+    opt.value = k;
+    opt.textContent = k.charAt(0).toUpperCase() + k.slice(1);
+    if (k === draft.kind) opt.selected = true;
+    kindSel.appendChild(opt);
+  });
+  const nameInput = document.createElement('input');
+  nameInput.value = draft.name || '';
+  const subtypeInput = document.createElement('input');
+  subtypeInput.value = draft.subtype || '';
+  const folderInput = document.createElement('input');
+  folderInput.value = draft.folder || '';
+  const tagsInput = document.createElement('input');
+  tagsInput.value = draft.tags || '';
+  const summaryInput = document.createElement('input');
+  summaryInput.value = draft.summary || '';
+  const bodyTa = document.createElement('textarea');
+  bodyTa.rows = 10;
+  bodyTa.value = draft.body || '';
+
+  const grid = document.createElement('div');
+  grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.6rem';
+  grid.append(
+    photoDraftField('Kind', kindSel),
+    photoDraftField('Name', nameInput),
+    photoDraftField('Subtype', subtypeInput),
+    photoDraftField('Folder', folderInput),
+    photoDraftField('Tags (comma-separated)', tagsInput),
+  );
+
+  const visLabel = document.createElement('label');
+  visLabel.style.cssText = 'font-size:.82rem;color:var(--text-dim);display:flex;align-items:center;gap:.4rem';
+  const visCb = document.createElement('input');
+  visCb.type = 'checkbox';
+  visCb.checked = draft.visible_to_players !== false;
+  visLabel.append(visCb, document.createTextNode('Visible to players'));
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:.75rem;align-items:center';
+  const createBtn = document.createElement('button');
+  createBtn.type = 'button';
+  createBtn.textContent = '✓ Create Entity';
+  createBtn.style.cssText = 'background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer';
+  const status = document.createElement('span');
+  status.style.cssText = 'font-size:.82rem';
+  createBtn.addEventListener('click', () => {
+    if (!nameInput.value.trim()) { alert('Name is required.'); return; }
+    submitPhotoDraft('entity_single', {
+      kind: kindSel.value,
+      name: nameInput.value.trim(),
+      subtype: subtypeInput.value.trim(),
+      folder: folderInput.value.trim(),
+      tags: tagsInput.value.trim(),
+      summary: summaryInput.value.trim(),
+      body: bodyTa.value,
+      visible_to_players: visCb.checked,
+    }, status, createBtn);
+  });
+  actions.append(createBtn, status);
+
+  card.append(
+    grid,
+    photoDraftField('Summary', summaryInput),
+    photoDraftField('Body (Markdown)', bodyTa),
+    visLabel,
+    actions,
+  );
+  return card;
+}
 </script>
 {% endblock %}

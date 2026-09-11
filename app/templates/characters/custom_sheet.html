@@ -34,6 +34,11 @@
 <div class="cx">
   <div class="cx-actions">
     <a href="{{ '/characters'|wq }}" style="color:var(--text-dim);font-size:.85rem;">← All Characters</a>
+    {% if pc %}
+    <a href="/characters/{{ pc.id }}/export.json" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.35rem .75rem;border-radius:4px;font-size:.85rem;text-decoration:none;" title="Export as plain JSON — re-importable via the /import page">⬇ JSON</a>
+    <a href="/characters/{{ pc.id }}/export.md" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.35rem .75rem;border-radius:4px;font-size:.85rem;text-decoration:none;" title="Export as a readable Markdown character sheet">⬇ Markdown</a>
+    <a href="/characters/{{ pc.id }}/export.pdf" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.35rem .75rem;border-radius:4px;font-size:.85rem;text-decoration:none;" title="Export as a printable PDF character sheet">⬇ PDF</a>
+    {% endif %}
     {% if pc and request.state.user and request.state.user.is_gm %}
     <form method="post" action="/characters/{{ pc.id }}/owner" style="display:flex;gap:.4rem;align-items:center;">
       <label style="font-size:.72rem;color:var(--text-dim)">Owning player</label>

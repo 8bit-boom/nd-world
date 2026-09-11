@@ -11,6 +11,7 @@ from sqlalchemy import or_, text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from .. import ai as _ai
 from .. import auth, deps
 from ..constants import KINDS, ND_DEFAULT_CURRENCY, ND_DEFAULT_STATS
 from ..database import get_db
@@ -896,6 +897,12 @@ def import_page(request: Request, db: Session = Depends(get_db), active_world: s
             {"id": e.id, "name": e.name, "kind": e.kind, "has_image": bool(e.image_url)} for e in entities
         ]),
         "bulk_image_max_files": BULK_IMAGE_MAX_FILES,
+        # Matches /api/ai/entity-from-images' own schema enum exactly (plain
+        # KINDS, not deps.effective_kinds' custom-kind superset) — see that
+        # route's docstring for why it mirrors /entity-from-text's same
+        # KINDS-only limitation rather than the world's full kind list.
+        "kinds_json": json.dumps(list(KINDS)),
+        "max_vision_import_images": _ai.MAX_VISION_IMPORT_IMAGES,
     })
 
 

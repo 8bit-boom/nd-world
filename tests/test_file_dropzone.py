@@ -112,14 +112,15 @@ def test_dropzone_rollout_across_every_touched_route(client, seed):
         assert "/static/js/file-dropzone.js" in r.text, f"{url} missing script include"
 
 
-def test_import_page_has_three_dropzones(client, seed):
-    """import.html has 3 independent file inputs (single JSON, bulk JSON,
-    bulk images) — each must get its own wrapper, not just the first."""
+def test_import_page_has_four_dropzones(client, seed):
+    """import.html has 4 independent file inputs (single JSON, bulk JSON,
+    bulk images, and Import from Photo's picture upload) — each must get its
+    own wrapper, not just the first."""
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/import")
     assert r.status_code == 200
-    assert r.text.count("data-dropzone") == 3
+    assert r.text.count("data-dropzone") == 4
 
 
 def test_ai_chat_page_has_four_dropzones(client, seed):

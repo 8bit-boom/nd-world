@@ -467,7 +467,11 @@ Other JSON fields, all `[...]` arrays of objects:
 | GET | `/characters/{id}/edit` | — | edit form (custom-mode sheets redirect straight to the detail page — they're edited in place) |
 | POST | `/characters/{id}/edit` | same fields as create | |
 | POST | `/characters/{id}/delete` | — | |
-| GET | `/characters/{id}/export.ndc` | — | export |
+| GET | `/characters/{id}/export.ndc` | — | export (NeonDragonsApp/Editor interchange format) |
+| GET | `/characters/{id}/export.foundry.json` | — | export (Foundry VTT Journal Entry) |
+| GET | `/characters/{id}/export.json` | — | export — plain JSON in the canonical shape this doc's §3 describes, re-importable via `POST /api/import/execute` (`kind=player_character`, see `docs/IMPORT_JSON_GUIDE.md`) |
+| GET | `/characters/{id}/export.md` | — | export — a readable Markdown character sheet |
+| GET | `/characters/{id}/export.pdf` | — | export — a printable PDF character sheet |
 | GET | `/api/characters/catalog` | — | races/professions/feats/equipment catalog used by the creation wizard UI — informational only, `race_id`/`profession_id` aren't validated against it server-side |
 
 ### Live-update AJAX endpoints (JSON body, not form-encoded)

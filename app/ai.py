@@ -1,4 +1,5 @@
 import asyncio
+import base64 as _b64
 import os
 import json as _json
 import logging
@@ -1529,6 +1530,159 @@ async def parse_entity_from_text(raw_text: str, kinds: list[str], model: str = "
         }
     except Exception as exc:
         raise ValueError("Could not turn that reply into an entity — try rephrasing or picking a shorter passage.") from exc
+
+
+# Photos of physical/scanned character sheets or handouts → structured drafts.
+# Both functions below reuse the exact same JSON-schema-constrained-chat
+# contract as parse_entity_from_text (ValueError on any failure; a plain dict
+# on success; nothing written to the database — see /api/import/execute for
+# that). The only difference is the user message carries base64 "images"
+# instead of raw text, which requires a vision-capable Ollama model (e.g.
+# llama3.2-vision, llava, qwen2-vl, gemma3) — a text-only model will either
+# error or simply ignore the images and return a near-empty draft; there's no
+# reliable way to detect vision capability up front (KNOWN_MODELS doesn't tag
+# it), so the caller just surfaces whatever the model returns.
+MAX_VISION_IMPORT_IMAGES = 6  # a multi-page/multi-photo sheet at most — bounds prompt size and latency
+
+
+def _images_to_b64(images: list[bytes]) -> list[str]:
+    return [_b64.b64encode(img).decode("ascii") for img in images[:MAX_VISION_IMPORT_IMAGES]]
+
+
+_CHARACTER_FROM_IMAGES_SYSTEM = (
+    "You are transcribing one or more photos of a tabletop RPG character sheet "
+    "(the pages may be handwritten, printed, or a mix, and may be out of order) "
+    "into structured data for a character-tracking app. Read every visible field "
+    "carefully, including handwritten annotations, cross-outs, and margin notes — "
+    "prefer the handwritten correction over a crossed-out printed value. Extract "
+    "only what is actually shown; leave a field blank rather than inventing or "
+    "guessing. \"notes\" must be a complete, well-organized Markdown transcription "
+    "of everything on the sheet that doesn't fit the other fields — abilities, "
+    "resources/tracks, gear, tools, backstory prompts, session/hunt records, "
+    "whatever the sheet contains — grouped under short headings, so nothing on "
+    "the sheet is lost even if the game system doesn't match the other fields "
+    "below. Respond with JSON only."
+)
+
+_CHARACTER_FROM_IMAGES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "player_name": {"type": "string"},
+        "race": {"type": "string"},
+        "char_class": {"type": "string"},
+        "level": {"type": "integer"},
+        "xp": {"type": "integer"},
+        "backstory": {"type": "string"},
+        "notes": {"type": "string"},
+    },
+    "required": ["name"],
+}
+
+
+async def parse_character_from_images(images: list[bytes], hint: str = "", model: str = "") -> dict:
+    """Turn photo(s) of a character sheet into a draft PlayerCharacter — same
+    JSON-schema-constrained pattern as parse_entity_from_text, with the images
+    attached to the user message instead of raw text. Raises ValueError on any
+    failure. Deliberately maps only the handful of PlayerCharacter fields that
+    are meaningful across every game system (name/race/class/level/xp/
+    backstory) plus a catch-all "notes" transcription — see
+    _CHARACTER_FROM_IMAGES_SYSTEM's own reasoning for why homebrew resource
+    tracks/abilities are transcribed into notes rather than force-fit onto
+    fixed D&D-shaped columns. Does not write anything to the database itself
+    (see main.py's /api/import/execute, kind="player_character", which already
+    knows how to write this exact shape via _upsert_player_character)."""
+    if not images:
+        raise ValueError("No images provided.")
+    m = model or effective_ollama_model()
+    user_text = hint.strip() or "Transcribe this character sheet."
+    try:
+        resp = await _client().chat(
+            model=m,
+            messages=[
+                {"role": "system", "content": _CHARACTER_FROM_IMAGES_SYSTEM},
+                {"role": "user", "content": user_text, "images": _images_to_b64(images)},
+            ],
+            format=_CHARACTER_FROM_IMAGES_SCHEMA,
+            **(await _chat_kwargs(model=m)),
+        )
+    except _ollama.ResponseError as exc:
+        raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
+    except Exception as exc:
+        raise ValueError(f"AI unavailable: {type(exc).__name__}: {exc}") from exc
+    try:
+        parsed = _json.loads(resp.message.content or "")
+        if not isinstance(parsed, dict) or not str(parsed.get("name") or "").strip():
+            raise ValueError
+        return {
+            "name": str(parsed["name"]).strip(),
+            "player_name": str(parsed.get("player_name") or "").strip(),
+            "race": str(parsed.get("race") or "").strip(),
+            "char_class": str(parsed.get("char_class") or "").strip(),
+            "level": max(1, min(20, int(parsed.get("level") or 1))) if str(parsed.get("level") or "").strip() else 1,
+            "xp": max(0, int(parsed.get("xp") or 0)) if str(parsed.get("xp") or "").strip() else 0,
+            "backstory": str(parsed.get("backstory") or "").strip(),
+            "notes": str(parsed.get("notes") or "").strip(),
+        }
+    except Exception as exc:
+        raise ValueError("Could not read a character off that photo — try a clearer/closer picture, or a different model.") from exc
+
+
+_ENTITY_FROM_IMAGES_SYSTEM = (
+    "You turn photo(s) of a document — a handout, map key, printed page, or "
+    "handwritten notes — into a single structured world-building entity for a "
+    "tabletop RPG GM's toolkit, whichever kind the document is actually "
+    "describing (a character/NPC, location, organization, creature, event, "
+    "item, feat, race, or profession). Read every visible detail carefully, "
+    "including handwritten annotations. Extract only what's shown or clearly "
+    "implied; do not invent unrelated details. \"body\" should be the entity's "
+    "full write-up in Markdown (history, description, stats — whatever's "
+    "relevant, transcribed from the photo); \"summary\" is a single-sentence "
+    "one-liner. Respond with JSON only."
+)
+
+
+async def parse_entity_from_images(images: list[bytes], kinds: list[str], hint: str = "", model: str = "") -> dict:
+    """Turn photo(s) of a document into a draft world Entity — the vision
+    sibling of parse_entity_from_text, reusing the exact same schema/response
+    shape (see _entity_from_text_schema) so callers/consumers of the draft
+    (the review UI, /api/import/execute kind="entity_single") don't need to
+    know which path produced it. Raises ValueError on any failure; writes
+    nothing itself."""
+    if not images:
+        raise ValueError("No images provided.")
+    m = model or effective_ollama_model()
+    user_text = hint.strip() or "Read this document and draft a world entity from it."
+    try:
+        resp = await _client().chat(
+            model=m,
+            messages=[
+                {"role": "system", "content": _ENTITY_FROM_IMAGES_SYSTEM},
+                {"role": "user", "content": user_text, "images": _images_to_b64(images)},
+            ],
+            format=_entity_from_text_schema(kinds),
+            **(await _chat_kwargs(model=m)),
+        )
+    except _ollama.ResponseError as exc:
+        raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
+    except Exception as exc:
+        raise ValueError(f"AI unavailable: {type(exc).__name__}: {exc}") from exc
+    try:
+        parsed = _json.loads(resp.message.content or "")
+        if not isinstance(parsed, dict) or parsed.get("kind") not in kinds or not str(parsed.get("name") or "").strip():
+            raise ValueError
+        return {
+            "kind": parsed["kind"],
+            "subtype": str(parsed.get("subtype") or "").strip(),
+            "name": str(parsed["name"]).strip(),
+            "summary": str(parsed.get("summary") or "").strip(),
+            "body": str(parsed.get("body") or "").strip(),
+            "tags": str(parsed.get("tags") or "").strip(),
+            "folder": str(parsed.get("folder") or "").strip(),
+            "visible_to_players": bool(parsed.get("visible_to_players", True)),
+        }
+    except Exception as exc:
+        raise ValueError("Could not turn that photo into an entity — try a clearer/closer picture, or a different model.") from exc
 
 
 _SESSION_PREP_SYSTEM = (

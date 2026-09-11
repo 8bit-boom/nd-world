@@ -1044,6 +1044,295 @@ def character_export_foundry(pc_id: int, request: Request, db: Session = Depends
     )
 
 
+# ── Generic exports: JSON (re-importable) / Markdown / PDF ───────────────────
+#
+# Unlike .ndc (NeonDragonsApp's own Kotlin-shaped format) and .foundry.json
+# (a Foundry VTT JournalEntry), these three are plain, human-usable exports:
+# .json round-trips straight back through POST /api/import/execute
+# (kind=player_character — see docs/IMPORT_JSON_GUIDE.md), and .md/.pdf are
+# read-only reference copies. All three work uniformly for both sheet modes
+# (native N&D sheet, or an entirely custom SheetTemplate) since they're built
+# from the same section list rather than assuming fixed D&D-shaped columns.
+
+def _safe_export_filename(name: str) -> str:
+    return "".join(c if c.isalnum() or c in " -_" else "" for c in (name or "character")) or "character"
+
+
+def _pc_to_import_dict(pc: PlayerCharacter) -> dict:
+    """The canonical nd-world import shape for this character — exactly what
+    _apply_form/_upsert_player_character (app/routers/importer.py) accept
+    back as kind="player_character". Omits zero/empty fields so the exported
+    file stays readable rather than listing every unused column."""
+    out = {}
+    for field in _PC_LIVE_SCALAR_FIELDS:
+        val = getattr(pc, field, "") or ""
+        if val:
+            out[field] = val
+    out.setdefault("name", pc.name or "Character")
+    if pc.race_id:
+        out["race_id"] = pc.race_id
+    if pc.profession_id:
+        out["profession_id"] = pc.profession_id
+    if pc.level:
+        out["level"] = pc.level
+    if pc.xp:
+        out["xp"] = pc.xp
+    if pc.max_hp:
+        out["max_hp"] = pc.max_hp
+    if pc.current_hp:
+        out["current_hp"] = pc.current_hp
+    for field in _PC_LIVE_DICT_FIELDS:
+        try:
+            val = json.loads(getattr(pc, field, None) or "{}")
+        except Exception:
+            val = {}
+        if val:
+            out[field] = val
+    for field in _PC_LIVE_LIST_FIELDS:
+        try:
+            val = json.loads(getattr(pc, field, None) or "[]")
+        except Exception:
+            val = []
+        if val:
+            out[field] = val
+    if pc.sheet_template_id:
+        out["sheet_template_id"] = pc.sheet_template_id
+    if pc.portrait_url:
+        out["portrait_url"] = pc.portrait_url
+    return out
+
+
+def _pc_field_value_lines(field: dict, custom_fields: dict) -> list:
+    """One (label, value) pair per SheetTemplate field for the export section
+    list below — a "list"-type field (a repeatable group, e.g. an abilities
+    table) expands to one pair per item rather than trying to squeeze a
+    whole sub-table into a single value string."""
+    fid = field.get("id")
+    label = field.get("label") or fid or ""
+    if field.get("type") == "list":
+        items = custom_fields.get(fid)
+        if not isinstance(items, list) or not items:
+            return []
+        item_fields = field.get("item_fields") or []
+        out = []
+        for i, item in enumerate(items, 1):
+            if not isinstance(item, dict):
+                continue
+            parts = [
+                f"{sf.get('label') or sf.get('id')}: {item.get(sf.get('id'), '')}"
+                for sf in item_fields if item.get(sf.get("id"))
+            ]
+            out.append((f"{label} #{i}", "; ".join(parts)))
+        return out
+    value = custom_fields.get(fid, field.get("default_value", ""))
+    if value in (None, ""):
+        return []
+    return [(label, str(value))]
+
+
+def _pc_export_sections(pc: PlayerCharacter, db: Session) -> list:
+    """A flat (section_name, [(label, value), ...]) list summarizing this
+    character for the .md/.pdf exports below — covers both the native N&D
+    sheet (via _derived, same helper the sheet page itself uses) and any
+    SheetTemplate fields (native "nd" mode's extra fields, or the entirety
+    of a "custom" mode sheet), so it reads correctly regardless of which
+    system this character actually uses."""
+    chosen_tpl = db.query(SheetTemplate).filter(SheetTemplate.id == pc.sheet_template_id).first() if pc.sheet_template_id else None
+    custom_fields = json.loads(getattr(pc, "custom_fields_json", None) or "{}")
+    sections = []
+
+    basics = [
+        (l, v) for l, v in (
+            ("Player", pc.player_name), ("Race", pc.race), ("Class", pc.char_class),
+            ("Level", str(pc.level) if pc.level else ""), ("XP", str(pc.xp) if pc.xp else ""),
+        ) if v
+    ]
+    if basics:
+        sections.append(("Basics", basics))
+
+    is_custom = bool(chosen_tpl and chosen_tpl.sheet_mode == "custom")
+    if not is_custom:
+        d = _derived(pc)
+        resources = [("HP", f"{pc.current_hp}/{d['hp_max']}")]
+        if d["shock_max"]:
+            resources.append(("Shock", f"{d['shock_current']}/{d['shock_max']}"))
+        if d["pp_current"] or d["mp_current"]:
+            resources.append(("PP", str(d["pp_current"])))
+            resources.append(("MP", str(d["mp_current"])))
+        if pc.armor_class:
+            resources.append(("Armor Class", str(pc.armor_class)))
+        if pc.speed:
+            resources.append(("Speed", str(pc.speed)))
+        sections.append(("Resources", resources))
+
+        stats = [
+            (s.get("label") or s.get("id", ""), str(s.get("value", "")))
+            for s in d["stats"] if isinstance(s, dict) and s.get("id")
+        ]
+        if stats:
+            sections.append(("Ability Scores", stats))
+
+        currency = [
+            (c.get("label") or c.get("abbr") or "", str(c.get("value", 0)))
+            for c in d["currency"] if isinstance(c, dict)
+        ]
+        if currency:
+            sections.append(("Currency", currency))
+
+        equipment = []
+        for it in d["equipment"]:
+            if not isinstance(it, dict):
+                continue
+            qty, notes = it.get("qty", 1), it.get("notes", "")
+            equipment.append((it.get("name", ""), f"x{qty}" + (f" — {notes}" if notes else "")))
+        if equipment:
+            sections.append(("Equipment", equipment))
+
+        feats = []
+        for f in d["feats"]:
+            if not isinstance(f, dict):
+                continue
+            feats.append((f.get("name", ""), f.get("notes") or f.get("description") or ""))
+        if feats:
+            sections.append(("Feats", feats))
+
+    if chosen_tpl:
+        tpl_fields = json.loads(chosen_tpl.fields_json or "[]")
+        for section_name, fields in _group_by_section(tpl_fields):
+            pairs = []
+            for f in fields:
+                pairs.extend(_pc_field_value_lines(f, custom_fields))
+            if pairs:
+                sections.append((section_name, pairs))
+
+    personality = [
+        (l, v) for l, v in (
+            ("Personality Traits", pc.personality_traits), ("Ideals", pc.ideals),
+            ("Bonds", pc.bonds), ("Flaws", pc.flaws),
+        ) if v
+    ]
+    if personality:
+        sections.append(("Personality", personality))
+
+    return sections
+
+
+def _pc_to_markdown(pc: PlayerCharacter, db: Session) -> str:
+    lines = [f"# {pc.name or 'Character'}"]
+    subtitle = " ".join(b for b in (pc.race, pc.char_class) if b)
+    if pc.level:
+        subtitle = (subtitle + f" — Level {pc.level}").strip(" —")
+    if subtitle:
+        lines.append(f"*{subtitle}*")
+    lines.append("")
+
+    for section_name, pairs in _pc_export_sections(pc, db):
+        lines.append(f"## {section_name}")
+        for label, value in pairs:
+            lines.append(f"- **{label}:** {value}")
+        lines.append("")
+
+    if pc.backstory:
+        lines.append("## Backstory")
+        lines.append(pc.backstory.strip())
+        lines.append("")
+    if pc.notes:
+        lines.append("## Notes")
+        lines.append(pc.notes.strip())
+        lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def _pc_to_pdf_bytes(pc: PlayerCharacter, db: Session) -> bytes:
+    # Imported lazily — reportlab is only needed by this one export path,
+    # and a local import keeps it off the module's normal startup cost.
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=LETTER,
+        topMargin=0.75 * inch, bottomMargin=0.75 * inch, leftMargin=0.75 * inch, rightMargin=0.75 * inch,
+    )
+    styles = getSampleStyleSheet()
+    story = [Paragraph(html.escape(pc.name or "Character"), styles["Title"])]
+
+    subtitle = " ".join(b for b in (pc.race, pc.char_class) if b)
+    if pc.level:
+        subtitle = (subtitle + f" — Level {pc.level}").strip(" —")
+    if subtitle:
+        story.append(Paragraph(html.escape(subtitle), styles["Italic"]))
+    story.append(Spacer(1, 12))
+
+    for section_name, pairs in _pc_export_sections(pc, db):
+        story.append(Paragraph(html.escape(section_name), styles["Heading2"]))
+        for label, value in pairs:
+            story.append(Paragraph(f"<b>{html.escape(label)}:</b> {html.escape(value)}", styles["Normal"]))
+        story.append(Spacer(1, 8))
+
+    for heading, text in (("Backstory", pc.backstory), ("Notes", pc.notes)):
+        if not text:
+            continue
+        story.append(Paragraph(heading, styles["Heading2"]))
+        for para in text.strip().split("\n\n"):
+            story.append(Paragraph(html.escape(para).replace("\n", "<br/>"), styles["Normal"]))
+        story.append(Spacer(1, 8))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+@router.get("/characters/{pc_id}/export.json")
+def character_export_json(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
+    payload = json.dumps(_pc_to_import_dict(pc), ensure_ascii=False, indent=2)
+    fname = _safe_export_filename(pc.name)
+    return StreamingResponse(
+        io.BytesIO(payload.encode("utf-8")),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{fname}.json"'},
+    )
+
+
+@router.get("/characters/{pc_id}/export.md")
+def character_export_md(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
+    payload = _pc_to_markdown(pc, db)
+    fname = _safe_export_filename(pc.name)
+    return StreamingResponse(
+        io.BytesIO(payload.encode("utf-8")),
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{fname}.md"'},
+    )
+
+
+@router.get("/characters/{pc_id}/export.pdf")
+def character_export_pdf(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    if not _can_manage_character(_current_user(request), pc):
+        raise HTTPException(403)
+    payload = _pc_to_pdf_bytes(pc, db)
+    fname = _safe_export_filename(pc.name)
+    return StreamingResponse(
+        io.BytesIO(payload),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}.pdf"'},
+    )
+
+
 # ── AJAX: HP ──────────────────────────────────────────────────────────────────
 
 @router.post("/api/characters/{pc_id}/hp-async")
