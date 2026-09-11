@@ -8,5 +8,5 @@
 -r requirements.txt
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.5.1
-torchaudio==2.5.1
+torchaudio==2.11.0+cpu
 deepfilternet==0.5.6
