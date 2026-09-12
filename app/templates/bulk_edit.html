@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+{% block title %}Find & Replace (AI) — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div class="form-page">
+  <h1>🔎 Find &amp; Replace (AI)</h1>
+  <div style="background:rgba(255,190,0,.08);border:1px solid #ffbe00;color:#ffbe00;padding:.7rem 1rem;border-radius:6px;font-size:.85rem;margin-bottom:1rem;line-height:1.5">
+    The AI only turns your instruction into a literal Find/Replace pair below —
+    it never rewrites content itself. Searching and substituting is a plain
+    text operation you can review, edit, and select match-by-match before
+    anything is changed. Searches entity names/summaries/bodies, entity notes,
+    and character race/class/backstory/notes in the active world.
+  </div>
+
+  <div class="form-group">
+    <label for="be-instruction">Describe the change</label>
+    <textarea id="be-instruction" rows="3" placeholder="e.g. Change the race name Skinwalker to Ashwalker everywhere"></textarea>
+  </div>
+  <button type="button" id="be-parse" class="btn-save">✨ Understand instruction</button>
+  <span id="be-parse-status" style="font-size:.85rem;color:var(--text-dim);margin-left:.6rem"></span>
+
+  <div id="be-terms" style="display:none;margin-top:1.5rem">
+    <div id="be-parse-note" style="display:none;background:#3a2a10;border:1px solid #a86;border-radius:6px;padding:.7rem 1rem;margin-bottom:1rem;font-size:.85rem;color:#fc8"></div>
+    <div style="display:flex;gap:1rem;flex-wrap:wrap">
+      <div class="form-group" style="flex:1;min-width:220px">
+        <label for="be-find">Find (exact text)</label>
+        <input type="text" id="be-find">
+      </div>
+      <div class="form-group" style="flex:1;min-width:220px">
+        <label for="be-replace">Replace with</label>
+        <input type="text" id="be-replace">
+      </div>
+    </div>
+    <label style="display:flex;align-items:center;gap:.4rem;font-size:.85rem;color:var(--text-dim);margin-bottom:1rem">
+      <input type="checkbox" id="be-case-insensitive"> Case-insensitive match
+    </label>
+    <button type="button" id="be-search" class="btn-save">🔍 Search</button>
+    <span id="be-search-status" style="font-size:.85rem;color:var(--text-dim);margin-left:.6rem"></span>
+  </div>
+
+  <div id="be-results" style="display:none;margin-top:1.5rem">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.6rem;flex-wrap:wrap;gap:.5rem">
+      <h2 style="font-size:.95rem;color:var(--text-dim);margin:0" id="be-results-heading"></h2>
+      <div>
+        <button type="button" id="be-select-all" class="btn-cancel" style="font-size:.8rem">Select all</button>
+        <button type="button" id="be-select-none" class="btn-cancel" style="font-size:.8rem">Select none</button>
+      </div>
+    </div>
+    <div id="be-truncated-note" style="display:none;font-size:.8rem;color:var(--text-dim);margin-bottom:.6rem">
+      Showing the first results only — narrow your search text for a complete list.
+    </div>
+    <div id="be-candidate-list" style="display:flex;flex-direction:column;gap:.6rem"></div>
+    <div style="margin-top:1rem">
+      <button type="button" id="be-apply" class="btn-save">✓ Apply selected</button>
+      <span id="be-apply-status" style="font-size:.85rem;color:var(--text-dim);margin-left:.6rem"></span>
+    </div>
+  </div>
+</div>
+
+<style>
+.be-candidate { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:.7rem .9rem; }
+.be-candidate-head { display:flex; align-items:center; gap:.5rem; font-size:.82rem; color:var(--text-dim); margin-bottom:.4rem; }
+.be-candidate-head strong { color:var(--text); }
+.be-diff { font-family:monospace; font-size:.78rem; white-space:pre-wrap; word-break:break-word; background:var(--bg3); border-radius:4px; padding:.5rem .6rem; }
+.be-diff .be-before { color:#e88; text-decoration:line-through; }
+.be-diff .be-after { color:#8e8; }
+</style>
+
+<script>
+(function () {
+  const instructionEl = document.getElementById('be-instruction');
+  const parseBtn = document.getElementById('be-parse');
+  const parseStatus = document.getElementById('be-parse-status');
+  const termsBox = document.getElementById('be-terms');
+  const parseNote = document.getElementById('be-parse-note');
+  const findEl = document.getElementById('be-find');
+  const replaceEl = document.getElementById('be-replace');
+  const caseInsensitiveEl = document.getElementById('be-case-insensitive');
+  const searchBtn = document.getElementById('be-search');
+  const searchStatus = document.getElementById('be-search-status');
+  const resultsBox = document.getElementById('be-results');
+  const resultsHeading = document.getElementById('be-results-heading');
+  const truncatedNote = document.getElementById('be-truncated-note');
+  const listEl = document.getElementById('be-candidate-list');
+  const applyBtn = document.getElementById('be-apply');
+  const applyStatus = document.getElementById('be-apply-status');
+
+  let candidates = [];
+
+  parseBtn.addEventListener('click', async () => {
+    const instruction = instructionEl.value.trim();
+    if (!instruction) { alert('Describe the change first.'); return; }
+    parseBtn.disabled = true;
+    parseStatus.textContent = '✨ Thinking…';
+    parseNote.style.display = 'none';
+    try {
+      const res = await fetch('/api/bulk-edit/parse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction }),
+      });
+      if (!res.ok) throw await ndApiErrorFrom(res);
+      const data = await res.json();
+      findEl.value = data.find || '';
+      replaceEl.value = data.replace || '';
+      termsBox.style.display = 'block';
+      if (!data.understood) {
+        parseNote.style.display = 'block';
+        parseNote.textContent = data.note
+          ? `The AI couldn't turn this into a simple find/replace: ${data.note} You can still edit the fields below by hand.`
+          : "The AI couldn't turn this into a simple find/replace — try rephrasing, or edit the fields below by hand.";
+      }
+      parseStatus.textContent = '';
+    } catch (e) {
+      parseStatus.textContent = 'Failed: ' + (e.message || e);
+    } finally {
+      parseBtn.disabled = false;
+    }
+  });
+
+  searchBtn.addEventListener('click', async () => {
+    const find = findEl.value.trim();
+    if (!find) { alert('Enter text to find.'); return; }
+    searchBtn.disabled = true;
+    searchStatus.textContent = 'Searching…';
+    resultsBox.style.display = 'none';
+    try {
+      const res = await fetch('/api/bulk-edit/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ find, replace: replaceEl.value, case_insensitive: caseInsensitiveEl.checked }),
+      });
+      if (!res.ok) throw await ndApiErrorFrom(res);
+      const data = await res.json();
+      candidates = data.candidates || [];
+      renderCandidates();
+      truncatedNote.style.display = data.truncated ? 'block' : 'none';
+      resultsHeading.textContent = candidates.length
+        ? `${candidates.length} place(s) with ${data.total_occurrences} occurrence(s)`
+        : 'No matches found.';
+      resultsBox.style.display = 'block';
+      searchStatus.textContent = '';
+    } catch (e) {
+      searchStatus.textContent = 'Failed: ' + (e.message || e);
+    } finally {
+      searchBtn.disabled = false;
+    }
+  });
+
+  const TARGET_LABELS = { entity: 'Entity', entity_note: 'Note on', player_character: 'Character' };
+
+  function renderCandidates() {
+    listEl.innerHTML = '';
+    candidates.forEach((c, i) => {
+      const row = document.createElement('div');
+      row.className = 'be-candidate';
+      const head = document.createElement('div');
+      head.className = 'be-candidate-head';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.dataset.idx = String(i);
+      const label = document.createElement('label');
+      label.style.cssText = 'display:flex;align-items:center;gap:.5rem;cursor:pointer;flex:1';
+      const text = document.createElement('span');
+      text.innerHTML = `${TARGET_LABELS[c.target_type] || c.target_type} <strong>${escapeHtml(c.target_name)}</strong> — ${escapeHtml(c.field)} (${c.occurrences}×)`;
+      label.append(cb, text);
+      head.appendChild(label);
+      const diff = document.createElement('div');
+      diff.className = 'be-diff';
+      diff.innerHTML = `<span class="be-before">${escapeHtml(c.before_excerpt)}</span>\n<span class="be-after">${escapeHtml(c.after_excerpt)}</span>`;
+      row.append(head, diff);
+      listEl.appendChild(row);
+    });
+  }
+
+  function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s || '';
+    return d.innerHTML;
+  }
+
+  document.getElementById('be-select-all').addEventListener('click', () => {
+    listEl.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = true; });
+  });
+  document.getElementById('be-select-none').addEventListener('click', () => {
+    listEl.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = false; });
+  });
+
+  applyBtn.addEventListener('click', async () => {
+    const checked = Array.from(listEl.querySelectorAll('input[type=checkbox]')).filter(cb => cb.checked);
+    if (!checked.length) { alert('Select at least one match to apply.'); return; }
+    if (!confirm(`Apply ${checked.length} change(s)? This cannot be undone from here.`)) return;
+    applyBtn.disabled = true;
+    applyStatus.textContent = 'Applying…';
+    try {
+      const targets = checked.map(cb => {
+        const c = candidates[parseInt(cb.dataset.idx, 10)];
+        return { target_type: c.target_type, target_id: c.target_id, field: c.field };
+      });
+      const res = await fetch('/api/bulk-edit/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          find: findEl.value.trim(), replace: replaceEl.value, case_insensitive: caseInsensitiveEl.checked, targets,
+        }),
+      });
+      if (!res.ok) throw await ndApiErrorFrom(res);
+      const data = await res.json();
+      applyStatus.textContent = `✓ Updated ${data.updated} field(s).`;
+      searchBtn.click();
+    } catch (e) {
+      applyStatus.textContent = 'Failed: ' + (e.message || e);
+    } finally {
+      applyBtn.disabled = false;
+    }
+  });
+})();
+</script>
+{% endblock %}

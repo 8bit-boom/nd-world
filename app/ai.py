@@ -1685,6 +1685,76 @@ async def parse_entity_from_images(images: list[bytes], kinds: list[str], hint: 
         raise ValueError("Could not turn that photo into an entity — try a clearer/closer picture, or a different model.") from exc
 
 
+_FIND_REPLACE_SYSTEM = (
+    "You turn a tabletop RPG GM's plain-language content-edit instruction into "
+    "a literal find-and-replace pair that a program will apply verbatim across "
+    "the world's entities, notes, and characters — you do NOT rewrite or "
+    "paraphrase any content yourself, and you never see the content being "
+    "changed. Extract the exact text to search for (\"find\") and the exact "
+    "text to replace it with (\"replace\"), preserving the instruction's own "
+    "spelling and capitalization exactly — do not correct, retitle, or "
+    "rephrase either one. If the instruction genuinely reduces to one literal "
+    "find-and-replace, set \"understood\" to true. If it asks for something "
+    "more than that — rewriting prose, several unrelated changes, a "
+    "conditional or context-dependent edit — set \"understood\" to false and "
+    "briefly say what's unsupported in \"note\". Respond with JSON only."
+)
+
+_FIND_REPLACE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "understood": {"type": "boolean"},
+        "find": {"type": "string"},
+        "replace": {"type": "string"},
+        "note": {"type": "string"},
+    },
+    "required": ["understood"],
+}
+
+
+async def parse_find_replace_instruction(instruction: str, model: str = "") -> dict:
+    """Turns a natural-language content-edit instruction (e.g. "change the
+    race name Skinwalker to Ashwalker everywhere") into a literal {find,
+    replace} pair for app.routers.bulk_edit's GM/Assistant "AI-assisted find
+    & replace" tool. This is the model's ONLY job here — it never sees the
+    world's actual entities/notes/characters and never rewrites their
+    content; the search and substitution themselves are a deterministic
+    string operation the caller performs (see that module's _apply_replace)
+    against a GM-reviewed preview, precisely so a hallucinated or malformed
+    reply can't corrupt content — at worst it produces a wrong/empty find
+    term, which the preview step will simply show as "no matches." Raises
+    ValueError on any failure; writes nothing itself."""
+    m = model or effective_ollama_model()
+    try:
+        resp = await _client().chat(
+            model=m,
+            messages=[
+                {"role": "system", "content": _FIND_REPLACE_SYSTEM},
+                {"role": "user", "content": instruction},
+            ],
+            format=_FIND_REPLACE_SCHEMA,
+            **(await _chat_kwargs(model=m)),
+        )
+    except _ollama.ResponseError as exc:
+        raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
+    except Exception as exc:
+        raise ValueError(f"AI unavailable: {type(exc).__name__}: {exc}") from exc
+    try:
+        parsed = _json.loads(resp.message.content or "")
+        if not isinstance(parsed, dict):
+            raise ValueError
+        find = str(parsed.get("find") or "").strip()
+        understood = bool(parsed.get("understood")) and bool(find)
+        return {
+            "understood": understood,
+            "find": find,
+            "replace": str(parsed.get("replace") or "").strip(),
+            "note": str(parsed.get("note") or "").strip(),
+        }
+    except Exception as exc:
+        raise ValueError("The model returned malformed JSON — try again or switch models.") from exc
+
+
 _SESSION_PREP_SYSTEM = (
     "You are a scribe helping a tabletop RPG GM prepare for their next session. Given a summary "
     "of what happened recently (facts and/or a recap), any open quests, and the party's makeup, "

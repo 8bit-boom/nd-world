@@ -733,6 +733,10 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/tools/code-assist` | GM | The panel: file picker, change instruction, model/thinking, diff preview. |
 | POST | `/tools/code-assist/generate` | GM | Starts a background job (`op=code_edit` via `app/ai_assist.py`) — body `file`, `instruction`, `model`, `think`; returns `{job_id}`. |
 | GET | `/tools/code-assist/generate/{job_id}` | GM | Poll one job: `{status: "pending"}`, `{status: "error", error}`, or `{status: "done", file, original, revised, diff, model}` (diff computed server-side with `difflib` against the file content actually sent to the model). |
+| GET | `/tools/bulk-edit` | GM / Assistant | AI-assisted find & replace panel — see `app/routers/bulk_edit.py`. |
+| POST | `/api/bulk-edit/parse` | GM / Assistant | Turns a plain-language instruction into a literal `{understood, find, replace, note}` pair (`app.ai.parse_find_replace_instruction`) — the model never sees or rewrites actual content, only extracts the two literal strings. |
+| POST | `/api/bulk-edit/preview` | GM / Assistant | Body `{find, replace, case_insensitive}` — deterministic (non-AI) search across the active world's entity name/summary/body, entity note content, and character race/class/backstory/notes; returns candidate `{target_type, target_id, target_name, field, occurrences, before_excerpt, after_excerpt}` rows. Writes nothing. |
+| POST | `/api/bulk-edit/apply` | GM / Assistant | Body `{find, replace, case_insensitive, targets: [{target_type, target_id, field}, ...]}` — re-derives the substitution from each target's current value (never trusts a client-supplied "after" string) and commits only the selected targets; returns `{updated: N}`. |
 
 ## AI — Image Generation
 

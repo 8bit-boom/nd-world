@@ -51,6 +51,7 @@ STATIC_CATALOG = [
     {"id": "calendar", "label": "Calendar", "icon": "🗓", "href": "/calendar", "gm_only": True},
     {"id": "images", "label": "Images", "icon": "🖼", "href": "/images", "gm_only": True},
     {"id": "import", "label": "Import", "icon": "📥", "href": "/import", "gm_only": True},
+    {"id": "bulk_edit", "label": "Find & Replace (AI)", "icon": "🔎", "href": "/tools/bulk-edit", "exact": True, "gm_only": True},
     {"id": "background_jobs", "label": "Background Jobs", "icon": "⏳", "href": "/background-jobs", "exact": True, "gm_only": True},
     {"id": "export", "label": "Export & Backup", "icon": "📦", "href": "/export", "exact": True, "gm_only": True},
     {"id": "dreamlands", "label": "Dreamlands", "icon": "🌙", "href": "/dreamlands",

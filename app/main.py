@@ -76,6 +76,7 @@ from .routers import video as _video_router_module
 from .routers.pages import router as pages_router, _delete_doc_file as _delete_page_doc_file
 from .routers.character_sheets import router as character_sheets_router
 from .routers.code_assist import router as code_assist_router
+from .routers.bulk_edit import router as bulk_edit_router
 from .routers.nav_menus_admin import router as nav_menus_admin_router
 from .routers.dice import router as dice_router
 from .routers.backups import router as backups_router
@@ -155,6 +156,7 @@ app.include_router(video_router)
 app.include_router(character_sheets_router)
 app.include_router(pages_router)
 app.include_router(code_assist_router)
+app.include_router(bulk_edit_router)
 app.include_router(nav_menus_admin_router)
 app.include_router(dice_router)
 app.include_router(backups_router)
@@ -615,6 +617,15 @@ def _is_assistant_safe(method: str, path: str) -> bool:
     if path == "/import" and method == "GET":
         return True
     if method == "POST" and (path == "/api/import" or path.startswith("/api/import/")):
+        return True
+    # AI-assisted find & replace across world content (app/routers/bulk_edit.py)
+    # — content editing, same can_edit tier as /import and the entity/character
+    # drafters above, not administration.
+    if path == "/tools/bulk-edit" and method == "GET":
+        return True
+    if method == "POST" and path in (
+        "/api/bulk-edit/parse", "/api/bulk-edit/preview", "/api/bulk-edit/apply",
+    ):
         return True
     # AI content-generation endpoints only — the entity editor's smart-draft
     # button and the world-context RAG lookups it (and the note saver) rely
