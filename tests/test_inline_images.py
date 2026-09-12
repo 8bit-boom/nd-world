@@ -125,4 +125,9 @@ def test_entity_note_content_renders_markdown_image(client, seed):
     r = client.get(f"/entity/{ent_id}")
     assert r.status_code == 200
     assert '<img src="/uploads/clue.png"' in r.text
-    assert "![a clue]" not in r.text
+    # The raw markdown reference legitimately reappears once, inside the
+    # note's hidden edit-form textarea (toggleNoteEdit) — see
+    # test_entity_notes_edit.py — but the rendered note content itself
+    # must still show the resolved <img>, not the source syntax.
+    rendered = r.text.split('id="en-edit-')[0]
+    assert "![a clue]" not in rendered

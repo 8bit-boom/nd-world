@@ -194,6 +194,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/entity/{entity_id}/notes/import` | GM / Assistant | Imports a note from an uploaded file — `.md`/`.txt`/`.pdf` become plain text, `.html`/`.htm` convert to markdown (or stay sanitized HTML with "preserve original formatting"), images become an embedded note. |
 | POST | `/entity/{entity_id}/notes/{note_id}/toggle` | GM / Assistant | Toggles a note's `visible_to_players` flag. |
 | POST | `/entity/{entity_id}/notes/{note_id}/delete` | GM / Assistant | Deletes a note. |
+| POST | `/entity/{entity_id}/notes/{note_id}/edit` | GM / Assistant | Edits a note's content/visibility — reopens it in the same data-fmt textarea used to create it, so an embedded image can be resized after the fact via the toolbar's Resize control. |
 | POST | `/api/upload-image` | GM / Assistant | Uploads an image and returns its URL — backs the rich-text formatting toolbar's image button on GM-only fields (entity body/notes). |
 | POST | `/api/upload-media` | GM / Assistant | Superset of `/api/upload-image` — also accepts audio/video (browser-native containers only). Backs the same toolbar's media button/drag-drop/clipboard-paste; response is `{url, kind}` where `kind` is `image`/`audio`/`video`. |
 | POST | `/api/entity/{entity_id}/image` | GM / Assistant | Sets an entity's portrait directly from a URL (Image Studio's "Set as portrait"/"Attach" flow) without the full edit form. |

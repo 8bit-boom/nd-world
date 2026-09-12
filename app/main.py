@@ -5033,6 +5033,29 @@ def delete_entity_note(entity_id: int, note_id: int, db: Session = Depends(get_d
         db.commit()
     return RedirectResponse(f"/entity/{entity_id}", status_code=303)
 
+@app.post("/entity/{entity_id}/notes/{note_id}/edit")
+def edit_entity_note(
+    entity_id: int, note_id: int,
+    content: str = Form(...), visible: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    # Reopening a saved note for editing (rather than only toggle/delete) is
+    # what lets a GM place the cursor on an embedded `![](...)` image
+    # reference and use the data-fmt toolbar's Resize control on it — see
+    # the "Add a note" textarea just below, which already carries data-fmt.
+    # content_is_html is intentionally left untouched: the textarea always
+    # edits the note's raw stored content (markdown or, for an HTML-preserved
+    # import, raw HTML), not a re-derived format.
+    note = db.get(EntityNote, note_id)
+    if not note or note.entity_id != entity_id:
+        raise HTTPException(404)
+    content = content.strip()
+    if content:
+        note.content = content
+    note.visible_to_players = bool(visible)
+    db.commit()
+    return RedirectResponse(f"/entity/{entity_id}", status_code=303)
+
 # ── Search ────────────────────────────────────────────────────────────────────
 
 def _snippet(text: str, q: str, window: int = 120) -> str:

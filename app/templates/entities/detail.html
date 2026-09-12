@@ -127,24 +127,40 @@
     {% if entity_notes %}
     <div class="en-list">
       {% for n in entity_notes %}
-      <div class="en-note{% if not n.visible_to_players %} en-hidden{% endif %}">
-        {% if n.content_is_html %}
-        <div class="en-note-content rendered-md">{{ n.content | safe }}</div>
-        {% else %}
-        <div class="en-note-content rendered-md">{{ n.content | md | safe }}</div>
-        {% endif %}
-        <div class="en-note-footer">
-          <span class="en-note-date">{{ n.created_at.strftime('%Y-%m-%d %H:%M') if n.created_at else '' }}</span>
-          {% if can_edit(request) %}
-          <span class="en-note-vis">{% if n.visible_to_players %}👁 visible to players{% else %}🔒 GM only{% endif %}</span>
-          <form action="/entity/{{ entity.id }}/notes/{{ n.id }}/toggle" method="post" class="en-inline-form">
-            <button type="submit" class="en-btn">{% if n.visible_to_players %}Hide from players{% else %}Un-hide{% endif %}</button>
-          </form>
-          <form action="/entity/{{ entity.id }}/notes/{{ n.id }}/delete" method="post" class="en-inline-form" onsubmit="return confirm('Delete this note?')">
-            <button type="submit" class="en-btn en-btn-del">Delete</button>
-          </form>
+      <div class="en-note{% if not n.visible_to_players %} en-hidden{% endif %}" id="en-note-{{ n.id }}">
+        <div id="en-view-{{ n.id }}">
+          {% if n.content_is_html %}
+          <div class="en-note-content rendered-md">{{ n.content | safe }}</div>
+          {% else %}
+          <div class="en-note-content rendered-md">{{ n.content | md | safe }}</div>
           {% endif %}
+          <div class="en-note-footer">
+            <span class="en-note-date">{{ n.created_at.strftime('%Y-%m-%d %H:%M') if n.created_at else '' }}</span>
+            {% if can_edit(request) %}
+            <span class="en-note-vis">{% if n.visible_to_players %}👁 visible to players{% else %}🔒 GM only{% endif %}</span>
+            <button type="button" class="en-btn" onclick="toggleNoteEdit({{ n.id }})">Edit</button>
+            <form action="/entity/{{ entity.id }}/notes/{{ n.id }}/toggle" method="post" class="en-inline-form">
+              <button type="submit" class="en-btn">{% if n.visible_to_players %}Hide from players{% else %}Un-hide{% endif %}</button>
+            </form>
+            <form action="/entity/{{ entity.id }}/notes/{{ n.id }}/delete" method="post" class="en-inline-form" onsubmit="return confirm('Delete this note?')">
+              <button type="submit" class="en-btn en-btn-del">Delete</button>
+            </form>
+            {% endif %}
+          </div>
         </div>
+        {% if can_edit(request) %}
+        <form action="/entity/{{ entity.id }}/notes/{{ n.id }}/edit" method="post" id="en-edit-{{ n.id }}" class="en-edit-form" style="display:none">
+          <textarea name="content" rows="3" required data-fmt>{{ n.content }}</textarea>
+          <div class="en-add-row">
+            <label class="en-vis-check">
+              <input type="checkbox" name="visible" value="1" style="width:auto" {% if n.visible_to_players %}checked{% endif %}>
+              Visible to players
+            </label>
+            <button type="submit" class="btn-add-attr">Save</button>
+            <button type="button" class="en-btn" onclick="toggleNoteEdit({{ n.id }})">Cancel</button>
+          </div>
+        </form>
+        {% endif %}
       </div>
       {% endfor %}
     </div>
@@ -186,6 +202,25 @@
     </details>
     {% endif %}
   </section>
+  <script>
+  // Toggle a single note between its rendered view and its inline edit
+  // form — same show/hide shape as Facts' toggleFactEdit. Reopening lets a
+  // GM place the cursor on an already-saved `![]()` image reference and use
+  // the data-fmt toolbar's Resize control on it, which a brand-new "Add a
+  // note" textarea can't reach since the image isn't in it yet.
+  function toggleNoteEdit(id) {
+    const view = document.getElementById('en-view-' + id);
+    const edit = document.getElementById('en-edit-' + id);
+    if (!view || !edit) return;
+    const editing = edit.style.display !== 'none';
+    view.style.display = editing ? '' : 'none';
+    edit.style.display = editing ? 'none' : 'flex';
+    if (!editing) {
+      const ta = edit.querySelector('textarea');
+      if (ta) ta.focus();
+    }
+  }
+  </script>
 
   <section class="relations">
     <h2>// CONNECTIONS</h2>
@@ -327,6 +362,8 @@
 .en-btn:hover { border-color:var(--neon); color:var(--neon); }
 .en-btn-del:hover { border-color:#ff2d78; color:#ff2d78; }
 .en-add-form { display:flex; flex-direction:column; gap:.4rem; }
+.en-edit-form { display:flex; flex-direction:column; gap:.4rem; margin-top:.5rem; }
+.en-edit-form textarea { background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:5px; padding:.5rem .65rem; font-family:inherit; font-size:.85rem; resize:vertical; }
 .en-add-form textarea { background:var(--bg3); border:1px solid var(--border); color:var(--text); border-radius:5px; padding:.5rem .65rem; font-family:inherit; font-size:.85rem; resize:vertical; }
 .en-add-row { display:flex; align-items:center; justify-content:space-between; gap:.6rem; }
 .en-vis-check { display:flex; align-items:center; gap:.35rem; font-size:.78rem; color:var(--text-dim); }
