@@ -185,3 +185,64 @@ def test_note_edit_form_present_for_gm(client, seed):
     assert f'id="en-edit-{note_id}"' in r.text
     assert f"toggleNoteEdit({note_id})" in r.text
     assert f'/entity/{entity_id}/notes/{note_id}/edit' in r.text
+
+
+# ── UI: drag-corner resize handles (GM only) ────────────────────────────────
+
+def test_image_resize_handle_script_present_for_gm(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    entity_id = _make_entity(seed.world_a.id)
+    _make_note(entity_id, content="![pic](/uploads/x.png)")
+
+    r = client.get(f"/entity/{entity_id}")
+    assert r.status_code == 200
+    assert "en-img-handle" in r.text
+    assert "Drag to resize" in r.text
+    assert "pointerdown" in r.text
+
+
+def test_image_resize_handle_script_absent_for_player(client, seed):
+    entity_id = _make_entity(seed.world_a.id)
+    db = SessionLocal()
+    try:
+        e = db.get(Entity, entity_id)
+        e.visible_to_players = True
+        db.commit()
+    finally:
+        db.close()
+    _make_note(entity_id, content="![pic](/uploads/x.png)", visible=True)
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/entity/{entity_id}")
+    assert r.status_code == 200
+    # The CSS rule is always present (harmless with no handles to style),
+    # but the script that actually creates and wires up handle elements —
+    # gated by can_edit(request) — must not render for a player.
+    assert "Drag to resize" not in r.text
+    assert "pointerdown" not in r.text
+
+
+def test_html_preserved_note_content_flagged_to_skip_resize_handles(client, seed):
+    """content_is_html notes render real <img> tags, not markdown ![]()
+    references — the size:NN rewrite scheme can't target them, so the
+    drag-resize script must skip any note flagged data-html-content."""
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=seed.world_a.id, kind="location", name="Loc")
+        db.add(e)
+        db.commit()
+        db.refresh(e)
+        n = EntityNote(entity_id=e.id, content='<p><img src="/uploads/x.png"></p>', content_is_html=True)
+        db.add(n)
+        db.commit()
+        entity_id = e.id
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/entity/{entity_id}")
+    assert r.status_code == 200
+    assert 'data-html-content="1"' in r.text

@@ -130,7 +130,7 @@
       <div class="en-note{% if not n.visible_to_players %} en-hidden{% endif %}" id="en-note-{{ n.id }}">
         <div id="en-view-{{ n.id }}">
           {% if n.content_is_html %}
-          <div class="en-note-content rendered-md">{{ n.content | safe }}</div>
+          <div class="en-note-content rendered-md" data-html-content="1">{{ n.content | safe }}</div>
           {% else %}
           <div class="en-note-content rendered-md">{{ n.content | md | safe }}</div>
           {% endif %}
@@ -221,6 +221,131 @@
     }
   }
   </script>
+
+  {% if can_edit(request) %}
+  <script>
+  // Drag-to-resize handles on note images (GM only — the underlying save
+  // POSTs to /entity/{id}/notes/{id}/edit, which 403s for a player anyway).
+  // Rather than wrapping each <img> in a new positioned container (risky:
+  // a percentage-width child of an auto-width inline-block has a circular
+  // sizing dependency and can collapse to 0 in some browsers), handles are
+  // free-floating <span>s absolutely positioned within the note's own
+  // .en-note-content (made position:relative below) and kept aligned to
+  // the image's live getBoundingClientRect() — so the image markup itself
+  // never changes shape, only its own inline width style does.
+  (function () {
+    var MIN_PCT = 10, MAX_PCT = 300, HANDLE = 10;
+
+    function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+    // Same size:NN title-marker convention as ndFmtSetImageSize
+    // (text-format-toolbar.js), but every occurrence of a given URL is
+    // targeted at once (by src match) instead of the one under a textarea
+    // cursor, since this acts on an already-rendered <img>.
+    function rewriteImageSize(markdown, url, pct) {
+      var re = new RegExp('(!\\[[^\\]]*\\]\\(' + escapeRe(url) + ')(?:\\s+"[^"]*")?(\\))', 'g');
+      var title = pct === 100 ? '' : ' "size:' + pct + '"';
+      return markdown.replace(re, function (_, pre, post) { return pre + title + post; });
+    }
+
+    function positionHandles(img, handles, containerRect) {
+      var r = img.getBoundingClientRect();
+      var half = HANDLE / 2;
+      var top = r.top - containerRect.top, bottom = r.bottom - containerRect.top;
+      var left = r.left - containerRect.left, right = r.right - containerRect.left;
+      handles.nw.style.top = (top - half) + 'px'; handles.nw.style.left = (left - half) + 'px';
+      handles.ne.style.top = (top - half) + 'px'; handles.ne.style.left = (right - half) + 'px';
+      handles.sw.style.top = (bottom - half) + 'px'; handles.sw.style.left = (left - half) + 'px';
+      handles.se.style.top = (bottom - half) + 'px'; handles.se.style.left = (right - half) + 'px';
+    }
+
+    function saveNote(entityId, noteId, content, visible) {
+      return fetch('/entity/' + entityId + '/notes/' + noteId + '/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ content: content, visible: visible ? '1' : '' }),
+      }).then(function (r) { if (!r.ok) throw new Error('save failed'); });
+    }
+
+    function initImage(img, entityId) {
+      if (img.dataset.resizeReady) return;
+      var content = img.closest('.en-note-content');
+      var noteEl = img.closest('.en-note');
+      if (!content || content.dataset.htmlContent === '1' || !noteEl) return;
+      var noteId = (noteEl.id || '').replace('en-note-', '');
+      if (!noteId) return;
+      img.dataset.resizeReady = '1';
+
+      var handles = {};
+      ['nw', 'ne', 'sw', 'se'].forEach(function (corner) {
+        var h = document.createElement('span');
+        h.className = 'en-img-handle en-img-handle-' + corner;
+        h.title = 'Drag to resize';
+        content.appendChild(h);
+        handles[corner] = h;
+      });
+      function reposition() { positionHandles(img, handles, content.getBoundingClientRect()); }
+      reposition();
+      window.addEventListener('resize', reposition);
+
+      Object.keys(handles).forEach(function (corner) {
+        var handle = handles[corner];
+        var growsRight = corner === 'ne' || corner === 'se';
+        handle.addEventListener('pointerdown', function (e) {
+          e.preventDefault();
+          handle.setPointerCapture(e.pointerId);
+          var startX = e.clientX;
+          var startWidth = img.getBoundingClientRect().width;
+          var containerWidth = content.getBoundingClientRect().width;
+          var prevStyleWidth = img.style.width;
+
+          function onMove(ev) {
+            var delta = growsRight ? (ev.clientX - startX) : (startX - ev.clientX);
+            var px = startWidth + delta;
+            px = Math.max(containerWidth * MIN_PCT / 100, Math.min(containerWidth * MAX_PCT / 100, px));
+            img.style.width = px + 'px';
+            reposition();
+          }
+          function onUp() {
+            handle.removeEventListener('pointermove', onMove);
+            var finalWidth = img.getBoundingClientRect().width;
+            var pct = Math.round(finalWidth / containerWidth * 100);
+            pct = Math.max(MIN_PCT, Math.min(MAX_PCT, pct));
+            img.style.width = pct + '%';
+            reposition();
+
+            var ta = document.querySelector('#en-edit-' + noteId + ' textarea[name="content"]');
+            var visCheckbox = document.querySelector('#en-edit-' + noteId + ' input[name="visible"]');
+            if (!ta) return;
+            var newContent = rewriteImageSize(ta.value, img.getAttribute('src'), pct);
+            ta.value = newContent;
+            saveNote(entityId, noteId, newContent, visCheckbox && visCheckbox.checked).catch(function () {
+              img.style.width = prevStyleWidth;
+              reposition();
+              alert("Couldn't save the new image size — please try again.");
+            });
+          }
+          handle.addEventListener('pointermove', onMove);
+          handle.addEventListener('pointerup', onUp, { once: true });
+        });
+      });
+    }
+
+    function initAll() {
+      var entityId = {{ entity.id }};
+      document.querySelectorAll('.en-note-content img').forEach(function (img) {
+        initImage(img, entityId);
+      });
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAll);
+    } else {
+      initAll();
+    }
+  })();
+  </script>
+  {% endif %}
 
   <section class="relations">
     <h2>// CONNECTIONS</h2>
@@ -354,7 +479,13 @@
    breaks, stacking on top of those tags' own CSS margins — most visible on
    a file-imported note, whose source tends to have a blank line between
    every short line. */
-.en-note-content { font-size:.87rem; }
+.en-note-content { font-size:.87rem; position:relative; }
+.en-img-handle {
+  position:absolute; width:10px; height:10px; background:var(--neon);
+  border:1px solid #000; border-radius:2px; z-index:5; touch-action:none;
+}
+.en-img-handle-nw, .en-img-handle-se { cursor:nwse-resize; }
+.en-img-handle-ne, .en-img-handle-sw { cursor:nesw-resize; }
 .en-note-footer { display:flex; align-items:center; flex-wrap:wrap; gap:.6rem; margin-top:.4rem; font-size:.72rem; color:var(--text-dim); }
 .en-note-vis { color:var(--neon2); }
 .en-inline-form { display:inline; }
