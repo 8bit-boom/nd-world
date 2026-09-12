@@ -311,7 +311,15 @@
 .en-list { display:flex; flex-direction:column; gap:.5rem; margin-bottom:.75rem; }
 .en-note { background:var(--bg2); border:1px solid var(--border); border-radius:6px; padding:.6rem .75rem; }
 .en-note.en-hidden { border-color:var(--neon2); border-style:dashed; }
-.en-note-content { font-size:.87rem; white-space:pre-wrap; }
+/* No white-space:pre-wrap here — content is always already-rendered block
+   HTML (markdown2 output via the `md` filter, or sanitized HTML for an
+   imported "preserve formatting" note), never raw unescaped text. Preserving
+   whitespace on top of that double-counts the literal newlines markdown2
+   leaves between block tags (e.g. "</p>\n\n<h2>") as extra visible line
+   breaks, stacking on top of those tags' own CSS margins — most visible on
+   a file-imported note, whose source tends to have a blank line between
+   every short line. */
+.en-note-content { font-size:.87rem; }
 .en-note-footer { display:flex; align-items:center; flex-wrap:wrap; gap:.6rem; margin-top:.4rem; font-size:.72rem; color:var(--text-dim); }
 .en-note-vis { color:var(--neon2); }
 .en-inline-form { display:inline; }

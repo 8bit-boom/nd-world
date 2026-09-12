@@ -5,6 +5,7 @@ rendering.html_to_markdown (default .html/.htm handling) and
 rendering.sanitize_note_html (the "preserve original formatting" mode).
 """
 import io
+import re
 
 import pytest
 
@@ -263,3 +264,30 @@ def test_import_anonymous_forbidden(client, seed):
     r = _upload(client, entity_id, "log.txt", b"hi", "text/plain")
     assert r.status_code == 303  # auth_gate middleware: no session, redirected to /login
     assert _last_note(entity_id) is None
+
+
+# ── rendering: no double-spaced gaps between blocks (regression) ───────────
+# A file-imported .md note commonly has a blank line between every short
+# line ("**Where:** ...\n\n**Who:** ...") — real markdown, and normal
+# paragraph spacing once rendered. .en-note-content used to also set
+# white-space:pre-wrap, which preserves markdown2's own literal newlines
+# between block tags ("</p>\n\n<h2>") as extra visible line breaks on top of
+# those tags' CSS margins, doubling the gap versus the identical text typed
+# straight into the entity's own body (rendered via .detail-body.prose,
+# which never had this rule).
+
+def test_entity_body_and_imported_note_share_same_paragraph_spacing_rule(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    entity_id = _make_entity(seed.world_a.id)
+    md = "**Where:** The Hall.\n\n**Who:** Mera Sorn.\n\n## The Setup\n\nSome text here."
+    _upload(client, entity_id, "notes.md", md.encode(), "text/markdown")
+
+    r = client.get(f"/entity/{entity_id}")
+    assert r.status_code == 200
+    # The one CSS rule that used to single out note content for extra
+    # preserved whitespace must not reappear.
+    m = re.search(r"\.en-note-content\s*\{([^}]*)\}", r.text)
+    assert m, "expected an .en-note-content rule in the page's inline <style>"
+    assert "pre-wrap" not in m.group(1)
+    assert "pre-line" not in m.group(1)
