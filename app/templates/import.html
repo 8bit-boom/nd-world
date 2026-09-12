@@ -70,6 +70,25 @@
   </div>
 
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-top:1.5rem">
+    <h2 style="color:var(--neon);font-size:.9rem;margin:0 0 .4rem">📝 Generate Entities from Text (AI)</h2>
+    <p style="color:var(--text-dim);font-size:.82rem;margin:0 0 .8rem">
+      Paste a whole document — session notes, a homebrew page, a wiki dump,
+      anything — and the AI pulls out everything worth tracking as separate
+      content in one pass: NPCs, locations, organizations, creatures, items,
+      and player characters, sorted into the right category automatically.
+      Review, edit, deselect anything you don't want, then create the rest
+      in one click. Nothing is written until you do.
+    </p>
+    <textarea id="batch-text-input" rows="8" placeholder="Paste session notes or a document here…"
+      style="width:100%;box-sizing:border-box;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.6rem .75rem;font-family:monospace;font-size:.8rem;border-radius:3px"></textarea>
+    <div style="display:flex;gap:.75rem;margin-top:.75rem;align-items:center">
+      <button type="button" id="batch-extract-btn" style="background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">✨ Extract Entities</button>
+      <span id="batch-extract-result" aria-live="polite" style="font-size:.85rem;color:var(--text-dim)"></span>
+    </div>
+    <div id="batch-draft-area" style="margin-top:1rem"></div>
+  </div>
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-top:1.5rem">
     <h2 style="color:var(--neon);font-size:.9rem;margin:0 0 .4rem">📦 Bulk JSON Import</h2>
     <p style="color:var(--text-dim);font-size:.82rem;margin:0 0 .8rem">
       Select several JSON files at once — each is analyzed the same way as the
@@ -1281,6 +1300,205 @@ function renderEntityPhotoDraft(draft) {
     actions,
   );
   return card;
+}
+
+// ── Generate Entities from Text (AI) ────────────────────────────────────
+// Multi-item sibling of the photo-import flow above: one AI call classifies
+// a whole pasted document into several entities/player-characters at once
+// (POST /api/ai/entities-from-text-batch, draft-only), the GM reviews/edits/
+// deselects individual items in the list rendered here, and "Create
+// Selected" sends only the checked ones as an {"imports": [...]} batch to
+// the existing /api/import/execute (kind=batch) — the same commit path
+// every other import on this page uses.
+let batchItems = []; // [{ kind: 'entity'|'player_character', data: {...} }]
+
+document.getElementById('batch-extract-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('batch-extract-btn');
+  const resEl = document.getElementById('batch-extract-result');
+  const draftArea = document.getElementById('batch-draft-area');
+  const text = document.getElementById('batch-text-input').value.trim();
+  if (!text) { alert('Paste some text first.'); return; }
+  btn.disabled = true;
+  resEl.style.color = 'var(--text-dim)';
+  resEl.textContent = '✨ Reading document… this can take a while on a large model.';
+  draftArea.innerHTML = '';
+  try {
+    const res = await fetch('/api/ai/entities-from-text-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw await ndApiErrorFrom(res);
+    const data = await res.json();
+    batchItems = [
+      ...(data.entities || []).map(d => ({ kind: 'entity', data: d })),
+      ...(data.player_characters || []).map(d => ({ kind: 'player_character', data: d })),
+    ];
+    if (!batchItems.length) {
+      resEl.textContent = 'Nothing worth extracting was found in that text.';
+    } else {
+      resEl.textContent = `Found ${batchItems.length} item(s) — review below.`;
+      draftArea.appendChild(renderBatchList());
+    }
+  } catch (e) {
+    resEl.style.color = '#c44';
+    resEl.textContent = 'Failed: ' + (e.message || e);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function batchCompactField(labelText, el) {
+  const wrap = document.createElement('label');
+  wrap.style.cssText = 'display:flex;flex-direction:column;gap:.25rem;font-size:.78rem;color:var(--text-dim)';
+  const span = document.createElement('span');
+  span.textContent = labelText;
+  el.style.cssText = 'background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-size:.8rem;border-radius:3px;font-family:inherit';
+  wrap.append(span, el);
+  return wrap;
+}
+
+function renderBatchList() {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;flex-direction:column;gap:.6rem';
+
+  const toolbar = document.createElement('div');
+  toolbar.style.cssText = 'display:flex;gap:.6rem;align-items:center;margin-bottom:.2rem';
+  const selectAllBtn = document.createElement('button');
+  selectAllBtn.type = 'button';
+  selectAllBtn.textContent = 'Select all';
+  selectAllBtn.style.cssText = 'background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.3rem .7rem;font-size:.78rem;border-radius:3px;cursor:pointer';
+  const selectNoneBtn = selectAllBtn.cloneNode(true);
+  selectNoneBtn.textContent = 'Select none';
+  toolbar.append(selectAllBtn, selectNoneBtn);
+  wrap.appendChild(toolbar);
+
+  const list = document.createElement('div');
+  list.style.cssText = 'display:flex;flex-direction:column;gap:.6rem';
+  const checkboxes = [];
+
+  batchItems.forEach((item, i) => {
+    const card = document.createElement('div');
+    card.style.cssText = 'background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:.75rem;display:flex;gap:.6rem;align-items:flex-start';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = true;
+    cb.style.marginTop = '.4rem';
+    checkboxes.push(cb);
+
+    const body = document.createElement('div');
+    body.style.cssText = 'flex:1;display:flex;flex-direction:column;gap:.5rem';
+
+    const badge = document.createElement('span');
+    badge.style.cssText = 'font-size:.7rem;text-transform:uppercase;letter-spacing:.04em;color:var(--neon)';
+
+    if (item.kind === 'entity') {
+      badge.textContent = 'Entity';
+      const kindSel = document.createElement('select');
+      ENTITY_KIND_OPTIONS.forEach((k) => {
+        const opt = document.createElement('option');
+        opt.value = k;
+        opt.textContent = k.charAt(0).toUpperCase() + k.slice(1);
+        if (k === item.data.kind) opt.selected = true;
+        kindSel.appendChild(opt);
+      });
+      kindSel.addEventListener('change', () => { item.data.kind = kindSel.value; });
+      const nameInput = document.createElement('input');
+      nameInput.value = item.data.name || '';
+      nameInput.addEventListener('input', () => { item.data.name = nameInput.value; });
+      const summaryInput = document.createElement('input');
+      summaryInput.value = item.data.summary || '';
+      summaryInput.addEventListener('input', () => { item.data.summary = summaryInput.value; });
+      const bodyTa = document.createElement('textarea');
+      bodyTa.rows = 3;
+      bodyTa.value = item.data.body || '';
+      bodyTa.addEventListener('input', () => { item.data.body = bodyTa.value; });
+
+      const grid = document.createElement('div');
+      grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.5rem';
+      grid.append(batchCompactField('Kind', kindSel), batchCompactField('Name', nameInput));
+      body.append(badge, grid, batchCompactField('Summary', summaryInput), batchCompactField('Body', bodyTa));
+    } else {
+      badge.textContent = 'Player Character';
+      const nameInput = document.createElement('input');
+      nameInput.value = item.data.name || '';
+      nameInput.addEventListener('input', () => { item.data.name = nameInput.value; });
+      const raceInput = document.createElement('input');
+      raceInput.value = item.data.race || '';
+      raceInput.addEventListener('input', () => { item.data.race = raceInput.value; });
+      const classInput = document.createElement('input');
+      classInput.value = item.data.char_class || '';
+      classInput.addEventListener('input', () => { item.data.char_class = classInput.value; });
+      const backstoryTa = document.createElement('textarea');
+      backstoryTa.rows = 3;
+      backstoryTa.value = item.data.backstory || '';
+      backstoryTa.addEventListener('input', () => { item.data.backstory = backstoryTa.value; });
+
+      const grid = document.createElement('div');
+      grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.5rem';
+      grid.append(batchCompactField('Name', nameInput), batchCompactField('Race', raceInput), batchCompactField('Class', classInput));
+      body.append(badge, grid, batchCompactField('Backstory', backstoryTa));
+    }
+
+    card.append(cb, body);
+    list.appendChild(card);
+  });
+  wrap.appendChild(list);
+
+  selectAllBtn.addEventListener('click', () => checkboxes.forEach(cb => { cb.checked = true; }));
+  selectNoneBtn.addEventListener('click', () => checkboxes.forEach(cb => { cb.checked = false; }));
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:.75rem;align-items:center;margin-top:.4rem';
+  const createBtn = document.createElement('button');
+  createBtn.type = 'button';
+  createBtn.textContent = '✓ Create Selected';
+  createBtn.style.cssText = 'background:var(--neon);color:#000;border:none;padding:.5rem 1.3rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer';
+  const status = document.createElement('span');
+  status.style.cssText = 'font-size:.82rem';
+  const resultsList = document.createElement('div');
+  resultsList.style.cssText = 'margin-top:.6rem;font-size:.8rem;color:var(--text-dim);display:flex;flex-direction:column;gap:.2rem';
+
+  createBtn.addEventListener('click', async () => {
+    const selected = batchItems.filter((_, i) => checkboxes[i].checked);
+    if (!selected.length) { alert('Select at least one item to create.'); return; }
+    createBtn.disabled = true;
+    status.textContent = 'Creating…';
+    status.style.color = 'var(--text-dim)';
+    resultsList.innerHTML = '';
+    try {
+      const imports = selected.map(item => ({
+        kind: item.kind === 'entity' ? 'entity_single' : 'player_character',
+        data: item.data,
+      }));
+      const res = await fetch('/api/import/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ json_text: JSON.stringify({ imports }), kind: 'batch' }),
+      });
+      if (!res.ok) throw await ndApiErrorFrom(res);
+      const data = await res.json();
+      const okCount = (data.results || []).filter(r => r.ok).length;
+      status.textContent = `✓ Created ${okCount}/${selected.length}.`;
+      (data.results || []).forEach((r, i) => {
+        const line = document.createElement('div');
+        const name = selected[i] && selected[i].data && selected[i].data.name;
+        line.textContent = `${r.ok ? '✓' : '✕'} ${name || r.kind}: ${r.message}`;
+        line.style.color = r.ok ? '#8e8' : '#e88';
+        resultsList.appendChild(line);
+      });
+    } catch (e) {
+      status.style.color = '#c44';
+      status.textContent = 'Failed: ' + (e.message || e);
+    } finally {
+      createBtn.disabled = false;
+    }
+  });
+  actions.append(createBtn, status);
+  wrap.append(actions, resultsList);
+
+  return wrap;
 }
 </script>
 {% endblock %}

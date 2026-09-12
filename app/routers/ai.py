@@ -425,6 +425,35 @@ async def api_entity_from_text(
     return draft
 
 
+class EntitiesBatchFromTextBody(BaseModel):
+    text: str
+
+
+@router.post("/entities-from-text-batch")
+async def api_entities_from_text_batch(
+    body: EntitiesBatchFromTextBody, request: Request, db=Depends(get_db), active_world: str = Cookie(None),
+):
+    """Draft MULTIPLE entities and/or player characters from one passage of
+    text (session notes, a homebrew document...) in a single AI call — the
+    batch sibling of /entity-from-text, for "paste a whole document and get
+    a batch of classified drafts" rather than one passage per entity.
+    Returns {"entities": [...], "player_characters": [...]} without writing
+    anything; the client reviews/edits/deselects individual items, then
+    POSTs the confirmed subset as an {"imports": [...]} batch to the
+    existing /api/import/execute (kind=batch)."""
+    _require_can_edit(request)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(400, "No text provided")
+    try:
+        return await _ai.parse_entities_batch_from_text(text, KINDS)
+    except ValueError as exc:
+        raise HTTPException(502, str(exc))
+
+
 async def _read_import_images(files: List[UploadFile]) -> list[bytes]:
     """Shared validation for the two image-to-draft routes below: image-
     extension + per-file size checks reusing the same allowlist/cap the chat

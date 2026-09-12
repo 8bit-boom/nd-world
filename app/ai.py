@@ -1755,6 +1755,135 @@ async def parse_find_replace_instruction(instruction: str, model: str = "") -> d
         raise ValueError("The model returned malformed JSON — try again or switch models.") from exc
 
 
+# Multi-category batch extraction — the sibling of parse_entity_from_text for
+# "paste a whole document (session notes, a homebrew page, a wiki dump) and
+# get back everything worth tracking as separate world content" rather than
+# one passage -> one entity. Same draft-then-confirm contract: raises
+# ValueError on failure, writes nothing — the caller reviews the batch, then
+# POSTs the confirmed set to /api/import/execute (kind="batch").
+MAX_BATCH_ENTITIES = 25  # bounds the response size and keeps the review list human-reviewable
+MAX_BATCH_TEXT_CHARS = 20000  # generous for a session's worth of notes, bounded against blowing the model's context
+
+_ENTITIES_BATCH_SYSTEM = (
+    "You read a passage of tabletop RPG text — session notes, a homebrew "
+    "document, a wiki page, anything — and extract EVERY distinct thing it "
+    "describes that's worth tracking as separate world content: NPCs/"
+    "characters, locations, organizations, creatures, events, items, feats, "
+    "races, professions, and player characters. Put lore/NPC content in "
+    "\"entities\" — each with a \"kind\" (character, location, organization, "
+    "creature, event, item, feat, race, or profession), \"name\", a "
+    "one-sentence \"summary\", and the full write-up in Markdown as \"body\". "
+    "Put anything that's clearly a PLAYER's own character sheet in "
+    "\"player_characters\" instead (name, race, class, level, backstory, "
+    "notes) — never the same thing in both. Extract only what's stated or "
+    "clearly implied by the text; do not invent unrelated details, and do "
+    "not split one thing into several entries or merge distinct things into "
+    "one. If nothing in the text is worth extracting, return empty arrays. "
+    "Respond with JSON only."
+)
+
+
+def _entities_batch_schema(kinds: list[str]) -> dict:
+    entity_item = {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": list(kinds)},
+            "subtype": {"type": "string"},
+            "name": {"type": "string"},
+            "summary": {"type": "string"},
+            "body": {"type": "string"},
+            "tags": {"type": "string"},
+            "folder": {"type": "string"},
+            "visible_to_players": {"type": "boolean"},
+        },
+        "required": ["kind", "name"],
+    }
+    pc_item = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "player_name": {"type": "string"},
+            "race": {"type": "string"},
+            "char_class": {"type": "string"},
+            "level": {"type": "integer"},
+            "xp": {"type": "integer"},
+            "backstory": {"type": "string"},
+            "notes": {"type": "string"},
+        },
+        "required": ["name"],
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "entities": {"type": "array", "items": entity_item},
+            "player_characters": {"type": "array", "items": pc_item},
+        },
+        "required": ["entities", "player_characters"],
+    }
+
+
+async def parse_entities_batch_from_text(raw_text: str, kinds: list[str], model: str = "") -> dict:
+    """Extracts every distinct entity/player-character described in a
+    passage of text in ONE call — see this module's own note above. Returns
+    {"entities": [...], "player_characters": [...]} (either may be empty);
+    each entity dict has the exact same shape parse_entity_from_text
+    returns, and each player_character dict the same shape
+    parse_character_from_images returns, so the review UI/commit path
+    (POST /api/import/execute) can treat a batch item identically to a
+    single-item draft. Raises ValueError on any failure."""
+    m = model or effective_ollama_model()
+    text = raw_text[:MAX_BATCH_TEXT_CHARS]
+    try:
+        resp = await _client().chat(
+            model=m,
+            messages=[
+                {"role": "system", "content": _ENTITIES_BATCH_SYSTEM},
+                {"role": "user", "content": text},
+            ],
+            format=_entities_batch_schema(kinds),
+            **(await _chat_kwargs(model=m)),
+        )
+    except _ollama.ResponseError as exc:
+        raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
+    except Exception as exc:
+        raise ValueError(f"AI unavailable: {type(exc).__name__}: {exc}") from exc
+    try:
+        parsed = _json.loads(resp.message.content or "")
+        if not isinstance(parsed, dict):
+            raise ValueError
+        entities = []
+        for item in (parsed.get("entities") or [])[:MAX_BATCH_ENTITIES]:
+            if not isinstance(item, dict) or item.get("kind") not in kinds or not str(item.get("name") or "").strip():
+                continue
+            entities.append({
+                "kind": item["kind"],
+                "subtype": str(item.get("subtype") or "").strip(),
+                "name": str(item["name"]).strip(),
+                "summary": str(item.get("summary") or "").strip(),
+                "body": str(item.get("body") or "").strip(),
+                "tags": str(item.get("tags") or "").strip(),
+                "folder": str(item.get("folder") or "").strip(),
+                "visible_to_players": bool(item.get("visible_to_players", True)),
+            })
+        player_characters = []
+        for item in (parsed.get("player_characters") or [])[:MAX_BATCH_ENTITIES]:
+            if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+                continue
+            player_characters.append({
+                "name": str(item["name"]).strip(),
+                "player_name": str(item.get("player_name") or "").strip(),
+                "race": str(item.get("race") or "").strip(),
+                "char_class": str(item.get("char_class") or "").strip(),
+                "level": max(1, min(20, int(item.get("level") or 1))) if str(item.get("level") or "").strip() else 1,
+                "xp": max(0, int(item.get("xp") or 0)) if str(item.get("xp") or "").strip() else 0,
+                "backstory": str(item.get("backstory") or "").strip(),
+                "notes": str(item.get("notes") or "").strip(),
+            })
+        return {"entities": entities, "player_characters": player_characters}
+    except Exception as exc:
+        raise ValueError("Could not extract anything usable from that text — try a shorter passage, or a different model.") from exc
+
+
 _SESSION_PREP_SYSTEM = (
     "You are a scribe helping a tabletop RPG GM prepare for their next session. Given a summary "
     "of what happened recently (facts and/or a recap), any open quests, and the party's makeup, "

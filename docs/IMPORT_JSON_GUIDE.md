@@ -225,3 +225,17 @@ and clicking Create sends that reviewed JSON straight to
 `llama3.2-vision`, `llava`, `qwen2-vl`, `gemma3`) selected as the active
 Ollama model — a text-only model will return a mostly-empty draft since it
 can't actually see the photo.
+
+## Getting several drafts at once: "📝 Generate Entities from Text (AI)"
+
+For a whole document rather than one thing at a time — session notes, a
+homebrew page, a wiki dump — the `/import` page's **Generate Entities from
+Text (AI)** section reads the pasted text once and returns a whole batch of
+classified drafts in a single call: `POST /api/ai/entities-from-text-batch`
+returns `{"entities": [...], "player_characters": [...]}`, each entry in the
+exact shape documented above. Review/edit/deselect individual items in the
+list, and "Create Selected" wraps only the checked ones as an
+`{"imports": [{"kind": "entity_single"|"player_character", "data": {...}}, ...]}`
+batch and sends it to `POST /api/import/execute` (`kind=batch`) — the same
+best-effort, per-item-result batch path documented above, so one bad item
+never blocks the rest.

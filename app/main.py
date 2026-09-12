@@ -639,6 +639,7 @@ def _is_assistant_safe(method: str, path: str) -> bool:
         "/api/ai/generate/location",
         "/api/ai/generate/quest",
         "/api/ai/entity-from-text",
+        "/api/ai/entities-from-text-batch",
         "/api/ai/character-from-images",
         "/api/ai/entity-from-images",
         "/api/ai/save-note",
