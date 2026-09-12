@@ -414,6 +414,104 @@ function ndFmtSetImageSize(ta, pct) {
   ta.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+// ── Live thumbnail preview + drag-resize, below the textarea ───────────────
+// A raw ![]() reference is unreadable text with no visual feedback, so a
+// note/body with several images pasted in back-to-back (no separating text)
+// is impossible to tell apart or resize by cursor position alone. This
+// mirrors every image reference in the field as a small thumbnail with its
+// own corner-drag handles, updating the SAME size:NN title-marker
+// convention as ndFmtSetImageSize above but targeted at a specific match's
+// [start,end) span rather than the cursor — see ndFmtImageMatches.
+//
+// Each thumbnail's own wrapping <span> is deliberately given NO explicit
+// width (just display:inline-block + position:relative) and the <img>
+// inside it is sized in PIXELS, never a percentage — a percentage would
+// resolve against this auto-width wrapper's own box, which is exactly the
+// circular shrink-to-fit sizing hazard described where the toolbar's own
+// resize handles are built for the *rendered* page (see
+// entities/detail.html's note-image resize script). Pixels sidestep that
+// entirely: the wrapper just shrinks to hug whatever pixel width the image
+// ends up at, so the corner handles (plain CSS, anchored to the wrapper's
+// own corners) are always correctly placed with no JS position bookkeeping.
+const NDFMT_PREVIEW_BASE_PX = 160; // maps size:100 to this many preview pixels
+const NDFMT_PREVIEW_MIN_PX = 40;
+const NDFMT_PREVIEW_MAX_PX = 260;
+
+// Every ![]() occurrence in the field, in order, each with its exact
+// [start,end) span in `text` — used both to render one preview thumbnail
+// per image and, on that thumbnail's own resize, to rewrite precisely that
+// occurrence (by span, not by URL — so two references to the same image
+// resize independently, unlike the rendered-page version which can't
+// address a specific occurrence since it only has the <img> it was clicked
+// on, not the textarea's raw source).
+function ndFmtImageMatches(text) {
+  const out = [];
+  NDFMT_IMAGE_REF_RE.lastIndex = 0;
+  let m;
+  while ((m = NDFMT_IMAGE_REF_RE.exec(text))) {
+    const parsed = ndFmtParseImageRef(m[0]);
+    if (parsed) out.push({ start: m.index, end: m.index + m[0].length, parsed });
+  }
+  return out;
+}
+
+function ndFmtRefreshPreview(ta, preview) {
+  const matches = ndFmtImageMatches(ta.value).filter(
+    (m) => !NDFMT_AV_TITLES.has(m.parsed.title) && ndFmtSafeImageUrl(m.parsed.url)
+  );
+  preview.innerHTML = "";
+  preview.classList.toggle("fmt-preview-empty", matches.length === 0);
+  matches.forEach((match) => {
+    const item = document.createElement("span");
+    item.className = "fmt-preview-item";
+    const img = document.createElement("img");
+    img.src = ndFmtSafeImageUrl(match.parsed.url);
+    img.alt = match.parsed.alt || "";
+    const sizeMatch = match.parsed.title && NDFMT_SIZE_TITLE_RE.exec(match.parsed.title);
+    const pct = sizeMatch
+      ? Math.max(NDFMT_MIN_SIZE_PCT, Math.min(NDFMT_MAX_SIZE_PCT, parseInt(sizeMatch[1], 10)))
+      : 100;
+    const startPx = Math.max(NDFMT_PREVIEW_MIN_PX, Math.min(NDFMT_PREVIEW_MAX_PX, NDFMT_PREVIEW_BASE_PX * pct / 100));
+    img.style.width = startPx + "px";
+    item.appendChild(img);
+
+    ["nw", "ne", "sw", "se"].forEach((corner) => {
+      const handle = document.createElement("span");
+      handle.className = "fmt-preview-handle fmt-preview-handle-" + corner;
+      handle.title = "Drag to resize";
+      item.appendChild(handle);
+      const growsRight = corner === "ne" || corner === "se";
+      handle.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        handle.setPointerCapture(e.pointerId);
+        const startX = e.clientX;
+        const dragStartWidth = img.getBoundingClientRect().width;
+
+        function onMove(ev) {
+          const delta = growsRight ? ev.clientX - startX : startX - ev.clientX;
+          const px = Math.max(NDFMT_PREVIEW_MIN_PX, Math.min(NDFMT_PREVIEW_MAX_PX, dragStartWidth + delta));
+          img.style.width = px + "px";
+        }
+        function onUp() {
+          handle.removeEventListener("pointermove", onMove);
+          const finalPx = img.getBoundingClientRect().width;
+          let newPct = Math.round((finalPx / NDFMT_PREVIEW_BASE_PX) * 100);
+          newPct = Math.max(NDFMT_MIN_SIZE_PCT, Math.min(NDFMT_MAX_SIZE_PCT, newPct));
+          const title = newPct === 100 ? "" : ` "size:${newPct}"`;
+          const rebuilt = `![${match.parsed.alt}](${match.parsed.url}${title})`;
+          ta.value = ta.value.slice(0, match.start) + rebuilt + ta.value.slice(match.end);
+          ta.dispatchEvent(new Event("input", { bubbles: true }));
+          ndFmtRefreshPreview(ta, preview);
+        }
+        handle.addEventListener("pointermove", onMove);
+        handle.addEventListener("pointerup", onUp, { once: true });
+      });
+    });
+
+    preview.appendChild(item);
+  });
+}
+
 function ndFmtButton(label, title, onClick) {
   const b = document.createElement("button");
   b.type = "button";
@@ -486,6 +584,16 @@ function ndFmtBuildToolbar(ta) {
   bar.appendChild(colorGroup);
 
   ta.parentNode.insertBefore(bar, ta);
+
+  const preview = document.createElement("div");
+  preview.className = "fmt-preview";
+  ta.parentNode.insertBefore(preview, ta.nextSibling);
+  ndFmtRefreshPreview(ta, preview);
+  let previewDebounce;
+  ta.addEventListener("input", () => {
+    clearTimeout(previewDebounce);
+    previewDebounce = setTimeout(() => ndFmtRefreshPreview(ta, preview), 250);
+  });
 }
 
 function ndFmtInit() {

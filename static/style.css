@@ -712,7 +712,11 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
   border-radius: 2px;
 }
 .prose u, .rendered-md u { text-decoration-color: var(--neon); text-underline-offset: 2px; }
-.prose img, .rendered-md img { max-width: 100%; height: auto; border-radius: 4px; margin: .4em 0; display: block; }
+/* inline-block (not block): a lone image still sits on its own line since
+   it's the sole content of its wrapping <p>, but several small images
+   placed back-to-back (no separating text) now flow side by side on the
+   same row instead of always stacking one-per-line regardless of width. */
+.prose img, .rendered-md img { max-width: 100%; height: auto; border-radius: 4px; margin: .4em .3em .4em 0; display: inline-block; vertical-align: top; }
 .prose audio, .rendered-md audio { width: 100%; margin: .4em 0; display: block; }
 .prose video, .rendered-md video { max-width: 100%; height: auto; border-radius: 4px; margin: .4em 0; display: block; }
 
@@ -1596,6 +1600,22 @@ input[type="file"]:hover { border-color: var(--neon); }
 textarea[data-fmt].fmt-drag-over {
   outline: 2px dashed var(--neon); outline-offset: -2px; background: rgba(0,240,255,0.06);
 }
+/* Live thumbnail preview below a data-fmt textarea (ndFmtRefreshPreview) —
+   every ![]() reference in the field as a small draggable-corner thumbnail,
+   so images are visible and resizable while composing/editing, not only
+   after saving and viewing the rendered page. */
+.fmt-preview { display: flex; flex-wrap: wrap; gap: .5rem; margin: -.15rem 0 .5rem; }
+.fmt-preview.fmt-preview-empty { display: none; }
+.fmt-preview-item { position: relative; display: inline-block; vertical-align: top; }
+.fmt-preview-item img { display: block; border-radius: 4px; height: auto; }
+.fmt-preview-handle {
+  position: absolute; width: 10px; height: 10px; background: var(--neon);
+  border: 1px solid #000; border-radius: 2px; z-index: 2; touch-action: none;
+}
+.fmt-preview-handle-nw { top: -5px; left: -5px; cursor: nwse-resize; }
+.fmt-preview-handle-ne { top: -5px; right: -5px; cursor: nesw-resize; }
+.fmt-preview-handle-sw { bottom: -5px; left: -5px; cursor: nesw-resize; }
+.fmt-preview-handle-se { bottom: -5px; right: -5px; cursor: nwse-resize; }
 
 /* Shared "Choose from Gallery" picker (static/js/gallery-picker.js) — one
    modal per page, opened by any number of trigger buttons via

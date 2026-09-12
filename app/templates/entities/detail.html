@@ -235,6 +235,15 @@
   // never changes shape, only its own inline width style does.
   (function () {
     var MIN_PCT = 10, MAX_PCT = 300, HANDLE = 10;
+    // Every tracked {img, handles, content} on the page — resizing ANY one
+    // image changes its own height (width% scales height via the image's
+    // aspect ratio), which reflows every image below it in the document.
+    // A resize therefore has to reposition every OTHER image's handles too,
+    // not just the one being dragged, or their absolutely-positioned spans
+    // are left stranded at their old (now wrong) coordinates — this was the
+    // bug where only the first image in a multi-image note stayed
+    // draggable after any earlier one was resized.
+    var registry = [];
 
     function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
@@ -248,16 +257,20 @@
       return markdown.replace(re, function (_, pre, post) { return pre + title + post; });
     }
 
-    function positionHandles(img, handles, containerRect) {
-      var r = img.getBoundingClientRect();
+    function positionOne(entry) {
+      var containerRect = entry.content.getBoundingClientRect();
+      var r = entry.img.getBoundingClientRect();
       var half = HANDLE / 2;
       var top = r.top - containerRect.top, bottom = r.bottom - containerRect.top;
       var left = r.left - containerRect.left, right = r.right - containerRect.left;
-      handles.nw.style.top = (top - half) + 'px'; handles.nw.style.left = (left - half) + 'px';
-      handles.ne.style.top = (top - half) + 'px'; handles.ne.style.left = (right - half) + 'px';
-      handles.sw.style.top = (bottom - half) + 'px'; handles.sw.style.left = (left - half) + 'px';
-      handles.se.style.top = (bottom - half) + 'px'; handles.se.style.left = (right - half) + 'px';
+      var h = entry.handles;
+      h.nw.style.top = (top - half) + 'px'; h.nw.style.left = (left - half) + 'px';
+      h.ne.style.top = (top - half) + 'px'; h.ne.style.left = (right - half) + 'px';
+      h.sw.style.top = (bottom - half) + 'px'; h.sw.style.left = (left - half) + 'px';
+      h.se.style.top = (bottom - half) + 'px'; h.se.style.left = (right - half) + 'px';
     }
+
+    function repositionAll() { registry.forEach(positionOne); }
 
     function saveNote(entityId, noteId, content, visible) {
       return fetch('/entity/' + entityId + '/notes/' + noteId + '/edit', {
@@ -284,9 +297,9 @@
         content.appendChild(h);
         handles[corner] = h;
       });
-      function reposition() { positionHandles(img, handles, content.getBoundingClientRect()); }
-      reposition();
-      window.addEventListener('resize', reposition);
+      var entry = { img: img, handles: handles, content: content };
+      registry.push(entry);
+      positionOne(entry);
 
       Object.keys(handles).forEach(function (corner) {
         var handle = handles[corner];
@@ -304,7 +317,7 @@
             var px = startWidth + delta;
             px = Math.max(containerWidth * MIN_PCT / 100, Math.min(containerWidth * MAX_PCT / 100, px));
             img.style.width = px + 'px';
-            reposition();
+            repositionAll();
           }
           function onUp() {
             handle.removeEventListener('pointermove', onMove);
@@ -312,7 +325,7 @@
             var pct = Math.round(finalWidth / containerWidth * 100);
             pct = Math.max(MIN_PCT, Math.min(MAX_PCT, pct));
             img.style.width = pct + '%';
-            reposition();
+            repositionAll();
 
             var ta = document.querySelector('#en-edit-' + noteId + ' textarea[name="content"]');
             var visCheckbox = document.querySelector('#en-edit-' + noteId + ' input[name="visible"]');
@@ -321,7 +334,7 @@
             ta.value = newContent;
             saveNote(entityId, noteId, newContent, visCheckbox && visCheckbox.checked).catch(function () {
               img.style.width = prevStyleWidth;
-              reposition();
+              repositionAll();
               alert("Couldn't save the new image size — please try again.");
             });
           }
@@ -337,6 +350,7 @@
         initImage(img, entityId);
       });
     }
+    window.addEventListener('resize', repositionAll);
 
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', initAll);

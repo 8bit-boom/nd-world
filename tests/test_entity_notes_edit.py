@@ -246,3 +246,40 @@ def test_html_preserved_note_content_flagged_to_skip_resize_handles(client, seed
     r = client.get(f"/entity/{entity_id}")
     assert r.status_code == 200
     assert 'data-html-content="1"' in r.text
+
+
+# ── Regression: resizing one image must not strand another's handles ───────
+# Resizing an image changes its own rendered height, which reflows every
+# image below it in the note — a fix used to reposition only the dragged
+# image's own handles, stranding every other image's absolutely-positioned
+# handle spans at their old (now wrong) coordinates. Only the first image in
+# a multi-image note stayed draggable after any earlier one was resized.
+
+def test_multi_image_note_resize_script_repositions_every_tracked_image(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    entity_id = _make_entity(seed.world_a.id)
+    content = (
+        '![](/uploads/a.png)'
+        '![](/uploads/b.png)'
+        '![](/uploads/c.png)'
+    )
+    _make_note(entity_id, content=content, visible=True)
+
+    r = client.get(f"/entity/{entity_id}")
+    assert r.status_code == 200
+    script_start = r.text.index("Drag-to-resize handles on note images")
+    script_end = r.text.index("</script>", script_start)
+    script = r.text[script_start:script_end]
+    # A shared registry + repositionAll (not a per-image reposition closure
+    # called only for the image being dragged) is what keeps every other
+    # image's handles correctly aligned after any one of them is resized.
+    assert "var registry = []" in script
+    assert "function repositionAll()" in script
+    assert "registry.forEach(positionOne)" in script
+    onmove_start = script.index("function onMove(ev) {")
+    onmove_end = script.index("\n          }", onmove_start)
+    assert "repositionAll()" in script[onmove_start:onmove_end]
+    onup_start = script.index("function onUp() {")
+    onup_end = script.index("\n          }", onup_start)
+    assert "repositionAll()" in script[onup_start:onup_end]

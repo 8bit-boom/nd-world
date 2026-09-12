@@ -7,6 +7,8 @@ existing image-only upload routes), and the toolbar JS's generalized
 insert/drag-drop/paste/resize logic.
 """
 import io
+import re
+from pathlib import Path
 
 from app.database import SessionLocal
 from app.models import Entity, EntityNote
@@ -15,6 +17,7 @@ from app.rendering import render_md, strip_md
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
 _PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 1000
+_STYLE_CSS = (Path(__file__).parent.parent / "static" / "style.css").read_text()
 
 
 def _file(name, content_type, size=1000):
@@ -253,3 +256,70 @@ def test_toolbar_js_render_inline_supports_title_marker_for_board_preview(client
     assert "NDFMT_SIZE_TITLE_RE" in fn_body
     assert '"audio"' in fn_body
     assert '"video"' in fn_body
+
+
+# ── Live thumbnail preview panel (ndFmtRefreshPreview) ─────────────────────
+# A raw ![]() reference is unreadable text with no visual feedback, and
+# several pasted in back-to-back are indistinguishable from the cursor
+# alone — this panel mirrors every image reference in the field as a small
+# draggable-corner thumbnail so images are visible/resizable while
+# composing, not just after saving and viewing the rendered page.
+
+def test_toolbar_js_has_image_matches_helper(client, seed):
+    js = _toolbar_js(client)
+    fn_start = js.index("function ndFmtImageMatches")
+    fn_end = js.index("\n}", fn_start)
+    fn_body = js[fn_start:fn_end]
+    assert "NDFMT_IMAGE_REF_RE" in fn_body
+    assert "ndFmtParseImageRef" in fn_body
+
+
+def test_toolbar_js_refresh_preview_builds_thumbnails_with_handles(client, seed):
+    js = _toolbar_js(client)
+    fn_start = js.index("function ndFmtRefreshPreview")
+    fn_end = js.index("\nfunction ndFmtBuildToolbar", fn_start)
+    fn_body = js[fn_start:fn_end]
+    # Skips audio/video references (not resizable as an <img> thumbnail)
+    # and anything that fails the same safe-URL check the toolbar's own
+    # media insertion uses.
+    assert "NDFMT_AV_TITLES.has(m.parsed.title)" in fn_body
+    assert "ndFmtSafeImageUrl(m.parsed.url)" in fn_body
+    assert "fmt-preview-item" in fn_body
+    assert "fmt-preview-handle" in fn_body
+    # Pixel-based sizing (not percentage) so the thumbnail's own wrapper
+    # never hits the shrink-to-fit / percentage-width circular sizing
+    # problem described in its own comment.
+    assert "NDFMT_PREVIEW_BASE_PX" in fn_body
+    assert 'img.style.width = startPx + "px"' in fn_body
+    # A resize rewrites this exact occurrence's [start,end) span, not a
+    # cursor position or a blanket URL match — the same field can carry
+    # multiple references to the same image, each resized independently.
+    assert "ta.value.slice(0, match.start)" in fn_body
+    assert "ta.value.slice(match.end)" in fn_body
+
+
+def test_toolbar_js_build_toolbar_wires_preview_panel(client, seed):
+    js = _toolbar_js(client)
+    build_start = js.index("function ndFmtBuildToolbar")
+    build_end = js.index("\nfunction ndFmtInit", build_start)
+    build_body = js[build_start:build_end]
+    assert "fmt-preview" in build_body
+    assert "ndFmtRefreshPreview(ta, preview)" in build_body
+    # Re-renders (debounced) on further typing, so hand-edited/pasted
+    # references pick up a thumbnail without requiring a save+reopen.
+    assert 'ta.addEventListener("input"' in build_body
+
+
+# ── Rendered images share a row when they fit (regression) ─────────────────
+# .rendered-md img/.prose img used to force display:block, so several small
+# images pasted back-to-back (no separating text) always stacked one per
+# row regardless of how narrow each one was resized to — this asserts the
+# fix (inline-block) stays in place. A lone image is unaffected: it's still
+# alone on its own line since it's the sole content of its wrapping <p>.
+
+def test_rendered_md_images_use_inline_block_so_small_ones_share_a_row():
+    m = re.search(r"\.prose img, \.rendered-md img\s*\{([^}]*)\}", _STYLE_CSS)
+    assert m, "expected a .prose img, .rendered-md img rule in style.css"
+    rule = m.group(1)
+    assert "display: inline-block" in rule
+    assert "display: block" not in rule
