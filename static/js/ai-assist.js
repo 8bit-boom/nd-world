@@ -20,6 +20,7 @@
 
 const ND_AA_OP_LABELS = {
   improve: '✨ Improve writing',
+  deslop: '🧹 Remove AI slop',
   expand: '➕ Expand draft',
   summarize: '📝 Write summary',
   suggest: '🏷 Suggest summary & tags',

@@ -52,6 +52,16 @@ OP_ANALYZE = "analyze"
 OP_TRANSLATE = "translate"
 OP_CUSTOM = "custom"
 OP_RULES_REWRITE = "rules_rewrite"
+# A style-only edit pass: strips the small set of tics that make text read as
+# generic AI output (banned filler words, "not X, it's Y" contrasts, faux-
+# insight setups, fake-profound kickers, and the rest of the pattern list
+# below) without touching facts, names or the writer's own voice. Ported
+# from the community "no-ai-slop" editing guide (github.com/petergyang/
+# no-ai-slop's SKILL.md) into this app's own prompt rather than depended on
+# as a package — that project is a slash-command prompt for a coding agent
+# (Claude Code/Codex), not a library or service nd-world could import; the
+# actual value is its rule list, which _DESLOP_SYSTEM below carries.
+OP_DESLOP = "deslop"
 # Internal-only op (the dashboard's world-summary widget; the job engine
 # assembles the world state and hands it in as `content`). Accepted by
 # run_assist but deliberately not offered by any editor panel.
@@ -77,6 +87,7 @@ OP_FOLK_TALE = "folk_tale"
 FREE_TEXT_OPS = {
     OP_EXPAND, OP_IMPROVE, OP_SUMMARIZE, OP_ANALYZE, OP_TRANSLATE,
     OP_CUSTOM, OP_RULES_REWRITE, OP_WORLD_SUMMARY, OP_FOLK_TALE, OP_CODE_EDIT,
+    OP_DESLOP,
 }
 
 # Structured ops — result is JSON the surface applies field-by-field.
@@ -115,6 +126,36 @@ _IMPROVE_SYSTEM = _BASE_SYSTEM + (
     "structure and flow. Preserve the meaning, tone, voice and every fact/name "
     "exactly — this is an edit, not a rewrite of the story. Keep the existing "
     "Markdown formatting. Output only the improved text."
+)
+
+_DESLOP_SYSTEM = _BASE_SYSTEM + (
+    " Rewrite the text to remove patterns that read as generic AI-generated "
+    "writing, while preserving the writer's own voice, vocabulary, cadence and "
+    "every fact/name exactly — this is a style edit, not a rewrite of the "
+    "content. Make the minimum effective changes.\n"
+    "Avoid these words: delve, foster, leverage, utilize, facilitate, empower, "
+    "streamline, robust, cutting-edge, paradigm shift, game changer, this is "
+    "huge, this changes everything, tapestry, realm, beacon, multifaceted, "
+    "meticulous, intricate, paramount, transformative, elevate, embark, "
+    "supercharge, harness, ever-evolving.\n"
+    "Remove these patterns wherever they appear: binary contrasts ('It's not "
+    "X, it's Y' — state the claim directly); throat-clearing openers ('Here's "
+    "the thing,' 'Let me be clear,' 'I'll be honest'); faux-insight setups "
+    "('What most people get wrong is...'); dramatic colon reveals ('The "
+    "result: chaos.' — use a plain sentence); superficial -ing clauses that "
+    "gesture at meaning without saying anything ('showcasing the depth of...'); "
+    "importance puffery ('marks a pivotal moment' — state the concrete fact "
+    "instead); interpretive metadiscourse that tells the reader what to "
+    "notice ('It's worth noting that...'); unsourced weasel attribution "
+    "('Experts say...' — name the source or cut the claim); synonym cycling "
+    "(rotating words for variety instead of repeating the clear one); "
+    "negative listing ('Not X. Not Y. Z.' — say the point directly); stacked "
+    "sentence fragments for false drama; rhetorical setups ('What if I told "
+    "you...'); fake-profound closing lines; and 'In conclusion' summary "
+    "recaps (end on the last concrete point instead).\n"
+    "Use active voice, cut empty qualifiers, show concrete detail rather than "
+    "telling in the abstract, and replace weak verbs with direct ones. Keep "
+    "the existing Markdown formatting. Output only the edited text."
 )
 
 _SUMMARIZE_SYSTEM = _BASE_SYSTEM + (
@@ -392,6 +433,7 @@ async def run_assist(
     system_by_op = {
         OP_EXPAND: _EXPAND_SYSTEM,
         OP_IMPROVE: _IMPROVE_SYSTEM,
+        OP_DESLOP: _DESLOP_SYSTEM,
         OP_SUMMARIZE: _SUMMARIZE_SYSTEM,
         OP_ANALYZE: _ANALYZE_SYSTEM,
         OP_TRANSLATE: _TRANSLATE_SYSTEM,
@@ -410,7 +452,7 @@ async def run_assist(
         user = _compose_user(meta, content)
     if op == OP_CODE_EDIT and not instruction.strip():
         raise ValueError("The code_edit operation needs an instruction — describe the change to make.")
-    if op in (OP_EXPAND, OP_IMPROVE, OP_SUMMARIZE, OP_TRANSLATE, OP_RULES_REWRITE,
+    if op in (OP_EXPAND, OP_IMPROVE, OP_DESLOP, OP_SUMMARIZE, OP_TRANSLATE, OP_RULES_REWRITE,
               OP_WORLD_SUMMARY, OP_FOLK_TALE, OP_CODE_EDIT):
         _require_content(op, content)
     elif op in (OP_ANALYZE,) and not user.strip():

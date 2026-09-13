@@ -98,6 +98,28 @@ async def test_degenerate_artifacts_are_cleaned(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_deslop_returns_generated_text(monkeypatch):
+    captured = {}
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=False):
+        captured["system"] = system
+        return "Plainly stated prose."
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    result = await assist_module.run_assist("deslop", content="It's not just a sword, it's a legacy.")
+    assert result == {"op": "deslop", "mode": "text", "text": "Plainly stated prose.", "model": result["model"]}
+    # The ported no-ai-slop rule list actually reached the model.
+    assert "delve" in captured["system"]
+    assert "binary contrasts" in captured["system"]
+
+
+@pytest.mark.asyncio
+async def test_deslop_requires_content():
+    with pytest.raises(ValueError, match="Nothing to work on"):
+        await assist_module.run_assist("deslop", content="   ")
+
+
+@pytest.mark.asyncio
 async def test_translate_uses_lang_and_drops_instruction_from_user(monkeypatch):
     captured = {}
 
@@ -245,6 +267,18 @@ def test_assist_route_gm_ok(client, seed, monkeypatch):
     assert r.status_code == 200, r.text
     data = r.json()
     assert data["mode"] == "text" and data["text"] == "Polished text."
+
+
+def test_assist_route_deslop_ok(client, seed, monkeypatch):
+    async def fake_generate_chat(messages, system="", model="", options=None, think=False):
+        return "Cleaned-up text."
+
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+    _login_gm(client, seed)
+    r = client.post("/api/ai/assist", json={"op": "deslop", "body": "It's not just a name, it's a legacy."})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["mode"] == "text" and data["text"] == "Cleaned-up text."
 
 
 def test_assist_route_player_403(client, seed, monkeypatch):
