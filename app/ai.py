@@ -4527,14 +4527,20 @@ SWARMUI_MODELS_DIR = Path(os.getenv("SWARMUI_MODELS_DIR", "/data/swarmui-models"
 # Subfolder names this app already asks SwarmUI's own API for elsewhere
 # (imagegen_models/_loras/_upscalers/_ipadapter_models/_refiners above use
 # these exact path= values against SwarmUI's ListModels endpoint) — real,
-# code-verified values, not guesses. VAE/clip/ControlNet/Embedding are
-# SwarmUI's own documented convention but aren't independently re-verified
-# against a live instance here. Offered as suggestions only (a <datalist>,
-# not an enum) — a GM running a SwarmUI version with different folder names
-# isn't blocked by nd-world guessing wrong, since they can just type whatever
-# their own installation actually uses.
+# code-verified values, not guesses. VAE/clip/ControlNet/Embedding/
+# diffusion_models are SwarmUI's own documented convention (docs/Model
+# Support.md) but aren't independently re-verified against a live instance
+# here. "diffusion_models" holds split/quantized checkpoints — Flux-style
+# UNet-only files, and GGUF-quantized models generally (SwarmUI auto-detects
+# the .gguf extension there and offers to install city96/ComfyUI-GGUF; see
+# the "krea2" entry in imagegen_templates.py for a GGUF model family that
+# needs a fork of that node instead of the mainline release). Offered as
+# suggestions only (a <datalist>, not an enum) — a GM running a SwarmUI
+# version with different folder names isn't blocked by nd-world guessing
+# wrong, since they can just type whatever their own installation actually
+# uses.
 SWARMUI_MODEL_FOLDER_SUGGESTIONS = [
-    "", "LoRA", "VAE", "clip", "ControlNet", "Upscale", "IPAdapter", "Refiner", "Embedding",
+    "", "LoRA", "VAE", "clip", "diffusion_models", "ControlNet", "Upscale", "IPAdapter", "Refiner", "Embedding",
 ]
 
 

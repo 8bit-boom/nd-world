@@ -401,6 +401,27 @@ def test_downloaded_list_route_returns_models_and_suggestions(client, seed, tmp_
     assert body["folder_suggestions"] == ai_module.SWARMUI_MODEL_FOLDER_SUGGESTIONS
 
 
+def test_diffusion_models_is_an_offered_folder_suggestion():
+    """Split/quantized checkpoints (Flux-style UNet-only files, and GGUF
+    models generally — e.g. a Krea 2 GGUF build) go in SwarmUI's
+    diffusion_models folder per its own docs, not any of the other
+    per-component folders (clip/VAE/...) already offered here."""
+    assert "diffusion_models" in ai_module.SWARMUI_MODEL_FOLDER_SUGGESTIONS
+
+
+def test_diffusion_models_download_round_trip(client, seed, tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "SWARMUI_MODELS_DIR", tmp_path)
+    _patch_httpx(monkeypatch, stream_response=_FakeStreamResponse(200, headers={}, chunks=[b"gguf bytes"]))
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/imagegen/models/download", json={
+        "url": "https://huggingface.co/realrebelai/KREA-2_GGUFs/resolve/main/krea2-turbo-Q4_K_M.gguf",
+        "subfolder": "diffusion_models", "filename": "krea2-turbo-Q4_K_M.gguf",
+    })
+    assert r.status_code == 200
+    assert (tmp_path / "diffusion_models" / "krea2-turbo-Q4_K_M.gguf").read_bytes() == b"gguf bytes"
+
+
 def test_delete_route_round_trip(client, seed, tmp_path, monkeypatch):
     monkeypatch.setattr(ai_module, "SWARMUI_MODELS_DIR", tmp_path)
     (tmp_path / "VAE").mkdir()
