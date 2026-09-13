@@ -754,6 +754,7 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/api/ai/imagegen/models/downloaded` | GM | Lists files nd-world can see under the shared SwarmUI models directory, plus suggested subfolder names. |
 | DELETE | `/api/ai/imagegen/models/downloaded` | GM | Deletes a previously-downloaded file (`?subfolder=&filename=`). Response includes `model_list_refreshed` (bool), same meaning as the download route. |
 | GET | `/api/ai/imagegen/models` | GM | Available checkpoint models. |
+| GET | `/api/ai/imagegen/models/hf-files` | GM | Every file in a Hugging Face repo matching `?suffix=` (default `.gguf`), recursing into subfolders — unlike `/api/ai/ollama/hf-files`, which only sees the repo root. Backs the Image Gen tab's "Krea 2 GGUF Quick Setup" panel. |
 | GET | `/api/ai/imagegen/loras` | GM | Available LoRAs. |
 | GET | `/api/ai/imagegen/samplers-schedulers` | GM | Available samplers/schedulers. |
 | GET | `/api/ai/imagegen/upscalers` | GM | Available upscale models. |

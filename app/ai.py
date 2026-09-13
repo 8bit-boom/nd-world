@@ -637,6 +637,60 @@ async def list_huggingface_gguf_files(repo_id: str) -> list[dict]:
     return out
 
 
+async def list_huggingface_repo_files_recursive(repo_id: str, suffix: str = ".gguf") -> list[dict]:
+    """Every file in `repo_id` (any revision path, not just the repo root)
+    whose name ends in `suffix`, each as {"path": <full repo-relative path>,
+    "size_bytes":} — for image-gen models like a Krea 2 GGUF build, where a
+    publisher commonly splits quantizations into subfolders (e.g. this
+    repo's own TURBO/ and BASE/ — see city96/ComfyUI-GGUF#464) rather than
+    dumping every file at the repo root the way list_huggingface_gguf_files
+    above assumes.
+
+    A DELIBERATELY SEPARATE function from list_huggingface_gguf_files, not
+    a shared "add recursive=True" flag on it: that one backs the Ollama
+    "pull from HF" flow, which builds a `hf.co/{repo}:{filename}` pull
+    string Ollama resolves itself — untested here whether Ollama's own
+    resolution accepts a filename containing a "/" for a nested path, so
+    that function is left exactly as it already works (root-level files
+    only) rather than risking a regression for a use case (Ollama LLM
+    pulls) this function was never written to serve. This one instead
+    hands its `path` straight to app.ai.download_swarmui_model's own `url`
+    (as .../resolve/main/{path}) — a plain HTTP download has no such
+    per-consumer ambiguity about what a "/" in the path means.
+
+    Uses HF's tree API with recursive=true (per huggingface_hub's own
+    documented list_repo_tree(..., recursive=True) parameter for this
+    exact endpoint) so one call covers every subfolder — not independently
+    verified against a live call from this environment (outbound access to
+    huggingface.co is unavailable here; see this module's other HF
+    functions for the same "returns [] on any failure" fallback shape,
+    which already covers an unexpected response to this param too).
+    Returns [] on any failure, same reasoning as search_huggingface_models
+    above."""
+    repo_id = (repo_id or "").strip().strip("/")
+    if not repo_id or "/" not in repo_id:
+        return []
+    suffix = (suffix or "").lower()
+    try:
+        async with _httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
+            r = await c.get(f"{_HF_API_BASE}/models/{repo_id}/tree/main", params={"recursive": "true"})
+            if r.status_code >= 400:
+                return []
+            data = r.json()
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path", "")
+        if entry.get("type") == "file" and path.lower().endswith(suffix):
+            out.append({"path": path, "size_bytes": entry.get("size")})
+    return out
+
+
 async def import_local_gguf_model(path: Path, model_name: str) -> AsyncGenerator[dict, None]:
     """Push a GGUF file already on local disk (an upload just reassembled
     by app.uploads' chunked-upload pair — see app.routers.ai's /ollama/

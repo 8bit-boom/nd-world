@@ -2054,6 +2054,19 @@ async def api_imagegen_models():
     return {"models": await _ai.imagegen_models()}
 
 
+@router.get("/imagegen/models/hf-files")
+async def api_imagegen_hf_files(repo: str = "", suffix: str = ".gguf"):
+    """Every matching file in a Hugging Face repo, recursing into
+    subfolders — see app.ai.list_huggingface_repo_files_recursive's own
+    docstring for why this is a separate function/route from the Ollama
+    HF-search flow's /ollama/hf-files rather than a shared one. Backs the
+    Image Gen tab's "Krea 2 GGUF quick setup" panel (discovering the
+    TURBO/BASE diffusion-model quantizations and the Qwen3-VL-4B-Instruct
+    text-encoder quantizations, each in their own repo), but is general —
+    any repo/suffix works, same "discovery only" shape as /ollama/hf-files."""
+    return {"files": await _ai.list_huggingface_repo_files_recursive(repo, suffix)}
+
+
 @router.get("/imagegen/loras")
 async def api_imagegen_loras():
     return {"loras": await _ai.imagegen_loras()}

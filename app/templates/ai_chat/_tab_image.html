@@ -75,6 +75,38 @@
         </div>
       </details>
 
+      <!-- Krea 2 GGUF quick setup — fetches the actual quantizations
+           available in the two required repos (realrebelai/KREA-2_GGUFs
+           for the diffusion model, unsloth/Qwen3-VL-4B-Instruct-GGUF for
+           its text encoder — see the "krea2" Image Gen template's own
+           note for why THAT text encoder specifically) and downloads a
+           picked pair straight through the same Download Models flow
+           above (k2Setup sets #dlm-* and calls dlmStartDownload() twice),
+           so this is "automatic" for everything nd-world can actually
+           reach — the one step it can't do is install the ComfyUI custom
+           node inside SwarmUI's own backend (no shared volume exposes
+           that path the way SWARMUI_MODELS_DIR does for model files). -->
+      <details class="ig-collapsible">
+        <summary>⚡ Krea 2 GGUF Quick Setup</summary>
+        <div class="ig-section-body">
+          <div style="font-size:.72rem;color:var(--text-dim);margin-bottom:.5rem;line-height:1.4">
+            Downloads a Krea 2 GGUF diffusion model + its Qwen3-VL-4B-Instruct text encoder straight into SwarmUI's model folders. Same shared-volume requirement as Download Models above.
+          </div>
+          <button class="ig-btn" id="k2-check-btn" onclick="k2CheckFiles()">🔍 Check available files</button>
+          <div id="k2-picker" style="display:none;margin-top:.6rem">
+            <label class="ig-label" style="margin-top:0">Diffusion model (TURBO recommended — 8 steps, see the Krea 2 template)</label>
+            <select id="k2-unet-select" class="ig-select" style="width:100%;box-sizing:border-box;margin-bottom:.5rem"></select>
+            <label class="ig-label">Text encoder (Qwen3-VL-4B-Instruct)</label>
+            <select id="k2-clip-select" class="ig-select" style="width:100%;box-sizing:border-box;margin-bottom:.5rem"></select>
+            <button class="ig-btn" id="k2-setup-btn" onclick="k2Setup()" style="border-color:var(--neon);color:var(--neon)">⬇ Download both automatically</button>
+          </div>
+          <div id="k2-status" style="font-size:.78rem;color:var(--text-dim);margin-top:.5rem"></div>
+          <div style="font-size:.72rem;color:var(--text-dim);margin-top:.7rem;line-height:1.4;border-top:1px solid var(--border);padding-top:.5rem">
+            <strong style="color:var(--neon)">One manual step remains:</strong> the first time SwarmUI sees a .gguf file it offers to install <code>city96/ComfyUI-GGUF</code> — that release doesn't parse Krea 2's ops yet, so replace it with the <code>RealRebelAI/ComfyUI-GGUF_KREA-2</code> fork instead (same node names, drop-in) in SwarmUI's own ComfyUI custom_nodes folder. nd-world has no access to that folder to do this step for you.
+          </div>
+        </div>
+      </details>
+
       <!-- Download LoRAs — same shared-volume download path as "Download
            Models" above (subfolder="LoRA" is already one of its datalist
            suggestions), just given its own discoverable section instead of

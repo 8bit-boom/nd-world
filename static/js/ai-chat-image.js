@@ -892,6 +892,116 @@ async function dlmStartDownload() {
   }
 }
 
+// ── Krea 2 GGUF quick setup ──────────────────────────────────────────────────
+// Discovers the actual quantizations available in the two repos a Krea 2
+// GGUF setup needs (see the "krea2" Image Gen template's own note) via
+// /api/ai/imagegen/models/hf-files — a recursive HF file listing, since
+// realrebelai/KREA-2_GGUFs splits its files into TURBO/ and BASE/
+// subfolders rather than the repo root — then reuses the Download Models
+// form above (dlmStartDownload) to actually fetch a picked pair, so there's
+// only one download code path in this file, not two.
+
+const K2_UNET_REPO = 'realrebelai/KREA-2_GGUFs';
+const K2_CLIP_REPO = 'unsloth/Qwen3-VL-4B-Instruct-GGUF';
+let _k2UnetFiles = [];
+let _k2ClipFiles = [];
+
+function k2FmtBytes(n) {
+  if (!n && n !== 0) return '';
+  return n >= 1e9 ? (n / 1e9).toFixed(2) + ' GB' : (n / 1e6).toFixed(0) + ' MB';
+}
+
+async function k2FetchFiles(repo) {
+  const res = await fetch('/api/ai/imagegen/models/hf-files?repo=' + encodeURIComponent(repo));
+  const data = await res.json();
+  return data.files || [];
+}
+
+// TURBO is SwarmUI's own recommended pick for Krea 2 (8 steps vs. Base's
+// ~52 — see the krea2 template's note), so prefer that folder when present;
+// within whichever pool that leaves, prefer the quant levels that tend to
+// give the best size/quality trade-off, falling back to whatever's first.
+function k2PickDefaultIndex(files, preferPrefix) {
+  let pool = files.map((f, i) => ({ f, i }));
+  if (preferPrefix) {
+    const preferred = pool.filter(({ f }) => f.path.toLowerCase().startsWith(preferPrefix.toLowerCase() + '/'));
+    if (preferred.length) pool = preferred;
+  }
+  const quantPriority = ['q4_k_m', 'q4_k_s', 'q5_k_m', 'q5_k_s', 'q6_k', 'q8_0'];
+  for (const q of quantPriority) {
+    const hit = pool.find(({ f }) => f.path.toLowerCase().includes(q));
+    if (hit) return hit.i;
+  }
+  return pool.length ? pool[0].i : 0;
+}
+
+function k2PopulateSelect(selectEl, files, defaultIndex) {
+  selectEl.innerHTML = files.map((f, i) =>
+    `<option value="${i}">${f.path}${f.size_bytes ? ' (' + k2FmtBytes(f.size_bytes) + ')' : ''}</option>`
+  ).join('');
+  selectEl.selectedIndex = defaultIndex;
+}
+
+async function k2CheckFiles() {
+  const btn = document.getElementById('k2-check-btn');
+  const status = document.getElementById('k2-status');
+  const picker = document.getElementById('k2-picker');
+  btn.disabled = true;
+  status.textContent = '⏳ Checking Hugging Face…';
+  try {
+    const [unetFiles, clipFiles] = await Promise.all([k2FetchFiles(K2_UNET_REPO), k2FetchFiles(K2_CLIP_REPO)]);
+    _k2UnetFiles = unetFiles;
+    _k2ClipFiles = clipFiles;
+    if (!unetFiles.length || !clipFiles.length) {
+      status.textContent = '✗ Could not find files in one or both repos — is this environment able to reach huggingface.co?';
+      picker.style.display = 'none';
+      return;
+    }
+    k2PopulateSelect(document.getElementById('k2-unet-select'), unetFiles, k2PickDefaultIndex(unetFiles, 'TURBO'));
+    k2PopulateSelect(document.getElementById('k2-clip-select'), clipFiles, k2PickDefaultIndex(clipFiles, ''));
+    picker.style.display = 'block';
+    status.textContent = `Found ${unetFiles.length} diffusion-model file(s) and ${clipFiles.length} text-encoder file(s) — a sensible default is pre-selected below.`;
+  } catch (e) {
+    status.textContent = '✗ Failed: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Fills in the Download Models form and reuses its own download+progress
+// flow, then checks its status text for the "✗" prefix dlmStartDownload
+// writes on failure — that function swallows its own errors (so its own
+// form's status area shows them) rather than re-throwing, so this is the
+// only way for the caller here to know to stop before the second file.
+async function k2DownloadOne(repo, path, subfolder) {
+  document.getElementById('dlm-url').value = `https://huggingface.co/${repo}/resolve/main/${path}`;
+  document.getElementById('dlm-subfolder').value = subfolder;
+  document.getElementById('dlm-filename').value = path.split('/').pop();
+  await dlmStartDownload();
+  const dlmStatus = document.getElementById('dlm-status').textContent || '';
+  if (dlmStatus.startsWith('✗')) throw new Error(dlmStatus.replace(/^✗\s*/, ''));
+}
+
+async function k2Setup() {
+  const setupBtn = document.getElementById('k2-setup-btn');
+  const status = document.getElementById('k2-status');
+  const unet = _k2UnetFiles[parseInt(document.getElementById('k2-unet-select').value, 10)];
+  const clip = _k2ClipFiles[parseInt(document.getElementById('k2-clip-select').value, 10)];
+  if (!unet || !clip) { alert('Check files first.'); return; }
+  setupBtn.disabled = true;
+  try {
+    status.textContent = '⬇ Downloading diffusion model (1/2)…';
+    await k2DownloadOne(K2_UNET_REPO, unet.path, 'diffusion_models');
+    status.textContent = '⬇ Downloading text encoder (2/2)…';
+    await k2DownloadOne(K2_CLIP_REPO, clip.path, 'clip');
+    status.textContent = '✓ Both files downloaded — see the note below for the one remaining manual step (the ComfyUI-GGUF custom node).';
+  } catch (e) {
+    status.textContent = '✗ Failed: ' + e.message;
+  } finally {
+    setupBtn.disabled = false;
+  }
+}
+
 // ── SwarmUI LoRA downloads ──────────────────────────────────────────────────
 // Same backend as the model downloader above (download_swarmui_model already
 // accepts any subfolder — "LoRA" is one of its own suggestions) with the
