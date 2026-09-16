@@ -37,9 +37,9 @@ async def _fake_resolve_model(requested):
     return requested or "fake-model", None
 
 
-async def _fake_stream_chat(messages, system="", model="", options=None, think=False):
+async def _fake_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
     for tok in ["Hello", " world"]:
-        yield tok
+        yield {"type": "content", "text": tok} if emit_thinking else tok
 
 
 def _patch_ai(monkeypatch):
@@ -57,6 +57,57 @@ def test_ai_stream_gm_always_allowed(client, seed, monkeypatch):
     assert "[DONE]" in r.text
 
 
+# ── Seeing the model's reasoning live (epEnsureReasoning in entities/
+# detail.html's "Ask AI" panel) — the route always asks stream_chat for
+# emit_thinking so a "thinking" frame reaches the client whenever the model
+# actually produced one, distinct from the normal "token" frames.
+
+def test_ai_stream_requests_emit_thinking_unconditionally(client, seed, monkeypatch):
+    captured = {}
+
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
+        captured["emit_thinking"] = emit_thinking
+        yield {"type": "content", "text": "ok"} if emit_thinking else "ok"
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/stream", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200
+    assert captured["emit_thinking"] is True
+
+
+def test_ai_stream_emits_thinking_frames_ahead_of_the_answer(client, seed, monkeypatch):
+    async def _thinking_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
+        yield {"type": "thinking", "text": "Pondering "}
+        yield {"type": "thinking", "text": "the question."}
+        yield {"type": "content", "text": "Final answer."}
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _thinking_stream_chat)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/stream", json={"messages": [{"role": "user", "content": "hi"}], "think": True})
+    assert r.status_code == 200
+    assert '{"thinking": "Pondering "}' in r.text
+    assert '{"thinking": "the question."}' in r.text
+    assert '{"token": "Final answer."}' in r.text
+    assert r.text.index('"Pondering "') < r.text.index('"Final answer."')
+
+
+def test_ai_stream_no_thinking_frame_for_a_plain_reply(client, seed, monkeypatch):
+    """A model/request that never produces reasoning must not surface an
+    empty or spurious thinking frame — nothing for the UI to show a panel
+    for at all."""
+    _patch_ai(monkeypatch)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/stream", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200
+    assert "thinking" not in r.text
+
+
 def test_ai_stream_forwards_think_to_stream_chat(client, seed, monkeypatch):
     """The entity detail page's Ask AI panel is the one surface with a
     Thinking checkbox (epSend sends `think` in its POST body) — confirm
@@ -64,9 +115,9 @@ def test_ai_stream_forwards_think_to_stream_chat(client, seed, monkeypatch):
     being silently dropped somewhere in ai_stream's plumbing."""
     captured = {}
 
-    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
         captured["think"] = think
-        yield "ok"
+        yield {"type": "content", "text": "ok"} if emit_thinking else "ok"
 
     monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
     monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
@@ -82,9 +133,9 @@ def test_ai_stream_forwards_think_to_stream_chat(client, seed, monkeypatch):
 def test_ai_stream_think_defaults_to_false(client, seed, monkeypatch):
     captured = {}
 
-    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
         captured["think"] = think
-        yield "ok"
+        yield {"type": "content", "text": "ok"} if emit_thinking else "ok"
 
     monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
     monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
@@ -103,9 +154,9 @@ def test_ai_stream_think_defaults_to_false(client, seed, monkeypatch):
 def test_ai_stream_widens_num_predict_when_thinking(client, seed, monkeypatch):
     captured = {}
 
-    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
         captured["options"] = options
-        yield "ok"
+        yield {"type": "content", "text": "ok"} if emit_thinking else "ok"
 
     monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
     monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
@@ -125,9 +176,9 @@ def test_ai_stream_widens_num_predict_when_thinking(client, seed, monkeypatch):
 def test_ai_stream_no_widening_when_not_thinking(client, seed, monkeypatch):
     captured = {}
 
-    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
         captured["options"] = options
-        yield "ok"
+        yield {"type": "content", "text": "ok"} if emit_thinking else "ok"
 
     monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
     monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
@@ -149,9 +200,9 @@ def test_ai_stream_thinking_widening_does_not_override_an_explicit_num_predict(c
     the widening only fills a gap, it never overrides an explicit choice."""
     captured = {}
 
-    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
         captured["options"] = options
-        yield "ok"
+        yield {"type": "content", "text": "ok"} if emit_thinking else "ok"
 
     monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
     monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
@@ -173,9 +224,9 @@ def test_ai_stream_thinking_widening_does_not_override_an_explicit_num_predict(c
 def test_ai_stream_sizes_num_ctx_for_a_long_history(client, seed, monkeypatch):
     captured = {}
 
-    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
         captured["options"] = options
-        yield "ok"
+        yield {"type": "content", "text": "ok"} if emit_thinking else "ok"
 
     monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
     monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
@@ -190,9 +241,9 @@ def test_ai_stream_sizes_num_ctx_for_a_long_history(client, seed, monkeypatch):
 def test_ai_stream_short_message_has_no_num_ctx_override(client, seed, monkeypatch):
     captured = {}
 
-    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
         captured["options"] = options
-        yield "ok"
+        yield {"type": "content", "text": "ok"} if emit_thinking else "ok"
 
     monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
     monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
@@ -208,9 +259,9 @@ def test_ai_stream_explicit_num_ctx_wins_over_the_auto_sized_one(client, seed, m
     for a message long enough that auto-sizing would otherwise kick in."""
     captured = {}
 
-    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
         captured["options"] = options
-        yield "ok"
+        yield {"type": "content", "text": "ok"} if emit_thinking else "ok"
 
     monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
     monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
@@ -225,9 +276,9 @@ def test_ai_stream_explicit_num_ctx_wins_over_the_auto_sized_one(client, seed, m
 def test_ai_stream_num_ctx_clamped_to_the_max_auto_ceiling(client, seed, monkeypatch):
     captured = {}
 
-    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False):
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
         captured["options"] = options
-        yield "ok"
+        yield {"type": "content", "text": "ok"} if emit_thinking else "ok"
 
     monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
     monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)

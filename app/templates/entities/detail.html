@@ -527,11 +527,18 @@
 .ai-panel .ep-messages { display:flex; flex-direction:column; gap:.6rem; max-height:340px; overflow-y:auto; margin-bottom:.5rem; }
 .ai-panel .ai-msg { display:flex; max-width:100%; }
 .ai-panel .ai-msg--user { align-self:flex-end; flex-direction:row-reverse; }
-.ai-panel .ai-msg--assistant { align-self:flex-start; }
+.ai-panel .ai-msg--assistant { align-self:flex-start; flex-direction:column; }
 .ai-panel .ai-bubble { padding:.45rem .75rem; border-radius:8px; font-size:.85rem; line-height:1.6; word-break:break-word; max-width:90%; }
 .ai-panel .ai-msg--user .ai-bubble { background:var(--neon); color:#000; font-weight:500; }
 .ai-panel .ai-msg--assistant .ai-bubble { background:var(--bg2); border:1px solid var(--border); }
 .ai-panel .ai-thinking .ai-bubble { color:var(--text-dim); font-style:italic; border-style:dashed; }
+/* The model's live reasoning trace (see epEnsureReasoning) — only ever
+   appears when the Thinking checkbox is on AND the model actually produced
+   one; collapses once the real answer starts streaming so it doesn't crowd
+   out the reply, but stays there to reopen and read in full. */
+.ai-panel .ai-reasoning { max-width:90%; margin-bottom:.35rem; }
+.ai-panel .ai-reasoning summary { cursor:pointer; font-size:.72rem; color:var(--text-dim); user-select:none; }
+.ai-panel .ai-reasoning-text { margin-top:.3rem; padding:.45rem .7rem; border:1px dashed var(--border); border-radius:8px; font-size:.78rem; line-height:1.5; color:var(--text-dim); font-style:italic; white-space:pre-wrap; word-break:break-word; }
 .ai-panel .ep-status-row { text-align:right; font-size:.7rem; min-height:1.1em; margin-bottom:.25rem; transition:color .3s; }
 .ai-panel .ep-bar { display:flex; gap:.5rem; align-items:flex-end; }
 .ai-panel .ep-bar textarea { flex:1; background:var(--bg3); border:1px solid var(--border); border-radius:5px; color:var(--text); padding:.4rem .65rem; font-size:.85rem; resize:none; font-family:inherit; line-height:1.5; max-height:100px; overflow-y:auto; }
@@ -668,6 +675,8 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
       let tokenCount = 0;
       let firstToken = true;
       let startTime = 0;
+      let reasoning = '';
+      let reasoningTextEl = null;
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = '';
@@ -689,11 +698,26 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
             bubble.innerHTML = `<div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.4rem">ℹ️ ${_escHtml(noteText)}</div>` + _mdToHtml(full);
             continue;
           }
+          if (typeof obj.thinking === 'string') {
+            reasoning += obj.thinking;
+            if (!reasoningTextEl) reasoningTextEl = epEnsureReasoning(bubble);
+            reasoningTextEl.textContent = reasoning;
+            document.getElementById('ep-messages').scrollTop = 99999;
+            continue;
+          }
           if (typeof obj.token !== 'string') continue;
           const token = obj.token;
           if (firstToken) {
             firstToken = false;
             startTime = Date.now();
+            if (reasoningTextEl) {
+              // The real answer is starting — collapse the reasoning trace
+              // so it doesn't crowd out the reply, but leave it there to
+              // reopen and read in full.
+              const det = reasoningTextEl.closest('details');
+              det.querySelector('summary').textContent = '🧠 Thought process';
+              det.open = false;
+            }
             statsEl.style.color = 'var(--neon)';
             statsTimer = setInterval(() => {
               const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -723,6 +747,28 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
       bubble.textContent = 'Error: ' + e.message;
     } finally { btn.disabled = false; inp.focus(); }
   };
+
+  function epEnsureReasoning(bubble) {
+    // Inserted as a sibling BEFORE the bubble (not inside it — bubble's own
+    // innerHTML gets wiped/replaced every token) within the same .ai-msg
+    // wrapper, which is why that wrapper needs flex-direction:column (see
+    // the .ai-panel .ai-msg--assistant CSS rule above).
+    const w = bubble.parentElement;
+    let det = w.querySelector('.ai-reasoning');
+    if (!det) {
+      det = document.createElement('details');
+      det.className = 'ai-reasoning';
+      det.open = true;
+      const sum = document.createElement('summary');
+      sum.textContent = '🧠 Thinking…';
+      det.appendChild(sum);
+      const pre = document.createElement('div');
+      pre.className = 'ai-reasoning-text';
+      det.appendChild(pre);
+      w.insertBefore(det, bubble);
+    }
+    return det.querySelector('.ai-reasoning-text');
+  }
 
   function epAdd(role, text, thinking, attachments) {
     const box = document.getElementById('ep-messages');

@@ -990,14 +990,25 @@ def is_thinking_starved_sentinel(result: str) -> bool:
 
 async def stream_chat(
     messages: list[dict], system: str = "", model: str = "", options: dict = None, think: bool = False,
-) -> AsyncGenerator[str, None]:
+    emit_thinking: bool = False,
+) -> AsyncGenerator[str | dict, None]:
     """`think` defaults to False, same as generate_chat's own plain
     default — most interactive surfaces (AI Chat's World Chat/Image tabs,
-    the Chronicler, "Talk to this NPC") have no Thinking toggle at all and
-    never pass it. The entity detail page's "Ask AI" panel is the one
-    caller that does (see app.routers.ai's ChatBody.think and epSend's own
-    Thinking checkbox), letting a GM opt into slower/deeper reasoning for
-    that one surface per-request."""
+    "Talk to this NPC") have no Thinking toggle at all and never pass it.
+    The entity detail page's "Ask AI" panel and the Chronicler are the two
+    callers that do (see app.routers.ai's ChatBody.think/epSend's own
+    Thinking checkbox, and app.routers.chronicler's own), letting a GM
+    opt into slower/deeper reasoning for those surfaces per-request.
+
+    emit_thinking defaults to False and changes what this generator
+    yields: False (every existing caller that predates this flag) yields
+    plain content strings exactly as before, silently dropping any
+    reasoning text the model produced — unchanged behavior. True yields
+    dicts instead — {"type": "content"|"thinking", "text": str} — so a
+    caller that wants to show the model's reasoning live (alongside the
+    Thinking toggle that requests it) can tell the two apart on the wire.
+    Never emitted when the model produced no reasoning at all (a
+    non-thinking model, or a thinking one Ollama silently downgraded)."""
     m = model or effective_ollama_model()
     _log.info("stream_chat model=%s msgs=%d think=%r", m, len(messages), think)
     full = [{"role": "system", "content": system}] if system else []
@@ -1005,6 +1016,14 @@ async def stream_chat(
     yielded_any = False
     thinking_chars = 0
     done_reason = None
+
+    def _piece(text: str):
+        # See emit_thinking's own docstring paragraph above — every
+        # existing caller (emit_thinking=False) keeps getting plain
+        # strings; only a caller that opted in to seeing reasoning gets
+        # the {"type": "content", ...} wrapper.
+        return {"type": "content", "text": text} if emit_thinking else text
+
     try:
         chat_kwargs = await _chat_kwargs(options, think, m)
         if think and not chat_kwargs["think"] and m in _prompt_token_thinking_models:
@@ -1014,9 +1033,12 @@ async def stream_chat(
             full = _messages_with_prompt_think_token(full)
         async for chunk in await _client().chat(model=m, messages=full, stream=True, **chat_kwargs):
             token = chunk.message.content
+            piece_thinking = getattr(chunk.message, "thinking", None)
+            if emit_thinking and piece_thinking:
+                yield {"type": "thinking", "text": piece_thinking}
             if token:
                 yielded_any = True
-                yield token
+                yield _piece(token)
             # Tracked regardless of whether `think` was requested — even
             # with think=False a model can still ignore that and burn its
             # budget on hidden reasoning (the case generate_chat's own
@@ -1025,7 +1047,7 @@ async def stream_chat(
             # the same starvation diagnostic below still fires if even a
             # deliberately-thinking model runs out of room before writing
             # a visible answer.
-            thinking_chars += len(getattr(chunk.message, "thinking", None) or "")
+            thinking_chars += len(piece_thinking or "")
             done_reason = getattr(chunk, "done_reason", None) or done_reason
         # The EFFECTIVE think (post _chat_kwargs downgrade), not the
         # caller's requested one — see generate_chat's identical call and
@@ -1043,7 +1065,7 @@ async def stream_chat(
                 "stream_chat model=%s yielded no content (done_reason=%r, thinking_chars=%d)",
                 m, done_reason, thinking_chars,
             )
-            yield _empty_response_message(m, thinking_chars, done_reason)
+            yield _piece(_empty_response_message(m, thinking_chars, done_reason))
     except _ollama.ResponseError as exc:
         _log.error("stream_chat Ollama error: %s %s", exc.status_code, exc.error)
         if think and "does not support thinking" in (exc.error or "") and not yielded_any:
@@ -1065,13 +1087,15 @@ async def stream_chat(
                 _log.warning("stream_chat model=%s: does not support thinking — retrying with the %s system-prompt token", m, _PROMPT_THINK_TOKEN)
             else:
                 _log.warning("stream_chat model=%s: does not support thinking — retrying with think=False", m)
-            async for token in stream_chat(retry_full, system="", model=m, options=options, think=False):
-                yield token
+            async for piece in stream_chat(
+                retry_full, system="", model=m, options=options, think=False, emit_thinking=emit_thinking,
+            ):
+                yield piece
             return
-        yield f"[AI error: Ollama {exc.status_code}: {exc.error}]"
+        yield _piece(f"[AI error: Ollama {exc.status_code}: {exc.error}]")
     except Exception as exc:
         _log.error("stream_chat unavailable: %s: %s", type(exc).__name__, exc)
-        yield f"[AI unavailable: {type(exc).__name__}: {exc}]"
+        yield _piece(f"[AI unavailable: {type(exc).__name__}: {exc}]")
 
 
 async def generate(prompt: str, system: str = _SYSTEM) -> str:

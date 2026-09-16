@@ -165,18 +165,26 @@ async def chronicler_ask(request: Request, db: Session = Depends(get_db), active
         chunks: list[str] = []
 
         async def _chat():
-            async for token in _ai_module.stream_chat(
+            # emit_thinking=True unconditionally — see the identical comment
+            # on app.routers.ai's own _chat(): stream_chat only ever
+            # produces a "thinking" piece when the model actually reasoned,
+            # so this just fixes the wire shape (dicts, not bare strings)
+            # that the loop below always expects.
+            async for piece in _ai_module.stream_chat(
                 [{"role": "user", "content": question}], system=system,
-                model=resolved_model, options=options, think=think,
+                model=resolved_model, options=options, think=think, emit_thinking=True,
             ):
-                chunks.append(token)
-                yield token
+                if piece.get("type") != "thinking":
+                    chunks.append(piece["text"])
+                yield piece
 
-        async for token in _with_heartbeat(_chat()):
-            if token is None:
+        async for piece in _with_heartbeat(_chat()):
+            if piece is None:
                 yield ": keep-alive\n\n"
+            elif piece.get("type") == "thinking":
+                yield _sse({"thinking": piece["text"]})
             else:
-                yield _sse({"token": token})
+                yield _sse({"token": piece["text"]})
         answer = "".join(chunks)
         _ask_cache[cache_key] = (now, {"answer": answer})
         yield "data: [DONE]\n\n"

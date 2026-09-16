@@ -810,6 +810,71 @@ async def test_stream_chat_normal_stream_yields_no_sentinel(monkeypatch):
     assert tokens == ["Hello", " there"]
 
 
+# ── stream_chat: emit_thinking (see the "Thinking" panels in the entity
+# detail Ask AI panel / the Chronicler, which now show the model's live
+# reasoning trace alongside its answer) ─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_stream_chat_emit_thinking_false_drops_reasoning_as_before(monkeypatch):
+    """The default (every caller that predates this flag) is unchanged:
+    plain content strings, reasoning silently discarded — same assertion
+    as test_stream_chat_normal_stream_yields_no_sentinel, but explicit
+    about the flag itself defaulting off."""
+    chunks = [
+        _FakeStreamChunk(content="Hello", thinking="a little reasoning"),
+        _FakeStreamChunk(content=" there", done_reason="stop"),
+    ]
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeStreamClient(chunks))
+    tokens = [tok async for tok in ai_module.stream_chat([{"role": "user", "content": "hi"}])]
+    assert tokens == ["Hello", " there"]
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_emit_thinking_true_yields_typed_dicts(monkeypatch):
+    chunks = [
+        _FakeStreamChunk(content="", thinking="Let me "),
+        _FakeStreamChunk(content="", thinking="consider..."),
+        _FakeStreamChunk(content="Hello", thinking=None),
+        _FakeStreamChunk(content=" there", done_reason="stop"),
+    ]
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeStreamClient(chunks))
+    pieces = [p async for p in ai_module.stream_chat([{"role": "user", "content": "hi"}], emit_thinking=True)]
+    assert pieces == [
+        {"type": "thinking", "text": "Let me "},
+        {"type": "thinking", "text": "consider..."},
+        {"type": "content", "text": "Hello"},
+        {"type": "content", "text": " there"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_emit_thinking_true_never_fires_for_a_non_thinking_model(monkeypatch):
+    """No thinking dict at all when the model produced none — a plain
+    model or an interactive surface that never enabled the Thinking
+    checkbox must not surface an empty/spurious reasoning panel."""
+    chunks = [_FakeStreamChunk(content="Hello", thinking=None), _FakeStreamChunk(content=" there", done_reason="stop")]
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeStreamClient(chunks))
+    pieces = [p async for p in ai_module.stream_chat([{"role": "user", "content": "hi"}], emit_thinking=True)]
+    assert pieces == [{"type": "content", "text": "Hello"}, {"type": "content", "text": " there"}]
+    assert all(p["type"] != "thinking" for p in pieces)
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_emit_thinking_wraps_the_empty_response_sentinel(monkeypatch):
+    """The diagnostic sentinel is real visible-text content, same as any
+    other reply — a caller showing reasoning live must still get it as a
+    {"type": "content", ...} piece, not a bare string it wasn't expecting."""
+    chunks = [_FakeStreamChunk(content="", thinking="pondering ", done_reason="length")]
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeStreamClient(chunks))
+    pieces = [p async for p in ai_module.stream_chat([{"role": "user", "content": "hi"}], emit_thinking=True)]
+    # The reasoning itself streams first as its own "thinking" piece, then
+    # the diagnostic sentinel arrives as a normal "content" piece once the
+    # stream ends with nothing else visible to show.
+    assert pieces[0] == {"type": "thinking", "text": "pondering "}
+    assert pieces[-1]["type"] == "content"
+    assert "hidden" in pieces[-1]["text"] and "thinking" in pieces[-1]["text"]
+
+
 @pytest.mark.asyncio
 async def test_parse_facts_from_recap_passes_options_and_keep_alive(monkeypatch):
     calls = []

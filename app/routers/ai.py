@@ -1283,18 +1283,25 @@ async def ai_stream(
     _log.info("stream requested model=%r surface=%r msgs=%d", requested, body.surface, len(body.messages))
 
     async def _chat(model: str):
-        async for token in _ai.stream_chat(msgs, body.system, model, options, think=body.think):
-            yield token
+        # emit_thinking=True unconditionally (not just when body.think is
+        # set) is harmless — stream_chat only ever produces a "thinking"
+        # piece when the model actually reasoned, so a non-thinking request
+        # just never sees one; this only changes the wire shape (dicts
+        # instead of bare strings), which _gen() below always expects.
+        async for piece in _ai.stream_chat(msgs, body.system, model, options, think=body.think, emit_thinking=True):
+            yield piece
 
     async def _gen():
         model, note = await _ai.resolve_model(requested)
         if note:
             yield f"data: {_json.dumps({'note': note})}\n\n"
-        async for token in _with_heartbeat(_chat(model)):
-            if token is None:
+        async for piece in _with_heartbeat(_chat(model)):
+            if piece is None:
                 yield ": keep-alive\n\n"
+            elif piece.get("type") == "thinking":
+                yield f"data: {_json.dumps({'thinking': piece['text']})}\n\n"
             else:
-                yield f"data: {_json.dumps({'token': token})}\n\n"
+                yield f"data: {_json.dumps({'token': piece['text']})}\n\n"
         yield "data: [DONE]\n\n"
 
     return _SR(

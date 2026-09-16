@@ -50,12 +50,12 @@ def _patch_stream_chat(monkeypatch, captured, answer="An answer."):
     /api/ai/stream's identical plumbing: an async generator yielding
     chunks, plus resolve_model so the streaming path's model-resolution
     step doesn't try to reach a real Ollama."""
-    async def fake_stream_chat(messages, system="", model="", options=None, think=False):
+    async def fake_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
         captured["system"] = system
         captured["model"] = model
         captured["think"] = think
         captured["options"] = options
-        yield answer
+        yield {"type": "content", "text": answer} if emit_thinking else answer
     monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
     monkeypatch.setattr(ai_module, "stream_chat", fake_stream_chat)
 
@@ -187,6 +187,67 @@ def test_gm_can_select_model_and_thinking(client, seed, monkeypatch):
     assert captured["think"] is True
 
 
+# ── Seeing the model's reasoning live (chronEnsureReasoning in
+# chronicler.html) — chronicler_ask always asks stream_chat for
+# emit_thinking so a "thinking" frame reaches the client whenever the
+# model actually produced one, distinct from the normal "token" frames.
+
+def test_chronicler_requests_emit_thinking_unconditionally(client, seed, monkeypatch):
+    captured = {}
+
+    async def fake_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
+        captured["emit_thinking"] = emit_thinking
+        yield {"type": "content", "text": "ok"} if emit_thinking else "ok"
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", fake_stream_chat)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/chronicler/ask", json={"question": "anything?"})
+    assert r.status_code == 200
+    assert captured["emit_thinking"] is True
+
+
+def test_chronicler_emits_thinking_frames_ahead_of_the_answer(client, seed, monkeypatch):
+    async def fake_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
+        yield {"type": "thinking", "text": "Consulting "}
+        yield {"type": "thinking", "text": "the chronicles."}
+        yield {"type": "content", "text": "Here is the tale."}
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", fake_stream_chat)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/chronicler/ask", json={"question": "What happened?", "think": True})
+    assert r.status_code == 200
+    assert '{"thinking": "Consulting "}' in r.text
+    assert '{"thinking": "the chronicles."}' in r.text
+    assert '{"token": "Here is the tale."}' in r.text
+    assert r.text.index('"Consulting "') < r.text.index('"Here is the tale."')
+
+
+def test_chronicler_cache_stores_only_the_answer_not_the_reasoning(client, seed, monkeypatch):
+    """A cached reply is served instantly on a repeat question — it must
+    never replay a stale reasoning trace as if freshly generated."""
+    calls = []
+
+    async def fake_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
+        calls.append(1)
+        yield {"type": "thinking", "text": "Deep thought."}
+        yield {"type": "content", "text": "The final answer."}
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", fake_stream_chat)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    q = {"question": "Repeat-cache thinking check?"}
+    r1 = client.post("/api/chronicler/ask", json=q)
+    r2 = client.post("/api/chronicler/ask", json=q)
+    assert "The final answer." in r1.text and "The final answer." in r2.text
+    assert "thinking" not in r2.text  # served from cache — no reasoning replayed
+    assert len(calls) == 1  # the model was only actually asked once
+
+
 def test_player_supplied_model_and_think_are_ignored(client, seed, monkeypatch):
     """A player-facing chat surface with its own cost-control cooldown must
     never let the client dictate a slower/pricier model or reasoning mode —
@@ -200,9 +261,9 @@ def test_player_supplied_model_and_think_are_ignored(client, seed, monkeypatch):
         captured["requested_model"] = requested
         return requested or "fake-model", None
 
-    async def fake_stream_chat(messages, system="", model="", options=None, think=False):
+    async def fake_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
         captured["think"] = think
-        yield "answer"
+        yield {"type": "content", "text": "answer"} if emit_thinking else "answer"
 
     monkeypatch.setattr(ai_module, "resolve_model", fake_resolve_model)
     monkeypatch.setattr(ai_module, "stream_chat", fake_stream_chat)
@@ -223,9 +284,10 @@ def test_cache_key_distinguishes_model_and_think(client, seed, monkeypatch):
     generated under the previous selection."""
     calls = []
 
-    async def fake_stream_chat(messages, system="", model="", options=None, think=False):
+    async def fake_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
         calls.append((model, think))
-        yield "answer for " + model
+        answer = "answer for " + model
+        yield {"type": "content", "text": answer} if emit_thinking else answer
     monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
     monkeypatch.setattr(ai_module, "stream_chat", fake_stream_chat)
 

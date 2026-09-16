@@ -92,9 +92,9 @@ async def _fake_resolve_model(requested):
 def _patch_stream_chat(monkeypatch, calls, answer="An answer."):
     from app import ai as ai_module
 
-    async def fake_stream_chat(messages, system="", model="", options=None, think=False):
+    async def fake_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
         calls.append(1)
-        yield answer
+        yield {"type": "content", "text": answer} if emit_thinking else answer
     monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
     monkeypatch.setattr(ai_module, "stream_chat", fake_stream_chat)
 

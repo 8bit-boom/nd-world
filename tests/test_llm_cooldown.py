@@ -59,8 +59,8 @@ def _patch_chronicler_stream(monkeypatch):
     async def fake_resolve_model(requested):
         return requested or "fake-model", None
 
-    async def fake_stream_chat(messages, system="", model="", options=None, think=False):
-        yield "An answer."
+    async def fake_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
+        yield {"type": "content", "text": "An answer."} if emit_thinking else "An answer."
     monkeypatch.setattr(ai_module, "resolve_model", fake_resolve_model)
     monkeypatch.setattr(ai_module, "stream_chat", fake_stream_chat)
 

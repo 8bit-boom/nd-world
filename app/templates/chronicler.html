@@ -8,11 +8,17 @@
 .chron-messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: .7rem; padding: .5rem 0; }
 .chron-msg { display: flex; max-width: 100%; }
 .chron-msg--user { align-self: flex-end; flex-direction: row-reverse; }
-.chron-msg--assistant { align-self: flex-start; }
+.chron-msg--assistant { align-self: flex-start; flex-direction: column; }
 .chron-bubble { padding: .55rem .9rem; border-radius: 10px; font-size: .88rem; line-height: 1.6; word-break: break-word; max-width: 640px; }
 .chron-msg--user .chron-bubble { background: var(--neon); color: #000; font-weight: 500; border-radius: 10px 10px 2px 10px; }
 .chron-msg--assistant .chron-bubble { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px 10px 10px 2px; }
 .chron-thinking .chron-bubble { color: var(--text-dim); font-style: italic; border-style: dashed; }
+/* The model's live reasoning trace — only appears when the GM's Thinking
+   checkbox is on AND the model actually produced one (see chronEnsureReasoning);
+   collapses once the real answer starts streaming, stays there to reopen. */
+.chron-reasoning { max-width: 640px; margin-bottom: .35rem; }
+.chron-reasoning summary { cursor: pointer; font-size: .72rem; color: var(--text-dim); user-select: none; }
+.chron-reasoning-text { margin-top: .3rem; padding: .5rem .8rem; border: 1px dashed var(--border); border-radius: 8px; font-size: .8rem; line-height: 1.5; color: var(--text-dim); font-style: italic; white-space: pre-wrap; word-break: break-word; }
 .chron-bar { display: flex; gap: .6rem; align-items: flex-end; padding-top: .8rem; border-top: 1px solid var(--border); }
 .chron-bar textarea { flex: 1; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: .55rem .8rem; font-size: .9rem; resize: none; font-family: inherit; line-height: 1.5; max-height: 140px; }
 .chron-bar textarea:focus { outline: 1px solid var(--neon); }
@@ -65,6 +71,27 @@ function _chronMdToHtml(text) {
 }
 function _chronEscHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+function chronEnsureReasoning(bubble) {
+  // Sibling BEFORE the bubble (not inside it — bubble's innerHTML gets
+  // replaced every token) within the same .chron-msg wrapper, which is why
+  // that wrapper needs flex-direction:column (see the CSS rule above).
+  const w = bubble.parentElement;
+  let det = w.querySelector('.chron-reasoning');
+  if (!det) {
+    det = document.createElement('details');
+    det.className = 'chron-reasoning';
+    det.open = true;
+    const sum = document.createElement('summary');
+    sum.textContent = '🧠 Thinking…';
+    det.appendChild(sum);
+    const pre = document.createElement('div');
+    pre.className = 'chron-reasoning-text';
+    det.appendChild(pre);
+    w.insertBefore(det, bubble);
+  }
+  return det.querySelector('.chron-reasoning-text');
+}
+
 function chronAdd(role, text, thinking) {
   const box = document.getElementById('chron-messages');
   const w = document.createElement('div');
@@ -106,6 +133,8 @@ window.chronSend = async function () {
   btn.disabled = true;
   const bubble = chronAdd('assistant', '…', true);
   let raw = '';
+  let reasoning = '';
+  let reasoningTextEl = null;
   try {
     // Streamed over SSE (not one blocking JSON response) so a slow or
     // Thinking-enabled model doesn't run past a reverse proxy's idle-byte
@@ -136,7 +165,21 @@ window.chronSend = async function () {
         if (chunk === '[DONE]') continue;
         try {
           const obj = JSON.parse(chunk);
-          if (obj.token) {
+          if (typeof obj.thinking === 'string') {
+            reasoning += obj.thinking;
+            if (!reasoningTextEl) reasoningTextEl = chronEnsureReasoning(bubble);
+            reasoningTextEl.textContent = reasoning;
+            document.getElementById('chron-messages').scrollTop = 999999;
+          } else if (obj.token) {
+            if (reasoningTextEl) {
+              // The real answer is starting — collapse the reasoning trace
+              // so it doesn't crowd out the reply, but leave it there to
+              // reopen and read in full.
+              const det = reasoningTextEl.closest('details');
+              det.querySelector('summary').textContent = '🧠 Thought process';
+              det.open = false;
+              reasoningTextEl = null;
+            }
             raw += obj.token;
             gotAny = true;
             bubble.parentElement.classList.remove('chron-thinking');

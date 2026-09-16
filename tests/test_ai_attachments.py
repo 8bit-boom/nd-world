@@ -338,9 +338,9 @@ async def _fake_resolve_model(requested):
     return requested or "fake-model", None
 
 
-async def _fake_stream_chat(messages, system="", model="", options=None, think=False):
+async def _fake_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
     for tok in ["ok"]:
-        yield tok
+        yield {"type": "content", "text": tok} if emit_thinking else tok
 
 
 def test_ai_stream_accepts_message_with_attachments(client, seed, monkeypatch):

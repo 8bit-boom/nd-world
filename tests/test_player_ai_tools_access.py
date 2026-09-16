@@ -88,8 +88,8 @@ async def _fake_resolve_model(requested):
     return requested or "fake-model", None
 
 
-async def _fake_stream_chat(messages, system="", model="", options=None, think=False):
-    yield "Hello"
+async def _fake_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
+    yield {"type": "content", "text": "Hello"} if emit_thinking else "Hello"
 
 
 def _patch_ai(monkeypatch):
