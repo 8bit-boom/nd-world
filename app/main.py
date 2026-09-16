@@ -16,7 +16,9 @@ import re
 import html
 import logging
 import os
+import queue
 import secrets
+import threading
 import time
 import uuid
 import shutil
@@ -3965,6 +3967,51 @@ def export_foundry(request: Request, db: Session = Depends(get_db), active_world
     )
 
 
+# A stalled consumer (client vanished mid-download, or a genuinely wedged
+# disk) must not leave the producer/consumer pair of threads below blocked
+# on the queue forever — bounded by this on both ends of admin_backup's
+# _QueueZipWriter/_gen pair instead.
+_BACKUP_STALL_TIMEOUT = 120
+
+
+class _BackupStalled(Exception):
+    """Raised by _QueueZipWriter when nothing has drained the queue for
+    _BACKUP_STALL_TIMEOUT seconds — admin_backup's build thread treats
+    this exactly like any other build failure (log it, stop, let the
+    generator side notice the same stall independently and end the
+    response)."""
+
+
+class _QueueZipWriter:
+    """A write-only file object that hands every chunk zipfile gives it
+    straight to a queue instead of buffering it — the file-like target
+    admin_backup's ZipFile writes into so the zip streams out to the
+    client as it's built (see admin_backup's own comment for why holding
+    the whole archive in memory first was the actual bug). No seek() —
+    zipfile detects that and falls back to writing per-entry data
+    descriptors instead of pre-computed sizes in local headers, which
+    every standard unzip tool (Python's own zipfile included) reads fine
+    for a one-pass, streamed-out archive like this one."""
+    def __init__(self, q: "queue.Queue"):
+        self._q = q
+        self._pos = 0
+
+    def write(self, data: bytes) -> int:
+        data = bytes(data)
+        try:
+            self._q.put(data, timeout=_BACKUP_STALL_TIMEOUT)
+        except queue.Full:
+            raise _BackupStalled("no room in the backup queue — consumer stalled")
+        self._pos += len(data)
+        return len(data)
+
+    def tell(self) -> int:
+        return self._pos
+
+    def flush(self) -> None:
+        pass
+
+
 @app.get("/admin/backup.zip")
 def admin_backup(db: Session = Depends(get_db)):
     # Not in _is_player_safe, so the auth_gate middleware already denies this to
@@ -4000,34 +4047,70 @@ def admin_backup(db: Session = Depends(get_db)):
         },
     }
 
-    with tempfile.TemporaryDirectory() as tmp:
-        # VACUUM INTO produces a consistent, defragmented snapshot in one statement —
-        # copying world.db directly while uvicorn holds it open risks capturing a
-        # half-written page mid-write.
-        snapshot_path = Path(tmp) / "world.db"
-        raw = sqlite3.connect(str(db_path))
-        try:
-            raw.execute("VACUUM INTO ?", (str(snapshot_path),))
-        finally:
-            raw.close()
+    # This used to build the ENTIRE zip in an in-memory BytesIO before
+    # returning anything — for a real install (uploaded/AI-generated images,
+    # audio, video), that's a multi-minute gap with zero bytes sent to the
+    # browser, which either sits on an infinite-looking spinner or gets its
+    # connection killed by a reverse proxy's idle-byte timeout (the same
+    # class of bug the Chronicler/AI Chat streaming fixes exist for — see
+    # their own docstrings). Streaming real zip bytes out continuously as
+    # the archive is built (world.db, then every uploaded/map file) keeps
+    # the connection alive and gives the browser actual download progress
+    # for the whole thing instead of one silent blocking wait.
+    q: "queue.Queue" = queue.Queue(maxsize=64)
+    _DONE = object()
 
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.write(snapshot_path, "world.db")
-            zf.writestr("manifest.json", json.dumps(manifest, indent=2))
-            if UPLOADS_DIR.exists():
-                for f in UPLOADS_DIR.rglob("*"):
-                    if f.is_file():
-                        zf.write(f, "uploads/" + str(f.relative_to(UPLOADS_DIR)))
-            if _MAPS_DIR.exists():
-                for f in _MAPS_DIR.rglob("*"):
-                    if f.is_file():
-                        zf.write(f, "maps/" + str(f.relative_to(_MAPS_DIR)))
-        buf.seek(0)
+    def _build():
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                # VACUUM INTO produces a consistent, defragmented snapshot in one
+                # statement — copying world.db directly while uvicorn holds it
+                # open risks capturing a half-written page mid-write.
+                snapshot_path = Path(tmp) / "world.db"
+                raw = sqlite3.connect(str(db_path))
+                try:
+                    raw.execute("VACUUM INTO ?", (str(snapshot_path),))
+                finally:
+                    raw.close()
+
+                with zipfile.ZipFile(_QueueZipWriter(q), "w", zipfile.ZIP_DEFLATED) as zf:
+                    zf.write(snapshot_path, "world.db")
+                    zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+                    if UPLOADS_DIR.exists():
+                        for f in UPLOADS_DIR.rglob("*"):
+                            if f.is_file():
+                                zf.write(f, "uploads/" + str(f.relative_to(UPLOADS_DIR)))
+                    if _MAPS_DIR.exists():
+                        for f in _MAPS_DIR.rglob("*"):
+                            if f.is_file():
+                                zf.write(f, "maps/" + str(f.relative_to(_MAPS_DIR)))
+        except Exception:
+            _log.exception("admin_backup: build failed mid-stream")
+        finally:
+            # Best-effort — if the queue is still full at this point the
+            # consumer is gone anyway (see _gen's matching stall check
+            # below), so there's no one left to see _DONE.
+            try:
+                q.put(_DONE, timeout=5)
+            except queue.Full:
+                pass
+
+    threading.Thread(target=_build, daemon=True).start()
+
+    def _gen():
+        while True:
+            try:
+                chunk = q.get(timeout=_BACKUP_STALL_TIMEOUT)
+            except queue.Empty:
+                _log.error("admin_backup: no progress for %ss — ending the response", _BACKUP_STALL_TIMEOUT)
+                break
+            if chunk is _DONE:
+                break
+            yield chunk
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return StreamingResponse(
-        buf,
+        _gen(),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="nd-world-backup-{stamp}.zip"'},
     )
