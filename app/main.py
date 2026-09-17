@@ -1631,31 +1631,32 @@ async def world_import(world_id: int, file: UploadFile = File(...), db: Session 
             filename = unique_upload_filename(name, ext)
             (UPLOADS_DIR / filename).write_bytes(base64.b64decode(b64))
             image_url = f"/uploads/{filename}"
-        # This export (_entity_to_export_dict, shared with the per-kind
-        # split export/import) always writes these as real values, never
-        # omits them — unlike subtype/folder/tags/summary/body above,
-        # which use an `or`-fallback so a blank field in the import can't
-        # blow away a manually-edited value already on `existing`, these
-        # three are set outright on every import so a genuine "restore
-        # from backup" actually restores them, rather than leaving a
-        # previously-hidden entity looking visible (visible_to_players
-        # defaults True) or a template-driven stat block empty forever.
         template_id = _resolve_entity_template(db, world_id, item)
         custom_fields = item.get("custom_fields_json")
         if not isinstance(custom_fields, dict):
             custom_fields = {}
         visible_to_players = bool(item.get("visible_to_players", True))
+        # Same (name, kind) can match more than one row in this world (the
+        # export format has no stronger identity to key off) — order by id
+        # so which one gets updated is at least deterministic rather than
+        # whatever the query planner happens to return first.
         existing = db.query(Entity).filter(
             Entity.name == name, Entity.kind == kind, Entity.world_id == world_id
-        ).first()
+        ).order_by(Entity.id).first()
         if existing:
-            existing.subtype  = item.get("subtype") or existing.subtype
-            existing.folder   = item.get("folder")  or existing.folder
-            existing.tags     = item.get("tags")     or existing.tags
-            existing.summary  = item.get("summary")  or existing.summary
-            existing.body     = item.get("body")     or existing.body
-            if image_url:
-                existing.image_url = image_url
+            # A restore is meant to reproduce exactly what's in the
+            # backup, so every field is set outright here — a field the
+            # export captured as blank/absent (the entity had no summary,
+            # no image, wasn't hidden, etc.) really does overwrite
+            # `existing`'s current value, rather than an `or`-fallback
+            # silently preserving whatever was there before and leaving
+            # the restored world out of sync with the backup.
+            existing.subtype  = item.get("subtype")
+            existing.folder   = item.get("folder")
+            existing.tags     = item.get("tags")
+            existing.summary  = item.get("summary")
+            existing.body     = item.get("body")
+            existing.image_url = image_url
             existing.visible_to_players = visible_to_players
             existing.template_id = template_id
             existing.custom_fields_json = json.dumps(custom_fields)
@@ -3950,12 +3951,19 @@ def export_rules_and_notes(request: Request, db: Session = Depends(get_db), acti
     )
 
 
-def _entity_to_foundry_journal(db: Session, entity: Entity) -> dict:
+def _entity_to_foundry_journal(notes: list, entity: Entity) -> dict:
     """A single Foundry VTT JournalEntry document (v10+ page-based schema)
     for one entity — same system-agnostic approach as characters.py's
     _pc_to_foundry_journal, so it imports cleanly into any Foundry world
     regardless of which game system module is installed there. GM-only
-    export, so (like Rules and Notes) notes are included unfiltered."""
+    export, so (like Rules and Notes) notes are included unfiltered.
+
+    Takes this entity's already-queried notes rather than a `db` session
+    to query them itself — export_foundry's caller now streams the
+    output (see app.streaming_export), which runs this in a background
+    thread well after the request's own Depends(get_db) session has been
+    torn down; see _entities_zip's docstring in this file for why that
+    session can't be reused there."""
     kind_label = entity.kind.capitalize() + (f" — {entity.subtype}" if entity.subtype else "")
     parts = []
     if entity.summary:
@@ -3963,7 +3971,6 @@ def _entity_to_foundry_journal(db: Session, entity: Entity) -> dict:
     parts.append(render_md(entity.body) if entity.body else "<p><em>No description.</em></p>")
     pages = [{"name": "Overview", "type": "text", "text": {"format": 1, "content": "".join(parts)}, "sort": 0}]
 
-    notes = db.query(EntityNote).filter(EntityNote.entity_id == entity.id).order_by(EntityNote.created_at).all()
     if notes:
         notes_html = "".join(render_md(n.content) for n in notes)
         pages.append({"name": "Notes", "type": "text", "text": {"format": 1, "content": notes_html}, "sort": 100})
@@ -3994,16 +4001,37 @@ def export_foundry(request: Request, db: Session = Depends(get_db), active_world
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
-    documents = [_rules_to_foundry_journal(world)]
     entities = db.query(Entity).filter(Entity.world_id == world.id).order_by(Entity.kind, Entity.name).all()
-    documents += [_entity_to_foundry_journal(db, e) for e in entities]
     pcs = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == world.id).order_by(PlayerCharacter.name).all()
-    documents += [_pc_to_foundry_journal(pc) for pc in pcs]
-    payload = json.dumps(documents, ensure_ascii=False, indent=2)
-    filename = f"{world.slug}-foundry.json"
-    return StreamingResponse(
-        io.BytesIO(payload.encode("utf-8")), media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    # One query for every entity's notes rather than one per entity (the
+    # old N+1 db.query(...) inside _entity_to_foundry_journal) — also
+    # means that function no longer needs a `db` session at all, which
+    # matters now that render_md(entity.body) for every entity/PC (real,
+    # if bounded, CPU work for a large world) happens inside
+    # stream_json_array_download's background thread rather than all
+    # upfront before any bytes went out; see _entities_zip's docstring
+    # for why that thread can't reuse this request's own session.
+    notes_by_entity: dict[int, list] = {}
+    if entities:
+        entity_ids = [e.id for e in entities]
+        for note in (
+            db.query(EntityNote).filter(EntityNote.entity_id.in_(entity_ids))
+            .order_by(EntityNote.entity_id, EntityNote.created_at).all()
+        ):
+            notes_by_entity.setdefault(note.entity_id, []).append(note)
+
+    items = [("rules", world)] + [("entity", e) for e in entities] + [("pc", pc) for pc in pcs]
+
+    def _item_to_dict(item):
+        kind, obj = item
+        if kind == "rules":
+            return _rules_to_foundry_journal(obj)
+        if kind == "entity":
+            return _entity_to_foundry_journal(notes_by_entity.get(obj.id, []), obj)
+        return _pc_to_foundry_journal(obj)
+
+    return _streaming_export.stream_json_array_download(
+        items, _item_to_dict, filename=f"{world.slug}-foundry.json",
     )
 
 

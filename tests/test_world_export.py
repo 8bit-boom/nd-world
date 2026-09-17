@@ -267,3 +267,44 @@ def test_world_export_round_trip_preserves_visibility_template_and_custom_fields
         assert json.loads(imported.custom_fields_json) == {"hp": 42}
     finally:
         db.close()
+
+
+def test_world_import_restore_overwrites_an_existing_entity_with_the_backups_values(client, seed):
+    """world_import is a "restore from backup", not a partial merge — a
+    field the backup captured as blank must actually clear a stale value
+    already on the matching entity in the target world, rather than an
+    `or`-fallback silently keeping whatever was there before out of sync
+    with the backup being restored."""
+    db = SessionLocal()
+    try:
+        db.add(Entity(
+            world_id=seed.world_b.id, kind="character", name="Overwrite Me",
+            summary="stale summary", tags="stale-tag",
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    _login_gm(client, seed)
+    payload = {
+        "world": {"name": "W", "slug": "w"},
+        "entities": [{
+            "name": "Overwrite Me", "kind": "character",
+            "summary": None, "tags": None, "visible_to_players": True,
+        }],
+    }
+    r = client.post(
+        f"/worlds/{seed.world_b.id}/import",
+        files={"file": ("export.json", io.BytesIO(json.dumps(payload).encode()), "application/json")},
+    )
+    assert r.status_code in (200, 303, 307)
+
+    db = SessionLocal()
+    try:
+        imported = db.query(Entity).filter(
+            Entity.world_id == seed.world_b.id, Entity.name == "Overwrite Me",
+        ).first()
+        assert imported.summary is None
+        assert imported.tags is None
+    finally:
+        db.close()

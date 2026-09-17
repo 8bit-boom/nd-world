@@ -4,6 +4,7 @@ page-based schema as characters.py's existing per-character
 export.foundry.json). GM-only, like everything else under /export."""
 import json
 
+import app.main as main_module
 from app.database import SessionLocal
 from app.models import Entity, EntityNote, PlayerCharacter, World
 
@@ -115,6 +116,26 @@ def test_export_foundry_document_shape_is_valid_journal_entries(client, seed):
             assert page["type"] == "text"
             assert "content" in page["text"]
         assert doc["flags"]["nd-world"]["source"] == "nd-world"
+
+
+def test_entity_to_foundry_journal_takes_notes_not_a_db_session():
+    """export_foundry now streams its payload (app.streaming_export), so
+    the per-document dict-building runs in a background thread well after
+    the request's own db session is gone — the same hazard _entities_zip
+    hit (see its docstring in app/main.py). _entity_to_foundry_journal
+    used to run its own db.query(EntityNote)...all() per entity (also an
+    N+1); it now takes an already-fetched notes list instead. Calling it
+    here with no db argument at all proves by construction that nothing
+    it does can depend on a live session."""
+    e = Entity(id=1, world_id=1, kind="character", name="Standalone", body="Hi there.")
+    doc = main_module._entity_to_foundry_journal([], e)
+    assert doc["name"] == "[Character] Standalone"
+    assert len(doc["pages"]) == 1  # no notes passed in -> no "Notes" page
+
+    note = EntityNote(entity_id=1, content="A secret.")
+    doc_with_notes = main_module._entity_to_foundry_journal([note], e)
+    notes_page = next(p for p in doc_with_notes["pages"] if p["name"] == "Notes")
+    assert "A secret." in notes_page["text"]["content"]
 
 
 def test_export_foundry_cross_world_isolation(client, seed):
