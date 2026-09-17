@@ -19,7 +19,7 @@ import zipfile
 
 from app.database import SessionLocal
 from app.main import UPLOADS_DIR
-from app.models import Entity, World
+from app.models import Entity, EntityTemplate, World
 
 from .conftest import GM_PASSWORD, login
 
@@ -100,6 +100,37 @@ def test_world_book_with_no_images_still_produces_a_valid_zip(client, seed):
     assert not any(n.startswith("assets/images/") for n in zf.namelist())
 
 
+def test_world_book_image_url_cannot_escape_uploads_dir(client, seed, tmp_path):
+    """image_url is set from an unvalidated raw string via
+    POST /api/entity/{id}/image (see api_entity_set_image) — a value like
+    "/uploads/../../data/world.db" must not let world_export_book read a
+    file from outside UPLOADS_DIR into this GM-only zip. Resolving the
+    full remainder after "/uploads/" (rather than just the basename, like
+    every other image-embedding export in this app) used to allow exactly
+    that."""
+    sentinel = UPLOADS_DIR.parent / "sentinel-outside-uploads.txt"
+    sentinel.write_text("should never leave the server")
+    try:
+        db = SessionLocal()
+        try:
+            db.add(Entity(
+                world_id=seed.world_a.id, kind="character", name="Escapee",
+                image_url="/uploads/../sentinel-outside-uploads.txt",
+            ))
+            db.commit()
+        finally:
+            db.close()
+        _login_gm(client, seed)
+        r = client.get("/export/book.zip")
+        assert r.status_code == 200
+        zf = zipfile.ZipFile(io.BytesIO(r.content))
+        for n in zf.namelist():
+            assert b"should never leave the server" not in zf.read(n)
+        assert not any(n.startswith("assets/images/") for n in zf.namelist())
+    finally:
+        sentinel.unlink(missing_ok=True)
+
+
 # ── World JSON single file (/worlds/{id}/export) ────────────────────────────
 
 def test_world_export_returns_valid_json_with_world_header(client, seed):
@@ -166,5 +197,73 @@ def test_world_export_round_trips_through_import(client, seed):
         ).first()
         assert imported is not None
         assert imported.image_url and imported.image_url.startswith("/uploads/")
+    finally:
+        db.close()
+
+
+def test_world_export_includes_visibility_template_and_custom_fields(client, seed):
+    """This shape (via export.py's shared _entity_to_export_dict) must
+    match what the "split" per-kind export already emits — main.py used to
+    have its own, separate dict-builder that silently dropped all three of
+    these on every export."""
+    db = SessionLocal()
+    try:
+        tpl = EntityTemplate(name="Stat Block", slug="stat-block-x", kind="creature")
+        db.add(tpl)
+        db.commit()
+        db.refresh(tpl)
+        db.add(Entity(
+            world_id=seed.world_a.id, kind="creature", name="Hidden Dragon",
+            visible_to_players=False, template_id=tpl.id,
+            custom_fields_json=json.dumps({"hp": 42}),
+        ))
+        db.commit()
+    finally:
+        db.close()
+    _login_gm(client, seed)
+    data = client.get(f"/worlds/{seed.world_a.id}/export").json()
+    exported = data["entities"][0]
+    assert exported["visible_to_players"] is False
+    assert exported["template_slug"] == "stat-block-x"
+    assert exported["custom_fields_json"] == {"hp": 42}
+
+
+def test_world_export_round_trip_preserves_visibility_template_and_custom_fields(client, seed):
+    """A restore into a fresh/empty world (the documented disaster-recovery
+    use case) must not silently reset every entity's visible_to_players to
+    the model default (True) — that would expose every previously-hidden
+    GM secret to players — nor drop template-driven stat block values."""
+    db = SessionLocal()
+    try:
+        tpl = EntityTemplate(name="Stat Block", slug="stat-block-x", kind="creature")
+        db.add(tpl)
+        db.commit()
+        db.refresh(tpl)
+        db.add(Entity(
+            world_id=seed.world_a.id, kind="creature", name="Hidden Dragon",
+            visible_to_players=False, template_id=tpl.id,
+            custom_fields_json=json.dumps({"hp": 42}),
+        ))
+        db.commit()
+    finally:
+        db.close()
+    _login_gm(client, seed)
+    exported = client.get(f"/worlds/{seed.world_a.id}/export").json()
+
+    r = client.post(
+        f"/worlds/{seed.world_b.id}/import",
+        files={"file": ("export.json", io.BytesIO(json.dumps(exported).encode()), "application/json")},
+    )
+    assert r.status_code in (200, 303, 307)
+
+    db = SessionLocal()
+    try:
+        imported = db.query(Entity).filter(
+            Entity.world_id == seed.world_b.id, Entity.name == "Hidden Dragon",
+        ).first()
+        assert imported is not None
+        assert imported.visible_to_players is False
+        assert imported.template_id is not None
+        assert json.loads(imported.custom_fields_json) == {"hp": 42}
     finally:
         db.close()

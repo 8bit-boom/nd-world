@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.datastructures import Headers
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_, func, text
 from sqlalchemy.exc import OperationalError
 from typing import List, Optional
@@ -57,7 +57,8 @@ from .routers.lore_extras import router as lore_extras_router
 from .routers.boards_generate import router as boards_generate_router
 from .routers.handouts import router as handouts_router
 from .routers.home_content import router as home_content_router
-from .routers.export import router as export_router
+from .routers.export import router as export_router, _entity_to_export_dict
+from .routers.importer import _resolve_entity_template
 from .routers.kinds_admin import router as kinds_admin_router
 from .routers.facts import router as facts_router
 from .routers.chronicler import router as chronicler_router
@@ -1557,27 +1558,28 @@ def folder_rename(
         redirect_url += f"?folder={quote(new_path)}"
     return RedirectResponse(redirect_url, status_code=303)
 
-def _world_export_entity_dict(e: Entity) -> dict:
-    d = {
-        "name": e.name, "kind": e.kind, "subtype": e.subtype,
-        "folder": e.folder, "tags": e.tags, "summary": e.summary,
-        "body": e.body, "image_url": e.image_url, "image_data": None,
-    }
-    # Embed local uploaded images as base64
-    if e.image_url and e.image_url.startswith("/uploads/"):
-        img_path = UPLOADS_DIR / Path(e.image_url).name
-        if img_path.exists():
-            ext = img_path.suffix.lower().lstrip(".")
-            d["image_data"] = f"data:image/{ext};base64," + base64.b64encode(img_path.read_bytes()).decode()
-    return d
-
-
 @app.get("/worlds/{world_id}/export")
 def world_export(world_id: int, db: Session = Depends(get_db)):
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
-    entities = db.query(Entity).filter(Entity.world_id == world_id).all()
+    entities = (
+        db.query(Entity)
+        # Reuses export.py's _entity_to_export_dict (same shape the "split"
+        # per-kind JSON export/import already round-trips correctly) rather
+        # than a second, hand-maintained dict-builder — this file used to
+        # have its own that only wrote name/kind/subtype/folder/tags/
+        # summary/body/image, silently dropping visible_to_players,
+        # template, and custom_fields_json on every restore through this
+        # route's own POST counterpart (world_import below): a GM restoring
+        # a backup into a fresh world got every entity back with
+        # visible_to_players defaulted to True — every previously-hidden
+        # secret exposed to players — and every template-driven stat block
+        # value gone for good. See joinedload note on export_entities_by_
+        # kind for why .template needs eager-loading here too.
+        .options(joinedload(Entity.template))
+        .filter(Entity.world_id == world_id).all()
+    )
     # Every entity's image gets read off disk and base64-encoded — for an
     # illustrated world that's real work, and the old json.dumps(...) of
     # the whole thing at once meant every one of those reads happened
@@ -1592,7 +1594,7 @@ def world_export(world_id: int, db: Session = Depends(get_db)):
     )
     prefix = header.rstrip()[:-1].rstrip() + ',\n  "entities": '
     return _streaming_export.stream_json_array_download(
-        entities, _world_export_entity_dict,
+        entities, _entity_to_export_dict,
         filename=f"{w.slug}-export.json", wrap=(prefix, "\n}"),
     )
 
@@ -1629,6 +1631,20 @@ async def world_import(world_id: int, file: UploadFile = File(...), db: Session 
             filename = unique_upload_filename(name, ext)
             (UPLOADS_DIR / filename).write_bytes(base64.b64decode(b64))
             image_url = f"/uploads/{filename}"
+        # This export (_entity_to_export_dict, shared with the per-kind
+        # split export/import) always writes these as real values, never
+        # omits them — unlike subtype/folder/tags/summary/body above,
+        # which use an `or`-fallback so a blank field in the import can't
+        # blow away a manually-edited value already on `existing`, these
+        # three are set outright on every import so a genuine "restore
+        # from backup" actually restores them, rather than leaving a
+        # previously-hidden entity looking visible (visible_to_players
+        # defaults True) or a template-driven stat block empty forever.
+        template_id = _resolve_entity_template(db, world_id, item)
+        custom_fields = item.get("custom_fields_json")
+        if not isinstance(custom_fields, dict):
+            custom_fields = {}
+        visible_to_players = bool(item.get("visible_to_players", True))
         existing = db.query(Entity).filter(
             Entity.name == name, Entity.kind == kind, Entity.world_id == world_id
         ).first()
@@ -1640,6 +1656,9 @@ async def world_import(world_id: int, file: UploadFile = File(...), db: Session 
             existing.body     = item.get("body")     or existing.body
             if image_url:
                 existing.image_url = image_url
+            existing.visible_to_players = visible_to_players
+            existing.template_id = template_id
+            existing.custom_fields_json = json.dumps(custom_fields)
             updated += 1
         else:
             db.add(Entity(
@@ -1647,6 +1666,9 @@ async def world_import(world_id: int, file: UploadFile = File(...), db: Session 
                 subtype=item.get("subtype"), folder=item.get("folder"),
                 tags=item.get("tags"), summary=item.get("summary"),
                 body=item.get("body"), image_url=image_url,
+                visible_to_players=visible_to_players,
+                template_id=template_id,
+                custom_fields_json=json.dumps(custom_fields),
             ))
             created += 1
     db.commit()
@@ -3837,15 +3859,18 @@ def world_export_book(request: Request, db: Session = Depends(get_db), active_wo
     for ent in entities_raw:
         ent.image_rel = None  # type: ignore[attr-defined]
         if ent.image_url and ent.image_url.startswith("/uploads/"):
-            try:
-                rel = ent.image_url[len("/uploads/"):]
-                img_path = UPLOADS_DIR / rel
-                if img_path.exists():
-                    zip_img_path = "assets/images/" + rel.replace("\\", "/")
-                    image_paths.append((zip_img_path, img_path))
-                    ent.image_rel = "./" + zip_img_path  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            # Basename only, like every other image-embedding export in
+            # this app (world_export/export_entities_by_kind's
+            # _entity_to_export_dict) — image_url is set from an
+            # unvalidated raw string via POST /api/entity/{id}/image, so
+            # resolving the full remainder after "/uploads/" (as this used
+            # to) let a value like "/uploads/../../data/world.db" escape
+            # UPLOADS_DIR and get bundled straight into this zip.
+            img_path = UPLOADS_DIR / Path(ent.image_url).name
+            if img_path.exists():
+                zip_img_path = "assets/images/" + img_path.name
+                image_paths.append((zip_img_path, img_path))
+                ent.image_rel = "./" + zip_img_path  # type: ignore[attr-defined]
         raw_html = render_md(ent.body) if ent.body else ""
         ent.body_html = re.sub(r'^<h1[^>]*>.*?</h1>\s*', '', raw_html, count=1, flags=re.DOTALL)  # type: ignore[attr-defined]
         entities_by_kind.setdefault(ent.kind, []).append(ent)

@@ -48,7 +48,14 @@ def _entity_to_export_dict(e: Entity) -> dict:
         "folder": e.folder, "tags": e.tags, "summary": e.summary,
         "body": e.body, "image_url": e.image_url, "image_data": None,
         "visible_to_players": bool(e.visible_to_players),
+        # "template" holds the slug (kept as-is for anything already reading
+        # it), but _resolve_entity_template's own priority order checks
+        # template_id, then template_slug, then template as a NAME match —
+        # so re-importing this without template_slug would silently fail to
+        # relink whenever a template's slug and name differ, which is the
+        # common case (auto-generated slugs vs. a human-typed display name).
         "template": e.template.slug if e.template else None,
+        "template_slug": e.template.slug if e.template else None,
         "custom_fields_json": json.loads(e.custom_fields_json or "{}"),
     }
     if e.image_url and e.image_url.startswith("/uploads/"):
