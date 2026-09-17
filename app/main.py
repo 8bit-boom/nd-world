@@ -16,9 +16,7 @@ import re
 import html
 import logging
 import os
-import queue
 import secrets
-import threading
 import time
 import uuid
 import shutil
@@ -30,6 +28,7 @@ from pathlib import Path
 from . import deps
 from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
+from . import streaming_export as _streaming_export
 from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache
 from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content
 from .imaging import convert_image, make_thumbnail
@@ -1558,35 +1557,43 @@ def folder_rename(
         redirect_url += f"?folder={quote(new_path)}"
     return RedirectResponse(redirect_url, status_code=303)
 
+def _world_export_entity_dict(e: Entity) -> dict:
+    d = {
+        "name": e.name, "kind": e.kind, "subtype": e.subtype,
+        "folder": e.folder, "tags": e.tags, "summary": e.summary,
+        "body": e.body, "image_url": e.image_url, "image_data": None,
+    }
+    # Embed local uploaded images as base64
+    if e.image_url and e.image_url.startswith("/uploads/"):
+        img_path = UPLOADS_DIR / Path(e.image_url).name
+        if img_path.exists():
+            ext = img_path.suffix.lower().lstrip(".")
+            d["image_data"] = f"data:image/{ext};base64," + base64.b64encode(img_path.read_bytes()).decode()
+    return d
+
+
 @app.get("/worlds/{world_id}/export")
 def world_export(world_id: int, db: Session = Depends(get_db)):
     w = db.get(World, world_id)
     if not w:
         raise HTTPException(404)
     entities = db.query(Entity).filter(Entity.world_id == world_id).all()
-    export_entities = []
-    for e in entities:
-        d = {
-            "name": e.name, "kind": e.kind, "subtype": e.subtype,
-            "folder": e.folder, "tags": e.tags, "summary": e.summary,
-            "body": e.body, "image_url": e.image_url, "image_data": None,
-        }
-        # Embed local uploaded images as base64
-        if e.image_url and e.image_url.startswith("/uploads/"):
-            img_path = UPLOADS_DIR / Path(e.image_url).name
-            if img_path.exists():
-                ext = img_path.suffix.lower().lstrip(".")
-                d["image_data"] = f"data:image/{ext};base64," + base64.b64encode(img_path.read_bytes()).decode()
-        export_entities.append(d)
-    payload = json.dumps({
-        "world": {"name": w.name, "slug": w.slug, "description": w.description, "accent": w.accent},
-        "entities": export_entities,
-    }, ensure_ascii=False, indent=2)
-    filename = f"{w.slug}-export.json"
-    return StreamingResponse(
-        io.BytesIO(payload.encode("utf-8")),
-        media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    # Every entity's image gets read off disk and base64-encoded — for an
+    # illustrated world that's real work, and the old json.dumps(...) of
+    # the whole thing at once meant every one of those reads happened
+    # before a single byte of the response went out (same risk class as
+    # admin_backup's Full Backup — see app.streaming_export). Streaming a
+    # JSON array (app.streaming_export.stream_json_array_download) means
+    # each entity's dict — image read included — is only built right
+    # before its own JSON text is written.
+    header = json.dumps(
+        {"world": {"name": w.name, "slug": w.slug, "description": w.description, "accent": w.accent}},
+        ensure_ascii=False, indent=2,
+    )
+    prefix = header.rstrip()[:-1].rstrip() + ',\n  "entities": '
+    return _streaming_export.stream_json_array_download(
+        entities, _world_export_entity_dict,
+        filename=f"{w.slug}-export.json", wrap=(prefix, "\n}"),
     )
 
 @app.post("/worlds/{world_id}/import")
@@ -3805,13 +3812,20 @@ def export_hub(request: Request, db: Session = Depends(get_db), active_world: st
 
 @app.get("/export/book.zip")
 def world_export_book(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    import zipfile, io as _io
+    import zipfile
     from datetime import date
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         return RedirectResponse("/worlds")
 
-    image_files: dict[str, bytes] = {}  # zip path -> bytes
+    # (zip path, disk path) — NOT the image bytes themselves. Every image
+    # in a world could add up to real size, and reading them all into
+    # memory here (the old image_files: dict[str, bytes]) meant that
+    # entire read happened before a single byte of the response went out.
+    # zf.write() below reads each file straight off disk in 8KB chunks as
+    # it writes it into the (now streamed) zip — same technique
+    # admin_backup's uploads-dir walk uses.
+    image_paths: list[tuple[str, Path]] = []
 
     entities_raw = (
         db.query(Entity)
@@ -3828,7 +3842,7 @@ def world_export_book(request: Request, db: Session = Depends(get_db), active_wo
                 img_path = UPLOADS_DIR / rel
                 if img_path.exists():
                     zip_img_path = "assets/images/" + rel.replace("\\", "/")
-                    image_files[zip_img_path] = img_path.read_bytes()
+                    image_paths.append((zip_img_path, img_path))
                     ent.image_rel = "./" + zip_img_path  # type: ignore[attr-defined]
             except Exception:
                 pass
@@ -3853,27 +3867,28 @@ def world_export_book(request: Request, db: Session = Depends(get_db), active_wo
     rules_html = render_md(rules_md) if rules_md else ""
 
     export_kinds, export_kind_icons = deps.effective_kinds(world)
-    html = templates.env.get_template("world_export.html").render(
+    rendered_html = templates.env.get_template("world_export.html").render(
         world=world, worlds=worlds, kinds=export_kinds, kind_icons=export_kind_icons,
         entities_by_kind=entities_by_kind, boards=boards_export,
         maps=maps_export, rules_html=rules_html,
         export_date=date.today().isoformat(),
     )
 
-    buf = _io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("index.html", html.encode("utf-8"))
-        css_path = BASE_DIR / "static" / "style.css"
-        if css_path.exists():
-            zf.writestr("assets/style.css", css_path.read_bytes())
-        for zpath, data in image_files.items():
-            zf.writestr(zpath, data)
-    buf.seek(0)
+    # Same "stream real bytes out as the zip is built" fix as admin_backup
+    # (see app.streaming_export) — a world with many/large illustrated
+    # entities used to mean the whole zip sat fully built in memory before
+    # any of it reached the browser.
+    def _build(writer):
+        with zipfile.ZipFile(writer, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("index.html", rendered_html.encode("utf-8"))
+            css_path = BASE_DIR / "static" / "style.css"
+            if css_path.exists():
+                zf.writestr("assets/style.css", css_path.read_bytes())
+            for zpath, disk_path in image_paths:
+                zf.write(disk_path, zpath)
 
-    return StreamingResponse(
-        buf,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{world.slug}-worldbook.zip"'},
+    return _streaming_export.stream_download(
+        _build, media_type="application/zip", filename=f"{world.slug}-worldbook.zip",
     )
 
 
@@ -3967,51 +3982,6 @@ def export_foundry(request: Request, db: Session = Depends(get_db), active_world
     )
 
 
-# A stalled consumer (client vanished mid-download, or a genuinely wedged
-# disk) must not leave the producer/consumer pair of threads below blocked
-# on the queue forever — bounded by this on both ends of admin_backup's
-# _QueueZipWriter/_gen pair instead.
-_BACKUP_STALL_TIMEOUT = 120
-
-
-class _BackupStalled(Exception):
-    """Raised by _QueueZipWriter when nothing has drained the queue for
-    _BACKUP_STALL_TIMEOUT seconds — admin_backup's build thread treats
-    this exactly like any other build failure (log it, stop, let the
-    generator side notice the same stall independently and end the
-    response)."""
-
-
-class _QueueZipWriter:
-    """A write-only file object that hands every chunk zipfile gives it
-    straight to a queue instead of buffering it — the file-like target
-    admin_backup's ZipFile writes into so the zip streams out to the
-    client as it's built (see admin_backup's own comment for why holding
-    the whole archive in memory first was the actual bug). No seek() —
-    zipfile detects that and falls back to writing per-entry data
-    descriptors instead of pre-computed sizes in local headers, which
-    every standard unzip tool (Python's own zipfile included) reads fine
-    for a one-pass, streamed-out archive like this one."""
-    def __init__(self, q: "queue.Queue"):
-        self._q = q
-        self._pos = 0
-
-    def write(self, data: bytes) -> int:
-        data = bytes(data)
-        try:
-            self._q.put(data, timeout=_BACKUP_STALL_TIMEOUT)
-        except queue.Full:
-            raise _BackupStalled("no room in the backup queue — consumer stalled")
-        self._pos += len(data)
-        return len(data)
-
-    def tell(self) -> int:
-        return self._pos
-
-    def flush(self) -> None:
-        pass
-
-
 @app.get("/admin/backup.zip")
 def admin_backup(db: Session = Depends(get_db)):
     # Not in _is_player_safe, so the auth_gate middleware already denies this to
@@ -4052,67 +4022,39 @@ def admin_backup(db: Session = Depends(get_db)):
     # audio, video), that's a multi-minute gap with zero bytes sent to the
     # browser, which either sits on an infinite-looking spinner or gets its
     # connection killed by a reverse proxy's idle-byte timeout (the same
-    # class of bug the Chronicler/AI Chat streaming fixes exist for — see
-    # their own docstrings). Streaming real zip bytes out continuously as
-    # the archive is built (world.db, then every uploaded/map file) keeps
-    # the connection alive and gives the browser actual download progress
-    # for the whole thing instead of one silent blocking wait.
-    q: "queue.Queue" = queue.Queue(maxsize=64)
-    _DONE = object()
-
-    def _build():
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                # VACUUM INTO produces a consistent, defragmented snapshot in one
-                # statement — copying world.db directly while uvicorn holds it
-                # open risks capturing a half-written page mid-write.
-                snapshot_path = Path(tmp) / "world.db"
-                raw = sqlite3.connect(str(db_path))
-                try:
-                    raw.execute("VACUUM INTO ?", (str(snapshot_path),))
-                finally:
-                    raw.close()
-
-                with zipfile.ZipFile(_QueueZipWriter(q), "w", zipfile.ZIP_DEFLATED) as zf:
-                    zf.write(snapshot_path, "world.db")
-                    zf.writestr("manifest.json", json.dumps(manifest, indent=2))
-                    if UPLOADS_DIR.exists():
-                        for f in UPLOADS_DIR.rglob("*"):
-                            if f.is_file():
-                                zf.write(f, "uploads/" + str(f.relative_to(UPLOADS_DIR)))
-                    if _MAPS_DIR.exists():
-                        for f in _MAPS_DIR.rglob("*"):
-                            if f.is_file():
-                                zf.write(f, "maps/" + str(f.relative_to(_MAPS_DIR)))
-        except Exception:
-            _log.exception("admin_backup: build failed mid-stream")
-        finally:
-            # Best-effort — if the queue is still full at this point the
-            # consumer is gone anyway (see _gen's matching stall check
-            # below), so there's no one left to see _DONE.
+    # class of bug the Chronicler/AI Chat streaming fixes exist for). See
+    # app.streaming_export for the shared queue/thread mechanism this and
+    # every other GM export/download route with the same risk profile
+    # (World Book, World JSON, per-kind bulk downloads) now use — bytes
+    # flow to the client continuously as the archive is built (world.db,
+    # then every uploaded/map file) instead of one silent blocking wait.
+    def _build(writer):
+        with tempfile.TemporaryDirectory() as tmp:
+            # VACUUM INTO produces a consistent, defragmented snapshot in one
+            # statement — copying world.db directly while uvicorn holds it
+            # open risks capturing a half-written page mid-write.
+            snapshot_path = Path(tmp) / "world.db"
+            raw = sqlite3.connect(str(db_path))
             try:
-                q.put(_DONE, timeout=5)
-            except queue.Full:
-                pass
+                raw.execute("VACUUM INTO ?", (str(snapshot_path),))
+            finally:
+                raw.close()
 
-    threading.Thread(target=_build, daemon=True).start()
-
-    def _gen():
-        while True:
-            try:
-                chunk = q.get(timeout=_BACKUP_STALL_TIMEOUT)
-            except queue.Empty:
-                _log.error("admin_backup: no progress for %ss — ending the response", _BACKUP_STALL_TIMEOUT)
-                break
-            if chunk is _DONE:
-                break
-            yield chunk
+            with zipfile.ZipFile(writer, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.write(snapshot_path, "world.db")
+                zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+                if UPLOADS_DIR.exists():
+                    for f in UPLOADS_DIR.rglob("*"):
+                        if f.is_file():
+                            zf.write(f, "uploads/" + str(f.relative_to(UPLOADS_DIR)))
+                if _MAPS_DIR.exists():
+                    for f in _MAPS_DIR.rglob("*"):
+                        if f.is_file():
+                            zf.write(f, "maps/" + str(f.relative_to(_MAPS_DIR)))
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return StreamingResponse(
-        _gen(),
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="nd-world-backup-{stamp}.zip"'},
+    return _streaming_export.stream_download(
+        _build, media_type="application/zip", filename=f"nd-world-backup-{stamp}.zip",
     )
 
 # ── List ──────────────────────────────────────────────────────────────────────
@@ -4334,18 +4276,22 @@ def entity_download(entity_id: int, request: Request, db: Session = Depends(get_
     )
 
 
-def _entities_zip(db: Session, entities, request: Request) -> io.BytesIO:
+def _entities_zip(db: Session, entities, request: Request, filename: str) -> StreamingResponse:
     """Zip one .md file per entity (via _entity_to_markdown) — shared by the
     per-kind bulk download and the "Download Selected" bulk-action-bar button
-    so both produce identically-shaped zips."""
+    so both produce identically-shaped zips. Streamed (app.streaming_export)
+    rather than built fully in memory first — a world with many/long-bodied
+    entities could otherwise mean a real wait with nothing sent to the
+    browser, same risk class as every other zip export in this file."""
     import zipfile
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for e in entities:
-            fname = "".join(c if c.isalnum() or c in " -_" else "" for c in (e.name or "entity")) or "entity"
-            zf.writestr(f"{fname}-{e.id}.md", _entity_to_markdown(db, e, request))
-    buf.seek(0)
-    return buf
+
+    def _build(writer):
+        with zipfile.ZipFile(writer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for e in entities:
+                fname = "".join(c if c.isalnum() or c in " -_" else "" for c in (e.name or "entity")) or "entity"
+                zf.writestr(f"{fname}-{e.id}.md", _entity_to_markdown(db, e, request))
+
+    return _streaming_export.stream_download(_build, media_type="application/zip", filename=filename)
 
 
 @app.get("/kind/{kind}/download.zip")
@@ -4358,12 +4304,7 @@ def kind_download(kind: str, request: Request, db: Session = Depends(get_db), ac
         raise HTTPException(403)
     q = db.query(Entity).filter(Entity.world_id == world.id, Entity.kind == kind)
     entities = _filter_visible_entities(q, request).order_by(Entity.name).all()
-    buf = _entities_zip(db, entities, request)
-    filename = f"{world.slug}-{kind}.zip"
-    return StreamingResponse(
-        buf, media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    return _entities_zip(db, entities, request, f"{world.slug}-{kind}.zip")
 
 
 @app.get("/kind/{kind}/download-selected.zip")
@@ -4382,12 +4323,7 @@ def kind_download_selected(
     # can't smuggle a hidden entity's id into the query string to bypass
     # visible_to_players, even with the download toggle on.
     entities = _filter_visible_entities(q, request).order_by(Entity.name).all()
-    buf = _entities_zip(db, entities, request)
-    filename = f"{world.slug}-{kind}-selected.zip"
-    return StreamingResponse(
-        buf, media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    return _entities_zip(db, entities, request, f"{world.slug}-{kind}-selected.zip")
 
 
 @app.get("/api/entity/{entity_id}/preview")

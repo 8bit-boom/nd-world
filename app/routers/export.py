@@ -20,6 +20,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
+from .. import streaming_export as _streaming_export
 from ..constants import KIND_ICONS, KINDS
 from ..database import get_db
 from ..deps import get_world_ctx
@@ -120,7 +121,14 @@ def export_entities_by_kind(world_id: int, kind: str, db: Session = Depends(get_
     if kind not in KINDS:
         raise HTTPException(404, f"Unknown entity kind: {kind}")
     entities = db.query(Entity).filter(Entity.world_id == world_id, Entity.kind == kind).order_by(Entity.name).all()
-    return _json_download([_entity_to_export_dict(e) for e in entities], f"{w.slug}-{kind}.json")
+    # Each entity's image gets read off disk and base64-encoded — for a
+    # kind with many illustrated entities (items, creatures, characters)
+    # that's real work best done one entity at a time as it's written out,
+    # not all upfront before any bytes reach the client (see
+    # app.streaming_export and world_export's identical fix in main.py).
+    return _streaming_export.stream_json_array_download(
+        entities, _entity_to_export_dict, filename=f"{w.slug}-{kind}.json",
+    )
 
 
 @router.get("/worlds/{world_id}/export/templates/{template_id}.json")
