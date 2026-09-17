@@ -8,8 +8,11 @@ field_template already expect).
 """
 import json
 
+import pytest
+
 from app.database import SessionLocal
-from app.models import Entity, PlayerCharacter, SheetTemplate
+from app.models import Entity, EntityTemplate, PlayerCharacter, SheetTemplate
+from app.routers import export as export_module
 from app.routers.importer import detect_kind
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
@@ -94,6 +97,60 @@ def test_export_entities_by_kind_scoped_and_shaped(client, seed):
     detected = detect_kind(data)
     assert detected["kind"] == "entity_bulk"
     assert detected["count"] == 1
+
+
+def test_export_entities_by_kind_eager_loads_template_before_streaming(client, seed):
+    """_entity_to_export_dict reads e.template.slug — a lazy relationship —
+    from inside app.streaming_export.stream_json_array_download's
+    background thread, which keeps running after the route handler
+    returns. FastAPI tears down the route's Depends(get_db) session as
+    soon as the handler returns, not once the response finishes
+    streaming, so a lazy load triggered from the background thread would
+    hit a detached, closed session and raise. export_entities_by_kind
+    guards against this with .options(joinedload(Entity.template)) so the
+    relationship is already cached on the object before the handoff ever
+    happens.
+
+    Whether an unfixed version merely *appears* to work depends on
+    whether the lazy load wins its race against the session teardown —
+    exactly why the equivalent bug in _entities_zip only ever showed up
+    as an intermittent CI failure, not locally. Checking sqlalchemy's own
+    "is this attribute loaded yet" bookkeeping right as the per-entity
+    dict is built sidesteps that race entirely: whether `template` is
+    already loaded is fixed at query time, not by when this check runs,
+    so this fails every time on an unfixed query and passes every time
+    on the eager-loaded one."""
+    from sqlalchemy import inspect as sa_inspect
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    db = SessionLocal()
+    try:
+        tpl = EntityTemplate(name="Stat Block", slug="stat-block-x", kind="creature")
+        db.add(tpl)
+        db.commit()
+        db.refresh(tpl)
+        db.add(Entity(world_id=seed.world_a.id, kind="creature", name="Dragon", template_id=tpl.id))
+        db.commit()
+    finally:
+        db.close()
+
+    captured = {}
+    original = export_module._entity_to_export_dict
+
+    def _spy(e):
+        captured["unloaded"] = sa_inspect(e).unloaded
+        return original(e)
+
+    export_module._entity_to_export_dict = _spy
+    try:
+        r = client.get(f"/worlds/{seed.world_a.id}/export/entities/creature.json")
+        assert r.status_code == 200
+        data = r.json()
+    finally:
+        export_module._entity_to_export_dict = original
+
+    assert "template" not in captured["unloaded"]
+    assert data[0]["template"] == "stat-block-x"
 
 
 def test_export_entities_by_kind_unknown_kind_404(client, seed):

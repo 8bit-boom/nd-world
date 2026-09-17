@@ -4282,14 +4282,30 @@ def _entities_zip(db: Session, entities, request: Request, filename: str) -> Str
     so both produce identically-shaped zips. Streamed (app.streaming_export)
     rather than built fully in memory first — a world with many/long-bodied
     entities could otherwise mean a real wait with nothing sent to the
-    browser, same risk class as every other zip export in this file."""
+    browser, same risk class as every other zip export in this file.
+
+    _build runs in a background thread (see app.streaming_export.
+    stream_download) that keeps writing well after this function returns —
+    but the `db` parameter is the request's Depends(get_db) session, which
+    FastAPI tears down as soon as this function returns its response, not
+    once that response finishes streaming. _entity_to_markdown queries
+    through `db` (World lookup, note visibility), so it needs a session
+    that's still alive whenever the thread actually gets to it — a fresh
+    one opened inside _build, not the request's. The `entities` objects
+    themselves don't have this problem: their columns were already loaded
+    by the caller's .all() and stay safe to read regardless of session
+    state."""
     import zipfile
 
     def _build(writer):
-        with zipfile.ZipFile(writer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for e in entities:
-                fname = "".join(c if c.isalnum() or c in " -_" else "" for c in (e.name or "entity")) or "entity"
-                zf.writestr(f"{fname}-{e.id}.md", _entity_to_markdown(db, e, request))
+        thread_db = SessionLocal()
+        try:
+            with zipfile.ZipFile(writer, "w", zipfile.ZIP_DEFLATED) as zf:
+                for e in entities:
+                    fname = "".join(c if c.isalnum() or c in " -_" else "" for c in (e.name or "entity")) or "entity"
+                    zf.writestr(f"{fname}-{e.id}.md", _entity_to_markdown(thread_db, e, request))
+        finally:
+            thread_db.close()
 
     return _streaming_export.stream_download(_build, media_type="application/zip", filename=filename)
 

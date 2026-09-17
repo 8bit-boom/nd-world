@@ -18,7 +18,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from .. import streaming_export as _streaming_export
 from ..constants import KIND_ICONS, KINDS
@@ -120,7 +120,22 @@ def export_entities_by_kind(world_id: int, kind: str, db: Session = Depends(get_
         raise HTTPException(404)
     if kind not in KINDS:
         raise HTTPException(404, f"Unknown entity kind: {kind}")
-    entities = db.query(Entity).filter(Entity.world_id == world_id, Entity.kind == kind).order_by(Entity.name).all()
+    entities = (
+        db.query(Entity)
+        # _entity_to_export_dict reads e.template.slug — a lazy relationship
+        # that would otherwise issue its own query the first time it's
+        # touched. That first touch happens inside stream_json_array_
+        # download's background thread, well after this request's own
+        # `db` (Depends(get_db)) has been torn down, since FastAPI closes
+        # a yield-dependency as soon as this function returns its
+        # response rather than once the response finishes streaming.
+        # Eager-loading it here means it's already sitting on the object
+        # before that handoff happens, so the background thread never
+        # needs a live session for it.
+        .options(joinedload(Entity.template))
+        .filter(Entity.world_id == world_id, Entity.kind == kind)
+        .order_by(Entity.name).all()
+    )
     # Each entity's image gets read off disk and base64-encoded — for a
     # kind with many illustrated entities (items, creatures, characters)
     # that's real work best done one entity at a time as it's written out,

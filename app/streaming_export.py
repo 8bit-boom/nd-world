@@ -78,7 +78,17 @@ def stream_download(build, *, media_type: str, filename: str, maxsize: int = 64)
     writes to the client as it's produced instead of assembling the whole
     payload in memory first. `build` should only ever write through
     `writer` (directly, or via zipfile.ZipFile(writer, ...)/
-    json.dump(obj, writer)) — its return value, if any, is ignored."""
+    json.dump(obj, writer)) — its return value, if any, is ignored.
+
+    `build` keeps running well after the route handler returns this
+    response — so it must NOT touch the request's `Depends(get_db)`
+    session. FastAPI tears that down as soon as the handler returns, not
+    once the response finishes streaming, so a `build` that queries
+    through it races that teardown and intermittently drops/errors on
+    whatever it was fetching. Read already-loaded plain columns off
+    objects the caller queried beforehand (always safe), do filesystem
+    I/O, or open a fresh `SessionLocal()` inside `build` itself if it
+    genuinely needs to query — never pass the request's own session in."""
     q: "queue.Queue" = queue.Queue(maxsize=maxsize)
     _DONE = object()
 
@@ -126,7 +136,10 @@ def stream_json_array_download(items, item_to_dict, *, filename: str, wrap: tupl
     has for an illustrated world). `wrap`, if given, is (prefix, suffix)
     literal, already-valid JSON text placed before/after the array — e.g.
     to embed it as one field of a larger object rather than exporting a
-    bare list."""
+    bare list. `item_to_dict` runs inside stream_download's background
+    thread — see its own docstring for why it must not touch the
+    request's `db` session (a lazy relationship access counts: eager-load
+    it into the query the caller passed `items` from instead)."""
     prefix, suffix = wrap or ("", "")
 
     def build(writer):

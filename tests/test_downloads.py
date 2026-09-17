@@ -12,7 +12,11 @@ All three are gated by two independent axes:
 import io
 import json
 import zipfile
+from types import SimpleNamespace
 
+import pytest
+
+import app.main as main_module
 from app.database import SessionLocal
 from app.models import Entity, EntityNote, World
 
@@ -188,6 +192,49 @@ def test_kind_download_gm_gets_everything_player_gets_only_visible(client, seed)
     names = zf.namelist()
     assert any("Visible Guy" in n for n in names)
     assert not any("Hidden Guy" in n for n in names)
+
+
+async def _collect(resp) -> bytes:
+    chunks = []
+    async for c in resp.body_iterator:
+        chunks.append(c)
+    return b"".join(chunks)
+
+
+class _ExplodingSession:
+    """Stands in for the request's own `db` (Depends(get_db)) — any attempt
+    to use it raises immediately, so this deterministically catches a
+    regression back to the bug this guards: _entities_zip used to run
+    _entity_to_markdown against that exact session from inside
+    app.streaming_export.stream_download's background thread, which
+    FastAPI tears down as soon as the route handler returns (not once the
+    response finishes streaming), racing concurrent use of one Session
+    object across two threads — SQLAlchemy documents that as unsafe, and
+    it showed up as an intermittent CI-only failure (passed locally,
+    failed in CI) with entities silently missing from the zip. The fix
+    opens its own fresh SessionLocal() inside the background thread
+    instead of reusing this one at all."""
+    def __getattr__(self, name):
+        raise AssertionError(f"_entities_zip's build thread touched the request's own db via .{name}()")
+
+
+@pytest.mark.asyncio
+async def test_entities_zip_build_thread_never_touches_the_passed_in_db_session(seed):
+    db = SessionLocal()
+    try:
+        ent = Entity(world_id=seed.world_a.id, kind="character", name="Visible Guy")
+        db.add(ent)
+        db.commit()
+        db.refresh(ent)
+        entities = [ent]
+    finally:
+        db.close()
+
+    fake_request = SimpleNamespace(state=SimpleNamespace(user=None))
+    resp = main_module._entities_zip(_ExplodingSession(), entities, fake_request, "test.zip")
+    data = await _collect(resp)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    assert any("Visible Guy" in n for n in zf.namelist())
 
 
 def test_kind_download_unique_names_for_duplicate_entity_names(client, seed):
