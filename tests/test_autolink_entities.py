@@ -206,3 +206,37 @@ def test_entity_note_autolinks_imported_html_note(client, seed):
     r = client.get(f"/entity/{loc_id}")
     assert f'<a href="/entity/{bob_id}" class="auto-entity-link">Bob</a>' in r.text
     assert 'data-html-content="1"' in r.text
+
+
+# ── Private Notes (GM ↔ one player) — a separate feature from EntityNote,
+# same autolinking wiring (app.main.private_notes_view) ───────────────────
+
+def test_private_note_autolinks_mention_of_an_entity(client, seed):
+    bob_id = _add_entity(seed.world_a.id, name="Bob", visible_to_players=True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(
+        f"/worlds/{seed.world_a.id}/notes/{seed.player_a.id}/new",
+        data={"title": "Hook", "content": "Bob has a job for you."},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    view = client.get(f"/worlds/{seed.world_a.id}/notes/{seed.player_a.id}")
+    assert view.status_code == 200
+    assert f'<a href="/entity/{bob_id}" class="auto-entity-link">Bob</a>' in view.text
+
+
+def test_private_note_does_not_autolink_hidden_entity_for_player(client, seed):
+    secret_id = _add_entity(seed.world_a.id, name="Secret Villain", visible_to_players=False)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post(
+        f"/worlds/{seed.world_a.id}/notes/{seed.player_a.id}/new",
+        data={"title": "", "content": "Secret Villain is watching you."},
+        follow_redirects=False,
+    )
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    view = client.get(f"/worlds/{seed.world_a.id}/notes/{seed.player_a.id}")
+    assert view.status_code == 200
+    assert f'href="/entity/{secret_id}"' not in view.text
+    assert "auto-entity-link" not in view.text

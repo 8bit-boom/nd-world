@@ -1515,6 +1515,9 @@ def private_notes_view(
         .order_by(PrivateNote.created_at.desc())
         .all()
     )
+    autolink_names = _autolink_name_map(db, world_id, request)
+    for n in notes:
+        n.content_html = autolink_entities(render_md(n.content), autolink_names)  # type: ignore[attr-defined]
     worlds = _visible_worlds(request, db)
     # Sidebar "Contents" nav — same idea as Rules' TOC (_rules_toc), except
     # Notes has no single continuous document to pull headings from, so each

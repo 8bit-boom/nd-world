@@ -132,7 +132,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/worlds/{world_id}/invites/{invite_id}/revoke` | GM | Revokes an unused invite link. |
 | POST | `/worlds/{world_id}/members/{user_id}/remove` | GM | Removes a player's `WorldMembership` from this world. |
 | POST | `/worlds/{world_id}/members/{user_id}/role` | GM | Sets a member's `WorldMembership.role` — `player` (default) or `assistant` (GM-Assistant: player visibility, may create/edit world content via `_is_assistant_safe`; see the Auth model above). Unknown roles get a 400. |
-| GET | `/worlds/{world_id}/notes/{user_id}` | Player | A private GM↔player note thread — visible to the GM and that one player only. |
+| GET | `/worlds/{world_id}/notes/{user_id}` | Player | A private GM↔player note thread — visible to the GM and that one player only. Entity names mentioned in a note are automatically wikilinked, same as entity bodies/notes (`rendering.autolink_entities`). |
 | POST | `/worlds/{world_id}/notes/{user_id}/new` | GM | Posts a new private note to a player. |
 | POST | `/worlds/{world_id}/notes/{user_id}/{note_id}/delete` | GM | Deletes a private note. |
 | POST | `/folders/rename` | GM / Assistant | Renames (or clears, moving entities to Unfiled) a folder across all entities of a kind. |

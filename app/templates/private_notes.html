@@ -56,7 +56,7 @@
         <div class="pn-note" id="note-{{ n.id }}">
           {% if n.title %}<div class="pn-note-title">{{ n.title }}</div>{% endif %}
           <div class="pn-note-date">{{ n.created_at.strftime('%Y-%m-%d %H:%M') if n.created_at else '' }}</div>
-          <div class="pn-note-content rendered-md">{{ n.content | md | safe }}</div>
+          <div class="pn-note-content rendered-md">{{ n.content_html | safe }}</div>
           {% if can_manage %}
           <form class="pn-del-form" method="post" action="/worlds/{{ world.id }}/notes/{{ target_user.id }}/{{ n.id }}/delete"
                 onsubmit="return confirm('Delete this note?');">
