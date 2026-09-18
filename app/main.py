@@ -32,7 +32,7 @@ from . import streaming_export as _streaming_export
 from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache, RESTORE_STAGING_DIR
 from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content
 from .imaging import convert_image, make_thumbnail
-from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html
+from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html, autolink_entities
 from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_overlay,
                            restore_blocks, split_rules_sections, suggest_tabs_overlay)
 from .templating import templates
@@ -4417,6 +4417,21 @@ def _visible_entity_notes(db: Session, entity_id: int, request: Request):
     return notes_q.order_by(EntityNote.created_at).all()
 
 
+def _autolink_name_map(db: Session, world_id: int, request: Request, exclude_entity_id: int | None = None) -> dict:
+    """{entity name: entity id} for every OTHER entity in this world the
+    current viewer may see — see rendering.autolink_entities, which this
+    feeds. Goes through _filter_visible_entities so a hidden entity's name
+    (and thus its existence) can never leak to a player just because
+    another entity's body happens to mention it. exclude_entity_id leaves
+    out the entity whose own body/notes are about to be rendered, so it
+    never links to itself."""
+    q = db.query(Entity.id, Entity.name).filter(Entity.world_id == world_id)
+    if exclude_entity_id is not None:
+        q = q.filter(Entity.id != exclude_entity_id)
+    q = _filter_visible_entities(q, request)
+    return {name: entity_id for entity_id, name in q.all() if name}
+
+
 def _entity_to_markdown(db: Session, entity: Entity, request: Request) -> str:
     """Render an entity (name/kind/summary/body) plus whatever notes the
     current viewer can see into a single standalone .md document — used by
@@ -4685,6 +4700,10 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         request,
     ).order_by(Entity.kind, Entity.name).all()
     entity_notes = _visible_entity_notes(db, entity_id, request)
+    autolink_names = _autolink_name_map(db, entity.world_id, request, exclude_entity_id=entity.id)
+    for n in entity_notes:
+        note_html = n.content if n.content_is_html else render_md(n.content)
+        n.content_html = autolink_entities(note_html, autolink_names)  # type: ignore[attr-defined]
     custom_sections = []
     if entity.template_id:
         tpl_fields = json.loads(entity.template.fields_json or "[]") if entity.template else []
@@ -4705,7 +4724,8 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
     # sidebar and keep only their subsections.
     body_sections, toc = [], []
     if entity.body:
-        content_html, toc = _rules_toc(render_md(_RULES_LEGACY_ANCHOR_RE.sub("", entity.body)), levels="123")
+        content_html = autolink_entities(render_md(_RULES_LEGACY_ANCHOR_RE.sub("", entity.body)), autolink_names)
+        content_html, toc = _rules_toc(content_html, levels="123")
         body_sections = split_rules_sections(content_html, include_h1=True)
     return templates.TemplateResponse("entities/detail.html", {
         "request": request, "entity": entity,

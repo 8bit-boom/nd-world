@@ -193,6 +193,77 @@ def sanitize_note_html(raw_html: str) -> str:
     ).strip()
 
 
+# Elements autolink_entities must never rewrite text inside: <a> (so it can't
+# nest a link inside a link a GM already hand-wrote), <code>/<pre> (a code
+# sample shouldn't get "helpfully" linkified), and <script>/<style> (never
+# text content to begin with). Tracked as one flat open/close depth counter
+# across the whole set — HTML from render_md/sanitize_note_html is always
+# well-formed, so nesting any mix of these still nets back to 0 correctly
+# without having to match each closing tag to its specific opener.
+_AUTOLINK_SKIP_TAGS = {"a", "code", "pre", "script", "style"}
+_AUTOLINK_TAG_SPLIT_RE = re.compile(r'(<[^>]+>)')
+_AUTOLINK_TAG_NAME_RE = re.compile(r'^</?\s*([a-zA-Z0-9]+)')
+_AUTOLINK_MIN_NAME_LEN = 3
+
+
+def autolink_entities(html: str, names: dict) -> str:
+    """Turn a plain-text mention of another entity's name into a link to it
+    — so a GM writing "Bob went to the Rusty Anchor" gets both wikilinked
+    for free instead of hand-writing [Bob](/entity/5) every time. `html`
+    must already be fully rendered (render_md's output, or sanitized note
+    HTML) — this only rewrites its text nodes, never a tag or attribute, so
+    a name that happens to appear inside an href/id/class can't get mangled.
+
+    `names` maps each candidate entity's display name (any case, as the GM
+    typed it) to its id — callers are expected to have already restricted
+    this to entities the current viewer may see and to exclude the entity
+    whose own body is being rendered (self-links are noise, not a feature).
+    Matching is case-insensitive, but the substring actually found in the
+    text (not the map's key) is kept as the link's visible text, so
+    "bob"/"Bob"/"BOB" in prose all link correctly without changing how the
+    sentence reads. Names shorter than 3 characters are ignored — a
+    2-letter entity name would otherwise turn ordinary words into links
+    throughout the document. When two+ entities' names overlap (e.g. "Bob"
+    and "Bob Smith"), the longer name wins at a given position, same as any
+    tokenizer built on regex alternation ordered longest-first."""
+    if not html or not names:
+        return html
+    lower_to_id: dict[str, int] = {}
+    for name, entity_id in names.items():
+        key = (name or "").strip().lower()
+        if len(key) < _AUTOLINK_MIN_NAME_LEN:
+            continue
+        lower_to_id.setdefault(key, entity_id)
+    if not lower_to_id:
+        return html
+    ordered = sorted(lower_to_id, key=len, reverse=True)
+    pattern = re.compile(
+        r'(?<![A-Za-z0-9_])(' + '|'.join(re.escape(n) for n in ordered) + r')(?![A-Za-z0-9_])',
+        re.IGNORECASE,
+    )
+
+    def _link(m):
+        entity_id = lower_to_id.get(m.group(0).lower())
+        return f'<a href="/entity/{entity_id}" class="auto-entity-link">{m.group(0)}</a>'
+
+    skip_depth = 0
+    out = []
+    for chunk in _AUTOLINK_TAG_SPLIT_RE.split(html):
+        if not chunk:
+            continue
+        if chunk[0] == "<":
+            out.append(chunk)
+            tag_m = _AUTOLINK_TAG_NAME_RE.match(chunk)
+            if tag_m and tag_m.group(1).lower() in _AUTOLINK_SKIP_TAGS:
+                if chunk.startswith("</"):
+                    skip_depth = max(0, skip_depth - 1)
+                elif not chunk.endswith("/>"):
+                    skip_depth += 1
+            continue
+        out.append(chunk if skip_depth else pattern.sub(_link, chunk))
+    return "".join(out)
+
+
 def strip_md(text):
     if not text:
         return ""

@@ -137,6 +137,13 @@ h1, h2, h3, h4, h5, h6 { font-family: var(--font-heading, var(--font)); }
 a { color: var(--neon); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
+/* Auto-linked entity mentions (rendering.autolink_entities) — a dotted
+   underline distinguishes "the app noticed this name" from a link the GM
+   actually hand-wrote (a plain solid-on-hover `a` above), without a
+   different color that would fight the accent color other links use. */
+.auto-entity-link { text-decoration: underline dotted; text-underline-offset: 2px; }
+.auto-entity-link:hover { text-decoration: underline solid; }
+
 /* ── Topbar ── */
 .topbar {
   display: flex;

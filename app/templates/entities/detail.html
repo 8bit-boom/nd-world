@@ -129,11 +129,7 @@
       {% for n in entity_notes %}
       <div class="en-note{% if not n.visible_to_players %} en-hidden{% endif %}" id="en-note-{{ n.id }}">
         <div id="en-view-{{ n.id }}">
-          {% if n.content_is_html %}
-          <div class="en-note-content rendered-md" data-html-content="1">{{ n.content | safe }}</div>
-          {% else %}
-          <div class="en-note-content rendered-md">{{ n.content | md | safe }}</div>
-          {% endif %}
+          <div class="en-note-content rendered-md"{% if n.content_is_html %} data-html-content="1"{% endif %}>{{ n.content_html | safe }}</div>
           <div class="en-note-footer">
             <span class="en-note-date">{{ n.created_at.strftime('%Y-%m-%d %H:%M') if n.created_at else '' }}</span>
             {% if can_edit(request) %}
