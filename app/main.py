@@ -32,7 +32,7 @@ from . import streaming_export as _streaming_export
 from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache, RESTORE_STAGING_DIR
 from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content
 from .imaging import convert_image, make_thumbnail
-from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html, autolink_entities
+from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html, autolink_entities, derive_name_variants
 from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_overlay,
                            restore_blocks, split_rules_sections, suggest_tabs_overlay)
 from .templating import templates
@@ -4441,19 +4441,33 @@ def _autolink_name_map(db: Session, world_id: int, request: Request, exclude_ent
     prose/tables that refer to him just as "Edmund Vosk" or "Vosk" would
     otherwise never link at all — aliases are the GM's own way to register
     those shorter forms explicitly, same visibility rules as the name
-    itself since they're read off the same (already access-filtered) row."""
+    itself since they're read off the same (already access-filtered) row.
+
+    rendering.derive_name_variants also contributes automatic structural
+    short forms (no GM action needed) for the common "Title(s) Firstname
+    Lastname, epithet" pattern — filled in via a SECOND pass, after every
+    explicit name/alias is already in `names`, so a real name or alias
+    (this entity's own, or another entity's) always wins over an
+    auto-derived guess rather than being silently shadowed by one."""
     q = db.query(Entity.id, Entity.name, Entity.aliases).filter(Entity.world_id == world_id)
     if exclude_entity_id is not None:
         q = q.filter(Entity.id != exclude_entity_id)
     q = _filter_visible_entities(q, request)
+    rows = q.all()
+
     names: dict[str, int] = {}
-    for entity_id, name, aliases in q.all():
+    for entity_id, name, aliases in rows:
         if name:
             names[name] = entity_id
         for alias in (aliases or "").split(","):
             alias = alias.strip()
             if alias:
                 names[alias] = entity_id
+
+    for entity_id, name, _aliases in rows:
+        for variant in derive_name_variants(name):
+            names.setdefault(variant, entity_id)
+
     return names
 
 

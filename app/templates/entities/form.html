@@ -85,7 +85,7 @@
     <div class="form-group">
       <label>Aliases <small>(comma-separated)</small></label>
       <input name="aliases" value="{{ entity.aliases if entity else '' }}" placeholder="Vosk, Edmund Vosk, the Greyfather"/>
-      <p style="color:var(--text-dim);font-size:.78rem;margin-top:.3rem">Short or alternate names that should also auto-link to this entity when they appear in other entities' text — useful when this entity's full name carries a title or epithet (e.g. "Hunter Edmund Vosk, the Greyfather") that GM-authored prose rarely spells out in full.</p>
+      <p style="color:var(--text-dim);font-size:.78rem;margin-top:.3rem">Short or alternate names that should also auto-link to this entity — for anything the automatic linker can't already figure out on its own (a nickname unrelated to the name, a translation, etc). Common patterns like "Title Firstname Lastname, the Epithet" already auto-link their short form ("Firstname Lastname") with no aliases needed — only add one here if that's not enough.</p>
     </div>
 
     <div class="form-group">

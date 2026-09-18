@@ -8,7 +8,7 @@ wiring — see _autolink_name_map).
 from app.database import SessionLocal
 from app.models import Entity, EntityNote, World, WorldMembership
 
-from app.rendering import autolink_entities, render_md
+from app.rendering import autolink_entities, derive_name_variants, render_md
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -411,3 +411,75 @@ def test_entity_form_renders_and_saves_aliases(client, seed):
     assert r.status_code == 200
     assert 'name="aliases"' in r.text
     assert 'value="Testy, the Test"' in r.text
+
+
+# ── rendering.derive_name_variants — pure function ──────────────────────────
+
+def test_derive_variants_strips_epithet_and_leading_title():
+    assert derive_name_variants("Hunter Edmund Vosk, the Greyfather") == \
+        ["Hunter Edmund Vosk", "Edmund Vosk"]
+
+
+def test_derive_variants_strips_leading_title_with_no_epithet():
+    assert derive_name_variants("Hunter Mara Vell") == ["Mara Vell"]
+
+
+def test_derive_variants_handles_multi_word_title():
+    assert derive_name_variants("Senior Resident Hunter Edmund Vosk") == ["Edmund Vosk"]
+
+
+def test_derive_variants_rejects_lowercase_connector_words():
+    # "in"/"of the" etc. failing the all-capitalized check is what keeps
+    # this from generating "in Yellow" or "the Yard" as bogus aliases.
+    assert derive_name_variants("The King in Yellow") == []
+    assert derive_name_variants("Chief Inspector of the Yard") == []
+
+
+def test_derive_variants_empty_for_short_plain_names():
+    assert derive_name_variants("Bob Smith") == []
+    assert derive_name_variants("Bob") == []
+    assert derive_name_variants("") == []
+    assert derive_name_variants(None) == []
+
+
+# ── Automatic derivation wired into autolinking (no alias needed) ─────────
+
+def test_autolink_derives_short_form_automatically_with_no_alias_set(client, seed):
+    # This is the exact scenario reported: a full name carrying a title and
+    # epithet must still autolink from its short form even when the GM set
+    # no aliases at all.
+    vosk_id = _add_entity(seed.world_a.id, name="Hunter Edmund Vosk, the Greyfather", visible_to_players=True)
+    loc_id = _add_entity(seed.world_a.id, name="Hunter's Hall", kind="location",
+                          body="Edmund Vosk runs the place.", visible_to_players=True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/entity/{loc_id}")
+    assert r.status_code == 200
+    assert f'<a href="/entity/{vosk_id}" class="auto-entity-link">Edmund Vosk</a>' in r.text
+
+
+def test_player_does_not_get_autolink_via_derived_variant_of_hidden_entity(client, seed):
+    secret_id = _add_entity(seed.world_a.id, name="Hunter Edmund Vosk, the Greyfather", visible_to_players=False)
+    loc_id = _add_entity(seed.world_a.id, name="Hunter's Hall", kind="location",
+                          body="Edmund Vosk runs the place.", visible_to_players=True)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/entity/{loc_id}")
+    assert r.status_code == 200
+    assert f'href="/entity/{secret_id}"' not in r.text
+    assert "auto-entity-link" not in r.text
+
+
+def test_explicit_name_wins_over_another_entitys_derived_variant(client, seed):
+    # "Edmund Vosk" would be derived from "Hunter Edmund Vosk, the
+    # Greyfather" — but if a DIFFERENT entity is literally named
+    # "Edmund Vosk", that real entity must win, not the guess.
+    vosk_title_id = _add_entity(seed.world_a.id, name="Hunter Edmund Vosk, the Greyfather", visible_to_players=True)
+    real_vosk_id = _add_entity(seed.world_a.id, name="Edmund Vosk", visible_to_players=True)
+    loc_id = _add_entity(seed.world_a.id, name="Hunter's Hall", kind="location",
+                          body="Edmund Vosk runs the place.", visible_to_players=True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/entity/{loc_id}")
+    assert f'<a href="/entity/{real_vosk_id}" class="auto-entity-link">Edmund Vosk</a>' in r.text
+    assert f'href="/entity/{vosk_title_id}"' not in r.text

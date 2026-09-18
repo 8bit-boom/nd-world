@@ -283,6 +283,49 @@ def autolink_entities(html: str, names: dict) -> str:
     return "".join(out)
 
 
+_ALL_CAPITALIZED_RE = re.compile(r'^[A-Z]')
+
+
+def derive_name_variants(name: str) -> list[str]:
+    """Structural short-form variants of an entity's full name, derived
+    automatically so a GM doesn't have to hand-type an alias for the
+    common "Title(s) Firstname Lastname, epithet" naming convention a lot
+    of NPC names follow — e.g. "Hunter Edmund Vosk, the Greyfather" yields
+    ["Hunter Edmund Vosk", "Edmund Vosk"], so prose that only ever writes
+    "Edmund Vosk" still autolinks (app.main._autolink_name_map feeds these
+    in alongside the literal name and any manually-set Entity.aliases).
+
+    Two structural moves, applied in order:
+      1. Drop a trailing ", ..." appositive/epithet (the "the Greyfather"
+         part) — whatever's left of the comma is a variant on its own.
+      2. If that has 3+ words, also take just the LAST TWO — this strips
+         however many leading title/rank words precede the actual name
+         ("Hunter", "Senior Resident Hunter", ...) without needing to know
+         what a "title word" looks like for this particular world.
+
+    Every candidate must be made ENTIRELY of capitalized words — a cheap
+    proper-noun check that rejects a name like "The King in Yellow" (the
+    lowercase "in" fails it), which would otherwise hand back "in Yellow"
+    as a would-be alias that'd then match any unrelated "dressed in
+    yellow" in someone else's prose. This is deliberately conservative:
+    it misses real short forms it can't structurally derive (a nickname
+    like "Eddie" for "Edmund"), which is exactly what Entity.aliases is
+    still there for."""
+    name = (name or "").strip()
+    if not name:
+        return []
+    variants = []
+    core = name.split(",", 1)[0].strip()
+    if core and core != name:
+        variants.append(core)
+    words = core.split()
+    if len(words) >= 3:
+        short = " ".join(words[-2:])
+        if short != core and short not in variants:
+            variants.append(short)
+    return [v for v in variants if all(_ALL_CAPITALIZED_RE.match(w) for w in v.split())]
+
+
 def strip_md(text):
     if not text:
         return ""
