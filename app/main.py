@@ -37,7 +37,7 @@ from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_over
                            restore_blocks, split_rules_sections, suggest_tabs_overlay)
 from .templating import templates
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll, CharacterSheet
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll, CharacterSheet, TrustedDevice
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -1329,12 +1329,9 @@ def world_switch(slug: str, request: Request, next: str = "/", db: Session = Dep
     resp.set_cookie(DEFAULT_WORLD_COOKIE, slug, max_age=60*60*24*365)
     return resp
 
-@app.get("/worlds/{world_id}/edit", response_class=HTMLResponse)
-def world_edit_form(world_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    w = db.get(World, world_id)
-    if not w:
-        raise HTTPException(404)
-    world, worlds = get_world_ctx(request, db, active_world)
+def _world_edit_invites_and_members(db: Session, world_id: int):
+    """Shared by world_edit_form and member_reset_password — both need to
+    re-render world_edit.html with the same Invites/Members context."""
     invites = db.query(InviteCode).filter(InviteCode.world_id == world_id).order_by(InviteCode.created_at.desc()).all()
     members = (
         db.query(WorldMembership, User)
@@ -1343,6 +1340,16 @@ def world_edit_form(world_id: int, request: Request, db: Session = Depends(get_d
         .order_by(User.display_name)
         .all()
     )
+    return invites, members
+
+
+@app.get("/worlds/{world_id}/edit", response_class=HTMLResponse)
+def world_edit_form(world_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    w = db.get(World, world_id)
+    if not w:
+        raise HTTPException(404)
+    world, worlds = get_world_ctx(request, db, active_world)
+    invites, members = _world_edit_invites_and_members(db, world_id)
     return templates.TemplateResponse("world_edit.html", {
         "request": request, "world": world, "worlds": worlds,
         "edit_world": w, "kinds": KINDS, "kind_icons": KIND_ICONS,
@@ -1496,6 +1503,53 @@ def member_set_role(
     m.role = role
     db.commit()
     return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
+
+
+@app.post("/worlds/{world_id}/members/{user_id}/reset-password", response_class=HTMLResponse)
+def member_reset_password(
+    world_id: int, user_id: int, request: Request,
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """GM-only (not in _is_player_safe/_is_assistant_safe — see
+    member_set_role's docstring for why that's enough). Generates a fresh
+    temporary password for a player/assistant who's locked out, shown
+    exactly once in this response for the GM to relay out-of-band (this
+    app has no outbound email to send a reset link itself). Renders
+    world_edit.html directly rather than redirecting, the same one-time-
+    reveal pattern as account.py's API token issuance — a redirect would
+    have nowhere to carry the plaintext value except a URL, which leaks
+    into browser history/server logs.
+    """
+    m = db.query(WorldMembership).filter(
+        WorldMembership.world_id == world_id, WorldMembership.user_id == user_id
+    ).first()
+    if not m:
+        raise HTTPException(404)
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(404)
+
+    temp_password = _auth.generate_temp_password()
+    target.password_hash = _auth.hash_password(temp_password)
+    # Same invalidation as the player's own self-service password change
+    # (app/routers/account.py) — a reset because someone forgot their
+    # password shouldn't leave an old session or trusted device still
+    # walking around on the old credentials.
+    target.session_version += 1
+    db.query(TrustedDevice).filter(TrustedDevice.user_id == target.id).delete()
+    db.commit()
+
+    w = db.get(World, world_id)
+    if not w:
+        raise HTTPException(404)
+    world, worlds = get_world_ctx(request, db, active_world)
+    invites, members = _world_edit_invites_and_members(db, world_id)
+    return templates.TemplateResponse("world_edit.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "edit_world": w, "kinds": KINDS, "kind_icons": KIND_ICONS,
+        "invites": invites, "members": members,
+        "reset_password_user_id": target.id, "reset_password_value": temp_password,
+    })
 
 
 # ── Private Notes (GM ↔ one player) ─────────────────────────────────────────────

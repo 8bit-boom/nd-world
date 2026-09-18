@@ -42,6 +42,16 @@ def generate_invite_code() -> str:
     return secrets.token_urlsafe(9)  # short, URL-safe, ~12 chars
 
 
+def generate_temp_password() -> str:
+    """A one-time temporary password for a GM-initiated player/assistant
+    password reset (see POST /worlds/{id}/members/{user_id}/reset-password
+    in main.py) — shown exactly once in that response for the GM to relay
+    out-of-band (Discord, in person, etc.), since this self-hosted app has
+    no outbound-email setup to send a reset link itself. Never stored
+    anywhere but as its hash, same rationale as generate_api_token."""
+    return secrets.token_urlsafe(12)
+
+
 def generate_api_token() -> str:
     """A high-entropy MCP bearer token (see app/mcp_server.py). Shown to the
     user exactly once at creation — only its hash is ever stored."""

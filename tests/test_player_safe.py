@@ -25,6 +25,7 @@ CASES = [
     ("POST", "/worlds/1/delete", False),
     ("POST", "/worlds/1/theme/import", False),
     ("POST", "/worlds/1/theme/clear", False),
+    ("POST", "/worlds/1/members/1/reset-password", False),
     ("GET", "/worlds", False),
     ("GET", "/settings", False),
     ("POST", "/settings/system", False),

@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from .models import (
     Base, World, Schematic, MapOverlay, InvestBoard, PlayerCharacter, SheetTemplate,
     StarredImage, User, WorldMembership, InviteCode, EntityTemplate, RandomTable,
-    AppSettings,
+    AppSettings, TrustedDevice,
 )
 
 
@@ -1159,6 +1159,41 @@ def _seed():
                     is_gm=True,
                 ))
                 db.commit()
+
+        # Force-reset an existing GM account's password from GM_PASSWORD_RESET —
+        # the GM has no one else with admin rights over their own account, so
+        # unlike a player (who the GM can reset via
+        # POST /worlds/{id}/members/{user_id}/reset-password), a locked-out GM's
+        # only recovery path is server/container access they already have.
+        # Mirrors the GM_EMAIL/GM_PASSWORD bootstrap pattern above: an env var,
+        # checked on every boot. Keyed on GM_EMAIL (not "the" GM account) so a
+        # typo'd email can't reset the wrong account. Deliberately leaves TOTP
+        # alone — 2FA, if enabled, still guards the next login.
+        gm_password_reset = os.environ.get("GM_PASSWORD_RESET") or ""
+        if gm_email and gm_password_reset:
+            gm_user = db.query(User).filter(User.email == gm_email, User.is_gm == True).first()  # noqa: E712
+            if gm_user:
+                gm_user.password_hash = _auth.hash_password(gm_password_reset)
+                # Same invalidation as the self-service password change in
+                # app/routers/account.py: bump session_version to log out every
+                # other session, and drop trusted-device cookies so 2FA can't be
+                # skipped past whatever prompted this reset.
+                gm_user.session_version += 1
+                db.query(TrustedDevice).filter(TrustedDevice.user_id == gm_user.id).delete()
+                db.commit()
+                _log.warning(
+                    "GM_PASSWORD_RESET was set for %s — its password has been force-reset. "
+                    "Remove GM_PASSWORD_RESET from the environment now: it will keep "
+                    "resetting the password (and logging out every session) on every "
+                    "restart until you do.",
+                    gm_email,
+                )
+            else:
+                _log.warning(
+                    "GM_PASSWORD_RESET is set but no GM account matches GM_EMAIL (%s) — "
+                    "nothing was reset.",
+                    gm_email,
+                )
     finally:
         db.close()
 

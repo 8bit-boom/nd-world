@@ -134,6 +134,16 @@
   <h2 style="margin-top:2rem">👥 Players</h2>
   <div class="cf-section" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem">
     <div class="cf-section-title" style="font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.75rem">Members</div>
+    {% if reset_password_value %}
+    <div style="background:#1a3a1a;border:1px solid #4f4;border-radius:4px;padding:.7rem 1rem;margin-bottom:1rem">
+      <p style="font-size:.82rem;margin:0 0 .4rem;color:#4f4">
+        Copy this password now — it won't be shown again. Relay it to
+        {% for membership, u in members %}{% if u.id == reset_password_user_id %}<strong>{{ u.display_name }}</strong>{% endif %}{% endfor %}
+        out-of-band (Discord, in person, etc.) — this app has no email set up to send it for you.
+      </p>
+      <code style="display:block;word-break:break-all;font-size:.82rem;background:var(--bg3);padding:.5rem;border-radius:3px">{{ reset_password_value }}</code>
+    </div>
+    {% endif %}
     {% if members %}
     <table class="cf-dynamic-table" style="width:100%;border-collapse:collapse">
       <thead><tr>
@@ -165,6 +175,12 @@
           <td style="padding:.4rem .3rem;white-space:nowrap">
             <a href="/worlds/{{ edit_world.id }}/notes/{{ u.id }}"
                style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.2rem .6rem;border-radius:4px;font-size:.78rem;text-decoration:none;margin-right:.4rem;display:inline-block">🔒 Notes</a>
+            <form method="post" action="/worlds/{{ edit_world.id }}/members/{{ u.id }}/reset-password"
+                  onsubmit="return confirm('Generate a new temporary password for {{ u.display_name }}? Their current password will stop working immediately.');"
+                  style="display:inline;margin-right:.4rem">
+              <button type="submit" title="Generate a new temporary password"
+                      style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.2rem .6rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.78rem">🔑 Reset password</button>
+            </form>
             <form method="post" action="/worlds/{{ edit_world.id }}/members/{{ u.id }}/remove"
                   onsubmit="return confirm('Remove {{ u.display_name }} from this world?');" style="display:inline">
               <button type="submit" style="background:transparent;border:1px solid var(--neon2);color:var(--neon2);padding:.2rem .6rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.78rem">Remove</button>
