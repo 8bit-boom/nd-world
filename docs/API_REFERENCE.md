@@ -132,6 +132,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/worlds/{world_id}/invites/{invite_id}/revoke` | GM | Revokes an unused invite link. |
 | POST | `/worlds/{world_id}/members/{user_id}/remove` | GM | Removes a player's `WorldMembership` from this world. |
 | POST | `/worlds/{world_id}/members/{user_id}/role` | GM | Sets a member's `WorldMembership.role` — `player` (default) or `assistant` (GM-Assistant: player visibility, may create/edit world content via `_is_assistant_safe`; see the Auth model above). Unknown roles get a 400. |
+| POST | `/worlds/{world_id}/members/{user_id}/reset-password` | GM | Generates a one-time temporary password for a locked-out player/assistant and re-renders the edit page with it shown exactly once (never emailed — this app has no outbound mail; the GM relays it out-of-band). Also bumps `User.session_version` and clears `TrustedDevice` rows for that account, same invalidation as the self-service `/account/password` change. See also the `GM_PASSWORD_RESET` env var (docs/DEPLOYMENT.md) for the GM's own account recovery. |
 | GET | `/worlds/{world_id}/notes/{user_id}` | Player | A private GM↔player note thread — visible to the GM and that one player only. Entity names mentioned in a note are automatically wikilinked, same as entity bodies/notes (`rendering.autolink_entities`). |
 | POST | `/worlds/{world_id}/notes/{user_id}/new` | GM | Posts a new private note to a player. |
 | POST | `/worlds/{world_id}/notes/{user_id}/{note_id}/delete` | GM | Deletes a private note. |

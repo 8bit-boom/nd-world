@@ -448,6 +448,7 @@ The script auto-detects the correct path and installs ComfyUI-Manager into `cust
 | `SECRET_KEY` | _(random each restart)_ | Signs session cookies — set a fixed value in production (`openssl rand -hex 32`), or logins won't survive a restart |
 | `GM_EMAIL` / `GM_PASSWORD` | _(empty)_ | Bootstraps the GM account on first start. Leave blank if the GM account already exists |
 | `GM_NAME` | `GM` | Display name for the bootstrapped GM account |
+| `GM_PASSWORD_RESET` | _(empty)_ | Set (alongside `GM_EMAIL`) and restart to force-reset a locked-out GM's password — the GM has no one else with admin rights over their own account, unlike a player (who the GM can reset from the world's Members list). Logs out every session/trusted device for that account. **Remove it after the restart** — it re-applies (and re-logs-everyone-out) on every boot while set |
 | `COOKIE_SECURE` | `false` | Set `true` once served over HTTPS (see [Accounts, Invites & Going Public](#accounts-invites--going-public)) |
 | `COMPOSE_PROFILES` | _(empty)_ | Not read by the app itself — Docker Compose reads it to decide which optional services to start. Empty starts just `world`; set any comma-separated combination of `ollama`, `whisper`, `swarmui` to also start those containers |
 | `AI_MODELS_DIR` | `./ai-models` | Not read by the app itself — Docker Compose reads it to pick where Ollama's text models, Whisper's transcription model, and SwarmUI's image checkpoints/LoRAs/VAEs are stored on the host (in `ollama/`, `whisper/`, and `swarmui/` subfolders), instead of separate Docker-managed volumes. Only matters if the corresponding profile(s) are enabled |
@@ -855,9 +856,14 @@ no way to sign up otherwise.
 - Create/revoke **Invite Links** (optionally time- or use-limited) and share the
   `/join/<code>` URL with a player — opening it lets them create an account (or log
   in) and joins them to that world
-- View and remove **Members**, and open **🔒 Notes** next to any member for a
+- View and remove **Members**, open **🔒 Notes** next to any member for a
   private note thread with that player (e.g. session hooks meant only for them —
-  visible to you and them, never to the rest of the party)
+  visible to you and them, never to the rest of the party), or **🔑 Reset
+  password** for a locked-out player/assistant — generates a one-time temporary
+  password shown right there for you to relay to them (Discord, in person, etc.)
+  since there's no email set up to send it automatically. If you (the GM) get
+  locked out yourself, see `GM_PASSWORD_RESET` above — there's no one else with
+  admin rights over your account to reset it for you.
 - Toggle whether **players can see each other's characters** (party roster, read-only)
   for that world
 
