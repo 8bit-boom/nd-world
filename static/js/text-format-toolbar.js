@@ -19,8 +19,8 @@
 //
 // Keep the color allowlist and tag regexes here in sync with
 // app/rendering.py's _COLOR_NAMES/_HEX_COLOR_RE/_COLOR_TAG_RE/_MARK_TAG_RE/
-// _U_TAG_RE, and the size/audio/video title markers in sync with
-// app/rendering.py's _SIZE_TITLE_RE/"audio"/"video" — they must accept
+// _U_TAG_RE/_SPOILER_TAG_RE, and the size/audio/video title markers in sync
+// with app/rendering.py's _SIZE_TITLE_RE/"audio"/"video" — they must accept
 // exactly the same syntax.
 
 const NDFMT_AV_TITLES = new Set(["audio", "video"]);
@@ -104,6 +104,8 @@ function ndFmtRenderInline(text) {
     const c = color ? ndFmtSafeColor(color) : null;
     return c ? `<mark style="background-color:${c}">${inner}</mark>` : `<mark>${inner}</mark>`;
   });
+  html = html.replace(/\[spoiler\](.*?)\[\/spoiler\]/gs,
+    '<span class="spoiler-text" data-spoiler tabindex="0" role="button" aria-label="Spoiler — click to reveal">$1</span>');
   return html.replace(/\n/g, "<br>");
 }
 
@@ -531,6 +533,7 @@ function ndFmtBuildToolbar(ta) {
   bar.appendChild(ndFmtButton("U", "Underline", () => ndFmtWrapSelection(ta, "[u]", "[/u]")));
   bar.appendChild(ndFmtButton("S", "Strikethrough", () => ndFmtWrapSelection(ta, "~~", "~~")));
   bar.appendChild(ndFmtButton("⬛", "Highlight", () => ndFmtWrapSelection(ta, "[mark]", "[/mark]")));
+  bar.appendChild(ndFmtButton("🙈", "Spoiler — hidden until clicked", () => ndFmtWrapSelection(ta, "[spoiler]", "[/spoiler]")));
 
   const imgBtn = ndFmtButton("🖼", "Insert image, audio, or video (or paste/drag one in)", () => ndFmtInsertImage(ta, imgBtn));
   bar.appendChild(imgBtn);

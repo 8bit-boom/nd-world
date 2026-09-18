@@ -30,6 +30,18 @@ _HEX_COLOR_RE = re.compile(r'^#(?:[0-9a-fA-F]{3}){1,2}$')
 _COLOR_TAG_RE = re.compile(r'\[color=([^\]]{1,20})\](.*?)\[/color\]', re.DOTALL)
 _MARK_TAG_RE = re.compile(r'\[mark(?:=([^\]]{1,20}))?\](.*?)\[/mark\]', re.DOTALL)
 _U_TAG_RE = re.compile(r'\[u\](.*?)\[/u\]', re.DOTALL)
+# [spoiler]...[/spoiler] — a GM redacting the twist ending of a note, the
+# location of a hidden trap, etc. without splitting it into a separate
+# GM-only note (visible_to_players/entity_player_access already cover
+# hiding a WHOLE entity/note; this is for hiding one PHRASE inside text
+# that's otherwise fine for players to read). Same everyone-sees-a-
+# redacted-blob-until-they-click convention as Discord/Reddit spoiler
+# tags, deliberately not GM-vs-player aware: render_md has no notion of
+# who's viewing (it's a pure function called from a dozen places with no
+# viewer context threaded through), and a GM clicking their own spoiler
+# to check it is a fair trade for not having to plumb viewer identity
+# through every render_md call site just for this one tag.
+_SPOILER_TAG_RE = re.compile(r'\[spoiler\](.*?)\[/spoiler\]', re.DOTALL)
 
 
 def _safe_color(raw: str) -> str | None:
@@ -99,6 +111,13 @@ def _apply_inline_styles(html: str) -> str:
     html = _COLOR_TAG_RE.sub(color_sub, html)
     html = _MARK_TAG_RE.sub(mark_sub, html)
     html = _U_TAG_RE.sub(r'<u>\1</u>', html)
+    # Runs last so a [spoiler] wrapping a [color]/[mark]/[u] span sees those
+    # already-rendered — a spoiler-hidden phrase can still be colored, etc.
+    html = _SPOILER_TAG_RE.sub(
+        r'<span class="spoiler-text" data-spoiler tabindex="0" role="button" '
+        r'aria-label="Spoiler — click to reveal">\1</span>',
+        html,
+    )
     return html
 
 

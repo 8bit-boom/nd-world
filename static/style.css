@@ -728,6 +728,25 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
   border-radius: 2px;
 }
 .prose u, .rendered-md u { text-decoration-color: var(--neon); text-underline-offset: 2px; }
+/* [spoiler]...[/spoiler] (render_md/_apply_inline_styles) — redacted until
+   clicked/tapped or focused+Enter/Space'd (see the delegated handler in
+   base.html). Selecting/copying the hidden text still works even while
+   redacted (color, not visibility, hides it) — the point is not to spoil
+   at a glance, not to prevent someone who really wants to peek. */
+.spoiler-text {
+  background: var(--bg3);
+  color: var(--bg3);
+  border-radius: 3px;
+  padding: 0 .15em;
+  cursor: pointer;
+  transition: color .1s;
+}
+.spoiler-text:hover { background: var(--border); }
+.spoiler-text.revealed {
+  background: transparent;
+  color: inherit;
+  cursor: text;
+}
 /* inline-block (not block): a lone image still sits on its own line since
    it's the sole content of its wrapping <p>, but several small images
    placed back-to-back (no separating text) now flow side by side on the

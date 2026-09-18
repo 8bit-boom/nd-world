@@ -853,6 +853,23 @@ document.addEventListener('click', e => {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') ndCloseDropdowns(true);
 });
+
+// [spoiler]...[/spoiler] (render_md/_apply_inline_styles) reveal-on-click —
+// delegated so it works for every .spoiler-text on the page, including ones
+// added later (e.g. a note edited in place) without re-binding anything.
+// Space/Enter also reveal it since the span is tabindex="0" role="button"
+// (a real player using a screen reader or keyboard-only navigation still
+// needs a way to trigger it).
+document.addEventListener('click', e => {
+  var sp = e.target.closest('.spoiler-text');
+  if (sp) sp.classList.add('revealed');
+});
+document.addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.classList && e.target.classList.contains('spoiler-text')) {
+    e.preventDefault();
+    e.target.classList.add('revealed');
+  }
+});
 </script>
 </body>
 </html>
