@@ -24,6 +24,33 @@
         <div id="accent-prev" style="width:80px;height:24px;border-radius:4px;background:{{ edit_world.accent or '#00f0ff' }}"></div>
       </div>
     </div>
+    <div class="form-group">
+      <label>Font</label>
+      <input type="text" name="font" list="font-suggestions" value="{{ edit_world.font or '' }}"
+             placeholder="App default ('Courier New', Courier, monospace)" autocomplete="off" spellcheck="false"
+             pattern="[A-Za-z0-9 ,'\-]{1,120}" title="A CSS font-family value, e.g. 'EB Garamond', Georgia, serif"
+             style="max-width:28rem"/>
+      <datalist id="font-suggestions">
+        <option value="'Courier New', Courier, monospace">
+        <option value="'Orbitron', sans-serif">
+        <option value="'EB Garamond', Georgia, serif">
+        <option value="'Cinzel', serif">
+        <option value="Arial, Helvetica, sans-serif">
+        <option value="Georgia, 'Times New Roman', serif">
+      </datalist>
+      <p style="color:var(--text-dim);font-size:.78rem;margin-top:.3rem">Leave blank to use the app's default font. Applies everywhere in this world, for every viewer.</p>
+    </div>
+    <div class="form-group">
+      <label>Font size</label>
+      <select name="font_size" style="width:auto;min-width:220px">
+        <option value="85" {% if edit_world.font_size == 85 %}selected{% endif %}>Small (85%)</option>
+        <option value="100" {% if not edit_world.font_size or edit_world.font_size == 100 %}selected{% endif %}>Normal (default)</option>
+        <option value="115" {% if edit_world.font_size == 115 %}selected{% endif %}>Large (115%)</option>
+        <option value="130" {% if edit_world.font_size == 130 %}selected{% endif %}>Extra large (130%)</option>
+        <option value="150" {% if edit_world.font_size == 150 %}selected{% endif %}>Huge (150%)</option>
+      </select>
+      <p style="color:var(--text-dim);font-size:.78rem;margin-top:.3rem">The world-wide baseline everyone sees — a player's own personal UI-scale zoom (Settings ▸ Options) still applies on top of this.</p>
+    </div>
     <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
       <input type="checkbox" id="players-see-party" name="players_see_party" value="1"
              style="width:auto;accent-color:var(--neon)" {% if edit_world.players_see_party %}checked{% endif %}>

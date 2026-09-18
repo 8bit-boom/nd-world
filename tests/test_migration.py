@@ -531,6 +531,47 @@ def test_heals_pre_video_conversion_worlds_schema(tmp_path, monkeypatch):
     engine.dispose()
 
 
+def test_heals_pre_font_settings_worlds_schema(tmp_path, monkeypatch):
+    """A worlds table predating font/font_size (the simple, no-JSON-file
+    per-world font controls on the World edit page) must heal onto NULL/100
+    defaults — the app default font and 100% size — not break loading an
+    existing world."""
+    db_path = tmp_path / "pre_font_settings.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE worlds (id INTEGER PRIMARY KEY, name VARCHAR(256) NOT NULL, "
+            "slug VARCHAR(64) UNIQUE NOT NULL, description VARCHAR(512), accent VARCHAR(16), "
+            "players_see_party BOOLEAN, rules_md TEXT, home_welcome_md TEXT, "
+            "home_sections_json TEXT, custom_kinds_json TEXT, created_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO worlds (id, name, slug, home_sections_json, custom_kinds_json) "
+            "VALUES (1, 'Pre-existing World', 'pre-existing-world', '[]', '[]')"
+        ))
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        world_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(worlds)")).fetchall()}
+    assert {"font", "font_size"} <= world_cols
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, 1)
+        assert w.font is None
+        assert w.font_size == 100
+    finally:
+        db.close()
+
+    engine.dispose()
+
+
 def test_heals_pre_nested_albums_schema(tmp_path, monkeypatch):
     """An image_albums table predating parent_id (added so an album can
     nest inside another as a folder) must heal onto a NULL (top-level)

@@ -30,6 +30,20 @@ class World(Base):
     slug = Column(String(64), unique=True, nullable=False)
     description = Column(String(512), nullable=True)
     accent = Column(String(16), default="#00f0ff")
+    # Simple, direct GM-set base font-family for the whole world — same
+    # "no JSON file needed" spirit as accent above, and the plain
+    # alternative to theme_json's own font/font_heading/font_display trio
+    # below. If a theme is ALSO imported and its own "font" key is set,
+    # the theme's value wins for --font (see base.html) — this field is
+    # just the common case that doesn't require writing JSON at all.
+    font = Column(String(120), nullable=True)
+    # Simple, direct GM-set base text size for the whole world, as a whole
+    # CSS percentage (100 = the app's normal size) — drives --font-size-base
+    # (see static/style.css), which every viewer's own personal UI-scale
+    # zoom (base.html's #scale-select, localStorage-only) then multiplies
+    # on top of, so a GM's world-wide baseline and a player's own zoom
+    # preference combine instead of one silently overriding the other.
+    font_size = Column(Integer, default=100)
     # A GM-importable visual palette/font preset — JSON object with any of
     # bg/bg2/bg3/border/neon2/neon3/yellow/text/text_dim (hex colors),
     # font/font_heading (CSS font-family strings), google_fonts_url, and

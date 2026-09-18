@@ -10,7 +10,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 
 ## Features
 
-- **Multi-world support** — create and switch between separate game worlds, each with its own colour accent
+- **Multi-world support** — create and switch between separate game worlds, each with its own colour accent, font, and font size
 - **10 entity types** — Characters, Locations, Organizations, Creatures, Events, Items, Feats, Notes, Races, Professions — each with TTRPG-specific subtypes, plus GM-defined custom kinds
 - **Entity relationships** — link any entity to any other; navigate connections from the detail page
 - **Entity notes** — attach multiple discrete notes to any entity, each independently hideable/un-hideable from players regardless of the entity's own visibility (e.g. reveal one detail about a location while keeping the rest secret). Type one directly, or import from a file — `.md`/`.txt`/`.pdf` become plain text, `.html`/`.htm` convert to markdown by default (or keep original formatting, sanitized, with "preserve original formatting" checked), images become an embedded note

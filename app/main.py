@@ -1098,6 +1098,35 @@ def _sanitize_accent(value: str, fallback: str = "#00f0ff") -> str:
     return value if _ACCENT_HEX_RE.match(value) else fallback
 
 
+# world.font is rendered raw (|safe) into base.html's <style> block, same
+# exposure as theme_json's own font/font_heading — reuses _THEME_FONT_RE
+# (defined just below) rather than a second copy of the same pattern. An
+# empty submission is a deliberate "clear it, use the app default" rather
+# than invalid input — only a non-empty value that fails the pattern falls
+# back to whatever was already saved, so garbage input can't silently wipe
+# a previously-good font the way it also can't for accent.
+def _sanitize_font(value: str, fallback):
+    value = (value or "").strip()
+    if not value:
+        return None
+    return value if _THEME_FONT_RE.match(value) else fallback
+
+
+# A fixed, curated set rather than a free-form number — this is a whole CSS
+# percentage rendered raw (|safe) into base.html's <style> block for
+# --font-size-base, so only pre-approved values are ever accepted, same
+# reasoning as _HERO_GRAPHIC_CHOICES/hero_style below.
+_FONT_SIZE_CHOICES = (85, 100, 115, 130, 150)
+
+
+def _sanitize_font_size(value, fallback: int = 100) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return value if value in _FONT_SIZE_CHOICES else fallback
+
+
 # ── World visual themes (World.theme_json) ──────────────────────────────────
 # A GM-importable JSON preset overriding static/style.css's existing CSS
 # custom properties (see World.theme_json's own docstring in app/models.py)
@@ -1320,6 +1349,8 @@ def world_edit_post(
     name: str = Form(...),
     description: str = Form(""),
     accent: str = Form("#00f0ff"),
+    font: str = Form(""),
+    font_size: str = Form("100"),
     players_see_party: Optional[str] = Form(None),
     players_can_download_rules: Optional[str] = Form(None),
     players_can_download_entities: Optional[str] = Form(None),
@@ -1336,6 +1367,8 @@ def world_edit_post(
     w.name = name.strip() or w.name
     w.description = description
     w.accent = _sanitize_accent(accent, fallback=w.accent)
+    w.font = _sanitize_font(font, fallback=w.font)
+    w.font_size = _sanitize_font_size(font_size, fallback=w.font_size or 100)
     w.players_see_party = bool(players_see_party)
     w.players_can_download_rules = bool(players_can_download_rules)
     w.players_can_download_entities = bool(players_can_download_entities)

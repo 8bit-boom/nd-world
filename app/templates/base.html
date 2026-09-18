@@ -33,9 +33,10 @@
     {% if world_theme.yellow %}--yellow: {{ world_theme.yellow }} !important;{% endif %}
     {% if world_theme.text %}--text: {{ world_theme.text }} !important;{% endif %}
     {% if world_theme.text_dim %}--text-dim: {{ world_theme.text_dim }} !important;{% endif %}
-    {% if world_theme.font %}--font: {{ world_theme.font|safe }} !important;{% endif %}
+    {% if world_theme.font %}--font: {{ world_theme.font|safe }} !important;{% elif world.font %}--font: {{ world.font|safe }} !important;{% endif %}
     {% if world_theme.font_heading %}--font-heading: {{ world_theme.font_heading|safe }} !important;{% endif %}
     {% if world_theme.font_display %}--font-display: {{ world_theme.font_display|safe }} !important;{% endif %}
+    {% if world.font_size and world.font_size != 100 %}--font-size-base: {{ world.font_size }}% !important;{% endif %}
     {% if world_theme.hero_glow_color %}--hero-glow: {{ world_theme.hero_glow_color }} !important;{% endif %}
     {% if world_theme.hero_letter_spacing %}--hero-letter-spacing: {{ world_theme.hero_letter_spacing }} !important;{% endif %}
   }</style>

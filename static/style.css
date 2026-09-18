@@ -14,6 +14,10 @@
      help text, secondary labels). This clears 4.5:1+ against all three. */
   --text-dim: #7c849d;
   --font: 'Courier New', Courier, monospace;
+  /* A GM's world-wide base text size (World.font_size, see base.html) — the
+     UI-scale rules below multiply on top of this rather than replacing it,
+     so a world's baseline and a viewer's own zoom preference combine. */
+  --font-size-base: 100%;
 
   --kind-character: #00f0ff;
   --kind-location:  #00ff99;
@@ -61,15 +65,20 @@
    Root font-size drives every `rem`-based measurement in the app (spacing,
    most widths, most font sizes) — scaling it here is what makes the whole UI
    grow/shrink together. Set from Settings > Options or the nav-bar picker
-   (see base.html), persisted client-side like the theme choice. */
-html[data-scale="90"]  { font-size: 90%; }
-html[data-scale="110"] { font-size: 110%; }
-html[data-scale="125"] { font-size: 125%; }
-html[data-scale="150"] { font-size: 150%; }
+   (see base.html), persisted client-side like the theme choice. Multiplies
+   on top of --font-size-base (a GM's world-wide default, set server-side —
+   see World.font_size) rather than overriding it outright, via calc(), so
+   the two combine instead of one silently discarding the other. The
+   default scale ("100", no rule below) falls through to the plain `html`
+   rule just under this block, which reads --font-size-base directly. */
+html[data-scale="90"]  { font-size: calc(var(--font-size-base) * 0.9); }
+html[data-scale="110"] { font-size: calc(var(--font-size-base) * 1.1); }
+html[data-scale="125"] { font-size: calc(var(--font-size-base) * 1.25); }
+html[data-scale="150"] { font-size: calc(var(--font-size-base) * 1.5); }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-html { scroll-behavior: smooth; }
+html { scroll-behavior: smooth; font-size: var(--font-size-base); }
 
 /* Visually hidden but still reachable by screen readers — for a status
    conveyed only by color/an icon (e.g. #ai-dot) or a link meant only to

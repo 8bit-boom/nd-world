@@ -936,6 +936,10 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN now_playing_loop BOOLEAN DEFAULT 0"))
             if "now_playing_version" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN now_playing_version INTEGER DEFAULT 0"))
+            if "font" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN font VARCHAR(120)"))
+            if "font_size" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN font_size INTEGER DEFAULT 100"))
         # audio_clips table — add album_id if missing (added after the
         # table's initial ship in a prior release; existing clips get
         # NULL = top-level/unfiled, same as any newly-uploaded clip that
