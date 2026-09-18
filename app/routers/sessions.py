@@ -1328,7 +1328,7 @@ def api_live_audio_list(session_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/api/sessions/{session_id}/live-audio/download")
-async def api_live_audio_download(session_id: int, db: Session = Depends(get_db)):
+async def api_live_audio_download(session_id: int):
     """The whole raw recording as one downloadable file: every saved segment
     concatenated in recording order. Concatenation is -c copy via ffmpeg's
     concat demuxer (instant, no re-encode) and is cached next to the
@@ -1336,13 +1336,26 @@ async def api_live_audio_download(session_id: int, db: Session = Depends(get_db)
     (i.e. the segment set changed), since a concat of unchanged inputs is
     deterministic. One saved segment is served directly, no concat. ffmpeg
     missing or failing is a 400 with the reason, not a 500 — the raw
-    segments stay on disk either way and the GM can retry."""
-    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
-    if not gs:
-        raise HTTPException(404)
+    segments stay on disk either way and the GM can retry.
+
+    Deliberately NOT `db: Session = Depends(get_db)` — the DB is only ever
+    consulted once, right below, to read the segment list off `gs`; holding
+    a pooled connection across the `await _concat_live_segments` further
+    down (an ffmpeg subprocess with no timeout) would be the same
+    pool-exhaustion shape as api_live_transcript_append used to have (see
+    its own comment) for no benefit, since nothing after this point touches
+    the DB at all."""
+    db = SessionLocal()
+    try:
+        gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+        if not gs:
+            raise HTTPException(404)
+        audio_files = _live_audio_files(gs)
+    finally:
+        db.close()
     live_root = _live_audio_root(session_id)
     uploads_dir = live_root.parents[1]
-    segs = [uploads_dir / rel for rel in _live_audio_files(gs)]
+    segs = [uploads_dir / rel for rel in audio_files]
     segs = [p for p in segs if p.is_file()]
     if not segs:
         raise HTTPException(400, "No raw audio saved for this session.")

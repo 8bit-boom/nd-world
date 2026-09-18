@@ -962,6 +962,44 @@ def test_live_audio_download_single_segment_served_directly(client, seed, monkey
     assert (_live_audio_root(session_id) / _RID / "000000.webm").is_file()
 
 
+def test_live_audio_download_does_not_hold_a_pooled_db_connection_during_concat(client, seed, monkeypatch, tmp_path):
+    """Reliability regression, same shape as the live-transcript-append fix:
+    this route used to take `db: Session = Depends(get_db)` and hold it open
+    across `await _concat_live_segments(...)` (an ffmpeg subprocess with no
+    timeout), even though nothing after the initial segment-list lookup ever
+    touches the DB again. Assert zero pool connections are checked out while
+    the concat is "running"."""
+    from app.database import engine as db_engine
+    from app.routers import sessions as sessions_module
+
+    session_id = _make_session(seed.world_a)
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        return "transcribed"
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    seg_a = tmp_path / "a.webm"
+    seg_b = tmp_path / "b.webm"
+    _make_real_webm(seg_a, 1)
+    _make_real_webm(seg_b, 1)
+
+    _login_gm_in(client, seed, seed.world_a)
+    _append_segment(client, session_id, 0, data=seg_a.read_bytes())
+    _append_segment(client, session_id, 1, data=seg_b.read_bytes())
+
+    checked_out_during_call = {}
+    real_concat = sessions_module._concat_live_segments
+
+    async def spying_concat(segs, out_path):
+        checked_out_during_call["n"] = db_engine.pool.checkedout()
+        return await real_concat(segs, out_path)
+    monkeypatch.setattr(sessions_module, "_concat_live_segments", spying_concat)
+
+    r = client.get(f"/api/sessions/{session_id}/live-audio/download")
+    assert r.status_code == 200
+    assert checked_out_during_call["n"] == 0
+
+
 def test_live_audio_download_with_nothing_saved_is_400(client, seed):
     session_id = _make_session(seed.world_a)
     _login_gm_in(client, seed, seed.world_a)

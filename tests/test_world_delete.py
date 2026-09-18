@@ -237,6 +237,38 @@ def test_world_delete_cleans_up_maps_and_schematic_files(client, seed):
         db.close()
 
 
+def test_world_delete_cleans_up_live_recording_audio_dirs(client, seed):
+    """A live-recorded GameSession can archive raw audio segments under
+    uploads/live/{session_id}/ (routers/sessions.py's api_live_transcript_append,
+    opt-in "Save raw audio"). session_delete already cleans this up for a
+    single session (see its own shutil.rmtree call), but world_delete only
+    bulk-deletes the GameSession row via _WORLD_DELETE_MODELS — it never
+    touched files keyed by that row's id, leaking a session's entire raw
+    recording archive (potentially large) on every world delete."""
+    from app.routers.sessions import _live_audio_root
+
+    world_id = seed.world_a.id
+    db = SessionLocal()
+    try:
+        gs = GameSession(world_id=world_id, title="Doomed Recording Session")
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        session_id = gs.id
+    finally:
+        db.close()
+
+    live_dir = _live_audio_root(session_id) / ("cd" * 16)
+    live_dir.mkdir(parents=True, exist_ok=True)
+    (live_dir / "000000.webm").write_bytes(b"fake-webm-segment")
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(f"/worlds/{world_id}/delete", follow_redirects=False)
+    assert r.status_code == 303
+
+    assert not _live_audio_root(session_id).exists()
+
+
 def test_world_delete_leaves_other_world_untouched(client, seed):
     db = SessionLocal()
     try:

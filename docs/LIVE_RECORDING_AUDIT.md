@@ -341,3 +341,82 @@ deterministic manual reproduction.
 4. Items 5, 6 — races and the close-warning gap.
 5. Items 9, 10 — consistency and disclosure.
 6. Item 11 — tests, landing alongside item 1 rather than after.
+
+---
+
+## Wave 5 — Server-side reliability (triggered by a second real report)
+
+A GM reported the whole *site* — not just the recording panel — becoming
+slow/unresponsive twice during live-recorded play; once it recovered on its
+own, once it needed a manual server restart. Unlike Waves 1–4 (client-side,
+one recording's own data), these are server-side and affect every
+concurrent user of the deployment, matching that report.
+
+### 12. `api_live_transcript_append` held a pooled DB connection for the whole Whisper call — **fixed**
+
+**What's broken.** This route took `db: Session = Depends(get_db)`, which
+checks a connection out of the SQLAlchemy pool for the entire request —
+including `await _transcribe_chunk(...)`, which runs on every chunk of
+every live-recorded session and can legitimately take a while (Whisper's
+own timeout, `WHISPER_TIMEOUT_SECONDS`, defaults to 8 hours — tuned for the
+one-shot "upload a whole recording" routes, not this per-chunk path that
+fires silently every `liveChunkSeconds()` for the length of the session).
+`app/database.py`'s `_set_sqlite_pragma` docstring already names exactly
+this shape as the risk: "a single slow write (saving an entity, appending a
+live-transcript chunk, ...) can back up enough concurrent readers to
+exhaust the SQLAlchemy pool (5 + 10 overflow)". Once exhausted, every other
+request site-wide — including the 4s spotlight poll every open tab makes —
+queues or fails behind it: a plausible mechanism for "the whole site was
+loading long," self-resolving once the stuck request eventually returned,
+or requiring a restart if it never did.
+
+**The fix.** Bookend the Whisper call with two short-lived `SessionLocal()`
+sessions instead of holding one open across it — nothing in this route
+actually needs the DB open while awaiting Whisper.
+
+**How to verify.** `tests/test_live_recording_append_idempotency.py::test_whisper_call_does_not_hold_a_pooled_db_connection` —
+monkeypatches `transcribe_audio` to read `engine.pool.checkedout()` from
+inside the "Whisper call" and asserts it's 0.
+
+### 13. `api_live_audio_download` had the same shape, holding a connection across the ffmpeg concat — **fixed**
+
+**What's broken.** Same pattern as item 12, lower frequency (a GM clicks
+Download once, not automatically every chunk): `db: Session =
+Depends(get_db)` was held across `await _concat_live_segments(...)`, an
+ffmpeg subprocess with no timeout on `proc.communicate()`. The DB is only
+ever consulted once, at the very top, to read the segment list off `gs` —
+nothing after that point touches it again.
+
+**The fix.** Drop the request-scoped dependency entirely; fetch the
+segment list from a single short-lived `SessionLocal()` session, closed
+before the concat call.
+
+**How to verify.** `tests/test_session_recap_ai.py::test_live_audio_download_does_not_hold_a_pooled_db_connection_during_concat` —
+same `engine.pool.checkedout()` assertion, spied on `_concat_live_segments`.
+
+### 14. `world_delete` orphaned a session's raw-audio archive — **fixed**
+
+**What's broken.** `session_delete` (single-session delete) correctly
+`shutil.rmtree`s `_live_audio_root(session_id)` — the opt-in raw-audio
+archive under `uploads/live/{session_id}/`. `world_delete` bulk-deletes
+every `GameSession` row for a world via the generic `_WORLD_DELETE_MODELS`
+loop (a raw `.delete()` query, not a per-row call into `session_delete`'s
+logic), so it never touched those directories — every world delete leaked
+the full raw-audio archive of any session that had ever used "Save raw
+audio," potentially large (whole-session recordings).
+
+**The fix.** Before the `_WORLD_DELETE_MODELS` loop, collect the world's
+`GameSession` ids and `shutil.rmtree(_live_audio_root(gs_id), ignore_errors=True)`
+each one — same ownership shape `world_delete` already uses for
+AudioClip/VideoClip/PageDoc/CalendarDayIcon files.
+
+**How to verify.** `tests/test_world_delete.py::test_world_delete_cleans_up_live_recording_audio_dirs`.
+
+**Not changed, and why:** `WHISPER_TIMEOUT_SECONDS`'s 8-hour default itself
+was deliberately left alone — it's tuned for the one-shot
+`/api/sessions/ai/summarize-from-audio(/complete)` routes (a GM
+knowingly uploads a multi-hour recording and expects the request to run
+that long; `app/audio_jobs.py`'s job-based alternative exists precisely
+for callers who don't want to hold a request open that long). Items 12–13
+remove the *pool-exhaustion* consequence of a slow/stuck call without
+touching that intentional tradeoff for the routes it was designed for.

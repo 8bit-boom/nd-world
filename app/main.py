@@ -48,7 +48,7 @@ from .routers.combat import router as combat_router
 from .routers.combat import _candidates as _combat_candidates
 from .routers.parties import router as parties_router
 from .routers.quests import router as quests_router
-from .routers.sessions import router as sessions_router
+from .routers.sessions import router as sessions_router, _live_audio_root as _session_live_audio_root
 from .routers.calendar import router as calendar_router, _delete_icon_file as _delete_calendar_icon_file
 from .routers.importer import router as importer_router
 from .routers.races import router as races_router
@@ -1325,6 +1325,15 @@ def world_delete(world_id: int, db: Session = Depends(get_db)):
     # delete helper rather than duplicating its containment/extension logic.
     for icon in db.query(CalendarDayIcon).filter(CalendarDayIcon.world_id == world_id).all():
         _delete_calendar_icon_file(icon)
+
+    # Same ownership shape as AudioClip/VideoClip/PageDoc/CalendarDayIcon —
+    # a live-recorded GameSession can own a raw-audio archive under
+    # uploads/live/{session_id}/ (see routers/sessions.py's own
+    # session_delete route, which cleans this up for a single session) that
+    # the generic _WORLD_DELETE_MODELS bulk-delete below never touches,
+    # since it only removes the GameSession row, not files keyed by its id.
+    for gs_id in [row[0] for row in db.query(GameSession.id).filter(GameSession.world_id == world_id).all()]:
+        shutil.rmtree(_session_live_audio_root(gs_id), ignore_errors=True)
 
     for slug, _data in list(_iter_world_maps(world_id)):
         jf = _MAPS_DIR / f"{slug}.json"
