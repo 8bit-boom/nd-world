@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from .. import auth
 from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
-from ..database import get_db
+from ..database import SessionLocal, get_db
 from ..deps import check_llm_cooldown, get_world_ctx, paginate
 from ..models import AudioClip, AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, Quest, World
 from ..rendering import render_md
@@ -1195,86 +1195,115 @@ async def api_live_transcript_append(
     save_audio: str = Form(""),
     recording_id: str = Form(""),
     segment_index: int = Form(-1),
-    db: Session = Depends(get_db),
 ):
-    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
-    if not gs:
-        raise HTTPException(404)
-    world = db.get(World, gs.world_id)
-    # Idempotency: the client sends recording_id/segment_index on EVERY
-    # upload, not just when "Save raw audio" is on, specifically so this
-    # check can run regardless of that setting. A blank/absent pair (an
-    # older client, or a caller that never sends them) just leaves
-    # already_appended False, unchanged from before. See models.py's
-    # live_transcript_segments_json docstring for why this exists: without
-    # it, a client retry after a lost response (not a lost request — the
-    # server already transcribed and committed) would duplicate that
-    # chunk's text.
-    #
-    # This only skips Whisper + the transcript append below, NOT the
-    # raw-audio save further down — that save is independently idempotent
-    # (same-path overwrite, see its own comment) and a retry must still
-    # perform it even when the text side is already settled.
-    seg_key = ""
-    already_appended = False
-    if CHUNK_ID_RE.match(recording_id or "") and segment_index >= 0:
-        seg_key = _live_transcript_segment_key(recording_id, segment_index)
-        already_appended = seg_key in _live_transcript_segment_keys(gs)
+    # Deliberately NOT `db: Session = Depends(get_db)` — that would check a
+    # pooled connection out for the whole request, including the Whisper
+    # call below, which runs on every chunk of every live-recorded session
+    # and can legitimately take a while (or hang, if Whisper itself is stuck
+    # or unreachable). See _set_sqlite_pragma's docstring in database.py:
+    # "a single slow write (saving an entity, appending a live-transcript
+    # chunk, ...) can back up enough concurrent readers to exhaust the
+    # SQLAlchemy pool (5 + 10 overflow)" — a chunk held open for minutes
+    # (worst case, hours) is exactly that slow write, and once the pool is
+    # exhausted every OTHER request site-wide (including the 4s spotlight
+    # poll every open tab makes) queues behind it and the whole site looks
+    # hung. Nothing here actually needs the DB open while awaiting Whisper,
+    # so two short-lived sessions bookend the call instead of one held
+    # across it.
+    db = SessionLocal()
+    try:
+        gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+        if not gs:
+            raise HTTPException(404)
+        world = db.get(World, gs.world_id)
+        # Idempotency: the client sends recording_id/segment_index on EVERY
+        # upload, not just when "Save raw audio" is on, specifically so this
+        # check can run regardless of that setting. A blank/absent pair (an
+        # older client, or a caller that never sends them) just leaves
+        # already_appended False, unchanged from before. See models.py's
+        # live_transcript_segments_json docstring for why this exists: without
+        # it, a client retry after a lost response (not a lost request — the
+        # server already transcribed and committed) would duplicate that
+        # chunk's text.
+        #
+        # This only skips Whisper + the transcript append below, NOT the
+        # raw-audio save further down — that save is independently idempotent
+        # (same-path overwrite, see its own comment) and a retry must still
+        # perform it even when the text side is already settled.
+        seg_key = ""
+        already_appended = False
+        if CHUNK_ID_RE.match(recording_id or "") and segment_index >= 0:
+            seg_key = _live_transcript_segment_key(recording_id, segment_index)
+            already_appended = seg_key in _live_transcript_segment_keys(gs)
+        glossary = _glossary_for_world(world, gs.id)
+        language = _language_for_world(world)
+        denoise = _denoise_for_world(world)
+    finally:
+        db.close()
+
     if already_appended:
         chunk_text = ""
     else:
         try:
-            chunk_text = (await _transcribe_chunk(file, glossary=_glossary_for_world(world, gs.id), language=_language_for_world(world), denoise=_denoise_for_world(world))).strip()
+            chunk_text = (await _transcribe_chunk(file, glossary=glossary, language=language, denoise=denoise)).strip()
         except _ai_module.WhisperError as exc:
             raise HTTPException(400, str(exc)) from exc
+
     # Raw-audio save runs AFTER transcription, so a Whisper failure (the 400
     # above) leaves nothing half-saved, and the DB row below is committed
     # together with the transcript append as the plan requires. The upload
     # stream was consumed by _transcribe_chunk's bounded copy, hence the
     # seek(0) — an UploadFile is a spooled temp file, rewinding it is free.
-    saved_rel = ""
-    if save_audio:
-        # Malformed archive fields are a hard 400 rather than a silent
-        # fallback to not-saving: a client bug that quietly drops audio the
-        # GM explicitly asked to keep is worse than a failed upload, which
-        # the client's failed-chunk/retry UI surfaces. Same validation shape
-        # as uploads.save_upload_chunk's "Invalid upload id"/"Invalid chunk
-        # index" — recording_id must match uploads.CHUNK_ID_RE (32 hex, the
-        # same generator ndChunkedUpload uses client-side), which also rules
-        # out any path traversal since it admits nothing but hex chars.
-        if not CHUNK_ID_RE.match(recording_id or ""):
-            raise HTTPException(400, "Invalid recording id")
-        if segment_index < 0:
-            raise HTTPException(400, "Invalid segment index")
-        live_root = _live_audio_root(session_id)
-        seg_dir = live_root / recording_id
-        seg_dir.mkdir(parents=True, exist_ok=True)
-        # ext comes from the upload filename (MediaRecorder produces .webm in
-        # every browser that ships the API today, hence the default) — already
-        # validated against _SESSION_AUDIO_EXTS by _transcribe_chunk above.
-        ext = Path(file.filename or "").suffix.lower() or ".webm"
-        dest = seg_dir / f"{segment_index:06d}{ext}"
-        file.file.seek(0)
-        copy_upload_bounded(file, dest, max_bytes=MAX_LIVE_SAVED_SEGMENT_BYTES)
-        saved_rel = dest.relative_to(live_root.parents[1]).as_posix()
-        # A client retry of a segment whose response was lost overwrites the
-        # same file — the JSON list must not grow a duplicate entry for it.
-        files = _live_audio_files(gs)
-        if saved_rel not in files:
-            files.append(saved_rel)
-            gs.live_audio_files_json = json.dumps(files)
-    if chunk_text or saved_rel:
-        if chunk_text:
-            gs.live_transcript = (gs.live_transcript or "") + (" " if gs.live_transcript else "") + chunk_text
-            if seg_key:
-                keys = _live_transcript_segment_keys(gs)
-                keys.append(seg_key)
-                gs.live_transcript_segments_json = json.dumps(keys)
-        db.commit()
-    # chunk_text can legitimately be "" (a silent segment) — that's not an
-    # error, just nothing to append; the client still needs the running
-    # total either way to keep its live display in sync.
-    return {"chunk_text": chunk_text, "transcript": gs.live_transcript}
+    db = SessionLocal()
+    try:
+        gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+        if not gs:
+            raise HTTPException(404)
+        saved_rel = ""
+        if save_audio:
+            # Malformed archive fields are a hard 400 rather than a silent
+            # fallback to not-saving: a client bug that quietly drops audio the
+            # GM explicitly asked to keep is worse than a failed upload, which
+            # the client's failed-chunk/retry UI surfaces. Same validation shape
+            # as uploads.save_upload_chunk's "Invalid upload id"/"Invalid chunk
+            # index" — recording_id must match uploads.CHUNK_ID_RE (32 hex, the
+            # same generator ndChunkedUpload uses client-side), which also rules
+            # out any path traversal since it admits nothing but hex chars.
+            if not CHUNK_ID_RE.match(recording_id or ""):
+                raise HTTPException(400, "Invalid recording id")
+            if segment_index < 0:
+                raise HTTPException(400, "Invalid segment index")
+            live_root = _live_audio_root(session_id)
+            seg_dir = live_root / recording_id
+            seg_dir.mkdir(parents=True, exist_ok=True)
+            # ext comes from the upload filename (MediaRecorder produces .webm in
+            # every browser that ships the API today, hence the default) — already
+            # validated against _SESSION_AUDIO_EXTS by _transcribe_chunk above.
+            ext = Path(file.filename or "").suffix.lower() or ".webm"
+            dest = seg_dir / f"{segment_index:06d}{ext}"
+            file.file.seek(0)
+            copy_upload_bounded(file, dest, max_bytes=MAX_LIVE_SAVED_SEGMENT_BYTES)
+            saved_rel = dest.relative_to(live_root.parents[1]).as_posix()
+            # A client retry of a segment whose response was lost overwrites the
+            # same file — the JSON list must not grow a duplicate entry for it.
+            files = _live_audio_files(gs)
+            if saved_rel not in files:
+                files.append(saved_rel)
+                gs.live_audio_files_json = json.dumps(files)
+        if chunk_text or saved_rel:
+            if chunk_text:
+                gs.live_transcript = (gs.live_transcript or "") + (" " if gs.live_transcript else "") + chunk_text
+                if seg_key:
+                    keys = _live_transcript_segment_keys(gs)
+                    keys.append(seg_key)
+                    gs.live_transcript_segments_json = json.dumps(keys)
+            db.commit()
+        # chunk_text can legitimately be "" (a silent segment) — that's not an
+        # error, just nothing to append; the client still needs the running
+        # total either way to keep its live display in sync.
+        return {"chunk_text": chunk_text, "transcript": gs.live_transcript}
+    finally:
+        db.close()
 
 
 @router.get("/api/sessions/{session_id}/live-audio")

@@ -17,7 +17,7 @@ calling Whisper and returns the existing transcript unchanged."""
 import json
 
 from app import ai as ai_module
-from app.database import SessionLocal
+from app.database import SessionLocal, engine
 from app.models import GameSession
 
 from .conftest import GM_PASSWORD, login
@@ -175,3 +175,31 @@ def test_clear_resets_the_segment_dedup_list_too(client, seed, monkeypatch):
     r = _append(client, session_id, 0)
     assert r.status_code == 200
     assert r.json()["transcript"] == "some text"
+
+
+def test_whisper_call_does_not_hold_a_pooled_db_connection(client, seed, monkeypatch):
+    """Reliability regression: this route used to take `db:
+    Session = Depends(get_db)`, which checks a connection out of the
+    SQLAlchemy pool (5 + 10 overflow, see database.py's _set_sqlite_pragma
+    docstring) for the entire request — including this await, which for a
+    real Whisper call can take a long time or hang. Enough of those in
+    flight exhausts the pool and every other request site-wide (even the
+    4s spotlight poll every open tab makes) starts queuing/timing out
+    behind it — a plausible mechanism for a site that "was loading long"
+    during a live-recorded session. The fix bookends the call with two
+    short-lived sessions instead of holding one open across it; this
+    asserts zero connections are checked out from the pool at the moment
+    Whisper is "running"."""
+    checked_out_during_call = {}
+
+    async def fake_transcribe(path, glossary="", **kwargs):
+        checked_out_during_call["n"] = engine.pool.checkedout()
+        return "some text"
+    monkeypatch.setattr(ai_module, "transcribe_audio", fake_transcribe)
+
+    session_id = _make_session(seed.world_a)
+    _login_gm_in(client, seed, seed.world_a)
+
+    r = _append(client, session_id, 0)
+    assert r.status_code == 200
+    assert checked_out_during_call["n"] == 0
