@@ -3,8 +3,9 @@ the World edit page (same spirit as world.accent) — see World.font's
 docstring in app/models.py. world.font is interpolated raw (|safe) into
 base.html's <style> block exactly like theme_json's own font/font_heading,
 so world_edit_post must reject anything that isn't a plain CSS font-family
-value instead of trusting the submitted form value; world.font_size is
-restricted to a fixed set of percentages for the same reason.
+value instead of trusting the submitted form value; world.font_size (a
+75-150 <input type="range"> on the edit page) is clamped into that range
+for the same reason, since it's rendered the same raw way.
 """
 from app.database import SessionLocal
 from app.models import World
@@ -110,15 +111,10 @@ def test_world_edit_accepts_valid_font_size(client, seed):
         db.close()
 
 
-def test_world_edit_rejects_invalid_font_size_keeps_previous(client, seed):
-    db = SessionLocal()
-    try:
-        w = db.get(World, seed.world_a.id)
-        w.font_size = 115
-        db.commit()
-    finally:
-        db.close()
-
+def test_world_edit_clamps_font_size_above_max(client, seed):
+    # A real <input type="range" max="150"> can never send this, but a
+    # hand-crafted request shouldn't be able to push the stored value past
+    # what the slider itself allows.
     login(client, seed.gm.email, GM_PASSWORD)
     r = client.post(
         f"/worlds/{seed.world_a.id}/edit",
@@ -130,7 +126,49 @@ def test_world_edit_rejects_invalid_font_size_keeps_previous(client, seed):
     db = SessionLocal()
     try:
         w = db.get(World, seed.world_a.id)
-        assert w.font_size == 115  # unchanged, not overwritten with an unapproved value
+        assert w.font_size == 150
+    finally:
+        db.close()
+
+
+def test_world_edit_clamps_font_size_below_min(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(
+        f"/worlds/{seed.world_a.id}/edit",
+        data={"name": seed.world_a.name, "font_size": "10"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        assert w.font_size == 75
+    finally:
+        db.close()
+
+
+def test_world_edit_rejects_non_numeric_font_size_keeps_previous(client, seed):
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.font_size = 115
+        db.commit()
+    finally:
+        db.close()
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post(
+        f"/worlds/{seed.world_a.id}/edit",
+        data={"name": seed.world_a.name, "font_size": "not-a-number"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        assert w.font_size == 115  # unchanged, not overwritten with garbage
     finally:
         db.close()
 

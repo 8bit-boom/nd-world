@@ -1112,11 +1112,17 @@ def _sanitize_font(value: str, fallback):
     return value if _THEME_FONT_RE.match(value) else fallback
 
 
-# A fixed, curated set rather than a free-form number — this is a whole CSS
-# percentage rendered raw (|safe) into base.html's <style> block for
-# --font-size-base, so only pre-approved values are ever accepted, same
-# reasoning as _HERO_GRAPHIC_CHOICES/hero_style below.
-_FONT_SIZE_CHOICES = (85, 100, 115, 130, 150)
+# A whole CSS percentage rendered raw (|safe) into base.html's <style>
+# block for --font-size-base — matches world_edit.html's <input type="range">
+# (min=75, max=150), so a bogus non-numeric submission falls back to
+# whatever was already saved (same "don't let garbage wipe a good value"
+# rule as _sanitize_font/_sanitize_accent), while an in-range-but-off-step
+# or out-of-range NUMBER is just clamped rather than rejected outright —
+# a real browser slider can never actually send one, so this only ever
+# matters for a hand-crafted request, and clamping is friendlier there
+# than silently discarding an otherwise-genuine change.
+_FONT_SIZE_MIN = 75
+_FONT_SIZE_MAX = 150
 
 
 def _sanitize_font_size(value, fallback: int = 100) -> int:
@@ -1124,7 +1130,7 @@ def _sanitize_font_size(value, fallback: int = 100) -> int:
         value = int(value)
     except (TypeError, ValueError):
         return fallback
-    return value if value in _FONT_SIZE_CHOICES else fallback
+    return max(_FONT_SIZE_MIN, min(_FONT_SIZE_MAX, value))
 
 
 # ── World visual themes (World.theme_json) ──────────────────────────────────
