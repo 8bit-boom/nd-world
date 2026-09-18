@@ -11,7 +11,9 @@
     </div>
     <div style="display:flex;gap:.9rem;align-items:center">
       <a href="{{ '/calendar/agenda'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">📋 Agenda</a>
+      {% if can_edit(request) %}
       <a href="{{ '/calendar/config'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">⚙ Configure</a>
+      {% endif %}
     </div>
   </div>
 
@@ -20,14 +22,17 @@
   {% endif %}
 
   <div style="display:flex;gap:.6rem;align-items:center;margin-bottom:.6rem;flex-wrap:wrap">
+    {% if can_edit(request) %}
     <input id="advance-days" type="number" value="1" style="width:70px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
     <button type="button" id="advance-btn" style="background:var(--neon);color:#000;border:none;padding:.45rem 1rem;font-size:.82rem;font-weight:bold;border-radius:3px;cursor:pointer">⏭ Advance Days</button>
+    {% endif %}
     <label style="display:flex;align-items:center;gap:.35rem;font-size:.8rem;color:var(--text-dim);cursor:pointer;margin-left:.4rem"
            title="Dims days with no events or icons, so a busy campaign's planned days stand out at a glance">
       <input type="checkbox" id="filter-empty-cb"/> Only show days with content
     </label>
   </div>
 
+  {% if can_edit(request) %}
   <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap">
     <span style="font-size:.8rem;color:var(--text-dim)">Set today:</span>
     <select id="set-date-month" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .5rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
@@ -39,6 +44,7 @@
            style="width:85px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
     <button type="button" id="set-date-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem .9rem;font-size:.82rem;border-radius:3px;cursor:pointer">📌 Set as Today</button>
   </div>
+  {% endif %}
 
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
     <a href="{{ ('/calendar?year=' + prev_year|string + '&month=' + prev_month|string)|wq }}" style="color:var(--text-dim);text-decoration:none;font-size:.85rem">← {{ months[prev_month].name }}</a>
@@ -109,6 +115,7 @@
 </style>
 
 <script>
+const CAN_EDIT = {{ 'true' if can_edit(request) else 'false' }};
 const MONTH_DAYS = {{ months | map(attribute='days') | list | tojson }};
 const ENTITIES = {{ entities | tojson }};
 const SESSIONS = {{ sessions | tojson }};
@@ -127,12 +134,14 @@ function openDayPanel(dayNum) {
   panel.innerHTML = `
     <h3 style="color:var(--neon);font-size:.9rem;margin:0 0 .6rem">Day ${dayNum}</h3>
     <div id="day-icons" style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.5rem"></div>
+    ${CAN_EDIT ? `
     <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin-bottom:.9rem">
       <input type="file" id="icon-file" accept="image/*" style="font-size:.78rem;color:var(--text-dim);max-width:180px"/>
       <input id="icon-label" placeholder="Label (optional)" style="flex:1;min-width:100px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
       <button type="button" id="icon-add-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem .9rem;font-size:.82rem;border-radius:3px;cursor:pointer">+ Add Icon</button>
-    </div>
+    </div>` : ''}
     <div id="day-events" style="display:flex;flex-direction:column;gap:.3rem;margin-bottom:.75rem"></div>
+    ${CAN_EDIT ? `
     <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
       <input id="ev-title" placeholder="Event title" style="flex:1;min-width:120px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
       <select id="ev-entity" title="Link an entity (character, location, creature, item, etc.)" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
@@ -153,12 +162,14 @@ function openDayPanel(dayNum) {
       </select>
       <input id="ev-color" type="color" value="#4488ff" style="width:40px;background:var(--bg3);border:1px solid var(--border);border-radius:3px"/>
       <button type="button" id="ev-add-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem .9rem;font-size:.82rem;border-radius:3px;cursor:pointer">+ Add Event</button>
-    </div>
+    </div>` : ''}
   `;
   renderDayIcons(dayNum);
   renderDayEvents(dayNum);
-  document.getElementById('icon-add-btn').addEventListener('click', () => addIcon(dayNum));
-  document.getElementById('ev-add-btn').addEventListener('click', () => addEvent(dayNum));
+  if (CAN_EDIT) {
+    document.getElementById('icon-add-btn').addEventListener('click', () => addIcon(dayNum));
+    document.getElementById('ev-add-btn').addEventListener('click', () => addEvent(dayNum));
+  }
 }
 
 function renderDayIcons(dayNum) {
@@ -171,11 +182,13 @@ function renderDayIcons(dayNum) {
     chip.style.cssText = 'display:flex;align-items:center;gap:.3rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.2rem .4rem';
     chip.innerHTML = `<img src="${ic.image_url}" alt="${esc(ic.label)}" style="width:24px;height:24px;object-fit:cover;border-radius:3px"/>
       <span style="font-size:.76rem;color:var(--text-dim);max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ic.label)}</span>
-      <button type="button" style="background:none;border:none;color:#c44;cursor:pointer;font-size:.9rem;line-height:1">✕</button>`;
-    chip.querySelector('button').addEventListener('click', async () => {
-      await fetch('/api/calendar/icons/' + ic.id + '/delete', { method: 'POST' });
-      window.location.reload();
-    });
+      ${CAN_EDIT ? '<button type="button" style="background:none;border:none;color:#c44;cursor:pointer;font-size:.9rem;line-height:1">✕</button>' : ''}`;
+    if (CAN_EDIT) {
+      chip.querySelector('button').addEventListener('click', async () => {
+        await fetch('/api/calendar/icons/' + ic.id + '/delete', { method: 'POST' });
+        window.location.reload();
+      });
+    }
     container.appendChild(chip);
   });
 }
@@ -208,11 +221,13 @@ function renderDayEvents(dayNum) {
     if (e.party_label) links.push(`<span style="color:var(--text-dim)">👥 ${esc(e.party_label)}</span>`);
     const linksHtml = links.length ? `<div style="display:flex;gap:.5rem;flex-wrap:wrap;font-size:.76rem;margin-top:.15rem">${links.join('')}</div>` : '';
     row.innerHTML = `<span style="flex:1">${esc(e.title)}${e.notes ? ' — <span style=\"color:var(--text-dim)\">'+esc(e.notes)+'</span>' : ''}${linksHtml}</span>
-      <button type="button" style="background:none;border:none;color:#c44;cursor:pointer">✕</button>`;
-    row.querySelector('button').addEventListener('click', async () => {
-      await fetch('/api/calendar/events/' + e.id + '/delete', { method: 'POST' });
-      window.location.reload();
-    });
+      ${CAN_EDIT ? '<button type="button" style="background:none;border:none;color:#c44;cursor:pointer">✕</button>' : ''}`;
+    if (CAN_EDIT) {
+      row.querySelector('button').addEventListener('click', async () => {
+        await fetch('/api/calendar/events/' + e.id + '/delete', { method: 'POST' });
+        window.location.reload();
+      });
+    }
     container.appendChild(row);
   });
 }
@@ -232,36 +247,38 @@ async function addEvent(dayNum) {
   window.location.reload();
 }
 
-document.getElementById('advance-btn').addEventListener('click', async () => {
-  const days = parseInt(document.getElementById('advance-days').value, 10) || 1;
-  await fetch('/api/calendar/advance', {
-    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ days }),
+if (CAN_EDIT) {
+  document.getElementById('advance-btn').addEventListener('click', async () => {
+    const days = parseInt(document.getElementById('advance-days').value, 10) || 1;
+    await fetch('/api/calendar/advance', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ days }),
+    });
+    window.location.reload();
   });
-  window.location.reload();
-});
 
-// "Set today" — a friendly Year/Month/Day picker in place of hand-computing
-// an absolute day count, the same one-line-per-field convenience "Advance
-// Days" already offers for relative moves.
-document.getElementById('set-date-month').addEventListener('change', () => {
-  const monthIdx = parseInt(document.getElementById('set-date-month').value, 10) || 0;
-  const domInput = document.getElementById('set-date-dom');
-  const maxDays = MONTH_DAYS[monthIdx] || 30;
-  domInput.max = maxDays;
-  if (parseInt(domInput.value, 10) > maxDays) domInput.value = maxDays;
-});
-document.getElementById('set-date-btn').addEventListener('click', async () => {
-  const month_idx = parseInt(document.getElementById('set-date-month').value, 10) || 0;
-  const dom = parseInt(document.getElementById('set-date-dom').value, 10) || 1;
-  const year = parseInt(document.getElementById('set-date-year').value, 10) || 1;
-  const res = await fetch('/api/calendar/set-date', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ year, month_idx, dom }),
+  // "Set today" — a friendly Year/Month/Day picker in place of hand-computing
+  // an absolute day count, the same one-line-per-field convenience "Advance
+  // Days" already offers for relative moves.
+  document.getElementById('set-date-month').addEventListener('change', () => {
+    const monthIdx = parseInt(document.getElementById('set-date-month').value, 10) || 0;
+    const domInput = document.getElementById('set-date-dom');
+    const maxDays = MONTH_DAYS[monthIdx] || 30;
+    domInput.max = maxDays;
+    if (parseInt(domInput.value, 10) > maxDays) domInput.value = maxDays;
   });
-  if (!res.ok) { alert('Could not set date.'); return; }
-  const d = await res.json();
-  window.location.href = `${window.location.pathname}?year=${d.year}&month=${d.month_idx}`;
-});
+  document.getElementById('set-date-btn').addEventListener('click', async () => {
+    const month_idx = parseInt(document.getElementById('set-date-month').value, 10) || 0;
+    const dom = parseInt(document.getElementById('set-date-dom').value, 10) || 1;
+    const year = parseInt(document.getElementById('set-date-year').value, 10) || 1;
+    const res = await fetch('/api/calendar/set-date', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ year, month_idx, dom }),
+    });
+    if (!res.ok) { alert('Could not set date.'); return; }
+    const d = await res.json();
+    window.location.href = `${window.location.pathname}?year=${d.year}&month=${d.month_idx}`;
+  });
+}
 
 // Jump-to-day — the Agenda page links here with ?day=N so a GM doesn't have
 // to re-find the day they just clicked from the "days with content" table.

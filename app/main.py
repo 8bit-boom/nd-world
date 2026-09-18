@@ -30,7 +30,7 @@ from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
 from . import streaming_export as _streaming_export
 from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache, RESTORE_STAGING_DIR
-from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content
+from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content, world_can_view_section, world_row_visible, world_player_sections, PLAYER_TOGGLEABLE_SECTIONS
 from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html, autolink_entities, derive_name_variants
 from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_overlay,
@@ -436,6 +436,14 @@ def _is_player_safe(method: str, path: str) -> bool:
     # from_job in app/routers/characters.py) needs no separate entry here —
     # it's already covered by the blanket "/api/characters/" prefix rule
     # near the top of this function; _can_manage_character is its real gate.
+    if method == "POST" and re.match(r"^/api/tables/\d+/roll$", path):
+        # Rolling IS the point of opening Random Tables to players — see
+        # World.player_section_access_json. Handler-level gate (app/routers/
+        # tables.py) still requires deps.world_can_view_section(..., "tables"),
+        # off by default; this allowlist only decides "reachable at all".
+        # Every other /tables* route (new/edit/delete/export/import) stays
+        # GM+Assistant-only regardless of this toggle.
+        return True
     if method != "GET":
         return False
     if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log", "/audio", "/video", "/pages", "/ai-chat", "/image-gen"):
@@ -443,6 +451,24 @@ def _is_player_safe(method: str, path: str) -> bool:
         # players_can_use_ai_chat / players_can_use_image_gen check (both
         # off by default) is the real gate, same "reachable vs. actually
         # allowed" split as every route here.
+        return True
+    if path in ("/calendar", "/calendar/agenda", "/quests", "/parties", "/tables") or re.match(
+        r"^/(quests|parties)/\d+$", path
+    ):
+        # Read-only browsing for the GM-tool-shaped world sections a GM can
+        # opt players into per world — see World.player_section_access_json
+        # and deps.world_can_view_section, the real handler-level gate (off
+        # by default except Maps above, which predates this mechanism).
+        # /calendar/config, every /api/calendar* write, /quests/new,
+        # /quests/{id}/edit|delete, /parties/new, /parties/{id}/edit|delete,
+        # every /api/parties* action, /tables/new, /tables/{id}/edit|delete,
+        # /tables/export, /tables/import stay GM+Assistant-only regardless
+        # of this toggle — only the plain read views above are listed here.
+        # Combat Tracker (live, often spoiler-heavy encounter state) and
+        # Investigation Boards (a large, drag-and-drop canvas editor with
+        # no read/edit separation anywhere in its JS — retrofitting a safe
+        # read-only mode there is its own project) deliberately have no
+        # player_section entry at all and stay fully GM-only.
         return True
     if path.startswith("/kind/") or path.startswith("/uploads/"):
         return True
@@ -1354,6 +1380,8 @@ def world_edit_form(world_id: int, request: Request, db: Session = Depends(get_d
         "request": request, "world": world, "worlds": worlds,
         "edit_world": w, "kinds": KINDS, "kind_icons": KIND_ICONS,
         "invites": invites, "members": members,
+        "player_sections": world_player_sections(w),
+        "player_toggleable_sections": [(sid, label, icon) for sid, (label, icon) in PLAYER_TOGGLEABLE_SECTIONS.items()],
     })
 
 @app.post("/worlds/{world_id}/edit")
@@ -1371,6 +1399,7 @@ def world_edit_post(
     players_can_use_ai_chat: Optional[str] = Form(None),
     players_can_view_world_summary: Optional[str] = Form(None),
     players_can_use_image_gen: Optional[str] = Form(None),
+    player_sections: List[str] = Form([]),
     hero_style: str = Form("home"),
     db: Session = Depends(get_db),
 ):
@@ -1389,6 +1418,10 @@ def world_edit_post(
     w.players_can_use_ai_chat = bool(players_can_use_ai_chat)
     w.players_can_view_world_summary = bool(players_can_view_world_summary)
     w.players_can_use_image_gen = bool(players_can_use_image_gen)
+    # Unrecognized values (a stale/hand-crafted request) are silently
+    # dropped rather than stored — same "don't trust the client" reasoning
+    # as every sanitize_* helper elsewhere in this handler.
+    w.player_section_access_json = json.dumps(sorted(set(player_sections) & set(PLAYER_TOGGLEABLE_SECTIONS)))
     if hero_style in ("off", "home", "everywhere"):
         w.hero_style = hero_style
     db.commit()
@@ -1548,6 +1581,8 @@ def member_reset_password(
         "request": request, "world": world, "worlds": worlds,
         "edit_world": w, "kinds": KINDS, "kind_icons": KIND_ICONS,
         "invites": invites, "members": members,
+        "player_sections": world_player_sections(w),
+        "player_toggleable_sections": [(sid, label, icon) for sid, (label, icon) in PLAYER_TOGGLEABLE_SECTIONS.items()],
         "reset_password_user_id": target.id, "reset_password_value": temp_password,
     })
 
@@ -1995,6 +2030,8 @@ def maps_page(request: Request, db: Session = Depends(get_db), active_world: str
     world = get_active_world(request, db, active_world)
     if not world:
         return RedirectResponse("/worlds")
+    if not world_can_view_section(request, world, "maps"):
+        raise HTTPException(403)
     worlds = _visible_worlds(request, db)
     maps = []
     _STATIC_MAPS = BASE_DIR / "static" / "maps"
@@ -2195,6 +2232,8 @@ def map_viewer(slug: str, request: Request, db: Session = Depends(get_db), activ
         raise HTTPException(404)
     world = get_active_world(request, db, active_world)
     if not world or map_data.get("world_id", 1) != world.id:
+        raise HTTPException(404)
+    if not world_can_view_section(request, world, "maps"):
         raise HTTPException(404)
     _sm = BASE_DIR / "static" / "maps"
     image_url = None
@@ -3808,7 +3847,11 @@ def settings_model_override_delete(model: str = Form(...), db: Session = Depends
 @app.get("/boards", response_class=HTMLResponse)
 def boards_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
-    boards = db.query(InvestBoard).filter(InvestBoard.world_id == (world.id if world else 1)).all()
+    if not world:
+        raise HTTPException(404)
+    if not world_can_view_section(request, world, "boards"):
+        raise HTTPException(403)
+    boards = db.query(InvestBoard).filter(InvestBoard.world_id == world.id).all()
     return templates.TemplateResponse("boards.html", {
         "request": request, "world": world, "worlds": worlds,
         "boards": boards, "kinds": KINDS, "kind_icons": KIND_ICONS,
@@ -3846,7 +3889,8 @@ def board_new_post(
 def board_view(slug: str, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
     b = db.query(InvestBoard).filter(InvestBoard.slug == slug).first()
-    if not b: raise HTTPException(404)
+    if not b or not world_row_visible(request, db, b.world_id, "boards"):
+        raise HTTPException(404)
     # Build entity name→{id,kind,image_url} map for quick lookup — scoped to the
     # board's own world (not every entity in the database) so a board with a
     # handful of nodes doesn't load every lore entry across every world.

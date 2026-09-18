@@ -37,18 +37,18 @@ _MAX_MENU_ICON_LEN = 8
 # only the dynamic per-kind items built by build_catalog, which drag onto
 # the home page as target_type="kind" rather than target_type="url").
 STATIC_CATALOG = [
-    {"id": "maps", "label": "Maps", "icon": "🗺", "href": "/maps", "exact": True, "gm_only": False},
+    {"id": "maps", "label": "Maps", "icon": "🗺", "href": "/maps", "exact": True, "gm_only": False, "player_section": "maps"},
     {"id": "races", "label": "Race Catalog", "icon": "🧬", "href": "/races", "gm_only": False},
     {"id": "professions", "label": "Profession Catalog", "icon": "🎭", "href": "/professions", "gm_only": False},
 
     {"id": "boards", "label": "Boards", "icon": "📌", "href": "/boards", "gm_only": True},
-    {"id": "tables", "label": "Random Tables", "icon": "🎲", "href": "/tables", "gm_only": True},
+    {"id": "tables", "label": "Random Tables", "icon": "🎲", "href": "/tables", "gm_only": True, "player_section": "tables"},
     {"id": "combat", "label": "Combat Tracker", "icon": "⚔", "href": "/combat", "gm_only": True},
-    {"id": "parties", "label": "Parties", "icon": "🛡", "href": "/parties", "gm_only": True},
-    {"id": "quests", "label": "Quests", "icon": "📜", "href": "/quests", "gm_only": True},
+    {"id": "parties", "label": "Parties", "icon": "🛡", "href": "/parties", "gm_only": True, "player_section": "parties"},
+    {"id": "quests", "label": "Quests", "icon": "📜", "href": "/quests", "gm_only": True, "player_section": "quests"},
     {"id": "sessions", "label": "Sessions", "icon": "📓", "href": "/sessions", "gm_only": True},
     {"id": "facts", "label": "Facts", "icon": "🗒", "href": "/facts", "gm_only": True},
-    {"id": "calendar", "label": "Calendar", "icon": "🗓", "href": "/calendar", "gm_only": True},
+    {"id": "calendar", "label": "Calendar", "icon": "🗓", "href": "/calendar", "gm_only": True, "player_section": "calendar"},
     {"id": "images", "label": "Images", "icon": "🖼", "href": "/images", "gm_only": True},
     {"id": "import", "label": "Import", "icon": "📥", "href": "/import", "gm_only": True},
     {"id": "bulk_edit", "label": "Find & Replace (AI)", "icon": "🔎", "href": "/tools/bulk-edit", "exact": True, "gm_only": True},
@@ -85,6 +85,7 @@ for _item in STATIC_CATALOG:
     _item.setdefault("condition", None)
     _item.setdefault("ql_type", None)
     _item.setdefault("ql_ref", None)
+    _item.setdefault("player_section", None)
 
 # Shipped so every world keeps today's exact grouping (Tools / AI Tools)
 # until a GM explicitly customizes it from Settings -> Navigation — see
@@ -211,6 +212,21 @@ def resolve_nav_menus(world, dreamlands_enabled: bool, king_in_yellow_enabled: b
             return False
         if cond == "king_in_yellow_enabled" and not king_in_yellow_enabled:
             return False
+        section = item.get("player_section")
+        if section and not is_gm:
+            # A "player_section" item (Maps/Calendar/Quests/Parties/Random
+            # Tables/Boards — see World.player_section_access_json) is
+            # visible to a non-GM viewer exactly when the GM has opted
+            # players into it for THIS world, REGARDLESS of the item's own
+            # static gm_only flag — this deliberately replaces, not adds
+            # to, the plain gm_only check below for these items, since a
+            # world that hasn't opted in still needs the item hidden even
+            # for the (gm_only: False) Maps entry. GM visibility is
+            # entirely unaffected either way (see the `not is_gm` guard).
+            if section not in deps.world_player_sections(world):
+                return False
+        elif item.get("gm_only") and not is_gm:
+            return False
         if cond and cond not in ("dreamlands_enabled", "king_in_yellow_enabled"):
             # Generic fallback: any other condition string names a per-World
             # boolean column (e.g. "players_can_use_ai_chat") rather than one
@@ -220,8 +236,6 @@ def resolve_nav_menus(world, dreamlands_enabled: bool, king_in_yellow_enabled: b
             # a world that's never opted in.
             if not getattr(world, cond, False):
                 return False
-        if item.get("gm_only") and not is_gm:
-            return False
         return True
 
     claimed = set()

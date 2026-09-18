@@ -8,6 +8,7 @@
     <a href="{{ '/parties'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Parties</a>
   </div>
 
+  {% if can_edit(request) %}
   <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:1.25rem">
     <button type="button" id="launch-combat-btn" style="background:var(--neon);color:#000;border:none;padding:.5rem 1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">⚔ Launch Combat</button>
     <button type="button" id="delete-party-btn" style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.5rem 1rem;font-size:.85rem;border-radius:3px;cursor:pointer;margin-left:auto">🗑 Delete Party</button>
@@ -75,6 +76,42 @@
     </div>
   </div>
 
+  {% else %}
+  {# Read-only view for a player whose world has opened Parties to them —
+     this whole page is otherwise an edit form (there's no separate
+     "view" template), so a non-editor gets a plain rendering instead. #}
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">Members</h2>
+    {% for pc in member_pcs %}
+    <div style="padding:.3rem 0;font-size:.85rem">{{ pc.name }} <span style="color:var(--text-dim);font-size:.78rem">HP {{ pc.current_hp }}/{{ pc.max_hp }}{% if pc.shock_max %} · Shock {{ pc.shock_current }}/{{ pc.shock_max }}{% endif %}</span></div>
+    {% endfor %}
+    {% for e in member_entities %}
+    <div style="padding:.3rem 0;font-size:.85rem">{{ e.name }} <span style="color:var(--text-dim);font-size:.78rem">({{ e.kind }})</span></div>
+    {% endfor %}
+    {% if not member_pcs and not member_entities %}
+    <p style="color:var(--text-dim);font-size:.82rem;font-style:italic">No members yet.</p>
+    {% endif %}
+  </div>
+
+  {% if party.notes %}
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">Notes</h2>
+    <div class="rendered-md">{{ party.notes|md|safe }}</div>
+  </div>
+  {% endif %}
+
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">💰 Shared Loot</h2>
+    {% for item in loot %}
+    <div style="display:flex;align-items:center;gap:.5rem;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.4rem .6rem;font-size:.85rem;margin-bottom:.4rem">
+      {{ item.name }} <span style="color:var(--text-dim)">×{{ item.qty }}</span>{% if item.notes %} — <span style="color:var(--text-dim);font-size:.8rem">{{ item.notes }}</span>{% endif %}
+    </div>
+    {% else %}
+    <p style="color:var(--text-dim);font-size:.82rem;font-style:italic">No loot yet.</p>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   {% if assigned_quests %}
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">📜 Assigned Quests</h2>
@@ -85,6 +122,7 @@
   {% endif %}
 </div>
 
+{% if can_edit(request) %}
 <script>
 const PARTY_ID = {{ party.id }};
 let loot = {{ loot | tojson }};
@@ -152,4 +190,5 @@ ndAiAssist('prt', {
   metaSelectors: { name: () => {{ party.name | tojson }} },
 });
 </script>
+{% endif %}
 {% endblock %}

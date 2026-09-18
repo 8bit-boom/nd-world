@@ -124,7 +124,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/worlds/new` | GM | Creates a new `World`. |
 | POST | `/worlds/{world_id}/delete` | GM | Deletes a world and every row/file it owns (entities, characters, maps, schematics, uploads, etc.) — irreversible. |
 | GET | `/worlds/switch/{slug}` | Player | Sets the `active_world` cookie to this world and redirects to `?next=` (or `/`) — the world-switcher dropdown's target. |
-| GET | `/worlds/{world_id}/edit` | GM | World settings form: name, accent color, font/font size (`World.font`/`World.font_size` — simple direct fields, no JSON needed), visual theme, hero banner placement (off/home page/every page), party-visibility toggle, invites, members list. |
+| GET | `/worlds/{world_id}/edit` | GM | World settings form: name, accent color, font/font size (`World.font`/`World.font_size` — simple direct fields, no JSON needed), visual theme, hero banner placement (off/home page/every page), party-visibility toggle, invites, members list, and the "Player World Access" checkboxes (`World.player_section_access_json` — which of Maps/Calendar/Quests/Parties/Random Tables players may read-only browse; see `deps.PLAYER_TOGGLEABLE_SECTIONS`). |
 | POST | `/worlds/{world_id}/edit` | GM | Saves world settings. |
 | POST | `/worlds/{world_id}/theme/import` | GM | Imports a visual theme (palette/font overrides) from a JSON file — see `docs/world-theme-gothic-moonlight.json` for an example and `World.theme_json` in `app/models.py` for the recognized shape. Unrecognized/invalid fields are dropped rather than failing the whole import; a `"accent"` key in the file is applied to `World.accent` instead of being stored in the theme itself. |
 | POST | `/worlds/{world_id}/theme/clear` | GM | Removes the imported theme, reverting to the app's default look (still keeps the plain accent color). |
@@ -288,10 +288,10 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/quests` | GM | Quest list for the active world. |
+| GET | `/quests` | GM / Player* | Quest list for the active world. *Read-only for a player once the GM opts them into "Quests" (`World.player_section_access_json` — see `deps.world_can_view_section`); off by default. |
 | GET | `/quests/new` | GM | New quest form. |
 | POST | `/quests/new` | GM | Creates a quest. |
-| GET | `/quests/{quest_id}` | GM | Quest detail. |
+| GET | `/quests/{quest_id}` | GM / Player* | Quest detail. *Same opt-in as the list above; 404s (not 403) for an id belonging to a world the viewer can't access, same hidden-content convention as `pages_viewer`. |
 | POST | `/quests/{quest_id}/edit` | GM | Saves quest edits. |
 | POST | `/api/quests/{quest_id}/status` | GM | Updates quest status (active/completed/failed). |
 | POST | `/quests/{quest_id}/delete` | GM | Deletes a quest. |
@@ -389,9 +389,9 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/parties` | GM | Party list. |
+| GET | `/parties` | GM / Player* | Party list. *Read-only for a player once the GM opts them into "Parties" (`World.player_section_access_json`); off by default. |
 | POST | `/parties/new` | GM | Creates a party (a named group of characters). |
-| GET | `/parties/{party_id}` | GM | Party detail: members, shared loot, location. |
+| GET | `/parties/{party_id}` | GM / Player* | Party detail: members, shared loot, location. *Same opt-in as the list above; 404s for an id belonging to a world the viewer can't access. |
 | POST | `/parties/{party_id}/edit` | GM | Saves party edits (membership, name). |
 | POST | `/parties/{party_id}/delete` | GM | Deletes a party. |
 | POST | `/api/parties/{party_id}/loot` | GM | Updates shared party loot/currency. |
@@ -404,8 +404,8 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/calendar` | GM / Assistant | Calendar view with logged events. |
-| GET | `/calendar/agenda` | GM / Assistant | Every day with an event or icon pinned to it, across the whole calendar, sorted chronologically — the "days with content" table, since a many-year calendar can't be browsed month by month to find what's on it. |
+| GET | `/calendar` | GM / Assistant / Player* | Calendar view with logged events. *Read-only for a player once the GM opts them into "Calendar" (`World.player_section_access_json`); off by default. |
+| GET | `/calendar/agenda` | GM / Assistant / Player* | Every day with an event or icon pinned to it, across the whole calendar, sorted chronologically — the "days with content" table, since a many-year calendar can't be browsed month by month to find what's on it. *Same opt-in as the calendar view above. |
 | GET | `/calendar/config` | GM / Assistant | Calendar configuration form (month names/lengths, starting date). |
 | POST | `/calendar/config` | GM / Assistant | Saves calendar configuration. |
 | POST | `/api/calendar/events` | GM / Assistant | Adds an event on a given in-world date. |
@@ -421,13 +421,13 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/maps` | Player | Map list for the active world. |
+| GET | `/maps` | Player* | Map list for the active world. *On by default (`World.player_section_access_json` includes `"maps"` for every world unless the GM explicitly removes it) — the only one of the "Player World Access" toggles that starts opted-in, preserving Maps' original always-open behavior from before this toggle existed. |
 | GET | `/maps/new` | GM / Assistant | New map form. |
 | POST | `/maps/new` | GM / Assistant | Creates a map. |
 | POST | `/maps/{slug}/rename` | GM / Assistant | Renames a map. |
 | POST | `/maps/{slug}/delete` | GM / Assistant | Deletes a map. |
 | POST | `/maps/{slug}/upload` | GM / Assistant | Uploads/replaces the map's background image. |
-| GET | `/maps/{slug}` | Player | Map viewer with markers/regions. |
+| GET | `/maps/{slug}` | Player* | Map viewer with markers/regions. *Same "maps" opt-in as the list above (on by default). |
 | POST | `/api/maps/{slug}/overlay` | GM / Assistant | Saves marker/region overlay data. |
 
 ## Schematics
@@ -594,13 +594,13 @@ worlds they've been invited into (`WorldMembership`).
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/tables` | GM / Assistant | Table list. |
+| GET | `/tables` | GM / Assistant / Player* | Table list. *Read-only for a player once the GM opts them into "Random Tables" (`World.player_section_access_json`); off by default. |
 | GET | `/tables/new` | GM / Assistant | New table form. |
 | POST | `/tables/new` | GM / Assistant | Creates a table. |
 | GET | `/tables/{table_id}/edit` | GM / Assistant | Edit form. |
 | POST | `/tables/{table_id}/edit` | GM / Assistant | Saves table edits. |
 | POST | `/tables/{table_id}/delete` | GM / Assistant | Deletes a table. |
-| POST | `/api/tables/{table_id}/roll` | GM / Assistant | Rolls on a table and returns the result. |
+| POST | `/api/tables/{table_id}/roll` | GM / Assistant / Player* | Rolls on a table and returns the result. *Once "Random Tables" is opted in, this is the one action a player gets — creating/editing/deleting tables stays GM/Assistant-only. A built-in table (`world_id=NULL`) is rollable by anyone regardless of which world's toggle is checked. |
 | GET | `/tables/export` | GM / Assistant | Exports all tables as JSON. |
 | POST | `/tables/import` | GM / Assistant | Imports tables from JSON. |
 

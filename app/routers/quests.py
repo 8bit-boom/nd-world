@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, world_can_view_section, world_row_visible
 from ..models import Entity, Party, Quest, World
 from ..templating import templates
 
@@ -18,7 +18,11 @@ CATEGORIES = ["main", "side", "personal"]
 @router.get("/quests", response_class=HTMLResponse)
 def quests_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
-    quests = db.query(Quest).filter(Quest.world_id == (world.id if world else 1)).order_by(Quest.title).all()
+    if not world:
+        raise HTTPException(404)
+    if not world_can_view_section(request, world, "quests"):
+        raise HTTPException(403)
+    quests = db.query(Quest).filter(Quest.world_id == world.id).order_by(Quest.title).all()
     grouped: dict = {s: [] for s in STATUSES}
     for q in quests:
         grouped.setdefault(q.status or "active", []).append(q)
@@ -70,7 +74,7 @@ async def quest_create(request: Request, db: Session = Depends(get_db), active_w
 def quest_detail(quest_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
     quest = db.query(Quest).filter(Quest.id == quest_id).first()
-    if not quest:
+    if not quest or not world_row_visible(request, db, quest.world_id, "quests"):
         raise HTTPException(404)
     parties = db.query(Party).filter(Party.world_id == quest.world_id).order_by(Party.name).all()
     quests = db.query(Quest).filter(Quest.world_id == quest.world_id, Quest.id != quest.id).order_by(Quest.title).all()

@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_world_ctx, paginate
+from ..deps import get_world_ctx, paginate, world_can_view_section, world_row_visible
 from ..models import CombatSession, Entity, Party, PlayerCharacter, Quest, World
 from ..templating import templates
 from .combat import entity_to_combatant, pc_to_combatant, _COMBATANT_KINDS
@@ -16,7 +16,11 @@ router = APIRouter()
 @router.get("/parties", response_class=HTMLResponse)
 def parties_list(request: Request, page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
-    base_q = db.query(Party).filter(Party.world_id == (world.id if world else 1)).order_by(Party.name)
+    if not world:
+        raise HTTPException(404)
+    if not world_can_view_section(request, world, "parties"):
+        raise HTTPException(403)
+    base_q = db.query(Party).filter(Party.world_id == world.id).order_by(Party.name)
     parties, page, total_pages = paginate(base_q, page)
     member_counts = {
         p.id: len(json.loads(p.member_pc_ids_json or "[]")) + len(json.loads(p.member_entity_ids_json or "[]"))
@@ -43,7 +47,7 @@ def party_create(request: Request, name: str = Form("New Party"), db: Session = 
 def party_detail(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
     party = db.query(Party).filter(Party.id == party_id).first()
-    if not party:
+    if not party or not world_row_visible(request, db, party.world_id, "parties"):
         raise HTTPException(404)
     pc_ids = json.loads(party.member_pc_ids_json or "[]")
     entity_ids = json.loads(party.member_entity_ids_json or "[]")

@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session, joinedload
 
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, world_can_view_section
 from ..imaging import convert_image
 from ..models import CalendarDayIcon, CalendarEvent, Entity, GameSession, Party, PlayerCharacter, World, WorldCalendar
 from ..templating import templates
@@ -241,6 +241,8 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not world_can_view_section(request, world, "calendar"):
+        raise HTTPException(403)
     world_id = world.id
     cal = _get_or_create_calendar(db, world_id)
     config = json.loads(cal.config_json or "{}") or _default_config()
@@ -354,6 +356,8 @@ def calendar_agenda(request: Request, db: Session = Depends(get_db), active_worl
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not world_can_view_section(request, world, "calendar"):
+        raise HTTPException(403)
     world_id = world.id
     cal = _get_or_create_calendar(db, world_id)
     config = json.loads(cal.config_json or "{}") or _default_config()

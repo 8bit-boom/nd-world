@@ -59,6 +59,84 @@ def is_gm(request: Request) -> bool:
     return bool(user and user.is_gm)
 
 
+# id -> (label, icon) for World.player_section_access_json (see its
+# docstring in app/models.py) and the "Player World Access" panel on the
+# World edit page. Order here is the checkbox display order. Combat
+# Tracker and Investigation Boards deliberately aren't here — Combat's
+# live state is often spoiler-heavy, and Boards is a large drag-and-drop
+# canvas editor with no read/edit separation anywhere in its JS, so a safe
+# read-only mode for it is its own separate project.
+PLAYER_TOGGLEABLE_SECTIONS = {
+    "maps": ("Maps", "🗺"),
+    "calendar": ("Calendar", "🗓"),
+    "quests": ("Quests", "📜"),
+    "parties": ("Parties", "🛡"),
+    "tables": ("Random Tables", "🎲"),
+}
+
+
+def world_player_sections(world) -> set:
+    """The set of section ids `world`'s players may read-only browse (see
+    PLAYER_TOGGLEABLE_SECTIONS/World.player_section_access_json). Falls
+    back to the column's own default ({"maps"}) on a NULL/malformed value
+    rather than an empty set, matching how every other JSON-backed World
+    field degrades (e.g. _parse_world_theme in app/templating.py) —
+    resetting Maps back to closed for a bad row would be a much louder
+    regression than resetting an optional cosmetic field."""
+    raw = getattr(world, "player_section_access_json", None) if world else None
+    if not raw:
+        return {"maps"}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {"maps"}
+    if not isinstance(parsed, list):
+        return {"maps"}
+    return {s for s in parsed if s in PLAYER_TOGGLEABLE_SECTIONS}
+
+
+def world_can_view_section(request: Request, world, section_id: str) -> bool:
+    """True if this request may read-only browse `section_id` (one of
+    PLAYER_TOGGLEABLE_SECTIONS) for `world` — a GM/GM-Assistant always can
+    (same can_edit_content tier; for calendar/tables/boards they can
+    already fully edit these areas via _is_assistant_safe in app/main.py,
+    so this is a no-op for them either way; for quests/parties, which
+    _is_assistant_safe doesn't cover, this does newly grant an assistant
+    read access once a GM opens either section to players at all — a
+    deliberately accepted, low-risk side effect, since an assistant
+    already sits at a strictly more-trusted tier than a plain player
+    everywhere else). A plain player gets read access only when the GM has
+    opted them in for THIS world. Used by each section's own GET handler
+    (the real enforcement — nav_menus.py's own check only decides whether
+    the nav link/menu entry is shown)."""
+    if can_edit_content(request):
+        return True
+    return section_id in world_player_sections(world)
+
+
+def world_row_visible(request: Request, db: Session, world_id: Optional[int], section_id: str) -> bool:
+    """Like world_can_view_section, but for a row fetched by its OWN
+    primary key/slug (a Quest, Party, RandomTable roll, InvestBoard, ...)
+    rather than the request's active world — quests.py/parties.py/
+    tables.py/main.py's board routes all look these up directly by id/slug
+    with no query-level world scoping at all (previously harmless, since
+    only a GM — who can access every world — could ever reach them), so a
+    caller must separately confirm the ROW'S OWN world is one this viewer
+    may access at all before also checking the section is opened to
+    players, or a player could view another world's quest/party/board by
+    guessing its id/slug even with the section toggle off everywhere they
+    actually belong. world_id=None (a global/built-in row shared across
+    every world, e.g. a built-in RandomTable) is always visible — nothing
+    world-specific to leak."""
+    if world_id is None:
+        return True
+    user = getattr(request.state, "user", None)
+    world = db.query(World).filter(World.id == world_id).first()
+    if not auth.user_can_access_world(db, user, world):
+        return False
+    return world_can_view_section(request, world, section_id)
+
+
 def require_can_edit(request: Request) -> None:
     """The write-side gate for content the media library routers manage
     (clips/pages/albums): a GM, or a GM-Assistant (WorldMembership.role ==

@@ -135,6 +135,22 @@ class World(Base):
     # in app/routers/ai.py) so a single player can't grow the image job
     # table or the disk without bound.
     players_can_use_image_gen = Column(Boolean, default=False)
+    # Which GM-tool-shaped world sections players may READ-ONLY browse,
+    # beyond what's always open to them — a JSON array of ids drawn from
+    # deps.PLAYER_TOGGLEABLE_SECTIONS ("maps", "calendar", "quests",
+    # "parties", "tables", "boards"). Each area's WRITE routes (create/
+    # edit/delete/advance-date/etc.) stay GM+Assistant-only regardless of
+    # this list — see can_edit(request) guards in each area's own
+    # template and deps.world_can_view_section for the read-side check.
+    # Deliberately one growing JSON list rather than N near-identical
+    # boolean columns (the players_can_use_ai_chat/players_can_view_
+    # world_summary/players_can_use_image_gen columns above are each a
+    # SEPARATE feature with its own distinct semantics; these six are all
+    # the exact same "read-only browse a GM-tool page" toggle, just for
+    # different pages). Defaults to '["maps"]' so every existing world's
+    # actual behavior is unchanged on upgrade — Maps was already open to
+    # every player unconditionally before this column existed.
+    player_section_access_json = Column(Text, default='["maps"]')
     # Campaign vocabulary (NPC names, places, invented terms) fed to Whisper
     # as an initial-prompt hint on every session-recording transcription, so
     # e.g. "Elyndra" doesn't come back as "Elandra" or "a lender". Per-world,

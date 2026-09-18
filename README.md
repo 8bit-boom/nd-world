@@ -866,6 +866,10 @@ no way to sign up otherwise.
   admin rights over your account to reset it for you.
 - Toggle whether **players can see each other's characters** (party roster, read-only)
   for that world
+- Grant **Player World Access** to read-only browse Maps, Calendar, Quests, Parties,
+  and/or Random Tables — off by default (Maps is on by default, matching how it's
+  always worked), and creating/editing/deleting content in any of these stays
+  GM/GM-Assistant only regardless; a Random Tables player also gets to roll
 
 **As a player**, once joined to a world you can:
 - Browse its lore, minus whatever the GM has hidden from you — each entity's edit

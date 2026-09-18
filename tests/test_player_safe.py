@@ -15,10 +15,7 @@ CASES = [
     # GM-only — no in-handler auth of their own, so this allowlist is the only
     # thing standing between a player and these routes.
     ("GET", "/combat", False),
-    ("GET", "/tables", False),
-    ("GET", "/quests", False),
     ("GET", "/sessions", False),
-    ("GET", "/calendar", False),
     ("GET", "/import", False),
     ("POST", "/api/ai/chat", False),
     ("GET", "/admin/backup.zip", False),
@@ -70,6 +67,38 @@ CASES = [
     ("POST", "/video/albums/new", False),
     ("POST", "/video/albums/1/rename", False),
     ("POST", "/video/albums/1/delete", False),
+    # World-toggleable read-only sections (World.player_section_access_json)
+    # — reachable at all; deps.world_can_view_section is the real
+    # off-by-default gate. Their write routes stay GM+Assistant-only.
+    ("GET", "/calendar/config", False),
+    ("POST", "/api/calendar/events", False),
+    ("POST", "/api/calendar/advance", False),
+    ("GET", "/quests/new", False),
+    ("POST", "/quests/new", False),
+    ("POST", "/quests/5/edit", False),
+    ("POST", "/quests/5/delete", False),
+    ("POST", "/api/quests/5/status", False),
+    ("POST", "/parties/new", False),
+    ("POST", "/parties/5/edit", False),
+    ("POST", "/parties/5/delete", False),
+    ("POST", "/api/parties/5/loot", False),
+    ("GET", "/tables/new", False),
+    ("POST", "/tables/new", False),
+    ("GET", "/tables/5/edit", False),
+    ("POST", "/tables/5/edit", False),
+    ("POST", "/tables/5/delete", False),
+    ("GET", "/tables/export", False),
+    ("POST", "/tables/import", False),
+    ("GET", "/boards/new", False),
+    ("POST", "/boards/new", False),
+    ("POST", "/boards/some-slug/save", False),
+    ("POST", "/boards/some-slug/delete", False),
+    ("GET", "/boards/some-slug/export", False),
+    # Investigation Boards stays fully GM-only, unlike the other four —
+    # see its own comment in _is_player_safe (large canvas editor, no
+    # read/edit separation in its JS).
+    ("GET", "/boards", False),
+    ("GET", "/boards/some-slug", False),
     # Player-safe — read-only world/lore browsing and their own character(s).
     ("GET", "/", True),
     ("GET", "/account", True),
@@ -83,6 +112,14 @@ CASES = [
     ("GET", "/video/albums/1", True),
     ("GET", "/pages/1", True),
     ("GET", "/pages/1/download", True),
+    ("GET", "/calendar", True),
+    ("GET", "/calendar/agenda", True),
+    ("GET", "/quests", True),
+    ("GET", "/quests/5", True),
+    ("GET", "/parties", True),
+    ("GET", "/parties/5", True),
+    ("GET", "/tables", True),
+    ("POST", "/api/tables/5/roll", True),
     # Character sheets — the router's own owner-or-GM check is the real
     # gate (404 for anyone else), same pattern as pages_viewer/pages_download
     # above; a player must be able to reach these to create/save/edit/delete

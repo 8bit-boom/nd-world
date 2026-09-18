@@ -18,6 +18,7 @@
   </div>
   {% endif %}
 
+  {% if can_edit(request) %}
   <form method="post" action="{% if quest %}/quests/{{ quest.id }}/edit{% else %}/quests/new{% endif %}" id="quest-form">
     <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
       <div class="form-group" style="margin-bottom:.75rem">
@@ -93,6 +94,31 @@
   <form id="del-form" method="post" action="/quests/{{ quest.id }}/delete" style="display:none"></form>
   {% endif %}
 
+  {% else %}
+  {# Read-only view for a player whose world has opened Quests to them —
+     this whole page is otherwise an edit form (there's no separate
+     "view" template), so a non-editor gets a plain rendering instead. #}
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.75rem;font-size:.8rem">
+      <span style="background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.2rem .6rem">{{ quest.status|capitalize }}</span>
+      <span style="background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.2rem .6rem">{{ quest.category|capitalize }}</span>
+      {% for p in parties %}{% if p.id == quest.assigned_party_id %}
+      <span style="background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.2rem .6rem">🛡 {{ p.name }}</span>
+      {% endif %}{% endfor %}
+    </div>
+    {% if quest.summary %}<p style="color:var(--text-dim);margin-bottom:.75rem">{{ quest.summary }}</p>{% endif %}
+    {% if quest.body %}<div class="rendered-md">{{ quest.body|md|safe }}</div>{% endif %}
+  </div>
+  {% if linked_entities %}
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .75rem">Linked Entities</h2>
+    {% for l in linked_entities %}
+    <a href="{{ ('/entity/' + l.entity.id|string)|wq }}" style="display:block;padding:.3rem 0;color:var(--text);font-size:.85rem;text-decoration:none">{{ l.entity.name }}{% if l.role %} <span style="color:var(--text-dim);font-size:.78rem">— {{ l.role }}</span>{% endif %}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endif %}
+
   {% if quest and quest.sub_quests %}
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-top:1.5rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .75rem">Sub-Quests</h2>
@@ -109,6 +135,7 @@
 .link-del { background:none; border:none; color:#c44; font-size:1.1rem; cursor:pointer; padding:0 .1rem; line-height:1; }
 </style>
 
+{% if can_edit(request) %}
 <script>
 const INIT_LINKS = {{ linked_entities | tojson }};
 const ENTITY_NAME_TO_ID = {};
@@ -162,4 +189,5 @@ ndAiAssist('qst', {
   metaSelectors: { name: 'input[name="title"]', summary: 'input[name="summary"]' },
 });
 </script>
+{% endif %}
 {% endblock %}

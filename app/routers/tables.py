@@ -7,7 +7,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, world_can_view_section, world_row_visible
 from ..models import RandomTable, World
 from ..templating import templates
 
@@ -27,8 +27,12 @@ def _slugify(name: str, db: Session) -> str:
 @router.get("/tables", response_class=HTMLResponse)
 def tables_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    if not world_can_view_section(request, world, "tables"):
+        raise HTTPException(403)
     tables = db.query(RandomTable).filter(
-        (RandomTable.world_id.is_(None)) | (RandomTable.world_id == (world.id if world else None))
+        (RandomTable.world_id.is_(None)) | (RandomTable.world_id == world.id)
     ).order_by(RandomTable.category, RandomTable.name).all()
     grouped: dict = {}
     for t in tables:
@@ -113,9 +117,9 @@ def table_delete(table_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/api/tables/{table_id}/roll")
-def table_roll(table_id: int, db: Session = Depends(get_db)):
+def table_roll(table_id: int, request: Request, db: Session = Depends(get_db)):
     tbl = db.query(RandomTable).filter(RandomTable.id == table_id).first()
-    if not tbl:
+    if not tbl or not world_row_visible(request, db, tbl.world_id, "tables"):
         raise HTTPException(404)
     entries = json.loads(tbl.entries_json or "[]")
     if not entries:
