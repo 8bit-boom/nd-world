@@ -4427,18 +4427,34 @@ def _visible_entity_notes(db: Session, entity_id: int, request: Request):
 
 
 def _autolink_name_map(db: Session, world_id: int, request: Request, exclude_entity_id: int | None = None) -> dict:
-    """{entity name: entity id} for every OTHER entity in this world the
+    """{name or alias: entity id} for every OTHER entity in this world the
     current viewer may see — see rendering.autolink_entities, which this
     feeds. Goes through _filter_visible_entities so a hidden entity's name
     (and thus its existence) can never leak to a player just because
     another entity's body happens to mention it. exclude_entity_id leaves
     out the entity whose own body/notes are about to be rendered, so it
-    never links to itself."""
-    q = db.query(Entity.id, Entity.name).filter(Entity.world_id == world_id)
+    never links to itself.
+
+    Entity.aliases (comma-separated, same shape as tags) is included
+    alongside the entity's own name: a full name like "Hunter Edmund Vosk,
+    the Greyfather" only ever matches that exact string, so GM-authored
+    prose/tables that refer to him just as "Edmund Vosk" or "Vosk" would
+    otherwise never link at all — aliases are the GM's own way to register
+    those shorter forms explicitly, same visibility rules as the name
+    itself since they're read off the same (already access-filtered) row."""
+    q = db.query(Entity.id, Entity.name, Entity.aliases).filter(Entity.world_id == world_id)
     if exclude_entity_id is not None:
         q = q.filter(Entity.id != exclude_entity_id)
     q = _filter_visible_entities(q, request)
-    return {name: entity_id for entity_id, name in q.all() if name}
+    names: dict[str, int] = {}
+    for entity_id, name, aliases in q.all():
+        if name:
+            names[name] = entity_id
+        for alias in (aliases or "").split(","):
+            alias = alias.strip()
+            if alias:
+                names[alias] = entity_id
+    return names
 
 
 def _entity_to_markdown(db: Session, entity: Entity, request: Request) -> str:
@@ -4870,7 +4886,7 @@ def new_form(request: Request, kind: str = "character", folder: str = "",
 async def create(
     request: Request,
     kind: str = Form(...), subtype: str = Form(""), name: str = Form(...),
-    folder: str = Form(""), tags: str = Form(""), image_url: str = Form(""),
+    folder: str = Form(""), tags: str = Form(""), aliases: str = Form(""), image_url: str = Form(""),
     image_file: UploadFile = File(None), summary: str = Form(""), body: str = Form(""),
     visibility_mode: str = Form("everyone"),
     allowed_player_ids: List[int] = Form([]),
@@ -4886,7 +4902,7 @@ async def create(
     except Exception:
         custom_fields_json = "{}"
     e = Entity(world_id=world.id, kind=kind, subtype=subtype or None, name=name,
-               folder=folder.strip() or None, tags=tags or None,
+               folder=folder.strip() or None, tags=tags or None, aliases=aliases or None,
                image_url=final_image, summary=summary or None, body=body or None,
                visible_to_players=(visibility_mode == "everyone"),
                template_id=int(template_id) if template_id and template_id.isdigit() else None,
@@ -4922,7 +4938,7 @@ def duplicate_entity(entity_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404)
     clone = Entity(
         world_id=src.world_id, kind=src.kind, subtype=src.subtype, name=f"{src.name} (copy)",
-        folder=src.folder, tags=src.tags, image_url=src.image_url, summary=src.summary,
+        folder=src.folder, tags=src.tags, aliases=src.aliases, image_url=src.image_url, summary=src.summary,
         body=src.body, visible_to_players=src.visible_to_players, template_id=src.template_id,
         custom_fields_json=src.custom_fields_json,
     )
@@ -4966,7 +4982,7 @@ def edit_form(request: Request, entity_id: int, db: Session = Depends(get_db), a
 async def update(
     entity_id: int,
     kind: str = Form(...), subtype: str = Form(""), name: str = Form(...),
-    folder: str = Form(""), tags: str = Form(""), image_url: str = Form(""),
+    folder: str = Form(""), tags: str = Form(""), aliases: str = Form(""), image_url: str = Form(""),
     image_file: UploadFile = File(None), summary: str = Form(""), body: str = Form(""),
     visibility_mode: str = Form("everyone"),
     allowed_player_ids: List[int] = Form([]),
@@ -4984,6 +5000,7 @@ async def update(
     entity.folder = folder.strip() or None
     entity.name = name
     entity.tags = tags or None
+    entity.aliases = aliases or None
     # A new upload or pasted URL replaces the image; the "Remove image" checkbox
     # clears it explicitly; otherwise leave the existing image untouched — the
     # image_url text field is deliberately blank for uploaded images (an internal

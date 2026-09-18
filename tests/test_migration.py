@@ -572,6 +572,48 @@ def test_heals_pre_font_settings_worlds_schema(tmp_path, monkeypatch):
     engine.dispose()
 
 
+def test_heals_pre_aliases_entities_schema(tmp_path, monkeypatch):
+    """An entities table predating aliases (the comma-separated alternate-
+    names field that feeds automatic entity-name linking — see
+    app.main._autolink_name_map) must heal onto a NULL default, not break
+    loading an existing entity."""
+    from app.models import Entity
+
+    db_path = tmp_path / "pre_aliases.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE TABLE entities (id INTEGER PRIMARY KEY, world_id INTEGER NOT NULL DEFAULT 1, "
+            "kind VARCHAR(32) NOT NULL, subtype VARCHAR(64), name VARCHAR(256) NOT NULL, "
+            "folder VARCHAR(256), tags VARCHAR(512), image_url VARCHAR(512), summary VARCHAR(512), "
+            "body TEXT, visible_to_players BOOLEAN DEFAULT 1, template_id INTEGER, "
+            "custom_fields_json TEXT DEFAULT '{}', created_at DATETIME, updated_at DATETIME)"
+        ))
+        conn.execute(text(
+            "INSERT INTO entities (id, world_id, kind, name) VALUES (1, 1, 'character', 'Pre-existing NPC')"
+        ))
+
+    monkeypatch.setattr(database_module, "engine", engine)
+    monkeypatch.setattr(database_module, "SessionLocal", SessionLocal)
+
+    database_module.init_db()
+
+    with engine.begin() as conn:
+        entity_cols = {r[1] for r in conn.execute(text("PRAGMA table_info(entities)")).fetchall()}
+    assert "aliases" in entity_cols
+
+    db = SessionLocal()
+    try:
+        e = db.get(Entity, 1)
+        assert e.aliases is None
+    finally:
+        db.close()
+
+    engine.dispose()
+
+
 def test_heals_pre_nested_albums_schema(tmp_path, monkeypatch):
     """An image_albums table predating parent_id (added so an album can
     nest inside another as a folder) must heal onto a NULL (top-level)

@@ -338,3 +338,76 @@ def test_private_note_does_not_autolink_hidden_entity_for_player(client, seed):
     assert view.status_code == 200
     assert f'href="/entity/{secret_id}"' not in view.text
     assert "auto-entity-link" not in view.text
+
+
+# ── Entity.aliases — short/alternate names also feed autolinking ───────────
+
+def test_autolink_matches_alias_when_full_name_is_not_used(client, seed):
+    # A GM-authored table/prose commonly refers to a character by a short
+    # form ("Edmund Vosk") even though the entity's registered name carries
+    # a title and epithet ("Hunter Edmund Vosk, the Greyfather") — before
+    # aliases existed, only the exact full name ever matched.
+    vosk_id = _add_entity(
+        seed.world_a.id, name="Hunter Edmund Vosk, the Greyfather",
+        aliases="Edmund Vosk, Vosk", visible_to_players=True,
+    )
+    loc_id = _add_entity(seed.world_a.id, name="Hunter's Hall", kind="location",
+                          body="Edmund Vosk runs the place.", visible_to_players=True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/entity/{loc_id}")
+    assert r.status_code == 200
+    assert f'<a href="/entity/{vosk_id}" class="auto-entity-link">Edmund Vosk</a>' in r.text
+
+
+def test_autolink_still_matches_full_name_alongside_aliases(client, seed):
+    vosk_id = _add_entity(
+        seed.world_a.id, name="Hunter Edmund Vosk, the Greyfather",
+        aliases="Edmund Vosk, Vosk", visible_to_players=True,
+    )
+    loc_id = _add_entity(
+        seed.world_a.id, name="Hunter's Hall", kind="location",
+        body="Hunter Edmund Vosk, the Greyfather runs the place.", visible_to_players=True,
+    )
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/entity/{loc_id}")
+    assert f'<a href="/entity/{vosk_id}" class="auto-entity-link">Hunter Edmund Vosk, the Greyfather</a>' in r.text
+
+
+def test_player_does_not_get_autolink_via_alias_of_hidden_entity(client, seed):
+    secret_id = _add_entity(
+        seed.world_a.id, name="Secret Villain", aliases="the Whisperer", visible_to_players=False,
+    )
+    loc_id = _add_entity(seed.world_a.id, name="Dark Tower", kind="location",
+                          body="the Whisperer lives here.", visible_to_players=True)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/entity/{loc_id}")
+    assert r.status_code == 200
+    assert f'href="/entity/{secret_id}"' not in r.text
+    assert "auto-entity-link" not in r.text
+
+
+def test_entity_form_renders_and_saves_aliases(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(
+        "/new",
+        data={"kind": "character", "name": "Test NPC", "aliases": "Testy, the Test"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    db = SessionLocal()
+    try:
+        e = db.query(Entity).filter(Entity.name == "Test NPC").first()
+        assert e.aliases == "Testy, the Test"
+        eid = e.id
+    finally:
+        db.close()
+
+    r = client.get(f"/entity/{eid}/edit")
+    assert r.status_code == 200
+    assert 'name="aliases"' in r.text
+    assert 'value="Testy, the Test"' in r.text

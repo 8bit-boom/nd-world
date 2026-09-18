@@ -416,6 +416,14 @@ class Entity(Base):
     name = Column(String(256), nullable=False)
     folder = Column(String(256), nullable=True, index=True)
     tags = Column(String(512), nullable=True)
+    # Comma-separated alternate names/short forms — same shape as tags. Feeds
+    # rendering.autolink_entities alongside `name` (app.main._autolink_name_map)
+    # so a full name like "Hunter Edmund Vosk, the Greyfather" still
+    # auto-links when GM-authored prose/tables refer to him just as "Edmund
+    # Vosk" or "Vosk" — autolinking only ever matched the literal `name`
+    # field before this existed, which silently missed every shortened
+    # reference to an entity whose registered name carries a title/epithet.
+    aliases = Column(String(512), nullable=True)
     image_url = Column(String(512), nullable=True)
     summary = Column(String(512), nullable=True)
     body = Column(Text, nullable=True)

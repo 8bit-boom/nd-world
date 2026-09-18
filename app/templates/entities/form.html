@@ -83,6 +83,12 @@
     </div>
 
     <div class="form-group">
+      <label>Aliases <small>(comma-separated)</small></label>
+      <input name="aliases" value="{{ entity.aliases if entity else '' }}" placeholder="Vosk, Edmund Vosk, the Greyfather"/>
+      <p style="color:var(--text-dim);font-size:.78rem;margin-top:.3rem">Short or alternate names that should also auto-link to this entity when they appear in other entities' text — useful when this entity's full name carries a title or epithet (e.g. "Hunter Edmund Vosk, the Greyfather") that GM-authored prose rarely spells out in full.</p>
+    </div>
+
+    <div class="form-group">
       {# The template PICKER is content tooling (assistants may use it), but
          "manage templates" links to /entity-templates — template management
          stays GM-only — so the link itself is only rendered for the GM. #}
