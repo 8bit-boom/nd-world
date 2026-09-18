@@ -6,7 +6,7 @@ function) and app.main's detail() route (the viewer-visibility-aware
 wiring — see _autolink_name_map).
 """
 from app.database import SessionLocal
-from app.models import Entity, EntityNote, World
+from app.models import Entity, EntityNote, World, WorldMembership
 
 from app.rendering import autolink_entities, render_md
 
@@ -19,6 +19,23 @@ def _set_world(world_id, **kw):
         w = db.get(World, world_id)
         for k, v in kw.items():
             setattr(w, k, v)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _make_assistant(seed, player):
+    """Flip `player`'s membership in world_a to role="assistant" — same
+    helper shape as test_gm_assistant.py's own. An assistant may edit world
+    content but its VISIBILITY stays keyed on is_gm (False for an
+    assistant), so it should see exactly what a regular player sees here —
+    never a hidden entity's autolink just because it also has edit rights."""
+    db = SessionLocal()
+    try:
+        m = db.query(WorldMembership).filter(
+            WorldMembership.world_id == seed.world_a.id, WorldMembership.user_id == player.id
+        ).first()
+        m.role = "assistant"
         db.commit()
     finally:
         db.close()
@@ -198,6 +215,63 @@ def test_player_gets_autolink_to_hidden_entity_specifically_shared_with_them(cli
     r = client.get(f"/entity/{loc_id}")
     assert r.status_code == 200
     assert f'<a href="/entity/{secret_id}" class="auto-entity-link">Secret Contact</a>' in r.text
+
+
+def test_assistant_does_not_get_autolink_to_hidden_entity(client, seed):
+    # A GM-Assistant (WorldMembership.role == "assistant") may edit world
+    # content, but is_gm is still False for them — visibility filtering
+    # (including autolinking) must treat them exactly like a regular
+    # player, never leaking a hidden entity's existence just because they
+    # also happen to have content-editing rights.
+    _make_assistant(seed, seed.player_a)
+    secret_id = _add_entity(seed.world_a.id, name="Secret Villain", visible_to_players=False)
+    loc_id = _add_entity(seed.world_a.id, name="Dark Tower", kind="location",
+                          body="Secret Villain lives here.", visible_to_players=True)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/entity/{loc_id}")
+    assert r.status_code == 200
+    assert f'href="/entity/{secret_id}"' not in r.text
+    assert "auto-entity-link" not in r.text
+
+
+def test_assistant_gets_autolink_to_entity_specifically_shared_with_them(client, seed):
+    # The flip side: an assistant IS a player for visibility purposes, so a
+    # hidden entity specifically shared with them (entity_player_access)
+    # must still autolink, same as for any other player with that grant.
+    from app.models import entity_player_access
+
+    _make_assistant(seed, seed.player_a)
+    secret_id = _add_entity(seed.world_a.id, name="Secret Contact", visible_to_players=False)
+    db = SessionLocal()
+    try:
+        db.execute(entity_player_access.insert().values(entity_id=secret_id, user_id=seed.player_a.id))
+        db.commit()
+    finally:
+        db.close()
+    loc_id = _add_entity(seed.world_a.id, name="Safehouse", kind="location",
+                          body="Secret Contact meets you here.", visible_to_players=True)
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/entity/{loc_id}")
+    assert r.status_code == 200
+    assert f'<a href="/entity/{secret_id}" class="auto-entity-link">Secret Contact</a>' in r.text
+
+
+def test_hover_preview_404s_for_hidden_entity_not_shared_with_player(client, seed):
+    # If a GM hand-writes a markdown link straight to a hidden entity's id
+    # (bypassing autolinking entirely — [Foo](/entity/999) works regardless
+    # of what generated the href), the hover-preview endpoint every
+    # /entity/ link on the page wires up (base.html) must still 404 for a
+    # player without access — the same _entity_view_gate the full detail
+    # page itself uses, so a hand-typed or copy-pasted link can't leak a
+    # name/summary/image through the preview popup either.
+    secret_id = _add_entity(seed.world_a.id, name="Secret Villain", visible_to_players=False)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/api/entity/{secret_id}/preview")
+    assert r.status_code == 404
 
 
 def test_autolink_does_not_cross_worlds(client, seed):
