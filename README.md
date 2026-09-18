@@ -642,8 +642,25 @@ retain before older ones are pruned (default 14).
 
 ### Restoring from a backup
 
-Restore is deliberately manual — there's no in-app "restore" button that could overwrite
-a live database by accident.
+**In-app (recommended):** from the Export & Backup hub, use **♻ Restore from Full
+Backup** — upload a previously downloaded Full Backup zip and type the confirmation
+text shown (the active world's name, since Full Backup spans every world on the
+instance) to stage it. Staging only extracts and validates the zip; nothing is
+applied yet, and the app keeps running normally. The next time the container
+restarts, the staged backup is swapped in automatically — before the app opens its
+first connection to the database — the current `world.db` is renamed aside first
+(never deleted), and `uploads/`/`maps/` are merged (files from the backup overwrite
+same-named files, nothing already on disk is deleted). Restart to actually apply a
+staged restore:
+
+```bash
+docker compose restart nd-world
+```
+
+A banner on the Export & Backup hub shows when a restore is staged and waiting, with
+a button to cancel it before restarting if you change your mind.
+
+**Manual (fallback — use if you can't reach the app, e.g. it's already down):**
 
 1. Stop the container: `docker compose down` (or `docker stop nd-world`).
 2. Unzip the backup and replace the contents of the `/data` volume with it:

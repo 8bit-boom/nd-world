@@ -837,6 +837,8 @@ jobs](DEPLOYMENT.md#updating-without-losing-in-flight-jobs) for what
 | Method | Path | Access | Description |
 |---|---|---|---|
 | GET | `/admin/backup.zip` | GM | Streams a full-fidelity backup zip: a consistent `VACUUM INTO` snapshot of `world.db`, all uploads, all map JSON, and a row-count manifest. Safe to run against a live database. |
+| POST | `/admin/backup/restore` | GM | Uploads a Full Backup zip and stages it for restore (`confirm_name` form field must match the active world's name, or "RESTORE" with none active). Validates the zip and the embedded `world.db` but doesn't touch the live database — applied automatically on the next process restart, before its first DB connection (`app.database._apply_staged_restore`). |
+| POST | `/admin/backup/restore/cancel` | GM | Clears a staged restore without applying it. |
 | GET | `/api/backups` | GM | Lists scheduled DB snapshots (`ND_BACKUP_DIR`) — 400 if scheduled backups aren't configured. |
 | POST | `/api/backups/run` | GM | Takes a `VACUUM INTO` snapshot right now and prunes to `ND_BACKUP_KEEP` — same primitive the optional scheduler thread runs on `ND_BACKUP_INTERVAL_SECONDS`. |
 | POST | `/worlds/{world_id}/nav-menus/edit` | GM | Saves this world's customized top-nav menu grouping (Settings > Navigation). |

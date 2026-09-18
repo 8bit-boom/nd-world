@@ -29,7 +29,7 @@ from . import deps
 from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
 from . import streaming_export as _streaming_export
-from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache
+from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache, RESTORE_STAGING_DIR
 from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content
 from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html
@@ -3829,8 +3829,17 @@ def board_export(slug: str, request: Request, db: Session = Depends(get_db), act
 @app.get("/export", response_class=HTMLResponse)
 def export_hub(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    staged_restore_manifest = None
+    staged_manifest_path = RESTORE_STAGING_DIR / "manifest.json"
+    if staged_manifest_path.exists():
+        try:
+            staged_restore_manifest = json.loads(staged_manifest_path.read_text())
+        except (OSError, ValueError):
+            staged_restore_manifest = {}
     return templates.TemplateResponse("export_hub.html", {
         "request": request, "world": world, "worlds": worlds,
+        "staged_restore_manifest": staged_restore_manifest,
+        "restore_confirm_name": world.name if world else "RESTORE",
     })
 
 @app.get("/export/book.zip")
@@ -4109,6 +4118,89 @@ def admin_backup(db: Session = Depends(get_db)):
     return _streaming_export.stream_download(
         _build, media_type="application/zip", filename=f"nd-world-backup-{stamp}.zip",
     )
+
+
+@app.post("/admin/backup/restore")
+async def admin_backup_restore_stage(
+    request: Request, file: UploadFile = File(...), confirm_name: str = Form(...),
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    # Not in _is_player_safe, so this is already GM-only like admin_backup
+    # itself. Doesn't touch the live database at all — swapping world.db
+    # out from under an already-open connection pool while the app is
+    # serving traffic could leave some in-flight requests reading the old
+    # file and some the new one. Instead this validates the upload and
+    # extracts it to RESTORE_STAGING_DIR; app.database._apply_staged_
+    # restore() applies it the next time the process starts, before this
+    # process's own first connection to world.db (see that function's
+    # docstring for why that ordering matters).
+    import sqlite3
+    import tempfile
+    import zipfile
+
+    world, worlds = get_world_ctx(request, db, active_world)
+    # Full Backup spans every world on the instance, so there's no single
+    # obvious name to confirm against — the currently active world (shown
+    # right in the nav the GM is looking at) is just deliberate friction
+    # against fat-fingering an upload here, the same purpose a delete
+    # confirmation serves elsewhere in this app.
+    expected_name = world.name if world else "RESTORE"
+    if confirm_name.strip() != expected_name:
+        raise HTTPException(400, f'Type "{expected_name}" exactly to confirm.')
+
+    raw = await file.read()
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw))
+    except zipfile.BadZipFile:
+        raise HTTPException(400, "Not a valid zip file")
+    names = zf.namelist()
+    if "world.db" not in names or "manifest.json" not in names:
+        raise HTTPException(400, "Doesn't look like a Full Backup — missing world.db/manifest.json")
+
+    # Sanity-check the embedded database now — a corrupt/garbage file
+    # would otherwise only be discovered on the NEXT server restart, when
+    # it's too late to back out cleanly.
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        tmp.write(zf.read("world.db"))
+        tmp_path = Path(tmp.name)
+    try:
+        test_conn = sqlite3.connect(str(tmp_path))
+        try:
+            test_conn.execute("SELECT COUNT(*) FROM worlds").fetchone()
+        finally:
+            test_conn.close()
+    except sqlite3.Error:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(400, "world.db inside the zip isn't a valid nd-world database")
+
+    if RESTORE_STAGING_DIR.exists():
+        shutil.rmtree(RESTORE_STAGING_DIR)
+    RESTORE_STAGING_DIR.mkdir(parents=True)
+    shutil.move(str(tmp_path), str(RESTORE_STAGING_DIR / "world.db"))
+    resolved_staging = RESTORE_STAGING_DIR.resolve()
+    for name in names:
+        if name in ("world.db", "manifest.json") or name.endswith("/"):
+            continue
+        # A crafted zip entry with ".." components could otherwise escape
+        # RESTORE_STAGING_DIR — ZipFile itself only sanitizes a leading
+        # "/" or drive letter, not ".." segments inside the path.
+        target = (RESTORE_STAGING_DIR / name).resolve()
+        if not target.is_relative_to(resolved_staging):
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(zf.read(name))
+    (RESTORE_STAGING_DIR / "manifest.json").write_bytes(zf.read("manifest.json"))
+
+    return RedirectResponse("/export?restore_staged=1", status_code=303)
+
+
+@app.post("/admin/backup/restore/cancel")
+def admin_backup_restore_cancel():
+    # Same GM-only gate as admin_backup_restore_stage above.
+    if RESTORE_STAGING_DIR.exists():
+        shutil.rmtree(RESTORE_STAGING_DIR)
+    return RedirectResponse("/export", status_code=303)
+
 
 # ── List ──────────────────────────────────────────────────────────────────────
 

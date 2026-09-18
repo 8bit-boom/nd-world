@@ -86,6 +86,8 @@ def client():
     Base.metadata.drop_all(bind=engine)
     from app.main import UPLOADS_DIR
     shutil.rmtree(UPLOADS_DIR, ignore_errors=True)
+    from app.database import RESTORE_STAGING_DIR
+    shutil.rmtree(RESTORE_STAGING_DIR, ignore_errors=True)
     # Dropping/recreating the tables above restarts autoincrement ids from 1
     # every test, so a user id gets reused across tests — a process-local,
     # user-id-keyed dict like app.deps._llm_cooldowns would otherwise leak a

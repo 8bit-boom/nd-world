@@ -11,6 +11,12 @@
   </div>
   {% endif %}
 
+  {% if request.query_params.get('restore_staged') %}
+  <div class="import-notice">
+    Restore staged — restart the server to apply it (see the warning below).
+  </div>
+  {% endif %}
+
   <p style="font-size:.85rem;color:var(--text-dim);margin-bottom:1.4rem">
     Six different things, each for a different job — pick the one that matches what you're
     actually trying to do.
@@ -27,6 +33,45 @@
     </p>
     <a href="/admin/backup.zip" class="btn-primary">⬇ Download Full Backup</a>
   </div>
+
+  {% if staged_restore_manifest %}
+  <div class="export-option" style="border-color:var(--danger, #d94848)">
+    <h2>⚠ Restore staged — restart required</h2>
+    <p>
+      A Full Backup has been staged for restore
+      {% if staged_restore_manifest.get('created_at') %}(backup created {{ staged_restore_manifest['created_at'] }}){% endif %}.
+      It will <strong>overwrite the live database</strong> — every world, not just this one —
+      the next time the server restarts. Nothing has been applied yet.
+    </p>
+    {% if staged_restore_manifest.get('tables') %}
+    <p style="font-size:.78rem">
+      Backup contents:
+      {% for k, v in staged_restore_manifest['tables'].items() %}{{ k }}: {{ v }}{% if not loop.last %}, {% endif %}{% endfor %}
+    </p>
+    {% endif %}
+    <form action="/admin/backup/restore/cancel" method="post" style="display:inline">
+      <button type="submit" class="btn-cancel">Cancel staged restore</button>
+    </form>
+  </div>
+  {% else %}
+  <div class="export-option">
+    <h2>♻ Restore from Full Backup</h2>
+    <p>
+      Upload a previously downloaded Full Backup zip. It's <strong>staged only</strong> — nothing
+      is applied until the server is next restarted, and the current database is backed up
+      aside automatically before the swap. Type
+      <code>{{ restore_confirm_name }}</code> below to confirm.
+    </p>
+    <form action="/admin/backup/restore" method="post" enctype="multipart/form-data" class="import-form">
+      <div class="form-dropzone" data-dropzone style="padding:.3rem .6rem;flex:1;min-width:200px">
+        <input type="file" name="file" accept=".zip" required/>
+      </div>
+      <input type="text" name="confirm_name" placeholder='Type "{{ restore_confirm_name }}" to confirm' required
+             style="flex:1;min-width:200px" />
+      <button type="submit" class="btn-save">Stage restore</button>
+    </form>
+  </div>
+  {% endif %}
 
   {% if not world %}
   <p style="color:var(--text-dim);font-size:.85rem;margin-top:1.4rem">

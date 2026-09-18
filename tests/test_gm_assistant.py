@@ -43,6 +43,8 @@ CASES = [
     ("GET", "/export", False),
     ("GET", "/export/book.zip", False),
     ("GET", "/admin/backup.zip", False),
+    ("POST", "/admin/backup/restore", False),
+    ("POST", "/admin/backup/restore/cancel", False),
     ("GET", "/api/backups", False),
     ("GET", "/ai", False),  # the GM World Chat page
     ("POST", "/api/ai/chat", False),

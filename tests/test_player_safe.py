@@ -51,6 +51,8 @@ CASES = [
     ("GET", "/export", False),
     ("GET", "/export/rules-and-notes.md", False),
     ("GET", "/export/foundry.json", False),
+    ("POST", "/admin/backup/restore", False),
+    ("POST", "/admin/backup/restore/cancel", False),
     # The dedicated GM "/ai" World Chat page (quick prompts, image gen, etc.)
     # stays GM-only — only the shared streaming endpoint it and the entity
     # panel both call is opened up, gated per-world by players_can_ask_ai.

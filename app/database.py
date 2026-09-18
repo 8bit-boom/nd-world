@@ -1,7 +1,9 @@
 import json
 import logging
 import os
+import shutil
 import time
+from pathlib import Path
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 from .models import (
@@ -431,6 +433,14 @@ _HITM_FIELDS = [
 DB_PATH = os.environ.get("DB_PATH", "/data/world.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 
+# Where app.main's POST /admin/backup/restore extracts an uploaded Full
+# Backup zip to. Staging (rather than swapping the live database in place
+# from inside a running request) exists because this app never opens more
+# than one connection to world.db at a time from its own code, but a
+# StreamingResponse's background thread and other in-flight requests could
+# easily be mid-read when a restore lands — see _apply_staged_restore.
+RESTORE_STAGING_DIR = Path(DB_PATH).parent / "restore_staging"
+
 
 @event.listens_for(engine, "connect")
 def _set_sqlite_pragma(dbapi_connection, connection_record):
@@ -457,7 +467,65 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+
+def _apply_staged_restore():
+    """Applies a Full Backup restore staged by app.main's
+    POST /admin/backup/restore, if one is waiting — called as the very
+    first thing init_db() does, before Base.metadata.create_all(bind=
+    engine) or anything else touches `engine`, so this is guaranteed to
+    run before this process's first connection to world.db. Doing this
+    later — say, from inside a request handler while the app is serving
+    traffic — risks a connection already open against the old file (WAL
+    mode keeps its own in-memory view) while a new one opens the
+    replacement, i.e. some requests would see pre-restore data and some
+    post-restore, mid-swap.
+
+    The current world.db is renamed aside (never deleted) so a bad
+    restore is still recoverable without another backup. The swap itself
+    is an atomic rename (os.replace), not an in-place byte copy, so
+    there's never a moment where world.db exists but is half-written —
+    and any leftover -wal/-shm sidecar files for the OLD database are
+    removed, since they're keyed to that file's own change-counter and
+    would otherwise sit next to the replacement unable to apply. uploads/
+    and maps/ are merged — files from the staged backup overwrite
+    same-named files, but nothing already on disk is ever deleted — since
+    the goal is to bring the backup's referenced media back, not to wipe
+    files an entity created after the backup was taken might still
+    reference.
+    """
+    staged_db = RESTORE_STAGING_DIR / "world.db"
+    if not staged_db.exists():
+        return
+    _log.warning("Applying a staged Full Backup restore from %s", RESTORE_STAGING_DIR)
+    db_path = Path(DB_PATH)
+    if db_path.exists():
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        aside = db_path.parent / f"{db_path.name}.pre-restore-{stamp}"
+        shutil.copy2(db_path, aside)
+        _log.warning("Pre-restore database backed up to %s", aside)
+    os.replace(staged_db, db_path)
+    for ext in ("-wal", "-shm"):
+        sidecar = db_path.parent / (db_path.name + ext)
+        sidecar.unlink(missing_ok=True)
+
+    for subdir in ("uploads", "maps"):
+        staged_dir = RESTORE_STAGING_DIR / subdir
+        if not staged_dir.exists():
+            continue
+        live_dir = db_path.parent / subdir
+        for f in staged_dir.rglob("*"):
+            if not f.is_file():
+                continue
+            dest = live_dir / f.relative_to(staged_dir)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, dest)
+
+    shutil.rmtree(RESTORE_STAGING_DIR, ignore_errors=True)
+    _log.warning("Full Backup restore applied.")
+
+
 def init_db():
+    _apply_staged_restore()
     Base.metadata.create_all(bind=engine)
     try:
         _migrate()
