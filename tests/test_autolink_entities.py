@@ -176,6 +176,30 @@ def test_gm_does_get_autolink_to_hidden_entity(client, seed):
     assert f'<a href="/entity/{secret_id}" class="auto-entity-link">Secret Villain</a>' in r.text
 
 
+def test_player_gets_autolink_to_hidden_entity_specifically_shared_with_them(client, seed):
+    # A hidden entity a GM has shared with one specific player (Entity's own
+    # per-player access grant, entity_player_access — distinct from the
+    # world-wide visible_to_players flag) must still autolink for that
+    # player, same as any other entity they can actually open.
+    from app.models import entity_player_access
+
+    secret_id = _add_entity(seed.world_a.id, name="Secret Contact", visible_to_players=False)
+    db = SessionLocal()
+    try:
+        db.execute(entity_player_access.insert().values(entity_id=secret_id, user_id=seed.player_a.id))
+        db.commit()
+    finally:
+        db.close()
+    loc_id = _add_entity(seed.world_a.id, name="Safehouse", kind="location",
+                          body="Secret Contact meets you here.", visible_to_players=True)
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/entity/{loc_id}")
+    assert r.status_code == 200
+    assert f'<a href="/entity/{secret_id}" class="auto-entity-link">Secret Contact</a>' in r.text
+
+
 def test_autolink_does_not_cross_worlds(client, seed):
     _add_entity(seed.world_b.id, name="Bob", visible_to_players=True)
     loc_id = _add_entity(seed.world_a.id, name="Some Place", kind="location",
