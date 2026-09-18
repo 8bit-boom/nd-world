@@ -7,10 +7,14 @@ value instead of trusting the submitted form value; world.font_size (a
 75-150 <input type="range"> on the edit page) is clamped into that range
 for the same reason, since it's rendered the same raw way.
 """
+from pathlib import Path
+
 from app.database import SessionLocal
 from app.models import World
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+
+_STYLE_CSS = (Path(__file__).parent.parent / "static" / "style.css").read_text()
 
 
 def _upload_theme(client, world_id, payload):
@@ -266,3 +270,22 @@ def test_font_visible_to_players_reading_the_world(client, seed):
     assert r.status_code == 200
     assert "--font: 'Orbitron', sans-serif !important" in r.text
     assert "--font-size-base: 115% !important" in r.text
+
+
+# ── body's own font-size must be root-relative, not a fixed px ─────────────
+#
+# --font-size-base only ever changes html's own font-size (see the html{}
+# rule in style.css) — anything that doesn't set its OWN rem-based size
+# just inherits body's computed size instead of recomputing against the
+# new root, so a literal `font-size: 14px` on body would silently opt
+# nearly all plain paragraph text (headings/tables already use rem and
+# scale on their own) out of both this feature AND the pre-existing
+# personal UI-scale zoom, no matter what either one is set to. This was
+# exactly why the Rules page (almost entirely plain body text) visibly
+# didn't respond to a font-size change even though the CSS variable
+# itself was being emitted correctly.
+
+def test_body_font_size_is_root_relative_not_fixed_px():
+    body_block = _STYLE_CSS.split("\nbody {", 1)[1].split("}", 1)[0]
+    assert "font-size: 0.875rem" in body_block
+    assert "font-size: 14px" not in body_block
