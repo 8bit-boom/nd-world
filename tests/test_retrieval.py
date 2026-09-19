@@ -16,8 +16,15 @@ from datetime import datetime, timedelta
 
 from app import audio_jobs
 from app.database import SessionLocal
-from app.models import Entity, User, entity_player_access
-from app.retrieval import find_relevant_entities, format_context_from_entities
+from app.models import Entity, User, World, entity_player_access
+from app.retrieval import (
+    _rules_sections,
+    find_relevant_entities,
+    format_context_from_entities,
+    rules_context,
+    smart_world_context,
+    world_rules_markdown,
+)
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -282,3 +289,160 @@ def test_build_rag_context_notes_topup_prefers_most_recently_updated(client, see
     )
     assert "Zebra Note" in context
     assert "Ancient Note" not in context
+
+
+# ── Rules RAG: world_rules_markdown / _rules_sections / rules_context ───────
+
+def _set_world_rules(world_id, rules_md):
+    db = SessionLocal()
+    try:
+        w = db.get(World, world_id)
+        w.rules_md = rules_md
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_world_rules_markdown_uses_world_own_rules(client, seed):
+    _set_world_rules(seed.world_a.id, "# My Homebrew\n\nCustom content here.")
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        assert world_rules_markdown(w) == "# My Homebrew\n\nCustom content here."
+    finally:
+        db.close()
+
+
+def test_world_rules_markdown_falls_back_to_bundled_core_rules(client, seed):
+    """Blank/unset rules_md (the default) falls back to the bundled
+    core_rules.md, same as app.main._world_rules_markdown always has."""
+    _set_world_rules(seed.world_a.id, "")
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        md = world_rules_markdown(w)
+        assert md  # the bundled file is non-empty
+        assert "My Homebrew" not in md
+    finally:
+        db.close()
+
+
+def test_rules_sections_splits_on_headings():
+    md = "# Title\n\nIntro text.\n\n## Armor\n\nChainmail costs 120 crowns.\n\n## Weapons\n\nA sword costs 15 crowns."
+    sections = _rules_sections(md)
+    headings = [h for h, _body in sections]
+    assert "Title" in headings
+    assert "Armor" in headings
+    assert "Weapons" in headings
+    armor_body = dict(sections)["Armor"]
+    assert "120 crowns" in armor_body
+
+
+def test_rules_sections_keeps_text_before_first_heading_as_introduction():
+    md = "Some preamble with no heading yet.\n\n# Real Heading\n\nBody."
+    sections = _rules_sections(md)
+    assert sections[0] == ("Introduction", "Some preamble with no heading yet.")
+
+
+def test_rules_sections_no_headings_returns_one_section():
+    sections = _rules_sections("Just plain text, no markdown headings at all.")
+    assert sections == [("Rules", "Just plain text, no markdown headings at all.")]
+
+
+def test_rules_sections_empty_input():
+    assert _rules_sections("") == []
+
+
+def test_rules_context_finds_matching_section(client, seed):
+    _set_world_rules(seed.world_a.id, "## Armor Prices\n\nChainmail armor costs 120 crowns and grants +3 AC.")
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        ctx = rules_context(w, "how much does chainmail armor cost")
+        assert "Armor Prices" in ctx
+        assert "120 crowns" in ctx
+    finally:
+        db.close()
+
+
+def test_rules_context_empty_when_nothing_matches(client, seed):
+    _set_world_rules(seed.world_a.id, "## Combat\n\nRoll a d20 to attack.")
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        assert rules_context(w, "completely unrelated wizzlefrobnicator query") == ""
+    finally:
+        db.close()
+
+
+def test_rules_context_respects_limit(client, seed):
+    _set_world_rules(seed.world_a.id, "## Armor\n\nArmor armor armor costs money.\n\n## Weapons\n\nA weapon, armor-adjacent, costs less.")
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        ctx = rules_context(w, "armor", limit=1)
+        # Only the higher-scoring section (more "armor" occurrences) should appear.
+        assert "Armor" in ctx
+        assert "Weapons" not in ctx
+    finally:
+        db.close()
+
+
+def test_rules_context_zero_limit_disabled(client, seed):
+    _set_world_rules(seed.world_a.id, "## Armor\n\nChainmail costs 120 crowns.")
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        assert rules_context(w, "chainmail armor", limit=0) == ""
+    finally:
+        db.close()
+
+
+# ── smart_world_context now also folds in Rules ─────────────────────────────
+
+def test_smart_world_context_includes_rules_when_relevant(client, seed):
+    """The original motivating bug: a price that only ever lived in Rules
+    prose (never as an Entity) is now actually findable."""
+    _set_world_rules(seed.world_a.id, "## Armor Prices\n\nChainmail armor costs 120 crowns.")
+    db = SessionLocal()
+    try:
+        context, non_notes, notes = smart_world_context(db, seed.world_a.id, "chainmail armor cost")
+        assert "120 crowns" in context
+        # Rules text isn't an Entity — it must never show up in these lists,
+        # which the RAG-transparency panel renders as pinnable chips.
+        assert non_notes == []
+        assert notes == []
+    finally:
+        db.close()
+
+
+def test_smart_world_context_rules_runs_unfiltered_for_players_too(client, seed):
+    """Rules has no per-row visibility to filter — it's already visible to
+    every world member regardless of role, same as GET /rules itself — so
+    a non-GM `user` must still get the Rules match."""
+    _set_world_rules(seed.world_a.id, "## Armor Prices\n\nChainmail armor costs 120 crowns.")
+    db = SessionLocal()
+    try:
+        player = db.get(User, seed.player_a.id)
+        context, _non_notes, _notes = smart_world_context(db, seed.world_a.id, "chainmail armor cost", user=player)
+        assert "120 crowns" in context
+    finally:
+        db.close()
+
+
+# ── End-to-end: the player-facing route now surfaces Rules content ─────────
+
+def test_world_context_player_route_surfaces_rules_content(client, seed):
+    _set_world_rules(seed.world_a.id, "## Armor Prices\n\nChainmail armor costs 120 crowns.")
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.players_can_use_ai_chat = True
+        db.commit()
+    finally:
+        db.close()
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/world-context-player", json={"query": "how much does chainmail armor cost"})
+    assert r.status_code == 200
+    assert "120 crowns" in r.json()["context"]

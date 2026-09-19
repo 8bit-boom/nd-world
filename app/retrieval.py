@@ -11,12 +11,111 @@ which imports nothing from main/audio_jobs/any router, so everyone can
 import it directly and normally instead.
 """
 import re
+from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
-from .models import Entity, entity_player_access
+from .models import Entity, World, entity_player_access
+
+_CORE_RULES_PATH = Path(__file__).parent / "core_rules.md"
+
+
+def world_rules_markdown(world) -> str:
+    """This world's own rules if the GM has set any, else the bundled N&D
+    core rules — the same fallback app.main._world_rules_markdown uses for
+    every human-facing Rules page/download (that function delegates here
+    instead of keeping a second copy, now that a RAG caller in this leaf
+    module needs it too). Unlike that version, this one does NOT strip
+    legacy doc-export `<a name=...>` anchors — irrelevant noise for a
+    plain-text RAG excerpt that's never rendered as HTML."""
+    if world and (getattr(world, "rules_md", None) or "").strip():
+        return world.rules_md
+    return _CORE_RULES_PATH.read_text(encoding="utf-8", errors="ignore") if _CORE_RULES_PATH.exists() else ""
+
+
+_MD_HEADING_RE = re.compile(r'^(#{1,3})[ \t]+(.+?)[ \t]*$', re.MULTILINE)
+
+# Independent of EXCERPT_CHARS/EXCERPT_TOTAL_BUDGET above (those are
+# per-entity-body budgets) — Rules is one document searched as a whole, so
+# it gets its own, deliberately small budget: a couple of matching
+# sections is plenty to answer "how much does X cost", and a GM's full
+# rules document can be very long.
+RULES_EXCERPT_CHARS = 1200
+RULES_EXCERPT_TOTAL_BUDGET = 2000
+RULES_SECTION_LIMIT = 2
+
+
+def _rules_sections(markdown: str) -> list:
+    """Splits raw rules markdown into (heading, body) pairs at H1/H2/H3
+    boundaries. Rules' own convention (see app.main._rules_toc) reserves a
+    bare H1 for the page's own title and never uses one in the body, but a
+    GM's own uploaded rules_md isn't guaranteed to follow that, so this
+    splits on all three rather than assuming. Text before the first
+    heading (if any) is kept under a synthetic "Introduction" heading
+    rather than silently dropped; a document with no headings at all comes
+    back as one single "Rules" section."""
+    if not markdown:
+        return []
+    matches = list(_MD_HEADING_RE.finditer(markdown))
+    if not matches:
+        return [("Rules", markdown.strip())] if markdown.strip() else []
+    sections = []
+    if matches[0].start() > 0:
+        intro = markdown[:matches[0].start()].strip()
+        if intro:
+            sections.append(("Introduction", intro))
+    for i, m in enumerate(matches):
+        heading = m.group(2).strip()
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(markdown)
+        body = markdown[start:end].strip()
+        if body:
+            sections.append((heading, body))
+    return sections
+
+
+def rules_context(world, query: str, limit: int = RULES_SECTION_LIMIT) -> str:
+    """Keyword-relevance search over `world`'s Rules text (the GM's own
+    rules_md, or the bundled core rules) — same word-tokenization
+    find_relevant_entities uses (words > 3 chars), scored by raw
+    occurrence count across each section's heading+body, highest first.
+
+    This closes a real gap: neither this module's own retrieval nor
+    Chronicler's (app.routers.chronicler.build_chronicler_system_prompt)
+    ever read World.rules_md at all — a player asking "how much does
+    armor cost" got no answer whenever that price only ever lived in Rules
+    prose, never in an Entity. Returns "" when nothing scores above zero,
+    so an unrelated question doesn't pad every prompt with a generic rules
+    dump — same "only when it actually matched" posture entity retrieval
+    already has."""
+    if limit <= 0:
+        return ""
+    words = [w for w in re.split(r'\W+', query.lower()) if len(w) > 3]
+    if not words:
+        return ""
+    markdown = world_rules_markdown(world)
+    if not markdown:
+        return ""
+    scored = []
+    for heading, body in _rules_sections(markdown):
+        haystack = f"{heading}\n{body}".lower()
+        score = sum(haystack.count(w) for w in words)
+        if score:
+            scored.append((score, heading, body))
+    if not scored:
+        return ""
+    scored.sort(key=lambda t: t[0], reverse=True)
+    lines = []
+    budget = RULES_EXCERPT_TOTAL_BUDGET
+    for _score, heading, body in scored[:limit]:
+        if budget <= 0:
+            break
+        excerpt = body[:min(RULES_EXCERPT_CHARS, budget)]
+        lines.append(f"- [Rules] {heading}: {excerpt}")
+        budget -= len(excerpt)
+    return "\n".join(lines)
 
 # AI 1.1 — RAG retrieval could always *find* an entity by its body text
 # (FTS5 indexes name/summary/body/tags), but the model never actually saw
@@ -151,7 +250,7 @@ def format_context_from_entities(
 
 def smart_world_context(
     db: Session, world_id: int, query: str,
-    entity_limit: int = 25, notes_limit: int = 5, user=None,
+    entity_limit: int = 25, notes_limit: int = 5, user=None, rules_limit: int = RULES_SECTION_LIMIT,
 ) -> tuple:
     """The interactive-RAG half of main.py's /api/ai/world-context-smart
     (AI Chat's Smart Context panel), factored to this leaf module so the
@@ -166,7 +265,13 @@ def smart_world_context(
       to match — the same gap app.audio_jobs._build_rag_context's own
       top-up closes on the job path),
     - a guaranteed-most-recent-notes block (ordered updated_at desc) up
-      to notes_limit beyond whatever the search itself surfaced.
+      to notes_limit beyond whatever the search itself surfaced,
+    - a rules_context() excerpt (see that function) appended at the end
+      when the query matches something in the World's Rules text — Rules
+      is a single free-text document, not a list of Entity rows, so unlike
+      the two above it never counts toward entity_limit/notes_limit or
+      appears in the returned non_notes/notes lists (which stay Entity-
+      only, for the RAG-transparency panel's pin/list UI).
 
     `user=None` (the default) is deliberately unfiltered — the posture the
     original world-context-smart route established for its GM + assistant
@@ -174,7 +279,10 @@ def smart_world_context(
     a real, non-GM `user` applies _visibility_filter to EVERY query this
     function runs (the initial search, the non-note top-up, and the notes
     top-up alike) — see app.routers.ai's player-facing RAG endpoint, which
-    is the one caller that ever passes a real player `user` through here."""
+    is the one caller that ever passes a real player `user` through here.
+    Rules text has no per-row visibility to filter — a world's Rules page
+    is already visible to every member of that world regardless of role,
+    same as GET /rules itself, so rules_context runs unconditionally."""
     entities = find_relevant_entities(db, world_id, query, limit=max(entity_limit, 0), user=user)
     notes = [e for e in entities if e.kind == "note"]
     non_notes = [e for e in entities if e.kind != "note"]
@@ -195,4 +303,8 @@ def smart_world_context(
         extra_notes = [e for e in note_entities if e.id not in seen_ids]
         notes = notes + extra_notes
     context = format_context_from_entities(non_notes + notes)
+    world = db.get(World, world_id)
+    rules = rules_context(world, query, limit=rules_limit)
+    if rules:
+        context = f"{context}\n\n{rules}" if context else rules
     return context, non_notes, notes

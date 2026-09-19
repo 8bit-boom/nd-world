@@ -2425,12 +2425,12 @@ _RULES_LEGACY_ANCHOR_RE = re.compile(r'<a\s+name="[^"]*">\s*</a>', re.IGNORECASE
 def _world_rules_markdown(world) -> str:
     """This world's own rules if the GM has set any, else the bundled N&D
     core rules — so a world running a different system doesn't show N&D's
-    stats/feats/psionics by default."""
-    if world and (world.rules_md or "").strip():
-        md = world.rules_md
-    else:
-        rules_path = Path(__file__).parent / "core_rules.md"
-        md = rules_path.read_text(encoding="utf-8", errors="ignore") if rules_path.exists() else ""
+    stats/feats/psionics by default. The actual lookup lives in
+    _retrieval.world_rules_markdown (a leaf module app.retrieval's own RAG
+    functions also need it), so it's not duplicated here — this wrapper
+    only adds the legacy-anchor stripping below, which is specific to
+    rendering this as HTML."""
+    md = _retrieval.world_rules_markdown(world)
     # Docs exported from Word/Google Docs often carry a raw <a name="..."></a>
     # anchor on every heading for their own in-document TOC links. render_md()
     # HTML-escapes raw tags (a stored-XSS guard for user-typed entity content),
