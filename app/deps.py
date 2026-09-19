@@ -61,47 +61,174 @@ def is_gm(request: Request) -> bool:
 
 # id -> (label, icon) for World.section_access_json (see its docstring in
 # app/models.py) and the per-section Players/Assistants None/Read/Edit
-# controls on Settings -> Navigation. Order here is display order. Combat
-# Tracker and Investigation Boards deliberately aren't here — Combat's
-# live state is often spoiler-heavy, and Boards is a large drag-and-drop
-# canvas editor with no read/edit separation anywhere in its JS, so a safe
-# read-only (let alone editable) mode for it is its own separate project.
+# controls on Settings -> Navigation. Order here is display order. Every
+# item in app.nav_menus.STATIC_CATALOG has an entry here except three
+# deliberate exceptions: "ai_chat_player"/"image_gen_player" already have
+# their own dedicated per-world flag (players_can_use_ai_chat/
+# players_can_use_image_gen) that gates the actual feature, not just nav
+# visibility — layering a second, independent gate on top would just be
+# confusing; and "character_sheets" ("My Character Sheets") is a personal
+# per-player area (GM + owner only per CharacterSheet) with nothing
+# world-level to configure. One dynamic "kind_<kind>" id per entity kind
+# (built-in or GM-added custom) is added on top of this static set by
+# section_permission_ids() below, since the kind list is per-world.
 SECTION_PERMISSION_IDS = {
     "maps": ("Maps", "🗺"),
     "calendar": ("Calendar", "🗓"),
     "quests": ("Quests", "📜"),
     "parties": ("Parties", "🛡"),
     "tables": ("Random Tables", "🎲"),
+    "boards": ("Boards", "📌"),
+    "combat": ("Combat Tracker", "⚔"),
+    "races": ("Race Catalog", "🧬"),
+    "professions": ("Profession Catalog", "🎭"),
+    "sessions": ("Sessions", "📓"),
+    "facts": ("Facts", "🗒"),
+    "images": ("Images", "🖼"),
+    "import": ("Import", "📥"),
+    "bulk_edit": ("Find & Replace (AI)", "🔎"),
+    "background_jobs": ("Background Jobs", "⏳"),
+    "export": ("Export & Backup", "📦"),
+    "dreamlands": ("Dreamlands", "🌙"),
+    "king-in-yellow": ("King in Yellow", "🎭"),
+    "ai": ("AI Chat (GM)", "🤖"),
+    "imagestudio": ("Image Studio", "🎨"),
+    "editor": ("Content Editor", "🛠"),
+    "code_assist": ("Code Assist", "🧩"),
+    "chronicler": ("Chronicler", "📜"),
+    "dice": ("Dice", "🎲"),
+    "session_log": ("Session Log", "📓"),
+    "rules": ("Rules", "📖"),
+    "characters": ("Player Characters", "🎲"),
+    "audio": ("Audio", "🎵"),
+    "video": ("Video", "🎬"),
+    "pages": ("Pages", "📄"),
+    "androidapp": ("Android App", "📱"),
 }
 
-# Sections with no meaningful player-edit action — nothing in the app lets
-# a player create/modify map content (Maps has no owner concept and no
-# player-facing create path), so a "player" level read back as "edit" here
-# (a stale row, or a hand-edited one) is floored to "read" rather than
-# granted, and the Settings UI only ever offers None/Read for this role+
-# section combination in the first place.
-_NO_PLAYER_EDIT_SECTIONS = {"maps"}
+
+def _is_kind_section(section_id: str) -> bool:
+    return section_id.startswith("kind_")
+
+
+def section_permission_ids(world) -> set:
+    """SECTION_PERMISSION_IDS' static ids plus one "kind_<kind>" id per
+    entity kind valid for `world` right now (built-in or GM-added custom —
+    see effective_kinds) — the full, world-aware id space
+    world_section_access/sanitize_section_access validate against, so a
+    kind added or renamed later is picked up with no separate migration."""
+    kinds, _ = effective_kinds(world)
+    return set(SECTION_PERMISSION_IDS) | {f"kind_{k}" for k in kinds}
+
+
+# Sections with no meaningful player-edit action via this matrix — either
+# there's no per-row "this is mine" concept an ordinary player could own
+# (Maps, Boards, the two catalogs, Background Jobs, ...), or the section is
+# GM/AI-system administration that stays GM(+trusted-assistant)-only
+# regardless (see _NO_ASSISTANT_EDIT_SECTIONS below for the subset that's
+# GM-only even for an assistant). A player's "edit" here reads back/saves
+# as "read" instead, and the Settings UI never offers "Edit" for this
+# role+section pair. Every entity kind ("kind_*") is in here too — an
+# assistant already has full create/edit/delete on every kind via
+# can_edit_content; letting an ordinary PLAYER create/edit their own lore
+# entities is a separate, larger feature (per-entity ownership, new write
+# routes) not part of this pass — for now a player only ever gets
+# None/Read on a kind. See _floor_level, the single place this (and
+# _NO_ASSISTANT_EDIT_SECTIONS) is actually enforced.
+_NO_PLAYER_EDIT_SECTIONS = {
+    "maps", "boards", "races", "professions", "sessions", "facts", "images",
+    "pages", "audio", "video", "background_jobs", "import", "bulk_edit",
+    "combat", "export", "dreamlands", "king-in-yellow", "ai", "imagestudio",
+    "editor", "code_assist", "chronicler", "dice", "session_log", "rules",
+    "characters", "androidapp",
+}
+
+# The subset of _NO_PLAYER_EDIT_SECTIONS that's ALSO GM-only for an
+# assistant today (see app/main.py's _is_assistant_safe and AGENTS.md: GM
+# administration and AI-system management stay GM-only for an assistant,
+# unlike the content-editing tier can_edit_content already covers) — an
+# assistant's own select is likewise floored to None/Read for these, so
+# this matrix can't be used to quietly widen that documented boundary.
+# Whatever's actually editable here (rules_md, backups, the code-assist
+# patch flow, ...) keeps its own existing GM-only route untouched either
+# way — these ids only ever control READ visibility through this matrix.
+_NO_ASSISTANT_EDIT_SECTIONS = {
+    "combat", "export", "dreamlands", "king-in-yellow", "ai", "imagestudio",
+    "editor", "code_assist", "chronicler", "dice", "session_log", "rules",
+    "characters", "androidapp",
+}
+
+# Ids visible to every player/assistant unconditionally before this matrix
+# existed (app.nav_menus.STATIC_CATALOG's "gm_only": False) — their
+# default PLAYER level is "read" so folding them into this matrix doesn't
+# hide anything nobody explicitly asked to hide. Every id not listed here
+# defaults to player="none" (it was GM-only before). Every entity kind is
+# implicitly in this set too (kind pages have always been unconditionally
+# reachable) — handled in _default_section_levels via _is_kind_section.
+_PLAYER_READ_DEFAULT_SECTIONS = {
+    "maps", "races", "professions", "chronicler", "dice", "session_log",
+    "rules", "characters", "audio", "video", "pages", "androidapp",
+}
+
+# Ids an assistant already had blanket edit access to via can_edit_content
+# before this matrix existed (app/main.py's _is_assistant_safe) — their
+# default ASSISTANT level is "edit" so folding them into this matrix
+# doesn't revoke anything by default; a GM can still dial an assistant
+# back per-section from here. An id not listed here (the
+# _NO_ASSISTANT_EDIT_SECTIONS admin/reference tier) defaults to "read" if
+# it's in _PLAYER_READ_DEFAULT_SECTIONS, else "none" — same rule as the
+# player default, since gm_only never distinguished player from assistant
+# before this matrix existed. Every entity kind defaults to "edit" here
+# too (handled via _is_kind_section).
+_ASSISTANT_EDIT_DEFAULT_SECTIONS = {
+    "maps", "calendar", "quests", "parties", "tables",
+    "boards", "races", "professions", "sessions", "facts", "images",
+    "pages", "audio", "video", "background_jobs", "import", "bulk_edit",
+}
 
 _SECTION_LEVELS = ("none", "read", "edit")
 
 
 def _default_section_levels(section_id: str) -> dict:
     """Pre-upgrade-equivalent defaults for a section with no (or corrupt)
-    configuration: assistant="edit" everywhere (assistants already had
-    blanket access via can_edit_content before this matrix existed), and
-    player="read" on maps only / "none" elsewhere (maps was already open
-    to every player unconditionally; the other four were GM-only)."""
-    return {"player": "read" if section_id == "maps" else "none", "assistant": "edit"}
+    configuration — chosen so folding a section into this matrix (or
+    adding a new entity kind) never changes an existing world's behavior
+    until a GM explicitly touches its Settings -> Navigation selects. See
+    the three default-set comments above for the exact rule per role."""
+    if _is_kind_section(section_id):
+        return {"player": "read", "assistant": "edit"}
+    player = "read" if section_id in _PLAYER_READ_DEFAULT_SECTIONS else "none"
+    if section_id in _ASSISTANT_EDIT_DEFAULT_SECTIONS:
+        assistant = "edit"
+    else:
+        assistant = "read" if section_id in _PLAYER_READ_DEFAULT_SECTIONS else "none"
+    return {"player": player, "assistant": assistant}
+
+
+def _floor_level(section_id: str, role: str, val: str) -> str:
+    """Applies _NO_PLAYER_EDIT_SECTIONS/_NO_ASSISTANT_EDIT_SECTIONS: an
+    "edit" value for a role/section combo that isn't allowed real edit
+    access reads back/saves as "read" instead — shared by
+    world_section_access (tolerant read) and sanitize_section_access
+    (strict save) so the two can never disagree on what's actually
+    allowed."""
+    if val != "edit":
+        return val
+    if role == "player" and section_id in _NO_PLAYER_EDIT_SECTIONS:
+        return "read"
+    if role == "assistant" and section_id in _NO_ASSISTANT_EDIT_SECTIONS:
+        return "read"
+    return val
 
 
 def world_section_access(world) -> dict:
     """Parses World.section_access_json into {section_id: {"player": lvl,
-    "assistant": lvl}} for every id in SECTION_PERMISSION_IDS — tolerant of
-    NULL/malformed/partial JSON, a missing section, an unknown role key, or
-    an invalid level string, all of which fall back independently to
-    _default_section_levels(section_id) rather than discarding the whole
-    row (a bad value for one section/role must not reset every other one a
-    GM already configured)."""
+    "assistant": lvl}} for every id in section_permission_ids(world) —
+    tolerant of NULL/malformed/partial JSON, a missing section, an unknown
+    role key, or an invalid level string, all of which fall back
+    independently to _default_section_levels(section_id) rather than
+    discarding the whole row (a bad value for one section/role must not
+    reset every other one a GM already configured)."""
     raw = getattr(world, "section_access_json", None) if world else None
     try:
         data = json.loads(raw) if raw else {}
@@ -110,7 +237,7 @@ def world_section_access(world) -> dict:
     if not isinstance(data, dict):
         data = {}
     out = {}
-    for sid in SECTION_PERMISSION_IDS:
+    for sid in section_permission_ids(world):
         defaults = _default_section_levels(sid)
         entry = data.get(sid) if isinstance(data.get(sid), dict) else {}
         levels = {}
@@ -118,23 +245,24 @@ def world_section_access(world) -> dict:
             val = entry.get(role)
             if val not in _SECTION_LEVELS:
                 val = defaults[role]
-            if role == "player" and val == "edit" and sid in _NO_PLAYER_EDIT_SECTIONS:
-                val = "read"
-            levels[role] = val
+            levels[role] = _floor_level(sid, role, val)
         out[sid] = levels
     return out
 
 
-def sanitize_section_access(raw_json) -> str:
+def sanitize_section_access(raw_json, world=None) -> str:
     """Validates a posted section_access_json payload (Settings ->
     Navigation's per-section Players/Assistants selects) before saving:
-    restricts to known section ids (SECTION_PERMISSION_IDS) and known
-    levels (_SECTION_LEVELS), flooring anything else to "none" (deny) —
-    unlike world_section_access's tolerant degrade-to-safe-defaults on
-    READ, a save is an explicit, deliberate action, so a garbled/tampered
-    field here is denied rather than silently keeping a permissive
-    fallback. Also floors "player": "edit" on a _NO_PLAYER_EDIT_SECTIONS
-    section down to "read", same as world_section_access."""
+    restricts to known section ids (section_permission_ids(world)) and
+    known levels (_SECTION_LEVELS), flooring anything else to "none"
+    (deny) — unlike world_section_access's tolerant degrade-to-safe-
+    defaults on READ, a save is an explicit, deliberate action, so a
+    garbled/tampered field here is denied rather than silently keeping a
+    permissive fallback. Also applies _floor_level, same as
+    world_section_access. world=None only ever validates against the
+    built-in kind ids (effective_kinds(None)'s own contract) — never
+    happens in practice since this is only ever called from a per-world
+    save route with a real World in hand."""
     try:
         data = json.loads(raw_json) if raw_json else {}
     except (TypeError, ValueError):
@@ -142,16 +270,14 @@ def sanitize_section_access(raw_json) -> str:
     if not isinstance(data, dict):
         data = {}
     out = {}
-    for sid in SECTION_PERMISSION_IDS:
+    for sid in section_permission_ids(world):
         entry = data.get(sid) if isinstance(data.get(sid), dict) else {}
         levels = {}
         for role in ("player", "assistant"):
             val = entry.get(role)
             if val not in _SECTION_LEVELS:
                 val = "none"
-            if role == "player" and val == "edit" and sid in _NO_PLAYER_EDIT_SECTIONS:
-                val = "read"
-            levels[role] = val
+            levels[role] = _floor_level(sid, role, val)
         out[sid] = levels
     return json.dumps(out)
 

@@ -26,7 +26,7 @@ from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
 from .. import media_albums
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit
+from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit, world_can_view_section
 from ..models import AudioAlbum, AudioClip
 from ..templating import templates
 from ..uploads import copy_upload_bounded, effective_upload_bytes, unique_upload_filename
@@ -181,6 +181,8 @@ def audio_library(request: Request, db: Session = Depends(get_db), active_world:
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not world_can_view_section(request, world, "audio"):
+        raise HTTPException(403)
     albums = (
         db.query(AudioAlbum)
         .filter(AudioAlbum.world_id == world.id, AudioAlbum.parent_id.is_(None))
@@ -203,6 +205,8 @@ def audio_album_detail(album_id: int, request: Request, db: Session = Depends(ge
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not world_can_view_section(request, world, "audio"):
+        raise HTTPException(403)
     album = _album_or_404(db, world.id, album_id)
     albums = (
         db.query(AudioAlbum).filter(AudioAlbum.parent_id == album.id).order_by(AudioAlbum.name).all()

@@ -12,7 +12,7 @@ from .. import ai as _ai_module
 from .. import ai_assist as _ai_assist
 from .. import audio_jobs as _audio_jobs
 from ..database import get_db
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, world_can_view_section
 from ..models import AudioJob, Fact, GameSession
 from ..templating import templates
 from .sessions import _rag_options_from_body
@@ -165,6 +165,8 @@ def _safe_next(form_value) -> str:
 @router.get("/facts", response_class=HTMLResponse)
 def facts_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "facts"):
+        raise HTTPException(403)
     world_id = world.id if world else 1
     sessions = {
         s.id: s for s in db.query(GameSession).filter(GameSession.world_id == world_id).all()

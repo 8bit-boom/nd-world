@@ -1,10 +1,16 @@
-"""_is_player_safe (app/main.py) is the entire authorization boundary for a
-long list of routers — /combat, /tables, /quests, /sessions, /calendar,
-/import, and most of main.py's own routes have no in-handler auth of their
-own, so a regression in this allowlist directly exposes GM-only/destructive
-routes to any logged-in player. Table-driven so a future accidental broadening
-(e.g. a careless prefix match) shows up as a one-line failure here instead of
-a live incident.
+"""_is_player_safe (app/main.py) is the authorization boundary that decides
+whether a route is even REACHABLE to a logged-in player at all — a route
+absent from it is 403'd by the auth_gate middleware before any handler
+code runs. Most write/destructive routes have no in-handler auth of their
+own, so a regression here directly exposes them. Most read routes covered
+by World.section_access_json (combat/sessions/import/facts/export/ai/
+boards/imagestudio/editor/code-assist/dice/races/professions/... — see
+deps.SECTION_PERMISSION_IDS) ARE reachable, but gated in-handler by
+deps.world_can_view_section/world_row_visible, off by default for every
+world that hasn't opted in — this file only tests reachability, not that
+off-by-default gate (see test_player_section_access.py for that). Table-
+driven so a future accidental broadening (e.g. a careless prefix match)
+shows up as a one-line failure here instead of a live incident.
 """
 import pytest
 
@@ -14,9 +20,6 @@ from app.main import _is_player_safe
 CASES = [
     # GM-only — no in-handler auth of their own, so this allowlist is the only
     # thing standing between a player and these routes.
-    ("GET", "/combat", False),
-    ("GET", "/sessions", False),
-    ("GET", "/import", False),
     ("POST", "/api/ai/chat", False),
     ("GET", "/admin/backup.zip", False),
     ("POST", "/worlds/1/delete", False),
@@ -36,25 +39,21 @@ CASES = [
     ("GET", "/worlds/1/home/edit", False),
     ("POST", "/worlds/1/home/edit", False),
     ("POST", "/api/worlds/1/home/quick-link", False),
-    ("GET", "/facts", False),
     ("POST", "/facts/new", False),
     ("POST", "/facts/5/edit", False),
     ("POST", "/facts/5/delete", False),
     ("POST", "/api/facts/parse", False),
     ("POST", "/api/facts/bulk", False),
     ("POST", "/api/entities/bulk-visibility", False),
-    # /export and everything under it (including the new Rules-and-Notes
-    # bundle) is GM-only — it includes notes hidden from players unfiltered,
-    # same trust level as /admin/backup.zip.
-    ("GET", "/export", False),
+    # Everything under /export EXCEPT the hub page itself is GM-only — it
+    # includes notes hidden from players unfiltered, same trust level as
+    # /admin/backup.zip. The hub page (GET /export alone) is reachable
+    # (export_hub gates on world_can_view_section(..., "export"), off by
+    # default) but exposes no actual download/restore action on its own.
     ("GET", "/export/rules-and-notes.md", False),
     ("GET", "/export/foundry.json", False),
     ("POST", "/admin/backup/restore", False),
     ("POST", "/admin/backup/restore/cancel", False),
-    # The dedicated GM "/ai" World Chat page (quick prompts, image gen, etc.)
-    # stays GM-only — only the shared streaming endpoint it and the entity
-    # panel both call is opened up, gated per-world by players_can_ask_ai.
-    ("GET", "/ai", False),
     ("POST", "/audio/upload", False),
     ("POST", "/audio/1/edit", False),
     ("POST", "/audio/1/delete", False),
@@ -97,16 +96,17 @@ CASES = [
     ("POST", "/tables/5/delete", True),
     ("GET", "/tables/export", False),
     ("POST", "/tables/import", False),
+    # Board creation/save/delete/export stay GM+Assistant ("full" level)
+    # only — Boards' None/Read/Edit matrix entry only ever grants a player
+    # up to Read (deps._NO_PLAYER_EDIT_SECTIONS), so nothing here opens up.
+    # /boards/new is also excluded from the read-reachability regex below
+    # (it's the create-form page, board_new_form, which has no in-handler
+    # gate of its own) — see _is_player_safe's own comment.
     ("GET", "/boards/new", False),
     ("POST", "/boards/new", False),
     ("POST", "/boards/some-slug/save", False),
     ("POST", "/boards/some-slug/delete", False),
     ("GET", "/boards/some-slug/export", False),
-    # Investigation Boards stays fully GM-only, unlike the other four —
-    # see its own comment in _is_player_safe (large canvas editor, no
-    # read/edit separation in its JS).
-    ("GET", "/boards", False),
-    ("GET", "/boards/some-slug", False),
     # Player-safe — read-only world/lore browsing and their own character(s).
     ("GET", "/", True),
     ("GET", "/account", True),
@@ -128,6 +128,29 @@ CASES = [
     ("GET", "/parties/5", True),
     ("GET", "/tables", True),
     ("POST", "/api/tables/5/roll", True),
+    # Reachable — each page's own handler-level world_can_view_section/
+    # world_row_visible check (off by default, so no existing world's
+    # behavior changes) is the real gate, same "reachable vs. actually
+    # allowed" split as every route in this function.
+    ("GET", "/combat", True),
+    ("GET", "/sessions", True),
+    ("GET", "/sessions/5", True),
+    ("GET", "/import", True),
+    ("GET", "/facts", True),
+    ("GET", "/export", True),
+    ("GET", "/ai", True),
+    ("GET", "/boards", True),
+    ("GET", "/boards/some-slug", True),
+    ("GET", "/imagestudio", True),
+    ("GET", "/editor", True),
+    ("GET", "/tools/code-assist", True),
+    ("GET", "/dice", True),
+    ("POST", "/dice", True),
+    ("POST", "/api/dice/roll", True),
+    ("GET", "/api/dice/history", True),
+    ("GET", "/races", True),
+    ("GET", "/professions", True),
+    ("GET", "/androidapp", True),
     # Character sheets — the router's own owner-or-GM check is the real
     # gate (404 for anyone else), same pattern as pages_viewer/pages_download
     # above; a player must be able to reach these to create/save/edit/delete
@@ -170,7 +193,6 @@ CASES = [
     ("GET", "/api/ai/imagegen/player/jobs/5", True),
     ("POST", "/api/ai/imagegen/player/jobs/5/cancel", True),
     ("DELETE", "/api/ai/imagegen/player/jobs/5", True),
-    ("GET", "/imagestudio", False),  # Image Studio itself stays GM-only, untouched
     ("POST", "/api/ai/imagegen/generate", False),  # the GM's own full-surface route
     ("POST", "/api/ai/attachments/upload", True),
     ("POST", "/api/ai/attachments/audio-jobs", True),

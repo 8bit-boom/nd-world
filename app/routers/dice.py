@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, world_can_view_section
 from ..models import DiceRoll
 from ..templating import templates
 
@@ -114,6 +114,8 @@ def _store_roll(db: Session, request: Request, world, notation: str) -> DiceRoll
 @router.get("/dice", response_class=HTMLResponse)
 def dice_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "dice"):
+        raise HTTPException(403)
     rolls = []
     if world:
         rows = (
@@ -137,6 +139,8 @@ async def dice_roll_form(request: Request, db: Session = Depends(get_db), active
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
+    if not world_can_view_section(request, world, "dice"):
+        raise HTTPException(403)
     form = await request.form()
     notation = str(form.get("notation", ""))
     try:
@@ -156,6 +160,8 @@ async def api_dice_roll(body: RollBody, request: Request, db: Session = Depends(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
+    if not world_can_view_section(request, world, "dice"):
+        raise HTTPException(403)
     try:
         roll = _store_roll(db, request, world, body.notation)
     except ValueError as exc:
@@ -168,6 +174,8 @@ def api_dice_history(request: Request, db: Session = Depends(get_db), active_wor
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
+    if not world_can_view_section(request, world, "dice"):
+        raise HTTPException(403)
     rows = (
         db.query(DiceRoll)
         .filter(DiceRoll.world_id == world.id)

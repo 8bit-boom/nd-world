@@ -1922,11 +1922,15 @@ def test_download_transcript_md_404_when_empty(client, seed):
 
 
 def test_download_md_player_forbidden(client, seed):
+    """404 (not 403): the "sessions" section defaults to "none" for players
+    (see deps._default_section_levels), and world_row_visible 404s a hidden
+    row rather than 403ing it — same "no business knowing this exists"
+    convention pages_viewer/pages_download use for a hidden PageDoc."""
     session_id = _make_session(seed.world_a)
     _set_live_transcript(session_id, "secret")
     login(client, seed.player_a.email, PLAYER_PASSWORD)
-    assert client.get(f"/sessions/{session_id}/summary.md").status_code == 403
-    assert client.get(f"/sessions/{session_id}/transcript.md").status_code == 403
+    assert client.get(f"/sessions/{session_id}/summary.md").status_code == 404
+    assert client.get(f"/sessions/{session_id}/transcript.md").status_code == 404
 
 
 def test_download_md_404_for_unknown_session(client, seed):

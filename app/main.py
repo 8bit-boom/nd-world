@@ -394,10 +394,12 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if path in ("/dice", "/api/dice/roll", "/api/dice/history"):
         # The shared dice roller: every member of the active world may roll
-        # and read the roll log — world membership (get_world_ctx inside
-        # app/routers/dice.py) is the only gate, matching how a real table
-        # shares dice. GET and POST both included, deliberately before the
-        # GET-only section below.
+        # and read the roll log by default — world membership plus
+        # deps.world_can_view_section(..., "dice") (off by default = "read",
+        # so no existing world's behavior changes) is the real gate inside
+        # app/routers/dice.py, matching how a real table shares dice unless
+        # a GM explicitly locks it down via Settings > Navigation. GET and
+        # POST both included, deliberately before the GET-only section below.
         return True
     if method == "GET" and path == "/api/ai/world-summary":
         # Read-only World Summary digest. Handler-level gate (see
@@ -478,6 +480,49 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if method != "GET":
         return False
+    # Read-only reachability for the rest of World.section_access_json's
+    # sections (see deps.SECTION_PERMISSION_IDS) — every one of these is
+    # None/Read-only for a player (deps._NO_PLAYER_EDIT_SECTIONS), so only
+    # their GET view routes are ever listed here; the handler-level
+    # world_can_view_section/world_row_visible check (off by default,
+    # except the always-visible-before-this-matrix pages further below) is
+    # the real gate, same "reachable vs. actually allowed" split as every
+    # other route in this function.
+    # "new" excluded — /boards/new is the create-form page (board_new_form),
+    # which has no in-handler gate of its own and must stay GM+Assistant
+    # only, matching /boards/new's POST counterpart (create is "full"-level
+    # only, unlike quests/tables/calendar) and unlike a real board slug
+    # (board_view), which IS gated (world_row_visible(..., "boards")).
+    if path == "/boards" or re.match(r"^/boards/(?!new$)[^/]+$", path):
+        return True
+    if path == "/combat" or re.match(r"^/combat/\d+$", path) or re.match(r"^/api/combat/\d+/state$", path):
+        return True
+    if path == "/sessions" or re.match(r"^/sessions/\d+(/summary\.md|/transcript\.md)?$", path):
+        return True
+    if path == "/facts":
+        return True
+    if path == "/images":
+        return True
+    if path == "/import":
+        return True
+    if path == "/tools/bulk-edit":
+        return True
+    if path == "/background-jobs":
+        return True
+    if path == "/export":
+        return True
+    if path == "/dreamlands":
+        return True
+    if path == "/king-in-yellow":
+        return True
+    if path == "/ai":
+        return True
+    if path == "/imagestudio":
+        return True
+    if path == "/editor":
+        return True
+    if path == "/tools/code-assist":
+        return True
     if path in ("/", "/rules", "/rules/download.md", "/search", "/maps", "/races", "/professions", "/androidapp", "/chronicler", "/session-log", "/audio", "/video", "/pages", "/ai-chat", "/image-gen"):
         # /ai-chat, /image-gen: reachable at all — the handler's own
         # players_can_use_ai_chat / players_can_use_image_gen check (both
@@ -3375,6 +3420,8 @@ async def gen_entity_smart(
 @app.get("/ai", response_class=HTMLResponse)
 def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "ai"):
+        raise HTTPException(403)
     entity_counts = {}
     world_system = (
         "You are a creative world-building AI assistant for a Neon & Dragons "
@@ -3450,6 +3497,8 @@ def player_image_gen(request: Request, db: Session = Depends(get_db), active_wor
 @app.get("/imagestudio", response_class=HTMLResponse)
 def imagestudio(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "imagestudio"):
+        raise HTTPException(403)
     settings = get_app_settings(db)
     swarmui_url = (settings.swarmui_external_url or SWARMUI_EXTERNAL_URL).rstrip("/")
     return templates.TemplateResponse("imagestudio.html", {
@@ -3461,6 +3510,8 @@ def imagestudio(request: Request, db: Session = Depends(get_db), active_world: s
 @app.get("/androidapp", response_class=HTMLResponse)
 def androidapp(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "androidapp"):
+        raise HTTPException(403)
     settings = get_app_settings(db)
     android_url = (settings.android_emulator_url or ANDROID_EMULATOR_URL).rstrip("/")
     return templates.TemplateResponse("androidapp.html", {
@@ -3472,6 +3523,8 @@ def androidapp(request: Request, db: Session = Depends(get_db), active_world: st
 @app.get("/editor", response_class=HTMLResponse)
 def content_editor(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "editor"):
+        raise HTTPException(403)
     settings = get_app_settings(db)
     editor_url = (settings.editor_external_url or EDITOR_EXTERNAL_URL).rstrip("/")
     return templates.TemplateResponse("editor_embed.html", {
@@ -3556,7 +3609,11 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "initial_nav_menus": _nav_menus_module.load_nav_menus(world) if world else [],
         "nav_max_menus": _nav_menus_module.MAX_NAV_MENUS,
         "initial_section_access": world_section_access(world) if world else {},
-        "no_player_edit_sections": sorted(deps._NO_PLAYER_EDIT_SECTIONS),
+        "no_player_edit_sections": sorted(
+            deps._NO_PLAYER_EDIT_SECTIONS | {f"kind_{k}" for k in deps.effective_kinds(world)[0]}
+            if world else deps._NO_PLAYER_EDIT_SECTIONS
+        ),
+        "no_assistant_edit_sections": sorted(deps._NO_ASSISTANT_EDIT_SECTIONS),
         "ollama_server_env": ollama_server_env,
         "ollama_server_status": _tuning.server_env_status(ollama_server_env),
         "ollama_server_spec": _tuning.SERVER_ENV_SPEC,
@@ -4036,6 +4093,8 @@ def board_export(slug: str, request: Request, db: Session = Depends(get_db), act
 @app.get("/export", response_class=HTMLResponse)
 def export_hub(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "export"):
+        raise HTTPException(403)
     staged_restore_manifest = None
     staged_manifest_path = RESTORE_STAGING_DIR / "manifest.json"
     if staged_manifest_path.exists():
@@ -4426,6 +4485,8 @@ def list_entities(request: Request, kind: str, q: str = "", folder: Optional[str
     world = get_active_world(request, db, active_world)
     if not world:
         return RedirectResponse("/worlds")
+    if not world_can_view_section(request, world, f"kind_{kind}"):
+        raise HTTPException(403)
     world_players = _world_player_list(db, world.id)
 
     # Base searchable query (no folder filter — used for counts/sidebar)
@@ -4569,6 +4630,8 @@ def _entity_view_gate(db: Session, request: Request, entity_id: int) -> Entity:
     # world could read every player-visible entity in every other world by walking IDs.
     ent_world = db.get(World, entity.world_id) if entity.world_id else None
     if not _auth.user_can_access_world(db, user, ent_world):
+        raise HTTPException(404)
+    if not world_can_view_section(request, ent_world, f"kind_{entity.kind}"):
         raise HTTPException(404)
     if not entity.visible_to_players and not (user and user.is_gm):
         shared = user and db.query(entity_player_access).filter(
@@ -4715,6 +4778,8 @@ def kind_download(kind: str, request: Request, db: Session = Depends(get_db), ac
     user = getattr(request.state, "user", None)
     if not (user and user.is_gm) and not world.players_can_download_entities:
         raise HTTPException(403)
+    if not world_can_view_section(request, world, f"kind_{kind}"):
+        raise HTTPException(403)
     q = db.query(Entity).filter(Entity.world_id == world.id, Entity.kind == kind)
     entities = _filter_visible_entities(q, request).order_by(Entity.name).all()
     return _entities_zip(db, entities, request, f"{world.slug}-{kind}.zip")
@@ -4730,6 +4795,8 @@ def kind_download_selected(
         raise HTTPException(404)
     user = getattr(request.state, "user", None)
     if not (user and user.is_gm) and not world.players_can_download_entities:
+        raise HTTPException(403)
+    if not world_can_view_section(request, world, f"kind_{kind}"):
         raise HTTPException(403)
     q = db.query(Entity).filter(Entity.world_id == world.id, Entity.kind == kind, Entity.id.in_(ids))
     # Same _filter_visible_entities pass as the bulk-kind download — a player

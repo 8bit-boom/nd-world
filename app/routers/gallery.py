@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from .. import media_albums
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, world_can_view_section
 from ..gallery import all_world_image_urls, discover_world_images, image_display_name
 from ..imaging import convert_image, make_thumbnail
 from ..models import ImageAlbum, World
@@ -179,6 +179,8 @@ def images_gallery(request: Request, db: Session = Depends(get_db), active_world
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not world_can_view_section(request, world, "images"):
+        raise HTTPException(403)
     images = discover_world_images(db, world)
     albums = (
         db.query(ImageAlbum)

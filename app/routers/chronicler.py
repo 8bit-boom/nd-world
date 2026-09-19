@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from .. import ai as _ai_module
 from .. import retrieval as _retrieval
 from ..database import get_db
-from ..deps import check_llm_cooldown, get_world_ctx
+from ..deps import check_llm_cooldown, get_world_ctx, world_can_view_section
 from ..models import Fact
 from ..templating import templates
 from .ai import _with_heartbeat
@@ -88,6 +88,8 @@ def build_chronicler_system_prompt(db: Session, world_id: int, question: str, us
 @router.get("/chronicler", response_class=HTMLResponse)
 def chronicler_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "chronicler"):
+        raise HTTPException(403)
     return templates.TemplateResponse("chronicler.html", {
         "request": request, "world": world, "worlds": worlds,
     })
@@ -111,6 +113,8 @@ async def chronicler_ask(request: Request, db: Session = Depends(get_db), active
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
+    if not world_can_view_section(request, world, "chronicler"):
+        raise HTTPException(403)
     body = await request.json()
     question = str(body.get("question", "")).strip()
     if not question:

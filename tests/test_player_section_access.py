@@ -1,9 +1,30 @@
-"""Per-world, per-role (player/assistant) None/Read/Edit access for the five
-GM-tool-shaped world sections — World.section_access_json (app/models.py),
-deps.world_section_access/world_section_level/world_can_view_section/
-world_can_edit_section/world_can_edit_row/sanitize_section_access
+"""Per-world, per-role (player/assistant) None/Read/Edit access for
+World.section_access_json (app/models.py) — deps.world_section_access/
+world_section_level/world_can_view_section/world_can_edit_section/
+world_can_edit_row/sanitize_section_access/section_permission_ids
 (app/deps.py), the nav_menus.py "player_section" override, and the
 per-section Players/Assistants selects on Settings -> Navigation.
+
+This matrix now covers every nav catalog section, not just five: the
+original Maps/Calendar/Quests/Parties/Tables ("Tier A" — real per-row
+ownership, a player's own "edit" reaches only rows they created), every
+GM-tool/content section from Boards through Pages ("Tier B" — an assistant
+keeps its existing blanket can_edit_content access by default via
+_ASSISTANT_EDIT_DEFAULT_SECTIONS, a player never gets past "read" via
+_NO_PLAYER_EDIT_SECTIONS), the GM-admin/reference pages from Combat
+Tracker through Code Assist ("Tier C" — _NO_ASSISTANT_EDIT_SECTIONS floors
+BOTH roles to at most "read"; actual editing there, e.g. rules_md or
+backups, stays exactly as GM-only as it always was, untouched by this
+matrix), and one dynamic "kind_<kind>" id per entity kind (built-in or
+GM-custom, from section_permission_ids/effective_kinds) gating that kind's
+/kind/{kind} list page and /entity/{id} detail page — additively, on top
+of each entity's own visible_to_players flag, not instead of it.
+
+Every section's default level is chosen to exactly preserve whatever that
+section's behavior was before it joined this matrix (see
+deps._default_section_levels) — folding a section in changes nothing for
+an existing world until a GM explicitly touches a Settings > Navigation
+select.
 
 Covers Maps (players: None/Read only — nothing lets a player create/modify
 map content), Quests and Random Tables (own-row create/edit/delete for a
@@ -12,10 +33,6 @@ player with "edit"; full CRUD for an assistant with "edit"), Calendar
 events they created — not config/advance/icons), and Parties (no owner
 column — a player's "edit" only reaches notes/loot on a party they're
 already a member of, never create/delete/membership).
-
-Combat Tracker and Investigation Boards deliberately have no entry at all
-(see their own comments in app/deps.py/app/main.py) and stay fully GM-only,
-unaffected by this feature.
 
 Successor to the previous boolean, players-only, read-only
 player_section_access_json model (see git history for those tests)."""

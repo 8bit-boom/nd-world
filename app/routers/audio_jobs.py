@@ -24,7 +24,7 @@ from .. import ai as _ai_module
 from .. import ai_assist as _ai_assist
 from .. import audio_jobs as _audio_jobs
 from ..database import get_db
-from ..deps import get_world_ctx, paginate, can_edit_content
+from ..deps import get_world_ctx, paginate, can_edit_content, world_can_view_section
 from ..models import AudioJob
 from ..templating import templates
 from .ai import _world_summary_audience_filter
@@ -198,10 +198,11 @@ def _safe_json_list(raw: str) -> list:
 
 @router.get("/background-jobs", response_class=HTMLResponse)
 def background_jobs_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    _require_can_edit(request)
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not world_can_view_section(request, world, "background_jobs"):
+        raise HTTPException(403)
     return templates.TemplateResponse("background_jobs.html", {
         "request": request, "world": world, "worlds": worlds,
     })
@@ -225,10 +226,11 @@ def api_audio_job_list(
     nothing rather than 400ing — a stale dropdown option degrading to an
     empty list is friendlier than an error page, and the dropdowns are
     always populated from real values anyway."""
-    _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not world_can_view_section(request, world, "background_jobs"):
+        raise HTTPException(403)
     is_gm = _is_gm_caller(request)
     base_q = db.query(AudioJob).filter(AudioJob.world_id == world.id)
     base_q = _job_visible_to(base_q, is_gm)

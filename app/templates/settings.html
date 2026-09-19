@@ -524,11 +524,15 @@
       to players too — moving one into a menu changes what players see, not just GMs.
     </p>
     <p style="font-size:.82rem;color:var(--text-dim);margin:0 0 1.25rem">
-      Items with Players/Assistants selectors give each role its own None/Read/Edit
-      level for that section — Edit means create/edit/delete (a player's own Edit
-      grant only ever reaches rows they created themselves; an assistant's reaches
-      the whole section, same as a GM). Everything else in the world (entities,
-      pages, etc.) is unaffected — that's still the existing GM-Assistant access.
+      Every item's Players/Assistants selector gives that role its own
+      None/Read/Edit level — None hides the tab (and blocks the page directly)
+      for that role, Read makes it visible, and Edit (where offered) means
+      create/edit/delete. A player's own Edit grant only ever reaches rows
+      they created themselves; an assistant's reaches the whole section, same
+      as a GM. A handful of GM-administration and AI-system pages (Export &amp;
+      Backup, Code Assist, Content Editor, Image Studio, Combat Tracker, ...)
+      only ever offer None/Read to either role — actually editing those stays
+      exactly as GM-only as it is today, unaffected by this matrix.
     </p>
     <form method="post" action="/worlds/{{ world.id }}/nav-menus/edit" id="nav-menus-form" class="entity-form">
       <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 .7rem">
@@ -881,6 +885,7 @@ function ndCopyRestartCmd() {
   const INIT_NAV_MENUS = {{ initial_nav_menus | tojson }};
   const INIT_SECTION_ACCESS = {{ initial_section_access | tojson }};
   const NO_PLAYER_EDIT_SECTIONS = {{ no_player_edit_sections | tojson }};
+  const NO_ASSISTANT_EDIT_SECTIONS = {{ no_assistant_edit_sections | tojson }};
   const SECTION_LEVELS = [['none', 'None'], ['read', 'Read'], ['edit', 'Edit']];
   function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
@@ -910,7 +915,10 @@ function ndCopyRestartCmd() {
   }
 
   function sectionAccessSelect(sectionId, role) {
-    const levels = SECTION_LEVELS.filter(([lvl]) => !(role === 'player' && lvl === 'edit' && NO_PLAYER_EDIT_SECTIONS.includes(sectionId)));
+    const levels = SECTION_LEVELS.filter(([lvl]) => !(lvl === 'edit' && (
+      (role === 'player' && NO_PLAYER_EDIT_SECTIONS.includes(sectionId))
+      || (role === 'assistant' && NO_ASSISTANT_EDIT_SECTIONS.includes(sectionId))
+    )));
     const current = (_sectionAccess[sectionId] || {})[role] || 'none';
     const opts = levels.map(([lvl, label]) => `<option value="${lvl}" ${lvl === current ? 'selected' : ''}>${label}</option>`);
     return `<select title="${role === 'player' ? 'Players' : 'Assistants'}: ${sectionId}" onchange="updateSectionAccess('${sectionId}','${role}',this.value)">${opts.join('')}</select>`;

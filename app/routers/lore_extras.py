@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from .. import ai as _ai_module
 from ..database import get_db, get_app_settings
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, world_can_view_section
 from ..templating import templates
 
 router = APIRouter()
@@ -35,6 +35,8 @@ _KIY_PLAYS_FILE = Path(__import__("os").environ.get("DB_PATH", "/data/world.db")
 @router.get("/dreamlands", response_class=HTMLResponse)
 def dreamlands_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "dreamlands"):
+        raise HTTPException(403)
     if not get_app_settings(db).dreamlands_enabled:
         return templates.TemplateResponse("feature_disabled.html", {
             "request": request, "world": world, "worlds": worlds,
@@ -46,6 +48,8 @@ def dreamlands_page(request: Request, db: Session = Depends(get_db), active_worl
 @router.get("/king-in-yellow", response_class=HTMLResponse)
 def king_in_yellow_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "king-in-yellow"):
+        raise HTTPException(403)
     if not get_app_settings(db).king_in_yellow_enabled:
         return templates.TemplateResponse("feature_disabled.html", {
             "request": request, "world": world, "worlds": worlds,

@@ -36,7 +36,7 @@ from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
 from .. import media_albums
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit
+from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit, world_can_view_section
 from ..models import VideoAlbum, VideoClip
 from ..templating import templates
 from ..uploads import (
@@ -381,6 +381,8 @@ def video_library(request: Request, db: Session = Depends(get_db), active_world:
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not world_can_view_section(request, world, "video"):
+        raise HTTPException(403)
     albums = (
         db.query(VideoAlbum)
         .filter(VideoAlbum.world_id == world.id, VideoAlbum.parent_id.is_(None))
@@ -403,6 +405,8 @@ def video_album_detail(album_id: int, request: Request, db: Session = Depends(ge
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not world_can_view_section(request, world, "video"):
+        raise HTTPException(403)
     album = _album_or_404(db, world.id, album_id)
     albums = (
         db.query(VideoAlbum).filter(VideoAlbum.parent_id == album.id).order_by(VideoAlbum.name).all()

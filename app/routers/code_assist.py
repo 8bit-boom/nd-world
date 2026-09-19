@@ -22,10 +22,19 @@ symlink under an allowed root pointing outside it resolves to its real,
 outside target first). Extensions are allowlisted to plain text/source
 types nd-world is actually built from.
 
-Not in main._is_player_safe or _is_assistant_safe, so the auth_gate
-middleware already denies this to anyone but a GM — deliberately narrower
-than the content-editing AI-assist ops (which a GM-Assistant may run):
-this touches the application's own source, not campaign content.
+Not in main._is_assistant_safe — a GM-Assistant never gets this regardless
+of the section permission matrix below, deliberately narrower than the
+content-editing AI-assist ops it may run: this touches the application's
+own source, not campaign content. The GET page IS listed in
+_is_player_safe (reachable), but gated in-handler by
+deps.world_can_view_section(..., "code_assist"), which a GM may grant a
+player at most "read" (never "edit" — see deps._NO_ASSISTANT_EDIT_SECTIONS/
+_NO_PLAYER_EDIT_SECTIONS, which floor both roles here) and which defaults
+to "none" for every world that hasn't explicitly opted in. The actual
+generate/status routes below are NOT in _is_player_safe, so they stay
+completely unreachable to non-GMs regardless of that setting — granting
+"read" only lets a player see the (GM-only, off-by-default) page shell,
+never actually draft or fetch a patch.
 """
 import difflib
 import json
@@ -41,7 +50,7 @@ from sqlalchemy.orm import Session
 from .. import ai_assist as _ai_assist
 from ..audio_jobs import create_assist_job
 from ..database import get_db
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, world_can_view_section
 from ..models import AudioJob
 from ..templating import templates
 
@@ -126,6 +135,8 @@ def _list_source_files() -> list[str]:
 @router.get("/tools/code-assist", response_class=HTMLResponse)
 def code_assist_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "code_assist"):
+        raise HTTPException(403)
     return templates.TemplateResponse("code_assist.html", {
         "request": request, "world": world, "worlds": worlds,
         "files": _list_source_files(),

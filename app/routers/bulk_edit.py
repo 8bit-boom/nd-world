@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from .. import ai as _ai
 from ..database import get_db
-from ..deps import get_world_ctx, require_can_edit
+from ..deps import get_world_ctx, require_can_edit, world_can_view_section
 from ..models import Entity, EntityNote, PlayerCharacter
 from ..templating import templates
 
@@ -33,8 +33,9 @@ router = APIRouter(tags=["bulk-edit"])
 
 @router.get("/tools/bulk-edit", response_class=HTMLResponse)
 def bulk_edit_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    require_can_edit(request)
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "bulk_edit"):
+        raise HTTPException(403)
     return templates.TemplateResponse("bulk_edit.html", {"request": request, "world": world, "worlds": worlds})
 
 

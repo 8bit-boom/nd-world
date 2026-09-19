@@ -29,6 +29,6 @@ async def nav_menus_edit_save(world_id: int, request: Request, db: Session = Dep
     # deps.SECTION_PERMISSION_IDS) — saved alongside nav grouping since
     # they're now one combined "everything about this nav item" page.
     if "section_access_json" in form:
-        w.section_access_json = sanitize_section_access(str(form.get("section_access_json", "{}") or "{}"))
+        w.section_access_json = sanitize_section_access(str(form.get("section_access_json", "{}") or "{}"), w)
     db.commit()
     return RedirectResponse("/settings?tab=navigation", status_code=303)

@@ -15,7 +15,7 @@ from .. import ai as _ai
 from .. import auth, deps
 from ..constants import KINDS, ND_DEFAULT_CURRENCY, ND_DEFAULT_STATS
 from ..database import get_db
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, world_can_view_section
 from ..imaging import CONVERT_QUALITY, convert_image_to
 from ..models import Entity, EntityTemplate, ImageAlbum, InvestBoard, MapOverlay, PlayerCharacter, RandomTable, Schematic, SheetTemplate, World
 from ..templating import templates
@@ -884,6 +884,8 @@ def execute_batch_import(db: Session, world: World, items: list) -> list:
 @router.get("/import", response_class=HTMLResponse)
 def import_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "import"):
+        raise HTTPException(403)
     world_id = world.id if world else 1
     schematics = db.query(Schematic).filter(Schematic.world_id == world_id, Schematic.is_html == False).order_by(Schematic.name).all()  # noqa: E712
     entities = db.query(Entity.id, Entity.name, Entity.kind, Entity.image_url).filter(

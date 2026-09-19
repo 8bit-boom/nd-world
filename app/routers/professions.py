@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db, get_app_settings
-from ..deps import get_world_ctx, filter_visible_entities
+from ..deps import get_world_ctx, filter_visible_entities, world_can_view_section
 from ..imaging import convert_image, make_thumbnail
 from ..models import Entity
 from ..rendering import render_md
@@ -131,6 +131,8 @@ def _load_builtin_professions() -> list[dict]:
 @router.get("/professions", response_class=HTMLResponse)
 def professions_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "professions"):
+        raise HTTPException(403)
     builtin = _load_builtin_professions()
 
     world_professions = []

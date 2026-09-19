@@ -18,7 +18,7 @@ from .. import auth
 from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
 from ..database import SessionLocal, get_db
-from ..deps import check_llm_cooldown, get_world_ctx, paginate
+from ..deps import check_llm_cooldown, get_world_ctx, paginate, world_can_view_section, world_row_visible
 from ..models import AudioClip, AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, Quest, World
 from ..rendering import render_md
 from ..templating import templates
@@ -160,6 +160,8 @@ def _recap_model(model: str) -> str:
 @router.get("/sessions", response_class=HTMLResponse)
 def sessions_list(request: Request, page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "sessions"):
+        raise HTTPException(403)
     base_q = db.query(GameSession).filter(
         GameSession.world_id == (world.id if world else 1)
     ).order_by(GameSession.session_num.desc())
@@ -207,7 +209,7 @@ async def session_create(request: Request, db: Session = Depends(get_db), active
 def session_detail(session_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
-    if not gs:
+    if not gs or not world_row_visible(request, db, gs.world_id, "sessions"):
         raise HTTPException(404)
     parties = db.query(Party).filter(Party.world_id == gs.world_id).order_by(Party.name).all()
     linked_combats = db.query(CombatSession).filter(CombatSession.game_session_id == gs.id).all()
@@ -347,16 +349,15 @@ def _session_download_filename(gs: GameSession, suffix: str) -> str:
 
 
 @router.get("/sessions/{session_id}/summary.md")
-def session_download_summary(session_id: int, db: Session = Depends(get_db)):
-    """GM-only, like every other route in this file that isn't in
-    app.main._is_player_safe — the middleware already blocks a non-GM
-    caller before this handler ever runs (see test_player_cannot_call_gm_
-    ai_endpoints for the pattern this mirrors), so there's nothing to check
-    here beyond the session existing. No active_world scoping either,
-    matching session_detail/session_edit/session_delete above — a
+def session_download_summary(session_id: int, request: Request, db: Session = Depends(get_db)):
+    """Read-gated by World.section_access_json's "sessions" entry (see
+    deps.world_row_visible) rather than GM-only — a player granted "Read"
+    on Sessions can download the same summary/transcript files the
+    session's own detail page shows them. No active_world scoping beyond
+    that, matching session_detail/session_edit/session_delete above — a
     GameSession is looked up by id alone throughout this file."""
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
-    if not gs:
+    if not gs or not world_row_visible(request, db, gs.world_id, "sessions"):
         raise HTTPException(404)
     if not gs.summary:
         raise HTTPException(404, "This session has no summary yet")
@@ -367,9 +368,9 @@ def session_download_summary(session_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/sessions/{session_id}/transcript.md")
-def session_download_transcript(session_id: int, db: Session = Depends(get_db)):
+def session_download_transcript(session_id: int, request: Request, db: Session = Depends(get_db)):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
-    if not gs:
+    if not gs or not world_row_visible(request, db, gs.world_id, "sessions"):
         raise HTTPException(404)
     if not gs.live_transcript:
         raise HTTPException(404, "This session has no live transcript yet")
@@ -1513,6 +1514,8 @@ def session_recap_publish(
 @router.get("/session-log", response_class=HTMLResponse)
 def session_log_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "session_log"):
+        raise HTTPException(403)
     sessions = db.query(GameSession).filter(
         GameSession.world_id == (world.id if world else 1)
     ).order_by(GameSession.session_num.desc()).all()

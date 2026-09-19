@@ -19,7 +19,7 @@ from ..constants import (
     ND_DEFAULT_STATS, ND_DEFAULT_CURRENCY,
 )
 from ..database import get_db, get_app_settings
-from ..deps import get_world_ctx
+from ..deps import get_world_ctx, world_can_view_section
 from ..imaging import convert_image, make_thumbnail
 from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename, save_inline_av
@@ -287,6 +287,8 @@ def _can_view_character(db: Session, user, pc: PlayerCharacter, world: World) ->
 @router.get("/characters", response_class=HTMLResponse)
 def characters_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "characters"):
+        raise HTTPException(403)
     user = _current_user(request)
     pcs = []
     if world:

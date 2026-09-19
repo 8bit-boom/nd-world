@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_world_ctx, paginate
+from ..deps import get_world_ctx, paginate, world_can_view_section, world_row_visible
 from ..models import CombatSession, Entity, GameSession, PlayerCharacter, World
 from ..templating import templates
 
@@ -94,6 +94,8 @@ def _candidates(db: Session, world_id: int):
 @router.get("/combat", response_class=HTMLResponse)
 def combat_list(request: Request, page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
+    if not world_can_view_section(request, world, "combat"):
+        raise HTTPException(403)
     base_q = db.query(CombatSession).filter(
         CombatSession.world_id == (world.id if world else 1)
     ).order_by(CombatSession.updated_at.desc())
@@ -120,7 +122,7 @@ def combat_create(request: Request, name: str = Form("New Encounter"), db: Sessi
 def combat_detail(combat_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
     cs = db.query(CombatSession).filter(CombatSession.id == combat_id).first()
-    if not cs:
+    if not cs or not world_row_visible(request, db, cs.world_id, "combat"):
         raise HTTPException(404)
     _, _, pc_payload, entity_payload = _candidates(db, cs.world_id)
     game_sessions = db.query(GameSession).filter(GameSession.world_id == cs.world_id).order_by(GameSession.session_num.desc()).all()
@@ -135,9 +137,9 @@ def combat_detail(combat_id: int, request: Request, db: Session = Depends(get_db
 
 
 @router.get("/api/combat/{combat_id}/state")
-def combat_get_state(combat_id: int, db: Session = Depends(get_db)):
+def combat_get_state(combat_id: int, request: Request, db: Session = Depends(get_db)):
     cs = db.query(CombatSession).filter(CombatSession.id == combat_id).first()
-    if not cs:
+    if not cs or not world_row_visible(request, db, cs.world_id, "combat"):
         raise HTTPException(404)
     return {
         "combatants": json.loads(cs.combatants_json or "[]"),
