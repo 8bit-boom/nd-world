@@ -140,6 +140,10 @@
     <div id="chat-jobs-panel" class="nd-jobs-panel" style="display:none;margin:0 1.2rem"></div>
     <div style="padding:.25rem 1.2rem 0;font-size:.72rem;color:var(--text-dim);display:flex;justify-content:space-between;align-items:center;gap:.5rem">
       <span>Model: <span id="active-model-label" style="color:var(--neon)">—</span></span>
+      <label style="display:inline-flex;align-items:center;gap:.25rem;cursor:pointer"
+             title="Uses the model's 'thinking'/reasoning mode for this reply — usually better quality, but slower and can leave a small/tight-context model with no room left to answer. On by default; remembered per-browser.">
+        <input type="checkbox" id="ai-think-checkbox" checked onchange="ndSetThinkEnabled(this.checked)">🧠 Thinking
+      </label>
       <span id="ctx-usage" style="color:var(--text-dim)" title="Estimated size of the last message sent, including RAG lore and chat history"></span>
       <button id="ctx-compact-suggest" type="button" onclick="compactChat()"
               style="display:none;font-size:.7rem;background:none;border:1px solid #f55;color:#f55;border-radius:3px;padding:.1rem .4rem;cursor:pointer">Compact now?</button>

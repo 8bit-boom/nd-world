@@ -75,6 +75,29 @@ function pcAdd(role, text, thinking) {
   return b;
 }
 
+// The model's live reasoning trace — same pattern (and same shared
+// static/css/ai-chat.css classes/.ai-msg--assistant column layout) as the
+// GM's main AI Chat page (static/js/ai-chat-core.js's ndEnsureReasoning).
+// Inserted as a sibling BEFORE the bubble within the same .ai-msg wrapper,
+// since the bubble's own innerHTML gets replaced wholesale every token.
+function pcEnsureReasoning(bubble) {
+  const w = bubble.parentElement;
+  let det = w.querySelector('.ai-reasoning');
+  if (!det) {
+    det = document.createElement('details');
+    det.className = 'ai-reasoning';
+    det.open = true;
+    const sum = document.createElement('summary');
+    sum.textContent = '🧠 Thinking…';
+    det.appendChild(sum);
+    const pre = document.createElement('div');
+    pre.className = 'ai-reasoning-text';
+    det.appendChild(pre);
+    w.insertBefore(det, bubble);
+  }
+  return det.querySelector('.ai-reasoning-text');
+}
+
 async function pcSend() {
   const inp = document.getElementById('ai-input');
   const btn = document.getElementById('ai-send');
@@ -104,13 +127,19 @@ async function pcSend() {
     const res = await fetch('/api/ai/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages, system: PC_SYSTEM, surface: 'ask_ai' }),
+      // think: true by default — same as the GM's main AI Chat page — so a
+      // reasoning-capable model actually reasons before answering; a model
+      // that doesn't support thinking just falls back transparently
+      // server-side (app.ai.stream_chat's own think=false retry).
+      body: JSON.stringify({ messages, system: PC_SYSTEM, surface: 'ask_ai', think: true }),
     });
     if (!res.ok) throw new Error('Server error ' + res.status);
     bubble.parentElement.classList.remove('ai-thinking');
     bubble.innerHTML = '';
     let full = '';
     let noteText = '';
+    let reasoning = '';
+    let reasoningTextEl = null;
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
@@ -129,7 +158,22 @@ async function pcSend() {
           bubble.innerHTML = `<div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.4rem">ℹ️ ${_escHtml(noteText)}</div>` + _mdToHtml(full);
           continue;
         }
+        if (typeof obj.thinking === 'string') {
+          reasoning += obj.thinking;
+          if (!reasoningTextEl) reasoningTextEl = pcEnsureReasoning(bubble);
+          reasoningTextEl.textContent = reasoning;
+          document.getElementById('ai-messages').scrollTop = 99999;
+          continue;
+        }
         if (typeof obj.token !== 'string') continue;
+        if (reasoningTextEl) {
+          // The real answer is starting — collapse the reasoning trace so
+          // it doesn't crowd out the reply, but leave it there to reopen.
+          const det = reasoningTextEl.closest('details');
+          det.querySelector('summary').textContent = '🧠 Thought process';
+          det.open = false;
+          reasoningTextEl = null;
+        }
         full += obj.token;
         bubble.innerHTML = (noteText ? `<div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.4rem">ℹ️ ${_escHtml(noteText)}</div>` : '') + _mdToHtml(full);
         document.getElementById('ai-messages').scrollTop = 99999;

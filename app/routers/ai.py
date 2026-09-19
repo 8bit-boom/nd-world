@@ -219,12 +219,14 @@ class ChatBody(BaseModel):
     # defaults. Always passed through _clamp_options() before reaching
     # app.ai — never trust a client-supplied options dict directly.
     options: dict = {}
-    # Defaults False, same as stream_chat's own plain default — most
-    # callers of this shared route (AI Chat's World Chat/Image tabs, "Talk
-    # to this NPC") have no Thinking toggle and never send this. The
-    # entity detail page's "Ask AI" panel does (see epSend's Thinking
-    # checkbox), letting a GM opt into slower/deeper reasoning per-request
-    # on that one surface.
+    # Defaults False, same as stream_chat's own plain default — a caller
+    # that has no reason to care about reasoning mode (background chat
+    # jobs, the entity detail page's "Ask AI" panel before its own Thinking
+    # checkbox is ticked) never sends this. Both the GM's main AI Chat page
+    # (ai-chat-core.js's ai-think-checkbox, checked by default) and the
+    # standalone player-facing /ai-chat page (ai_chat_player.html, always
+    # true — no toggle on that simpler page) now request it by default, so
+    # in practice most /stream calls do set this true.
     think: bool = False
 
 

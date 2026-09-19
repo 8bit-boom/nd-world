@@ -575,6 +575,31 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+// The model's live reasoning trace, shown while think=true and the model is
+// actually producing "thinking" pieces (see sendMessage's SSE loop below) —
+// same pattern as entities/detail.html's epEnsureReasoning for the "Ask
+// this entity" panel. Inserted as a sibling BEFORE the bubble (not inside
+// it — the bubble's own innerHTML gets replaced wholesale every token)
+// within the same .ai-msg wrapper, which is why .ai-msg--assistant needs
+// flex-direction:column (see static/css/ai-chat.css).
+function ndEnsureReasoning(bubble) {
+  const w = bubble.parentElement;
+  let det = w.querySelector('.ai-reasoning');
+  if (!det) {
+    det = document.createElement('details');
+    det.className = 'ai-reasoning';
+    det.open = true;
+    const sum = document.createElement('summary');
+    sum.textContent = '🧠 Thinking…';
+    det.appendChild(sum);
+    const pre = document.createElement('div');
+    pre.className = 'ai-reasoning-text';
+    det.appendChild(pre);
+    w.insertBefore(det, bubble);
+  }
+  return det.querySelector('.ai-reasoning-text');
+}
+
 function addSaveBtn(wrap, text) {
   const btn = document.createElement('button');
   btn.className = 'save-note-btn';
@@ -928,6 +953,20 @@ function ndGetAutoCompact() {
   try { return localStorage.getItem('nd_ai_autocompact') === '1'; } catch (e) { return false; }
 }
 
+// Same per-browser localStorage preference pattern as auto-compact above,
+// but defaults to ON (unset === thinking enabled) rather than off — every
+// Ollama model this page can select gets asked to reason by default; a GM
+// who wants a specific reply fast (or is on a model that doesn't support
+// thinking) can flip it off per-message via the checkbox next to the model
+// label.
+function ndSetThinkEnabled(enabled) {
+  try { localStorage.setItem('nd_ai_think', enabled ? '1' : '0'); } catch (e) { /* ignore */ }
+}
+
+function ndGetThinkEnabled() {
+  try { return localStorage.getItem('nd_ai_think') !== '0'; } catch (e) { return true; }
+}
+
 async function compactChat() {
   if (_compacting) return;
   if (history.length <= COMPACT_KEEP_RECENT) {
@@ -1182,12 +1221,13 @@ async function sendMessage() {
     const { messages: messagesWithCtx, system: presetSystem } = await buildChatMessagesWithContext();
     _updateCtxUsage(messagesWithCtx, presetSystem);
 
+    const thinkCb = document.getElementById('ai-think-checkbox');
     const res = await fetch('/api/ai/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         messages: messagesWithCtx, system: presetSystem, model: activeModel, surface: 'chat',
-        options: _chatPresetOptions,
+        options: _chatPresetOptions, think: thinkCb ? thinkCb.checked : ndGetThinkEnabled(),
       })
     });
     if (!res.ok) throw new Error('Server error ' + res.status);
@@ -1199,6 +1239,8 @@ async function sendMessage() {
     let tokenCount = 0;
     let firstToken = true;
     let startTime = 0;
+    let reasoning = '';
+    let reasoningTextEl = null;
     const statsEl = document.getElementById('gen-stats');
     statsEl.textContent = '⏳ Connecting…';
     statsEl.style.color = 'var(--text-dim)';
@@ -1232,11 +1274,26 @@ async function sendMessage() {
           thinking.innerHTML = `<div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.4rem">ℹ️ ${escHtml(noteText)}</div>` + mdToHtml(fullText);
           continue;
         }
+        if (typeof _obj.thinking === 'string') {
+          reasoning += _obj.thinking;
+          if (!reasoningTextEl) reasoningTextEl = ndEnsureReasoning(thinking);
+          reasoningTextEl.textContent = reasoning;
+          document.getElementById('ai-messages').scrollTop = 99999;
+          continue;
+        }
         if (typeof _obj.token !== 'string') continue;
         const token = _obj.token;
         if (firstToken) {
           firstToken = false;
           startTime = Date.now();
+          if (reasoningTextEl) {
+            // The real answer is starting — collapse the reasoning trace so
+            // it doesn't crowd out the reply, but leave it there to reopen
+            // and read in full.
+            const det = reasoningTextEl.closest('details');
+            det.querySelector('summary').textContent = '🧠 Thought process';
+            det.open = false;
+          }
           statsEl.style.color = 'var(--neon)';
           statsTimer = setInterval(() => {
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -1579,5 +1636,12 @@ function switchTab(tab) {
 (function () {
   const cb = document.getElementById('autocompact-toggle');
   if (cb) cb.checked = ndGetAutoCompact();
+})();
+
+// Same restore for the Thinking checkbox (see ndGetThinkEnabled's own
+// comment on why this one defaults to checked).
+(function () {
+  const cb = document.getElementById('ai-think-checkbox');
+  if (cb) cb.checked = ndGetThinkEnabled();
 })();
 
