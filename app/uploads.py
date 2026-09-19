@@ -223,12 +223,14 @@ def save_upload_chunk(chunks_root: Path, upload_id: str, chunk_index: int, file:
     copy_upload_bounded(file, dest, max_bytes=max_bytes)
 
 
-def reassemble_upload_chunks(chunks_root: Path, upload_id: str, total_chunks: int, dest: Path, max_bytes: int) -> None:
-    """Concatenate every part written by save_upload_chunk into `dest`, in
-    order, raising 400 if any part is missing (client should retry the whole
-    upload with a fresh id) or 413 if the reassembled total exceeds
-    max_bytes (the partial `dest` is removed either way). Always cleans up
-    the chunk session directory afterward, success or failure."""
+def verify_upload_chunks_present(chunks_root: Path, upload_id: str, total_chunks: int) -> list[Path]:
+    """The fast (no byte I/O — just stat() calls) half of reassemble_upload_
+    chunks below, split out so a caller that's about to hand the actual
+    copy off to a background task/thread (a multi-GB file can take too
+    long to await inline — see app.routers.ai's _start_chunked_gguf_import)
+    can still fail fast with a 400 in the original request when the upload
+    is obviously incomplete, rather than only discovering that later via
+    whatever polling mechanism reports the background task's result."""
     if not CHUNK_ID_RE.match(upload_id):
         raise HTTPException(400, "Invalid upload id")
     if not (1 <= total_chunks <= MAX_CHUNK_INDEX + 1):
@@ -237,6 +239,17 @@ def reassemble_upload_chunks(chunks_root: Path, upload_id: str, total_chunks: in
     parts = [session_dir / f"{i:06d}.part" for i in range(total_chunks)]
     if not session_dir.is_dir() or not all(p.is_file() for p in parts):
         raise HTTPException(400, "Upload incomplete — one or more parts are missing. Please retry the upload.")
+    return parts
+
+
+def reassemble_upload_chunks(chunks_root: Path, upload_id: str, total_chunks: int, dest: Path, max_bytes: int) -> None:
+    """Concatenate every part written by save_upload_chunk into `dest`, in
+    order, raising 400 if any part is missing (client should retry the whole
+    upload with a fresh id) or 413 if the reassembled total exceeds
+    max_bytes (the partial `dest` is removed either way). Always cleans up
+    the chunk session directory afterward, success or failure."""
+    parts = verify_upload_chunks_present(chunks_root, upload_id, total_chunks)
+    session_dir = chunk_session_dir(chunks_root, upload_id)
     try:
         total_bytes = 0
         with dest.open("wb") as out:

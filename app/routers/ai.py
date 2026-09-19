@@ -28,6 +28,7 @@ from ..deps import get_world_ctx, can_edit_content, check_llm_cooldown
 from ..models import AudioJob, ChatJob, ChatSession, ImageJob, PromptPreset, User
 from ..uploads import (
     copy_upload_bounded, unique_upload_filename, reassemble_upload_chunks, save_upload_chunk,
+    verify_upload_chunks_present,
     effective_upload_bytes,
 )
 
@@ -1666,6 +1667,56 @@ async def _run_local_gguf_import(import_id: str, dest: _Path, model_name: str) -
         dest.unlink(missing_ok=True)
 
 
+async def _run_chunked_gguf_import(
+    import_id: str, chunks_root: _Path, upload_id: str, total_chunks: int,
+    dest: _Path, max_bytes: int, model_name: str,
+) -> None:
+    """Background task body for the chunked-upload path: reassemble the
+    parts (blocking disk I/O — offloaded to a thread via asyncio.to_thread
+    so it doesn't stall the event loop, and every OTHER request this
+    process is serving, for however long it takes) before handing off to
+    the same Ollama-push _run_local_gguf_import already does.
+
+    Reassembly used to run inline in POST /ollama/upload/complete, awaited
+    directly, under the assumption it "stays fast even for a multi-GB
+    file" — true on fast local disk for a modest-sized model, but a large
+    enough one (or slow enough storage) makes the copy itself take longer
+    than a reverse-proxy/CDN's own edge timeout (e.g. Cloudflare's ~100s),
+    killing the request with an opaque 524 before the (already-backgrounded)
+    Ollama push ever got a chance to start — the same class of bug
+    _start_local_gguf_import's own docstring describes for that later
+    phase, just one step earlier in the pipeline."""
+    _model_imports[import_id] = {"status": "reassembling", "detail": "Reassembling uploaded file…", "_ts": _time.time()}
+    try:
+        await _asyncio.to_thread(
+            reassemble_upload_chunks, chunks_root, upload_id, total_chunks, dest, max_bytes,
+        )
+    except HTTPException as exc:
+        _model_imports[import_id] = {"error": str(exc.detail), "_ts": _time.time()}
+        return
+    except Exception as exc:
+        _log.warning("chunked gguf reassembly failed: %s: %s", type(exc).__name__, exc)
+        _model_imports[import_id] = {"error": f"Reassembly failed: {exc}", "_ts": _time.time()}
+        return
+    await _run_local_gguf_import(import_id, dest, model_name)
+
+
+def _start_chunked_gguf_import(
+    chunks_root: _Path, upload_id: str, total_chunks: int, dest: _Path, max_bytes: int, model_name: str,
+) -> dict:
+    """Same "return an import_id near-instantly, poll for progress" shape
+    as _start_local_gguf_import, extended to cover reassembly too — see
+    _run_chunked_gguf_import's own docstring for why that step can no
+    longer be awaited inline in the request handler either."""
+    _prune_model_imports()
+    import_id = _uuid.uuid4().hex
+    _model_imports[import_id] = {"status": "queued", "_ts": _time.time()}
+    _asyncio.create_task(_run_chunked_gguf_import(
+        import_id, chunks_root, upload_id, total_chunks, dest, max_bytes, model_name,
+    ))
+    return {"import_id": import_id, "status": "queued"}
+
+
 def _start_local_gguf_import(dest: _Path, model_name: str) -> dict:
     """Kick off the "push blob to Ollama + register" phase as a detached
     background task and return immediately with an import_id to poll.
@@ -1716,20 +1767,27 @@ async def api_ollama_upload_complete(
     upload_id: str = Form(...), filename: str = Form(...), total_chunks: int = Form(...),
     model_name: str = Form(...),
 ):
-    """Reassemble the parts uploaded via .../chunk above, then kick off the
-    push into Ollama as `model_name` as a background task (see
-    _start_local_gguf_import) — the reassembly itself is local disk I/O
-    and stays fast even for a multi-GB file, so it's fine to await here."""
+    """Kicks off reassembling the parts uploaded via .../chunk above, then
+    pushing the result into Ollama as `model_name`, as one background task
+    (see _start_chunked_gguf_import) — reassembly used to run inline here,
+    which for a large enough model (or slow enough disk) can outlast a
+    reverse-proxy/CDN's own edge timeout and kill the request with an
+    opaque 524 before the Ollama push even started. This returns near-
+    instantly regardless of file size; poll GET .../upload/status/{id} for
+    progress through both phases."""
     ext = _Path(filename or "").suffix.lower()
     if ext != ".gguf":
         raise HTTPException(400, "Only .gguf files are supported")
+    # Cheap (stat() calls only, no byte I/O) — still validated inline so an
+    # obviously-broken upload (missing/incomplete parts) 400s immediately,
+    # same as before this route started backgrounding the actual copy.
+    verify_upload_chunks_present(_model_upload_chunks_root(), upload_id, total_chunks)
     dest_dir = _model_upload_chunks_root().parent
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / unique_upload_filename(filename, ext)
-    reassemble_upload_chunks(
-        _model_upload_chunks_root(), upload_id, total_chunks, dest, max_bytes=_MAX_MODEL_UPLOAD_BYTES,
+    return _start_chunked_gguf_import(
+        _model_upload_chunks_root(), upload_id, total_chunks, dest, _MAX_MODEL_UPLOAD_BYTES, model_name,
     )
-    return _start_local_gguf_import(dest, model_name)
 
 
 @router.get("/ollama/upload/status/{import_id}")

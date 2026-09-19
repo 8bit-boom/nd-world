@@ -353,6 +353,105 @@ def test_upload_complete_missing_chunks_400(client, seed):
     assert r.status_code == 400
 
 
+def test_upload_complete_returns_before_reassembly_finishes(client, seed, monkeypatch):
+    """The regression this covers: reassembly used to be awaited inline in
+    POST /ollama/upload/complete, so a big enough file (or slow enough
+    disk) could make the copy itself outlast a reverse-proxy/CDN's own edge
+    timeout (Cloudflare's ~100s) and kill the request with an opaque 524
+    before the (already-backgrounded) Ollama push ever started. Proven here
+    by making the reassembly step itself artificially slow and confirming
+    the HTTP response still comes back near-instantly — the request can't
+    be waiting on that call."""
+    import time as _time_mod
+
+    _fake_import(monkeypatch, {"status": "done", "model": "my-model"})
+    reassembled = {"done": False}
+
+    def _slow_reassemble(chunks_root, upload_id, total_chunks, dest, max_bytes):
+        _time_mod.sleep(0.3)
+        dest.write_bytes(b"fake gguf")
+        reassembled["done"] = True
+
+    monkeypatch.setattr(ai_router, "reassemble_upload_chunks", _slow_reassemble)
+    login(client, seed.gm.email, GM_PASSWORD)
+    upload_id = "1" * 32
+    r0 = client.post("/api/ai/ollama/upload/chunk", data={"upload_id": upload_id, "chunk_index": "0"},
+                      files={"file": ("part", io.BytesIO(b"x"), "application/octet-stream")})
+    assert r0.status_code == 200
+
+    start = time.time()
+    r1 = client.post("/api/ai/ollama/upload/complete", data={
+        "upload_id": upload_id, "filename": "m.gguf", "total_chunks": "1", "model_name": "my-model",
+    })
+    elapsed = time.time() - start
+    assert r1.status_code == 200
+    assert elapsed < 0.3, f"complete route waited on reassembly ({elapsed:.2f}s) instead of backgrounding it"
+    assert not reassembled["done"], "reassembly should not have finished yet when the response came back"
+
+    result = _poll_until_terminal(client, r1.json()["import_id"])
+    assert result == {"status": "done", "model": "my-model"}
+    assert reassembled["done"]
+
+
+def test_upload_status_reports_reassembling_before_done(client, seed, monkeypatch):
+    import time as _time_mod
+
+    _fake_import(monkeypatch, {"status": "done", "model": "my-model"})
+
+    def _slow_reassemble(chunks_root, upload_id, total_chunks, dest, max_bytes):
+        _time_mod.sleep(0.2)
+        dest.write_bytes(b"fake gguf")
+
+    monkeypatch.setattr(ai_router, "reassemble_upload_chunks", _slow_reassemble)
+    login(client, seed.gm.email, GM_PASSWORD)
+    upload_id = "2" * 32
+    client.post("/api/ai/ollama/upload/chunk", data={"upload_id": upload_id, "chunk_index": "0"},
+                files={"file": ("part", io.BytesIO(b"x"), "application/octet-stream")})
+    r = client.post("/api/ai/ollama/upload/complete", data={
+        "upload_id": upload_id, "filename": "m.gguf", "total_chunks": "1", "model_name": "my-model",
+    })
+    import_id = r.json()["import_id"]
+    r2 = client.get(f"/api/ai/ollama/upload/status/{import_id}")
+    assert r2.json()["status"] in ("queued", "reassembling")
+    _poll_until_terminal(client, import_id)
+
+
+def test_upload_complete_reassembly_failure_surfaces_via_poll_not_the_request(client, seed, monkeypatch):
+    """A reassembly error (corrupt/missing part discovered mid-copy, disk
+    full, etc.) now happens inside the background task — the /complete
+    request itself already returned 200 with an import_id by the time this
+    can fail, so the error has to surface through the same polling
+    mechanism a downstream Ollama-push failure already uses."""
+    def _boom(chunks_root, upload_id, total_chunks, dest, max_bytes):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(ai_router, "reassemble_upload_chunks", _boom)
+    login(client, seed.gm.email, GM_PASSWORD)
+    upload_id = "3" * 32
+    client.post("/api/ai/ollama/upload/chunk", data={"upload_id": upload_id, "chunk_index": "0"},
+                files={"file": ("part", io.BytesIO(b"x"), "application/octet-stream")})
+    r = client.post("/api/ai/ollama/upload/complete", data={
+        "upload_id": upload_id, "filename": "m.gguf", "total_chunks": "1", "model_name": "my-model",
+    })
+    assert r.status_code == 200
+    result = _poll_until_terminal(client, r.json()["import_id"])
+    assert result == {"error": "Reassembly failed: no space left on device"}
+
+
+def test_upload_complete_still_fails_fast_on_missing_chunks(client, seed):
+    """The one thing that must NOT move to the background: an upload with
+    missing/incomplete parts is detected from stat() calls alone (no byte
+    I/O), so it still 400s synchronously in the request — same behavior as
+    before reassembly itself was backgrounded (see
+    test_upload_complete_missing_chunks_400 above)."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.post("/api/ai/ollama/upload/complete", data={
+        "upload_id": "4" * 32, "filename": "m.gguf", "total_chunks": "3", "model_name": "x",
+    })
+    assert r.status_code == 400
+    assert "incomplete" in r.json()["detail"].lower()
+
+
 def test_upload_direct_cleans_up_temp_file_on_success(client, seed, monkeypatch, tmp_path):
     captured = {}
 
