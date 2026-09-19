@@ -112,7 +112,7 @@
         <span id="ai-gen-status" style="font-size:.8rem;color:#888"></span>
       </div>
       {{ _aa.ai_assist_panel('ent') }}
-      <textarea name="body" id="body-field" rows="16" placeholder="# History&#10;…" data-fmt>{{ entity.body if entity else '' }}</textarea>
+      <textarea name="body" id="body-field" rows="16" placeholder="# History&#10;…" data-fmt data-fmt-gmonly>{{ entity.body if entity else '' }}</textarea>
     </div>
 
     <div class="form-group" style="margin:.6rem 0 1rem">

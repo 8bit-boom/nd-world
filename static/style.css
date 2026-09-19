@@ -760,6 +760,29 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
   color: inherit;
   cursor: text;
 }
+/* [gmonly]...[/gmonly] (render_md/_apply_inline_styles) — unlike
+   .spoiler-text above, this is a real access-control boundary: a non-GM
+   viewer's copy of the page never has this markup at all (strip_gm_only()
+   removes tag + contents server-side before render_md runs), so there's no
+   audience left to hide it from once it does render — a plainly-labeled
+   box, not click-to-reveal. */
+.gm-only-text {
+  display: block;
+  margin: .6em 0;
+  padding: .5em .7em;
+  background: rgba(255, 45, 120, .08);
+  border: 1px dashed var(--neon2);
+  border-radius: 3px;
+}
+.gm-only-text::before {
+  content: "GM ONLY";
+  display: block;
+  font-size: .68rem;
+  font-weight: bold;
+  letter-spacing: .05em;
+  color: var(--neon2);
+  margin-bottom: .3em;
+}
 /* inline-block (not block): a lone image still sits on its own line since
    it's the sole content of its wrapping <p>, but several small images
    placed back-to-back (no separating text) now flow side by side on the

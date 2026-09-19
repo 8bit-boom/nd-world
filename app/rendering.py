@@ -43,6 +43,36 @@ _U_TAG_RE = re.compile(r'\[u\](.*?)\[/u\]', re.DOTALL)
 # through every render_md call site just for this one tag.
 _SPOILER_TAG_RE = re.compile(r'\[spoiler\](.*?)\[/spoiler\]', re.DOTALL)
 
+# [gmonly]...[/gmonly] — a real access-control boundary, unlike [spoiler]
+# above: [spoiler] is a click-to-reveal blob EVERYONE (including a player)
+# can open, purely a "don't spoil the GM's own re-read" convenience. This
+# tag is for a GM secret embedded inside an otherwise player-visible
+# entity/note — the twist behind an NPC's friendly facade, a trap's real
+# trigger — that a player must never see rendered, downloaded, or fed into
+# their own RAG context, without splitting it into a whole separate
+# GM-only entity/note. strip_gm_only() below removes the tag AND its
+# content entirely from the raw text; unlike render_md (a pure function
+# with no notion of who's viewing — see [spoiler]'s own comment), this one
+# IS role-aware, but only because every call site chooses to invoke it
+# with real viewer context, not because rendering itself gained that
+# concept. Case-insensitive so a stray [GMOnly] still works — this is a
+# hide-from-players security boundary, not a cosmetic tag worth failing
+# silently over a typo'd case.
+_GM_ONLY_TAG_RE = re.compile(r'\[gmonly\](.*?)\[/gmonly\]', re.DOTALL | re.IGNORECASE)
+
+
+def strip_gm_only(text: str) -> str:
+    """Removes every [gmonly]...[/gmonly] block (tag and contents alike)
+    from `text`. Call this on any entity/note field BEFORE render_md,
+    autolinking, a .md/.zip download, or a RAG excerpt — anywhere the
+    caller knows the current viewer is not a GM. A GM viewing/editing
+    their own content is never passed through this function, so the raw
+    markers and the secret text underneath survive untouched for them."""
+    if not text:
+        return text
+    return _GM_ONLY_TAG_RE.sub("", text)
+
+
 
 def _safe_color(raw: str) -> str | None:
     raw = raw.strip()
@@ -116,6 +146,16 @@ def _apply_inline_styles(html: str) -> str:
     html = _SPOILER_TAG_RE.sub(
         r'<span class="spoiler-text" data-spoiler tabindex="0" role="button" '
         r'aria-label="Spoiler — click to reveal">\1</span>',
+        html,
+    )
+    # An intact [gmonly] tag reaching this point can only have come from a
+    # GM-authorized call — every non-GM path (retrieval, Chronicler, entity/
+    # note display, downloads) calls strip_gm_only() on the raw text first,
+    # which removes the tag and its contents entirely before render_md ever
+    # runs. So unlike [spoiler] there's no non-GM viewer left to hide this
+    # from; it's rendered as a plainly-labeled box rather than click-to-reveal.
+    html = _GM_ONLY_TAG_RE.sub(
+        r'<div class="gm-only-text" data-gm-only>\1</div>',
         html,
     )
     return html

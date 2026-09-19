@@ -81,7 +81,16 @@ def build_chronicler_system_prompt(db: Session, world_id: int, question: str, us
     if entities:
         lines.append("")
         lines.append("## Relevant entities")
-        lines.append(_retrieval.format_context_from_entities(entities))
+        # strip_gm_only: Chronicler is the primary player-facing lore-Q&A
+        # surface — entities are already visibility-filtered above (an
+        # entire hidden entity never reaches `entities` for a non-GM), but
+        # that says nothing about a [gmonly] secret embedded inside an
+        # otherwise player-visible entity's own body/summary. Without this,
+        # the Chronicler could read a GM's hidden aside straight out of the
+        # prompt and repeat it back to the player who asked.
+        lines.append(_retrieval.format_context_from_entities(
+            entities, strip_gm_only=bool(user) and not user.is_gm,
+        ))
     return "\n".join(lines)
 
 

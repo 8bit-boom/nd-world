@@ -22,6 +22,15 @@
 // _U_TAG_RE/_SPOILER_TAG_RE, and the size/audio/video title markers in sync
 // with app/rendering.py's _SIZE_TITLE_RE/"audio"/"video" — they must accept
 // exactly the same syntax.
+//
+// [gmonly] is NOT mirrored in ndFmtRenderInline below: unlike [spoiler]
+// (visible-to-everyone, just click-to-reveal), [gmonly] is a real
+// access-control boundary enforced server-side (app/rendering.py's
+// strip_gm_only, called on entity/note text before it ever reaches a
+// non-GM viewer or RAG). The board note body ndFmtRenderInline renders has
+// no such server-side pass to strip it against, so [gmonly] is only wired
+// into the toolbar button (which just inserts the tag) here, not into any
+// client-only render path.
 
 const NDFMT_AV_TITLES = new Set(["audio", "video"]);
 const NDFMT_SIZE_TITLE_RE = /^size:(\d{1,3})$/;
@@ -534,6 +543,15 @@ function ndFmtBuildToolbar(ta) {
   bar.appendChild(ndFmtButton("S", "Strikethrough", () => ndFmtWrapSelection(ta, "~~", "~~")));
   bar.appendChild(ndFmtButton("⬛", "Highlight", () => ndFmtWrapSelection(ta, "[mark]", "[/mark]")));
   bar.appendChild(ndFmtButton("🙈", "Spoiler — hidden until clicked", () => ndFmtWrapSelection(ta, "[spoiler]", "[/spoiler]")));
+  // Opt-in per textarea (data-fmt-gmonly), not shown on every data-fmt field:
+  // strip_gm_only() is only actually wired into the entity/note render,
+  // download, and RAG paths this tag needs to be safe on. Offering the
+  // button on a field nothing strips it from (Rules already has its own
+  // real :::gm block mechanism; Facts/PC notes/board nodes have neither)
+  // would be a false sense of security, so those textareas don't get it.
+  if (ta.hasAttribute("data-fmt-gmonly")) {
+    bar.appendChild(ndFmtButton("🔒", "GM only — stripped entirely before a player ever sees or asks AI about it", () => ndFmtWrapSelection(ta, "[gmonly]", "[/gmonly]")));
+  }
 
   const imgBtn = ndFmtButton("🖼", "Insert image, audio, or video (or paste/drag one in)", () => ndFmtInsertImage(ta, imgBtn));
   bar.appendChild(imgBtn);

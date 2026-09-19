@@ -18,6 +18,7 @@ from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from .models import Entity, World, entity_player_access
+from .rendering import strip_gm_only as _strip_gm_only
 
 _CORE_RULES_PATH = Path(__file__).parent / "core_rules.md"
 
@@ -219,6 +220,7 @@ def find_relevant_entities(db: Session, world_id: int, query: str, limit: int = 
 def format_context_from_entities(
     entities: list, excerpt_count: int = EXCERPT_COUNT,
     excerpt_chars: int = EXCERPT_CHARS, excerpt_total_budget: int = EXCERPT_TOTAL_BUDGET,
+    strip_gm_only: bool = False,
 ) -> str:
     """One line per entity ("- [kind] name (subtype): summary"), plus — for
     the first `excerpt_count` entities in the given order (retrieval-ranked
@@ -229,19 +231,31 @@ def format_context_from_entities(
     across all excerpts stops growing past `excerpt_total_budget` (a
     handful of very long bodies can't blow the prompt out even if each
     individually fits under the per-entity cap). Pass excerpt_count=0 for
-    the old summary-only behavior."""
+    the old summary-only behavior.
+
+    strip_gm_only=True removes every [gmonly]...[/gmonly] block (tag and
+    contents alike — see app.rendering.strip_gm_only) from each entity's
+    summary/body before it's used here. Callers pass this whenever the
+    context being built could reach a non-GM (a player's AI Chat question,
+    Chronicler's answer) — entities themselves are already visibility-
+    filtered by the caller's _visibility_filter pass, but that only decides
+    whether a WHOLE entity is included; this is what keeps a GM secret
+    embedded inside an otherwise player-visible entity from leaking into
+    that included entity's own text."""
     lines = []
     excerpt_total = 0
     for i, e in enumerate(entities):
+        summary = _strip_gm_only(e.summary) if strip_gm_only else e.summary
         line = f"- [{e.kind}] {e.name}"
         if e.subtype:
             line += f" ({e.subtype})"
-        if e.summary:
-            line += f": {e.summary}"
+        if summary:
+            line += f": {summary}"
         lines.append(line)
         if i < excerpt_count and e.body and excerpt_total < excerpt_total_budget:
+            body = _strip_gm_only(e.body) if strip_gm_only else e.body
             remaining = excerpt_total_budget - excerpt_total
-            excerpt = e.body.strip()[:min(excerpt_chars, remaining)]
+            excerpt = body.strip()[:min(excerpt_chars, remaining)]
             if excerpt:
                 lines.append(f"  {excerpt}")
                 excerpt_total += len(excerpt)
@@ -280,6 +294,11 @@ def smart_world_context(
     function runs (the initial search, the non-note top-up, and the notes
     top-up alike) — see app.routers.ai's player-facing RAG endpoint, which
     is the one caller that ever passes a real player `user` through here.
+    The same real-non-GM `user` also makes format_context_from_entities
+    strip any [gmonly]...[/gmonly] block out of each included entity's own
+    text — visibility filtering alone only decides whether a whole entity
+    is in scope, not whether a secret embedded inside an otherwise
+    player-visible entity's body should be.
     Rules text has no per-row visibility to filter — a world's Rules page
     is already visible to every member of that world regardless of role,
     same as GET /rules itself, so rules_context runs unconditionally."""
@@ -302,7 +321,7 @@ def smart_world_context(
         seen_ids = {e.id for e in entities}
         extra_notes = [e for e in note_entities if e.id not in seen_ids]
         notes = notes + extra_notes
-    context = format_context_from_entities(non_notes + notes)
+    context = format_context_from_entities(non_notes + notes, strip_gm_only=bool(user) and not user.is_gm)
     world = db.get(World, world_id)
     rules = rules_context(world, query, limit=rules_limit)
     if rules:

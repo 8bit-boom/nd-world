@@ -32,7 +32,7 @@ from . import streaming_export as _streaming_export
 from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache, RESTORE_STAGING_DIR
 from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content, world_can_edit_section, world_can_view_section, world_row_visible, world_section_access
 from .imaging import convert_image, make_thumbnail
-from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html, autolink_entities, derive_name_variants
+from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html, autolink_entities, derive_name_variants, strip_gm_only
 from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_overlay,
                            restore_blocks, split_rules_sections, suggest_tabs_overlay)
 from .templating import templates
@@ -1722,7 +1722,11 @@ def private_notes_view(
     )
     autolink_names = _autolink_name_map(db, world_id, request)
     for n in notes:
-        n.content_html = autolink_entities(render_md(n.content), autolink_names)  # type: ignore[attr-defined]
+        # The GM writes these, the target player only ever reads (no edit
+        # form on this page for the recipient) — so unlike the entity-note
+        # edit-form tension elsewhere, stripping here has no data-loss risk.
+        content = n.content if is_gm else strip_gm_only(n.content)
+        n.content_html = autolink_entities(render_md(content), autolink_names)  # type: ignore[attr-defined]
     worlds = _visible_worlds(request, db)
     # Sidebar "Contents" nav — same idea as Rules' TOC (_rules_toc), except
     # Notes has no single continuous document to pull headings from, so each
@@ -4714,21 +4718,32 @@ def _autolink_name_map(db: Session, world_id: int, request: Request, exclude_ent
 def _entity_to_markdown(db: Session, entity: Entity, request: Request) -> str:
     """Render an entity (name/kind/summary/body) plus whatever notes the
     current viewer can see into a single standalone .md document — used by
-    both the single-entity download and the per-kind bulk zip."""
+    both the single-entity download and the per-kind bulk zip.
+
+    Both download routes already gate a non-GM caller behind
+    players_can_download_entities (same tier as any other player-reachable
+    export), so a real, non-GM viewer here needs [gmonly] content stripped
+    from the body/notes for the exact same reason the RAG/display paths do
+    — a downloadable .md is just another way this text could reach a
+    player."""
+    user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
     ent_world = db.get(World, entity.world_id) if entity.world_id else None
     kind_icons = deps.effective_kinds(ent_world)[1]
     kind_label = f"{kind_icons.get(entity.kind, '')} {entity.kind.capitalize()}".strip()
     if entity.subtype:
         kind_label += f" — {entity.subtype}"
+    body = entity.body if is_gm else strip_gm_only(entity.body)
     parts = [f"# {entity.name}", "", f"*{kind_label}*", ""]
     if entity.summary:
         parts += [f"*{entity.summary}*", ""]
-    parts += ["---", "", entity.body or "", ""]
+    parts += ["---", "", body or "", ""]
     notes = _visible_entity_notes(db, entity.id, request)
     if notes:
         parts += ["## Notes", ""]
         for note in notes:
-            parts += [note.content, "", "---", ""]
+            content = note.content if is_gm else strip_gm_only(note.content)
+            parts += [content, "", "---", ""]
     return "\n".join(parts).rstrip() + "\n"
 
 
@@ -4828,6 +4843,12 @@ def entity_preview(entity_id: int, request: Request, db: Session = Depends(get_d
     not just the rendered/HTML summary the hover popup itself uses)."""
     entity = _entity_view_gate(db, request, entity_id)
     ent_world = db.get(World, entity.world_id) if entity.world_id else None
+    user = getattr(request.state, "user", None)
+    # entity_id is also used by Image Studio's prompt builder (per this
+    # function's own docstring), which reads the raw `body` field below —
+    # a non-GM viewer must never receive a [gmonly] secret in either shape,
+    # not just the rendered HTML one.
+    body = entity.body if (user and user.is_gm) else strip_gm_only(entity.body)
     return {
         "id": entity.id,
         "name": entity.name,
@@ -4837,8 +4858,8 @@ def entity_preview(entity_id: int, request: Request, db: Session = Depends(get_d
         "summary": entity.summary,
         "image_url": entity.image_url,
         "tags": [t.strip() for t in (entity.tags or "").split(",") if t.strip()],
-        "body_html": render_md(entity.body) if entity.body else "",
-        "body": entity.body or "",
+        "body_html": render_md(body) if body else "",
+        "body": body or "",
         "custom_fields_json": entity.custom_fields_json or "{}",
     }
 
@@ -4974,6 +4995,7 @@ def api_spotlight(request: Request, db: Session = Depends(get_db), active_world:
 def detail(request: Request, entity_id: int, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     entity = _entity_view_gate(db, request, entity_id)
     user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
     world = get_active_world(request, db, active_world)
     worlds = _visible_worlds(request, db)
     backlinks = _filter_visible_entities(
@@ -4985,7 +5007,13 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
     entity_notes = _visible_entity_notes(db, entity_id, request)
     autolink_names = _autolink_name_map(db, entity.world_id, request, exclude_entity_id=entity.id)
     for n in entity_notes:
-        note_html = n.content if n.content_is_html else render_md(n.content)
+        # strip_gm_only regardless of content_is_html: a [gmonly] block is
+        # literal bracket text either way, whether it sits inside markdown
+        # about to go through render_md or inside already-sanitized HTML
+        # from the rich note editor (sanitize_note_html doesn't know this
+        # syntax and would otherwise leave it sitting there unmangled).
+        content = n.content if is_gm else strip_gm_only(n.content)
+        note_html = content if n.content_is_html else render_md(content)
         n.content_html = autolink_entities(note_html, autolink_names)  # type: ignore[attr-defined]
     custom_sections = []
     if entity.template_id:
@@ -5005,9 +5033,19 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
     # style document commonly uses "# Part I — ..." for its top-level
     # chapters, and restricting to H2/H3 would drop every chapter from the
     # sidebar and keep only their subsections.
+    # safe_body/safe_summary — NOT entity.body/entity.summary directly — feed
+    # every read-only rendering of this entity below (section body, stat
+    # block, and the "Ask/Roleplay this entity"/AI-assist JS context the
+    # template embeds straight into the page source). The entity object
+    # itself is left untouched: /entity/{id}/edit re-reads the row fresh
+    # from the DB on its own page, so mutating `entity.body` here would gain
+    # nothing there and would risk this in-memory copy resurfacing somewhere
+    # unstripped; computing separate variables is the safer boundary.
+    safe_body = entity.body if is_gm else strip_gm_only(entity.body)
+    safe_summary = entity.summary if is_gm else strip_gm_only(entity.summary)
     body_sections, toc = [], []
-    if entity.body:
-        content_html = autolink_entities(render_md(_RULES_LEGACY_ANCHOR_RE.sub("", entity.body)), autolink_names)
+    if safe_body:
+        content_html = autolink_entities(render_md(_RULES_LEGACY_ANCHOR_RE.sub("", safe_body)), autolink_names)
         content_html, toc = _rules_toc(content_html, levels="123")
         body_sections = split_rules_sections(content_html, include_h1=True)
     return templates.TemplateResponse("entities/detail.html", {
@@ -5016,6 +5054,7 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         "entity_notes": entity_notes,
         "custom_sections": custom_sections, "custom_fields": custom_fields,
         "body_sections": body_sections, "toc": toc,
+        "safe_body": safe_body, "safe_summary": safe_summary,
     })
 
 # ── Entity Field Templates ──────────────────────────────────────────────────

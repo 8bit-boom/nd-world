@@ -31,7 +31,7 @@
       <span class="entity-kind">{{ kind_icons[entity.kind] }} {{ entity.kind }}</span>
       {% if entity.subtype %}<span class="entity-sub">{{ entity.subtype }}</span>{% endif %}
       <h1>{{ entity.name }}</h1>
-      {% if entity.summary %}<p class="detail-summary">{{ entity.summary }}</p>{% endif %}
+      {% if safe_summary %}<p class="detail-summary">{{ safe_summary }}</p>{% endif %}
       {% if entity.tags %}
       <div class="tags">{% for t in entity.tags.split(',') %}<span class="tag">{{ t.strip() }}</span>{% endfor %}</div>
       {% endif %}
@@ -56,8 +56,8 @@
     </div>
   </header>
 
-  {% if entity.kind in ('item', 'feat') and entity.body %}
-  {% set stats = entity.body | parse_stats %}
+  {% if entity.kind in ('item', 'feat') and safe_body %}
+  {% set stats = safe_body | parse_stats %}
   {% if stats %}
   <div class="stat-block">
     <div class="stat-block-header">
@@ -73,7 +73,7 @@
   {% endif %}
   {% endif %}
 
-  {% if entity.body %}
+  {% if safe_body %}
   <div class="detail-body prose" id="ed-body">
     {% for s in body_sections %}
     <section class="ed-section" data-section-id="{{ s.id or '' }}">{{ s.html|safe }}</section>
@@ -146,7 +146,7 @@
         </div>
         {% if can_edit(request) %}
         <form action="/entity/{{ entity.id }}/notes/{{ n.id }}/edit" method="post" id="en-edit-{{ n.id }}" class="en-edit-form" style="display:none">
-          <textarea name="content" rows="3" required data-fmt>{{ n.content }}</textarea>
+          <textarea name="content" rows="3" required data-fmt data-fmt-gmonly>{{ n.content }}</textarea>
           <div class="en-add-row">
             <label class="en-vis-check">
               <input type="checkbox" name="visible" value="1" style="width:auto" {% if n.visible_to_players %}checked{% endif %}>
@@ -166,7 +166,7 @@
 
     {% if can_edit(request) %}
     <form action="/entity/{{ entity.id }}/notes/new" method="post" class="en-add-form">
-      <textarea name="content" rows="2" placeholder="Add a note about this entity…" required data-fmt></textarea>
+      <textarea name="content" rows="2" placeholder="Add a note about this entity…" required data-fmt data-fmt-gmonly></textarea>
       <div class="en-add-row">
         <label class="en-vis-check">
           <input type="checkbox" name="visible" value="1" style="width:auto">
@@ -609,8 +609,8 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
   const ENTITY_CTX = {{ (
     entity.kind|capitalize + ': ' + entity.name
     + ('\nSubtype: ' + entity.subtype if entity.subtype else '')
-    + ('\nSummary: ' + entity.summary if entity.summary else '')
-    + ('\n\n' + (entity.body or '')[:3000] if entity.body else '')
+    + ('\nSummary: ' + safe_summary if safe_summary else '')
+    + ('\n\n' + (safe_body or '')[:3000] if safe_body else '')
   ) | tojson }};
 
   const EP_SYSTEM_ASK = "You are a world-building assistant. Answer questions about the entity provided. Be concise and in-world.";
@@ -863,11 +863,11 @@ document.addEventListener('keydown', e => {
 // ✨ AI assist panels on the entity detail page. The audit panel works on
 // the RENDERED entity (body seeded below via tojson — it's not a form
 // field here), the note panel on the add-note textarea above.
-const _entdBody = {{ (entity.body or '') | tojson }};
+const _entdBody = {{ (safe_body or '') | tojson }};
 const _entdMeta = {
   kind: {{ entity.kind | tojson }},
   name: {{ entity.name | tojson }},
-  summary: {{ (entity.summary or '') | tojson }},
+  summary: {{ (safe_summary or '') | tojson }},
   tags: {{ (entity.tags or '') | tojson }},
 };
 ndAiAssist('entd', {

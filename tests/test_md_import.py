@@ -112,7 +112,7 @@ def test_entity_note_textarea_has_data_fmt(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get(f"/entity/{eid}")
     assert r.status_code == 200
-    assert '<textarea name="content" rows="2" placeholder="Add a note about this entity…" required data-fmt>' in r.text
+    assert '<textarea name="content" rows="2" placeholder="Add a note about this entity…" required data-fmt data-fmt-gmonly>' in r.text
 
 
 def test_entity_body_notes_field_has_data_fmt(client, seed):
