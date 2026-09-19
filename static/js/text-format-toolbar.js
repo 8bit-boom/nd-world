@@ -550,7 +550,11 @@ function ndFmtBuildToolbar(ta) {
   // real :::gm block mechanism; Facts/PC notes/board nodes have neither)
   // would be a false sense of security, so those textareas don't get it.
   if (ta.hasAttribute("data-fmt-gmonly")) {
-    bar.appendChild(ndFmtButton("🔒", "GM only — stripped entirely before a player ever sees or asks AI about it", () => ndFmtWrapSelection(ta, "[gmonly]", "[/gmonly]")));
+    bar.appendChild(ndFmtButton(
+      "🔒",
+      `GM only — stripped entirely before a player ever sees or asks AI about it. Also: select text and right-click, or press ${NDFMT_GMONLY_SHORTCUT_LABEL}.`,
+      () => ndFmtWrapSelection(ta, "[gmonly]", "[/gmonly]"),
+    ));
   }
 
   const imgBtn = ndFmtButton("🖼", "Insert image, audio, or video (or paste/drag one in)", () => ndFmtInsertImage(ta, imgBtn));
@@ -617,6 +621,74 @@ function ndFmtBuildToolbar(ta) {
   });
 }
 
+// A single shared floating menu, reused across every gmonly-enabled
+// textarea — like the browser's own native context menu, only one is ever
+// open at a time — rather than building/tearing down a fresh element per
+// right-click.
+let _ndFmtCtxMenu = null;
+
+function _ndFmtCloseCtxMenu() {
+  if (_ndFmtCtxMenu) {
+    _ndFmtCtxMenu.remove();
+    _ndFmtCtxMenu = null;
+  }
+}
+document.addEventListener("mousedown", (e) => {
+  if (_ndFmtCtxMenu && !_ndFmtCtxMenu.contains(e.target)) _ndFmtCloseCtxMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") _ndFmtCloseCtxMenu();
+});
+window.addEventListener("scroll", _ndFmtCloseCtxMenu, true);
+window.addEventListener("resize", _ndFmtCloseCtxMenu);
+
+const NDFMT_GMONLY_SHORTCUT_LABEL = /Mac/.test(navigator.platform || "") ? "⌘⇧G" : "Ctrl+Shift+G";
+
+// Two quick ways to mark a selection [gmonly] besides the toolbar's lock
+// button — same data-fmt-gmonly opt-in as that button (see its own comment
+// for why this isn't offered on every data-fmt field):
+//  1. Select text, right-click: one menu item wraps it. Only intercepts the
+//     native context menu when there's an actual selection to wrap; a
+//     right-click with nothing selected (paste, spellcheck, the browser's
+//     own menu) is left alone.
+//  2. Select text, Ctrl+Shift+G (Cmd+Shift+G on Mac): wraps it immediately,
+//     no menu — for a GM who'd rather keep both hands on the keyboard.
+function ndFmtSetupGmOnlyShortcuts(ta) {
+  ta.addEventListener("contextmenu", (e) => {
+    if (ta.selectionStart === ta.selectionEnd) return;
+    e.preventDefault();
+    _ndFmtCloseCtxMenu();
+    const menu = document.createElement("div");
+    menu.className = "fmt-ctx-menu";
+    menu.style.left = e.pageX + "px";
+    menu.style.top = e.pageY + "px";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = `🔒 Mark as GM only (${NDFMT_GMONLY_SHORTCUT_LABEL})`;
+    btn.onclick = () => {
+      ndFmtWrapSelection(ta, "[gmonly]", "[/gmonly]");
+      _ndFmtCloseCtxMenu();
+    };
+    menu.appendChild(btn);
+    document.body.appendChild(menu);
+    _ndFmtCtxMenu = menu;
+    // Nudge back on-screen if the click landed near the right/bottom edge —
+    // pageX/pageY alone would otherwise let the menu render partly (or
+    // fully) off the visible viewport.
+    const rect = menu.getBoundingClientRect();
+    const overflowX = rect.right - window.innerWidth;
+    const overflowY = rect.bottom - window.innerHeight;
+    if (overflowX > 0) menu.style.left = Math.max(0, e.pageX - overflowX) + "px";
+    if (overflowY > 0) menu.style.top = Math.max(0, e.pageY - overflowY) + "px";
+  });
+  ta.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.key.toLowerCase() !== "g") return;
+    if (ta.selectionStart === ta.selectionEnd) return;
+    e.preventDefault();
+    ndFmtWrapSelection(ta, "[gmonly]", "[/gmonly]");
+  });
+}
+
 function ndFmtInit() {
   document.querySelectorAll("textarea[data-fmt]").forEach((ta) => {
     if (ta.dataset.fmtReady) return;
@@ -624,6 +696,7 @@ function ndFmtInit() {
     ndFmtBuildToolbar(ta);
     ndFmtSetupDragDrop(ta);
     ndFmtSetupPaste(ta);
+    if (ta.hasAttribute("data-fmt-gmonly")) ndFmtSetupGmOnlyShortcuts(ta);
   });
 }
 

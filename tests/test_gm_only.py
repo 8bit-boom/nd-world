@@ -415,3 +415,58 @@ def test_private_notes_page_shows_gm_only_to_the_gm(client, seed):
     r = client.get(f"/worlds/{seed.world_a.id}/notes/{seed.player_a.id}")
     assert r.status_code == 200
     assert "cult's mark" in r.text
+
+
+# ── Authoring convenience: toolbar button, right-click menu, keyboard shortcut ──
+
+def _fn_body(js, name, next_name="function "):
+    start = js.index(f"function {name}")
+    end = js.index(f"\n{next_name}", start + 1)
+    return js[start:end]
+
+
+def test_toolbar_js_has_gmonly_button(client, seed):
+    r = client.get("/static/js/text-format-toolbar.js")
+    assert r.status_code == 200
+    js = r.text
+    assert 'ndFmtWrapSelection(ta, "[gmonly]", "[/gmonly]")' in js
+
+
+def test_gmonly_button_is_opt_in_not_global(client, seed):
+    """Offered only on textareas the caller marks data-fmt-gmonly, not on
+    every data-fmt field — Rules already has its own :::gm block mechanism,
+    and Facts/PC notes/board nodes have no strip_gm_only() enforcement to
+    back the button up."""
+    r = client.get("/static/js/text-format-toolbar.js")
+    fn = _fn_body(r.text, "ndFmtBuildToolbar")
+    assert 'ta.hasAttribute("data-fmt-gmonly")' in fn
+
+
+def test_gmonly_shortcuts_wired_into_init_only_for_opted_in_textareas(client, seed):
+    # ndFmtInit is the last function declared in the file (followed only by
+    # the DOMContentLoaded bootstrap), so there's no trailing "\nfunction "
+    # to bound it with _fn_body — slice to end-of-file instead.
+    r = client.get("/static/js/text-format-toolbar.js")
+    fn = r.text[r.text.index("function ndFmtInit"):]
+    assert 'if (ta.hasAttribute("data-fmt-gmonly")) ndFmtSetupGmOnlyShortcuts(ta);' in fn
+
+
+def test_gmonly_context_menu_only_intercepts_an_actual_selection(client, seed):
+    """A right-click with nothing selected (paste, spellcheck, the
+    browser's own menu) must be left alone — only a non-collapsed
+    selection triggers the custom menu."""
+    r = client.get("/static/js/text-format-toolbar.js")
+    fn = _fn_body(r.text, "ndFmtSetupGmOnlyShortcuts")
+    assert '"contextmenu"' in fn
+    assert "ta.selectionStart === ta.selectionEnd" in fn
+    assert "e.preventDefault()" in fn
+    assert 'ndFmtWrapSelection(ta, "[gmonly]", "[/gmonly]")' in fn
+
+
+def test_gmonly_keyboard_shortcut_requires_ctrl_or_meta_and_shift_g(client, seed):
+    r = client.get("/static/js/text-format-toolbar.js")
+    fn = _fn_body(r.text, "ndFmtSetupGmOnlyShortcuts")
+    assert '"keydown"' in fn
+    assert "e.ctrlKey || e.metaKey" in fn
+    assert "e.shiftKey" in fn
+    assert 'e.key.toLowerCase() !== "g"' in fn

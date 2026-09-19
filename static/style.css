@@ -1659,6 +1659,21 @@ input[type="file"]:hover { border-color: var(--neon); }
 .fmt-btn[data-active="true"] { border-color: var(--neon); color: var(--neon); }
 .fmt-sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 .15rem; }
 .fmt-color-group { display: flex; align-items: center; gap: .25rem; }
+/* Right-click-while-selected menu (ndFmtSetupGmOnlyContextMenu) — a
+   floating one-item menu positioned at the click point, not anchored to
+   the toolbar like .fmt-popup above. */
+.fmt-ctx-menu {
+  position: absolute; z-index: 50;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 4px;
+  padding: .25rem; box-shadow: 0 4px 16px rgba(0,0,0,.4);
+}
+.fmt-ctx-menu button {
+  display: block; width: 100%; text-align: left; white-space: nowrap;
+  background: none; border: none; color: inherit; cursor: pointer;
+  padding: .4rem .7rem; border-radius: 3px;
+  font-family: var(--font); font-size: .82rem;
+}
+.fmt-ctx-menu button:hover { background: var(--bg3); color: var(--neon); }
 .fmt-swatch {
   width: 1.1rem; height: 1.1rem; padding: 0; border-radius: 50%;
   border: 1px solid rgba(255,255,255,.35); cursor: pointer;
