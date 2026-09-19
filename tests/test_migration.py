@@ -981,10 +981,11 @@ def test_columns_foreign_keys_indexes_derived_from_model():
         ("world_id", "worlds", "id"),
         ("parent_id", "quests", "id"),
         ("assigned_party_id", "parties", "id"),
+        ("created_by_user_id", "users", "id"),
     }
 
     indexes, unique_indexes = database_module._indexes_from_model("quests")
-    assert set(indexes) == {"world_id", "parent_id", "assigned_party_id"}
+    assert set(indexes) == {"world_id", "parent_id", "assigned_party_id", "created_by_user_id"}
     assert unique_indexes == []
 
     # world_calendars.world_id is unique=True + index=True on the model —
@@ -1037,8 +1038,8 @@ def test_heal_table_from_model_rebuilds_stray_not_null_and_preserves_data(tmp_pa
     assert "status" in cols and "linked_entities_json" in cols  # missing columns added
     assert cols["visible_to_players"] == 0  # NOT NULL constraint lifted by the rebuild
     ref_tables = {row[2] for row in fk_list}
-    assert ref_tables == {"worlds", "quests", "parties"}
-    assert len(idx_list) >= 3  # world_id/parent_id/assigned_party_id all recreated
+    assert ref_tables == {"worlds", "quests", "parties", "users"}
+    assert len(idx_list) >= 4  # world_id/parent_id/assigned_party_id/created_by_user_id all recreated
 
     db = SessionLocal()
     try:
