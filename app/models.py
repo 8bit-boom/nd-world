@@ -135,22 +135,36 @@ class World(Base):
     # in app/routers/ai.py) so a single player can't grow the image job
     # table or the disk without bound.
     players_can_use_image_gen = Column(Boolean, default=False)
-    # Which GM-tool-shaped world sections players may READ-ONLY browse,
-    # beyond what's always open to them — a JSON array of ids drawn from
-    # deps.PLAYER_TOGGLEABLE_SECTIONS ("maps", "calendar", "quests",
-    # "parties", "tables", "boards"). Each area's WRITE routes (create/
-    # edit/delete/advance-date/etc.) stay GM+Assistant-only regardless of
-    # this list — see can_edit(request) guards in each area's own
-    # template and deps.world_can_view_section for the read-side check.
-    # Deliberately one growing JSON list rather than N near-identical
-    # boolean columns (the players_can_use_ai_chat/players_can_view_
-    # world_summary/players_can_use_image_gen columns above are each a
-    # SEPARATE feature with its own distinct semantics; these six are all
-    # the exact same "read-only browse a GM-tool page" toggle, just for
-    # different pages). Defaults to '["maps"]' so every existing world's
-    # actual behavior is unchanged on upgrade — Maps was already open to
-    # every player unconditionally before this column existed.
-    player_section_access_json = Column(Text, default='["maps"]')
+    # Per-role access level for each of deps.SECTION_PERMISSION_IDS ("maps",
+    # "calendar", "quests", "parties", "tables") — a JSON object
+    # {section_id: {"player": "none"|"read"|"edit", "assistant":
+    # "none"|"read"|"edit"}}. Successor to the old boolean, players-only,
+    # read-only player_section_access_json: this adds a real "edit" tier
+    # (a player may create/edit/delete their OWN rows in that section — see
+    # Quest/CalendarEvent/RandomTable.created_by_user_id and Party's
+    # member-based equivalent; a GM-Assistant's rights become section-
+    # scoped here too instead of the blanket access can_edit_content still
+    # grants them everywhere else in the world) and covers assistants, not
+    # just players. "maps" has no meaningful player-edit action (nothing in
+    # the app lets a player create/modify map content), so its "player"
+    # level only ever means none/read in the UI (Settings -> Navigation).
+    # Missing/unparseable data, a missing section, or a missing role falls
+    # back to deps.world_section_access's defaults, which preserve pre-
+    # upgrade behavior exactly: assistant="edit" everywhere (assistants
+    # already had blanket access), player="read" on maps only (maps was
+    # already open to every player unconditionally) and "none" elsewhere.
+    # See app.database's migration heal for the one-time transform of an
+    # existing install's old player_section_access_json data into this
+    # shape. Deliberately excludes Boards/Combat Tracker, same as the old
+    # column — board.html is a full drag-and-drop canvas editor with no
+    # read/edit separation in its JS, a much larger separate project.
+    section_access_json = Column(Text, default=(
+        '{"maps":{"player":"read","assistant":"edit"},'
+        '"calendar":{"player":"none","assistant":"edit"},'
+        '"quests":{"player":"none","assistant":"edit"},'
+        '"parties":{"player":"none","assistant":"edit"},'
+        '"tables":{"player":"none","assistant":"edit"}}'
+    ))
     # Campaign vocabulary (NPC names, places, invented terms) fed to Whisper
     # as an initial-prompt hint on every session-recording transcription, so
     # e.g. "Elyndra" doesn't come back as "Elandra" or "a lender". Per-world,
@@ -725,6 +739,13 @@ class RandomTable(Base):
     description = Column(Text, default="")
     is_builtin = Column(Boolean, default=False)
     entries_json = Column(Text, default="[]")  # [{label, weight}]
+    # NULL = GM-authored (every table before this column existed, and every
+    # is_builtin one). Set for a table a PLAYER created under their own
+    # "tables: edit" section permission (see deps.world_can_edit_section) —
+    # that player may edit/delete this row; nobody else non-GM can, even if
+    # they also have "edit" on this section, matching the "own items only"
+    # scope this permission tier was given.
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -784,6 +805,12 @@ class Quest(Base):
     # GM can hide a quest from players entirely (e.g. a plot thread they haven't
     # discovered yet) — same field name/semantics as Entity.visible_to_players.
     visible_to_players = Column(Boolean, default=True)
+    # NULL = GM-authored (every quest before this column existed). Set for a
+    # quest a PLAYER created under their own "quests: edit" section
+    # permission (see deps.world_can_edit_section) — that player may edit/
+    # delete this row; nobody else non-GM can, matching the "own items
+    # only" scope this permission tier was given.
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -1532,6 +1559,12 @@ class CalendarEvent(Base):
     character_id = Column(Integer, ForeignKey("player_characters.id"), nullable=True, index=True)
     party_id = Column(Integer, ForeignKey("parties.id"), nullable=True, index=True)
     color = Column(String(16), default="#4488ff")
+    # NULL = GM-authored (every event before this column existed). Set for
+    # an event a PLAYER created under their own "calendar: edit" section
+    # permission (see deps.world_can_edit_section) — that player may edit/
+    # delete this row; nobody else non-GM can, matching the "own items
+    # only" scope this permission tier was given.
+    created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     entity = relationship("Entity")

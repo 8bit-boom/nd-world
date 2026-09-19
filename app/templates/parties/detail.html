@@ -8,14 +8,17 @@
     <a href="{{ '/parties'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Parties</a>
   </div>
 
-  {% if can_edit(request) %}
+  {% if edit_level == "full" %}
   <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:1.25rem">
     <button type="button" id="launch-combat-btn" style="background:var(--neon);color:#000;border:none;padding:.5rem 1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">⚔ Launch Combat</button>
     <button type="button" id="delete-party-btn" style="background:var(--bg3);border:1px solid #c44;color:#c44;padding:.5rem 1rem;font-size:.85rem;border-radius:3px;cursor:pointer;margin-left:auto">🗑 Delete Party</button>
     <form id="del-form" method="post" action="/parties/{{ party.id }}/delete" style="display:none"></form>
   </div>
+  {% endif %}
 
+  {% if edit_level in ("full", "member") %}
   <form method="post" action="/parties/{{ party.id }}/edit">
+    {% if edit_level == "full" %}
     <!-- Name -->
     <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
       <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">Party Name</h2>
@@ -51,6 +54,20 @@
         {% endfor %}
       </div>
     </div>
+    {% else %}
+    {# A "member"-level player (in this party via their own PC) may only
+       edit notes/loot — see parties.py's _party_edit_level — so name and
+       membership are shown read-only instead of as form fields. #}
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
+      <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .9rem">Members</h2>
+      {% for pc in member_pcs %}
+      <div style="padding:.3rem 0;font-size:.85rem">{{ pc.name }}</div>
+      {% endfor %}
+      {% for e in member_entities %}
+      <div style="padding:.3rem 0;font-size:.85rem">{{ e.name }} <span style="color:var(--text-dim);font-size:.78rem">({{ e.kind }})</span></div>
+      {% endfor %}
+    </div>
+    {% endif %}
 
     <!-- Notes -->
     <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
@@ -122,7 +139,7 @@
   {% endif %}
 </div>
 
-{% if can_edit(request) %}
+{% if edit_level in ("full", "member") %}
 <script>
 const PARTY_ID = {{ party.id }};
 let loot = {{ loot | tojson }};
@@ -169,13 +186,18 @@ document.getElementById('loot-add-btn').addEventListener('click', async () => {
   renderLoot();
 });
 
-document.getElementById('launch-combat-btn').addEventListener('click', async () => {
+// launch-combat-btn/delete-party-btn only exist in the DOM at the "full"
+// edit level (GM, or an assistant with parties:edit) — a "member"-level
+// player (editing notes/loot on a party they belong to) never sees them.
+const launchCombatBtn = document.getElementById('launch-combat-btn');
+if (launchCombatBtn) launchCombatBtn.addEventListener('click', async () => {
   const res = await fetch('/api/parties/' + PARTY_ID + '/launch-combat', { method: 'POST' });
   const data = await res.json();
   if (data.redirect) window.location.href = data.redirect;
 });
 
-document.getElementById('delete-party-btn').addEventListener('click', () => {
+const deletePartyBtn = document.getElementById('delete-party-btn');
+if (deletePartyBtn) deletePartyBtn.addEventListener('click', () => {
   if (confirm('Delete this party?')) document.getElementById('del-form').submit();
 });
 

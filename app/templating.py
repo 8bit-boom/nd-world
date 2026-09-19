@@ -48,10 +48,8 @@ def _kinds_context_processor(request: Request) -> dict:
         world, _ = deps.get_world_ctx(request, db, request.cookies.get(_ACTIVE_WORLD_COOKIE))
         kinds, kind_icons = deps.effective_kinds(world)
         flags = get_app_settings_flags_cached(db)
-        user = getattr(request.state, "user", None)
         nav_menus, nav_ungrouped_items = _nav_menus.resolve_nav_menus(
-            world, flags["dreamlands_enabled"], flags["king_in_yellow_enabled"],
-            bool(user and user.is_gm),
+            world, flags["dreamlands_enabled"], flags["king_in_yellow_enabled"], request,
         )
         return {
             "kinds": kinds, "kind_icons": kind_icons, "subtypes": deps.effective_subtypes(world),

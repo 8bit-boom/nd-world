@@ -188,7 +188,7 @@ def sanitize_nav_menus(raw_json, world=None) -> list:
     return out
 
 
-def resolve_nav_menus(world, dreamlands_enabled: bool, king_in_yellow_enabled: bool, is_gm: bool):
+def resolve_nav_menus(world, dreamlands_enabled: bool, king_in_yellow_enabled: bool, request):
     """-> (menus, ungrouped_items) for base.html:
     menus = [{id,label,icon,links:[<catalog item dict>,...]}, ...] (empty
     menus dropped, after per-viewer filtering); ungrouped_items = every
@@ -196,6 +196,11 @@ def resolve_nav_menus(world, dreamlands_enabled: bool, king_in_yellow_enabled: b
     filtered by its own "condition" flag and, for a non-GM viewer, its
     "gm_only" flag — a menu that mixes GM-only and player-visible items
     still renders for a player with only the player-visible ones inside.
+    `request` (not just an `is_gm` bool) is needed to resolve a
+    "player_section" item's visibility per-ROLE now (player vs assistant
+    get independently configurable levels — see deps.world_can_view_section)
+    rather than the single "is this GM or not" question every other item
+    still only needs.
 
     The resolved key is "links", not "items" — Jinja's `menu.items` would
     silently resolve to the dict's own builtin .items() *method* instead of
@@ -203,6 +208,8 @@ def resolve_nav_menus(world, dreamlands_enabled: bool, king_in_yellow_enabled: b
     is exactly what happened here during live verification before this
     rename: base.html's `{% for item in menu.items %}` blew up with
     "'builtin_function_or_method' object is not iterable"."""
+    user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
     catalog = build_catalog(world)
     catalog_by_id = {item["id"]: item for item in catalog}
 
@@ -215,15 +222,16 @@ def resolve_nav_menus(world, dreamlands_enabled: bool, king_in_yellow_enabled: b
         section = item.get("player_section")
         if section and not is_gm:
             # A "player_section" item (Maps/Calendar/Quests/Parties/Random
-            # Tables/Boards — see World.player_section_access_json) is
-            # visible to a non-GM viewer exactly when the GM has opted
-            # players into it for THIS world, REGARDLESS of the item's own
-            # static gm_only flag — this deliberately replaces, not adds
-            # to, the plain gm_only check below for these items, since a
-            # world that hasn't opted in still needs the item hidden even
-            # for the (gm_only: False) Maps entry. GM visibility is
-            # entirely unaffected either way (see the `not is_gm` guard).
-            if section not in deps.world_player_sections(world):
+            # Tables — see World.section_access_json) is visible to a
+            # non-GM viewer exactly when their ROLE (player or assistant)
+            # has at least "read" access to that section for THIS world,
+            # REGARDLESS of the item's own static gm_only flag — this
+            # deliberately replaces, not adds to, the plain gm_only check
+            # below for these items, since a world that hasn't opted a
+            # role in still needs the item hidden even for the
+            # (gm_only: False) Maps entry. GM visibility is entirely
+            # unaffected either way (see the `not is_gm` guard).
+            if not deps.world_can_view_section(request, world, section):
                 return False
         elif item.get("gm_only") and not is_gm:
             return False

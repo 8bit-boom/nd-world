@@ -59,14 +59,14 @@ def is_gm(request: Request) -> bool:
     return bool(user and user.is_gm)
 
 
-# id -> (label, icon) for World.player_section_access_json (see its
-# docstring in app/models.py) and the "Player World Access" panel on the
-# World edit page. Order here is the checkbox display order. Combat
+# id -> (label, icon) for World.section_access_json (see its docstring in
+# app/models.py) and the per-section Players/Assistants None/Read/Edit
+# controls on Settings -> Navigation. Order here is display order. Combat
 # Tracker and Investigation Boards deliberately aren't here — Combat's
 # live state is often spoiler-heavy, and Boards is a large drag-and-drop
 # canvas editor with no read/edit separation anywhere in its JS, so a safe
-# read-only mode for it is its own separate project.
-PLAYER_TOGGLEABLE_SECTIONS = {
+# read-only (let alone editable) mode for it is its own separate project.
+SECTION_PERMISSION_IDS = {
     "maps": ("Maps", "🗺"),
     "calendar": ("Calendar", "🗓"),
     "quests": ("Quests", "📜"),
@@ -74,57 +74,167 @@ PLAYER_TOGGLEABLE_SECTIONS = {
     "tables": ("Random Tables", "🎲"),
 }
 
+# Sections with no meaningful player-edit action — nothing in the app lets
+# a player create/modify map content (Maps has no owner concept and no
+# player-facing create path), so a "player" level read back as "edit" here
+# (a stale row, or a hand-edited one) is floored to "read" rather than
+# granted, and the Settings UI only ever offers None/Read for this role+
+# section combination in the first place.
+_NO_PLAYER_EDIT_SECTIONS = {"maps"}
 
-def world_player_sections(world) -> set:
-    """The set of section ids `world`'s players may read-only browse (see
-    PLAYER_TOGGLEABLE_SECTIONS/World.player_section_access_json). Falls
-    back to the column's own default ({"maps"}) on a NULL/malformed value
-    rather than an empty set, matching how every other JSON-backed World
-    field degrades (e.g. _parse_world_theme in app/templating.py) —
-    resetting Maps back to closed for a bad row would be a much louder
-    regression than resetting an optional cosmetic field."""
-    raw = getattr(world, "player_section_access_json", None) if world else None
-    if not raw:
-        return {"maps"}
+_SECTION_LEVELS = ("none", "read", "edit")
+
+
+def _default_section_levels(section_id: str) -> dict:
+    """Pre-upgrade-equivalent defaults for a section with no (or corrupt)
+    configuration: assistant="edit" everywhere (assistants already had
+    blanket access via can_edit_content before this matrix existed), and
+    player="read" on maps only / "none" elsewhere (maps was already open
+    to every player unconditionally; the other four were GM-only)."""
+    return {"player": "read" if section_id == "maps" else "none", "assistant": "edit"}
+
+
+def world_section_access(world) -> dict:
+    """Parses World.section_access_json into {section_id: {"player": lvl,
+    "assistant": lvl}} for every id in SECTION_PERMISSION_IDS — tolerant of
+    NULL/malformed/partial JSON, a missing section, an unknown role key, or
+    an invalid level string, all of which fall back independently to
+    _default_section_levels(section_id) rather than discarding the whole
+    row (a bad value for one section/role must not reset every other one a
+    GM already configured)."""
+    raw = getattr(world, "section_access_json", None) if world else None
     try:
-        parsed = json.loads(raw)
+        data = json.loads(raw) if raw else {}
     except (TypeError, ValueError):
-        return {"maps"}
-    if not isinstance(parsed, list):
-        return {"maps"}
-    return {s for s in parsed if s in PLAYER_TOGGLEABLE_SECTIONS}
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    out = {}
+    for sid in SECTION_PERMISSION_IDS:
+        defaults = _default_section_levels(sid)
+        entry = data.get(sid) if isinstance(data.get(sid), dict) else {}
+        levels = {}
+        for role in ("player", "assistant"):
+            val = entry.get(role)
+            if val not in _SECTION_LEVELS:
+                val = defaults[role]
+            if role == "player" and val == "edit" and sid in _NO_PLAYER_EDIT_SECTIONS:
+                val = "read"
+            levels[role] = val
+        out[sid] = levels
+    return out
+
+
+def sanitize_section_access(raw_json) -> str:
+    """Validates a posted section_access_json payload (Settings ->
+    Navigation's per-section Players/Assistants selects) before saving:
+    restricts to known section ids (SECTION_PERMISSION_IDS) and known
+    levels (_SECTION_LEVELS), flooring anything else to "none" (deny) —
+    unlike world_section_access's tolerant degrade-to-safe-defaults on
+    READ, a save is an explicit, deliberate action, so a garbled/tampered
+    field here is denied rather than silently keeping a permissive
+    fallback. Also floors "player": "edit" on a _NO_PLAYER_EDIT_SECTIONS
+    section down to "read", same as world_section_access."""
+    try:
+        data = json.loads(raw_json) if raw_json else {}
+    except (TypeError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    out = {}
+    for sid in SECTION_PERMISSION_IDS:
+        entry = data.get(sid) if isinstance(data.get(sid), dict) else {}
+        levels = {}
+        for role in ("player", "assistant"):
+            val = entry.get(role)
+            if val not in _SECTION_LEVELS:
+                val = "none"
+            if role == "player" and val == "edit" and sid in _NO_PLAYER_EDIT_SECTIONS:
+                val = "read"
+            levels[role] = val
+        out[sid] = levels
+    return json.dumps(out)
+
+
+def _role_for_request(request: Request) -> Optional[str]:
+    """"assistant" or "player" for a logged-in non-GM request, else None
+    (anonymous, or a GM — callers handle the GM case separately since a
+    GM's level is always "edit" regardless of this matrix)."""
+    user = getattr(request.state, "user", None)
+    if not user or user.is_gm:
+        return None
+    return "assistant" if getattr(request.state, "is_assistant", False) else "player"
+
+
+def world_section_level(request: Request, world, section_id: str) -> str:
+    """"none"/"read"/"edit" — this request's access to `section_id` (one of
+    SECTION_PERMISSION_IDS) for `world`. A GM always gets "edit"."""
+    user = getattr(request.state, "user", None)
+    if user and user.is_gm:
+        return "edit"
+    role = _role_for_request(request)
+    if role is None:
+        return "none"
+    return world_section_access(world).get(section_id, _default_section_levels(section_id))[role]
 
 
 def world_can_view_section(request: Request, world, section_id: str) -> bool:
-    """True if this request may read-only browse `section_id` (one of
-    PLAYER_TOGGLEABLE_SECTIONS) for `world` — a GM/GM-Assistant always can
-    (same can_edit_content tier; for calendar/tables/boards they can
-    already fully edit these areas via _is_assistant_safe in app/main.py,
-    so this is a no-op for them either way; for quests/parties, which
-    _is_assistant_safe doesn't cover, this does newly grant an assistant
-    read access once a GM opens either section to players at all — a
-    deliberately accepted, low-risk side effect, since an assistant
-    already sits at a strictly more-trusted tier than a plain player
-    everywhere else). A plain player gets read access only when the GM has
-    opted them in for THIS world. Used by each section's own GET handler
+    """True if this request may at least READ `section_id` for `world` —
+    "read" or "edit" both qualify. Used by each section's own GET handler
     (the real enforcement — nav_menus.py's own check only decides whether
     the nav link/menu entry is shown)."""
-    if can_edit_content(request):
+    return world_section_level(request, world, section_id) in ("read", "edit")
+
+
+def world_can_edit_section(request: Request, world, section_id: str) -> bool:
+    """True if this request may create/edit/delete in `section_id` for
+    `world` — "edit" only. For a GM this is always True. For a GM-Assistant
+    or player, this REPLACES can_edit_content's blanket answer for these
+    five sections specifically (can_edit_content stays the gate for
+    everything else in the world — entities, pages, sheets, ... — which
+    this matrix deliberately doesn't cover). Passing this check only means
+    the SECTION is open to this role at the edit tier; a player additionally
+    may only touch rows they own (Quest/CalendarEvent/RandomTable.
+    created_by_user_id == their own id, or — for Parties, which has no
+    owner column — a party containing one of their own PlayerCharacters).
+    Enforcing that per-row ownership check is each route handler's job,
+    same as it always has been for e.g. PlayerCharacter edits."""
+    return world_section_level(request, world, section_id) == "edit"
+
+
+def world_can_edit_row(request: Request, world, section_id: str, created_by_user_id: Optional[int]) -> bool:
+    """True if this request may edit/delete a SPECIFIC row in `section_id`
+    already known to belong to `world` (pair with world_row_visible, the
+    read-side equivalent, for a row looked up by its own id/slug) — a GM
+    or an edit-level GM-Assistant may touch ANY row once the section
+    itself is open to them at the edit tier (an assistant is a trusted
+    scoped-down GM, not restricted further per-row); an edit-level PLAYER
+    may only touch a row they themselves created (created_by_user_id ==
+    their own id) — see world_can_edit_section's own docstring for why
+    players are narrower here. Only meaningful for the three section
+    models that carry created_by_user_id (Quest, CalendarEvent,
+    RandomTable) — Party has no owner column and uses its own
+    membership-based check instead (see parties.py)."""
+    if not world_can_edit_section(request, world, section_id):
+        return False
+    user = getattr(request.state, "user", None)
+    if user and user.is_gm:
         return True
-    return section_id in world_player_sections(world)
+    if getattr(request.state, "is_assistant", False):
+        return True
+    return bool(user and created_by_user_id == user.id)
 
 
 def world_row_visible(request: Request, db: Session, world_id: Optional[int], section_id: str) -> bool:
     """Like world_can_view_section, but for a row fetched by its OWN
-    primary key/slug (a Quest, Party, RandomTable roll, InvestBoard, ...)
-    rather than the request's active world — quests.py/parties.py/
-    tables.py/main.py's board routes all look these up directly by id/slug
-    with no query-level world scoping at all (previously harmless, since
-    only a GM — who can access every world — could ever reach them), so a
-    caller must separately confirm the ROW'S OWN world is one this viewer
-    may access at all before also checking the section is opened to
-    players, or a player could view another world's quest/party/board by
-    guessing its id/slug even with the section toggle off everywhere they
+    primary key/slug (a Quest, Party, RandomTable roll, ...) rather than
+    the request's active world — quests.py/parties.py/tables.py look these
+    up directly by id with no query-level world scoping at all (previously
+    harmless, since only a GM — who can access every world — could ever
+    reach them), so a caller must separately confirm the ROW'S OWN world is
+    one this viewer may access at all before also checking the section is
+    opened to their role, or a player could view another world's quest/
+    party by guessing its id even with the section closed everywhere they
     actually belong. world_id=None (a global/built-in row shared across
     every world, e.g. a built-in RandomTable) is always visible — nothing
     world-specific to leak."""

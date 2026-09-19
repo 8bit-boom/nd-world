@@ -10,7 +10,7 @@ from app.database import SessionLocal
 from app.models import World
 from app.nav_menus import build_catalog, load_nav_menus, resolve_nav_menus, sanitize_nav_menus
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, fake_request, login
 
 
 def _set_nav_menus(world_id, menus):
@@ -56,7 +56,7 @@ def test_load_nav_menus_null_column_falls_back_to_default(client, seed):
 
     # No world at all (e.g. a GM logged in with nothing active) hits the
     # same "never customized" path as a real, un-customized world.
-    menus, ungrouped = resolve_nav_menus(None, dreamlands_enabled=False, king_in_yellow_enabled=False, is_gm=True)
+    menus, ungrouped = resolve_nav_menus(None, dreamlands_enabled=False, king_in_yellow_enabled=False, request=fake_request(is_gm=True))
     assert [m["id"] for m in menus] == ["menu_tools", "menu_ai_tools"]
 
 

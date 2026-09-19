@@ -23,7 +23,7 @@ from app import database as database_module
 from app.database import SessionLocal
 from app.models import World
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, fake_request, login
 
 
 def _set_world(world_id, **kw):
@@ -204,7 +204,7 @@ def test_nav_ai_chat_item_hidden_when_toggle_off(seed):
     db = SessionLocal()
     try:
         world = db.get(World, seed.world_a.id)
-        _, ungrouped = resolve_nav_menus(world, False, False, is_gm=False)
+        _, ungrouped = resolve_nav_menus(world, False, False, request=fake_request())
     finally:
         db.close()
     assert not any(item["id"] == "ai_chat_player" for item in ungrouped)
@@ -217,7 +217,7 @@ def test_nav_ai_chat_item_visible_when_toggle_on(seed):
     db = SessionLocal()
     try:
         world = db.get(World, seed.world_a.id)
-        _, ungrouped = resolve_nav_menus(world, False, False, is_gm=False)
+        _, ungrouped = resolve_nav_menus(world, False, False, request=fake_request())
     finally:
         db.close()
     item = next((i for i in ungrouped if i["id"] == "ai_chat_player"), None)

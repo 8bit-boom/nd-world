@@ -67,26 +67,34 @@ CASES = [
     ("POST", "/video/albums/new", False),
     ("POST", "/video/albums/1/rename", False),
     ("POST", "/video/albums/1/delete", False),
-    # World-toggleable read-only sections (World.player_section_access_json)
-    # — reachable at all; deps.world_can_view_section is the real
-    # off-by-default gate. Their write routes stay GM+Assistant-only.
+    # World-toggleable read-only sections (World.section_access_json) —
+    # reachable at all; deps.world_can_view_section is the real
+    # off-by-default gate. Structural/full-only write routes stay
+    # GM+Assistant-only regardless of the toggle.
     ("GET", "/calendar/config", False),
-    ("POST", "/api/calendar/events", False),
     ("POST", "/api/calendar/advance", False),
-    ("GET", "/quests/new", False),
-    ("POST", "/quests/new", False),
-    ("POST", "/quests/5/edit", False),
-    ("POST", "/quests/5/delete", False),
-    ("POST", "/api/quests/5/status", False),
+    # Own-item create/edit/delete for a player with "edit" level on
+    # quests/calendar/tables — reachable at all; deps.world_can_edit_
+    # section/world_can_edit_row are the real (off-by-default, own-rows-
+    # only) gate. See _is_player_safe's own comment.
+    ("POST", "/api/calendar/events", True),
+    ("GET", "/quests/new", True),
+    ("POST", "/quests/new", True),
+    ("POST", "/quests/5/edit", True),
+    ("POST", "/quests/5/delete", True),
+    ("POST", "/api/quests/5/status", True),
+    # Parties has no "own row" concept — only member-level notes/loot
+    # editing opens up (parties.py's _party_edit_level); create/delete
+    # stay GM+Assistant ("full" level) only.
     ("POST", "/parties/new", False),
-    ("POST", "/parties/5/edit", False),
+    ("POST", "/parties/5/edit", True),
     ("POST", "/parties/5/delete", False),
-    ("POST", "/api/parties/5/loot", False),
-    ("GET", "/tables/new", False),
-    ("POST", "/tables/new", False),
-    ("GET", "/tables/5/edit", False),
-    ("POST", "/tables/5/edit", False),
-    ("POST", "/tables/5/delete", False),
+    ("POST", "/api/parties/5/loot", True),
+    ("GET", "/tables/new", True),
+    ("POST", "/tables/new", True),
+    ("GET", "/tables/5/edit", True),
+    ("POST", "/tables/5/edit", True),
+    ("POST", "/tables/5/delete", True),
     ("GET", "/tables/export", False),
     ("POST", "/tables/import", False),
     ("GET", "/boards/new", False),

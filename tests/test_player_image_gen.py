@@ -18,7 +18,7 @@ from app import ai as ai_module
 from app.database import SessionLocal
 from app.models import ImageJob, PlayerCharacter, World, WorldMembership
 
-from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, fake_request, login
 
 
 @pytest.fixture(autouse=True)
@@ -407,7 +407,7 @@ def test_nav_image_gen_item_visible_only_when_toggle_on(seed):
     db = SessionLocal()
     try:
         world = db.get(World, seed.world_a.id)
-        _, ungrouped = resolve_nav_menus(world, False, False, is_gm=False)
+        _, ungrouped = resolve_nav_menus(world, False, False, request=fake_request())
     finally:
         db.close()
     assert not any(i["id"] == "image_gen_player" for i in ungrouped)
@@ -416,7 +416,7 @@ def test_nav_image_gen_item_visible_only_when_toggle_on(seed):
     db = SessionLocal()
     try:
         world = db.get(World, seed.world_a.id)
-        _, ungrouped = resolve_nav_menus(world, False, False, is_gm=False)
+        _, ungrouped = resolve_nav_menus(world, False, False, request=fake_request())
     finally:
         db.close()
     item = next((i for i in ungrouped if i["id"] == "image_gen_player"), None)

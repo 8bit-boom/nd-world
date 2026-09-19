@@ -8,13 +8,33 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session, joinedload
 
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx, world_can_view_section
+from ..deps import get_world_ctx, world_can_edit_row, world_can_edit_section, world_can_view_section
 from ..imaging import convert_image
 from ..models import CalendarDayIcon, CalendarEvent, Entity, GameSession, Party, PlayerCharacter, World, WorldCalendar
 from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename
 
 router = APIRouter()
+
+
+def _current_user_id(request: Request):
+    user = getattr(request.state, "user", None)
+    return user.id if user else None
+
+
+def _can_manage_calendar(request: Request, world) -> bool:
+    """True for a GM, or an assistant with calendar:edit — the tier
+    allowed to touch the calendar's own configuration (era/months/days-
+    per-week/moons/presets), advance/set the current day, and manage day
+    icons. None of that is something a plain "edit"-level player gets
+    even under the new permission matrix — those are structural/
+    world-shaping actions, unlike CalendarEvent, where a player's own
+    "edit" grant lets them add/remove events they created (see
+    calendar_event_add/calendar_event_delete)."""
+    if not world_can_edit_section(request, world, "calendar"):
+        return False
+    user = getattr(request.state, "user", None)
+    return bool(user and (user.is_gm or getattr(request.state, "is_assistant", False)))
 
 DEFAULT_MONTHS = [
     {"name": n, "days": 30} for n in [
@@ -278,6 +298,7 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
             "session_label": (f"#{e.session.session_num} {e.session.title}" if e.session else None),
             "character_id": e.character_id, "character_label": (e.character.name if e.character else None),
             "party_id": e.party_id, "party_label": (e.party.name if e.party else None),
+            "created_by_user_id": e.created_by_user_id,
         })
 
     icons = db.query(CalendarDayIcon).filter(
@@ -343,6 +364,9 @@ def calendar_view(request: Request, db: Session = Depends(get_db), active_world:
         "current_day": current_day, "cur_year": cur_year, "cur_month_idx": cur_month_idx, "cur_dom": cur_dom,
         "prev_month": prev_month, "prev_year": prev_year, "next_month": next_month, "next_year": next_year,
         "entities": entities, "sessions": sessions, "characters": characters, "parties": parties,
+        "can_manage": _can_manage_calendar(request, world),
+        "can_add_event": world_can_edit_section(request, world, "calendar"),
+        "current_user_id": _current_user_id(request),
     })
 
 
@@ -406,6 +430,8 @@ def calendar_config_form(request: Request, db: Session = Depends(get_db), active
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not _can_manage_calendar(request, world):
+        raise HTTPException(403)
     world_id = world.id
     cal = _get_or_create_calendar(db, world_id)
     config = json.loads(cal.config_json or "{}") or _default_config()
@@ -423,6 +449,8 @@ async def calendar_config_save(request: Request, db: Session = Depends(get_db), 
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not _can_manage_calendar(request, world):
+        raise HTTPException(403)
     world_id = world.id
     cal = _get_or_create_calendar(db, world_id)
     form = await request.form()
@@ -465,8 +493,17 @@ async def calendar_event_add(request: Request, db: Session = Depends(get_db), ac
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not world_can_edit_section(request, world, "calendar"):
+        raise HTTPException(403)
     world_id = world.id
     body = await request.json()
+    # A plain player adding under their own "calendar: edit" grant owns the
+    # row (see CalendarEvent.created_by_user_id) and may only ever delete
+    # this one going forward — a GM or assistant adding one leaves it
+    # GM-authored (None), same as every event before this column existed,
+    # since both already have unrestricted rights on every event here.
+    user = getattr(request.state, "user", None)
+    is_gm_or_assistant = bool(user and (user.is_gm or getattr(request.state, "is_assistant", False)))
     ev = CalendarEvent(
         world_id=world_id, day=int(body.get("day", 1)),
         title=str(body.get("title", "")).strip() or "Event",
@@ -476,6 +513,7 @@ async def calendar_event_add(request: Request, db: Session = Depends(get_db), ac
         character_id=int(body["character_id"]) if body.get("character_id") else None,
         party_id=int(body["party_id"]) if body.get("party_id") else None,
         color=str(body.get("color", "#4488ff")),
+        created_by_user_id=None if is_gm_or_assistant else _current_user_id(request),
     )
     db.add(ev)
     db.commit()
@@ -491,6 +529,8 @@ def calendar_event_delete(
     if not world:
         raise HTTPException(404)
     ev = _event_or_404(db, world.id, event_id)
+    if not world_can_edit_row(request, world, "calendar", ev.created_by_user_id):
+        raise HTTPException(403)
     db.delete(ev)
     db.commit()
     return {"ok": True}
@@ -501,6 +541,8 @@ async def calendar_advance(request: Request, db: Session = Depends(get_db), acti
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not _can_manage_calendar(request, world):
+        raise HTTPException(403)
     world_id = world.id
     cal = _get_or_create_calendar(db, world_id)
     body = await request.json()
@@ -528,6 +570,8 @@ async def calendar_set_date(request: Request, db: Session = Depends(get_db), act
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not _can_manage_calendar(request, world):
+        raise HTTPException(403)
     world_id = world.id
     cal = _get_or_create_calendar(db, world_id)
     body = await request.json()
@@ -553,6 +597,8 @@ async def calendar_day_icon_add(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not _can_manage_calendar(request, world):
+        raise HTTPException(403)
     world_id = world.id
     ext = Path(file.filename or "").suffix.lower()
     if ext not in _ICON_ALLOWED_EXTS:
@@ -589,6 +635,8 @@ def calendar_day_icon_delete(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    if not _can_manage_calendar(request, world):
+        raise HTTPException(403)
     icon = _icon_or_404(db, world.id, icon_id)
     _delete_icon_file(icon)
     db.delete(icon)

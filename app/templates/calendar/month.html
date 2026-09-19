@@ -11,7 +11,7 @@
     </div>
     <div style="display:flex;gap:.9rem;align-items:center">
       <a href="{{ '/calendar/agenda'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">📋 Agenda</a>
-      {% if can_edit(request) %}
+      {% if can_manage %}
       <a href="{{ '/calendar/config'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">⚙ Configure</a>
       {% endif %}
     </div>
@@ -22,7 +22,7 @@
   {% endif %}
 
   <div style="display:flex;gap:.6rem;align-items:center;margin-bottom:.6rem;flex-wrap:wrap">
-    {% if can_edit(request) %}
+    {% if can_manage %}
     <input id="advance-days" type="number" value="1" style="width:70px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
     <button type="button" id="advance-btn" style="background:var(--neon);color:#000;border:none;padding:.45rem 1rem;font-size:.82rem;font-weight:bold;border-radius:3px;cursor:pointer">⏭ Advance Days</button>
     {% endif %}
@@ -32,7 +32,7 @@
     </label>
   </div>
 
-  {% if can_edit(request) %}
+  {% if can_manage %}
   <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:1rem;flex-wrap:wrap">
     <span style="font-size:.8rem;color:var(--text-dim)">Set today:</span>
     <select id="set-date-month" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .5rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
@@ -115,7 +115,14 @@
 </style>
 
 <script>
-const CAN_EDIT = {{ 'true' if can_edit(request) else 'false' }};
+// CAN_MANAGE: full calendar management (config/advance/set-date/icons) —
+// GM, or an assistant with calendar:edit. CAN_ADD_EVENT: may add a new
+// event (a "edit"-level player owns what they add, and may later delete
+// only their own — see canDeleteEvent below); CAN_MANAGE implies this too.
+const CAN_MANAGE = {{ 'true' if can_manage else 'false' }};
+const CAN_ADD_EVENT = {{ 'true' if can_add_event else 'false' }};
+const CURRENT_USER_ID = {{ current_user_id | tojson }};
+function canDeleteEvent(e) { return CAN_MANAGE || (CAN_ADD_EVENT && e.created_by_user_id === CURRENT_USER_ID); }
 const MONTH_DAYS = {{ months | map(attribute='days') | list | tojson }};
 const ENTITIES = {{ entities | tojson }};
 const SESSIONS = {{ sessions | tojson }};
@@ -134,14 +141,14 @@ function openDayPanel(dayNum) {
   panel.innerHTML = `
     <h3 style="color:var(--neon);font-size:.9rem;margin:0 0 .6rem">Day ${dayNum}</h3>
     <div id="day-icons" style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.5rem"></div>
-    ${CAN_EDIT ? `
+    ${CAN_MANAGE ? `
     <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin-bottom:.9rem">
       <input type="file" id="icon-file" accept="image/*" style="font-size:.78rem;color:var(--text-dim);max-width:180px"/>
       <input id="icon-label" placeholder="Label (optional)" style="flex:1;min-width:100px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
       <button type="button" id="icon-add-btn" style="background:var(--bg3);border:1px solid var(--neon);color:var(--neon);padding:.4rem .9rem;font-size:.82rem;border-radius:3px;cursor:pointer">+ Add Icon</button>
     </div>` : ''}
     <div id="day-events" style="display:flex;flex-direction:column;gap:.3rem;margin-bottom:.75rem"></div>
-    ${CAN_EDIT ? `
+    ${CAN_ADD_EVENT ? `
     <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center">
       <input id="ev-title" placeholder="Event title" style="flex:1;min-width:120px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px"/>
       <select id="ev-entity" title="Link an entity (character, location, creature, item, etc.)" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
@@ -166,10 +173,8 @@ function openDayPanel(dayNum) {
   `;
   renderDayIcons(dayNum);
   renderDayEvents(dayNum);
-  if (CAN_EDIT) {
-    document.getElementById('icon-add-btn').addEventListener('click', () => addIcon(dayNum));
-    document.getElementById('ev-add-btn').addEventListener('click', () => addEvent(dayNum));
-  }
+  if (CAN_MANAGE) document.getElementById('icon-add-btn').addEventListener('click', () => addIcon(dayNum));
+  if (CAN_ADD_EVENT) document.getElementById('ev-add-btn').addEventListener('click', () => addEvent(dayNum));
 }
 
 function renderDayIcons(dayNum) {
@@ -182,8 +187,8 @@ function renderDayIcons(dayNum) {
     chip.style.cssText = 'display:flex;align-items:center;gap:.3rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.2rem .4rem';
     chip.innerHTML = `<img src="${ic.image_url}" alt="${esc(ic.label)}" style="width:24px;height:24px;object-fit:cover;border-radius:3px"/>
       <span style="font-size:.76rem;color:var(--text-dim);max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ic.label)}</span>
-      ${CAN_EDIT ? '<button type="button" style="background:none;border:none;color:#c44;cursor:pointer;font-size:.9rem;line-height:1">✕</button>' : ''}`;
-    if (CAN_EDIT) {
+      ${CAN_MANAGE ? '<button type="button" style="background:none;border:none;color:#c44;cursor:pointer;font-size:.9rem;line-height:1">✕</button>' : ''}`;
+    if (CAN_MANAGE) {
       chip.querySelector('button').addEventListener('click', async () => {
         await fetch('/api/calendar/icons/' + ic.id + '/delete', { method: 'POST' });
         window.location.reload();
@@ -221,8 +226,8 @@ function renderDayEvents(dayNum) {
     if (e.party_label) links.push(`<span style="color:var(--text-dim)">👥 ${esc(e.party_label)}</span>`);
     const linksHtml = links.length ? `<div style="display:flex;gap:.5rem;flex-wrap:wrap;font-size:.76rem;margin-top:.15rem">${links.join('')}</div>` : '';
     row.innerHTML = `<span style="flex:1">${esc(e.title)}${e.notes ? ' — <span style=\"color:var(--text-dim)\">'+esc(e.notes)+'</span>' : ''}${linksHtml}</span>
-      ${CAN_EDIT ? '<button type="button" style="background:none;border:none;color:#c44;cursor:pointer">✕</button>' : ''}`;
-    if (CAN_EDIT) {
+      ${canDeleteEvent(e) ? '<button type="button" style="background:none;border:none;color:#c44;cursor:pointer">✕</button>' : ''}`;
+    if (canDeleteEvent(e)) {
       row.querySelector('button').addEventListener('click', async () => {
         await fetch('/api/calendar/events/' + e.id + '/delete', { method: 'POST' });
         window.location.reload();
@@ -247,7 +252,7 @@ async function addEvent(dayNum) {
   window.location.reload();
 }
 
-if (CAN_EDIT) {
+if (CAN_MANAGE) {
   document.getElementById('advance-btn').addEventListener('click', async () => {
     const days = parseInt(document.getElementById('advance-days').value, 10) || 1;
     await fetch('/api/calendar/advance', {

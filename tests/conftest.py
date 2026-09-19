@@ -188,6 +188,17 @@ def seed(client):
         db.close()
 
 
+def fake_request(is_gm=False, is_assistant=False, logged_in=True):
+    """A minimal stand-in for a Starlette Request carrying just the
+    request.state.user/.is_assistant attributes deps.py's role-resolution
+    helpers (world_can_view_section, world_can_edit_section,
+    resolve_nav_menus, ...) read — for tests calling those directly
+    without going through a real HTTP request/response cycle."""
+    from types import SimpleNamespace
+    user = SimpleNamespace(is_gm=is_gm, id=1) if logged_in else None
+    return SimpleNamespace(state=SimpleNamespace(user=user, is_assistant=is_assistant))
+
+
 def login(c, email, password):
     r = c.post("/login", data={"email": email, "password": password, "next": "/"}, follow_redirects=False)
     assert r.status_code == 303, f"login failed for {email}: {r.status_code} {r.text[:300]}"

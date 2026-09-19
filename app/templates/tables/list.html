@@ -4,7 +4,7 @@
 <div class="list-header">
   <h1>🎲 Random Tables</h1>
   <div class="list-actions">
-    {% if can_edit(request) %}
+    {% if can_create %}
     <a href="{{ '/tables/export'|wq }}" style="background:var(--bg3);border:1px solid var(--border);color:var(--text-dim);padding:.4rem .85rem;font-size:.8rem;border-radius:3px;text-decoration:none">⬇ Export</a>
     <form action="/tables/import" method="post" enctype="multipart/form-data" style="display:flex;align-items:center;gap:.4rem">
       <div class="form-dropzone" data-dropzone style="padding:.15rem .4rem" title="Drag &amp; drop a JSON file here">
@@ -29,7 +29,7 @@
       {% if t.description %}<p>{{ t.description }}</p>{% endif %}
       <div style="display:flex;gap:.5rem;margin-top:.6rem;flex-wrap:wrap;align-items:center">
         <button type="button" class="roll-btn" data-id="{{ t.id }}" style="background:var(--neon);color:#000;border:none;padding:.35rem .8rem;font-size:.8rem;font-weight:bold;border-radius:3px;cursor:pointer">🎲 Roll</button>
-        {% if can_edit(request) %}
+        {% if can_edit_table(t) %}
         <a href="{{ ('/tables/' + t.id|string + '/edit')|wq }}" style="color:var(--text-dim);font-size:.8rem;text-decoration:none">Edit →</a>
         {% endif %}
       </div>
@@ -42,7 +42,7 @@
 {% else %}
 <p style="color:var(--text-dim);text-align:center;padding:2rem">
   No random tables yet.
-  {% if can_edit(request) %}<a href="{{ '/tables/new'|wq }}" style="color:var(--neon)">Create your first one</a>.{% endif %}
+  {% if can_create %}<a href="{{ '/tables/new'|wq }}" style="color:var(--neon)">Create your first one</a>.{% endif %}
 </p>
 {% endif %}
 

@@ -30,7 +30,7 @@ from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
 from . import streaming_export as _streaming_export
 from .database import init_db, get_db, SessionLocal, get_app_settings, clear_app_settings_flags_cache as _clear_app_settings_flags_cache, RESTORE_STAGING_DIR
-from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content, world_can_view_section, world_row_visible, world_player_sections, PLAYER_TOGGLEABLE_SECTIONS
+from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_edit_content, world_can_edit_section, world_can_view_section, world_row_visible, world_section_access
 from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html, autolink_entities, derive_name_variants
 from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_overlay,
@@ -438,11 +438,43 @@ def _is_player_safe(method: str, path: str) -> bool:
     # near the top of this function; _can_manage_character is its real gate.
     if method == "POST" and re.match(r"^/api/tables/\d+/roll$", path):
         # Rolling IS the point of opening Random Tables to players — see
-        # World.player_section_access_json. Handler-level gate (app/routers/
+        # World.section_access_json. Handler-level gate (app/routers/
         # tables.py) still requires deps.world_can_view_section(..., "tables"),
         # off by default; this allowlist only decides "reachable at all".
-        # Every other /tables* route (new/edit/delete/export/import) stays
-        # GM+Assistant-only regardless of this toggle.
+        return True
+    # Own-item create/edit/delete for a player with "edit" level on quests/
+    # calendar/tables (see World.section_access_json/deps.world_can_edit_
+    # section) — a player may only ever touch a Quest/CalendarEvent/
+    # RandomTable row they themselves created (created_by_user_id ==
+    # their own id), which the handler enforces via deps.world_can_edit_row;
+    # this allowlist only decides "reachable at all", same shape as every
+    # other player-writable route above. Off by default (section level
+    # defaults to "none" for these three).
+    if path == "/quests/new" and method in ("GET", "POST"):
+        return True
+    if method == "POST" and re.match(r"^/quests/\d+/(edit|delete)$", path):
+        return True
+    if method == "POST" and re.match(r"^/api/quests/\d+/status$", path):
+        return True
+    if path == "/tables/new" and method in ("GET", "POST"):
+        return True
+    if method == "GET" and re.match(r"^/tables/\d+/edit$", path):
+        return True
+    if method == "POST" and re.match(r"^/tables/\d+/(edit|delete)$", path):
+        return True
+    if method == "POST" and path == "/api/calendar/events":
+        return True
+    if method == "POST" and re.match(r"^/api/calendar/events/\d+/delete$", path):
+        return True
+    # Parties has no "own row" concept — a player's "edit" level only ever
+    # lets them edit notes/loot on a party they're already a MEMBER of (one
+    # of their own PlayerCharacters is in it), never create/delete a party
+    # or touch membership/name — see parties.py's _party_edit_level, the
+    # real gate here. /parties/new, /parties/{id}/delete, and every
+    # location/launch-combat route stay GM+Assistant ("full" level) only.
+    if method == "POST" and re.match(r"^/parties/\d+/edit$", path):
+        return True
+    if method == "POST" and re.match(r"^/api/parties/\d+/loot$", path):
         return True
     if method != "GET":
         return False
@@ -456,14 +488,16 @@ def _is_player_safe(method: str, path: str) -> bool:
         r"^/(quests|parties)/\d+$", path
     ):
         # Read-only browsing for the GM-tool-shaped world sections a GM can
-        # opt players into per world — see World.player_section_access_json
-        # and deps.world_can_view_section, the real handler-level gate (off
-        # by default except Maps above, which predates this mechanism).
-        # /calendar/config, every /api/calendar* write, /quests/new,
-        # /quests/{id}/edit|delete, /parties/new, /parties/{id}/edit|delete,
-        # every /api/parties* action, /tables/new, /tables/{id}/edit|delete,
-        # /tables/export, /tables/import stay GM+Assistant-only regardless
-        # of this toggle — only the plain read views above are listed here.
+        # opt players into per world — see World.section_access_json and
+        # deps.world_can_view_section, the real handler-level gate (off by
+        # default except Maps above, which predates this mechanism). This
+        # only covers the plain READ views; own-item write access for a
+        # player with "edit" level on quests/calendar/tables (and member-
+        # level party notes/loot) is a separate set of entries further up
+        # this function. /calendar/config, every other /api/calendar*
+        # write, /parties/new, /parties/{id}/delete, every /api/parties*
+        # location/combat action, /tables/export, /tables/import stay
+        # GM+Assistant ("full" level) only regardless of this toggle.
         # Combat Tracker (live, often spoiler-heavy encounter state) and
         # Investigation Boards (a large, drag-and-drop canvas editor with
         # no read/edit separation anywhere in its JS — retrofitting a safe
@@ -551,6 +585,25 @@ def _is_assistant_safe(method: str, path: str) -> bool:
     if path == "/sessions" or path.startswith("/sessions/"):
         return True
     if path.startswith("/api/sessions/"):
+        return True
+    # Quests & Parties — unlike Calendar/Random Tables/Boards below, these
+    # two had NO assistant access at all before World.section_access_json
+    # existed (an assistant's blanket content-editor access never covered
+    # them). Reachability now follows the same per-world edit level as a
+    # player's own grant (deps.world_can_edit_section/world_can_edit_row,
+    # the real gate) — default "edit" for a fresh world, same as every
+    # other section's assistant default.
+    if path == "/quests/new" and method in ("GET", "POST"):
+        return True
+    if method == "POST" and re.match(r"^/quests/\d+/(edit|delete)$", path):
+        return True
+    if method == "POST" and re.match(r"^/api/quests/\d+/status$", path):
+        return True
+    if path == "/parties/new" and method == "POST":
+        return True
+    if method == "POST" and re.match(r"^/parties/\d+/(edit|delete)$", path):
+        return True
+    if method == "POST" and re.match(r"^/api/parties/\d+/(loot|location|launch-combat)$", path):
         return True
     # Facts — the discrete session log IS content (the whole feature is
     # "log what happened in play", the same tier as a session's Summary
@@ -1389,8 +1442,6 @@ def world_edit_form(world_id: int, request: Request, db: Session = Depends(get_d
         "request": request, "world": world, "worlds": worlds,
         "edit_world": w, "kinds": KINDS, "kind_icons": KIND_ICONS,
         "invites": invites, "members": members,
-        "player_sections": world_player_sections(w),
-        "player_toggleable_sections": [(sid, label, icon) for sid, (label, icon) in PLAYER_TOGGLEABLE_SECTIONS.items()],
     })
 
 @app.post("/worlds/{world_id}/edit")
@@ -1408,7 +1459,6 @@ def world_edit_post(
     players_can_use_ai_chat: Optional[str] = Form(None),
     players_can_view_world_summary: Optional[str] = Form(None),
     players_can_use_image_gen: Optional[str] = Form(None),
-    player_sections: List[str] = Form([]),
     hero_style: str = Form("home"),
     db: Session = Depends(get_db),
 ):
@@ -1427,10 +1477,6 @@ def world_edit_post(
     w.players_can_use_ai_chat = bool(players_can_use_ai_chat)
     w.players_can_view_world_summary = bool(players_can_view_world_summary)
     w.players_can_use_image_gen = bool(players_can_use_image_gen)
-    # Unrecognized values (a stale/hand-crafted request) are silently
-    # dropped rather than stored — same "don't trust the client" reasoning
-    # as every sanitize_* helper elsewhere in this handler.
-    w.player_section_access_json = json.dumps(sorted(set(player_sections) & set(PLAYER_TOGGLEABLE_SECTIONS)))
     if hero_style in ("off", "home", "everywhere"):
         w.hero_style = hero_style
     db.commit()
@@ -1590,8 +1636,6 @@ def member_reset_password(
         "request": request, "world": world, "worlds": worlds,
         "edit_world": w, "kinds": KINDS, "kind_icons": KIND_ICONS,
         "invites": invites, "members": members,
-        "player_sections": world_player_sections(w),
-        "player_toggleable_sections": [(sid, label, icon) for sid, (label, icon) in PLAYER_TOGGLEABLE_SECTIONS.items()],
         "reset_password_user_id": target.id, "reset_password_value": temp_password,
     })
 
@@ -2080,6 +2124,8 @@ def map_new_form(request: Request, db: Session = Depends(get_db), active_world: 
     world = get_active_world(request, db, active_world)
     if not world:
         return RedirectResponse("/worlds")
+    if not world_can_edit_section(request, world, "maps"):
+        raise HTTPException(403)
     worlds = _visible_worlds(request, db)
     gallery_images = _gallery_module.all_world_image_urls(db, world)
     return templates.TemplateResponse("map_form.html", {
@@ -2099,6 +2145,8 @@ async def map_new(
     world = get_active_world(request, db, active_world)
     if not world:
         raise HTTPException(400, "No world selected")
+    if not world_can_edit_section(request, world, "maps"):
+        raise HTTPException(403)
     slug = _slug_from_name(name)
     if not slug:
         # A name with no letters/digits (e.g. "???" or emoji-only) slugifies to
@@ -2134,6 +2182,8 @@ def map_rename(slug: str, request: Request, name: str = Form(...),
     world = get_active_world(request, db, active_world)
     if not world or map_data.get("world_id", 1) != world.id:
         raise HTTPException(404)
+    if not world_can_edit_section(request, world, "maps"):
+        raise HTTPException(403)
     new_name = name.strip()
     if not new_name:
         raise HTTPException(400, "Name can't be blank")
@@ -2156,6 +2206,8 @@ def map_delete(slug: str, request: Request, db: Session = Depends(get_db), activ
     world = get_active_world(request, db, active_world)
     if not world or map_data.get("world_id", 1) != world.id:
         raise HTTPException(404)
+    if not world_can_edit_section(request, world, "maps"):
+        raise HTTPException(403)
     jf.unlink()
     maps_upload_dir = UPLOADS_DIR / "maps"
     for ext in (".webp", ".jpg", ".jpeg", ".png", ".gif", ".avif"):
@@ -2188,6 +2240,8 @@ async def map_upload_image(slug: str, request: Request, file: UploadFile = File(
     world = get_active_world(request, db, active_world)
     if not world or map_data.get("world_id", 1) != world.id:
         raise HTTPException(404)
+    if not world_can_edit_section(request, world, "maps"):
+        raise HTTPException(403)
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_EXTS:
         raise HTTPException(400, "Unsupported file type")
@@ -2291,6 +2345,8 @@ async def save_map_overlay(slug: str, request: Request, db: Session = Depends(ge
     world = get_active_world(request, db, active_world)
     if not world or map_data.get("world_id", 1) != world.id:
         raise HTTPException(404)
+    if not world_can_edit_section(request, world, "maps"):
+        raise HTTPException(403)
     body = await request.json()
     custom_markers = body.get("custom_markers", [])
     custom_regions = body.get("custom_regions", [])
@@ -3499,6 +3555,8 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "nav_catalog": _nav_menus_module.build_catalog(world),
         "initial_nav_menus": _nav_menus_module.load_nav_menus(world) if world else [],
         "nav_max_menus": _nav_menus_module.MAX_NAV_MENUS,
+        "initial_section_access": world_section_access(world) if world else {},
+        "no_player_edit_sections": sorted(deps._NO_PLAYER_EDIT_SECTIONS),
         "ollama_server_env": ollama_server_env,
         "ollama_server_status": _tuning.server_env_status(ollama_server_env),
         "ollama_server_spec": _tuning.SERVER_ENV_SPEC,

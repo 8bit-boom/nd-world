@@ -866,10 +866,43 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN players_can_view_world_summary BOOLEAN DEFAULT 0"))
             if "players_can_use_image_gen" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN players_can_use_image_gen BOOLEAN DEFAULT 0"))
-            if "player_section_access_json" not in w_cols:
+            # section_access_json (None/Read/Edit per role, per section —
+            # see World.section_access_json's own docstring) replaces the
+            # older player_section_access_json (a JSON list of sections a
+            # player could READ, nothing for assistants, no edit tier).
+            # Deliberately no unconditional ALTER for the old column
+            # anymore — a fresh install never gets it. An install that
+            # already has it (from the brief window before this migration)
+            # gets a one-time transform below instead of losing its GM's
+            # customization.
+            if "section_access_json" not in w_cols:
                 conn.execute(text(
-                    "ALTER TABLE worlds ADD COLUMN player_section_access_json TEXT DEFAULT '[\"maps\"]'"
+                    "ALTER TABLE worlds ADD COLUMN section_access_json TEXT DEFAULT "
+                    "'{\"maps\":{\"player\":\"read\",\"assistant\":\"edit\"},"
+                    "\"calendar\":{\"player\":\"none\",\"assistant\":\"edit\"},"
+                    "\"quests\":{\"player\":\"none\",\"assistant\":\"edit\"},"
+                    "\"parties\":{\"player\":\"none\",\"assistant\":\"edit\"},"
+                    "\"tables\":{\"player\":\"none\",\"assistant\":\"edit\"}}'"
                 ))
+                if "player_section_access_json" in w_cols:
+                    for row_id, old_json in conn.execute(text(
+                        "SELECT id, player_section_access_json FROM worlds"
+                    )).fetchall():
+                        try:
+                            old_sections = set(json.loads(old_json or "[]"))
+                        except (TypeError, ValueError):
+                            old_sections = set()
+                        new_val = json.dumps({
+                            sid: {
+                                "player": "read" if sid in old_sections else "none",
+                                "assistant": "edit",
+                            }
+                            for sid in ("maps", "calendar", "quests", "parties", "tables")
+                        })
+                        conn.execute(
+                            text("UPDATE worlds SET section_access_json = :v WHERE id = :id"),
+                            {"v": new_val, "id": row_id},
+                        )
             if "theme_json" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN theme_json TEXT"))
             if "hero_style" not in w_cols:
@@ -977,6 +1010,7 @@ def _migrate():
                 ("description",  "TEXT DEFAULT ''"),
                 ("is_builtin",   "BOOLEAN DEFAULT 0"),
                 ("entries_json", "TEXT DEFAULT '[]'"),
+                ("created_by_user_id", "INTEGER"),
                 ("created_at",   "DATETIME"),
                 ("updated_at",   "DATETIME"),
             ]
@@ -1005,12 +1039,13 @@ def _migrate():
                         description TEXT DEFAULT '',
                         is_builtin BOOLEAN DEFAULT 0,
                         entries_json TEXT DEFAULT '[]',
+                        created_by_user_id INTEGER,
                         created_at DATETIME,
                         updated_at DATETIME,
                         FOREIGN KEY (world_id) REFERENCES worlds(id)
                     )
                 """))
-                cols = "id, world_id, name, slug, category, description, is_builtin, entries_json, created_at, updated_at"
+                cols = "id, world_id, name, slug, category, description, is_builtin, entries_json, created_by_user_id, created_at, updated_at"
                 conn.execute(text(f"INSERT INTO random_tables ({cols}) SELECT {cols} FROM random_tables_old"))
                 conn.execute(text("DROP TABLE random_tables_old"))
                 conn.execute(text("CREATE INDEX IF NOT EXISTS ix_random_tables_world_id ON random_tables (world_id)"))

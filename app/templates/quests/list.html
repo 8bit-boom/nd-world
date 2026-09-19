@@ -4,7 +4,7 @@
 <div class="list-header">
   <h1>📜 Quests</h1>
   <div class="list-actions">
-    {% if can_edit(request) %}
+    {% if can_create %}
     <a href="{{ '/quests/new'|wq }}" class="btn-new">+ New Quest</a>
     {% endif %}
   </div>

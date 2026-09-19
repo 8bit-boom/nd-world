@@ -523,6 +523,13 @@
       marked <span style="color:var(--neon)">👁 players see this</span> are visible
       to players too — moving one into a menu changes what players see, not just GMs.
     </p>
+    <p style="font-size:.82rem;color:var(--text-dim);margin:0 0 1.25rem">
+      Items with Players/Assistants selectors give each role its own None/Read/Edit
+      level for that section — Edit means create/edit/delete (a player's own Edit
+      grant only ever reaches rows they created themselves; an assistant's reaches
+      the whole section, same as a GM). Everything else in the world (entities,
+      pages, etc.) is unaffected — that's still the existing GM-Assistant access.
+    </p>
     <form method="post" action="/worlds/{{ world.id }}/nav-menus/edit" id="nav-menus-form" class="entity-form">
       <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 .7rem">
         <h2 style="font-size:.9rem;color:var(--text-dim);margin:0">Menus</h2>
@@ -537,6 +544,7 @@
       <div id="nav-items-list"></div>
 
       <input type="hidden" name="nav_menus_json" id="nav-menus-json-input"/>
+      <input type="hidden" name="section_access_json" id="section-access-json-input"/>
       <div class="form-actions">
         <button type="submit" class="btn-primary">Save</button>
       </div>
@@ -561,10 +569,13 @@
 .nav-icon-btn:hover { border-color:var(--neon); color:var(--neon); }
 .nav-icon-btn.danger:hover { border-color:#c44; color:#c44; }
 .nav-btn-add { background:var(--bg3); border:1px solid var(--neon); color:var(--neon); padding:.3rem .75rem; font-size:.78rem; border-radius:3px; cursor:pointer; }
-.nav-item-row { display:flex; align-items:center; justify-content:space-between; gap:.6rem; background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.45rem .7rem; margin-bottom:.3rem; }
+.nav-item-row { display:flex; align-items:center; justify-content:space-between; gap:.6rem; background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.45rem .7rem; margin-bottom:.3rem; flex-wrap:wrap; }
 .nav-item-label { font-size:.83rem; }
 .nav-item-player-visible { color:var(--neon); font-size:.78rem; }
 .nav-item-row select { background:var(--bg3); border:1px solid var(--border); color:var(--text); padding:.3rem .5rem; font-family:var(--font); font-size:.8rem; border-radius:3px; min-width:180px; }
+.nav-item-section-access { display:flex; align-items:center; gap:.4rem; margin-left:auto; }
+.nav-item-section-role-label { font-size:.72rem; color:var(--text-dim); }
+.nav-item-section-access select { min-width:80px; }
 </style>
 
 <script>
@@ -868,11 +879,18 @@ function ndCopyRestartCmd() {
 
   const NAV_CATALOG_ITEMS = {{ nav_catalog | tojson }};
   const INIT_NAV_MENUS = {{ initial_nav_menus | tojson }};
+  const INIT_SECTION_ACCESS = {{ initial_section_access | tojson }};
+  const NO_PLAYER_EDIT_SECTIONS = {{ no_player_edit_sections | tojson }};
+  const SECTION_LEVELS = [['none', 'None'], ['read', 'Read'], ['edit', 'Edit']];
   function esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
   let _navMenus = INIT_NAV_MENUS.map(m => ({
     id: m.id, label: m.label || '', icon: m.icon || '', item_ids: Array.isArray(m.item_ids) ? m.item_ids.slice() : [],
   }));
+  // {section_id: {player: 'none'|'read'|'edit', assistant: 'none'|'read'|'edit'}}
+  // — deep-copied so editing this never mutates the server-rendered initial
+  // value (relevant if renderNavItemAssignments ever re-reads it).
+  let _sectionAccess = JSON.parse(JSON.stringify(INIT_SECTION_ACCESS));
 
   function navMenuIdForItem(itemId) {
     const m = _navMenus.find(m => m.item_ids.includes(itemId));
@@ -891,15 +909,29 @@ function ndCopyRestartCmd() {
     `;
   }
 
+  function sectionAccessSelect(sectionId, role) {
+    const levels = SECTION_LEVELS.filter(([lvl]) => !(role === 'player' && lvl === 'edit' && NO_PLAYER_EDIT_SECTIONS.includes(sectionId)));
+    const current = (_sectionAccess[sectionId] || {})[role] || 'none';
+    const opts = levels.map(([lvl, label]) => `<option value="${lvl}" ${lvl === current ? 'selected' : ''}>${label}</option>`);
+    return `<select title="${role === 'player' ? 'Players' : 'Assistants'}: ${sectionId}" onchange="updateSectionAccess('${sectionId}','${role}',this.value)">${opts.join('')}</select>`;
+  }
+
   function renderNavItemAssignments() {
     document.getElementById('nav-items-list').innerHTML = NAV_CATALOG_ITEMS.map(item => {
       const current = navMenuIdForItem(item.id);
       const opts = ['<option value="">— Flat tab —</option>'].concat(
         _navMenus.map(m => `<option value="${esc(m.id)}" ${m.id === current ? 'selected' : ''}>${esc(m.icon)} ${esc(m.label) || 'Untitled Menu'}</option>`)
       );
+      const sectionId = item.player_section;
+      const sectionControls = sectionId ? `
+        <span class="nav-item-section-access">
+          <span class="nav-item-section-role-label">Players</span>${sectionAccessSelect(sectionId, 'player')}
+          <span class="nav-item-section-role-label">Assistants</span>${sectionAccessSelect(sectionId, 'assistant')}
+        </span>` : '';
       return `
         <div class="nav-item-row">
           <span class="nav-item-label">${esc(item.icon)} ${esc(item.label)}${item.gm_only ? '' : ' <span class="nav-item-player-visible" title="Players see this tab too">👁</span>'}</span>
+          ${sectionControls}
           <select onchange="assignNavItem('${item.id}', this.value)">${opts.join('')}</select>
         </div>
       `;
@@ -944,12 +976,26 @@ function ndCopyRestartCmd() {
     syncNavMenusHidden();
   };
 
+  window.updateSectionAccess = function (sectionId, role, value) {
+    if (!_sectionAccess[sectionId]) _sectionAccess[sectionId] = {};
+    _sectionAccess[sectionId][role] = value;
+    syncSectionAccessHidden();
+  };
+
   function syncNavMenusHidden() {
     document.getElementById('nav-menus-json-input').value = JSON.stringify(_navMenus);
   }
 
-  document.getElementById('nav-menus-form').addEventListener('submit', syncNavMenusHidden);
+  function syncSectionAccessHidden() {
+    document.getElementById('section-access-json-input').value = JSON.stringify(_sectionAccess);
+  }
+
+  document.getElementById('nav-menus-form').addEventListener('submit', () => {
+    syncNavMenusHidden();
+    syncSectionAccessHidden();
+  });
   renderNavMenus();
+  syncSectionAccessHidden();
 })();
 </script>
 {% endblock %}

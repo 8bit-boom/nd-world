@@ -18,7 +18,7 @@
   </div>
   {% endif %}
 
-  {% if can_edit(request) %}
+  {% if can_edit_this %}
   <form method="post" action="{% if quest %}/quests/{{ quest.id }}/edit{% else %}/quests/new{% endif %}" id="quest-form">
     <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">
       <div class="form-group" style="margin-bottom:.75rem">
@@ -135,7 +135,7 @@
 .link-del { background:none; border:none; color:#c44; font-size:1.1rem; cursor:pointer; padding:0 .1rem; line-height:1; }
 </style>
 
-{% if can_edit(request) %}
+{% if can_edit_this %}
 <script>
 const INIT_LINKS = {{ linked_entities | tojson }};
 const ENTITY_NAME_TO_ID = {};
