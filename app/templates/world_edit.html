@@ -75,6 +75,20 @@
              style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_use_ai_chat %}checked{% endif %}>
       <label for="players-ai-chat" style="margin:0">Players can use a standalone AI Chat page (general-purpose, not tied to an entity)</label>
     </div>
+    <div class="form-group" style="margin-left:1.7rem">
+      <label style="font-size:.8rem;color:var(--text-dim)">
+        Lore lookup for players' questions (Ask AI / AI Chat) — up to
+        <input type="number" name="ai_chat_rag_entity_limit" min="0" max="25" style="width:4.5rem;display:inline-block"
+               placeholder="15" value="{{ edit_world.ai_chat_rag_entity_limit if edit_world.ai_chat_rag_entity_limit is not none else '' }}">
+        entities and
+        <input type="number" name="ai_chat_rag_notes_limit" min="0" max="10" style="width:4.5rem;display:inline-block"
+               placeholder="3" value="{{ edit_world.ai_chat_rag_notes_limit if edit_world.ai_chat_rag_notes_limit is not none else '' }}">
+        notes per question
+      </label>
+      <p style="color:var(--text-dim);font-size:.78rem;margin-top:.3rem">
+        Blank uses the built-in default (15 entities, 3 notes). This only ever surfaces content a player already has access to.
+      </p>
+    </div>
     <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
       <input type="checkbox" id="players-world-summary" name="players_can_view_world_summary" value="1"
              style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_view_world_summary %}checked{% endif %}>

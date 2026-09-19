@@ -34,10 +34,30 @@ const PC_SYSTEM = (
   "You are a helpful world-building assistant for a tabletop RPG campaign called "
   + {{ (world.name if world else "this world") | tojson }}
   + ". Answer the player's questions helpfully and in a tone that fits the setting. "
-  + "You don't have access to any GM-only secrets — answer from general knowledge and "
-  + "whatever the player tells you in this conversation."
+  + "You don't have access to any GM-only secrets — answer from general knowledge, "
+  + "whatever the player tells you in this conversation, and any \"Relevant world info\" "
+  + "provided below (only what this player already has access to)."
 );
 let pcHistory = [];
+
+// Best-effort lore lookup — same visibility rules /kind/{kind} and
+// /entity/{id} already enforce for this player (see
+// ai_world_context_player's docstring in app/routers/ai.py), so this can
+// only ever surface something the player could already find by browsing.
+// Failure here is silent: a player still gets a plain answer with no lore
+// grounding rather than a broken chat.
+async function pcFetchContext(query) {
+  try {
+    const res = await fetch('/api/ai/world-context-player', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+    if (!res.ok) return '';
+    const data = await res.json();
+    return data.context || '';
+  } catch (e) { return ''; }
+}
 
 function pcResize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 160) + 'px'; }
 function pcKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); pcSend(); } }
@@ -66,12 +86,25 @@ async function pcSend() {
   pcHistory.push({ role: 'user', content: text });
   btn.disabled = true;
   const bubble = pcAdd('assistant', '…', true);
+  statsEl.textContent = '⏳ Looking up lore…';
+  const ctx = await pcFetchContext(text);
+  // Same KV-cache-friendly placement ai-chat-core.js uses: the lore pair
+  // sits immediately before the newest turn, never at the front, so only
+  // it (plus that one new message) ever needs re-prefilling — everything
+  // before it stays byte-stable turn to turn. Never pushed into
+  // pcHistory itself, so nothing persisted changes.
+  const messages = ctx ? [
+    ...pcHistory.slice(0, -1),
+    { role: 'user', content: 'Relevant world info:\n\n' + ctx },
+    { role: 'assistant', content: 'Got it.' },
+    ...pcHistory.slice(-1),
+  ] : pcHistory;
   statsEl.textContent = '⏳ Connecting…';
   try {
     const res = await fetch('/api/ai/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: pcHistory, system: PC_SYSTEM, surface: 'ask_ai' }),
+      body: JSON.stringify({ messages, system: PC_SYSTEM, surface: 'ask_ai' }),
     });
     if (!res.ok) throw new Error('Server error ' + res.status);
     bubble.parentElement.classList.remove('ai-thinking');

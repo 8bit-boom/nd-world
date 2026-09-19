@@ -112,6 +112,17 @@ class World(Base):
     # (Image generation has its own narrower player toggle below,
     # players_can_use_image_gen — Image Studio itself is still GM-only.)
     players_can_use_ai_chat = Column(Boolean, default=False)
+    # Default retrieval breadth for the player-facing RAG lookup both
+    # players_can_ask_ai and players_can_use_ai_chat feed into (see
+    # ai_world_context_player in app/routers/ai.py) — how many entities/
+    # notes a player's question pulls in, same knobs a GM already tunes
+    # per-request for their own chat (ctx-limit/notes-limit in
+    # ai-chat-core.js), just fixed as a world-wide default here since the
+    # player page has no per-message UI for it. NULL (the default) means
+    # "use the built-in fallback" (15 entities, 3 notes) — every existing
+    # world behaves identically until a GM sets these explicitly.
+    ai_chat_rag_entity_limit = Column(Integer, nullable=True)
+    ai_chat_rag_notes_limit = Column(Integer, nullable=True)
     # Whether players may READ the AI-generated World Summary card (home
     # page) once a GM/assistant has generated one — see api_world_summary_get
     # in app/routers/ai.py. Off by default. Generating/regenerating/clearing

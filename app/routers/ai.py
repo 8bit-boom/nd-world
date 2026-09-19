@@ -1246,6 +1246,68 @@ def ai_attachment_audio_job_list(request: Request, db=Depends(get_db), active_wo
     return [_job_to_dict(j) for j in jobs]
 
 
+# Fallback when a world hasn't set World.ai_chat_rag_entity_limit/
+# ai_chat_rag_notes_limit (both NULL by default — see that model field's
+# own docstring) and the hard ceiling neither the world setting nor a
+# client-supplied override may exceed, same spirit as MAX_CANDIDATES-style
+# caps elsewhere in this app: a GM dialing this up can't blow the prompt
+# out arbitrarily.
+_DEFAULT_PLAYER_RAG_ENTITY_LIMIT = 15
+_DEFAULT_PLAYER_RAG_NOTES_LIMIT = 3
+_MAX_PLAYER_RAG_ENTITY_LIMIT = 25
+_MAX_PLAYER_RAG_NOTES_LIMIT = 10
+
+
+class PlayerContextBody(BaseModel):
+    query: str = ""
+    # None (the default — the page never sends these) means "use the
+    # world's configured default, or the built-in fallback if the world
+    # hasn't set one". Still accepted from the client for forward
+    # compatibility with a future per-message override, but every value —
+    # from either source — is clamped server-side regardless.
+    limit: Optional[int] = None
+    notes_limit: Optional[int] = None
+
+
+@router.post("/world-context-player")
+def ai_world_context_player(
+    body: PlayerContextBody,
+    request: Request,
+    db=Depends(get_db),
+    active_world: Optional[str] = Cookie(None),
+):
+    """The player-safe counterpart to main.py's /api/ai/world-context-smart
+    — same _retrieval.smart_world_context retrieval, but with the caller's
+    own `user` threaded through so _visibility_filter applies to every
+    query it runs (see that function's docstring): a player only ever gets
+    lore back for entities/notes that are visible_to_players or explicitly
+    shared with them, exactly what /kind/{kind} and /entity/{id} already
+    let them see. This is what lets the standalone /ai-chat page answer
+    "what does armor cost" from a Rules/Item entity's own body text without
+    ever leaking GM-only secrets into a player's answer. Gated by the same
+    _require_ask_ai_access rule as /stream itself — a GM always may, a
+    player only if their world opted into players_can_ask_ai or
+    players_can_use_ai_chat."""
+    _require_ask_ai_access(request, db, active_world)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world or not body.query.strip():
+        return {"context": ""}
+    entity_limit = body.limit if body.limit is not None else world.ai_chat_rag_entity_limit
+    if entity_limit is None:
+        entity_limit = _DEFAULT_PLAYER_RAG_ENTITY_LIMIT
+    notes_limit = body.notes_limit if body.notes_limit is not None else world.ai_chat_rag_notes_limit
+    if notes_limit is None:
+        notes_limit = _DEFAULT_PLAYER_RAG_NOTES_LIMIT
+    user = getattr(request.state, "user", None)
+    context, non_notes, notes = _retrieval.smart_world_context(
+        db, world.id, body.query,
+        entity_limit=max(0, min(entity_limit, _MAX_PLAYER_RAG_ENTITY_LIMIT)),
+        notes_limit=max(0, min(notes_limit, _MAX_PLAYER_RAG_NOTES_LIMIT)),
+        user=user,
+    )
+    return {"context": context, "count": len(non_notes), "notes": len(notes)}
+
+
 @router.post("/stream")
 async def ai_stream(
     body: ChatBody,

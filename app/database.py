@@ -866,6 +866,10 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN players_can_view_world_summary BOOLEAN DEFAULT 0"))
             if "players_can_use_image_gen" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN players_can_use_image_gen BOOLEAN DEFAULT 0"))
+            if "ai_chat_rag_entity_limit" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN ai_chat_rag_entity_limit INTEGER"))
+            if "ai_chat_rag_notes_limit" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN ai_chat_rag_notes_limit INTEGER"))
             # section_access_json (None/Read/Edit per role, per section —
             # see World.section_access_json's own docstring) replaces the
             # older player_section_access_json (a JSON list of sections a

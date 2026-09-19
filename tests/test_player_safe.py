@@ -180,6 +180,7 @@ CASES = [
     ("GET", "/kind/character/download.zip", True),
     ("GET", "/kind/character/download-selected.zip", True),
     ("POST", "/api/ai/stream", True),
+    ("POST", "/api/ai/world-context-player", True),  # player-safe, visibility-filtered RAG lookup for /ai-chat
     ("POST", "/api/ai/chat/compact", True),
     ("GET", "/api/ai/models", True),  # read-only model catalog for the player-facing recap pickers
     ("POST", "/api/ai/models", False),  # GET-only — the rest of /api/ai stays GM-only

@@ -358,13 +358,16 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if path == "/api/chronicler/ask":
         return True
-    if path in ("/api/ai/stream", "/api/ai/chat/compact"):
+    if path in ("/api/ai/stream", "/api/ai/chat/compact", "/api/ai/world-context-player"):
         # Middleware only decides "reachable" — the handler (app/routers/ai.py)
         # still gates a non-GM caller behind World.players_can_ask_ai, off by
         # default. The dedicated GM "/ai" World Chat page is a GET route and
         # stays off this allowlist entirely, so this only opens the shared
-        # streaming endpoint (and its "Compact chat" sibling), not that
-        # page's GM-only quick-prompt toolkit.
+        # streaming endpoint (and its "Compact chat" sibling) plus the
+        # player-safe, visibility-filtered RAG lookup /ai-chat uses (see
+        # ai_world_context_player's own docstring) — not that page's
+        # GM-only quick-prompt toolkit or the unfiltered
+        # /api/ai/world-context-smart GM/assistant route.
         return True
     if path in (
         "/api/ai/attachments/upload",
@@ -1504,6 +1507,8 @@ def world_edit_post(
     players_can_use_ai_chat: Optional[str] = Form(None),
     players_can_view_world_summary: Optional[str] = Form(None),
     players_can_use_image_gen: Optional[str] = Form(None),
+    ai_chat_rag_entity_limit: str = Form(""),
+    ai_chat_rag_notes_limit: str = Form(""),
     hero_style: str = Form("home"),
     db: Session = Depends(get_db),
 ):
@@ -1522,6 +1527,13 @@ def world_edit_post(
     w.players_can_use_ai_chat = bool(players_can_use_ai_chat)
     w.players_can_view_world_summary = bool(players_can_view_world_summary)
     w.players_can_use_image_gen = bool(players_can_use_image_gen)
+    # Blank (the field left empty) -> None -> ai_world_context_player falls
+    # back to its own built-in default; a non-numeric value is treated the
+    # same way rather than 400ing the whole form over one bad field. That
+    # route re-clamps to its own [0, max] range regardless, so an
+    # out-of-range value typed here is harmless, just redundant.
+    w.ai_chat_rag_entity_limit = int(ai_chat_rag_entity_limit) if ai_chat_rag_entity_limit.strip().isdigit() else None
+    w.ai_chat_rag_notes_limit = int(ai_chat_rag_notes_limit) if ai_chat_rag_notes_limit.strip().isdigit() else None
     if hero_style in ("off", "home", "everywhere"):
         w.hero_style = hero_style
     db.commit()

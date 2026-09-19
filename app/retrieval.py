@@ -151,7 +151,7 @@ def format_context_from_entities(
 
 def smart_world_context(
     db: Session, world_id: int, query: str,
-    entity_limit: int = 25, notes_limit: int = 5,
+    entity_limit: int = 25, notes_limit: int = 5, user=None,
 ) -> tuple:
     """The interactive-RAG half of main.py's /api/ai/world-context-smart
     (AI Chat's Smart Context panel), factored to this leaf module so the
@@ -168,11 +168,14 @@ def smart_world_context(
     - a guaranteed-most-recent-notes block (ordered updated_at desc) up
       to notes_limit beyond whatever the search itself surfaced.
 
-    Deliberately unfiltered (user=None) — the same visibility posture the
-    world-context-smart route already established for its GM + assistant
-    callers: this feeds content-editing surfaces, which the auth gate
-    already restricts to those tiers."""
-    entities = find_relevant_entities(db, world_id, query, limit=max(entity_limit, 0))
+    `user=None` (the default) is deliberately unfiltered — the posture the
+    original world-context-smart route established for its GM + assistant
+    callers, which the auth gate already restricts to those tiers. Passing
+    a real, non-GM `user` applies _visibility_filter to EVERY query this
+    function runs (the initial search, the non-note top-up, and the notes
+    top-up alike) — see app.routers.ai's player-facing RAG endpoint, which
+    is the one caller that ever passes a real player `user` through here."""
+    entities = find_relevant_entities(db, world_id, query, limit=max(entity_limit, 0), user=user)
     notes = [e for e in entities if e.kind == "note"]
     non_notes = [e for e in entities if e.kind != "note"]
     if entity_limit > 0 and len(non_notes) < entity_limit:
@@ -180,16 +183,14 @@ def smart_world_context(
         topup_q = db.query(Entity).filter(Entity.world_id == world_id, Entity.kind != "note")
         if seen_ids:
             topup_q = topup_q.filter(~Entity.id.in_(seen_ids))
+        topup_q = _visibility_filter(topup_q, user)
         topup = topup_q.order_by(Entity.kind, Entity.name).limit(entity_limit - len(non_notes)).all()
         non_notes = non_notes + topup
     if notes_limit > 0:
-        note_entities = (
-            db.query(Entity)
-            .filter(Entity.world_id == world_id, Entity.kind == "note")
-            .order_by(Entity.updated_at.desc())
-            .limit(notes_limit)
-            .all()
+        notes_q = _visibility_filter(
+            db.query(Entity).filter(Entity.world_id == world_id, Entity.kind == "note"), user,
         )
+        note_entities = notes_q.order_by(Entity.updated_at.desc()).limit(notes_limit).all()
         seen_ids = {e.id for e in entities}
         extra_notes = [e for e in note_entities if e.id not in seen_ids]
         notes = notes + extra_notes
