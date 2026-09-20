@@ -324,6 +324,44 @@ def test_player_403s_on_maps_when_gm_sets_it_to_none(client, seed):
     assert client.get("/maps").status_code == 403
 
 
+def test_player_403s_on_rules_when_gm_sets_it_to_none(client, seed):
+    """A real gap: /rules never called world_can_view_section at all, so a
+    GM who floored "rules" to "none" for players (nav_menus.py only hides
+    the link — this route is the actual enforcement everywhere else) still
+    left the bare URL reachable."""
+    _set_access(seed.world_a.id, rules={"player": "none"})
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get("/rules").status_code == 403
+
+
+def test_player_200s_on_rules_by_default(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get("/rules").status_code == 200
+
+
+def test_rules_with_no_active_world_is_not_gated(client, seed):
+    """get_active_world returns None only when the caller has NO
+    accessible world at all (not just "no cookie set" — that still
+    auto-selects their one world). With no world, /rules intentionally
+    falls back to the bundled, world-agnostic core rules (see
+    app.main._world_rules_markdown) — that isn't any one world's content
+    to hide, so the new section-access check must be skipped rather than
+    erroring or 403ing on a None world."""
+    from app import auth as _auth
+    db = SessionLocal()
+    try:
+        from app.models import User
+        orphan = User(email="no-world-player@test.local", password_hash=_auth.hash_password(PLAYER_PASSWORD), is_gm=False)
+        db.add(orphan)
+        db.commit()
+    finally:
+        db.close()
+    login(client, "no-world-player@test.local", PLAYER_PASSWORD)
+    assert client.get("/rules").status_code == 200
+
+
 def test_gm_always_200s_regardless_of_access(client, seed):
     _set_access(seed.world_a.id, maps={"assistant": "none"})
     login(client, seed.gm.email, GM_PASSWORD)

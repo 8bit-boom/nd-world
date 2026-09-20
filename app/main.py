@@ -2453,6 +2453,17 @@ def _world_rules_markdown(world) -> str:
 @app.get("/rules", response_class=HTMLResponse)
 def rules_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world = get_active_world(request, db, active_world)
+    # "rules" is a real, GM-configurable section id (world_section_access
+    # can floor a player/assistant's level to "none" for it, same as any
+    # other section) — this route just never checked it, so a GM who hid
+    # Rules for players still had it reachable at the bare URL; nav_menus.py
+    # only hides the link, it was never the actual enforcement (see
+    # world_can_view_section's own docstring). Only gated when a specific
+    # world is active: with none selected this page intentionally falls
+    # back to the bundled, world-agnostic core rules (see
+    # _world_rules_markdown), which isn't any one world's content to hide.
+    if world and not world_can_view_section(request, world, "rules"):
+        raise HTTPException(403)
     worlds = _visible_worlds(request, db)
     md = _world_rules_markdown(world)
     # Uploaded rules MD (especially Word/Google-Docs exports) often carries
