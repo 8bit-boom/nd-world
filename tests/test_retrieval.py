@@ -548,6 +548,55 @@ def test_rules_context_zero_limit_disabled(client, seed):
         db.close()
 
 
+# A real reported bug, reproduced against the GM's actual ~870KB rules
+# document: asking for "23. Ordinary Weapons table" never surfaced the
+# actual weapon price list. "23. Ordinary Weapons" collapses (its full
+# children exceed _MAX_SCORED_CHARS — see _rules_sections_full's own
+# docstring) to just this short intro, yet its heading STILL matches every
+# query word literally, so it (and another unrelated section that merely
+# repeats "ordinary"/"weapons" in prose) fill rules_context's top-`limit`
+# slots ahead of "Melee Weapons" — the section nested INSIDE "23. Ordinary
+# Weapons" that actually has the data table the query is asking for.
+_ORDINARY_WEAPONS_RULES_MD = (
+    "# Book\n\n"
+    "## 23. Ordinary Weapons\n\n"
+    "Ordinary weapons are mundane arms anyone might carry.\n\n"
+    "### Melee Weapons\n\n"
+    "| Weapon | Cost |\n|---|---|\n| Kitchen knife | 2 Crows |\n| Hand axe | 5 Crows |\n\n"
+    "### Filler Subsection\n\n" + ("Padding text to exceed the merge cap. " * 200)
+    + "\n\n## Ordinary Armor\n\nOrdinary armor is cheap and easy to find, unlike ordinary weapons which are pricier.\n\n"
+    + "## Unrelated Chapter\n\nNothing to do with any of this."
+)
+
+
+def test_rules_context_surfaces_a_table_buried_under_a_collapsed_ancestor(client, seed):
+    _set_world_rules(seed.world_a.id, _ORDINARY_WEAPONS_RULES_MD)
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        ctx = rules_context(w, "23 ordinary weapons")
+        assert "Kitchen knife" in ctx
+        assert "Hand axe" in ctx
+    finally:
+        db.close()
+
+
+def test_rules_context_guarantee_does_not_fire_for_a_normal_top_pick():
+    """The guarantee only kicks in when the #1 pick is itself a collapsed
+    ancestor (see _rules_sections_full) — an ordinary, non-collapsed top
+    pick behaves exactly as before, with no extra sections pulled in."""
+    from app.retrieval import _rules_sections_full, _select_relevant_sections, _query_words
+
+    md = (
+        "## Armor\n\nChainmail armor costs 120 crowns.\n\n"
+        "## Weapons\n\n| Weapon | Cost |\n|---|---|\n| Sword | 15 Crows |\n"
+    )
+    words = _query_words("armor")
+    picks = _select_relevant_sections(_rules_sections_full(md), words, 2000, 2)
+    headings = [h for h, _ in picks]
+    assert headings == ["Armor"]
+
+
 # ── smart_world_context now also folds in Rules ─────────────────────────────
 
 def test_smart_world_context_includes_rules_when_relevant(client, seed):

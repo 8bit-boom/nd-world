@@ -236,30 +236,17 @@ RULES_EXCERPT_TOTAL_BUDGET = 2000
 RULES_SECTION_LIMIT = 2
 
 
-def _rules_sections(markdown: str) -> list:
-    """Splits raw rules markdown into (heading, body) pairs at ANY markdown
-    heading (H1-H6), hierarchy-aware: a heading's own section extends up to
-    the next heading at the SAME OR SHALLOWER level, so a deeper heading
-    nested underneath it stays part of that section's own body instead of
-    ending it. A real GM rules document routinely structures a big
-    reference chapter as an H3 "chapter" whose actual content lives in
-    H4/H5 subheadings below it — e.g. an H3 "Traits of the Hunt" chapter
-    containing H4 "Weapon Traits" containing H5 "Weapon — Hunt Mode" with
-    the actual named trait table. Splitting on H1-H3 only used to make
-    every deeper heading invisible to this function, so the WHOLE chapter
-    (subheadings and all) collapsed into one giant section under its H3
-    title; any excerpt taker slicing a prefix of that section only ever
-    reached its opening paragraph, never the actual named entries several
-    subsections down. Every heading still gets its own (heading, body)
-    entry regardless of depth — a query matching the broad chapter title
-    and a query matching one specific nested subheading are both scored as
-    candidates, and whichever one actually matches the query wins; a
-    parent's own section body naturally includes its children's text too
-    (nesting, not exclusion), so the parent remains a valid, if coarser,
-    candidate in its own right. Text before the first heading (if any) is
-    kept under a synthetic "Introduction" heading rather than silently
-    dropped; a document with no headings at all comes back as one single
-    "Rules" section."""
+def _rules_sections_full(markdown: str) -> list:
+    """Same split _rules_sections does, but each entry also carries the
+    heading's nesting `level` and its `start`/`full_end` positions in the
+    (line-ending-normalized) markdown — the span a section would have
+    covered before the merge-cap fallback below collapsed it to just its
+    own direct text. _rules_sections itself only exposes the (heading,
+    body) pairs most callers need; this richer form exists for the
+    "guaranteed table slot" logic in best_matching_excerpt/rules_context,
+    which needs to recognize that a COLLAPSED section's real content lives
+    in headings physically nested inside that original span, not
+    duplicate this same heading-matching scan a second time to find them."""
     if not markdown:
         return []
     # A GM's rules_md can arrive with Windows line endings (pasted from a
@@ -272,12 +259,12 @@ def _rules_sections(markdown: str) -> list:
     markdown = markdown.replace("\r\n", "\n").replace("\r", "\n")
     matches = list(_MD_HEADING_RE.finditer(markdown))
     if not matches:
-        return [("Rules", markdown.strip())] if markdown.strip() else []
+        return [("Rules", markdown.strip(), 0, 0, len(markdown))] if markdown.strip() else []
     sections = []
     if matches[0].start() > 0:
         intro = markdown[:matches[0].start()].strip()
         if intro:
-            sections.append(("Introduction", intro))
+            sections.append(("Introduction", intro, 0, 0, matches[0].start()))
     for i, m in enumerate(matches):
         level = len(m.group(1))
         heading = m.group(2).strip()
@@ -307,8 +294,55 @@ def _rules_sections(markdown: str) -> list:
         end = full_end if (full_end - start) <= _MAX_SCORED_CHARS else own_end
         body = markdown[start:end].strip()
         if body:
-            sections.append((heading, body))
+            sections.append((heading, body, level, start, full_end))
     return sections
+
+
+def _rules_sections(markdown: str) -> list:
+    """Splits raw rules markdown into (heading, body) pairs at ANY markdown
+    heading (H1-H6), hierarchy-aware: a heading's own section extends up to
+    the next heading at the SAME OR SHALLOWER level, so a deeper heading
+    nested underneath it stays part of that section's own body instead of
+    ending it. A real GM rules document routinely structures a big
+    reference chapter as an H3 "chapter" whose actual content lives in
+    H4/H5 subheadings below it — e.g. an H3 "Traits of the Hunt" chapter
+    containing H4 "Weapon Traits" containing H5 "Weapon — Hunt Mode" with
+    the actual named trait table. Splitting on H1-H3 only used to make
+    every deeper heading invisible to this function, so the WHOLE chapter
+    (subheadings and all) collapsed into one giant section under its H3
+    title; any excerpt taker slicing a prefix of that section only ever
+    reached its opening paragraph, never the actual named entries several
+    subsections down. Every heading still gets its own (heading, body)
+    entry regardless of depth — a query matching the broad chapter title
+    and a query matching one specific nested subheading are both scored as
+    candidates, and whichever one actually matches the query wins; a
+    parent's own section body naturally includes its children's text too
+    (nesting, not exclusion), so the parent remains a valid, if coarser,
+    candidate in its own right. Text before the first heading (if any) is
+    kept under a synthetic "Introduction" heading rather than silently
+    dropped; a document with no headings at all comes back as one single
+    "Rules" section."""
+    return [(heading, body) for heading, body, _level, _start, _full_end in _rules_sections_full(markdown)]
+
+
+# A markdown table's separator row — e.g. "|---|---|---|" or
+# "| :--- | ---: |" — requiring at least two columns (so a plain "---"
+# horizontal-rule divider, which has no pipe at all, never matches). Used
+# by best_matching_excerpt/rules_context's "guaranteed table slot" (see
+# _select_relevant_sections) to recognize a section that's an actual DATA
+# table (a weapon/price list, a stat block) as opposed to prose that
+# happens to mention a table exists, or a short "collapsed" ancestor
+# section (see _rules_sections_full) whose own heading matches the query
+# well but whose body — by construction — never contains the deeper
+# content its heading promises.
+_MD_TABLE_SEPARATOR_RE = re.compile(
+    r'^[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)+\|?[ \t]*$',
+    re.MULTILINE,
+)
+
+
+def _has_markdown_table(text: str) -> bool:
+    return bool(_MD_TABLE_SEPARATOR_RE.search(text))
 
 
 def rules_context(world, query: str, limit: int = RULES_SECTION_LIMIT, is_gm: bool = True) -> str:
@@ -349,22 +383,14 @@ def rules_context(world, query: str, limit: int = RULES_SECTION_LIMIT, is_gm: bo
     if not is_gm:
         markdown = _strip_gm_directives(markdown)
         markdown = _strip_gm_only(markdown)
-    scored = []
-    for heading, body in _rules_sections(markdown):
-        score = _keyword_score(heading, body[:_MAX_SCORED_CHARS], words)
-        if score:
-            scored.append((score, heading, body))
-    if not scored:
+    full_sections = _rules_sections_full(markdown)
+    picks = _select_relevant_sections(
+        full_sections, words, RULES_EXCERPT_TOTAL_BUDGET, limit,
+        per_section_cap=RULES_EXCERPT_CHARS,
+    )
+    if not picks:
         return ""
-    scored.sort(key=lambda t: t[0], reverse=True)
-    lines = []
-    budget = RULES_EXCERPT_TOTAL_BUDGET
-    for _score, heading, body in scored[:limit]:
-        if budget <= 0:
-            break
-        excerpt = body[:min(RULES_EXCERPT_CHARS, budget)]
-        lines.append(f"- [Rules] {heading}: {excerpt}")
-        budget -= len(excerpt)
+    lines = [f"- [Rules] {heading}: {excerpt}" for heading, excerpt in picks]
     return "\n".join(lines)
 
 # AI 1.1 — RAG retrieval could always *find* an entity by its body text
@@ -544,6 +570,101 @@ def find_relevant_entities(db: Session, world_id: int, query: str, limit: int = 
         return []
 
 
+# Additional, small number of sections best_matching_excerpt/rules_context
+# will ALWAYS reserve room for, on top of max_sections/limit, when the
+# #1-ranked pick turned out to be a "collapsed" ancestor section (see
+# _rules_sections_full): its own heading matched the query well, but
+# _MAX_SCORED_CHARS' merge cap means its actual body is just a short
+# intro, with the real content — the tables its heading promises — living
+# in headings nested underneath it. _keyword_score has no way to know a
+# heading like "23. Ordinary Weapons" no longer "contains" what it
+# structurally implies once collapsed — it still legitimately matches
+# every query word literally present in that heading — so without this, a
+# genuinely relevant DATA TABLE nested under it (a "Melee Weapons" price
+# list, say) could lose the ratio-gate/max_sections race to its own
+# collapsed parent, or to an unrelated section elsewhere in a large
+# document that merely happens to share one more keyword. This is
+# scoped tight on purpose: only sections that are actual descendants of
+# that specific collapsed pick (not "any table anywhere with a decent
+# score") and that contain a real markdown table qualify — the concrete,
+# reported failure mode was a reader asking for "the X table" and getting
+# prose instead, even after literally naming the containing chapter.
+# Additive, not carved out of chars_budget's normal share: a query that
+# never triggers this (the common case — most top picks aren't collapsed,
+# or their own body already covers the table) behaves byte-for-byte as
+# before.
+_MAX_GUARANTEED_TABLE_SECTIONS = 3
+_GUARANTEED_TABLE_CHARS = 500
+
+
+def _select_relevant_sections(
+    full_sections: list, words: list, chars_budget: int, max_sections: int,
+    per_section_cap: Optional[int] = None,
+) -> list:
+    """Shared by best_matching_excerpt and rules_context. Scores every
+    (heading, body, level, start, full_end) entry from _rules_sections_full
+    against tokenized `words` and returns up to `max_sections` (heading,
+    excerpt) pairs: the highest-scoring sections whose score is
+    competitive with the #1 pick (_SECTION_RELEVANCE_RATIO), deduped
+    bidirectionally so a hierarchy-merged parent doesn't repeat a child's
+    text verbatim — see best_matching_excerpt's own docstring for more on
+    both of those — PLUS, if the #1 pick was itself a collapsed ancestor,
+    any of ITS OWN descendant sections that carry a genuine markdown table
+    and weren't already swept in above (see _MAX_GUARANTEED_TABLE_SECTIONS'
+    own comment). Returns [] when nothing scores.
+
+    `per_section_cap`, when given, additionally limits any single normal
+    pick's own share of `chars_budget` (rules_context's RULES_EXCERPT_CHARS
+    — a caller with no such per-item cap of its own, like
+    best_matching_excerpt, leaves this None and a pick may use as much of
+    the remaining budget as it needs)."""
+    scored = []
+    for heading, sect_body, _level, start, full_end in full_sections:
+        score = _keyword_score(heading, sect_body[:_MAX_SCORED_CHARS], words)
+        if score:
+            scored.append((score, heading, sect_body, start, full_end))
+    if not scored:
+        return []
+    scored.sort(key=lambda t: t[0], reverse=True)
+    top_score = scored[0][0]
+    top_start, top_full_end = scored[0][3], scored[0][4]
+    top_collapsed = (top_full_end - top_start) > _MAX_SCORED_CHARS
+
+    picks = []
+    included_bodies = []
+    remaining = chars_budget
+    for score, heading, sect_body, _start, _full_end in scored:
+        if len(picks) >= max_sections or remaining <= 0:
+            break
+        if picks and score < top_score * _SECTION_RELEVANCE_RATIO:
+            break
+        if any(sect_body in inc or inc in sect_body for inc in included_bodies):
+            continue
+        cap = min(remaining, per_section_cap) if per_section_cap else remaining
+        piece = sect_body[:cap]
+        picks.append((heading, piece))
+        included_bodies.append(sect_body)
+        remaining -= len(piece)
+
+    if top_collapsed:
+        guaranteed = 0
+        for score, heading, sect_body, start, _full_end in scored:
+            if guaranteed >= _MAX_GUARANTEED_TABLE_SECTIONS:
+                break
+            if not (top_start < start < top_full_end):
+                continue
+            if not _has_markdown_table(sect_body):
+                continue
+            if any(sect_body in inc or inc in sect_body for inc in included_bodies):
+                continue
+            piece = sect_body[:_GUARANTEED_TABLE_CHARS]
+            picks.append((heading, piece))
+            included_bodies.append(sect_body)
+            guaranteed += 1
+
+    return picks
+
+
 def best_matching_excerpt(body: str, query: str, chars_budget: int, max_sections: int = 3) -> str:
     """The chunk(s) of `body` most relevant to `query`, for a body long
     enough that a plain prefix slice risks missing the actually-relevant
@@ -582,50 +703,13 @@ def best_matching_excerpt(body: str, query: str, chars_budget: int, max_sections
     words = _query_words(query)
     if not words:
         return body[:chars_budget]
-    sections = _rules_sections(body)
-    if len(sections) <= 1:
+    full_sections = _rules_sections_full(body)
+    if len(full_sections) <= 1:
         return body[:chars_budget]
-    scored = []
-    for heading, section_body in sections:
-        score = _keyword_score(heading, section_body[:_MAX_SCORED_CHARS], words)
-        if score:
-            scored.append((score, heading, section_body))
-    if not scored:
+    picks = _select_relevant_sections(full_sections, words, chars_budget, max_sections)
+    if not picks:
         return body[:chars_budget]
-    scored.sort(key=lambda t: t[0], reverse=True)
-    top_score = scored[0][0]
-    parts = []
-    included_bodies = []
-    remaining = chars_budget
-    for score, heading, section_body in scored:
-        if len(parts) >= max_sections or remaining <= 0:
-            break
-        # A section beyond the #1 pick only earns a slot if it's a
-        # genuinely competitive match, not merely "technically nonzero" —
-        # e.g. a section whose only overlap with the query is one common
-        # word ("weapon") appearing once in an otherwise unrelated
-        # paragraph. Without this, that section would still get swept in
-        # as a "second section" whenever leftover budget happened to exist
-        # (list already sorted descending, so once one candidate fails
-        # this ratio every remaining one — all lower-scoring — fails it
-        # too, hence break rather than continue).
-        if parts and score < top_score * _SECTION_RELEVANCE_RATIO:
-            break
-        # Both directions matter: a later, smaller candidate duplicating an
-        # already-included bigger section is the obvious case, but the
-        # reverse also happens — a hierarchy-merged PARENT section (see
-        # _rules_sections) can score lower than one of its own children yet
-        # still appear as a later candidate, and its body contains that
-        # child's text verbatim plus whatever else got merged in (e.g. an
-        # unrelated sibling section) — including it adds noise, not new
-        # information, since everything genuinely relevant in it was
-        # already shown via the child.
-        if any(section_body in inc or inc in section_body for inc in included_bodies):
-            continue
-        piece = section_body[:remaining]
-        parts.append(piece if heading == "Introduction" else f"[{heading}] {piece}")
-        included_bodies.append(section_body)
-        remaining -= len(piece)
+    parts = [piece if heading == "Introduction" else f"[{heading}] {piece}" for heading, piece in picks]
     return "\n\n".join(parts)
 
 

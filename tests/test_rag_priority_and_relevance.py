@@ -167,6 +167,32 @@ def test_best_matching_excerpt_returns_multiple_comparable_sections():
     assert "Nothing to do with any of this" not in excerpt
 
 
+# A real reported bug, reproduced against the GM's actual ~870KB rules
+# document: "23. Ordinary Weapons" collapses (its full children exceed
+# _MAX_SCORED_CHARS — see _rules_sections_full's own docstring) to just
+# its own short intro, yet its heading still matches every query word
+# literally — so it (plus an unrelated section that merely repeats
+# "ordinary"/"weapons" in prose) fill the top ranked slots ahead of
+# "Melee Weapons", the section actually NESTED inside "23. Ordinary
+# Weapons" that has the real data table the query is asking for.
+_COLLAPSED_ANCESTOR_WITH_BURIED_TABLE = (
+    "# Book\n\n"
+    "## 23. Ordinary Weapons\n\n"
+    "Ordinary weapons are mundane arms anyone might carry.\n\n"
+    "### Melee Weapons\n\n"
+    "| Weapon | Cost |\n|---|---|\n| Kitchen knife | 2 Crows |\n| Hand axe | 5 Crows |\n\n"
+    "### Filler Subsection\n\n" + ("Padding text to exceed the merge cap. " * 200)
+    + "\n\n## Ordinary Armor\n\nOrdinary armor is cheap and easy to find, unlike ordinary weapons which are pricier.\n\n"
+    + "## Unrelated Chapter\n\nNothing to do with any of this."
+)
+
+
+def test_best_matching_excerpt_surfaces_a_table_buried_under_a_collapsed_ancestor():
+    excerpt = best_matching_excerpt(_COLLAPSED_ANCESTOR_WITH_BURIED_TABLE, "23 ordinary weapons", 200)
+    assert "Kitchen knife" in excerpt
+    assert "Hand axe" in excerpt
+
+
 def test_best_matching_excerpt_does_not_pad_with_a_barely_relevant_section():
     """A section whose only overlap with the query is one common word
     appearing once must not get swept in as a "second section" just
