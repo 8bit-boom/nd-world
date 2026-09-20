@@ -611,6 +611,45 @@ async def test_generate_chat_empty_content_with_thinking_reports_it_instead(monk
     assert "done_reason=length" not in result
 
 
+# ── generate_chat: inline <think> tags (the <|think|> prompt-token
+# fallback) — see stream_chat's own equivalent tests above for the full
+# "why". generate_chat's callers (expand_recap_notes/condense_recap/
+# summarize_transcript/summarize_session_from_facts) SAVE the returned
+# string as actual session content, so a literal <think>...</think> block
+# left in it would corrupt stored recap/summary text, not just a live
+# display.
+
+@pytest.mark.asyncio
+async def test_generate_chat_strips_inline_think_tags(monkeypatch):
+    resp = _FakeRespFull("<think>reasoning here</think>The final answer.")
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeFixedRespClient(resp))
+    result = await ai_module.generate_chat([{"role": "user", "content": "hi"}])
+    assert result == "The final answer."
+    assert "<think>" not in result and "</think>" not in result
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_no_inline_think_tag_is_a_no_op(monkeypatch):
+    resp = _FakeRespFull("Just a normal answer.")
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeFixedRespClient(resp))
+    result = await ai_module.generate_chat([{"role": "user", "content": "hi"}])
+    assert result == "Just a normal answer."
+
+
+@pytest.mark.asyncio
+async def test_generate_chat_inline_think_only_response_reports_hidden_thinking(monkeypatch):
+    """Content that's ENTIRELY a <think> block with nothing left after
+    stripping must fall through to the SAME empty-response diagnostic a
+    genuinely empty response gets — not a silent empty string, and not
+    reported as a plain "no done_reason" case that hides the real cause."""
+    resp = _FakeRespFull("<think>only reasoning, no real answer</think>", done_reason="length")
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeFixedRespClient(resp))
+    result = await ai_module.generate_chat([{"role": "user", "content": "hi"}])
+    assert "empty response" in result
+    assert "hidden" in result and "thinking" in result
+    assert "<think>" not in result
+
+
 @pytest.mark.asyncio
 async def test_stream_chat_passes_options(monkeypatch):
     calls = []
@@ -873,6 +912,91 @@ async def test_stream_chat_emit_thinking_wraps_the_empty_response_sentinel(monke
     assert pieces[0] == {"type": "thinking", "text": "pondering "}
     assert pieces[-1]["type"] == "content"
     assert "hidden" in pieces[-1]["text"] and "thinking" in pieces[-1]["text"]
+
+
+# ── stream_chat: inline <think> tags (the <|think|> prompt-token fallback) ──
+#
+# A real reported bug: a model imported as a raw GGUF (e.g. via the app's
+# own Hugging Face upload/pull flow) whose local Ollama tag isn't tagged
+# "thinking"-capable gets its think=True rejected by Ollama, and
+# stream_chat's own recovery (see _messages_with_prompt_think_token) retries
+# with the <|think|> token injected into the system prompt instead — but
+# that retry deliberately sends think=False (repeating think=True would
+# just repeat the identical rejection), so Ollama never populates the
+# native message.thinking field for any of it. A model that still reasons
+# because of the injected token typically wraps that reasoning in literal
+# <think>...</think> markup in its own raw text — the same convention
+# Ollama's own think=True splitting relies on for any compatible model —
+# which used to land entirely in the visible answer, tags and all, with no
+# separate "thinking" piece ever emitted: exactly what "the imported model
+# never shows a reasoning trace" looks like from the GM's side.
+
+@pytest.mark.asyncio
+async def test_stream_chat_splits_inline_think_tags_when_native_field_is_absent(monkeypatch):
+    chunks = [
+        _FakeStreamChunk(content="<think>reasoning here</think>The answer.", thinking=None),
+        _FakeStreamChunk(content="", done_reason="stop"),
+    ]
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeStreamClient(chunks))
+    pieces = [p async for p in ai_module.stream_chat([{"role": "user", "content": "hi"}], emit_thinking=True)]
+    assert {"type": "thinking", "text": "reasoning here"} in pieces
+    assert {"type": "content", "text": "The answer."} in pieces
+    # The literal tags themselves must never reach the visible answer.
+    assert not any("<think>" in p["text"] or "</think>" in p["text"] for p in pieces)
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_splits_inline_think_tag_across_stream_chunks(monkeypatch):
+    """Ollama's own chunking is arbitrary token-by-token — a tag can land
+    split across two separate chunks, and the splitter must still
+    recognize it rather than let half a tag leak through as visible text."""
+    chunks = [
+        _FakeStreamChunk(content="<thi", thinking=None),
+        _FakeStreamChunk(content="nk>some reasoning</th", thinking=None),
+        _FakeStreamChunk(content="ink>Final answer.", thinking=None, done_reason="stop"),
+    ]
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeStreamClient(chunks))
+    pieces = [p async for p in ai_module.stream_chat([{"role": "user", "content": "hi"}], emit_thinking=True)]
+    thinking_text = "".join(p["text"] for p in pieces if p["type"] == "thinking")
+    content_text = "".join(p["text"] for p in pieces if p["type"] == "content")
+    assert thinking_text == "some reasoning"
+    assert content_text == "Final answer."
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_no_inline_think_tag_is_a_no_op(monkeypatch):
+    """A model whose reasoning Ollama already separated via the native
+    field (or a plain non-thinking model) has a clean `content` stream
+    with no <think> tag to find — the splitter must not alter it."""
+    chunks = [_FakeStreamChunk(content="Just a normal answer.", thinking=None, done_reason="stop")]
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeStreamClient(chunks))
+    pieces = [p async for p in ai_module.stream_chat([{"role": "user", "content": "hi"}], emit_thinking=True)]
+    assert pieces == [{"type": "content", "text": "Just a normal answer."}]
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_inline_think_only_response_still_yields_empty_sentinel(monkeypatch):
+    """A response that's ENTIRELY inline reasoning with no visible answer
+    after it must still trip the empty-response diagnostic, same as the
+    native-field case — a "thinking"-only piece must not count as having
+    yielded a real answer."""
+    chunks = [_FakeStreamChunk(content="<think>only reasoning, no answer</think>", thinking=None, done_reason="length")]
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeStreamClient(chunks))
+    pieces = [p async for p in ai_module.stream_chat([{"role": "user", "content": "hi"}], emit_thinking=True)]
+    assert pieces[0] == {"type": "thinking", "text": "only reasoning, no answer"}
+    assert pieces[-1]["type"] == "content"
+    assert "hidden" in pieces[-1]["text"] and "thinking" in pieces[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_emit_thinking_false_leaves_inline_think_tags_untouched(monkeypatch):
+    """Every existing caller that doesn't opt into emit_thinking keeps
+    getting exactly what the model produced, unchanged — the splitter is
+    only ever allocated when emit_thinking is True."""
+    chunks = [_FakeStreamChunk(content="<think>reasoning</think>answer", thinking=None, done_reason="stop")]
+    monkeypatch.setattr(ai_module, "_client", lambda: _FakeStreamClient(chunks))
+    tokens = [tok async for tok in ai_module.stream_chat([{"role": "user", "content": "hi"}])]
+    assert tokens == ["<think>reasoning</think>answer"]
 
 
 @pytest.mark.asyncio

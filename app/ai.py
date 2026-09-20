@@ -204,6 +204,109 @@ def _messages_with_prompt_think_token(full: list[dict]) -> list[dict]:
     return out
 
 
+_THINK_TAG_OPEN = "<think>"
+_THINK_TAG_CLOSE = "</think>"
+
+
+class _InlineThinkSplitter:
+    """Incrementally splits a raw token stream into ("thinking", text)/
+    ("content", text) pieces around a literal <think>...</think> block.
+
+    A real gap the <|think|> prompt-token fallback (see
+    _messages_with_prompt_think_token) otherwise has: that retry
+    deliberately sends think=False to Ollama — sending think=true again
+    would just repeat the identical rejection that triggered the fallback
+    — so Ollama never populates the native message.thinking field for any
+    of it. But a model reasoning because of the injected token still
+    typically wraps that reasoning in literal <think>...</think> markup in
+    its own raw generation (the same convention Ollama's OWN think=true
+    splitting relies on for any compatible model — it isn't inventing
+    separate channels, it's parsing this exact tag out of the model's
+    output for you). Without this, that whole block — tags and all —
+    lands in the visible answer verbatim, and stream_chat's separate
+    "thinking" pieces (see chunk.message.thinking below) never fire at
+    all for a model on this fallback, which is exactly the reported "the
+    imported Gemma 4 GGUF never shows a reasoning trace" bug.
+
+    Wired in unconditionally in stream_chat whenever emit_thinking is
+    True (not just for the fallback case) — harmless for a model whose
+    reasoning Ollama already separated via the native field, since its
+    `content` stream is already clean and has no <think> tag left to
+    find; this only ever does something for a model whose raw output
+    still contains one.
+
+    Buffers a short tail of text whenever it could be the START of the
+    tag currently being looked for, so a tag split across two separate
+    stream chunks (Ollama's own chunking is arbitrary token-by-token, not
+    aligned to any of this) is still recognized correctly rather than
+    slipping through as literal visible text."""
+
+    def __init__(self):
+        self._buf = ""
+        self._in_think = False
+
+    def feed(self, token: str) -> list[tuple[str, str]]:
+        self._buf += token
+        out = []
+        while self._buf:
+            tag = _THINK_TAG_CLOSE if self._in_think else _THINK_TAG_OPEN
+            idx = self._buf.find(tag)
+            if idx == -1:
+                keep = 0
+                for k in range(min(len(tag) - 1, len(self._buf)), 0, -1):
+                    if tag.startswith(self._buf[-k:]):
+                        keep = k
+                        break
+                if keep:
+                    emit, self._buf = self._buf[:-keep], self._buf[-keep:]
+                else:
+                    emit, self._buf = self._buf, ""
+                if emit:
+                    out.append(("thinking" if self._in_think else "content", emit))
+                break
+            before, after = self._buf[:idx], self._buf[idx + len(tag):]
+            if before:
+                out.append(("thinking" if self._in_think else "content", before))
+            self._in_think = not self._in_think
+            self._buf = after
+        return out
+
+    def flush(self) -> list[tuple[str, str]]:
+        """Call once the stream ends — whatever's still held back (either
+        genuinely trailing text, or a suspected tag-start that never
+        completed and so was never really a tag) is real content/thinking
+        and must not be silently dropped."""
+        if not self._buf:
+            return []
+        piece = [("thinking" if self._in_think else "content", self._buf)]
+        self._buf = ""
+        return piece
+
+
+_THINK_BLOCK_RE = re.compile(r'<think>.*?</think>', re.DOTALL)
+
+
+def _strip_inline_think_tags(content: str) -> tuple[str, int]:
+    """generate_chat's non-streaming counterpart to _InlineThinkSplitter
+    (see its own docstring for the full "why") — generate_chat has no
+    typed-piece return the way stream_chat does, so there's nothing
+    sensible to DO with reasoning text here except discard it, the same
+    way generate_chat already silently discards reasoning delivered via
+    Ollama's own native `message.thinking` field on every call. Without
+    this, a model on the <|think|> prompt-token fallback would leave its
+    raw <think>...</think> block sitting in the returned string verbatim
+    — and generate_chat's callers are exactly the session-recap-assist
+    family (expand_recap_notes/condense_recap/summarize_transcript/
+    summarize_session_from_facts), which SAVE that return value as actual
+    session content, not just display it live. Returns (stripped_content,
+    removed_char_count) — the count feeds the empty-response diagnostic
+    below so a response that was ENTIRELY a think block (nothing left
+    after stripping) is still correctly reported as hidden reasoning
+    rather than a silent, unexplained empty string."""
+    stripped = _THINK_BLOCK_RE.sub('', content).strip()
+    return stripped, len(content) - len(stripped)
+
+
 def model_rejected_thinking(model: str = "") -> bool:
     """True if `model` (default: effective_ollama_model()) is the subject
     of a currently-live thinking rejection — same resolution as
@@ -942,6 +1045,14 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
         # poisoned this model's capability cache.
         _record_thinking_result(m, effective_think, failed=False)
         content = resp.message.content
+        # See _strip_inline_think_tags' own docstring: a model on the
+        # <|think|> prompt-token fallback gets no native message.thinking
+        # separation from Ollama at all, so its raw <think>...</think>
+        # reasoning (if any) is still sitting in `content` here — a no-op
+        # for every other model, whose content never contains that tag.
+        inline_thinking_chars = 0
+        if content:
+            content, inline_thinking_chars = _strip_inline_think_tags(content)
         if content:
             return content
         # A successful call with genuinely empty content — not a request/connection
@@ -955,15 +1066,16 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
         thinking = getattr(resp.message, "thinking", None)
         done_reason = getattr(resp, "done_reason", None)
         eval_count = getattr(resp, "eval_count", None)
+        thinking_chars = len(thinking or "") + inline_thinking_chars
         # thinking_chars (not just had_thinking's bool) is what a GM/admin
         # actually needs to calibrate _THINKING_HEADROOM_TOKENS from logs
         # across repeated failures — see that constant's own comment.
         _log.warning(
             "generate_chat model=%s returned empty content (done_reason=%r, eval_count=%r, "
             "had_thinking=%r, thinking_chars=%d)",
-            m, done_reason, eval_count, bool(thinking), len(thinking or ""),
+            m, done_reason, eval_count, bool(thinking_chars), thinking_chars,
         )
-        return _empty_response_message(m, len(thinking or ""), done_reason)
+        return _empty_response_message(m, thinking_chars, done_reason)
     except _ollama.ResponseError as exc:
         _log.error("generate_chat Ollama error: %s %s", exc.status_code, exc.error)
         if think and "does not support thinking" in (exc.error or ""):
@@ -1063,6 +1175,23 @@ async def stream_chat(
         # the {"type": "content", ...} wrapper.
         return {"type": "content", "text": text} if emit_thinking else text
 
+    # See _InlineThinkSplitter's own docstring for why this exists: a
+    # model on the <|think|> prompt-token fallback gets no native
+    # message.thinking field from Ollama at all (that retry deliberately
+    # sends think=False), so a model that still wraps its reasoning in
+    # literal <think>...</think> markup would otherwise dump that whole
+    # block into the visible answer with no separate reasoning piece ever
+    # emitted. Only allocated when a caller actually wants to see
+    # reasoning at all.
+    splitter = _InlineThinkSplitter() if emit_thinking else None
+
+    def _emit_split(kind: str, text: str):
+        nonlocal yielded_any
+        if kind == "thinking":
+            return {"type": "thinking", "text": text}
+        yielded_any = True
+        return _piece(text)
+
     try:
         chat_kwargs = await _chat_kwargs(options, think, m)
         if think and not chat_kwargs["think"] and m in _prompt_token_thinking_models:
@@ -1076,8 +1205,14 @@ async def stream_chat(
             if emit_thinking and piece_thinking:
                 yield {"type": "thinking", "text": piece_thinking}
             if token:
-                yielded_any = True
-                yield _piece(token)
+                if splitter:
+                    for kind, text in splitter.feed(token):
+                        if kind == "thinking":
+                            thinking_chars += len(text)
+                        yield _emit_split(kind, text)
+                else:
+                    yielded_any = True
+                    yield _piece(token)
             # Tracked regardless of whether `think` was requested — even
             # with think=False a model can still ignore that and burn its
             # budget on hidden reasoning (the case generate_chat's own
@@ -1088,6 +1223,11 @@ async def stream_chat(
             # a visible answer.
             thinking_chars += len(piece_thinking or "")
             done_reason = getattr(chunk, "done_reason", None) or done_reason
+        if splitter:
+            for kind, text in splitter.flush():
+                if kind == "thinking":
+                    thinking_chars += len(text)
+                yield _emit_split(kind, text)
         # The EFFECTIVE think (post _chat_kwargs downgrade), not the
         # caller's requested one — see generate_chat's identical call and
         # _record_thinking_result's own docstring for why.
