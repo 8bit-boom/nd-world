@@ -62,6 +62,20 @@ _STOPWORDS = frozenset({
     "each", "few", "more", "most", "other", "such", "only", "own", "same",
     "just", "into", "over", "under", "again", "once", "here", "also",
     "tell", "give", "show", "please", "know", "want", "like", "get",
+    # "rule(s)" specifically: a player phrase like "...from Rules" (steering
+    # AI Chat toward the World Rules document, as opposed to entities/notes)
+    # is a NAVIGATIONAL instruction, not a content keyword — but scored
+    # as one, it's a near-useless discriminator once already inside the
+    # Rules document itself: virtually any real rulebook has several
+    # section titles built around the word "Rule" ("Core Rule", "The Rule
+    # of Forms", "Armor Rule", ...) that have nothing to do with what's
+    # actually being asked about, so it dilutes coverage-based scoring
+    # toward whichever unrelated "Rule"-titled section happens to also
+    # share one other word with the query, confirmed against a real rules
+    # document (a query ending "...from Rules" pulled in several
+    # completely unrelated "___ Rule"-titled sections above the section
+    # that actually answered the question).
+    "rule", "rules",
 })
 
 
@@ -124,12 +138,26 @@ def _stem(word: str) -> str:
 # certainly the answer to "tell me about weapon traits" even if its body
 # (e.g. a table) never repeats those words again, whereas a long prose
 # section that happens to mention "weapon" several times in an unrelated
-# context is not. Plain substring-count scoring treated the two the same,
-# so a verbose section repeating a query word 4-5 times in passing could
-# outrank the one section whose own heading names exactly what was asked —
-# confirmed to reproduce the reported "AI can't find the Weapon Traits
-# table even though there's a whole section titled that" failure.
-_HEADING_MATCH_WEIGHT = 8
+# context is not.
+#
+# Scoring by DISTINCT-WORD COVERAGE (how many different query words
+# matched at all), not raw occurrence count, for the same reason: raw
+# counting lets a section that happens to repeat ONE word many times
+# outscore a section that actually matches MULTIPLE different query
+# words — confirmed against a real ~870KB rules document, where a
+# "Source Map" chapter-history table (pure editorial meta-content, listing
+# which source file each chapter came from) scored competitively with the
+# real "Ordinary Weapons" chapter purely because its own table densely
+# repeated "rules" and "ordinary" as substrings of unrelated filenames/
+# chapter titles (16 and 5 raw hits) — zero of which were an actual
+# heading match, and none of which reflect real relevance. Raw hit counts
+# still contribute a small, CAPPED tiebreak (_BODY_HIT_TIEBREAK_CAP) so
+# two candidates with identical coverage don't score as a dead tie, but a
+# capped tiebreak can't let sheer repetition manufacture a win the way an
+# uncapped sum could.
+_HEADING_COVERAGE_WEIGHT = 40
+_BODY_COVERAGE_WEIGHT = 8
+_BODY_HIT_TIEBREAK_CAP = 3
 
 
 def _keyword_score(heading: str, body: str, words: list) -> int:
@@ -139,8 +167,10 @@ def _keyword_score(heading: str, body: str, words: list) -> int:
     "Cartographer"), tolerating a simple trailing-s plural mismatch either
     direction ("trait" query vs. "Traits" heading, or vice versa) since RPG
     terminology constantly shifts singular/plural between a question and a
-    table's own column header. Heading matches count for
-    _HEADING_MATCH_WEIGHT points each; body matches count for 1.
+    table's own column header. Each DISTINCT query word matched in the
+    heading counts for _HEADING_COVERAGE_WEIGHT; each distinct word matched
+    anywhere in the body counts for _BODY_COVERAGE_WEIGHT — see the
+    constants' own comment for why coverage, not a raw per-occurrence sum.
 
     Does NOT cap `body`'s length itself — a caller scoring a whole,
     potentially very large document as a single candidate (priority_
@@ -157,12 +187,22 @@ def _keyword_score(heading: str, body: str, words: list) -> int:
     everyone."""
     heading_l = heading.lower()
     body_l = body.lower()
-    score = 0
+    head_coverage = 0
+    body_coverage = 0
+    body_hits = 0
     for w in words:
         pattern = re.compile(r'\b' + re.escape(_stem(w)) + r's?\b')
-        score += len(pattern.findall(heading_l)) * _HEADING_MATCH_WEIGHT
-        score += len(pattern.findall(body_l))
-    return score
+        if pattern.search(heading_l):
+            head_coverage += 1
+        b = len(pattern.findall(body_l))
+        if b:
+            body_coverage += 1
+            body_hits += b
+    return (
+        head_coverage * _HEADING_COVERAGE_WEIGHT
+        + body_coverage * _BODY_COVERAGE_WEIGHT
+        + min(body_hits, _BODY_HIT_TIEBREAK_CAP)
+    )
 
 
 _MD_HEADING_RE = re.compile(r'^(#{1,6})[ \t]+(.+?)[ \t]*$', re.MULTILINE)
@@ -181,6 +221,10 @@ _MD_HEADING_RE = re.compile(r'^(#{1,6})[ \t]+(.+?)[ \t]*$', re.MULTILINE)
 # scoring one already-split SECTION at a time (see that function's own
 # docstring for why it does NOT apply this cap itself).
 _MAX_SCORED_CHARS = 4000
+
+# best_matching_excerpt's own gate for how weak a match can be and still
+# earn a slot alongside the #1 pick — see that function's own comment.
+_SECTION_RELEVANCE_RATIO = 0.4
 
 # Independent of EXCERPT_CHARS/EXCERPT_TOTAL_BUDGET above (those are
 # per-entity-body budgets) — Rules is one document searched as a whole, so
@@ -428,7 +472,7 @@ def find_relevant_entities_fts(
     # Plain `rank` is bm25 with every column weighted equally (1.0), so a
     # long body that happens to repeat a query word several times in
     # passing can outrank the entity literally NAMED after it — the same
-    # bug class _HEADING_MATCH_WEIGHT already fixes for Rules sections,
+    # bug class _HEADING_COVERAGE_WEIGHT already fixes for Rules sections,
     # still unfixed one layer up at the entity level. Verified directly:
     # an entity named "Weapon Traits" (whose body doesn't repeat the word)
     # lost to one named "Ashfall Rifle" whose body says "weapon" 8 times,
@@ -500,29 +544,38 @@ def find_relevant_entities(db: Session, world_id: int, query: str, limit: int = 
         return []
 
 
-def best_matching_excerpt(body: str, query: str, chars_budget: int) -> str:
-    """The chunk of `body` most relevant to `query`, for a body long enough
-    that a plain prefix slice risks missing the actually-relevant part
-    entirely — the same problem rules_context already solves for World
-    Rules text, applied here to any single large entity/note body. A GM's
-    whole "Player Guide" consolidated into one note is exactly this case:
-    the section actually answering "what weapon traits exist" can sit
-    thousands of characters past the document's own front matter/revision
-    history, which is all body[:chars_budget] would ever surface — the
-    entity gets correctly RETRIEVED (its body mentions "weapon" plenty),
-    but the excerpt the model actually sees never reaches the relevant
-    table, so it truthfully (and unhelpfully) reports the info isn't there.
+def best_matching_excerpt(body: str, query: str, chars_budget: int, max_sections: int = 3) -> str:
+    """The chunk(s) of `body` most relevant to `query`, for a body long
+    enough that a plain prefix slice risks missing the actually-relevant
+    part entirely — the same problem rules_context already solves for
+    World Rules text, applied here to any single large entity/note body. A
+    GM's whole "Player Guide" consolidated into one note is exactly this
+    case: the section actually answering "what weapon traits exist" can
+    sit thousands of characters past the document's own front matter/
+    revision history, which is all body[:chars_budget] would ever surface
+    — the entity gets correctly RETRIEVED (its body mentions "weapon"
+    plenty), but the excerpt the model actually sees never reaches the
+    relevant table, so it truthfully (and unhelpfully) reports the info
+    isn't there.
 
-    Splits on the same H1-H3 markdown headings _rules_sections uses, scores
-    each section by keyword overlap with `query` (_query_words: stopwords
-    filtered out, same tokenization as find_relevant_entities/rules_context),
-    and returns the single highest-scoring section's own text — not several
-    sections stitched together, since this fills one entity's own excerpt slot, not
-    a dedicated multi-section block the way rules_context's return value
-    is. Falls back to a plain prefix slice when the body has no headings to
-    split on, already fits the budget uncut, or nothing in it scores
-    against the query — so a caller still gets SOME content rather than
-    none when the question shares no keywords with any heading/body."""
+    Splits on the same markdown headings _rules_sections uses, scores each
+    section by keyword overlap with `query` (_query_words/_keyword_score —
+    see those for the tokenization and coverage-based scoring), and
+    returns up to `max_sections` of the highest-scoring sections' own text,
+    joined together, instead of only ever the single best match — a real
+    gap for a "list all X" question spanning several SIBLING headings
+    (e.g. a document with separate "Melee Weapons"/"Thrown Weapons"/
+    "Ammunition" tables rather than one combined list): returning only
+    section #1 gave a partial answer even once ranking correctly favored
+    the right neighborhood of the document. A section already fully
+    contained in one already picked (the common parent/child overlap case
+    — a parent section under _rules_sections' own merge cap includes all
+    of its children's text verbatim) is skipped rather than duplicating
+    the same content twice. Falls back to a plain prefix slice when the
+    body has no headings to split on, already fits the budget uncut, or
+    nothing in it scores against the query — so a caller still gets SOME
+    content rather than none when the question shares no keywords with any
+    heading/body."""
     body = body.strip()
     if not body or len(body) <= chars_budget:
         return body
@@ -540,9 +593,40 @@ def best_matching_excerpt(body: str, query: str, chars_budget: int) -> str:
     if not scored:
         return body[:chars_budget]
     scored.sort(key=lambda t: t[0], reverse=True)
-    _score, heading, section_body = scored[0]
-    excerpt = section_body[:chars_budget]
-    return excerpt if heading == "Introduction" else f"[{heading}] {excerpt}"
+    top_score = scored[0][0]
+    parts = []
+    included_bodies = []
+    remaining = chars_budget
+    for score, heading, section_body in scored:
+        if len(parts) >= max_sections or remaining <= 0:
+            break
+        # A section beyond the #1 pick only earns a slot if it's a
+        # genuinely competitive match, not merely "technically nonzero" —
+        # e.g. a section whose only overlap with the query is one common
+        # word ("weapon") appearing once in an otherwise unrelated
+        # paragraph. Without this, that section would still get swept in
+        # as a "second section" whenever leftover budget happened to exist
+        # (list already sorted descending, so once one candidate fails
+        # this ratio every remaining one — all lower-scoring — fails it
+        # too, hence break rather than continue).
+        if parts and score < top_score * _SECTION_RELEVANCE_RATIO:
+            break
+        # Both directions matter: a later, smaller candidate duplicating an
+        # already-included bigger section is the obvious case, but the
+        # reverse also happens — a hierarchy-merged PARENT section (see
+        # _rules_sections) can score lower than one of its own children yet
+        # still appear as a later candidate, and its body contains that
+        # child's text verbatim plus whatever else got merged in (e.g. an
+        # unrelated sibling section) — including it adds noise, not new
+        # information, since everything genuinely relevant in it was
+        # already shown via the child.
+        if any(section_body in inc or inc in section_body for inc in included_bodies):
+            continue
+        piece = section_body[:remaining]
+        parts.append(piece if heading == "Introduction" else f"[{heading}] {piece}")
+        included_bodies.append(section_body)
+        remaining -= len(piece)
+    return "\n\n".join(parts)
 
 
 def format_context_from_entities(

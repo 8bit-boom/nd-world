@@ -18,6 +18,7 @@ from app import audio_jobs
 from app.database import SessionLocal
 from app.models import Entity, User, World, entity_player_access
 from app.retrieval import (
+    _keyword_score,
     _query_words,
     _rules_sections,
     find_relevant_entities,
@@ -71,7 +72,38 @@ def test_query_words_drops_common_question_words():
     words = _query_words("what does the brutal trait do")
     assert "what" not in words
     assert "does" not in words
-    assert "brutal" in words and "trait" in words
+
+
+def test_query_words_drops_rule_and_rules_as_navigational_noise():
+    """A phrase like "...from Rules" steers AI Chat toward the World Rules
+    document rather than entities/notes — that's an instruction about
+    WHERE to search, not a content word, and once actually scoring
+    sections inside the Rules document itself it's a near-useless
+    discriminator (almost every real rulebook has several unrelated
+    "___ Rule"-titled sections)."""
+    words = _query_words("give me a list of weapons from the Rules")
+    assert "rule" not in words and "rules" not in words
+    assert "weapons" in words
+
+
+# ── _keyword_score coverage-based scoring ───────────────────────────────────
+
+def test_keyword_score_coverage_beats_repetition_of_one_word():
+    """A real bug found against an actual ~870KB rules document: a pure
+    editorial "Source Map" table (listing which source file each chapter
+    was split from) scored competitively with real content purely by
+    repeating "rules"/"ordinary" many times as substrings of unrelated
+    filenames/chapter titles — raw per-occurrence counting can't tell
+    "matches many DIFFERENT query words" from "repeats one word a lot",
+    and the second one is much weaker evidence of real relevance."""
+    words = _query_words("list of ordinary weapons")
+    repeats_one_word = _keyword_score(
+        "Source Map", "rules rules rules rules rules ordinary", words,
+    )
+    matches_two_words = _keyword_score(
+        "Weapon Notes", "This covers ordinary weapons in one place.", words,
+    )
+    assert matches_two_words > repeats_one_word
 
 
 # ── user= visibility filter ─────────────────────────────────────────────────

@@ -127,6 +127,64 @@ def test_picks_titled_section_for_is_there_a_trait_phrasing():
     assert "The Three Modes" not in excerpt
 
 
+# ── best_matching_excerpt: multiple sibling sections, not just the #1 pick ──
+
+_MELEE_WEAPONS_SECTION = (
+    "## Melee Weapons\n\n"
+    "| Weapon | Trait | Cost |\n|---|---|---|\n"
+    "| Kitchen knife | Concealable | 2 Crows |\n"
+    "| Hand axe | Brutal | 5 Crows |\n"
+)
+_THROWN_WEAPONS_SECTION = (
+    "## Thrown Weapons\n\n"
+    "| Weapon | Trait | Cost |\n|---|---|---|\n"
+    "| Throwing knife | Concealable | 3 Crows |\n"
+)
+_ORDINARY_WEAPONS_GUIDE = (
+    "# Players Guide\n\n"
+    "## 23. Ordinary Weapons\n\n"
+    "Ordinary weapons are mundane arms anyone might carry: blades, firearms, clubs.\n\n"
+    + _MELEE_WEAPONS_SECTION + _THROWN_WEAPONS_SECTION
+    # Long enough that the whole document exceeds chars_budget below —
+    # otherwise best_matching_excerpt's own "already fits uncut" fast path
+    # returns the raw document verbatim and never exercises section
+    # scoring/selection at all.
+    + "\n\n## Unrelated Chapter\n\n" + ("Nothing to do with any of this. " * 200)
+)
+
+
+def test_best_matching_excerpt_returns_multiple_comparable_sections():
+    """A "list all X" question can span several SIBLING headings (separate
+    Melee/Thrown Weapons tables here) rather than one combined list —
+    returning only the single top-scoring section gave a partial answer
+    even once ranking correctly favored the right neighborhood of the
+    document. Both real weapon tables should appear; the unrelated filler
+    chapter must not, regardless of leftover budget."""
+    excerpt = best_matching_excerpt(_ORDINARY_WEAPONS_GUIDE, "list of ordinary weapons", 2000)
+    assert "Kitchen knife" in excerpt
+    assert "Throwing knife" in excerpt
+    assert "Unrelated Chapter" not in excerpt
+    assert "Nothing to do with any of this" not in excerpt
+
+
+def test_best_matching_excerpt_does_not_pad_with_a_barely_relevant_section():
+    """A section whose only overlap with the query is one common word
+    appearing once must not get swept in as a "second section" just
+    because leftover budget happens to exist — it has to be a genuinely
+    competitive match relative to the #1 pick (_SECTION_RELEVANCE_RATIO),
+    not merely technically nonzero."""
+    guide = (
+        "# Guide\n\n"
+        "## Weapon Traits\n\nBrutal: no mechanical bonus.\n\n"
+        "## Unrelated Lore\n\n"
+        + ("A merchant once sold a fine weapon here, long ago. " * 40)
+    )
+    excerpt = best_matching_excerpt(guide, "tell me about weapon traits", 2000)
+    assert "Brutal" in excerpt
+    assert "Unrelated Lore" not in excerpt
+    assert "merchant" not in excerpt
+
+
 # ── format_context_from_entities(query=...) ─────────────────────────────────
 
 def test_format_context_uses_relevant_excerpt_when_query_given(client, seed):
