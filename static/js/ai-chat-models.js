@@ -396,9 +396,30 @@ async function mpDeleteModel(modelId, isLoaded, cardEl) {
   }
 }
 
+// Recognizes a full Hugging Face file/model page URL pasted straight into
+// the Pull & Add box (the shape the site's own address bar or "Copy link"
+// button gives you — e.g. ".../resolve/main/file.gguf" or the "blob"
+// variant) and rewrites it to the hf.co/{repo}:{filename} shape Ollama's
+// own puller actually understands (same shape mpQuickPull below already
+// builds from a Search Hugging Face result — see that section's own
+// comment). Ollama has no notion of a plain https:// URL, so pasting one
+// unmodified 400s with "invalid model name"; anything that doesn't look
+// like a Hugging Face URL (a bare "llama3.2:3b", an already-correct
+// "hf.co/...", etc.) is returned unchanged.
+const HF_URL_RE = /^(?:https?:\/\/)?(?:www\.)?huggingface\.co\/([^\/\s]+\/[^\/\s]+)(?:\/(?:resolve|blob)\/[^\/\s]+\/([^?\s]+))?/i;
+
+function mpNormalizeModelId(raw) {
+  const trimmed = (raw || '').trim();
+  const m = HF_URL_RE.exec(trimmed);
+  if (!m) return trimmed;
+  const repo = m[1];
+  const filename = m[2] ? decodeURIComponent(m[2]) : '';
+  return filename ? `hf.co/${repo}:${filename}` : `hf.co/${repo}`;
+}
+
 async function mpAddAndPull() {
   const inp = document.getElementById('mp-add-id');
-  const id = (inp?.value || '').trim();
+  const id = mpNormalizeModelId(inp?.value);
   if (!id) { inp?.focus(); return; }
 
   // Register the model first

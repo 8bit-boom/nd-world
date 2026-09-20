@@ -14,6 +14,9 @@ ollama.com/library "Pull & Add" box:
   for the template this mirrors).
 """
 import io
+import json as _json
+import shutil
+import subprocess
 import time
 
 import httpx as _httpx
@@ -612,3 +615,82 @@ def test_js_upload_uses_shared_chunked_upload_helper():
     # instead of trusting ndChunkedUpload's own response as final.
     assert "/api/ai/ollama/upload/status/" in body
     assert "data.import_id" in body
+
+
+# ── Pasting a full Hugging Face URL into "+ Add / Download Model" ─────────
+# Ollama's own puller only understands hf.co/{repo}:{filename} (see
+# search_huggingface_models' docstring) — a plain https://huggingface.co/...
+# URL, exactly what the site's own address bar or "Copy link" button gives
+# you, 400s with "invalid model name". mpNormalizeModelId rewrites the
+# common shapes (a file page's "resolve" or "blob" URL, with or without a
+# scheme, with or without a trailing ?query) to that format automatically.
+# Actually executed via node rather than just asserted as source text
+# (unlike the string/structural JS assertions elsewhere in this file) since
+# regex behavior is the part actually worth verifying here — same
+# "run it for real, skip if node isn't on PATH" approach as
+# test_schematic_hex_grid.py's own hex-math test.
+
+_NODE_UNAVAILABLE = shutil.which("node") is None
+
+
+def _run_normalize(*raw_ids):
+    js = open("static/js/ai-chat-models.js").read()
+    fn_start = js.index("const HF_URL_RE")
+    fn_end = js.index("\nasync function mpAddAndPull", fn_start)
+    snippet = js[fn_start:fn_end]
+    script = snippet + "\n" + "\n".join(
+        f"console.log(JSON.stringify(mpNormalizeModelId({raw!r})));" for raw in raw_ids
+    )
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30, check=True)
+    return [_json.loads(line) for line in out.stdout.strip().splitlines()]
+
+
+@pytest.mark.skipif(_NODE_UNAVAILABLE, reason="node not available in this environment")
+def test_normalize_rewrites_a_pasted_resolve_url():
+    result = _run_normalize(
+        "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-UD-IQ4_NL.gguf"
+    )
+    assert result == ["hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:gemma-4-26B-A4B-it-UD-IQ4_NL.gguf"]
+
+
+@pytest.mark.skipif(_NODE_UNAVAILABLE, reason="node not available in this environment")
+def test_normalize_rewrites_a_pasted_blob_url_with_query_string():
+    result = _run_normalize(
+        "https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/blob/main/gemma-4-26B-A4B-it-UD-IQ4_NL.gguf?download=true"
+    )
+    assert result == ["hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:gemma-4-26B-A4B-it-UD-IQ4_NL.gguf"]
+
+
+@pytest.mark.skipif(_NODE_UNAVAILABLE, reason="node not available in this environment")
+def test_normalize_handles_scheme_and_www_and_surrounding_whitespace():
+    result = _run_normalize(
+        "  huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/foo.gguf  ",
+        "https://www.huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/main/foo.gguf",
+    )
+    assert result == [
+        "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:foo.gguf",
+        "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:foo.gguf",
+    ]
+
+
+@pytest.mark.skipif(_NODE_UNAVAILABLE, reason="node not available in this environment")
+def test_normalize_repo_only_url_with_no_specific_file():
+    """No /resolve or /blob path — just the repo's own page. Ollama's hf.co
+    support also accepts a bare repo reference (it picks a default file),
+    so this is left without a :filename rather than dropped/rejected."""
+    result = _run_normalize("https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF")
+    assert result == ["hf.co/unsloth/gemma-4-26B-A4B-it-GGUF"]
+
+
+@pytest.mark.skipif(_NODE_UNAVAILABLE, reason="node not available in this environment")
+def test_normalize_leaves_non_huggingface_ids_untouched():
+    result = _run_normalize("llama3.2:3b", "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:file.gguf")
+    assert result == ["llama3.2:3b", "hf.co/unsloth/gemma-4-26B-A4B-it-GGUF:file.gguf"]
+
+
+def test_add_and_pull_normalizes_before_registering_and_pulling():
+    js = open("static/js/ai-chat-models.js").read()
+    fn_start = js.index("async function mpAddAndPull()")
+    fn_end = js.index("\nfunction mpQuickPull", fn_start)
+    fn = js[fn_start:fn_end]
+    assert "const id = mpNormalizeModelId(inp?.value);" in fn
