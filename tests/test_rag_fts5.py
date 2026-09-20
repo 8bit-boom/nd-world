@@ -41,6 +41,38 @@ def test_matches_entity_body_text_not_just_name_summary_tags(client, seed):
     assert eid in ids
 
 
+def test_matches_via_entity_aliases(client, seed):
+    """Entity.aliases (comma-separated alternate names, GM-editable) is the
+    app's own built-in synonym mechanism — a player asking about "Vosk"
+    for an entity properly named "Hunter Edmund Vosk, the Greyfather"
+    should find it via the short form even though neither the body nor
+    summary spells it out, and the FTS index used to leave `aliases`
+    entirely unindexed."""
+    eid = _make_entity(
+        seed.world_a.id, name="Hunter Edmund Vosk, the Greyfather", kind="character",
+        summary="A grim, silent hunter.", body="He rarely speaks of his past.",
+        aliases="Vosk, the Greyfather",
+    )
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/world-context-smart", json={"query": "Vosk", "limit": 10, "notes_limit": 0})
+    assert r.status_code == 200
+    ids = {e["id"] for e in r.json()["entities"]}
+    assert eid in ids
+
+
+def test_ilike_fallback_matches_via_aliases_too(client, seed):
+    db = SessionLocal()
+    try:
+        eid = _make_entity(
+            seed.world_a.id, name="Findable By Alias", kind="character", aliases="ShortForm",
+        )
+        results = find_relevant_entities_ilike(db, seed.world_a.id, ["shortform"], 10)
+        assert eid in {e.id for e in results}
+    finally:
+        db.close()
+
+
 def test_ranks_a_name_match_above_a_body_only_match(client, seed):
     body_only_id = _make_entity(
         seed.world_a.id, name="Some Merchant", kind="character",
@@ -55,6 +87,32 @@ def test_ranks_a_name_match_above_a_body_only_match(client, seed):
     ids_in_order = [e["id"] for e in entities]
     assert name_match_id in ids_in_order and body_only_id in ids_in_order
     assert ids_in_order.index(name_match_id) < ids_in_order.index(body_only_id)
+
+
+def test_ranks_a_name_match_above_a_body_that_merely_repeats_the_word(client, seed):
+    """A real bug: plain `rank` weights every entity_fts column (name,
+    summary, body, tags) equally, so a body repeating a query word several
+    times in passing could outscore the entity literally NAMED after it —
+    the entity-level version of the bug _HEADING_MATCH_WEIGHT already
+    fixed for Rules sections. Verified directly against real FTS5 before
+    the weighted-bm25 fix: an entity named "Weapon Traits" (body doesn't
+    repeat the word) lost to one named "Ashfall Rifle" whose body says
+    "weapon" 8 times."""
+    # Both non-note kind, so relative order within the response's combined
+    # list reflects FTS rank alone — a note vs. non-note would confound
+    # this with the separate non_notes-before-notes list ordering.
+    body_repeats_id = _make_entity(
+        seed.world_a.id, name="Ashfall Rifle", kind="item",
+        body="weapon " * 8,
+    )
+    name_match_id = _make_entity(seed.world_a.id, name="Weapon Traits", kind="item", body="A reference table.")
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/world-context-smart", json={"query": "weapon", "limit": 10, "notes_limit": 0})
+    ids_in_order = [e["id"] for e in r.json()["entities"]]
+    assert name_match_id in ids_in_order and body_repeats_id in ids_in_order
+    assert ids_in_order.index(name_match_id) < ids_in_order.index(body_repeats_id)
 
 
 def test_index_stays_in_sync_after_update(client, seed):

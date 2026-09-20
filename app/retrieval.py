@@ -10,15 +10,19 @@ inside a function body for the same reason. Pulled out to this leaf module,
 which imports nothing from main/audio_jobs/any router, so everyone can
 import it directly and normally instead.
 """
+import logging
 import re
 from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import or_, text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from .models import Entity, World, entity_player_access
 from .rendering import strip_gm_only as _strip_gm_only
+from .rules_render import strip_gm_directives as _strip_gm_directives
+
+_log = logging.getLogger("nd.retrieval")
 
 _CORE_RULES_PATH = Path(__file__).parent / "core_rules.md"
 
@@ -61,6 +65,18 @@ _STOPWORDS = frozenset({
 })
 
 
+# Not a real-world limit for anything an actual player types — it exists
+# to bound worst-case cost for callers that build a query from arbitrary
+# document text rather than a chat message (app.routers.ai's interactive
+# assist endpoints feed name+summary+body+instruction, up to tens of
+# thousands of characters, straight into this function). Every downstream
+# keyword-scoring pass is O(words) per candidate section/entity, so an
+# uncapped word list turns one RAG call into tens of seconds of blocking
+# CPU on a large Rules document — measured ~70ms to score a ~1.4MB rules
+# doc against a 3-word query, which scales linearly with word count.
+_MAX_QUERY_WORDS = 32
+
+
 def _query_words(query: str) -> list:
     """Tokenizes `query` for keyword search/scoring: lowercased, split on
     non-word runs, dropping single characters and this module's own
@@ -68,8 +84,39 @@ def _query_words(query: str) -> list:
     this file needs "the meaningful words in this query", so a fix or
     tuning here applies consistently to entity search, Rules search,
     excerpt-picking, and priority-entity search alike instead of drifting
-    across four separately-maintained copies."""
-    return [w for w in re.split(r'\W+', query.lower()) if len(w) >= 2 and w not in _STOPWORDS]
+    across four separately-maintained copies. De-duplicates (a repeated
+    word used to double-count in _keyword_score for no reason) and caps at
+    _MAX_QUERY_WORDS, both preserving first-occurrence order — a real
+    chat question never comes close to the cap, so this only bites the
+    document-sized queries described above."""
+    seen: set = set()
+    out: list = []
+    for w in re.split(r'\W+', query.lower()):
+        if len(w) >= 2 and w not in _STOPWORDS and w not in seen:
+            seen.add(w)
+            out.append(w)
+            if len(out) >= _MAX_QUERY_WORDS:
+                break
+    return out
+
+
+def _stem(word: str) -> str:
+    """A crude, deliberately conservative singular/plural stem: strips a
+    single trailing "s" for a word long enough that it's unlikely to BE
+    the stem itself (len > 3, so "gas"/"was" aren't mangled). RPG
+    terminology constantly shifts singular/plural between a player's
+    question and a table's own column header ("trait" vs "Traits"), and
+    unlike _STOPWORDS this needs to run in both directions — deliberately
+    NOT extended to the "-es" plural pattern (class/box/church -> -es):
+    that would require distinguishing a true sibilant plural from a word
+    that already ends in a silent "e" before the "s" (headache+s vs
+    church+es both end in "ches"), and getting it wrong risks mangling
+    exactly the short RPG terms _STOPWORDS was built to protect (e.g.
+    "axe"/"axes" — axe already ends in "xe", so an "-es" strip would wrongly
+    yield "ax"). Shared by _keyword_score (whole-word scoring) and
+    find_relevant_entities_fts (FTS5 query construction) so retrieval and
+    scoring can never disagree about which words are "the same" word."""
+    return word[:-1] if word.endswith('s') and len(word) > 3 else word
 
 
 # A heading/name match is a far stronger "this is the right section" signal
@@ -112,8 +159,7 @@ def _keyword_score(heading: str, body: str, words: list) -> int:
     body_l = body.lower()
     score = 0
     for w in words:
-        stem = w[:-1] if w.endswith('s') and len(w) > 3 else w
-        pattern = re.compile(r'\b' + re.escape(stem) + r's?\b')
+        pattern = re.compile(r'\b' + re.escape(_stem(w)) + r's?\b')
         score += len(pattern.findall(heading_l)) * _HEADING_MATCH_WEIGHT
         score += len(pattern.findall(body_l))
     return score
@@ -221,7 +267,7 @@ def _rules_sections(markdown: str) -> list:
     return sections
 
 
-def rules_context(world, query: str, limit: int = RULES_SECTION_LIMIT) -> str:
+def rules_context(world, query: str, limit: int = RULES_SECTION_LIMIT, is_gm: bool = True) -> str:
     """Keyword-relevance search over `world`'s Rules text (the GM's own
     rules_md, or the bundled core rules) — same word-tokenization
     find_relevant_entities uses (_query_words: stopwords filtered out,
@@ -235,7 +281,19 @@ def rules_context(world, query: str, limit: int = RULES_SECTION_LIMIT) -> str:
     prose, never in an Entity. Returns "" when nothing scores above zero,
     so an unrelated question doesn't pad every prompt with a generic rules
     dump — same "only when it actually matched" posture entity retrieval
-    already has."""
+    already has.
+
+    is_gm=False (pass smart_world_context's own strip_secrets-derived
+    flag) strips every :::gm directive block from the Rules text before
+    it's searched/excerpted at all — a real leak this used to have: the
+    GM-only-content invariant app.rules_render documents ("The :::gm block
+    ... is never rendered ... a player could read") was enforced for the
+    rendered Rules PAGE but not for this RAG path, which read world.
+    rules_md completely raw and would happily quote a :::gm secret
+    straight back to a player who asked the right question. [gmonly] tags
+    (the Entity-body syntax) are stripped too, belt-and-braces, in case a
+    GM pastes that syntax into rules_md instead of :::gm — this function
+    doesn't know which one a given GM actually used."""
     if limit <= 0:
         return ""
     words = _query_words(query)
@@ -244,6 +302,9 @@ def rules_context(world, query: str, limit: int = RULES_SECTION_LIMIT) -> str:
     markdown = world_rules_markdown(world)
     if not markdown:
         return ""
+    if not is_gm:
+        markdown = _strip_gm_directives(markdown)
+        markdown = _strip_gm_only(markdown)
     scored = []
     for heading, body in _rules_sections(markdown):
         score = _keyword_score(heading, body[:_MAX_SCORED_CHARS], words)
@@ -298,15 +359,36 @@ def _visibility_filter(q, user):
     return q.filter(or_(Entity.visible_to_players.isnot(False), Entity.id.in_(shared)))
 
 
+def _fts_term(word: str) -> str:
+    """One OR-able FTS5 MATCH term for `word`, plural-tolerant in both
+    directions. FTS5's `"word"*` is a PREFIX match, so the singular-query-
+    matches-plural-text direction already worked ("trait"* matches
+    "traits") — but the reverse direction matched NOTHING: a player typing
+    the plural, the more natural phrasing for "what weapons have traits"
+    or "are there other armors", got zero FTS results whenever the actual
+    text used the singular ("weapon"). Verified directly against SQLite's
+    FTS5: `'"weapons"*'` against a document containing only "weapon"
+    returns no rows. Uses the same _stem() rule _keyword_score does, so
+    retrieval and scoring can never disagree about which words are meant
+    to match the same thing."""
+    esc = word.replace('"', '""')
+    stem = _stem(word)
+    if stem == word:
+        return f'"{esc}"*'
+    return f'("{esc}"* OR "{stem.replace(chr(34), chr(34) * 2)}"*)'
+
+
 def find_relevant_entities_fts(
     db: Session, world_id: int, words: list, limit: int, user=None, kind: Optional[str] = None,
 ) -> list:
-    """FTS5 prefix search over Entity(name, summary, body, tags) — unlike
-    the _ilike fallback below, this also matches an entity's full body
-    text, and ranks results by SQLite's own bm25-based relevance (`rank`)
-    instead of "whatever order the table happens to be in". Raises on any
-    failure (FTS5 unavailable, entity_fts missing on an old/degraded DB) —
-    the caller falls back to find_relevant_entities_ilike in that case.
+    """FTS5 prefix search over Entity(name, summary, body, tags, aliases)
+    — unlike the _ilike fallback below (which does check aliases too, just
+    not body), this also matches an entity's full body text, and ranks
+    results by a bm25-based relevance weighted per column (see the
+    ORDER BY below) instead of "whatever order the table happens to be
+    in". Raises on any failure (FTS5 unavailable, entity_fts missing on an
+    old/degraded DB) — the caller falls back to find_relevant_entities_ilike
+    in that case.
     `kind`, when given, is applied in the SQL itself (not as a Python
     post-filter) so a kind-filtered caller's `limit` still returns up to
     that many matches of the right kind, not up to `limit` matches of any
@@ -326,7 +408,7 @@ def find_relevant_entities_fts(
     extra cost) gives filtering enough candidates, still in the same rank
     order, to actually fill the requested count when enough visible
     matches exist at all."""
-    fts_query = " OR ".join(f'"{w.replace(chr(34), chr(34)*2)}"*' for w in words)
+    fts_query = " OR ".join(_fts_term(w) for w in words)
     needs_filtering = user is not None and not user.is_gm
     # max(..., 20): even the smallest `limit` a real caller passes still
     # needs a real cushion — plenty of exact-rank ties are realistic (many
@@ -343,7 +425,25 @@ def find_relevant_entities_fts(
     if kind:
         sql += "AND entities.kind = :kind "
         params["kind"] = kind
-    sql += "ORDER BY rank LIMIT :lim"
+    # Plain `rank` is bm25 with every column weighted equally (1.0), so a
+    # long body that happens to repeat a query word several times in
+    # passing can outrank the entity literally NAMED after it — the same
+    # bug class _HEADING_MATCH_WEIGHT already fixes for Rules sections,
+    # still unfixed one layer up at the entity level. Verified directly:
+    # an entity named "Weapon Traits" (whose body doesn't repeat the word)
+    # lost to one named "Ashfall Rifle" whose body says "weapon" 8 times,
+    # under plain `rank`; explicit column weights below reverse that.
+    # Weights are pinned to entity_fts's actual column order from its
+    # CREATE VIRTUAL TABLE statement (app/database.py) — name, summary,
+    # body, tags, aliases — do NOT reorder these without also checking
+    # that. An alias match ("Vosk" for "Hunter Edmund Vosk, the
+    # Greyfather") is nearly as strong an identity signal as the name
+    # itself, so it's weighted close to `name` rather than left at bm25's
+    # silent 1.0 default for an unweighted column (which SQLite applies
+    # with no error if fewer weights are given than columns exist —
+    # verified directly; it does NOT raise on a stale weight count, it
+    # just silently under-weights whatever column was left out).
+    sql += "ORDER BY bm25(entity_fts, 10.0, 2.0, 1.0, 5.0, 8.0) LIMIT :lim"
     rows = db.execute(text(sql), params).fetchall()
     ids = [r[0] for r in rows]
     if not ids:
@@ -361,6 +461,7 @@ def find_relevant_entities_ilike(
             Entity.name.ilike(f'%{w}%'),
             Entity.summary.ilike(f'%{w}%'),
             Entity.tags.ilike(f'%{w}%'),
+            Entity.aliases.ilike(f'%{w}%'),
         )
         for w in words
     ]
@@ -380,7 +481,23 @@ def find_relevant_entities(db: Session, world_id: int, query: str, limit: int = 
     try:
         return find_relevant_entities_fts(db, world_id, words, limit, user=user)
     except Exception:
+        # Silent before: an FTS5 failure (unavailable, entity_fts missing
+        # on an old/degraded DB) degraded retrieval to the ILIKE fallback
+        # — which doesn't search entity body text at all, exactly where
+        # Rules/Player-Guide-style content lives — with no log line
+        # anywhere. If FTS ever breaks on a real install, results get much
+        # worse and nothing says so.
+        _log.warning("FTS5 retrieval failed, falling back to ILIKE", exc_info=True)
+    try:
         return find_relevant_entities_ilike(db, world_id, words, limit, user=user)
+    except Exception:
+        # Belt-and-braces: _query_words already caps word count (see
+        # _MAX_QUERY_WORDS) specifically so this OR'd-ILIKE query can't hit
+        # SQLite's "Expression tree is too large" error, but an uncaught
+        # exception here would otherwise surface as an unhandled 500 on
+        # whatever request triggered it rather than just an empty result.
+        _log.warning("ILIKE retrieval fallback also failed", exc_info=True)
+        return []
 
 
 def best_matching_excerpt(body: str, query: str, chars_budget: int) -> str:
@@ -431,18 +548,34 @@ def best_matching_excerpt(body: str, query: str, chars_budget: int) -> str:
 def format_context_from_entities(
     entities: list, excerpt_count: int = EXCERPT_COUNT,
     excerpt_chars: int = EXCERPT_CHARS, excerpt_total_budget: int = EXCERPT_TOTAL_BUDGET,
-    strip_gm_only: bool = False, query: str = "",
+    strip_gm_only: bool = False, query: str = "", excerpt_ids: Optional[set] = None,
 ) -> str:
     """One line per entity ("- [kind] name (subtype): summary"), plus — for
-    the first `excerpt_count` entities in the given order (retrieval-ranked
-    callers should pass their most-relevant-first) — an indented excerpt of
-    Entity.body underneath, so the model actually sees the lore text that
-    got the entity retrieved in the first place rather than only its short
-    summary. Each excerpt is capped at `excerpt_chars`; the running total
-    across all excerpts stops growing past `excerpt_total_budget` (a
-    handful of very long bodies can't blow the prompt out even if each
-    individually fits under the per-entity cap). Pass excerpt_count=0 for
-    the old summary-only behavior.
+    the first `excerpt_count` ELIGIBLE entities in the given order
+    (retrieval-ranked callers should pass their most-relevant-first) — an
+    indented excerpt of Entity.body underneath, so the model actually sees
+    the lore text that got the entity retrieved in the first place rather
+    than only its short summary. Each excerpt is capped at `excerpt_chars`;
+    the running total across all excerpts stops growing past
+    `excerpt_total_budget` (a handful of very long bodies can't blow the
+    prompt out even if each individually fits under the per-entity cap).
+    Pass excerpt_count=0 for the old summary-only behavior.
+
+    excerpt_ids, when given, restricts which entities are "eligible" for an
+    excerpt at all — entities not in the set only ever get their one-line
+    summary, regardless of position. Without it every entity in `entities`
+    is eligible and only ITS OWN ORDER decides who gets the first
+    `excerpt_count` slots — a real bug when the caller's list isn't purely
+    rank order (smart_world_context's list is
+    [matched] + [arbitrary alphabetical top-up] + [more matched] + [recent
+    notes], and with entity_limit>=5 the alphabetical top-up alone fills
+    every excerpt slot before a single MATCHED entity is ever reached,
+    while the top-up itself — having scored zero against the query — falls
+    through best_matching_excerpt straight to a blind prefix slice, so the
+    prompt fills up on unrelated front matter instead of the content that
+    actually answers the question). Pass the set of entity ids that
+    actually matched the search to make ONLY those eligible, independent of
+    where they land in the final display order.
 
     query, when given, picks each excerpt via best_matching_excerpt
     instead of a blind body[:excerpt_chars] prefix slice — the section of a
@@ -463,7 +596,8 @@ def format_context_from_entities(
     that included entity's own text."""
     lines = []
     excerpt_total = 0
-    for i, e in enumerate(entities):
+    excerpted = 0
+    for e in entities:
         summary = _strip_gm_only(e.summary) if strip_gm_only else e.summary
         line = f"- [{e.kind}] {e.name}"
         if e.subtype:
@@ -471,7 +605,8 @@ def format_context_from_entities(
         if summary:
             line += f": {summary}"
         lines.append(line)
-        if i < excerpt_count and e.body and excerpt_total < excerpt_total_budget:
+        eligible = excerpt_ids is None or e.id in excerpt_ids
+        if eligible and excerpted < excerpt_count and e.body and excerpt_total < excerpt_total_budget:
             body = _strip_gm_only(e.body) if strip_gm_only else e.body
             remaining = excerpt_total_budget - excerpt_total
             budget = min(excerpt_chars, remaining)
@@ -479,6 +614,7 @@ def format_context_from_entities(
             if excerpt:
                 lines.append(f"  {excerpt}")
                 excerpt_total += len(excerpt)
+            excerpted += 1
     return "\n".join(lines)
 
 
@@ -603,9 +739,14 @@ def smart_world_context(
     text — visibility filtering alone only decides whether a whole entity
     is in scope, not whether a secret embedded inside an otherwise
     player-visible entity's body should be.
-    Rules text has no per-row visibility to filter — a world's Rules page
+    Rules text has no per-ROW visibility to filter — a world's Rules page
     is already visible to every member of that world regardless of role,
-    same as GET /rules itself, so rules_context runs unconditionally."""
+    same as GET /rules itself, so rules_context runs unconditionally
+    regardless of `user` — but it DOES still have GM-only CONTENT within
+    that one document (:::gm directive blocks, or a stray [gmonly] tag),
+    which is why rules_context is passed is_gm=not strip_secrets: the same
+    real-non-GM `user` that strips secrets out of entity text above must
+    also strip them out of the one Rules document every member can see."""
     entities = find_relevant_entities(db, world_id, query, limit=max(entity_limit, 0), user=user)
     notes = [e for e in entities if e.kind == "note"]
     non_notes = [e for e in entities if e.kind != "note"]
@@ -615,6 +756,15 @@ def smart_world_context(
         if seen_ids:
             topup_q = topup_q.filter(~Entity.id.in_(seen_ids))
         topup_q = _visibility_filter(topup_q, user)
+        # A top-up entity only ever contributes its one-line name/summary
+        # (it exists purely as a name-reference list — see this function's
+        # own docstring — and is now excluded from excerpt eligibility by
+        # the excerpt_ids fix below), so its (potentially large) `body`
+        # never needs loading at all. A GM's own entity-limit slider goes
+        # up to 250, so at max this was loading 250 full entity bodies
+        # from SQLite on every single message just to print 250 one-line
+        # summaries.
+        topup_q = topup_q.options(defer(Entity.body))
         topup = topup_q.order_by(Entity.kind, Entity.name).limit(entity_limit - len(non_notes)).all()
         non_notes = non_notes + topup
     if notes_limit > 0:
@@ -626,9 +776,33 @@ def smart_world_context(
         extra_notes = [e for e in note_entities if e.id not in seen_ids]
         notes = notes + extra_notes
     strip_secrets = bool(user) and not user.is_gm
-    context = format_context_from_entities(non_notes + notes, strip_gm_only=strip_secrets, query=query)
+    # format_context_from_entities only excerpts its first EXCERPT_COUNT
+    # entities IN LIST ORDER — but non_notes/notes above is
+    # [matched] + [arbitrary alphabetical top-up] + [more matched] + [most-
+    # recent notes], so with entity_limit>=EXCERPT_COUNT (5) the top-up
+    # alone can fill every excerpt slot before a single entity that
+    # actually MATCHED the query is ever reached. Worse, the top-up scores
+    # zero against the query (it exists only as a name-reference list for
+    # cross-language recognition — see this function's own docstring),
+    # so its "excerpt" is a blind prefix slice of unrelated front matter
+    # burning the shared excerpt_total_budget for nothing. Reordering the
+    # DISPLAY list to put every matched entity first (independent of
+    # note/non-note kind) and passing excerpt_ids=matched_ids makes only
+    # the entities that actually matched eligible for an excerpt at all —
+    # non_notes/notes themselves are left untouched since the RAG-
+    # transparency panel's pin/list UI depends on their existing order.
+    matched_ids = {e.id for e in entities}
+    display_order = (
+        [e for e in non_notes if e.id in matched_ids]
+        + [e for e in notes if e.id in matched_ids]
+        + [e for e in non_notes if e.id not in matched_ids]
+        + [e for e in notes if e.id not in matched_ids]
+    )
+    context = format_context_from_entities(
+        display_order, strip_gm_only=strip_secrets, query=query, excerpt_ids=matched_ids,
+    )
     world = db.get(World, world_id)
-    rules = rules_context(world, query, limit=rules_limit)
+    rules = rules_context(world, query, limit=rules_limit, is_gm=not strip_secrets)
     priority = priority_entities_context(
         db, world_id, query, user=user, strip_gm_only=strip_secrets,
         exclude_ids={e.id for e in non_notes} | {e.id for e in notes},

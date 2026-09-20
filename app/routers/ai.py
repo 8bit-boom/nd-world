@@ -552,8 +552,18 @@ def _assist_world_context(body: AssistBody, db, world) -> str:
         return ""
     # The content being worked on is the best relevance signal — same
     # convention the job engine applies to transcript-based RAG
-    # (audio_jobs._build_rag_context caps query length itself).
-    query = "\n".join(x for x in (body.name, body.summary, body.body, body.instruction) if x)
+    # (audio_jobs._build_rag_context caps query length itself). This was
+    # previously uncapped despite the comment above claiming otherwise:
+    # body/instruction can run to tens of thousands of characters (the
+    # rules-editor assist path has no size cap at all), which turns into
+    # thousands of unique query words and tens of seconds of blocking CPU
+    # in downstream keyword scoring — _query_words' own cap now bounds
+    # that regardless, but truncating the source text too avoids doing
+    # the (cheap but pointless) work of splitting all of it in the first
+    # place.
+    query = "\n".join(
+        x for x in (body.name, body.summary, body.body, body.instruction) if x
+    )[:_audio_jobs._RAG_QUERY_CHAR_BUDGET]
     context, _non_notes, _notes = _retrieval.smart_world_context(
         db, world.id, query,
         entity_limit=body.rag_entity_limit if body.rag_entity_limit is not None else 15,

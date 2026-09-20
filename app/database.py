@@ -600,27 +600,48 @@ def _migrate():
         if note_cols and "content_is_html" not in note_cols:
             conn.execute(text("ALTER TABLE entity_notes ADD COLUMN content_is_html BOOLEAN DEFAULT 0"))
 
-        # FTS5 full-text index over Entity(name, summary, body, tags), backing
-        # app.retrieval.find_relevant_entities (RAG retrieval for AI Chat,
-        # Chronicler, session Summarize/Condense) — an upgrade from plain
-        # per-word ILIKE, which never matched `body` at all. "External
-        # content" table (content='entities') so the indexed text isn't
-        # duplicated on disk; triggers keep it in sync on every future
-        # insert/update/delete, and the SELECT right after creation
-        # backfills every entity that existed before this migration ran.
-        # Deliberately NOT allowed to fail the whole migration (see
-        # init_db's "startup dies either way" contract just above this
-        # function) — some SQLite builds may lack FTS5, and RAG search
-        # falling back to the old ILIKE matcher (see find_relevant_entities)
-        # is far preferable to the entire app refusing to start over it.
+        # FTS5 full-text index over Entity(name, summary, body, tags,
+        # aliases), backing app.retrieval.find_relevant_entities (RAG
+        # retrieval for AI Chat, Chronicler, session Summarize/Condense) —
+        # an upgrade from plain per-word ILIKE, which never matched `body`
+        # at all. "External content" table (content='entities') so the
+        # indexed text isn't duplicated on disk; triggers keep it in sync
+        # on every future insert/update/delete, and the SELECT right after
+        # creation backfills every entity that existed before this
+        # migration ran. Deliberately NOT allowed to fail the whole
+        # migration (see init_db's "startup dies either way" contract just
+        # above this function) — some SQLite builds may lack FTS5, and RAG
+        # search falling back to the old ILIKE matcher (see
+        # find_relevant_entities) is far preferable to the entire app
+        # refusing to start over it.
+        #
+        # Entity.aliases (comma-separated alternate names — "Vosk" for
+        # "Hunter Edmund Vosk, the Greyfather") is the app's own built-in
+        # synonym mechanism, GM-editable and already populated in many
+        # worlds, but was never actually in this index — a player asking
+        # about an entity by its short/alternate name got nothing unless
+        # the body happened to spell it out. `aliases not in the column
+        # list` detects an old 4-column index (created before this fix)
+        # and forces a drop+recreate; content='entities' means no real
+        # data lives in entity_fts itself, so the drop only destroys a
+        # derived index that 'rebuild' repopulates from `entities` a few
+        # lines below, not any real content.
         try:
             fts_exists = conn.execute(text(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='entity_fts'"
             )).fetchone()
+            if fts_exists:
+                fts_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(entity_fts)")).fetchall()]
+                if "aliases" not in fts_cols:
+                    conn.execute(text("DROP TRIGGER IF EXISTS entity_fts_ai"))
+                    conn.execute(text("DROP TRIGGER IF EXISTS entity_fts_ad"))
+                    conn.execute(text("DROP TRIGGER IF EXISTS entity_fts_au"))
+                    conn.execute(text("DROP TABLE IF EXISTS entity_fts"))
+                    fts_exists = None
             if not fts_exists:
                 conn.execute(text(
                     "CREATE VIRTUAL TABLE entity_fts USING fts5("
-                    "name, summary, body, tags, content='entities', content_rowid='id')"
+                    "name, summary, body, tags, aliases, content='entities', content_rowid='id')"
                 ))
             # SQLite auto-drops a table's triggers when the table itself is
             # dropped (e.g. the test suite's Base.metadata.drop_all/
@@ -629,7 +650,8 @@ def _migrate():
             # it isn't part of Base.metadata, so checking "does entity_fts
             # exist" alone isn't enough to know the triggers are still
             # attached to the CURRENT `entities` table. Check for a trigger
-            # directly; if it's missing, (re)create all three AND rebuild
+            # directly; if it's missing (including just now, from the
+            # stale-column drop above), (re)create all three AND rebuild
             # the index from scratch via FTS5's special 'rebuild' command —
             # entity_fts may otherwise be silently stale (still indexing
             # rows from a since-dropped `entities` table) with nothing to
@@ -640,20 +662,20 @@ def _migrate():
             if not triggers_exist:
                 conn.execute(text(
                     "CREATE TRIGGER entity_fts_ai AFTER INSERT ON entities BEGIN "
-                    "INSERT INTO entity_fts(rowid, name, summary, body, tags) "
-                    "VALUES (new.id, new.name, new.summary, new.body, new.tags); END"
+                    "INSERT INTO entity_fts(rowid, name, summary, body, tags, aliases) "
+                    "VALUES (new.id, new.name, new.summary, new.body, new.tags, new.aliases); END"
                 ))
                 conn.execute(text(
                     "CREATE TRIGGER entity_fts_ad AFTER DELETE ON entities BEGIN "
-                    "INSERT INTO entity_fts(entity_fts, rowid, name, summary, body, tags) "
-                    "VALUES ('delete', old.id, old.name, old.summary, old.body, old.tags); END"
+                    "INSERT INTO entity_fts(entity_fts, rowid, name, summary, body, tags, aliases) "
+                    "VALUES ('delete', old.id, old.name, old.summary, old.body, old.tags, old.aliases); END"
                 ))
                 conn.execute(text(
                     "CREATE TRIGGER entity_fts_au AFTER UPDATE ON entities BEGIN "
-                    "INSERT INTO entity_fts(entity_fts, rowid, name, summary, body, tags) "
-                    "VALUES ('delete', old.id, old.name, old.summary, old.body, old.tags); "
-                    "INSERT INTO entity_fts(rowid, name, summary, body, tags) "
-                    "VALUES (new.id, new.name, new.summary, new.body, new.tags); END"
+                    "INSERT INTO entity_fts(entity_fts, rowid, name, summary, body, tags, aliases) "
+                    "VALUES ('delete', old.id, old.name, old.summary, old.body, old.tags, old.aliases); "
+                    "INSERT INTO entity_fts(rowid, name, summary, body, tags, aliases) "
+                    "VALUES (new.id, new.name, new.summary, new.body, new.tags, new.aliases); END"
                 ))
                 conn.execute(text("INSERT INTO entity_fts(entity_fts) VALUES ('rebuild')"))
         except Exception:

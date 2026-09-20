@@ -149,6 +149,23 @@ def extract_blocks(md: str):
     return "\n".join(skeleton), blocks
 
 
+def strip_gm_directives(md: str) -> str:
+    """The plain-text counterpart of _render_callout's is_gm=False path
+    (see this module's own "Security model" docstring above), for a
+    caller that hands a non-GM raw Rules TEXT rather than rendering it to
+    HTML — app.retrieval's RAG context, which used to send world.rules_md
+    to a player completely unfiltered. Every :::gm block is dropped
+    entirely (never even reaches the LLM prompt, let alone the player);
+    every other directive (callouts, collapses, statblocks) keeps its own
+    inner text, since those aren't secret — only their box/icon/collapse
+    presentation is HTML-only and doesn't apply to a plain-text excerpt."""
+    skeleton, blocks = extract_blocks(md)
+    for b in blocks:
+        repl = "" if (b["kind"] == "callout" and b["type"] == "gm") else b["text"]
+        skeleton = skeleton.replace(b["sentinel"], repl)
+    return skeleton
+
+
 def _render_callout(block: dict, is_gm: bool) -> str:
     """One ::: block → themed callout / collapse / gm-only div (or "" when it
     must not ship)."""

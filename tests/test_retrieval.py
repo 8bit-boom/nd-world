@@ -255,6 +255,36 @@ def test_world_context_smart_tops_up_entities_for_a_foreign_language_query(clien
     assert any(e["name"] == "Gareth Ashfall" for e in data["entities"])
 
 
+def test_world_context_smart_excerpts_the_actual_match_not_alphabetical_topup_filler(client, seed):
+    """A real bug: format_context_from_entities excerpts the first
+    EXCERPT_COUNT (5) entities in LIST ORDER, but that order is
+    non_notes (matched non-notes, THEN the arbitrary alphabetical top-up)
+    followed by notes (matched notes, then recent-notes top-up) — always,
+    regardless of which one actually matched the query. Here the query
+    only matches a NOTE; with entity_limit >= 5 the ordinary (non-note)
+    entity search finds nothing, so the ENTIRE non-note top-up (5 unrelated
+    decoys, scoring zero against the query) fills every excerpt slot ahead
+    of the note in list order — the note that actually answers the
+    question never reaches an excerpt at all, while the 5 decoys each get
+    a blind prefix-slice "excerpt" of irrelevant filler text instead."""
+    for i in range(5):
+        _make_entity(
+            seed.world_a.id, name=f"Decoy {i}", kind="character",
+            body="This is unrelated front-matter text that should never be quoted. " * 5,
+        )
+    _make_entity(
+        seed.world_a.id, name="Zylo's Secret", kind="note",
+        body="Zylo the blacksmith knows the secret of the Undermarket vault.",
+    )
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/world-context-smart", json={"query": "Zylo blacksmith", "limit": 10, "notes_limit": 0})
+    assert r.status_code == 200
+    context = r.json()["context"]
+    assert "Undermarket" in context
+    assert "unrelated front-matter" not in context
+
+
 def test_world_context_smart_no_topup_leak_when_search_already_fills_the_limit(client, seed):
     _make_entity(seed.world_a.id, name="Gareth Ashfall", kind="character", body="A blacksmith.")
     _make_entity(seed.world_a.id, name="Completely Unrelated Entity", kind="location", body="Nothing to do with Gareth.")
@@ -514,6 +544,40 @@ def test_smart_world_context_rules_runs_unfiltered_for_players_too(client, seed)
         player = db.get(User, seed.player_a.id)
         context, _non_notes, _notes = smart_world_context(db, seed.world_a.id, "chainmail armor cost", user=player)
         assert "120 crowns" in context
+    finally:
+        db.close()
+
+
+def test_smart_world_context_strips_gm_only_rules_directive_for_players(client, seed):
+    """A real leak: rules_context read world.rules_md completely raw, with
+    no GM-only filtering at all — app.rules_render documents the :::gm
+    directive as a security invariant ("never rendered ... a player could
+    read") for the rendered Rules PAGE, but this RAG path bypassed it
+    entirely and would happily quote a :::gm secret straight back to a
+    player who asked the right question. Non-secret content in the SAME
+    document must still reach the player (this isn't just "hide all
+    rules" — the previous test already pins that half)."""
+    _set_world_rules(
+        seed.world_a.id,
+        "## Armor Prices\n\nChainmail armor costs 120 crowns.\n\n"
+        ":::gm\nThe secret weakness of the BBEG is silver.\n:::\n",
+    )
+    db = SessionLocal()
+    try:
+        player = db.get(User, seed.player_a.id)
+        context_player, _, _ = smart_world_context(
+            db, seed.world_a.id, "chainmail armor cost secret BBEG", user=player,
+        )
+        assert "120 crowns" in context_player
+        assert "silver" not in context_player
+        assert "BBEG" not in context_player
+
+        gm = db.get(User, seed.gm.id)
+        context_gm, _, _ = smart_world_context(
+            db, seed.world_a.id, "chainmail armor cost secret BBEG", user=gm,
+        )
+        assert "120 crowns" in context_gm
+        assert "silver" in context_gm
     finally:
         db.close()
 
