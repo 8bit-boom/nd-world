@@ -566,6 +566,25 @@ def test_smart_world_context_includes_rules_when_relevant(client, seed):
         db.close()
 
 
+def test_smart_world_context_leads_with_rules_not_matched_entities(client, seed):
+    """Rules (and, by the same logic, GM-flagged priority content) is the
+    more authoritative source — the official rules text, or content a GM
+    specifically flagged as important — and should read FIRST in the
+    assembled context, ahead of ordinary matched entities, not as an
+    afterthought tacked onto the end."""
+    _set_world_rules(seed.world_a.id, "## Armor Prices\n\nChainmail armor costs 120 crowns.")
+    _make_entity(
+        seed.world_a.id, name="Chainmail Merchant", kind="character",
+        body="Sells chainmail armor and other goods.",
+    )
+    db = SessionLocal()
+    try:
+        context, _non_notes, _notes = smart_world_context(db, seed.world_a.id, "chainmail armor cost")
+        assert context.index("120 crowns") < context.index("Chainmail Merchant")
+    finally:
+        db.close()
+
+
 def test_smart_world_context_rules_runs_unfiltered_for_players_too(client, seed):
     """Rules has no per-row visibility to filter — it's already visible to
     every world member regardless of role, same as GET /rules itself — so

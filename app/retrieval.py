@@ -799,17 +799,21 @@ def smart_world_context(
       top-up closes on the job path),
     - a guaranteed-most-recent-notes block (ordered updated_at desc) up
       to notes_limit beyond whatever the search itself surfaced,
-    - a rules_context() excerpt (see that function) appended at the end
-      when the query matches something in the World's Rules text — Rules
-      is a single free-text document, not a list of Entity rows, so unlike
-      the two above it never counts toward entity_limit/notes_limit or
-      appears in the returned non_notes/notes lists (which stay Entity-
-      only, for the RAG-transparency panel's pin/list UI),
+    - a rules_context() excerpt (see that function), LED WITH rather than
+      appended, when the query matches something in the World's Rules
+      text — the official rules text is the more authoritative source, so
+      it reads first, ahead of ordinary entities/notes, not as an
+      afterthought tacked on at the end. Rules is a single free-text
+      document, not a list of Entity rows, so unlike the two above it
+      never counts toward entity_limit/notes_limit or appears in the
+      returned non_notes/notes lists (which stay Entity-only, for the
+      RAG-transparency panel's pin/list UI),
     - a priority_entities_context() block for any Entity.rag_priority row
       that scores against the query — same independence from entity_limit/
-      notes_limit and the same exclusion from non_notes/notes as Rules
-      above (see that function's own docstring for why this exists
-      alongside Rules rather than being redundant with it).
+      notes_limit, the same lead-with-not-append-to ordering, and the same
+      exclusion from non_notes/notes as Rules above (see that function's
+      own docstring for why this exists alongside Rules rather than being
+      redundant with it).
 
     `user=None` (the default) is deliberately unfiltered — the posture the
     original world-context-smart route established for its GM + assistant
@@ -891,7 +895,13 @@ def smart_world_context(
         db, world_id, query, user=user, strip_gm_only=strip_secrets,
         exclude_ids={e.id for e in non_notes} | {e.id for e in notes},
     )
+    # Rules and GM-flagged priority content lead the assembled context,
+    # ahead of ordinary matched/topped-up entities — both are the more
+    # authoritative sources (the official rules text itself, and content
+    # the GM specifically flagged as important) and should read as
+    # "here's the ground truth" before "here's some possibly-related
+    # lore", not as an afterthought tacked on at the end.
     extra = "\n\n".join(part for part in (rules, priority) if part)
     if extra:
-        context = f"{context}\n\n{extra}" if context else extra
+        context = f"{extra}\n\n{context}" if context else extra
     return context, non_notes, notes

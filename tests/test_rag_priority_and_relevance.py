@@ -303,6 +303,31 @@ def test_smart_world_context_finds_weapon_traits_via_priority_even_with_entity_r
         db.close()
 
 
+def test_smart_world_context_leads_with_priority_content_not_matched_entities(client, seed):
+    """Priority content (a GM-flagged reference document) is the more
+    authoritative source and should read FIRST, ahead of ordinary matched
+    entities, not tacked onto the end. entity_limit=1 forces the ordinary
+    path to have room for only "Weaponsmith Corin" (the stronger, exact,
+    short match) — otherwise ordinary retrieval would ALSO find "Players
+    Guide" on its own for this query, priority_entities_context would then
+    correctly exclude it as an already-included duplicate, and it would
+    never actually exercise the priority code path this test is about."""
+    _make_entity(seed.world_a.id, name="Players Guide", body=_PLAYER_GUIDE_BODY, rag_priority=True)
+    _make_entity(
+        seed.world_a.id, name="Weaponsmith Corin", kind="character",
+        body="Crafts weapon traits like Brutal into custom blades.",
+    )
+    db = SessionLocal()
+    try:
+        context, non_notes, _notes = smart_world_context(
+            db, seed.world_a.id, "what weapon traits exist, like Brutal", entity_limit=1, notes_limit=0,
+        )
+        assert [e.name for e in non_notes] == ["Weaponsmith Corin"]  # sanity: isolation worked
+        assert context.index("no mechanical bonus") < context.index("Weaponsmith Corin")
+    finally:
+        db.close()
+
+
 def test_smart_world_context_without_priority_flag_misses_it_when_entity_rag_off(client, seed):
     """Baseline confirming the flag is what does the work: the identical
     setup, minus rag_priority, finds nothing with entity RAG off — guards
