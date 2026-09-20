@@ -103,5 +103,5 @@ def test_ask_ai_panel_has_thinking_checkbox_wired_into_send(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get(f"/entity/{eid}")
-    assert '<input type="checkbox" id="ep-think-checkbox">' in r.text  # unchecked by default
+    assert '<input type="checkbox" id="ep-think-checkbox" checked>' in r.text  # on by default
     assert "think: document.getElementById('ep-think-checkbox').checked" in r.text

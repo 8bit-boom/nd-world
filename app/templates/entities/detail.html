@@ -413,7 +413,7 @@
         <button type="button" id="ep-mode-roleplay" class="ep-mode-btn" onclick="epSetMode('roleplay')" title="Chat AS this entity, in character">🎭 Talk as {{ entity.name }}</button>
         <label style="display:inline-flex;align-items:center;gap:.25rem;font-size:.75rem;color:var(--text-dim);cursor:pointer;margin-left:auto"
                title="Uses the model's 'thinking'/reasoning mode for this reply — usually better quality, but slower and can leave a small/tight-context model with no room left to answer.">
-          <input type="checkbox" id="ep-think-checkbox">🧠 Thinking
+          <input type="checkbox" id="ep-think-checkbox" checked>🧠 Thinking
         </label>
       </div>
       <input type="file" id="ep-attach-input" multiple accept="image/*,audio/*,.txt,.md,.markdown,.pdf" style="display:none"
@@ -606,12 +606,41 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
 
 (function(){
   const ENTITY_NAME = {{ entity.name | tojson }};
-  const ENTITY_CTX = {{ (
+  const ENTITY_ID = {{ entity.id | tojson }};
+  // Name/kind/subtype/summary only — cheap, always the same regardless of
+  // what's asked. The body used to be baked in here too as a fixed
+  // [:3000] prefix, reused unchanged for every question in the
+  // conversation; for a large, heading-structured entity (a GM's whole
+  // "Player Guide" consolidated into one note, say) that fixed prefix is
+  // all front matter, and the section that actually answers a given
+  // question can sit thousands of characters past it — entirely outside
+  // what the model ever saw, regardless of what was asked. epFetchEntity
+  // Context below now fetches a QUESTION-RELEVANT excerpt of the body
+  // per-question instead (POST /api/ai/entity-context, same
+  // best_matching_excerpt keyword-relevance section search
+  // smart_world_context's RAG already uses for this identical problem).
+  const ENTITY_HEADER = {{ (
     entity.kind|capitalize + ': ' + entity.name
     + ('\nSubtype: ' + entity.subtype if entity.subtype else '')
     + ('\nSummary: ' + safe_summary if safe_summary else '')
-    + ('\n\n' + (safe_body or '')[:3000] if safe_body else '')
   ) | tojson }};
+
+  // Best-effort per-question relevant excerpt of this entity's own body —
+  // failure here is silent (a player/GM still gets an answer grounded in
+  // just the header above, not a broken chat), same posture pcFetchContext
+  // (ai_chat_player.html) already takes for its own world-wide lookup.
+  async function epFetchEntityContext(query) {
+    try {
+      const res = await fetch('/api/ai/entity-context', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entity_id: ENTITY_ID, query }),
+      });
+      if (!res.ok) return '';
+      const data = await res.json();
+      return data.context || '';
+    } catch (e) { return ''; }
+  }
 
   const EP_SYSTEM_ASK = "You are a world-building assistant. Answer questions about the entity provided. Be concise and in-world.";
   const EP_SYSTEM_ROLEPLAY = (
@@ -649,14 +678,23 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
     epHistory.push({ role: 'user', content: text, attachments });
     btn.disabled = true;
     const bubble = epAdd('assistant', '…', true);
-    statsEl.textContent = '⏳ Connecting…';
+    statsEl.textContent = '⏳ Finding relevant lore…';
     statsEl.style.color = 'var(--text-dim)';
     let statsTimer = null;
     try {
+      const bodyExcerpt = await epFetchEntityContext(text);
+      const ctx = bodyExcerpt ? ENTITY_HEADER + '\n\n' + bodyExcerpt : ENTITY_HEADER;
+      // Same KV-cache-friendly placement ai-chat-core.js/pcSend use: the
+      // context pair sits immediately before the newest turn, never at the
+      // front, so a per-question-changing excerpt doesn't invalidate the
+      // whole conversation's prefix cache on every single message — only
+      // this pair + the new turn ever need re-prefilling.
+      statsEl.textContent = '⏳ Connecting…';
       const messages = [
-        { role: 'user', content: 'Entity context:\n\n' + ENTITY_CTX },
+        ...epHistory.slice(0, -1),
+        { role: 'user', content: 'Entity context:\n\n' + ctx },
         { role: 'assistant', content: epMode === 'roleplay' ? 'Understood — I will speak as this character.' : 'Understood.' },
-        ...epHistory
+        ...epHistory.slice(-1)
       ];
       const res = await fetch('/api/ai/stream', {
         method: 'POST',

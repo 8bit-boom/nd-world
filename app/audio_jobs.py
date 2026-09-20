@@ -1055,7 +1055,9 @@ def _build_rag_context(
 
         pinned_notes = [e for e in pinned if e.kind == "note"]
         pinned_non_notes = [e for e in pinned if e.kind != "note"]
-        entity_context = _retrieval.format_context_from_entities(pinned_non_notes + non_notes + pinned_notes + notes)
+        entity_context = _retrieval.format_context_from_entities(
+            pinned_non_notes + non_notes + pinned_notes + notes, query=query[:_RAG_QUERY_CHAR_BUDGET],
+        )
         pc_context = "\n".join(_format_pc_line(pc) for pc in pinned_pcs)
 
         facts = (

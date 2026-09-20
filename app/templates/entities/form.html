@@ -162,6 +162,15 @@
       </div>
     </div>
 
+    <div class="form-group" style="margin:.6rem 0 1rem">
+      <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer"
+             title="Always searched for AI Chat/Chronicler RAG regardless of the entity/notes limit sliders — same treatment World Rules text already gets. For a big reference document (a consolidated rules note, say) that the normal top-N retrieval might otherwise crowd out, or whose own relevant section a plain from-the-start excerpt would never reach. Still only actually included in an answer when it's relevant to the question asked, not dumped into every prompt.">
+        <input type="checkbox" name="rag_priority" value="1" style="width:auto;accent-color:var(--neon2)"
+               {% if entity and entity.rag_priority %}checked{% endif %}>
+        ⭐ High priority for AI (always searched, doesn't count against RAG limits)
+      </label>
+    </div>
+
     <div class="form-actions">
       <button type="submit" class="btn-save">Save</button>
       {% if not entity %}

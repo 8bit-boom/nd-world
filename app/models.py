@@ -470,6 +470,17 @@ class Entity(Base):
     body = Column(Text, nullable=True)
     # GM can hide spoilers/secrets from invited players; defaults visible so existing content is unaffected.
     visible_to_players = Column(Boolean, default=True)
+    # Opt this entity into the same "always searched, doesn't count against
+    # the entity/notes RAG limits" treatment World Rules text already gets
+    # (see app.retrieval.priority_entities_context) — for a big reference
+    # document (a consolidated "Player Guide" note, say) that keyword
+    # retrieval might otherwise crowd out of the ordinary entity_limit-
+    # bounded top-N results, or whose own relevant section a plain
+    # excerpt-from-the-start would never reach. Still only actually
+    # included in a given answer when it scores against that question's
+    # keywords, same as Rules — this is "always eligible", not "always
+    # dumped into every prompt".
+    rag_priority = Column(Boolean, default=False)
     # Optional structured fields (age/title/gender/status, stat blocks, etc.) on
     # top of the free-text body — see EntityTemplate for the field definitions.
     template_id = Column(Integer, ForeignKey("entity_templates.id"), nullable=True)

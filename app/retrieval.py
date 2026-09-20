@@ -217,10 +217,56 @@ def find_relevant_entities(db: Session, world_id: int, query: str, limit: int = 
         return find_relevant_entities_ilike(db, world_id, words, limit, user=user)
 
 
+def best_matching_excerpt(body: str, query: str, chars_budget: int) -> str:
+    """The chunk of `body` most relevant to `query`, for a body long enough
+    that a plain prefix slice risks missing the actually-relevant part
+    entirely — the same problem rules_context already solves for World
+    Rules text, applied here to any single large entity/note body. A GM's
+    whole "Player Guide" consolidated into one note is exactly this case:
+    the section actually answering "what weapon traits exist" can sit
+    thousands of characters past the document's own front matter/revision
+    history, which is all body[:chars_budget] would ever surface — the
+    entity gets correctly RETRIEVED (its body mentions "weapon" plenty),
+    but the excerpt the model actually sees never reaches the relevant
+    table, so it truthfully (and unhelpfully) reports the info isn't there.
+
+    Splits on the same H1-H3 markdown headings _rules_sections uses, scores
+    each section by keyword overlap with `query` (words > 3 chars, same
+    tokenization as find_relevant_entities/rules_context), and returns the
+    single highest-scoring section's own text — not several sections
+    stitched together, since this fills one entity's own excerpt slot, not
+    a dedicated multi-section block the way rules_context's return value
+    is. Falls back to a plain prefix slice when the body has no headings to
+    split on, already fits the budget uncut, or nothing in it scores
+    against the query — so a caller still gets SOME content rather than
+    none when the question shares no keywords with any heading/body."""
+    body = body.strip()
+    if not body or len(body) <= chars_budget:
+        return body
+    words = [w for w in re.split(r'\W+', query.lower()) if len(w) > 3]
+    if not words:
+        return body[:chars_budget]
+    sections = _rules_sections(body)
+    if len(sections) <= 1:
+        return body[:chars_budget]
+    scored = []
+    for heading, section_body in sections:
+        haystack = f"{heading}\n{section_body}".lower()
+        score = sum(haystack.count(w) for w in words)
+        if score:
+            scored.append((score, heading, section_body))
+    if not scored:
+        return body[:chars_budget]
+    scored.sort(key=lambda t: t[0], reverse=True)
+    _score, heading, section_body = scored[0]
+    excerpt = section_body[:chars_budget]
+    return excerpt if heading == "Introduction" else f"[{heading}] {excerpt}"
+
+
 def format_context_from_entities(
     entities: list, excerpt_count: int = EXCERPT_COUNT,
     excerpt_chars: int = EXCERPT_CHARS, excerpt_total_budget: int = EXCERPT_TOTAL_BUDGET,
-    strip_gm_only: bool = False,
+    strip_gm_only: bool = False, query: str = "",
 ) -> str:
     """One line per entity ("- [kind] name (subtype): summary"), plus — for
     the first `excerpt_count` entities in the given order (retrieval-ranked
@@ -232,6 +278,14 @@ def format_context_from_entities(
     handful of very long bodies can't blow the prompt out even if each
     individually fits under the per-entity cap). Pass excerpt_count=0 for
     the old summary-only behavior.
+
+    query, when given, picks each excerpt via best_matching_excerpt
+    instead of a blind body[:excerpt_chars] prefix slice — the section of a
+    long, heading-structured body actually relevant to the question, not
+    just whatever happens to come first. Pass "" (the default) to keep the
+    old prefix-slice behavior for a caller with no real query of its own
+    (e.g. app.audio_jobs' pinned-entity path has one; a caller building
+    context for something other than a single user question may not).
 
     strip_gm_only=True removes every [gmonly]...[/gmonly] block (tag and
     contents alike — see app.rendering.strip_gm_only) from each entity's
@@ -255,10 +309,91 @@ def format_context_from_entities(
         if i < excerpt_count and e.body and excerpt_total < excerpt_total_budget:
             body = _strip_gm_only(e.body) if strip_gm_only else e.body
             remaining = excerpt_total_budget - excerpt_total
-            excerpt = body.strip()[:min(excerpt_chars, remaining)]
+            budget = min(excerpt_chars, remaining)
+            excerpt = best_matching_excerpt(body, query, budget) if query else body.strip()[:budget]
             if excerpt:
                 lines.append(f"  {excerpt}")
                 excerpt_total += len(excerpt)
+    return "\n".join(lines)
+
+
+# Independent of entity_limit/notes_limit the same way Rules text is (see
+# smart_world_context's own docstring on rules_context) — a GM-flagged
+# Entity.rag_priority row is always searched regardless of those limits,
+# and never counts toward them or appears in the returned non_notes/notes
+# lists, matching Rules' own "only in the free-text context, not the
+# RAG-transparency panel's pin/list UI" treatment.
+PRIORITY_ENTITY_LIMIT = 3
+PRIORITY_EXCERPT_CHARS = 1200
+PRIORITY_EXCERPT_TOTAL_BUDGET = 2400
+
+
+def priority_entities_context(
+    db: Session, world_id: int, query: str, user=None,
+    limit: int = PRIORITY_ENTITY_LIMIT, strip_gm_only: bool = False, exclude_ids: Optional[set] = None,
+) -> str:
+    """Same "always searched, only actually included when it scores
+    against the query, never counted toward the ordinary entity/notes RAG
+    limits" treatment rules_context gives World Rules text — extended to
+    any Entity the GM has opted in via Entity.rag_priority (the entity
+    edit form's "High priority for AI" checkbox). Exists for a case Rules
+    alone can't cover: a big reference document the GM keeps as an
+    Entity/note rather than in Rules — a consolidated "Player Guide" note,
+    say — whose own relevant section keyword retrieval might otherwise
+    never surface, either because ordinary top-N entity_limit retrieval
+    ranks other, more literally-matching entities above it and it falls
+    out of the window entirely, or because ITS OWN excerpt would
+    (format_context_from_entities' plain prefix slice, when not given a
+    query) never reach the part that actually answers the question —
+    best_matching_excerpt (used here the same way format_context_from_
+    entities uses it when given a query) is what solves that second half.
+
+    exclude_ids skips any entity the caller already included via the
+    ordinary retrieval path, so a priority entity that ALSO happens to
+    rank in the normal top-N results doesn't appear twice in one prompt.
+    Returns "" when there are no priority entities in this world, none
+    score against the query's keywords, or limit<=0 — same "only when it
+    actually matched" posture as every other retrieval path here, so an
+    unrelated question doesn't pad every single prompt with a GM's
+    reference document regardless of relevance."""
+    if limit <= 0:
+        return ""
+    words = [w for w in re.split(r'\W+', query.lower()) if len(w) > 3]
+    if not words:
+        return ""
+    q = _visibility_filter(
+        db.query(Entity).filter(Entity.world_id == world_id, Entity.rag_priority.is_(True)), user,
+    )
+    if exclude_ids:
+        q = q.filter(~Entity.id.in_(exclude_ids))
+    entities = q.all()
+    if not entities:
+        return ""
+    scored = []
+    for e in entities:
+        summary = _strip_gm_only(e.summary) if strip_gm_only else (e.summary or "")
+        body = _strip_gm_only(e.body) if strip_gm_only else (e.body or "")
+        haystack = f"{e.name}\n{summary}\n{body}".lower()
+        score = sum(haystack.count(w) for w in words)
+        if score:
+            scored.append((score, e, summary, body))
+    if not scored:
+        return ""
+    scored.sort(key=lambda t: t[0], reverse=True)
+    lines = []
+    budget = PRIORITY_EXCERPT_TOTAL_BUDGET
+    for _score, e, summary, body in scored[:limit]:
+        if budget <= 0:
+            break
+        header = f"- [{e.kind}] {e.name}"
+        if summary:
+            header += f": {summary}"
+        lines.append(header)
+        if body:
+            excerpt = best_matching_excerpt(body, query, min(PRIORITY_EXCERPT_CHARS, budget))
+            if excerpt:
+                lines.append(f"  {excerpt}")
+                budget -= len(excerpt)
     return "\n".join(lines)
 
 
@@ -285,7 +420,12 @@ def smart_world_context(
       is a single free-text document, not a list of Entity rows, so unlike
       the two above it never counts toward entity_limit/notes_limit or
       appears in the returned non_notes/notes lists (which stay Entity-
-      only, for the RAG-transparency panel's pin/list UI).
+      only, for the RAG-transparency panel's pin/list UI),
+    - a priority_entities_context() block for any Entity.rag_priority row
+      that scores against the query — same independence from entity_limit/
+      notes_limit and the same exclusion from non_notes/notes as Rules
+      above (see that function's own docstring for why this exists
+      alongside Rules rather than being redundant with it).
 
     `user=None` (the default) is deliberately unfiltered — the posture the
     original world-context-smart route established for its GM + assistant
@@ -321,9 +461,15 @@ def smart_world_context(
         seen_ids = {e.id for e in entities}
         extra_notes = [e for e in note_entities if e.id not in seen_ids]
         notes = notes + extra_notes
-    context = format_context_from_entities(non_notes + notes, strip_gm_only=bool(user) and not user.is_gm)
+    strip_secrets = bool(user) and not user.is_gm
+    context = format_context_from_entities(non_notes + notes, strip_gm_only=strip_secrets, query=query)
     world = db.get(World, world_id)
     rules = rules_context(world, query, limit=rules_limit)
-    if rules:
-        context = f"{context}\n\n{rules}" if context else rules
+    priority = priority_entities_context(
+        db, world_id, query, user=user, strip_gm_only=strip_secrets,
+        exclude_ids={e.id for e in non_notes} | {e.id for e in notes},
+    )
+    extra = "\n\n".join(part for part in (rules, priority) if part)
+    if extra:
+        context = f"{context}\n\n{extra}" if context else extra
     return context, non_notes, notes

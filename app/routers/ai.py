@@ -17,6 +17,7 @@ from pathlib import Path as _Path
 from .. import ai as _ai
 from .. import ai_assist as _ai_assist
 from .. import audio_jobs as _audio_jobs
+from .. import auth as _auth
 from .. import chat_jobs as _chat_jobs
 from .. import image_jobs as _image_jobs
 from .. import imagegen_templates as _ig_templates
@@ -24,8 +25,9 @@ from .. import ollama_tuning as _tuning
 from .. import retrieval as _retrieval
 from ..constants import KINDS
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx, can_edit_content, check_llm_cooldown
-from ..models import AudioJob, ChatJob, ChatSession, ImageJob, PromptPreset, User
+from ..deps import get_world_ctx, can_edit_content, check_llm_cooldown, world_can_view_section
+from ..models import AudioJob, ChatJob, ChatSession, Entity, ImageJob, PromptPreset, User, World, entity_player_access
+from ..rendering import strip_gm_only as _strip_gm_only
 from ..uploads import (
     copy_upload_bounded, unique_upload_filename, reassemble_upload_chunks, save_upload_chunk,
     verify_upload_chunks_present,
@@ -1309,6 +1311,69 @@ def ai_world_context_player(
         user=user,
     )
     return {"context": context, "count": len(non_notes), "notes": len(notes)}
+
+
+_ENTITY_ASK_EXCERPT_CHARS = 4000
+
+
+class EntityContextBody(BaseModel):
+    entity_id: int
+    query: str = ""
+
+
+@router.post("/entity-context")
+def ai_entity_context(
+    body: EntityContextBody, request: Request, db=Depends(get_db), active_world: Optional[str] = Cookie(None),
+):
+    """Per-question relevant excerpt of ONE entity's own body, for the
+    entity detail page's "Ask AI about {entity}" panel (epSend in
+    entities/detail.html). That panel used to bake a fixed body[:3000]
+    prefix into the page once at load time and reuse it for every question
+    in the conversation — fine for a short entity, but for a large,
+    heading-structured one (a GM's whole "Player Guide" consolidated into
+    one note, say) the section that actually answers a given question can
+    sit thousands of characters past the document's own front matter/
+    revision history, entirely outside that fixed prefix regardless of
+    what was asked. Uses the same _retrieval.best_matching_excerpt keyword-
+    relevance section search smart_world_context uses for the identical
+    problem across a whole world's entities, scoped here to just this one
+    entity — and with a bigger budget than that per-entity RAG excerpt,
+    since this is the only content this call sends at all.
+
+    Gated the same as /stream itself (_require_ask_ai_access) — a player
+    can already reach this entity's detail page and thus its "Ask AI"
+    panel once players_can_ask_ai is on. The visibility/kind-section/
+    gmonly checks below mirror _entity_view_gate/detail() in app.main
+    exactly (this module can't import from main.py — see that module's
+    own docstring on why every router is a leaf here instead), so a
+    player gets 404 (not the entity's content) for anything they
+    couldn't already see on the page itself."""
+    _require_ask_ai_access(request, db, active_world)
+    entity = db.get(Entity, body.entity_id)
+    if not entity:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    ent_world = db.get(World, entity.world_id) if entity.world_id else None
+    if not _auth.user_can_access_world(db, user, ent_world):
+        raise HTTPException(404)
+    if not world_can_view_section(request, ent_world, f"kind_{entity.kind}"):
+        raise HTTPException(404)
+    is_gm = bool(user and user.is_gm)
+    if not entity.visible_to_players and not is_gm:
+        shared = user and db.query(entity_player_access).filter(
+            entity_player_access.c.entity_id == entity.id,
+            entity_player_access.c.user_id == user.id,
+        ).first()
+        if not shared:
+            raise HTTPException(404)
+    query = body.query.strip()
+    if not query:
+        return {"context": ""}
+    raw_body = entity.body if is_gm else _strip_gm_only(entity.body or "")
+    if not raw_body:
+        return {"context": ""}
+    excerpt = _retrieval.best_matching_excerpt(raw_body, query, _ENTITY_ASK_EXCERPT_CHARS)
+    return {"context": excerpt}
 
 
 @router.post("/stream")

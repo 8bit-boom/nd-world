@@ -582,6 +582,8 @@ def _migrate():
             conn.execute(text("ALTER TABLE entities ADD COLUMN custom_fields_json TEXT DEFAULT '{}'"))
         if "aliases" not in cols:
             conn.execute(text("ALTER TABLE entities ADD COLUMN aliases VARCHAR(512)"))
+        if "rag_priority" not in cols:
+            conn.execute(text("ALTER TABLE entities ADD COLUMN rag_priority BOOLEAN DEFAULT 0"))
         # Composite index backing the (world_id, kind) filter almost every
         # entity query uses — see Entity.__table_args__'s own comment.
         # CREATE INDEX IF NOT EXISTS is naturally idempotent, unlike the

@@ -358,15 +358,20 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if path == "/api/chronicler/ask":
         return True
-    if path in ("/api/ai/stream", "/api/ai/chat/compact", "/api/ai/world-context-player"):
+    if path in (
+        "/api/ai/stream", "/api/ai/chat/compact", "/api/ai/world-context-player", "/api/ai/entity-context",
+    ):
         # Middleware only decides "reachable" — the handler (app/routers/ai.py)
         # still gates a non-GM caller behind World.players_can_ask_ai, off by
         # default. The dedicated GM "/ai" World Chat page is a GET route and
         # stays off this allowlist entirely, so this only opens the shared
-        # streaming endpoint (and its "Compact chat" sibling) plus the
+        # streaming endpoint (and its "Compact chat" sibling), the
         # player-safe, visibility-filtered RAG lookup /ai-chat uses (see
-        # ai_world_context_player's own docstring) — not that page's
-        # GM-only quick-prompt toolkit or the unfiltered
+        # ai_world_context_player's own docstring), and the same per-entity
+        # lookup the entity detail page's own "Ask AI" panel uses (see
+        # ai_entity_context's own docstring — same _entity_view_gate-
+        # equivalent visibility check as that page itself) — not that
+        # page's GM-only quick-prompt toolkit or the unfiltered
         # /api/ai/world-context-smart GM/assistant route.
         return True
     if path in (
@@ -5209,6 +5214,7 @@ async def create(
     allowed_player_ids: List[int] = Form([]),
     template_id: Optional[str] = Form(None),
     custom_fields_json: str = Form("{}"),
+    rag_priority: Optional[str] = Form(None),
     save_and_new: Optional[str] = Form(None),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
@@ -5223,7 +5229,7 @@ async def create(
                image_url=final_image, summary=summary or None, body=body or None,
                visible_to_players=(visibility_mode == "everyone"),
                template_id=int(template_id) if template_id and template_id.isdigit() else None,
-               custom_fields_json=custom_fields_json)
+               custom_fields_json=custom_fields_json, rag_priority=bool(rag_priority))
     db.add(e)
     db.commit()
     db.refresh(e)
@@ -5306,6 +5312,7 @@ async def update(
     remove_image: Optional[str] = Form(None),
     template_id: Optional[str] = Form(None),
     custom_fields_json: str = Form("{}"),
+    rag_priority: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     entity = db.get(Entity, entity_id)
@@ -5332,6 +5339,7 @@ async def update(
     entity.summary = summary or None
     entity.body = body or None
     entity.visible_to_players = (visibility_mode == "everyone")
+    entity.rag_priority = bool(rag_priority)
     entity.template_id = int(template_id) if template_id and template_id.isdigit() else None
     try:
         json.loads(custom_fields_json)
