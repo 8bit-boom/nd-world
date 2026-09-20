@@ -388,6 +388,59 @@ def test_rules_sections_strips_windows_line_endings_from_headings():
     assert sections == [("Weapon Traits", "Brutal: no mechanical bonus.")]
 
 
+def test_rules_sections_recognizes_headings_deeper_than_h3():
+    """A real reported bug: a GM's actual rules document nested its real
+    content under H4/H5 headings inside a broader H3 "chapter" (e.g. H3
+    "Traits of the Hunt" containing H4 "Weapon Traits" containing H5
+    "Weapon — Hunt Mode" with the actual named trait table) — the old
+    H1-H3-only regex made every deeper heading invisible, collapsing the
+    whole chapter into one undifferentiated blob."""
+    md = "### Chapter\n\nIntro.\n\n#### Weapon Traits\n\nBrutal: no bonus.\n\n##### Sub Detail\n\nExtra nuance."
+    sections = _rules_sections(md)
+    headings = [h for h, _ in sections]
+    assert "Weapon Traits" in headings
+    assert "Sub Detail" in headings
+
+
+def test_rules_sections_nests_deeper_headings_into_their_parent():
+    """A heading's own section extends until the next heading at the SAME
+    OR SHALLOWER level — a deeper nested heading stays part of the
+    parent's body instead of ending it, so a parent like "Weapon Traits"
+    naturally includes all of its own H5 sub-tables rather than just its
+    opening sentence."""
+    md = (
+        "#### Weapon Traits\n\nIntro sentence.\n\n"
+        "##### Weapon — Hunt Mode\n\nHoned Edge: +1d10.\n\n"
+        "##### Weapon — Pursuit Mode\n\nReaching Form: +1 range.\n\n"
+        "#### Attire Traits\n\nUnrelated attire content."
+    )
+    sections = _rules_sections(md)
+    sd = dict(sections)
+    assert "Honed Edge" in sd["Weapon Traits"]
+    assert "Reaching Form" in sd["Weapon Traits"]
+    assert "Unrelated attire content" not in sd["Weapon Traits"]
+    # The nested headings still get their own, individually-scoped entries too.
+    assert "Honed Edge" in sd["Weapon — Hunt Mode"]
+    assert "Reaching Form" not in sd["Weapon — Hunt Mode"]
+
+
+def test_rules_sections_falls_back_to_own_text_when_merge_would_be_too_large():
+    """A parent heading whose nested children would merge into a body
+    bigger than _MAX_SCORED_CHARS falls back to just its own direct text
+    (usually a short intro) instead of an enormous merged blob — otherwise
+    a heading near the top of a large document (the file's own title, a
+    "Part" divider) would swallow huge unrelated stretches of the
+    document, and a query happening to share any word with that ocean of
+    text would always win purely by sheer size."""
+    from app.retrieval import _MAX_SCORED_CHARS
+    big_child_body = "Filler word. " * (_MAX_SCORED_CHARS // len("Filler word. ") + 10)
+    md = f"# Parent\n\nShort intro.\n\n## Child\n\n{big_child_body}"
+    sections = _rules_sections(md)
+    sd = dict(sections)
+    assert sd["Parent"] == "Short intro."
+    assert "Filler word" in sd["Child"]
+
+
 def test_rules_context_finds_matching_section(client, seed):
     _set_world_rules(seed.world_a.id, "## Armor Prices\n\nChainmail armor costs 120 crowns and grants +3 AC.")
     db = SessionLocal()

@@ -93,7 +93,21 @@ def _keyword_score(heading: str, body: str, words: list) -> int:
     direction ("trait" query vs. "Traits" heading, or vice versa) since RPG
     terminology constantly shifts singular/plural between a question and a
     table's own column header. Heading matches count for
-    _HEADING_MATCH_WEIGHT points each; body matches count for 1."""
+    _HEADING_MATCH_WEIGHT points each; body matches count for 1.
+
+    Does NOT cap `body`'s length itself — a caller scoring a whole,
+    potentially very large document as a single candidate (priority_
+    entities_context, deciding whether a flagged reference document is
+    relevant at all) needs the WHOLE body considered, or a match sitting
+    past whatever cap was chosen would make an actually-relevant document
+    score as a non-match and get silently excluded — exactly backwards for
+    a mechanism whose entire purpose is surfacing content buried deep in a
+    large document. A caller scoring individual, already-bounded SECTIONS
+    of a document (rules_context, best_matching_excerpt) is the one that
+    needs a length cap (see _MAX_SCORED_CHARS) — because there, an
+    unbounded section is itself the bug — so those callers cap `body`
+    before passing it in, rather than this shared function capping it for
+    everyone."""
     heading_l = heading.lower()
     body_l = body.lower()
     score = 0
@@ -105,7 +119,22 @@ def _keyword_score(heading: str, body: str, words: list) -> int:
     return score
 
 
-_MD_HEADING_RE = re.compile(r'^(#{1,3})[ \t]+(.+?)[ \t]*$', re.MULTILINE)
+_MD_HEADING_RE = re.compile(r'^(#{1,6})[ \t]+(.+?)[ \t]*$', re.MULTILINE)
+
+# Dual purpose, both defending against the same failure mode: raw
+# keyword-count scoring scales with how much text is being counted, so an
+# unusually large section — whether from _rules_sections merging many
+# nested children into one parent (see its own docstring), or simply a
+# single huge leaf section with no children at all (e.g. a document's own
+# Table of Contents, which densely repeats every chapter's own title as a
+# link) — can outscore a properly-scoped candidate purely by containing
+# more words, not by being more relevant. Used both to cap how much
+# nested-child text _rules_sections merges into a parent before it falls
+# back to that parent's own direct text, and by rules_context/
+# best_matching_excerpt to cap the body they pass into _keyword_score when
+# scoring one already-split SECTION at a time (see that function's own
+# docstring for why it does NOT apply this cap itself).
+_MAX_SCORED_CHARS = 4000
 
 # Independent of EXCERPT_CHARS/EXCERPT_TOTAL_BUDGET above (those are
 # per-entity-body budgets) — Rules is one document searched as a whole, so
@@ -118,14 +147,29 @@ RULES_SECTION_LIMIT = 2
 
 
 def _rules_sections(markdown: str) -> list:
-    """Splits raw rules markdown into (heading, body) pairs at H1/H2/H3
-    boundaries. Rules' own convention (see app.main._rules_toc) reserves a
-    bare H1 for the page's own title and never uses one in the body, but a
-    GM's own uploaded rules_md isn't guaranteed to follow that, so this
-    splits on all three rather than assuming. Text before the first
-    heading (if any) is kept under a synthetic "Introduction" heading
-    rather than silently dropped; a document with no headings at all comes
-    back as one single "Rules" section."""
+    """Splits raw rules markdown into (heading, body) pairs at ANY markdown
+    heading (H1-H6), hierarchy-aware: a heading's own section extends up to
+    the next heading at the SAME OR SHALLOWER level, so a deeper heading
+    nested underneath it stays part of that section's own body instead of
+    ending it. A real GM rules document routinely structures a big
+    reference chapter as an H3 "chapter" whose actual content lives in
+    H4/H5 subheadings below it — e.g. an H3 "Traits of the Hunt" chapter
+    containing H4 "Weapon Traits" containing H5 "Weapon — Hunt Mode" with
+    the actual named trait table. Splitting on H1-H3 only used to make
+    every deeper heading invisible to this function, so the WHOLE chapter
+    (subheadings and all) collapsed into one giant section under its H3
+    title; any excerpt taker slicing a prefix of that section only ever
+    reached its opening paragraph, never the actual named entries several
+    subsections down. Every heading still gets its own (heading, body)
+    entry regardless of depth — a query matching the broad chapter title
+    and a query matching one specific nested subheading are both scored as
+    candidates, and whichever one actually matches the query wins; a
+    parent's own section body naturally includes its children's text too
+    (nesting, not exclusion), so the parent remains a valid, if coarser,
+    candidate in its own right. Text before the first heading (if any) is
+    kept under a synthetic "Introduction" heading rather than silently
+    dropped; a document with no headings at all comes back as one single
+    "Rules" section."""
     if not markdown:
         return []
     # A GM's rules_md can arrive with Windows line endings (pasted from a
@@ -145,9 +189,32 @@ def _rules_sections(markdown: str) -> list:
         if intro:
             sections.append(("Introduction", intro))
     for i, m in enumerate(matches):
+        level = len(m.group(1))
         heading = m.group(2).strip()
         start = m.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(markdown)
+        rest = matches[i + 1:]
+        own_end = rest[0].start() if rest else len(markdown)  # up to the very next heading of ANY level
+        full_end = len(markdown)  # up to the next heading at this level or shallower
+        for later in rest:
+            if len(later.group(1)) <= level:
+                full_end = later.start()
+                break
+        # Merging every nested child into its parent's body (full_end) is
+        # what lets a section like "WEAPON TRAITS" pull in its own H5
+        # sub-tables — but applied without limit, the same merge makes a
+        # heading near the TOP of the document (the file's own H1 title, a
+        # "Part" divider) swallow enormous stretches of unrelated text,
+        # including this document's own Table of Contents (which densely
+        # repeats every chapter's own title). A raw keyword-count score
+        # scales with how much text is being counted, so that one
+        # accidentally-enormous "section" would then outscore every
+        # properly-scoped candidate purely by containing more words — not
+        # by being more relevant. Above this cap, fall back to the
+        # heading's own direct text only (own_end) — usually just its own
+        # intro paragraph — rather than the runaway merged version; its
+        # nested children still get their own, individually-capped entries
+        # from their own loop iterations either way.
+        end = full_end if (full_end - start) <= _MAX_SCORED_CHARS else own_end
         body = markdown[start:end].strip()
         if body:
             sections.append((heading, body))
@@ -179,7 +246,7 @@ def rules_context(world, query: str, limit: int = RULES_SECTION_LIMIT) -> str:
         return ""
     scored = []
     for heading, body in _rules_sections(markdown):
-        score = _keyword_score(heading, body, words)
+        score = _keyword_score(heading, body[:_MAX_SCORED_CHARS], words)
         if score:
             scored.append((score, heading, body))
     if not scored:
@@ -350,7 +417,7 @@ def best_matching_excerpt(body: str, query: str, chars_budget: int) -> str:
         return body[:chars_budget]
     scored = []
     for heading, section_body in sections:
-        score = _keyword_score(heading, section_body, words)
+        score = _keyword_score(heading, section_body[:_MAX_SCORED_CHARS], words)
         if score:
             scored.append((score, heading, section_body))
     if not scored:
