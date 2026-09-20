@@ -8,7 +8,7 @@ falls back to the old ILIKE matcher if FTS5 itself ever fails.
 """
 from app.database import SessionLocal
 from app.retrieval import find_relevant_entities, find_relevant_entities_ilike
-from app.models import Entity
+from app.models import Entity, User
 
 from .conftest import GM_PASSWORD, login
 
@@ -112,6 +112,34 @@ def test_ilike_fallback_still_matches_name_summary_tags(client, seed):
         eid = _make_entity(seed.world_a.id, name="Fallback Target", kind="character", summary="Findable via ILIKE.")
         results = find_relevant_entities_ilike(db, seed.world_a.id, ["fallback"], 10)
         assert eid in {e.id for e in results}
+    finally:
+        db.close()
+
+
+def test_player_visibility_does_not_starve_out_a_lower_ranked_visible_match(client, seed):
+    """A real bug: find_relevant_entities_fts applied its own SQL LIMIT
+    BEFORE the Python-side visibility filter ran (unlike the ILIKE
+    fallback, whose _visibility_filter is part of the same query the LIMIT
+    is applied to). For a real non-GM user, the top-`limit` FTS matches by
+    rank could be entirely GM-only — silently shrinking the result below
+    `limit`, or to nothing, even when a lower-ranked but actually-visible
+    match existed further down. Here, 5 identically-scored hidden entities
+    outrank (tie with, in insertion order) one visible entity; a player
+    asking with limit=1 must still get the visible one, not an empty list."""
+    for i in range(5):
+        _make_entity(
+            seed.world_a.id, name=f"NPC {i}", kind="character",
+            body="Mentions a dragon here.", visible_to_players=False,
+        )
+    visible_id = _make_entity(
+        seed.world_a.id, name="NPC visible", kind="character",
+        body="Mentions a dragon here.", visible_to_players=True,
+    )
+    db = SessionLocal()
+    try:
+        player = db.get(User, seed.player_a.id)
+        results = find_relevant_entities(db, seed.world_a.id, "dragon", limit=1, user=player)
+        assert [e.id for e in results] == [visible_id]
     finally:
         db.close()
 

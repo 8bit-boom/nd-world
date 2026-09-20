@@ -36,6 +36,75 @@ def world_rules_markdown(world) -> str:
     return _CORE_RULES_PATH.read_text(encoding="utf-8", errors="ignore") if _CORE_RULES_PATH.exists() else ""
 
 
+# A short, generic English stopword list — NOT a length cutoff. Every
+# keyword-scoring/tokenizing helper below used to filter with a blunt
+# `len(w) > 3`, which was really trying to drop noise words like "what"/
+# "does"/"have"/"were" but, as a side effect, also silently dropped every
+# genuine short RPG term a query could contain ("axe", "orc", "elf", "bow",
+# "gun", "imp", "hex", "war", and abbreviations like "hp"/"ac"/"xp") —
+# exactly the kind of query a player in a hurry actually types. A player
+# asking "does this axe have the brutal trait" got every one of those
+# content words thrown away except "brutal", so the answer's odds of
+# actually finding the relevant weapon entry depended on one lucky keyword.
+_STOPWORDS = frozenset({
+    "the", "and", "for", "are", "was", "were", "what", "does", "have", "has",
+    "had", "will", "would", "should", "could", "with", "this", "that",
+    "from", "there", "their", "about", "which", "when", "where", "how",
+    "why", "who", "whom", "can", "did", "do", "is", "am", "be", "been",
+    "being", "not", "but", "than", "then", "them", "they", "you", "your",
+    "yours", "my", "mine", "me", "i", "we", "us", "our", "ours", "he",
+    "she", "his", "her", "hers", "its", "in", "on", "at", "to", "of", "a",
+    "an", "as", "by", "or", "if", "so", "no", "yes", "all", "any", "some",
+    "each", "few", "more", "most", "other", "such", "only", "own", "same",
+    "just", "into", "over", "under", "again", "once", "here", "also",
+    "tell", "give", "show", "please", "know", "want", "like", "get",
+})
+
+
+def _query_words(query: str) -> list:
+    """Tokenizes `query` for keyword search/scoring: lowercased, split on
+    non-word runs, dropping single characters and this module's own
+    stopword list (see _STOPWORDS above) — used identically everywhere
+    this file needs "the meaningful words in this query", so a fix or
+    tuning here applies consistently to entity search, Rules search,
+    excerpt-picking, and priority-entity search alike instead of drifting
+    across four separately-maintained copies."""
+    return [w for w in re.split(r'\W+', query.lower()) if len(w) >= 2 and w not in _STOPWORDS]
+
+
+# A heading/name match is a far stronger "this is the right section" signal
+# than a body match: a section literally TITLED "Weapon Traits" is almost
+# certainly the answer to "tell me about weapon traits" even if its body
+# (e.g. a table) never repeats those words again, whereas a long prose
+# section that happens to mention "weapon" several times in an unrelated
+# context is not. Plain substring-count scoring treated the two the same,
+# so a verbose section repeating a query word 4-5 times in passing could
+# outrank the one section whose own heading names exactly what was asked —
+# confirmed to reproduce the reported "AI can't find the Weapon Traits
+# table even though there's a whole section titled that" failure.
+_HEADING_MATCH_WEIGHT = 8
+
+
+def _keyword_score(heading: str, body: str, words: list) -> int:
+    """Scores a (heading, body) section/entity against tokenized query
+    `words` — whole-word matches only (a regex \\b...\\b, not a raw
+    substring count, so "art" in a query can't silently score a hit against
+    "Cartographer"), tolerating a simple trailing-s plural mismatch either
+    direction ("trait" query vs. "Traits" heading, or vice versa) since RPG
+    terminology constantly shifts singular/plural between a question and a
+    table's own column header. Heading matches count for
+    _HEADING_MATCH_WEIGHT points each; body matches count for 1."""
+    heading_l = heading.lower()
+    body_l = body.lower()
+    score = 0
+    for w in words:
+        stem = w[:-1] if w.endswith('s') and len(w) > 3 else w
+        pattern = re.compile(r'\b' + re.escape(stem) + r's?\b')
+        score += len(pattern.findall(heading_l)) * _HEADING_MATCH_WEIGHT
+        score += len(pattern.findall(body_l))
+    return score
+
+
 _MD_HEADING_RE = re.compile(r'^(#{1,3})[ \t]+(.+?)[ \t]*$', re.MULTILINE)
 
 # Independent of EXCERPT_CHARS/EXCERPT_TOTAL_BUDGET above (those are
@@ -59,6 +128,14 @@ def _rules_sections(markdown: str) -> list:
     back as one single "Rules" section."""
     if not markdown:
         return []
+    # A GM's rules_md can arrive with Windows line endings (pasted from a
+    # Word doc, edited on Windows, etc.) — \r isn't matched by [ \t]*$
+    # before MULTILINE's $ anchor, so an un-normalized "## Weapon Traits\r\n"
+    # captured the heading as "Weapon Traits\r": a trailing \r baked into
+    # the section's own name. That heading no longer string-matched anything
+    # (the "\r" is invisible but present), and worse, `\r` further corrupts
+    # every downstream keyword-count/exact-match check against that heading.
+    markdown = markdown.replace("\r\n", "\n").replace("\r", "\n")
     matches = list(_MD_HEADING_RE.finditer(markdown))
     if not matches:
         return [("Rules", markdown.strip())] if markdown.strip() else []
@@ -80,8 +157,9 @@ def _rules_sections(markdown: str) -> list:
 def rules_context(world, query: str, limit: int = RULES_SECTION_LIMIT) -> str:
     """Keyword-relevance search over `world`'s Rules text (the GM's own
     rules_md, or the bundled core rules) — same word-tokenization
-    find_relevant_entities uses (words > 3 chars), scored by raw
-    occurrence count across each section's heading+body, highest first.
+    find_relevant_entities uses (_query_words: stopwords filtered out,
+    not just short words), scored by raw occurrence count across each
+    section's heading+body, highest first.
 
     This closes a real gap: neither this module's own retrieval nor
     Chronicler's (app.routers.chronicler.build_chronicler_system_prompt)
@@ -93,7 +171,7 @@ def rules_context(world, query: str, limit: int = RULES_SECTION_LIMIT) -> str:
     already has."""
     if limit <= 0:
         return ""
-    words = [w for w in re.split(r'\W+', query.lower()) if len(w) > 3]
+    words = _query_words(query)
     if not words:
         return ""
     markdown = world_rules_markdown(world)
@@ -101,8 +179,7 @@ def rules_context(world, query: str, limit: int = RULES_SECTION_LIMIT) -> str:
         return ""
     scored = []
     for heading, body in _rules_sections(markdown):
-        haystack = f"{heading}\n{body}".lower()
-        score = sum(haystack.count(w) for w in words)
+        score = _keyword_score(heading, body, words)
         if score:
             scored.append((score, heading, body))
     if not scored:
@@ -166,14 +243,36 @@ def find_relevant_entities_fts(
     `kind`, when given, is applied in the SQL itself (not as a Python
     post-filter) so a kind-filtered caller's `limit` still returns up to
     that many matches of the right kind, not up to `limit` matches of any
-    kind with most of them then discarded."""
+    kind with most of them then discarded.
+
+    A real bug this fixes: visibility filtering happens AFTER this raw SQL
+    query already applied its own LIMIT — unlike find_relevant_entities_
+    ilike below, whose _visibility_filter is part of the SAME SQLAlchemy
+    query LIMIT gets applied to. For a real non-GM `user`, the top-`limit`
+    FTS matches by rank can be mostly or entirely hidden from them, which
+    used to silently shrink the returned list below `limit` even when
+    plenty of OTHER, lower-ranked-but-still-visible matches existed to
+    fill it — a player could get zero or few results for a query a GM
+    asking the identical thing would get plenty for. Over-fetching a
+    multiple of `limit` before filtering (only when a real non-GM `user`
+    is given — the GM/no-user path is already exactly right and pays no
+    extra cost) gives filtering enough candidates, still in the same rank
+    order, to actually fill the requested count when enough visible
+    matches exist at all."""
     fts_query = " OR ".join(f'"{w.replace(chr(34), chr(34)*2)}"*' for w in words)
+    needs_filtering = user is not None and not user.is_gm
+    # max(..., 20): even the smallest `limit` a real caller passes still
+    # needs a real cushion — plenty of exact-rank ties are realistic (many
+    # short entities matching the same one or two words), and fetching only
+    # limit*5 of those (e.g. 5, for a limit=1 lookup) would still starve out
+    # a visible match sitting just past the tied group ahead of it.
+    fetch_limit = min(max(limit * 5, 20), 250) if needs_filtering else limit
     sql = (
         "SELECT entities.id FROM entity_fts "
         "JOIN entities ON entities.id = entity_fts.rowid "
         "WHERE entity_fts MATCH :q AND entities.world_id = :wid "
     )
-    params = {"q": fts_query, "wid": world_id, "lim": limit}
+    params = {"q": fts_query, "wid": world_id, "lim": fetch_limit}
     if kind:
         sql += "AND entities.kind = :kind "
         params["kind"] = kind
@@ -184,7 +283,7 @@ def find_relevant_entities_fts(
         return []
     q = _visibility_filter(db.query(Entity).filter(Entity.id.in_(ids)), user)
     by_id = {e.id: e for e in q.all()}
-    return [by_id[i] for i in ids if i in by_id]
+    return [by_id[i] for i in ids if i in by_id][:limit]
 
 
 def find_relevant_entities_ilike(
@@ -207,7 +306,7 @@ def find_relevant_entities_ilike(
 
 
 def find_relevant_entities(db: Session, world_id: int, query: str, limit: int = 25, user=None) -> list:
-    words = [w for w in re.split(r'\W+', query.lower()) if len(w) > 3]
+    words = _query_words(query)
     if not words:
         q = _visibility_filter(db.query(Entity).filter(Entity.world_id == world_id), user)
         return q.order_by(Entity.kind, Entity.name).limit(limit).all()
@@ -231,10 +330,10 @@ def best_matching_excerpt(body: str, query: str, chars_budget: int) -> str:
     table, so it truthfully (and unhelpfully) reports the info isn't there.
 
     Splits on the same H1-H3 markdown headings _rules_sections uses, scores
-    each section by keyword overlap with `query` (words > 3 chars, same
-    tokenization as find_relevant_entities/rules_context), and returns the
-    single highest-scoring section's own text — not several sections
-    stitched together, since this fills one entity's own excerpt slot, not
+    each section by keyword overlap with `query` (_query_words: stopwords
+    filtered out, same tokenization as find_relevant_entities/rules_context),
+    and returns the single highest-scoring section's own text — not several
+    sections stitched together, since this fills one entity's own excerpt slot, not
     a dedicated multi-section block the way rules_context's return value
     is. Falls back to a plain prefix slice when the body has no headings to
     split on, already fits the budget uncut, or nothing in it scores
@@ -243,7 +342,7 @@ def best_matching_excerpt(body: str, query: str, chars_budget: int) -> str:
     body = body.strip()
     if not body or len(body) <= chars_budget:
         return body
-    words = [w for w in re.split(r'\W+', query.lower()) if len(w) > 3]
+    words = _query_words(query)
     if not words:
         return body[:chars_budget]
     sections = _rules_sections(body)
@@ -251,8 +350,7 @@ def best_matching_excerpt(body: str, query: str, chars_budget: int) -> str:
         return body[:chars_budget]
     scored = []
     for heading, section_body in sections:
-        haystack = f"{heading}\n{section_body}".lower()
-        score = sum(haystack.count(w) for w in words)
+        score = _keyword_score(heading, section_body, words)
         if score:
             scored.append((score, heading, section_body))
     if not scored:
@@ -358,7 +456,7 @@ def priority_entities_context(
     reference document regardless of relevance."""
     if limit <= 0:
         return ""
-    words = [w for w in re.split(r'\W+', query.lower()) if len(w) > 3]
+    words = _query_words(query)
     if not words:
         return ""
     q = _visibility_filter(
@@ -373,8 +471,7 @@ def priority_entities_context(
     for e in entities:
         summary = _strip_gm_only(e.summary) if strip_gm_only else (e.summary or "")
         body = _strip_gm_only(e.body) if strip_gm_only else (e.body or "")
-        haystack = f"{e.name}\n{summary}\n{body}".lower()
-        score = sum(haystack.count(w) for w in words)
+        score = _keyword_score(e.name, f"{summary}\n{body}", words)
         if score:
             scored.append((score, e, summary, body))
     if not scored:

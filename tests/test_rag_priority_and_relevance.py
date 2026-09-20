@@ -90,6 +90,43 @@ def test_no_section_scores_falls_back_to_prefix_slice():
     assert excerpt == _PLAYER_GUIDE_BODY.strip()[:50]
 
 
+# A "tell me about X" / "is there a Y for X" style question, phrased the way
+# a player actually types it — plus a decoy section that repeats "weapon"
+# several times in unrelated prose, but never says "trait(s)" at all. The
+# real reported bug: a blunt len(word) > 3 filter let noise words like
+# "tell"/"about" survive into keyword-count scoring (diluting/skewing it),
+# AND plain substring-count scoring let the decoy's repeated "weapon"s
+# outscore the one section actually titled "Weapon Traits" even though that
+# heading match is the far stronger signal.
+_MODES_DECOY_SECTION = (
+    "## The Three Modes\n\n"
+    "Every Tool of the Hunt (which includes Hunter Weapons) is defined by how a "
+    "weapon functions across three weapon modes: Hunt Mode, Pursuit Mode, and "
+    "Execution Mode. Building a weapon means picking a mode for each weapon.\n\n"
+)
+
+_GUIDE_WITH_MODES_DECOY = (
+    "# Players Guide\n\n" + _MODES_DECOY_SECTION + _WEAPON_TRAITS_SECTION
+)
+
+
+def test_picks_titled_section_over_a_decoy_that_merely_repeats_the_word():
+    excerpt = best_matching_excerpt(_GUIDE_WITH_MODES_DECOY, "tell me about weapon traits", 200)
+    assert excerpt.startswith("[Weapon Traits")
+    assert "Brutal" in excerpt
+    assert "The Three Modes" not in excerpt
+
+
+def test_picks_titled_section_for_is_there_a_trait_phrasing():
+    """Matches the exact reported phrasing: "is there a 'Brutal' trait for
+    weapons?" — singular "trait" in the query must still line up with the
+    plural "Weapon Traits" heading."""
+    excerpt = best_matching_excerpt(_GUIDE_WITH_MODES_DECOY, "is there a Brutal trait for weapons?", 200)
+    assert excerpt.startswith("[Weapon Traits")
+    assert "Brutal" in excerpt
+    assert "The Three Modes" not in excerpt
+
+
 # ── format_context_from_entities(query=...) ─────────────────────────────────
 
 def test_format_context_uses_relevant_excerpt_when_query_given(client, seed):

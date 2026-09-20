@@ -18,6 +18,7 @@ from app import audio_jobs
 from app.database import SessionLocal
 from app.models import Entity, User, World, entity_player_access
 from app.retrieval import (
+    _query_words,
     _rules_sections,
     find_relevant_entities,
     format_context_from_entities,
@@ -48,6 +49,29 @@ def _share_with(entity_id, user_id):
         db.commit()
     finally:
         db.close()
+
+
+# ── _query_words tokenizer ──────────────────────────────────────────────────
+
+def test_query_words_keeps_short_rpg_terms():
+    """The old len(word) > 3 filter silently dropped every one of these
+    real, meaningful short RPG terms — a player asking about any of them
+    got that word thrown away before search/scoring ever saw it."""
+    for term in ("axe", "orc", "elf", "bow", "gun", "imp", "hex", "war", "ac", "hp"):
+        assert term in _query_words(f"tell me about the {term}"), term
+
+
+def test_query_words_drops_stopwords_regardless_of_length():
+    words = _query_words("tell me about weapon traits")
+    assert words == ["weapon", "traits"]
+    assert "tell" not in words and "about" not in words
+
+
+def test_query_words_drops_common_question_words():
+    words = _query_words("what does the brutal trait do")
+    assert "what" not in words
+    assert "does" not in words
+    assert "brutal" in words and "trait" in words
 
 
 # ── user= visibility filter ─────────────────────────────────────────────────
@@ -351,6 +375,17 @@ def test_rules_sections_no_headings_returns_one_section():
 
 def test_rules_sections_empty_input():
     assert _rules_sections("") == []
+
+
+def test_rules_sections_strips_windows_line_endings_from_headings():
+    """A GM's rules_md pasted from Windows (or edited on Windows) can carry
+    \\r\\n line endings — the heading regex's [ \\t]*$ doesn't consume \\r
+    before MULTILINE's $ anchor, so an un-normalized heading captured a
+    literal trailing \\r baked into the section's own name, silently
+    breaking any exact heading comparison downstream."""
+    md = "## Weapon Traits\r\n\r\nBrutal: no mechanical bonus.\r\n"
+    sections = _rules_sections(md)
+    assert sections == [("Weapon Traits", "Brutal: no mechanical bonus.")]
 
 
 def test_rules_context_finds_matching_section(client, seed):
