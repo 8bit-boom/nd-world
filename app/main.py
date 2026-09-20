@@ -3438,11 +3438,30 @@ def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: 
     world, worlds = get_world_ctx(request, db, active_world)
     if not world_can_view_section(request, world, "ai"):
         raise HTTPException(403)
+    # This assistant has two distinct jobs that pull in opposite directions:
+    # inventing new content on request ("write a quest hook") vs. reporting
+    # what the world's OWN rules/lore already say ("is there a Brutal trait
+    # for weapons?"). With no instruction covering the second case, a model
+    # answering a factual lookup with nothing relevant actually retrieved
+    # tends to confidently fabricate specifics (invented weapon names,
+    # made-up stats) rather than say the lore doesn't cover it — the same
+    # failure mode Chronicler's system prompt (app/routers/chronicler.py)
+    # already guards against for its own, narrower Q&A surface. The final
+    # clause below asks for that same honesty here too, without losing the
+    # creative-generation half of this page's job.
+    _GROUNDING_CLAUSE = (
+        "When asked whether something already exists in this world's rules or lore "
+        "(a trait, an item, a price, a named NPC, a fact), answer only from what the "
+        "retrieved world lore/Rules text actually says — never invent specific names, "
+        "numbers, or details to fill a gap. If it isn't covered, say so plainly rather "
+        "than presenting an invented answer as fact, and offer to help create it instead."
+    )
     entity_counts = {}
     world_system = (
         "You are a creative world-building AI assistant for a Neon & Dragons "
         "cyberpunk-fantasy TTRPG setting. Help the Game Master with world-building, "
-        "lore, NPC backstories, plot hooks, and creative writing. Be vivid and immersive."
+        "lore, NPC backstories, plot hooks, and creative writing. Be vivid and immersive. "
+        + _GROUNDING_CLAUSE
     )
     if world:
         entity_counts = _kind_counts(db, world, request)
@@ -3453,7 +3472,8 @@ def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: 
             f"The world currently contains: {counts_str}. "
             f"Help the Game Master with world-building, lore, NPC backstories, plot hooks, "
             f"and creative writing. Be vivid, immersive, and consistent with the cyberpunk-fantasy tone. "
-            f"Keep responses focused; expand only when asked."
+            f"Keep responses focused; expand only when asked. "
+            + _GROUNDING_CLAUSE
         )
     return templates.TemplateResponse("ai_chat.html", {
         "request": request, "world": world, "worlds": worlds,
