@@ -3470,7 +3470,23 @@ def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: 
         "(a trait, an item, a price, a named NPC, a fact), answer only from what the "
         "retrieved world lore/Rules text actually says — never invent specific names, "
         "numbers, or details to fill a gap. If it isn't covered, say so plainly rather "
-        "than presenting an invented answer as fact, and offer to help create it instead."
+        "than presenting an invented answer as fact, and offer to help create it instead. "
+        # Real reported failure: asked for "the list of ordinary weapons",
+        # a model given both a chapter's short overview paragraph AND the
+        # actual item table nested under it answered with the OVERVIEW's
+        # vague categories/price ranges instead of the table's real named
+        # rows — technically grounded (every word came from retrieved
+        # text), but not what "list the weapons" was actually asking for.
+        # A cautious model reads an overview as the safe, complete-looking
+        # answer and a visibly-partial table as something to hedge around
+        # rather than the actual data to report.
+        "When the retrieved text includes a markdown table relevant to the question, "
+        "that table IS the answer: list its actual named rows verbatim (item names, "
+        "prices, stats) rather than summarizing them into categories or ranges from "
+        "surrounding overview prose — an overview paragraph is a summary of the table, "
+        "not a substitute for it. If a table excerpt says more rows were truncated, "
+        "list every row you were given and say the list continues in the full Rules text "
+        "rather than treating the partial list as complete."
     )
     entity_counts = {}
     world_system = (

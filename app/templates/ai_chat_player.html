@@ -46,7 +46,18 @@ const PC_SYSTEM = (
   + "(a trait, an item, a price, a fact), answer only from what the \"Relevant world "
   + "info\" actually says — never invent specific names, numbers, or details to fill "
   + "a gap. If it isn't covered there, say so plainly rather than presenting an "
-  + "invented answer as fact."
+  + "invented answer as fact. "
+  // Real reported failure (see app.main.ai_chat_page's identical addition
+  // to _GROUNDING_CLAUSE): asked to list items from a Rules table, a
+  // model answered with a vague category/price-range summary instead of
+  // the table's actual named rows — grounded in retrieved text, but not
+  // what "list the X" was actually asking for.
+  + "When the retrieved \"Relevant world info\" includes a markdown table relevant to "
+  + "the question, that table IS the answer: list its actual named rows verbatim "
+  + "(item names, prices, stats) rather than summarizing them into categories or "
+  + "ranges from surrounding overview prose. If a table excerpt says more rows were "
+  + "truncated, list every row you were given and say the list continues in the full "
+  + "Rules text rather than treating the partial list as complete."
 );
 let pcHistory = [];
 

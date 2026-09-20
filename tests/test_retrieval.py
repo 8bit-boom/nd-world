@@ -582,8 +582,9 @@ def test_rules_context_surfaces_a_table_buried_under_a_collapsed_ancestor(client
 
 
 def test_rules_context_guarantee_does_not_fire_for_a_normal_top_pick():
-    """The guarantee only kicks in when the #1 pick is itself a collapsed
-    ancestor (see _rules_sections_full) — an ordinary, non-collapsed top
+    """The guarantee only kicks in when the #1 pick is either a collapsed
+    ancestor (see _rules_sections_full) or got its own excerpt truncated
+    by the budget — an ordinary, short, non-collapsed, non-truncated top
     pick behaves exactly as before, with no extra sections pulled in."""
     from app.retrieval import _rules_sections_full, _select_relevant_sections, _query_words
 
@@ -595,6 +596,61 @@ def test_rules_context_guarantee_does_not_fire_for_a_normal_top_pick():
     picks = _select_relevant_sections(_rules_sections_full(md), words, 2000, 2)
     headings = [h for h, _ in picks]
     assert headings == ["Armor"]
+
+
+def test_select_relevant_sections_guarantees_a_table_truncated_out_of_a_non_collapsed_top_pick():
+    """A second, distinct way a table can get lost: the top pick's own
+    merged body (children small enough to NOT trigger _rules_sections'
+    collapse fallback) can still be bigger than the excerpt budget, so the
+    shown excerpt is truncated well before reaching a table nested inside
+    it — the "collapsed ancestor" framing was never really the point,
+    "the reader can't see the whole table" is, and that can happen to a
+    perfectly ordinary, non-collapsed section too."""
+    from app.retrieval import _rules_sections_full, _select_relevant_sections, _query_words
+
+    intro = "Ordinary weapons are common. " * 12  # long enough to fill a small budget on its own
+    md = (
+        "## 23. Ordinary Weapons\n\n" + intro + "\n\n"
+        "### Melee Weapons\n\n| Weapon | Cost |\n|---|---|\n"
+        "| Kitchen knife | 2 Crows |\n| Hand axe | 5 Crows |\n"
+    )
+    full = _rules_sections_full(md)
+    assert not any(h == "23. Ordinary Weapons" and (fe - s) > 4000 for h, _b, _l, s, fe in full), (
+        "fixture must NOT collapse — this test is specifically about the non-collapsed case"
+    )
+    words = _query_words("23 ordinary weapons")
+    picks = _select_relevant_sections(full, words, 200, 2, per_section_cap=200)
+    headings = [h for h, _ in picks]
+    assert "Melee Weapons" in headings
+    melee_excerpt = dict(picks)["Melee Weapons"]
+    assert "Kitchen knife" in melee_excerpt
+    assert "Hand axe" in melee_excerpt
+
+
+def test_clip_section_never_severs_a_table_row_mid_line():
+    from app.retrieval import _clip_section
+
+    table = (
+        "| Weapon | Cost |\n|---|---|\n"
+        "| Kitchen knife | 2 Crows |\n"
+        "| Hand axe | 5 Crows |\n"
+        "| Straight sword | 12 Crows |\n"
+    )
+    # Cut in the middle of the "Hand axe" row.
+    clipped = _clip_section(table, len("| Weapon | Cost |\n|---|---|\n| Kitchen knife | 2 Crows |\n| Hand ax"))
+    assert "| Hand ax" not in clipped  # no dangling row fragment
+    for line in clipped.splitlines():
+        if line.startswith("|"):
+            assert line.endswith("|"), f"truncated mid-row: {line!r}"
+
+
+def test_clip_section_marks_truncated_output():
+    from app.retrieval import _clip_section
+
+    assert _clip_section("short", 100) == "short"  # no marker when nothing was cut
+    clipped = _clip_section("a" * 500, 100)
+    assert "truncated" in clipped
+    assert len(clipped) <= 100 + len("\n…[truncated — more entries follow in the full Rules text]")
 
 
 # ── smart_world_context now also folds in Rules ─────────────────────────────

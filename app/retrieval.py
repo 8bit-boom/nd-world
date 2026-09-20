@@ -227,12 +227,19 @@ _MAX_SCORED_CHARS = 4000
 _SECTION_RELEVANCE_RATIO = 0.4
 
 # Independent of EXCERPT_CHARS/EXCERPT_TOTAL_BUDGET above (those are
-# per-entity-body budgets) — Rules is one document searched as a whole, so
-# it gets its own, deliberately small budget: a couple of matching
-# sections is plenty to answer "how much does X cost", and a GM's full
-# rules document can be very long.
-RULES_EXCERPT_CHARS = 1200
-RULES_EXCERPT_TOTAL_BUDGET = 2000
+# per-entity-body budgets) — Rules is one document searched as a whole.
+# Was 1200/2000 — too small to hold an actual reference TABLE: a real
+# 20-30-row price/stat list runs 3-4KB, so at the old cap a "list the
+# ordinary weapons" question got maybe a third of the table, silently, and
+# the model filled the rest in from the chapter's own short intro prose
+# instead (the intro's vaguer categorical description IS retrieved
+# alongside the table, and reads as a complete answer on its own — a
+# weaker/quantized model has no reason to prefer an apparently-cut-off
+# table over it). Sized to comfortably hold one real data table rather
+# than a couple of matching PROSE sections, which was the only case this
+# budget was originally tuned for.
+RULES_EXCERPT_CHARS = 4000
+RULES_EXCERPT_TOTAL_BUDGET = 8000
 RULES_SECTION_LIMIT = 2
 
 
@@ -390,8 +397,18 @@ def rules_context(world, query: str, limit: int = RULES_SECTION_LIMIT, is_gm: bo
     )
     if not picks:
         return ""
-    lines = [f"- [Rules] {heading}: {excerpt}" for heading, excerpt in picks]
-    return "\n".join(lines)
+    # A multi-line excerpt (almost always a markdown table) gets its own
+    # line, right after the heading label, instead of gluing the table's
+    # header row onto the end of "- [Rules] Heading: " — the separator row
+    # (|---|---|) that follows would otherwise be the only thing that
+    # looks like a table, with the header row it belongs to stuck reading
+    # as part of the label sentence instead. Blocks are blank-line
+    # separated so consecutive tables don't visually run together either.
+    lines = []
+    for heading, excerpt in picks:
+        sep = "\n" if "\n" in excerpt else " "
+        lines.append(f"- [Rules] {heading}:{sep}{excerpt}")
+    return "\n\n".join(lines)
 
 # AI 1.1 — RAG retrieval could always *find* an entity by its body text
 # (FTS5 indexes name/summary/body/tags), but the model never actually saw
@@ -594,7 +611,41 @@ def find_relevant_entities(db: Session, world_id: int, query: str, limit: int = 
 # or their own body already covers the table) behaves byte-for-byte as
 # before.
 _MAX_GUARANTEED_TABLE_SECTIONS = 3
-_GUARANTEED_TABLE_CHARS = 500
+# Was 500 — enough to LOOK like a complete table (a header row, a
+# separator row, 2-3 data rows) while actually cutting off most of a real
+# 20-30-row list, with no signal to the model that anything was cut. See
+# _clip_section for the truncation-marker half of this same fix.
+_GUARANTEED_TABLE_CHARS = 2000
+
+
+_TRUNCATION_MARKER = "\n…[truncated — more entries follow in the full Rules text]"
+
+
+def _clip_section(text: str, cap: int) -> str:
+    """Slice `text` to at most `cap` chars for inclusion in a model's
+    context, without severing a markdown table row mid-line whenever that
+    can be avoided (a table's rows are one per line, so backing the cut up
+    to the last complete line before `cap` reliably lands on a row/
+    separator boundary instead of a fragment like "| Hunting spear | 12
+    Crows | 1d8 | Versa") — and, whenever ANY cut actually happens,
+    appends an explicit marker. A silent cut is actively misleading here:
+    asked to enumerate "the ordinary weapons", a model handed what LOOKS
+    like a complete list (correctly formatted rows, just fewer of them)
+    has no way to know it should say "there are more" rather than
+    presenting the partial list as the whole answer — which is exactly
+    the reported failure (a model reporting only categories/price RANGES
+    instead of the actual named rows it never fully saw)."""
+    if cap <= 0:
+        return ""
+    if len(text) <= cap:
+        return text
+    cut = text.rfind("\n", 0, cap)
+    # Backing up to a full line is only worth it when it doesn't throw
+    # away most of an already-small budget — a single giant paragraph with
+    # no line breaks for thousands of characters should still get SOME
+    # text rather than an empty result.
+    piece = text[:cut] if cut != -1 and cut >= cap * 0.5 else text[:cap]
+    return piece.rstrip() + _TRUNCATION_MARKER
 
 
 def _select_relevant_sections(
@@ -608,10 +659,16 @@ def _select_relevant_sections(
     competitive with the #1 pick (_SECTION_RELEVANCE_RATIO), deduped
     bidirectionally so a hierarchy-merged parent doesn't repeat a child's
     text verbatim — see best_matching_excerpt's own docstring for more on
-    both of those — PLUS, if the #1 pick was itself a collapsed ancestor,
-    any of ITS OWN descendant sections that carry a genuine markdown table
-    and weren't already swept in above (see _MAX_GUARANTEED_TABLE_SECTIONS'
-    own comment). Returns [] when nothing scores.
+    both of those — PLUS, if the #1 pick was itself a collapsed ancestor OR
+    got its own excerpt cut short by the budget, any of ITS OWN descendant
+    sections that carry a genuine markdown table and weren't already swept
+    in above (see _MAX_GUARANTEED_TABLE_SECTIONS' own comment). The second
+    trigger matters even for a NON-collapsed top pick: a chapter short
+    enough to merge all its children into one body can still be longer
+    than the excerpt budget, so the actual data table living inside it
+    gets truncated away exactly like the collapsed case does — the
+    ancestor being "collapsed" was never really the point, "the reader
+    can't see the whole table" is. Returns [] when nothing scores.
 
     `per_section_cap`, when given, additionally limits any single normal
     pick's own share of `chars_budget` (rules_context's RULES_EXCERPT_CHARS
@@ -627,26 +684,38 @@ def _select_relevant_sections(
         return []
     scored.sort(key=lambda t: t[0], reverse=True)
     top_score = scored[0][0]
-    top_start, top_full_end = scored[0][3], scored[0][4]
+    top_body, top_start, top_full_end = scored[0][2], scored[0][3], scored[0][4]
     top_collapsed = (top_full_end - top_start) > _MAX_SCORED_CHARS
+    top_cap = min(chars_budget, per_section_cap) if per_section_cap else chars_budget
+    top_truncated = len(top_body) > top_cap
 
     picks = []
-    included_bodies = []
+    # Tracks what was actually SHOWN (post-_clip_section), not each
+    # candidate's raw untruncated body — a section that got truncated can
+    # easily have had exactly the part another candidate would duplicate
+    # cut away, and deduping against the untruncated body would then
+    # wrongly treat that other candidate's content as "already shown" when
+    # the reader never actually saw it (this is precisely how a table
+    # merged into a longer, truncated parent used to block its OWN
+    # separately-scored section from ever being added by the guarantee
+    # sweep below, even though the parent's shown excerpt never reached
+    # it).
+    included_shown = []
     remaining = chars_budget
     for score, heading, sect_body, _start, _full_end in scored:
         if len(picks) >= max_sections or remaining <= 0:
             break
         if picks and score < top_score * _SECTION_RELEVANCE_RATIO:
             break
-        if any(sect_body in inc or inc in sect_body for inc in included_bodies):
+        if any(sect_body in shown or shown in sect_body for shown in included_shown):
             continue
         cap = min(remaining, per_section_cap) if per_section_cap else remaining
-        piece = sect_body[:cap]
+        piece = _clip_section(sect_body, cap)
         picks.append((heading, piece))
-        included_bodies.append(sect_body)
+        included_shown.append(piece)
         remaining -= len(piece)
 
-    if top_collapsed:
+    if top_collapsed or top_truncated:
         guaranteed = 0
         for score, heading, sect_body, start, _full_end in scored:
             if guaranteed >= _MAX_GUARANTEED_TABLE_SECTIONS:
@@ -655,11 +724,11 @@ def _select_relevant_sections(
                 continue
             if not _has_markdown_table(sect_body):
                 continue
-            if any(sect_body in inc or inc in sect_body for inc in included_bodies):
+            if any(sect_body in shown or shown in sect_body for shown in included_shown):
                 continue
-            piece = sect_body[:_GUARANTEED_TABLE_CHARS]
+            piece = _clip_section(sect_body, _GUARANTEED_TABLE_CHARS)
             picks.append((heading, piece))
-            included_bodies.append(sect_body)
+            included_shown.append(piece)
             guaranteed += 1
 
     return picks
@@ -709,7 +778,17 @@ def best_matching_excerpt(body: str, query: str, chars_budget: int, max_sections
     picks = _select_relevant_sections(full_sections, words, chars_budget, max_sections)
     if not picks:
         return body[:chars_budget]
-    parts = [piece if heading == "Introduction" else f"[{heading}] {piece}" for heading, piece in picks]
+    # A multi-line piece (almost always a markdown table) gets its own
+    # line after the "[Heading]" label instead of gluing the table's
+    # header row onto the same line as the label — see rules_context's
+    # identical fix for why that matters.
+    parts = []
+    for heading, piece in picks:
+        if heading == "Introduction":
+            parts.append(piece)
+        else:
+            sep = "\n" if "\n" in piece else " "
+            parts.append(f"[{heading}]{sep}{piece}")
     return "\n\n".join(parts)
 
 
@@ -780,7 +859,12 @@ def format_context_from_entities(
             budget = min(excerpt_chars, remaining)
             excerpt = best_matching_excerpt(body, query, budget) if query else body.strip()[:budget]
             if excerpt:
-                lines.append(f"  {excerpt}")
+                # Indent every line of a multi-line excerpt (a markdown
+                # table's separator/data rows), not just its first —
+                # `f"  {excerpt}"` alone only indented that first line,
+                # leaving a table's own rows sitting at column 0 looking
+                # detached from the entity line they belong to.
+                lines.append("  " + excerpt.replace("\n", "\n  "))
                 excerpt_total += len(excerpt)
             excerpted += 1
     return "\n".join(lines)
@@ -860,7 +944,10 @@ def priority_entities_context(
         if body:
             excerpt = best_matching_excerpt(body, query, min(PRIORITY_EXCERPT_CHARS, budget))
             if excerpt:
-                lines.append(f"  {excerpt}")
+                # See format_context_from_entities' identical fix — indent
+                # every line of a multi-line (table) excerpt, not just the
+                # first.
+                lines.append("  " + excerpt.replace("\n", "\n  "))
                 budget -= len(excerpt)
     return "\n".join(lines)
 

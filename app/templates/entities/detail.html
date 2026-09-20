@@ -642,7 +642,27 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
     } catch (e) { return ''; }
   }
 
-  const EP_SYSTEM_ASK = "You are a world-building assistant. Answer questions about the entity provided. Be concise and in-world.";
+  // Grounding + table-fidelity clauses mirroring app.main.ai_chat_page's
+  // _GROUNDING_CLAUSE and ai_chat_player.html's PC_SYSTEM — this panel had
+  // neither: a question about one large, table-bearing entity (a
+  // consolidated "Player Guide" note, say) had no instruction against
+  // inventing an answer, nor any push toward quoting a retrieved table's
+  // actual rows instead of summarizing them.
+  const EP_SYSTEM_ASK = (
+    "You are a world-building assistant. Answer questions about the entity provided. "
+    + "Be concise and in-world. "
+    + "When asked whether something already exists in this entity's own text (a trait, "
+    + "an item, a price, a fact), answer only from what the entity context provided "
+    + "actually says — never invent specific names, numbers, or details to fill a gap. "
+    + "If it isn't covered there, say so plainly rather than presenting an invented "
+    + "answer as fact. "
+    + "When the entity context includes a markdown table relevant to the question, "
+    + "that table IS the answer: list its actual named rows verbatim (item names, "
+    + "prices, stats) rather than summarizing them into categories or ranges from surrounding "
+    + "overview prose. If a table excerpt says more rows were truncated, list every row "
+    + "you were given and say the list continues in the entity's full text rather than "
+    + "treating the partial list as complete."
+  );
   const EP_SYSTEM_ROLEPLAY = (
     "You are roleplaying AS the entity described below, speaking entirely in first person and in "
     + "character — never as a narrator or assistant, never breaking character to explain yourself. "

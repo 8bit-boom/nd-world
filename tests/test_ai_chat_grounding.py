@@ -66,3 +66,68 @@ def test_player_ai_chat_system_prompt_includes_grounding_clause(client, seed):
     # The original scope-limiting instruction (no GM-only secrets) is
     # still there too.
     assert "You don't have access to any GM-only secrets" in r.text
+
+
+# ── Table-fidelity directive: "quote the table, don't summarize it" ────────
+#
+# A second, distinct real bug on top of the original grounding gap: asked
+# to "list the ordinary weapons", a model given BOTH a chapter's short
+# overview paragraph and the actual item table nested under it answered
+# with the overview's vague categories/price ranges instead of the
+# table's real named rows — technically grounded (every word came from
+# retrieved text) but not what "list the weapons" was actually asking
+# for. Fixed by adding an explicit "a table's rows are the answer, not
+# the overview prose" instruction to every AI Chat/Ask AI system prompt.
+
+def test_gm_ai_chat_system_prompt_includes_table_fidelity_clause(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/ai")
+    assert r.status_code == 200
+    assert "that table IS the answer" in r.text
+    assert "list its actual named rows verbatim" in r.text
+
+
+def test_player_ai_chat_system_prompt_includes_table_fidelity_clause(client, seed):
+    from app.database import SessionLocal
+    from app.models import World
+
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.players_can_use_ai_chat = True
+        db.commit()
+    finally:
+        db.close()
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/ai-chat")
+    assert r.status_code == 200
+    assert "that table IS the answer" in r.text
+    assert "list its actual named rows verbatim" in r.text
+
+
+def test_entity_ask_ai_system_prompt_has_grounding_and_table_fidelity_clauses(client, seed):
+    """EP_SYSTEM_ASK (the entity detail page's "Ask AI about {entity}"
+    panel) previously had NO grounding clause at all — just "answer
+    questions about the entity provided. Be concise and in-world." —
+    unlike the two general AI Chat surfaces above."""
+    from app.database import SessionLocal
+    from app.models import Entity
+
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=seed.world_a.id, kind="item", name="Test Item")
+        db.add(e)
+        db.commit()
+        db.refresh(e)
+        eid = e.id
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/entity/{eid}")
+    assert r.status_code == 200
+    assert "never invent specific names, numbers, or details to fill a gap" in r.text
+    assert "that table IS the answer" in r.text
+    assert "list its actual named rows verbatim" in r.text
