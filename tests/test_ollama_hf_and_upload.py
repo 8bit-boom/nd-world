@@ -16,6 +16,7 @@ ollama.com/library "Pull & Add" box:
 import io
 import time
 
+import httpx as _httpx
 import pytest
 
 from app import ai as ai_module
@@ -161,15 +162,23 @@ async def test_files_http_error_returns_empty(monkeypatch):
 # ── import_local_gguf_model() ────────────────────────────────────────────
 
 class _FakeOllamaClient:
-    def __init__(self, digest="sha256:deadbeef", create_blob_exc=None, create_exc=None):
+    def __init__(self, digest="sha256:deadbeef", create_blob_exc=None, create_exc=None, create_blob_exc_sequence=None):
         self._digest = digest
         self._create_blob_exc = create_blob_exc
         self._create_exc = create_exc
+        # A queue of exceptions to raise, one per create_blob() call, before
+        # falling through to a normal success — for testing
+        # import_local_gguf_model's create_blob retry loop (fails N times,
+        # then succeeds), as opposed to create_blob_exc above (always fails,
+        # every call, for the "give up entirely" cases).
+        self._create_blob_exc_sequence = list(create_blob_exc_sequence) if create_blob_exc_sequence else None
         self.blob_calls = []
         self.create_calls = []
 
     async def create_blob(self, path):
         self.blob_calls.append(path)
+        if self._create_blob_exc_sequence:
+            raise self._create_blob_exc_sequence.pop(0)
         if self._create_blob_exc:
             raise self._create_blob_exc
         return self._digest
@@ -234,6 +243,63 @@ async def test_import_generic_failure_surfaces(tmp_path, monkeypatch):
     monkeypatch.setattr(ai_module, "_client", lambda: fake)
     out = await _collect(ai_module.import_local_gguf_model(f, "my-model"))
     assert out[-1] == {"error": "OSError: no space left on device"}
+
+
+# ── create_blob retry on a dropped connection ───────────────────────────────
+# Pushing a multi-GB file is one HTTP request/connection for the whole
+# transfer — far more exposed to a transient network blip than any other
+# call this app makes to Ollama — and the ollama client sets timeout=None,
+# so the only way a dropped connection surfaces is httpx raising a bare
+# TransportError once the peer actually closes it. A lone blip used to fail
+# the whole (expensive to redo) import outright; import_local_gguf_model
+# now retries create_blob itself a few times first.
+
+@pytest.mark.asyncio
+async def test_import_retries_transport_error_and_succeeds(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "_GGUF_PUSH_RETRY_DELAY_SECONDS", 0)
+    f = tmp_path / "m.gguf"
+    f.write_bytes(b"x")
+    fake = _FakeOllamaClient(
+        digest="sha256:abc123",
+        create_blob_exc_sequence=[_httpx.ReadError("connection reset"), _httpx.ConnectError("refused")],
+    )
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    out = await _collect(ai_module.import_local_gguf_model(f, "my-model"))
+    assert out[-1] == {"status": "done", "model": "my-model"}
+    assert len(fake.blob_calls) == 3  # two failures + the succeeding attempt
+    # The retry attempts are visible in the progress stream, not silent.
+    retry_details = [p["detail"] for p in out if p.get("status") == "uploading" and "retrying" in p["detail"].lower()]
+    assert len(retry_details) == 2
+
+
+@pytest.mark.asyncio
+async def test_import_gives_up_after_max_transport_error_retries(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_module, "_GGUF_PUSH_RETRY_DELAY_SECONDS", 0)
+    f = tmp_path / "m.gguf"
+    f.write_bytes(b"x")
+    fake = _FakeOllamaClient(create_blob_exc=_httpx.ReadError("connection reset"))
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    out = await _collect(ai_module.import_local_gguf_model(f, "my-model"))
+    assert out[-1] == {"error": "ReadError: connection reset"}
+    assert len(fake.blob_calls) == ai_module._GGUF_PUSH_MAX_ATTEMPTS
+    assert fake.create_calls == []  # never got past the blob push
+
+
+@pytest.mark.asyncio
+async def test_import_transport_error_with_no_message_still_names_the_exception(tmp_path, monkeypatch):
+    """The bug this covers: str(exc) is empty for some httpx transport
+    errors (the real cause sits on __cause__/__context__ instead), which
+    used to render as a bare, unhelpful "ReadError: " with nothing after
+    the colon — repr() at least names the exception type clearly."""
+    monkeypatch.setattr(ai_module, "_GGUF_PUSH_RETRY_DELAY_SECONDS", 0)
+    f = tmp_path / "m.gguf"
+    f.write_bytes(b"x")
+    fake = _FakeOllamaClient(create_blob_exc=_httpx.ReadError(""))
+    monkeypatch.setattr(ai_module, "_client", lambda: fake)
+    out = await _collect(ai_module.import_local_gguf_model(f, "my-model"))
+    assert out[-1]["error"].startswith("ReadError: ")
+    assert out[-1]["error"] != "ReadError: "
+    assert "ReadError" in out[-1]["error"]
 
 
 # ── Routes ────────────────────────────────────────────────────────────────

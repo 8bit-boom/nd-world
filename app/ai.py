@@ -691,6 +691,10 @@ async def list_huggingface_repo_files_recursive(repo_id: str, suffix: str = ".gg
     return out
 
 
+_GGUF_PUSH_MAX_ATTEMPTS = 3
+_GGUF_PUSH_RETRY_DELAY_SECONDS = 3.0
+
+
 async def import_local_gguf_model(path: Path, model_name: str) -> AsyncGenerator[dict, None]:
     """Push a GGUF file already on local disk (an upload just reassembled
     by app.uploads' chunked-upload pair — see app.routers.ai's /ollama/
@@ -713,7 +717,19 @@ async def import_local_gguf_model(path: Path, model_name: str) -> AsyncGenerator
     byte-level progress callback of its own — the "pushing to Ollama" phase
     is reported as a single indeterminate step rather than granular bytes,
     since by this point the file is already fully on local disk and the
-    only remaining unknown-duration work is the blob upload + registration."""
+    only remaining unknown-duration work is the blob upload + registration.
+
+    create_blob streams the WHOLE file over one HTTP connection (32KB
+    chunks, but still one connection for the entire multi-GB transfer) —
+    far more exposed to a transient network blip than any other call this
+    module makes, and the ollama client sets timeout=None (no client-side
+    timeout at all, so this never gives up on its own), which means the
+    only way a dropped connection surfaces is httpx raising a bare
+    TransportError (ReadError/WriteError/ConnectError/RemoteProtocolError)
+    once the peer actually closes it. A single such blip used to fail the
+    whole import outright — expensive to retry by hand for a many-GB file
+    — so this retries create_blob itself a few times with a short delay
+    before giving up for good."""
     model_name = (model_name or "").strip()
     if not model_name:
         yield {"error": "No model name given"}
@@ -723,8 +739,26 @@ async def import_local_gguf_model(path: Path, model_name: str) -> AsyncGenerator
         return
     try:
         client = _client()
-        yield {"status": "uploading", "detail": "Pushing file to Ollama…"}
-        digest = await client.create_blob(str(path))
+        digest = None
+        for attempt in range(1, _GGUF_PUSH_MAX_ATTEMPTS + 1):
+            if attempt == 1:
+                yield {"status": "uploading", "detail": "Pushing file to Ollama…"}
+            else:
+                yield {
+                    "status": "uploading",
+                    "detail": f"Connection to Ollama dropped — retrying push ({attempt - 1}/{_GGUF_PUSH_MAX_ATTEMPTS - 1})…",
+                }
+            try:
+                digest = await client.create_blob(str(path))
+                break
+            except _httpx.TransportError as exc:
+                if attempt == _GGUF_PUSH_MAX_ATTEMPTS:
+                    raise
+                _log.warning(
+                    "import_local_gguf_model: create_blob dropped (attempt %d/%d): %s: %s",
+                    attempt, _GGUF_PUSH_MAX_ATTEMPTS, type(exc).__name__, exc,
+                )
+                await asyncio.sleep(_GGUF_PUSH_RETRY_DELAY_SECONDS)
         yield {"status": "creating", "detail": "Registering model…"}
         await client.create(model=model_name, files={path.name: digest})
         yield {"status": "done", "model": model_name}
@@ -732,7 +766,12 @@ async def import_local_gguf_model(path: Path, model_name: str) -> AsyncGenerator
         yield {"error": f"Ollama {exc.status_code}: {exc.error}"}
     except Exception as exc:
         _log.warning("import_local_gguf_model failed: %s: %s", type(exc).__name__, exc)
-        yield {"error": f"{type(exc).__name__}: {exc}"}
+        # str(exc) is empty for some httpx transport errors (the underlying
+        # cause is on __cause__/__context__ instead, e.g. a bare
+        # ConnectionResetError) — repr() at least names the exception type
+        # clearly instead of rendering as a bare, unhelpful "ReadError: ".
+        detail = str(exc) or repr(exc)
+        yield {"error": f"{type(exc).__name__}: {detail}"}
 
 
 async def resolve_model(requested: str) -> tuple[str, str | None]:
