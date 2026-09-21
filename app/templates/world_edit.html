@@ -158,6 +158,56 @@
     <form id="theme-clear-form" method="post" action="/worlds/{{ edit_world.id }}/theme/clear" style="display:none"></form>
   </div>
 
+  <h2 style="margin-top:2rem">🤖 AI Instructions</h2>
+  <div class="cf-section" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem">
+    <p style="color:var(--text-dim);font-size:.85rem;margin-bottom:.75rem">
+      Upload one or more markdown files of STANDING instructions for how the AI should behave —
+      e.g. "always answer in a noir detective's voice", "never reveal the killer's identity before
+      Act 3 is played". Every ENABLED file is appended to the system prompt on every question,
+      across AI Chat (GM and player), an entity's "Ask AI" panel, and Chronicler — unlike
+      Entities/Notes/Rules/the hybrid-RAG vault above, these aren't filtered by relevance to what
+      was actually asked; they always apply. Disable a file to switch it off without deleting it.
+    </p>
+    {% if ai_instructions %}
+    <table class="cf-dynamic-table" style="width:100%;border-collapse:collapse;margin-bottom:.75rem">
+      <thead><tr>
+        <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Title</th>
+        <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Preview</th>
+        <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Status</th>
+        <th></th>
+      </tr></thead>
+      <tbody>
+        {% for instr in ai_instructions %}
+        <tr style="border-top:1px solid var(--border)">
+          <td style="padding:.4rem .3rem">{{ instr.title }}</td>
+          <td style="padding:.4rem .3rem;color:var(--text-dim);font-size:.82rem">{{ instr.content[:80] }}{% if instr.content|length > 80 %}…{% endif %}</td>
+          <td style="padding:.4rem .3rem">{% if instr.enabled %}<span style="color:#4f4">Enabled</span>{% else %}<span style="color:var(--text-dim)">Disabled</span>{% endif %}</td>
+          <td style="padding:.4rem .3rem;white-space:nowrap">
+            <form method="post" action="/worlds/{{ edit_world.id }}/ai-instructions/{{ instr.id }}/toggle" style="display:inline">
+              <button type="submit" class="btn-secondary" style="padding:.2rem .5rem;font-size:.78rem">{% if instr.enabled %}Disable{% else %}Enable{% endif %}</button>
+            </form>
+            <form method="post" action="/worlds/{{ edit_world.id }}/ai-instructions/{{ instr.id }}/delete" style="display:inline" onsubmit="return confirm('Delete this instruction file?')">
+              <button type="submit" class="btn-cancel" style="padding:.2rem .5rem;font-size:.78rem">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty-small">No instruction files uploaded yet.</p>
+    {% endif %}
+    <form method="post" action="/worlds/{{ edit_world.id }}/ai-instructions/import" enctype="multipart/form-data"
+          style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;padding:.75rem 1rem;background:var(--bg3);border:1px solid var(--border);border-radius:6px">
+      <label style="font-size:.82rem;color:var(--text-dim)">Add instruction file</label>
+      <input type="text" name="title" placeholder="Title (optional — defaults to filename)" style="flex:1;min-width:12rem">
+      <div class="form-dropzone" data-dropzone style="padding:.3rem .6rem;display:inline-block">
+        <input type="file" name="file" accept=".md,.markdown,.txt" required/>
+      </div>
+      <button type="submit" class="btn-cancel">Upload</button>
+    </form>
+  </div>
+
   <h2 style="margin-top:2rem">👥 Players</h2>
   <div class="cf-section" style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:1rem">
     <div class="cf-section-title" style="font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--neon);margin-bottom:.75rem">Members</div>

@@ -648,6 +648,14 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
   // consolidated "Player Guide" note, say) had no instruction against
   // inventing an answer, nor any push toward quoting a retrieved table's
   // actual rows instead of summarizing them.
+  // GM-authored standing instructions (app.ai_instructions — a per-world
+  // collection of uploaded .md files, e.g. "always answer in a noir
+  // detective's voice") — "" when this world has none enabled. Applied
+  // to the Ask mode only, not Roleplay — a GM asked for this on "chat,
+  // ask AI, Chronicler" specifically, and an in-character roleplay
+  // response has its own, different "never break character" contract
+  // this would risk stepping on.
+  const EP_CUSTOM_INSTRUCTIONS = {{ (ai_custom_instructions or "") | tojson }};
   const EP_SYSTEM_ASK = (
     "You are a world-building assistant. Answer questions about the entity provided. "
     + "Be concise and in-world. "
@@ -662,6 +670,7 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
     + "overview prose. If a table excerpt says more rows were truncated, list every row "
     + "you were given and say the list continues in the entity's full text rather than "
     + "treating the partial list as complete."
+    + (EP_CUSTOM_INSTRUCTIONS ? "\n\n" + EP_CUSTOM_INSTRUCTIONS : "")
   );
   const EP_SYSTEM_ROLEPLAY = (
     "You are roleplaying AS the entity described below, speaking entirely in first person and in "

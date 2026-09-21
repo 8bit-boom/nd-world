@@ -30,6 +30,10 @@ function _mdToHtml(text) {
 }
 function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
+// GM-authored standing instructions (app.ai_instructions — a per-world
+// collection of uploaded .md files, e.g. "always answer in a noir
+// detective's voice") — "" when this world has none enabled.
+const PC_CUSTOM_INSTRUCTIONS = {{ (ai_custom_instructions or "") | tojson }};
 const PC_SYSTEM = (
   "You are a helpful world-building assistant for a tabletop RPG campaign called "
   + {{ (world.name if world else "this world") | tojson }}
@@ -58,6 +62,7 @@ const PC_SYSTEM = (
   + "ranges from surrounding overview prose. If a table excerpt says more rows were "
   + "truncated, list every row you were given and say the list continues in the full "
   + "Rules text rather than treating the partial list as complete."
+  + (PC_CUSTOM_INSTRUCTIONS ? "\n\n" + PC_CUSTOM_INSTRUCTIONS : "")
 );
 let pcHistory = [];
 

@@ -845,6 +845,9 @@ jobs](DEPLOYMENT.md#updating-without-losing-in-flight-jobs) for what
 | GET | `/api/backups` | GM | Lists scheduled DB snapshots (`ND_BACKUP_DIR`) — 400 if scheduled backups aren't configured. |
 | POST | `/api/backups/run` | GM | Takes a `VACUUM INTO` snapshot right now and prunes to `ND_BACKUP_KEEP` — same primitive the optional scheduler thread runs on `ND_BACKUP_INTERVAL_SECONDS`. |
 | POST | `/api/knowledge/sync` | GM | Rebuilds the active world's hybrid RAG + knowledge-graph indexes (`VaultChunk`/`EntityRelation`) from its configured Obsidian vault path (`World.obsidian_vault_path`, set via Settings). 400 if no vault path is configured or it doesn't exist. |
+| POST | `/worlds/{world_id}/ai-instructions/import` | GM | Uploads a `.md`/`.markdown`/`.txt` file as a new `AiInstruction` — standing behavior instructions appended to every AI Chat/Ask AI/Chronicler system prompt for this world (set via Settings). |
+| POST | `/worlds/{world_id}/ai-instructions/{id}/toggle` | GM | Enables/disables one `AiInstruction` without deleting it. |
+| POST | `/worlds/{world_id}/ai-instructions/{id}/delete` | GM | Deletes one `AiInstruction`. |
 | POST | `/worlds/{world_id}/nav-menus/edit` | GM | Saves this world's customized top-nav menu grouping (Settings > Navigation). |
 | GET | `/imagestudio` | GM | Embedded SwarmUI iframe (`SWARMUI_EXTERNAL_URL`). |
 | GET | `/androidapp` | Player | Embedded noVNC viewer for the optional Android-emulator Compose profile. |

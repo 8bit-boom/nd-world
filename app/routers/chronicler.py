@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from .. import ai as _ai_module
+from .. import ai_instructions as _ai_instructions
 from .. import retrieval as _retrieval
 from ..database import get_db
 from ..deps import check_llm_cooldown, get_world_ctx, world_can_view_section
@@ -73,7 +74,11 @@ def build_chronicler_system_prompt(db: Session, world_id: int, question: str, us
     # excerpts, see format_context_from_entities) for free, which the old
     # duplicate never had.
     entities = _retrieval.find_relevant_entities(db, world_id, question, limit=15, user=user)
-    lines = [_CHRONICLER_SYSTEM, "", "## Known facts"]
+    system = _CHRONICLER_SYSTEM
+    custom_instructions = _ai_instructions.enabled_instructions_text(db, world_id)
+    if custom_instructions:
+        system = f"{system}\n\n{custom_instructions}"
+    lines = [system, "", "## Known facts"]
     if facts:
         lines.extend(f"- {f.content}" for f in facts)
     else:

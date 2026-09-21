@@ -25,6 +25,7 @@ import base64
 import io
 from pathlib import Path
 
+from . import ai_instructions as _ai_instructions
 from . import deps
 from . import nav_menus as _nav_menus_module
 from . import retrieval as _retrieval
@@ -37,7 +38,7 @@ from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_over
                            restore_blocks, split_rules_sections, suggest_tabs_overlay)
 from .templating import templates
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -83,6 +84,7 @@ from .routers.nav_menus_admin import router as nav_menus_admin_router
 from .routers.dice import router as dice_router
 from .routers.backups import router as backups_router
 from .routers.knowledge import router as knowledge_router
+from .routers.ai_instructions import router as ai_instructions_router
 from . import gallery as _gallery_module
 from . import mcp_server
 from . import ai as _ai_module
@@ -164,6 +166,7 @@ app.include_router(nav_menus_admin_router)
 app.include_router(dice_router)
 app.include_router(backups_router)
 app.include_router(knowledge_router)
+app.include_router(ai_instructions_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 
@@ -1376,7 +1379,7 @@ _WORLD_DELETE_MODELS = (
     WorldCalendar, CalendarEvent, CalendarDayIcon, ImageAlbum, AudioClip, AudioAlbum,
     VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset,
     AudioJob, ImageJob, ChatJob, EntityTemplate, SheetTemplate, DiceRoll, CharacterSheet,
-    EntityRelation, VaultChunk,
+    EntityRelation, VaultChunk, AiInstruction,
 )
 
 
@@ -1494,10 +1497,15 @@ def world_edit_form(world_id: int, request: Request, db: Session = Depends(get_d
         raise HTTPException(404)
     world, worlds = get_world_ctx(request, db, active_world)
     invites, members = _world_edit_invites_and_members(db, world_id)
+    ai_instructions = (
+        db.query(AiInstruction).filter(AiInstruction.world_id == world_id)
+        .order_by(AiInstruction.created_at).all()
+    )
     return templates.TemplateResponse("world_edit.html", {
         "request": request, "world": world, "worlds": worlds,
         "edit_world": w, "kinds": KINDS, "kind_icons": KIND_ICONS,
         "invites": invites, "members": members,
+        "ai_instructions": ai_instructions,
     })
 
 @app.post("/worlds/{world_id}/edit")
@@ -3512,6 +3520,9 @@ def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: 
             f"Keep responses focused; expand only when asked. "
             + _GROUNDING_CLAUSE
         )
+        custom_instructions = _ai_instructions.enabled_instructions_text(db, world.id)
+        if custom_instructions:
+            world_system = f"{world_system}\n\n{custom_instructions}"
     return templates.TemplateResponse("ai_chat.html", {
         "request": request, "world": world, "worlds": worlds,
         "kinds": KINDS, "kind_icons": KIND_ICONS,
@@ -3538,6 +3549,7 @@ def player_ai_chat(request: Request, db: Session = Depends(get_db), active_world
         raise HTTPException(403)
     return templates.TemplateResponse("ai_chat_player.html", {
         "request": request, "world": world, "worlds": worlds,
+        "ai_custom_instructions": _ai_instructions.enabled_instructions_text(db, world.id),
     })
 
 @app.get("/image-gen", response_class=HTMLResponse)
@@ -5112,6 +5124,7 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         "custom_sections": custom_sections, "custom_fields": custom_fields,
         "body_sections": body_sections, "toc": toc,
         "safe_body": safe_body, "safe_summary": safe_summary,
+        "ai_custom_instructions": _ai_instructions.enabled_instructions_text(db, world.id) if world else "",
     })
 
 # ── Entity Field Templates ──────────────────────────────────────────────────

@@ -588,6 +588,31 @@ class VaultChunk(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class AiInstruction(Base):
+    """A GM-uploaded markdown document of STANDING instructions for how
+    the AI should behave across every AI-answering surface (AI Chat —
+    both GM and player, the per-entity "Ask AI" panel, and Chronicler) —
+    e.g. "always answer in a noir detective's voice", "never reveal the
+    killer's identity before Act 3 is played". Fundamentally different
+    from this world's Entities/Notes/Rules text or its hybrid-RAG vault
+    (see World.obsidian_vault_path): those are CONTENT the AI answers
+    FROM, filtered by relevance to each question; every enabled row here
+    is unconditionally appended to the relevant system prompt on EVERY
+    question regardless of what was asked — see
+    app.ai_instructions.enabled_instructions_text, the sole reader of
+    this table. `enabled` lets a GM keep a document uploaded but
+    temporarily switch it off without losing/re-uploading it (e.g. an
+    instruction set for a one-shot side session, off between sessions)."""
+    __tablename__ = "ai_instructions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    title = Column(String(256), nullable=False)
+    content = Column(Text, nullable=False)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class EntityNote(Base):
     """A discrete note attached to an entity, separate from its main body —
     the GM can jot several of these and hide/un-hide each independently of

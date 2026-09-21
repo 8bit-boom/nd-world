@@ -49,6 +49,10 @@ _GENERICALLY_HEALED_TABLES = (
     # catch. Deliberately single-column indexes only — see EntityRelation's
     # own comment — so generic healing actually applies cleanly.
     "entity_relations", "vault_chunks",
+    # ai_instructions (app.models.AiInstruction — GM-authored standing AI
+    # behavior instructions): brand new, same reasoning as entity_relations/
+    # vault_chunks just above.
+    "ai_instructions",
 )
 
 
