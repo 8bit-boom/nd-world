@@ -21,8 +21,8 @@ from sqlalchemy import or_, text
 from sqlalchemy.orm import Session, defer
 
 from . import ai as _ai
-from .models import Entity, EntityRelation, VaultChunk, World, entity_player_access
-from .rendering import strip_gm_only as _strip_gm_only
+from .models import Entity, EntityNote, EntityRelation, VaultChunk, World, entity_player_access
+from .rendering import html_to_markdown as _html_to_markdown, strip_gm_only as _strip_gm_only
 from .rules_render import strip_gm_directives as _strip_gm_directives
 
 _log = logging.getLogger("nd.retrieval")
@@ -430,6 +430,23 @@ EXCERPT_COUNT = 5
 EXCERPT_CHARS = 1200
 EXCERPT_TOTAL_BUDGET = 8000
 
+# EntityNote (a GM's discrete, independently hide/reveal-able notes
+# attached to an entity — separate from Entity.body/summary) was never
+# read by ANY RAG-consuming surface at all: not AI Chat, not Ask AI, not
+# Chronicler. Not a markdown-formatting gap like the excerpt-chunking
+# fixes above — the content just never reached the model, so a clue or
+# secret the GM specifically jotted as a note (rather than folding into
+# the entity's own body) was invisible to every AI feature regardless of
+# relevance. Own, smaller budget than EXCERPT_CHARS/EXCERPT_TOTAL_BUDGET:
+# a note is meant to be a short, discrete annotation, not a document —
+# unlike a body excerpt, note inclusion isn't capped to EXCERPT_COUNT
+# entities either, since notes are cheap enough in aggregate (bounded by
+# ENTITY_NOTES_TOTAL_BUDGET regardless) that gating them the same way a
+# potentially-huge body excerpt needs to be would suppress a short, highly
+# relevant secret for no real prompt-size benefit.
+ENTITY_NOTE_CHARS = 500
+ENTITY_NOTES_TOTAL_BUDGET = 3000
+
 
 def _visibility_filter(q, user):
     """Restrict `q` (a query over Entity) to what `user` may see. `user`
@@ -799,6 +816,7 @@ def format_context_from_entities(
     entities: list, excerpt_count: int = EXCERPT_COUNT,
     excerpt_chars: int = EXCERPT_CHARS, excerpt_total_budget: int = EXCERPT_TOTAL_BUDGET,
     strip_gm_only: bool = False, query: str = "", excerpt_ids: Optional[set] = None,
+    db: Optional[Session] = None,
 ) -> str:
     """One line per entity ("- [kind] name (subtype): summary"), plus — for
     the first `excerpt_count` ELIGIBLE entities in the given order
@@ -843,10 +861,40 @@ def format_context_from_entities(
     filtered by the caller's _visibility_filter pass, but that only decides
     whether a WHOLE entity is included; this is what keeps a GM secret
     embedded inside an otherwise player-visible entity from leaking into
-    that included entity's own text."""
+    that included entity's own text.
+
+    db, when given, also includes each ELIGIBLE entity's own EntityNote
+    rows (a GM's discrete, independently hide/reveal-able notes attached
+    to an entity, separate from its body/summary) — previously invisible
+    to every AI feature regardless of relevance, since nothing in this
+    module ever queried EntityNote at all. Unlike a body excerpt, note
+    inclusion isn't limited to excerpt_count entities (see
+    ENTITY_NOTES_TOTAL_BUDGET's own comment for why), but IS still gated
+    by the same `eligible` check a body excerpt uses — an alphabetical
+    top-up entity's notes are exactly as irrelevant as its body would be.
+    strip_gm_only=True additionally filters OUT any note with
+    visible_to_players=False entirely (not just [gmonly] spans within an
+    otherwise-visible one — a player must never learn a GM-only note
+    exists at all) and runs _strip_gm_only on what's left, same as the
+    entity's own summary/body above. Omit db (the default) to skip notes
+    entirely — every pre-existing caller that hasn't been updated to pass
+    it keeps its exact old behavior."""
     lines = []
     excerpt_total = 0
     excerpted = 0
+    notes_by_entity: dict = {}
+    if db is not None:
+        entity_ids = [e.id for e in entities]
+        if entity_ids:
+            note_rows = (
+                db.query(EntityNote)
+                .filter(EntityNote.entity_id.in_(entity_ids))
+                .order_by(EntityNote.entity_id, EntityNote.created_at)
+                .all()
+            )
+            for n in note_rows:
+                notes_by_entity.setdefault(n.entity_id, []).append(n)
+    notes_total = 0
     for e in entities:
         summary = _strip_gm_only(e.summary) if strip_gm_only else e.summary
         line = f"- [{e.kind}] {e.name}"
@@ -870,6 +918,23 @@ def format_context_from_entities(
                 lines.append("  " + excerpt.replace("\n", "\n  "))
                 excerpt_total += len(excerpt)
             excerpted += 1
+        if eligible:
+            entity_notes = notes_by_entity.get(e.id, [])
+            if strip_gm_only:
+                entity_notes = [n for n in entity_notes if n.visible_to_players]
+            for n in entity_notes:
+                if notes_total >= ENTITY_NOTES_TOTAL_BUDGET:
+                    break
+                content = _html_to_markdown(n.content) if n.content_is_html else (n.content or "")
+                if strip_gm_only:
+                    content = _strip_gm_only(content)
+                content = content.strip()
+                if not content:
+                    continue
+                remaining = ENTITY_NOTES_TOTAL_BUDGET - notes_total
+                piece = content[:min(ENTITY_NOTE_CHARS, remaining)]
+                lines.append("  [note] " + piece.replace("\n", "\n  "))
+                notes_total += len(piece)
     return "\n".join(lines)
 
 
@@ -1061,7 +1126,7 @@ def smart_world_context(
         + [e for e in notes if e.id not in matched_ids]
     )
     context = format_context_from_entities(
-        display_order, strip_gm_only=strip_secrets, query=query, excerpt_ids=matched_ids,
+        display_order, strip_gm_only=strip_secrets, query=query, excerpt_ids=matched_ids, db=db,
     )
     world = db.get(World, world_id)
     rules = rules_context(world, query, limit=rules_limit, is_gm=not strip_secrets)

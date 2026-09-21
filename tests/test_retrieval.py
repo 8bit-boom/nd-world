@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 
 from app import audio_jobs
 from app.database import SessionLocal
-from app.models import Entity, User, World, entity_player_access
+from app.models import Entity, EntityNote, User, World, entity_player_access
 from app.retrieval import (
     _keyword_score,
     _query_words,
@@ -247,6 +247,156 @@ def test_entity_with_no_body_gets_no_excerpt_line(client, seed):
         e = db.get(Entity, eid)
         context = format_context_from_entities([e])
         assert context == "- [character] Bodyless Entity: Just a summary."
+    finally:
+        db.close()
+
+
+# ── EntityNote inclusion — previously invisible to every RAG surface ────────
+#
+# EntityNote (a GM's discrete, independently hide/reveal-able notes
+# attached to an entity, separate from Entity.body/summary) was never read
+# by format_context_from_entities at all, regardless of relevance — not a
+# markdown-formatting gap, the content just never reached the model.
+
+def test_notes_omitted_when_no_db_given_old_behavior_unchanged(client, seed):
+    eid = _make_entity(seed.world_a.id, name="Bob")
+    db = SessionLocal()
+    try:
+        e = db.get(Entity, eid)
+        db.add(EntityNote(entity_id=eid, content="A secret note.", visible_to_players=True))
+        db.commit()
+        context = format_context_from_entities([e])  # no db= passed
+        assert "A secret note." not in context
+    finally:
+        db.close()
+
+
+def test_gm_sees_both_hidden_and_visible_notes(client, seed):
+    eid = _make_entity(seed.world_a.id, name="Bob")
+    db = SessionLocal()
+    try:
+        db.add_all([
+            EntityNote(entity_id=eid, content="Secretly works for the Thieves Guild.", visible_to_players=False),
+            EntityNote(entity_id=eid, content="Has a scar on his left hand.", visible_to_players=True),
+        ])
+        db.commit()
+        e = db.get(Entity, eid)
+        context = format_context_from_entities([e], db=db)
+        assert "[note] Secretly works for the Thieves Guild." in context
+        assert "[note] Has a scar on his left hand." in context
+    finally:
+        db.close()
+
+
+def test_player_only_sees_visible_to_players_notes(client, seed):
+    eid = _make_entity(seed.world_a.id, name="Bob")
+    db = SessionLocal()
+    try:
+        db.add_all([
+            EntityNote(entity_id=eid, content="Secretly works for the Thieves Guild.", visible_to_players=False),
+            EntityNote(entity_id=eid, content="Has a scar on his left hand.", visible_to_players=True),
+        ])
+        db.commit()
+        e = db.get(Entity, eid)
+        context = format_context_from_entities([e], db=db, strip_gm_only=True)
+        assert "Thieves Guild" not in context
+        assert "[note] Has a scar on his left hand." in context
+    finally:
+        db.close()
+
+
+def test_gmonly_span_inside_a_visible_note_is_still_stripped_for_players(client, seed):
+    eid = _make_entity(seed.world_a.id, name="Bob")
+    db = SessionLocal()
+    try:
+        db.add(EntityNote(
+            entity_id=eid,
+            content="Public info. [gmonly]Secret weakness: silver.[/gmonly] More public info.",
+            visible_to_players=True,
+        ))
+        db.commit()
+        e = db.get(Entity, eid)
+        context = format_context_from_entities([e], db=db, strip_gm_only=True)
+        assert "silver" not in context
+        assert "Public info." in context
+        assert "More public info." in context
+    finally:
+        db.close()
+
+
+def test_html_note_converted_to_markdown(client, seed):
+    eid = _make_entity(seed.world_a.id, name="Bob")
+    db = SessionLocal()
+    try:
+        db.add(EntityNote(
+            entity_id=eid, content="<p>Imported <b>HTML</b> note content.</p>",
+            visible_to_players=True, content_is_html=True,
+        ))
+        db.commit()
+        e = db.get(Entity, eid)
+        context = format_context_from_entities([e], db=db)
+        assert "<p>" not in context
+        assert "**HTML**" in context
+    finally:
+        db.close()
+
+
+def test_ineligible_entity_notes_are_excluded(client, seed):
+    """Notes are gated by the same `eligible` check a body excerpt uses —
+    an entity that isn't in excerpt_ids (e.g. an alphabetical top-up with
+    no real relevance) gets no notes either."""
+    eid = _make_entity(seed.world_a.id, name="Bob")
+    db = SessionLocal()
+    try:
+        db.add(EntityNote(entity_id=eid, content="Irrelevant top-up note.", visible_to_players=True))
+        db.commit()
+        e = db.get(Entity, eid)
+        context = format_context_from_entities([e], db=db, excerpt_ids=set())
+        assert "Irrelevant top-up note." not in context
+    finally:
+        db.close()
+
+
+def test_notes_total_budget_caps_across_notes(client, seed):
+    eid = _make_entity(seed.world_a.id, name="Bob")
+    db = SessionLocal()
+    try:
+        db.add_all([EntityNote(entity_id=eid, content="Z" * 100, visible_to_players=True) for _ in range(3)])
+        db.commit()
+        e = db.get(Entity, eid)
+        context = format_context_from_entities([e], db=db)
+        from app.retrieval import ENTITY_NOTES_TOTAL_BUDGET
+        assert context.count("Z") <= ENTITY_NOTES_TOTAL_BUDGET
+    finally:
+        db.close()
+
+
+def test_notes_fetched_in_one_bulk_query_not_per_entity(client, seed):
+    """Regression guard against an N+1 query: notes for every entity in
+    the list are fetched in a single EntityNote.entity_id.in_(...) query,
+    not one query per entity."""
+    ids = [_make_entity(seed.world_a.id, name=f"Entity {i}") for i in range(3)]
+    db = SessionLocal()
+    try:
+        for eid in ids:
+            db.add(EntityNote(entity_id=eid, content=f"Note for {eid}", visible_to_players=True))
+        db.commit()
+        entities = [db.get(Entity, i) for i in ids]
+        from sqlalchemy import event
+        query_count = 0
+
+        def _count_queries(*_a, **_kw):
+            nonlocal query_count
+            query_count += 1
+
+        event.listen(db.get_bind(), "before_cursor_execute", _count_queries)
+        try:
+            format_context_from_entities(entities, db=db)
+        finally:
+            event.remove(db.get_bind(), "before_cursor_execute", _count_queries)
+        # One SELECT for the notes bulk-fetch; generous upper bound (not
+        # an exact count) since this isn't testing unrelated query counts.
+        assert query_count <= 3
     finally:
         db.close()
 

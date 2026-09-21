@@ -89,7 +89,7 @@ def build_chronicler_system_prompt(db: Session, world_id: int, question: str, us
         # the Chronicler could read a GM's hidden aside straight out of the
         # prompt and repeat it back to the player who asked.
         lines.append(_retrieval.format_context_from_entities(
-            entities, strip_gm_only=bool(user) and not user.is_gm, query=question,
+            entities, strip_gm_only=bool(user) and not user.is_gm, query=question, db=db,
         ))
     return "\n".join(lines)
 
