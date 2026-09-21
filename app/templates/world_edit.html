@@ -89,6 +89,19 @@
         Blank uses the built-in default (15 entities, 3 notes). This only ever surfaces content a player already has access to.
       </p>
     </div>
+    <div class="form-group">
+      <label for="obsidian-vault-path">Obsidian vault path (hybrid RAG + knowledge graph)</label>
+      <input type="text" id="obsidian-vault-path" name="obsidian_vault_path" placeholder="/path/to/vault (leave blank to disable)"
+             value="{{ edit_world.obsidian_vault_path or '' }}">
+      <p style="color:var(--text-dim);font-size:.78rem;margin-top:.3rem">
+        Optional — a folder of markdown notes (readable by this server; a bind-mounted path for Docker) with
+        <code>[[wikilinks]]</code>/frontmatter, indexed ALONGSIDE this world's normal entities, never replacing them.
+        AI Chat/Ask AI then also draw on semantic vault search and entity relationship graph traversal. Save this
+        field first, then rebuild:
+        <button type="button" class="btn-secondary" onclick="ndSyncKnowledgeVault({{ edit_world.id }})">🔄 Rebuild indexes now</button>
+        <span id="knowledge-sync-status" style="margin-left:.5rem"></span>
+      </p>
+    </div>
     <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
       <input type="checkbox" id="players-world-summary" name="players_can_view_world_summary" value="1"
              style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_view_world_summary %}checked{% endif %}>
@@ -270,6 +283,37 @@ function copyInviteLink(el) {
     el.textContent = 'Copied!';
     setTimeout(() => { el.textContent = orig; }, 1200);
   });
+}
+
+// Triggers app.vault_sync.sync_vault for the active world (POST
+// /api/knowledge/sync — see app/routers/knowledge.py) and shows the
+// resulting {notes, chunks, edges, unmatched_notes} summary inline, so a
+// GM doesn't have to leave this page to tell a rebuild actually ran.
+// worldId is unused by the endpoint itself (it always acts on request's
+// own active-world cookie, same as every other per-world action here)
+// but kept as a param for a future multi-world picker without an API change.
+async function ndSyncKnowledgeVault(worldId) {
+  const status = document.getElementById('knowledge-sync-status');
+  status.style.color = 'var(--text-dim)';
+  status.textContent = '⏳ Rebuilding…';
+  try {
+    const res = await fetch('/api/knowledge/sync', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      status.style.color = '#f55';
+      status.textContent = '✗ ' + (data.detail || 'Failed');
+      return;
+    }
+    status.style.color = '#4f4';
+    let msg = `✓ ${data.notes} notes -> ${data.chunks} chunks, ${data.edges} edges`;
+    if (data.unmatched_notes && data.unmatched_notes.length) {
+      msg += ` (${data.unmatched_notes.length} note(s) didn't match an existing entity by name/title — still searchable, just not graph-linked)`;
+    }
+    status.textContent = msg;
+  } catch (e) {
+    status.style.color = '#f55';
+    status.textContent = '✗ Request failed';
+  }
 }
 </script>
 <script src="/static/js/file-dropzone.js"></script>

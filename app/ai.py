@@ -4,6 +4,7 @@ import os
 import json as _json
 import logging
 import re
+import struct as _struct
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -573,6 +574,66 @@ def set_default(surface: str, model_id: str) -> None:
     defaults = data.setdefault("defaults", {})
     defaults[surface] = model_id
     _save_data(data)
+
+
+# A dedicated embedding-model setting, not folded into DEFAULT_SURFACES —
+# every one of those picks between ordinary CHAT-capable models for a
+# generation surface (chat/ask_ai/image/recap/assist); an embedding model
+# (nomic-embed-text, mxbai-embed-large, ...) is a completely different
+# kind of model that can't serve any of those, and none of those models
+# can serve embed requests either. Instance-wide like every other setting
+# in this file, stored the same way (ai_models.json via _load_data/
+# _save_data) rather than per-world: which embedding model is installed
+# is a deployment fact, not campaign content. nomic-embed-text is a small,
+# widely-available Ollama embedding model — a reasonable default for a
+# GM who hasn't pulled anything else, but this only matters once they
+# actually configure a World.obsidian_vault_path (see app.vault_sync);
+# nothing calls embed_text otherwise.
+DEFAULT_EMBED_MODEL = "nomic-embed-text"
+
+
+def get_embed_model() -> str:
+    return _load_data().get("embed_model") or DEFAULT_EMBED_MODEL
+
+
+def set_embed_model(model_id: str) -> None:
+    data = _load_data()
+    data["embed_model"] = model_id
+    _save_data(data)
+
+
+async def embed_text(text: str, model: str = "") -> list[float]:
+    """Embeds `text` via Ollama's /api/embed, for app.retrieval.
+    vector_search and app.vault_sync's ingestion (both call this the same
+    way — a query and a vault chunk need the same embedding space to be
+    comparable at all). Raises _ollama.ResponseError untouched (e.g. the
+    configured embedding model isn't pulled) — callers are batch/sync
+    operations (a vault rebuild, one query-time embed) that need to know
+    embedding genuinely failed rather than silently getting back a
+    zero-vector that would then "match" everything equally under cosine
+    similarity."""
+    m = model or get_embed_model()
+    resp = await _client().embed(model=m, input=text)
+    return list(resp.embeddings[0])
+
+
+def pack_embedding(vec: list) -> str:
+    """Packs an embedding vector into a compact, DB-storable string
+    (base64 of little-endian float32 bytes) — VaultChunk.embedding's own
+    storage format (see app/models.py). A plain JSON list of floats would
+    work too but costs several times the bytes for the same precision a
+    similarity search actually needs; this lives here (not app.retrieval
+    or app.vault_sync) so both of those leaf modules — which can't import
+    from EACH OTHER (vault_sync imports retrieval's section-splitter, so
+    the reverse would be circular) — can each import this shared codec
+    from the one module neither has any reason to avoid."""
+    return _b64.b64encode(_struct.pack(f"<{len(vec)}f", *vec)).decode("ascii")
+
+
+def unpack_embedding(data: str) -> list:
+    raw = _b64.b64decode(data)
+    n = len(raw) // 4
+    return list(_struct.unpack(f"<{n}f", raw))
 
 
 # Chat presets — a GM-defined {model, system_extra, options} bundle a

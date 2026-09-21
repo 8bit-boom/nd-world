@@ -362,6 +362,21 @@ class World(Base):
     now_playing_loop = Column(Boolean, default=False)
     now_playing_version = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Optional path (readable by this server process — a bind-mounted
+    # folder for a self-hosted/Docker deployment) to an Obsidian vault of
+    # freeform, wikilink-connected markdown notes: a parallel, OPTIONAL
+    # knowledge source alongside this world's normal web-edited Entities,
+    # NOT a replacement for them — existing worlds with this unset behave
+    # completely unchanged. See app.vault_sync.sync_vault: a GM-triggered
+    # rebuild parses every note here into two DERIVED indexes (never the
+    # source of truth themselves, always regenerable from this vault) —
+    # EntityRelation edges from frontmatter relation fields/[[wikilinks]]
+    # resolved against this world's existing Entity names, and VaultChunk
+    # embeddings for semantic search — both consulted by
+    # app.retrieval.smart_world_context (via its own vector_search/
+    # graph_context calls) alongside the existing FTS5 path when this is
+    # set. NULL/"" = hybrid retrieval is off for this world.
+    obsidian_vault_path = Column(String(1024), nullable=True)
 
     entities = relationship("Entity", back_populates="world", cascade="all, delete-orphan")
 
@@ -504,6 +519,74 @@ class Entity(Base):
         secondaryjoin=id == entity_links.c.target_id,
         backref="referenced_by",
     )
+
+
+class EntityRelation(Base):
+    """A TYPED graph edge between two Entities in the same world — the
+    knowledge-graph half of the hybrid RAG+KG pipeline (see
+    World.obsidian_vault_path / app.vault_sync.sync_vault). Deliberately
+    separate from the pre-existing, untyped `entity_links` table (a plain
+    "related" many-to-many the GM curates by hand from the entity detail
+    page's link picker, with no notion of WHAT the relationship is): that
+    table and its UI stay exactly as they were, since retrofitting a type
+    onto GM-curated links the GM never labeled would be guesswork, not
+    data. Rows here instead come from app.vault_sync parsing a vault
+    note's frontmatter relation fields (e.g. `located_in: [[Dockside]]`)
+    and [[wikilinks]], resolved by NAME against this world's existing
+    Entity rows — a fully derived, rebuildable index, not something a GM
+    edits directly. `relation` is a short freeform label ("located_in",
+    "member_of", "owns", "ally_of", ...) rather than an enum: the vault is
+    the source of truth for what relation vocabulary a GM actually uses,
+    and a fixed enum here would just reject whatever they wrote.
+    Directional (source -> target) but app.retrieval.graph_context
+    traverses both directions when looking for a seed entity's
+    neighbors, since "X located_in Y" is exactly as relevant to a
+    question about Y as one about X."""
+    __tablename__ = "entity_relations"
+
+    # Single-column indexes only (not a (world_id, source_id) composite) —
+    # app.database._indexes_from_model's generic migration healing only
+    # knows how to rebuild single-column indexes (see its own docstring),
+    # so this table stays healable-by-model like most others instead of
+    # needing bespoke ALTER TABLE logic the moment it gains a column.
+    # SQLite combines the two via index intersection for a (world_id,
+    # source_id) lookup — see Entity's own ix_entities_world_id_kind
+    # comment for the identical tradeoff, made the other way there only
+    # because that composite already existed pre-_heal_table_from_model.
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    source_id = Column(Integer, ForeignKey("entities.id"), nullable=False, index=True)
+    target_id = Column(Integer, ForeignKey("entities.id"), nullable=False, index=True)
+    relation = Column(String(64), nullable=False, default="related")
+    # Which vault note last asserted this edge — lets a full resync tell
+    # "still asserted, keep it" apart from "that note no longer says this,
+    # drop it" without having to diff note bodies themselves.
+    source_path = Column(String(1024), nullable=True)
+
+
+class VaultChunk(Base):
+    """One embedded, heading-scoped chunk of one Obsidian vault note — the
+    semantic-search half of the hybrid RAG+KG pipeline (see
+    World.obsidian_vault_path / app.vault_sync.sync_vault). A fully
+    derived, rebuildable index: every row here traces back to a specific
+    (source_path, heading) in the vault and is replaced wholesale on the
+    next sync, never hand-edited. `embedding` is a packed little-endian
+    float32 array (see app.ai.embed_text / app.retrieval.vector_search's
+    struct.pack/unpack) rather than a separate vector-store dependency —
+    this app's per-world corpus (a GM's own vault) is small enough that a
+    brute-force cosine scan over these rows at query time is plenty fast;
+    see vector_search's own docstring for the scale assumption this
+    rests on."""
+    __tablename__ = "vault_chunks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
+    source_path = Column(String(1024), nullable=False)
+    heading = Column(String(256), nullable=False, default="")
+    text = Column(Text, nullable=False)
+    embedding = Column(Text, nullable=True)  # base64-encoded packed float32 bytes
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 
 class EntityNote(Base):
     """A discrete note attached to an entity, separate from its main body —

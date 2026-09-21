@@ -37,7 +37,7 @@ from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_over
                            restore_blocks, split_rules_sections, suggest_tabs_overlay)
 from .templating import templates
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
-from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll, CharacterSheet, TrustedDevice
+from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk
 from .routers.ai import router as ai_router
 from .routers.account import router as account_router
 from .routers.characters import router as characters_router
@@ -82,6 +82,7 @@ from .routers.bulk_edit import router as bulk_edit_router
 from .routers.nav_menus_admin import router as nav_menus_admin_router
 from .routers.dice import router as dice_router
 from .routers.backups import router as backups_router
+from .routers.knowledge import router as knowledge_router
 from . import gallery as _gallery_module
 from . import mcp_server
 from . import ai as _ai_module
@@ -162,6 +163,7 @@ app.include_router(bulk_edit_router)
 app.include_router(nav_menus_admin_router)
 app.include_router(dice_router)
 app.include_router(backups_router)
+app.include_router(knowledge_router)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 SCHEMATICS_STATIC_DIR = BASE_DIR / "static" / "schematics"
 
@@ -1374,6 +1376,7 @@ _WORLD_DELETE_MODELS = (
     WorldCalendar, CalendarEvent, CalendarDayIcon, ImageAlbum, AudioClip, AudioAlbum,
     VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset,
     AudioJob, ImageJob, ChatJob, EntityTemplate, SheetTemplate, DiceRoll, CharacterSheet,
+    EntityRelation, VaultChunk,
 )
 
 
@@ -1514,6 +1517,7 @@ def world_edit_post(
     players_can_use_image_gen: Optional[str] = Form(None),
     ai_chat_rag_entity_limit: str = Form(""),
     ai_chat_rag_notes_limit: str = Form(""),
+    obsidian_vault_path: str = Form(""),
     hero_style: str = Form("home"),
     db: Session = Depends(get_db),
 ):
@@ -1539,6 +1543,7 @@ def world_edit_post(
     # out-of-range value typed here is harmless, just redundant.
     w.ai_chat_rag_entity_limit = int(ai_chat_rag_entity_limit) if ai_chat_rag_entity_limit.strip().isdigit() else None
     w.ai_chat_rag_notes_limit = int(ai_chat_rag_notes_limit) if ai_chat_rag_notes_limit.strip().isdigit() else None
+    w.obsidian_vault_path = obsidian_vault_path.strip() or None
     if hero_style in ("off", "home", "everywhere"):
         w.hero_style = hero_style
     db.commit()

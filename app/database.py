@@ -41,6 +41,14 @@ _GENERICALLY_HEALED_TABLES = (
     # unique=True column lacking a matching index=True) for the generic
     # column/FK/index deriving to heal correctly.
     "invite_codes", "private_notes", "invest_boards", "facts", "entity_templates",
+    # entity_relations/vault_chunks (app.models — the hybrid RAG+knowledge-
+    # graph pipeline): brand new, so create_all() alone covers every
+    # existing install too (nothing to heal yet), but listed here from day
+    # one so a column added to either model later heals automatically
+    # instead of silently repeating the exact gap this test exists to
+    # catch. Deliberately single-column indexes only — see EntityRelation's
+    # own comment — so generic healing actually applies cleanly.
+    "entity_relations", "vault_chunks",
 )
 
 
@@ -1007,6 +1015,8 @@ def _migrate():
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN font VARCHAR(120)"))
             if "font_size" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN font_size INTEGER DEFAULT 100"))
+            if "obsidian_vault_path" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN obsidian_vault_path VARCHAR(1024)"))
         # audio_clips table — add album_id if missing (added after the
         # table's initial ship in a prior release; existing clips get
         # NULL = top-level/unfiled, same as any newly-uploaded clip that

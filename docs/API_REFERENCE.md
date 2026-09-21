@@ -844,6 +844,7 @@ jobs](DEPLOYMENT.md#updating-without-losing-in-flight-jobs) for what
 | POST | `/admin/backup/restore/cancel` | GM | Clears a staged restore without applying it. |
 | GET | `/api/backups` | GM | Lists scheduled DB snapshots (`ND_BACKUP_DIR`) — 400 if scheduled backups aren't configured. |
 | POST | `/api/backups/run` | GM | Takes a `VACUUM INTO` snapshot right now and prunes to `ND_BACKUP_KEEP` — same primitive the optional scheduler thread runs on `ND_BACKUP_INTERVAL_SECONDS`. |
+| POST | `/api/knowledge/sync` | GM | Rebuilds the active world's hybrid RAG + knowledge-graph indexes (`VaultChunk`/`EntityRelation`) from its configured Obsidian vault path (`World.obsidian_vault_path`, set via Settings). 400 if no vault path is configured or it doesn't exist. |
 | POST | `/worlds/{world_id}/nav-menus/edit` | GM | Saves this world's customized top-nav menu grouping (Settings > Navigation). |
 | GET | `/imagestudio` | GM | Embedded SwarmUI iframe (`SWARMUI_EXTERNAL_URL`). |
 | GET | `/androidapp` | Player | Embedded noVNC viewer for the optional Android-emulator Compose profile. |

@@ -526,6 +526,36 @@ Uncomment the `deploy` block in the Ollama service to enable NVIDIA GPU offloadi
 
 AMD GPU support requires the ROCm image: change `image: ollama/ollama` to `image: ollama/ollama:rocm`.
 
+### Hybrid RAG + knowledge graph (optional, Obsidian-backed)
+
+AI Chat and the "Ask AI" panel normally answer from the world's own web-edited
+Entities/Rules text (keyword search — no setup needed, this is always on). A GM who
+also keeps a separate [Obsidian](https://obsidian.md) vault of freeform notes can
+additionally wire that vault in as a **parallel** knowledge source — it never
+replaces or requires touching the normal Entity-editing workflow:
+
+1. **Settings → (world edit page)**: set **Obsidian vault path** to a folder this
+   server can read (a bind-mounted path for Docker) containing `.md` notes. Notes
+   can use `[[wikilinks]]` and simple YAML frontmatter (`kind:`, `tags:`, and any
+   relation field whose value is a `[[wikilink]]`, e.g. `located_in: "[[Dockside]]"`).
+2. Pull an embedding model via Ollama — `ollama pull nomic-embed-text` (the
+   built-in default; a different embedding-capable model can be set instance-wide
+   via `app.ai.set_embed_model()`, though there's no dedicated settings-page field
+   for it yet).
+3. Click **🔄 Rebuild indexes now** on that same settings page whenever the vault
+   changes — a GM action, not automatic — to (re)build two indexes purely
+   *derived* from the vault (never hand-edited, always safe to rebuild):
+   - a semantic **vector index** (Ollama embeddings, brute-force cosine search) so
+     a question phrased differently from the vault's own wording can still match, and
+   - a **knowledge graph** of typed entity relationships (from wikilinks/frontmatter,
+     resolved by name against existing Entities) for multi-hop questions like "who
+     does this NPC answer to, and who do THEY answer to".
+
+A vault note whose title doesn't match any existing Entity by name still gets
+indexed for semantic search; it just doesn't contribute graph edges (auto-creating
+new Entities from unmatched notes may come later). Leave the vault path blank to
+disable this entirely — a world that never sets it behaves exactly as before.
+
 ### SwarmUI (image generation)
 
 SwarmUI is defined in all compose files behind the `swarmui` Compose profile — see

@@ -10,7 +10,9 @@ inside a function body for the same reason. Pulled out to this leaf module,
 which imports nothing from main/audio_jobs/any router, so everyone can
 import it directly and normally instead.
 """
+import asyncio
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Optional
@@ -18,7 +20,8 @@ from typing import Optional
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session, defer
 
-from .models import Entity, World, entity_player_access
+from . import ai as _ai
+from .models import Entity, EntityRelation, VaultChunk, World, entity_player_access
 from .rendering import strip_gm_only as _strip_gm_only
 from .rules_render import strip_gm_directives as _strip_gm_directives
 
@@ -1066,13 +1069,206 @@ def smart_world_context(
         db, world_id, query, user=user, strip_gm_only=strip_secrets,
         exclude_ids={e.id for e in non_notes} | {e.id for e in notes},
     )
+    # Hybrid RAG + knowledge-graph layer (see this module's own section
+    # comment above vector_search) — entirely opt-in, gated on this world
+    # actually having a vault configured, so a world that's never touched
+    # this feature builds byte-for-byte the same context it always has.
+    vault = bool(world and (world.obsidian_vault_path or "").strip())
+    vector_block = ""
+    graph_block = ""
+    if vault:
+        vec_results = vector_search(db, world_id, query, top_k=VECTOR_SEARCH_TOP_K)
+        if vec_results:
+            vector_lines = [
+                f"- [{path} / {heading}] {text[:VECTOR_EXCERPT_CHARS]}"
+                for _score, path, heading, text in vec_results
+            ]
+            vector_block = "Semantically related vault notes:\n" + "\n".join(vector_lines)
+        graph_lines = graph_context(db, world_id, matched_ids, user=user)
+        if graph_lines:
+            graph_block = "Knowledge graph — entities connected to what's above:\n" + graph_lines
     # Rules and GM-flagged priority content lead the assembled context,
     # ahead of ordinary matched/topped-up entities — both are the more
     # authoritative sources (the official rules text itself, and content
     # the GM specifically flagged as important) and should read as
     # "here's the ground truth" before "here's some possibly-related
-    # lore", not as an afterthought tacked on at the end.
-    extra = "\n\n".join(part for part in (rules, priority) if part)
+    # lore", not as an afterthought tacked on at the end. The vault/graph
+    # blocks follow them but still lead the ordinary entity context —
+    # they're closer in kind to "more retrieved lore" than to "authoritative
+    # rules", but still worth surfacing before the generic entity dump.
+    extra = "\n\n".join(part for part in (rules, priority, vector_block, graph_block) if part)
     if extra:
         context = f"{extra}\n\n{context}" if context else extra
     return context, non_notes, notes
+
+
+# ── Hybrid RAG + knowledge graph (app.vault_sync's query-time half) ─────────
+#
+# Two independent, OPT-IN retrieval layers on top of everything above —
+# neither contributes to smart_world_context's own assembled context
+# unless a world has actually configured World.obsidian_vault_path and
+# run a sync (see smart_world_context's own vault-gated block and
+# app.vault_sync.sync_vault), so a world that never touches this feature
+# is completely unaffected:
+#
+# - vector_search: semantic similarity over VaultChunk embeddings, for a
+#   question phrased differently from how the vault text itself reads
+#   (no shared keyword for FTS5 to match on at all).
+# - graph_context: multi-hop traversal over EntityRelation edges, for a
+#   question about how two things RELATE ("who does X answer to", "what
+#   faction controls Y") that a same-document keyword/semantic match on
+#   X alone would never surface if the actual answer lives on a
+#   DIFFERENT entity three hops away.
+
+def _cosine_similarity(a: list, b: list) -> float:
+    if len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if not norm_a or not norm_b:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+# smart_world_context's own vault-search defaults — deliberately modest,
+# same "a couple of matching sections is plenty" reasoning RULES_SECTION_
+# LIMIT/RULES_EXCERPT_CHARS already apply to Rules text (see those
+# constants' own comment): a vault chunk that scored well enough to be in
+# the top few is almost certainly relevant, so there's little value (and
+# real prompt-size cost) in pulling more than a handful, or showing any
+# single one in full when a GM's own note can run long.
+VECTOR_SEARCH_TOP_K = 3
+VECTOR_EXCERPT_CHARS = 1200
+
+
+def vector_search(db: Session, world_id: int, query: str, top_k: int = 5) -> list:
+    """The `top_k` VaultChunk rows in this world semantically closest to
+    `query`, as (score, source_path, heading, text) tuples sorted highest
+    first. Brute-force cosine similarity over every stored chunk's
+    embedding, computed in plain Python — no vector-store dependency:
+    this app's per-world corpus is one GM's own vault, not a web-scale
+    collection, so even a few thousand chunks scan in well under the time
+    an LLM call itself takes. Revisit only if a real deployment's vault
+    ever grows large enough for that to stop being true.
+
+    Returns [] whenever there's nothing to compare against (no vault
+    synced yet) or embedding the query itself fails (embedding model not
+    pulled, Ollama unreachable) — same "degrade to nothing, not a 500"
+    posture query-time keyword retrieval already has; a GM's vault being
+    momentarily unembeddable shouldn't break the rest of AI Chat's
+    context.
+
+    Synchronous like the rest of this module's public API (every existing
+    caller — smart_world_context and both its route callers — is a plain
+    `def`, not `async def`, and FastAPI already runs a `def` route in a
+    worker thread with no event loop of its own), so embedding the query
+    happens via asyncio.run() here rather than making this function
+    itself async and rippling that up through every caller for one new,
+    optional feature. Safe specifically because nothing on this call path
+    is already inside a running event loop; do not call this from
+    already-async code without awaiting app.ai.embed_text directly
+    instead."""
+    chunks = db.query(VaultChunk).filter(
+        VaultChunk.world_id == world_id, VaultChunk.embedding.isnot(None),
+    ).all()
+    if not chunks:
+        return []
+    try:
+        query_vec = asyncio.run(_ai.embed_text(query))
+    except Exception:
+        _log.warning("vector_search: failed to embed query", exc_info=True)
+        return []
+    scored = []
+    for chunk in chunks:
+        try:
+            chunk_vec = _ai.unpack_embedding(chunk.embedding)
+        except Exception:
+            continue
+        score = _cosine_similarity(query_vec, chunk_vec)
+        if score > 0:
+            scored.append((score, chunk.source_path, chunk.heading, chunk.text))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return scored[:top_k]
+
+
+# How many hops out from a seed entity graph_context will follow, and how
+# many related-entity lines it will ever return — a GM's world can have
+# hundreds of entity_relations edges once a vault sync populates them;
+# without a cap, a densely-connected seed (a capital city referenced by
+# half the world) could pull in most of the world on every single
+# question. 2 hops covers the common "who does X answer to, and who do
+# THEY answer to" / "what's in this location, and who's connected to
+# that" cases without the summary ballooning into a graph dump.
+GRAPH_MAX_HOPS = 2
+GRAPH_MAX_RESULTS = 12
+
+
+def graph_context(db: Session, world_id: int, entity_ids, user=None, max_hops: int = GRAPH_MAX_HOPS) -> str:
+    """A compact "X --relation--> Y" summary of what's connected to
+    `entity_ids` (typically smart_world_context's own matched_ids — the
+    entities an ordinary keyword/semantic search already found) via
+    EntityRelation edges, out to `max_hops`. Traverses edges in BOTH
+    directions (an edge is directional in storage — see EntityRelation's
+    own docstring — but "X located_in Y" answers a question about Y
+    exactly as well as one about X), breadth-first so closer relationships
+    are favored when GRAPH_MAX_RESULTS caps the output before a
+    denser part of the graph is fully explored.
+
+    `user`, when a real non-GM player, restricts every entity this can
+    ever NAME (both a hop's endpoint and the seeds themselves) to ones
+    that entity visibility rules already allow that player to see — same
+    posture _visibility_filter enforces on every other query-time
+    retrieval path in this module. A hidden entity is treated as if it
+    doesn't exist in the graph at all for that viewer: its edges neither
+    expand the traversal through it nor appear in the output, rather than
+    showing a redacted placeholder that would itself leak that something
+    is there.
+
+    Returns "" when there are no seeds, no edges at all in this world, or
+    nothing new reachable within max_hops — same "only when it actually
+    found something" posture every other optional context block here
+    has."""
+    entity_ids = set(entity_ids or ())
+    if not entity_ids:
+        return ""
+    edges = db.query(EntityRelation).filter(EntityRelation.world_id == world_id).all()
+    if not edges:
+        return ""
+
+    visible_q = _visibility_filter(
+        db.query(Entity.id, Entity.name).filter(Entity.world_id == world_id), user,
+    )
+    names = dict(visible_q.all())
+    entity_ids &= set(names)
+    if not entity_ids:
+        return ""
+
+    adjacency: dict = {}
+    for e in edges:
+        if e.source_id not in names or e.target_id not in names:
+            continue
+        adjacency.setdefault(e.source_id, []).append((e.relation, e.target_id, True))
+        adjacency.setdefault(e.target_id, []).append((e.relation, e.source_id, False))
+
+    visited = set(entity_ids)
+    frontier = set(entity_ids)
+    lines = []
+    for _hop in range(max_hops):
+        if len(lines) >= GRAPH_MAX_RESULTS:
+            break
+        next_frontier = set()
+        for eid in sorted(frontier):
+            for relation, neighbor_id, forward in adjacency.get(eid, []):
+                if neighbor_id in visited:
+                    continue
+                visited.add(neighbor_id)
+                next_frontier.add(neighbor_id)
+                if len(lines) >= GRAPH_MAX_RESULTS:
+                    continue
+                src, tgt = (eid, neighbor_id) if forward else (neighbor_id, eid)
+                lines.append(f"- {names[src]} --{relation}--> {names[tgt]}")
+        frontier = next_frontier
+        if not frontier:
+            break
+    return "\n".join(lines[:GRAPH_MAX_RESULTS])
