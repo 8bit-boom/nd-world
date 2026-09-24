@@ -66,6 +66,19 @@ def test_gpu_setup_doc_corrects_the_swarmui_vram_hold_claim():
     assert "10 minutes" in section or "default **10" in section
 
 
+def test_gpu_setup_doc_does_not_recommend_the_nonexistent_whisper_model():
+    """§6 recommended "ggml-large-v3-q8_0.bin" for better accuracy at lower
+    VRAM — that filename doesn't exist in whisper.cpp's own repo (only
+    large-v3-q5_0 and large-v3-turbo-q8_0 do; see app/ai.py's
+    WHISPER_KNOWN_MODELS). A GM following this doc's exact filename would
+    get a 404 from the Models tab's download button."""
+    text = (_REPO_ROOT / "docs/GPU_SETUP.md").read_text()
+    assert "## 6." in text
+    section = text.split("## 6.", 1)[1].split("## 7.", 1)[0]
+    assert "ggml-large-v3-q8_0.bin" not in section
+    assert "ggml-large-v3-q5_0.bin" in section
+
+
 def test_gpu_setup_doc_recommends_capping_max_auto_num_ctx_on_a_shared_card():
     """MAX_AUTO_NUM_CTX (app/ai.py, default 32768) bounds the auto-sized
     context window background jobs (recap/facts/condense) pin per-call —

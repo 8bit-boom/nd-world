@@ -1139,6 +1139,36 @@ def test_whisper_model_status_active_source_is_marker_once_set(tmp_path, monkeyp
     assert by_name["ggml-base.bin"]["active"] is False
 
 
+# ── WHISPER_KNOWN_MODELS filenames ──────────────────────────────────────────
+
+def test_whisper_known_models_does_not_list_the_nonexistent_large_v3_q8_0():
+    """"ggml-large-v3-q8_0.bin" doesn't exist in whisper.cpp's own repo —
+    confirmed against its models/download-ggml-model.sh, whose large-v3
+    family is exactly: large-v3, large-v3-q5_0, large-v3-turbo,
+    large-v3-turbo-q5_0, large-v3-turbo-q8_0 (no plain "large-v3-q8_0").
+    Downloading it would 404 against download_whisper_model()'s trusted
+    ggerganov/whisper.cpp host."""
+    filenames = {m["filename"] for m in ai_module.WHISPER_KNOWN_MODELS}
+    assert "ggml-large-v3-q8_0.bin" not in filenames
+    assert "ggml-large-v3-q5_0.bin" in filenames
+    assert "ggml-large-v3-turbo-q8_0.bin" in filenames
+
+
+def test_whisper_known_models_filenames_match_the_real_upstream_list():
+    """Every filename here must be one whisper.cpp's own
+    download-ggml-model.sh actually recognizes, not a guessed variant —
+    same trust boundary as download_whisper_model()'s comment about only
+    fetching from the one official host."""
+    real_upstream_filenames = {
+        "ggml-tiny.bin", "ggml-tiny.en.bin", "ggml-base.bin", "ggml-base.en.bin",
+        "ggml-small.bin", "ggml-small.en.bin", "ggml-medium.bin", "ggml-medium.en.bin",
+        "ggml-large-v3.bin", "ggml-large-v3-q5_0.bin",
+        "ggml-large-v3-turbo.bin", "ggml-large-v3-turbo-q5_0.bin", "ggml-large-v3-turbo-q8_0.bin",
+    }
+    filenames = {m["filename"] for m in ai_module.WHISPER_KNOWN_MODELS}
+    assert filenames == real_upstream_filenames
+
+
 # ── _looks_like_ggml() ───────────────────────────────────────────────────────
 # Guards load_whisper_model against the one failure mode this app has
 # already hit in production: a GGUF-format file (a different, incompatible

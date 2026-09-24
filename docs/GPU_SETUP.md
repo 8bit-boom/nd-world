@@ -477,13 +477,15 @@ already hit that exact wall once in production (a GGUF file loaded into
 `WHISPER_MODELS_DIR` made whisper-server crash-loop with "invalid model
 data (bad magic)"), which is why `_looks_like_ggml()` in `app/ai.py` now
 refuses to hand one to `/load` at all. For the accuracy of `large-v3` at
-roughly half the size/VRAM, use `ggml-large-v3-q8_0.bin` instead — it's
-in the Models tab's "⬇ Download Whisper Model" list (Whisper tab on the
-AI page), fetched from the same official `ggerganov/whisper.cpp` repo as
-every other listed model.
+roughly a third of the size/VRAM, use `ggml-large-v3-q5_0.bin` instead
+(**not** `-q8_0` — that filename doesn't exist for plain `large-v3` in
+whisper.cpp's own repo, only for `large-v3-turbo`) — it's in the Models
+tab's "⬇ Download Whisper Model" list (Whisper tab on the AI page),
+fetched from the same official `ggerganov/whisper.cpp` repo as every
+other listed model.
 
 A V100 transcribes `whisper-large-v3-turbo` (or the more accurate
-`ggml-large-v3-q8_0.bin` above, once GPU-accelerated) several times
+`ggml-large-v3-q5_0.bin` above, once GPU-accelerated) several times
 faster than a typical NAS CPU — worth it if you record sessions.
 
 ## 7. V100 hardware notes (used cards)
