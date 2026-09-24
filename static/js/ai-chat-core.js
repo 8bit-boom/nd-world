@@ -432,14 +432,20 @@ async function pullModel(modelId, btn, dot) {
         if (!p.startsWith('data: ')) continue;
         const payload = p.slice(6);
         if (payload === '[DONE]') break;
-        try {
-          const obj = JSON.parse(payload);
-          if (obj.total && obj.completed) {
-            btn.textContent = '⏳ ' + Math.round(obj.completed / obj.total * 100) + '%';
-          } else if (obj.status) {
-            btn.textContent = obj.status.slice(0, 12);
-          }
-        } catch(_) {}
+        let obj;
+        try { obj = JSON.parse(payload); } catch (_) { continue; }
+        // A pull failure (bad model ID, disk full, registry error) arrives
+        // as its own {"error": ...} SSE frame (see /api/ai/pull's own
+        // _gen()) — this must always surface as a real failure, never get
+        // silently absorbed the way a malformed/partial JSON chunk is
+        // above, or the UI falsely reports the model as loaded when it
+        // never actually downloaded.
+        if (obj.error) throw new Error(obj.error);
+        if (obj.total && obj.completed) {
+          btn.textContent = '⏳ ' + Math.round(obj.completed / obj.total * 100) + '%';
+        } else if (obj.status) {
+          btn.textContent = obj.status.slice(0, 12);
+        }
       }
     }
     dot.className = 'model-dot model-dot--loaded';
@@ -485,14 +491,16 @@ async function forceRepull(modelId, btn, dot, row) {
         if (!p.startsWith('data: ')) continue;
         const payload = p.slice(6);
         if (payload === '[DONE]') break;
-        try {
-          const obj = JSON.parse(payload);
-          if (obj.total && obj.completed) {
-            btn.textContent = '⏳ ' + Math.round(obj.completed / obj.total * 100) + '%';
-          } else if (obj.status) {
-            btn.textContent = obj.status.slice(0, 12);
-          }
-        } catch(_) {}
+        let obj;
+        try { obj = JSON.parse(payload); } catch (_) { continue; }
+        // See pullModel's identical check above — must always surface a
+        // real pull failure, never silently absorb it into "succeeded".
+        if (obj.error) throw new Error(obj.error);
+        if (obj.total && obj.completed) {
+          btn.textContent = '⏳ ' + Math.round(obj.completed / obj.total * 100) + '%';
+        } else if (obj.status) {
+          btn.textContent = obj.status.slice(0, 12);
+        }
       }
     }
     dot.className = 'model-dot model-dot--loaded';

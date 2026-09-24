@@ -351,18 +351,21 @@ async function mpPullModel(modelId, cardEl, forceDelete = false) {
         if (!p.startsWith('data: ')) continue;
         const raw = p.slice(6);
         if (raw === '[DONE]') break;
-        try {
-          const obj = JSON.parse(raw);
-          if (obj.error) throw new Error(obj.error);
-          if (obj.total && obj.completed) {
-            const pct = Math.round(obj.completed / obj.total * 100);
-            if (progBar) progBar.style.width = pct + '%';
-            if (progLbl) progLbl.textContent = `Downloading… ${pct}% (${(obj.completed/1e9).toFixed(1)} / ${(obj.total/1e9).toFixed(1)} GB)`;
-          } else if (obj.status) {
-            if (progLbl) progLbl.textContent = obj.status;
-          }
-        } catch(pe) {
-          if (pe.message && !pe.message.includes('JSON')) throw pe;
+        let obj;
+        try { obj = JSON.parse(raw); } catch (_) { continue; }
+        // Must always surface a real pull failure — checking this INSIDE
+        // the JSON.parse try/catch above used to rely on a fragile
+        // "does the error message happen to contain the word JSON"
+        // heuristic to avoid re-swallowing it as a parse failure, which
+        // silently reported success whenever a real Ollama error message
+        // happened to mention "JSON" (e.g. a malformed-manifest error).
+        if (obj.error) throw new Error(obj.error);
+        if (obj.total && obj.completed) {
+          const pct = Math.round(obj.completed / obj.total * 100);
+          if (progBar) progBar.style.width = pct + '%';
+          if (progLbl) progLbl.textContent = `Downloading… ${pct}% (${(obj.completed/1e9).toFixed(1)} / ${(obj.total/1e9).toFixed(1)} GB)`;
+        } else if (obj.status) {
+          if (progLbl) progLbl.textContent = obj.status;
         }
       }
     }
@@ -460,18 +463,16 @@ async function mpAddAndPull() {
         if (!p.startsWith('data: ')) continue;
         const raw = p.slice(6);
         if (raw === '[DONE]') break;
-        try {
-          const obj = JSON.parse(raw);
-          if (obj.error) throw new Error(obj.error);
-          if (obj.total && obj.completed) {
-            const pct = Math.round(obj.completed / obj.total * 100);
-            if (bar) bar.style.width = pct + '%';
-            if (lbl) lbl.textContent = `Downloading ${id}… ${pct}% (${(obj.completed/1e9).toFixed(1)} / ${(obj.total/1e9).toFixed(1)} GB)`;
-          } else if (obj.status) {
-            if (lbl) lbl.textContent = obj.status;
-          }
-        } catch(pe) {
-          if (pe.message && !pe.message.includes('JSON')) throw pe;
+        let obj;
+        try { obj = JSON.parse(raw); } catch (_) { continue; }
+        // See mpPullModel's identical fix above.
+        if (obj.error) throw new Error(obj.error);
+        if (obj.total && obj.completed) {
+          const pct = Math.round(obj.completed / obj.total * 100);
+          if (bar) bar.style.width = pct + '%';
+          if (lbl) lbl.textContent = `Downloading ${id}… ${pct}% (${(obj.completed/1e9).toFixed(1)} / ${(obj.total/1e9).toFixed(1)} GB)`;
+        } else if (obj.status) {
+          if (lbl) lbl.textContent = obj.status;
         }
       }
     }
