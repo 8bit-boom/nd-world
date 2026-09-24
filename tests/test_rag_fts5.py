@@ -73,6 +73,32 @@ def test_ilike_fallback_matches_via_aliases_too(client, seed):
         db.close()
 
 
+def test_ilike_fallback_plural_query_still_matches_singular_text(client, seed):
+    """The FTS5 path's own plural-matching fix (_fts_term's OR'd-in stem)
+    never reached this fallback (used whenever FTS5 itself is unavailable,
+    or in tests that force it via monkeypatching find_relevant_entities_fts
+    to raise): a query word's singular-matches-plural-text direction
+    already worked for free (ILIKE's %w% is a substring check, "trait" is
+    already a substring of "traits"), but the reverse — "traits" (query)
+    against text that only ever says "trait" — found nothing, unlike
+    _keyword_score's own \\btraits?\\b tolerance every excerpt/section
+    scorer downstream already has."""
+    db = SessionLocal()
+    try:
+        # The singular "Trait" sits in `name` (which ILIKE always checks)
+        # rather than `body` (which find_relevant_entities_ilike never
+        # checks — only FTS5 does), isolating the stemming gap this test
+        # covers from that separate, already-documented capability
+        # difference.
+        eid = _make_entity(
+            seed.world_a.id, name="Weapon Trait Ledger", kind="item", summary="A reference list.",
+        )
+        results = find_relevant_entities_ilike(db, seed.world_a.id, ["traits"], 10)
+        assert eid in {e.id for e in results}
+    finally:
+        db.close()
+
+
 def test_ranks_a_name_match_above_a_body_only_match(client, seed):
     body_only_id = _make_entity(
         seed.world_a.id, name="Some Merchant", kind="character",

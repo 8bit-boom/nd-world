@@ -563,15 +563,37 @@ def find_relevant_entities_fts(
 def find_relevant_entities_ilike(
     db: Session, world_id: int, words: list, limit: int, user=None, kind: Optional[str] = None,
 ) -> list:
-    filters = [
-        or_(
-            Entity.name.ilike(f'%{w}%'),
-            Entity.summary.ilike(f'%{w}%'),
-            Entity.tags.ilike(f'%{w}%'),
-            Entity.aliases.ilike(f'%{w}%'),
-        )
-        for w in words
-    ]
+    """Substring fallback for when FTS5 itself is unavailable (see
+    find_relevant_entities's own try/except) — checks name/summary/tags/
+    aliases (not body; that's the one capability only the FTS5 path has).
+
+    Also OR's in `_stem(w)` alongside `w` itself whenever the two differ
+    (a query word that got its trailing "s" stripped) — the same plural-
+    tolerant reverse direction _fts_term already gives the FTS5 path (see
+    its own docstring) and _keyword_score already gives every downstream
+    excerpt/section scorer. Without this, a query word's own SINGULAR-
+    matches-plural-TEXT direction already worked for free (ILIKE's `%w%`
+    is a substring check, and "trait" is already a substring of "traits"),
+    but the reverse — a PLURAL query word ("traits") against SINGULAR text
+    ("trait") — silently found nothing, exactly the asymmetry task #2
+    fixed for FTS5 but never reached this fallback path: a world running
+    on a degraded/FTS5-unavailable SQLite build would silently lose the
+    plural tolerance every other retrieval/scoring path in this file
+    already has, with nothing indicating why a plural-phrased question
+    suddenly stopped finding entities a GM asking the singular form still
+    found."""
+    filters = []
+    for w in words:
+        terms = {w, _stem(w)}
+        conditions = []
+        for t in terms:
+            conditions.extend([
+                Entity.name.ilike(f'%{t}%'),
+                Entity.summary.ilike(f'%{t}%'),
+                Entity.tags.ilike(f'%{t}%'),
+                Entity.aliases.ilike(f'%{t}%'),
+            ])
+        filters.append(or_(*conditions))
     q = _visibility_filter(
         db.query(Entity).filter(Entity.world_id == world_id, or_(*filters)), user,
     )
