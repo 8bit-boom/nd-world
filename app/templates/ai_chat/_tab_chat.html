@@ -1,5 +1,9 @@
-<!-- Mobile-only: compact model selector (sidebar hidden on small screens) -->
+<!-- Mobile-only: compact model selector + sidebar-drawer toggle (the full
+     sidebar — history, save, compact, etc. — slides in from #ai-sidebar-toggle) -->
 <div class="ai-model-bar" id="mobile-model-bar">
+  <button type="button" id="ai-sidebar-toggle" class="ai-sidebar-toggle"
+          aria-label="Open chat menu — history, save, compact" aria-expanded="false" aria-controls="ai-page-sidebar"
+          onclick="toggleAiSidebarDrawer()">☰</button>
   <span style="color:var(--text-dim);white-space:nowrap">Model:</span>
   <select id="mobile-model-sel" onchange="mobileSelectModel(this.value)">
     <option value="">⏳ Loading…</option>
@@ -8,8 +12,9 @@
 </div>
 
 <div class="ai-page">
+  <div id="ai-sidebar-backdrop" onclick="closeAiSidebarDrawer()"></div>
 
-  <div class="ai-sidebar">
+  <div class="ai-sidebar" id="ai-page-sidebar">
     <div>
       <h3>{{ world.name if world else 'World' }}</h3>
       {% for k in kinds %}{% if entity_counts.get(k, 0) > 0 %}

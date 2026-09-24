@@ -1457,9 +1457,10 @@ input[type="file"]:hover { border-color: var(--neon); }
     border-bottom: 1px solid var(--border);
   }
 
-  /* AI chat page — hide sidebar on mobile (use Models tab + mobile-model-bar instead) */
+  /* AI chat page — sidebar becomes an off-canvas drawer on mobile instead of
+     being unreachable (see static/css/ai-chat.css's .ai-sidebar drawer rules
+     for the actual show/hide behavior — this file only owns the page layout). */
   .ai-page { flex-direction: column; height: auto; }
-  .ai-sidebar { display: none !important; }
   .ai-main { overflow: visible; height: auto; min-height: 60vh; }
 
   /* Two-column form rows → single column */

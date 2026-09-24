@@ -317,9 +317,54 @@
   to   { background-position: -200% 0; }
 }
 
-/* ── Mobile: hide sidebar (≤700px existing) + full mobile overhaul ── */
+/* ── Mobile sidebar drawer (≤700px) ──────────────────────────────────────
+   The sidebar holds History (+ New chat, saved sessions), Save chat,
+   Compact chat, Clear chat, plus Quick prompts/Model/Presets/RAG
+   limits/Debug — none of that was reachable on mobile before (it was just
+   display:none, and the separate mobile-model-bar/mobile-rag-bar only ever
+   re-implemented the model picker and RAG sliders). Instead of hiding it,
+   slide it in as an off-canvas drawer toggled by #ai-sidebar-toggle
+   (appended into mobile-model-bar — see _tab_chat.html), matching the same
+   toggle+backdrop pattern base.html's own mobile nav (.nav-kinds) uses. */
+.ai-sidebar-toggle { display: none; }
+#ai-sidebar-backdrop { display: none; }
 @media (max-width: 700px) {
-  .ai-sidebar { display: none; }
+  .ai-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 1001;
+    width: 84vw;
+    max-width: 320px;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, .6);
+    transform: translateX(-100%);
+    transition: transform .25s ease;
+  }
+  .ai-sidebar.open { transform: translateX(0); }
+  .ai-sidebar-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    border-radius: 4px;
+    width: 2rem;
+    height: 2rem;
+    font-size: .95rem;
+    cursor: pointer;
+    flex-shrink: 0;
+    font-family: inherit;
+  }
+  .ai-sidebar-toggle:hover { border-color: var(--neon); color: var(--neon); }
+  #ai-sidebar-backdrop.open {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, .55);
+    z-index: 1000;
+  }
   #mobile-rag-toggle-row { display: flex !important; }
 }
 

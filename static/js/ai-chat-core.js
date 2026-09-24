@@ -131,6 +131,39 @@ function newChat() {
 
 loadSessions(true);
 
+// ── Mobile sidebar drawer ────────────────────────────────────────────────────
+// Below 700px .ai-sidebar (History/New/Save/Compact/Clear, plus Quick
+// prompts/Model/Presets/RAG limits/Debug) slides in as an off-canvas drawer
+// instead of being display:none and totally unreachable — see ai-chat.css's
+// .ai-sidebar drawer rules for the actual show/hide styling.
+function openAiSidebarDrawer() {
+  const sidebar = document.getElementById('ai-page-sidebar');
+  if (!sidebar) return;
+  sidebar.classList.add('open');
+  const backdrop = document.getElementById('ai-sidebar-backdrop');
+  if (backdrop) backdrop.classList.add('open');
+  const toggle = document.getElementById('ai-sidebar-toggle');
+  if (toggle) toggle.setAttribute('aria-expanded', 'true');
+}
+function closeAiSidebarDrawer() {
+  const sidebar = document.getElementById('ai-page-sidebar');
+  if (!sidebar) return;
+  sidebar.classList.remove('open');
+  const backdrop = document.getElementById('ai-sidebar-backdrop');
+  if (backdrop) backdrop.classList.remove('open');
+  const toggle = document.getElementById('ai-sidebar-toggle');
+  if (toggle) toggle.setAttribute('aria-expanded', 'false');
+}
+function toggleAiSidebarDrawer() {
+  const sidebar = document.getElementById('ai-page-sidebar');
+  if (!sidebar) return;
+  if (sidebar.classList.contains('open')) closeAiSidebarDrawer();
+  else openAiSidebarDrawer();
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeAiSidebarDrawer();
+});
+
 // ── Chat presets ─────────────────────────────────────────────────────────────
 // A GM-defined {model, temperature/top_p, persona} bundle a conversation can
 // switch to on the fly — e.g. "Lorekeeper" (low temperature, factual) vs
