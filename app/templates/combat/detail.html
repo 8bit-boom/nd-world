@@ -82,6 +82,19 @@
 .cond-chip:hover { border-color:#c44; color:#c44; }
 .cond-add { background:var(--bg3); border:1px dashed var(--border); color:var(--text-dim); font-size:.72rem; padding:.15rem .5rem; border-radius:10px; width:90px; }
 .cond-preset { background:var(--bg3); border:1px dashed var(--border); color:var(--text-dim); font-size:.72rem; padding:.1rem .3rem; border-radius:10px; font-family:var(--font); }
+
+/* ── Touch / small-screen: larger hit targets — same (pointer:coarse)
+   pattern the schematic editor uses (matches touchscreen input
+   specifically, not just a narrow window). .stat-btn's HP/shock +/-
+   buttons were ~18px tall (padding:.15rem .4rem), the smallest touch
+   targets in the app. */
+@media (pointer:coarse) {
+  .stat-btn { padding:.4rem .55rem; min-width:36px; min-height:36px; font-size:.78rem; }
+  .combatant-remove { min-width:36px; min-height:36px; font-size:1.3rem; }
+  .cond-chip { padding:.35rem .65rem; }
+  .combatant-init input { min-height:36px; }
+  .stat-bar-row { flex-wrap:wrap; row-gap:.3rem; }
+}
 </style>
 
 <script>
@@ -210,6 +223,8 @@ document.getElementById('combatants-list').addEventListener('click', (e) => {
   const t = e.target;
   const i = t.dataset.i !== undefined ? parseInt(t.dataset.i, 10) : null;
   if (t.dataset.action === 'remove') {
+    const name = combatants[i] ? combatants[i].name : 'this combatant';
+    if (!confirm(`Remove ${name} from the encounter?`)) return;
     combatants.splice(i, 1);
     if (activeIdx >= sortedIndices().length) activeIdx = 0;
     render(); save();
