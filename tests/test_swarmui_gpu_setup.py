@@ -52,6 +52,20 @@ def test_gpu_setup_doc_covers_swarmui_wiring_and_vram_sharing():
     assert "OLLAMA_KEEP_ALIVE" in text.split("## 3a.", 1)[1].split("## 4.", 1)[0]
 
 
+def test_gpu_setup_doc_corrects_the_swarmui_vram_hold_claim():
+    """§3a used to claim SwarmUI "only loads a checkpoint into VRAM while
+    actively rendering" — false. Confirmed against SwarmUI's own source
+    (src/Core/Settings.cs): BackendData.ClearVRAMAfterMinutes (default 10)
+    keeps the last-used checkpoint resident for that long after the LAST
+    generation, the same kind of hold-time tradeoff as OLLAMA_KEEP_ALIVE,
+    not an always-releases-immediately behavior."""
+    text = (_REPO_ROOT / "docs/GPU_SETUP.md").read_text()
+    section = text.split("## 3a.", 1)[1].split("## 3b.", 1)[0]
+    assert "only loads a checkpoint into VRAM while actively rendering" not in section
+    assert "ClearVRAMAfterMinutes" in section
+    assert "10 minutes" in section or "default **10" in section
+
+
 def test_gpu_setup_doc_recommends_capping_max_auto_num_ctx_on_a_shared_card():
     """MAX_AUTO_NUM_CTX (app/ai.py, default 32768) bounds the auto-sized
     context window background jobs (recap/facts/condense) pin per-call —

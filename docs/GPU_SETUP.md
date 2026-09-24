@@ -216,21 +216,35 @@ exceed 16 GB:
   run noticeably higher (often 12+ GB) unless SwarmUI is using a quantized
   build.
 
-Neither one keeps VRAM reserved forever, though:
+Neither one keeps VRAM reserved forever, though — both sides have their own
+idle-eviction timer, and **both default to holding VRAM well past the last
+actual generation**, not just while a request is in flight:
 
-- **Ollama** evicts an idle model after `OLLAMA_KEEP_ALIVE` (§4) — set it
-  shorter (e.g. `5m`) if you regularly alternate between chatting and
-  generating images and want the previous one's VRAM back sooner, at the
-  cost of a reload delay on the next chat message.
-- **SwarmUI** only loads a checkpoint into VRAM while actively rendering
-  (or per its own backend idle-unload setting, if you've changed it) —
-  check its Backends tab if you want to tune that further.
+- **Ollama** evicts an idle model after `OLLAMA_KEEP_ALIVE` (§4, default
+  `5m` unless you've raised it — nd-world's own recommended `30m` in §4
+  holds it noticeably longer). Set it shorter if you regularly alternate
+  between chatting and generating images and want the previous model's
+  VRAM back sooner, at the cost of a reload delay on the next chat message.
+- **SwarmUI does the same, not "only while actively rendering."**
+  (Confirmed against SwarmUI's own source, `src/Core/Settings.cs`: the
+  `BackendData.ClearVRAMAfterMinutes` setting, default **10 minutes**,
+  keeps the last-used checkpoint resident in VRAM for that long after the
+  *last* generation, precisely to avoid a reload delay on the *next* one —
+  functionally the same tradeoff as `OLLAMA_KEEP_ALIVE`, not an
+  always-releases-immediately behavior.) It's in SwarmUI's own **Server →
+  Settings → Backends** section if you want to lower it — set it to `1` or
+  `2` (minutes) to free that VRAM back for Ollama sooner, or `-1` to
+  disable the hold entirely and always reload from disk. There's also a
+  matching `ClearSystemRAMAfterMinutes` (default 60) for system RAM, not
+  VRAM — irrelevant to a CUDA out-of-memory error but worth knowing exists.
 
 If real simultaneous use (a GM generating an NPC portrait mid-chat) is
 common at your table and you hit OOM errors, the practical fixes are: pick
 a smaller/quantized SwarmUI checkpoint, drop to an 8–9B Ollama model
-instead of 12B, or shorten `OLLAMA_KEEP_ALIVE` so the two rarely overlap
-in practice. A 32 GB V100 removes this concern almost entirely — see §5.
+instead of 12B, or lower `OLLAMA_KEEP_ALIVE` and/or SwarmUI's
+`ClearVRAMAfterMinutes` so the two rarely hold VRAM at the same time in
+practice — lowering only one side still leaves the other's hold window to
+collide with it. A 32 GB V100 removes this concern almost entirely — see §5.
 
 ## 3b. SwarmUI's PyTorch on a V100 — read this before assuming it "just works"
 
