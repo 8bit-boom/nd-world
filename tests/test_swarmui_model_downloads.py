@@ -820,6 +820,24 @@ def test_backend_status_js_handles_gpus_as_an_object_not_just_an_array(client, s
     assert "1073741824" in fn_body  # bytes -> GB
 
 
+def test_backend_status_js_hints_at_the_volta_torch_fix_for_a_v100_gpu(client, seed):
+    """When SwarmUI itself reports a Volta-class GPU (V100/TITAN V), the
+    Image Gen tab's own status row should point at docs/GPU_SETUP.md §3b
+    (the cu130/cu126 torch fix) right there — a GM who never opens the
+    repo docs still needs to know their card can't generate at all until
+    that fix is applied."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get("/static/js/ai-chat-image.js")
+    assert r.status_code == 200
+    js = r.text.replace("\r\n", "\n")
+    fn_start = js.index("async function igLoadBackendStatus")
+    fn_end = js.index("\nasync function", fn_start + 1)
+    fn_body = js[fn_start:fn_end]
+    assert "v100|titan v|volta" in fn_body
+    assert "GPU_SETUP.md" in fn_body
+    assert "§3b" in fn_body
+
+
 # ── swarmui_free_memory() / POST /imagegen/free-memory ──────────────────────
 
 @pytest.mark.asyncio

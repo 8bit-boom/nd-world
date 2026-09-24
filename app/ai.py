@@ -3827,12 +3827,16 @@ async def swarmui_backends() -> list:
 
 async def swarmui_resource_info() -> dict:
     """Best-effort: ask SwarmUI's Admin API (/API/GetServerResourceInfo)
-    for host-level resource usage (CPU/RAM, and per-GPU VRAM/utilization/
-    temperature where SwarmUI can read it) — same "not independently
-    verified against a live instance" caveat as swarmui_backends above.
-    Returns SwarmUI's own response shape verbatim, or {} if not
-    configured for SwarmUI, unreachable, or the session lacks
-    permission."""
+    for host-level resource usage (CPU/RAM, and per-GPU VRAM where SwarmUI
+    can read it). Confirmed against SwarmUI's own AdminAPI.cs source (not
+    just inferred, unlike swarmui_backends' endpoint shape above): `gpus`
+    is a JSON OBJECT keyed by GPU id string (e.g. {"0": {...}}), not a
+    list, and each entry's total_memory/used_memory/free_memory are raw
+    bytes, not MB — callers (ollama_tuning._detect_swarmui_gpus,
+    ai-chat-image.js's igLoadBackendStatus) must convert both the
+    dict-vs-list shape and the units. Returns SwarmUI's own response shape
+    verbatim, or {} if not configured for SwarmUI, unreachable, or the
+    session lacks permission."""
     t, u = _get_type(), _get_url()
     if t != "swarmui" or not u:
         return {}

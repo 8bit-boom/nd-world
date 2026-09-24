@@ -55,14 +55,17 @@ not a fleet-management VRAM planner. CPU core count and system RAM are
 reliably readable from nd-world's own container (they reflect the host, not
 the container, since /proc is a fresh view of the same kernel). GPU/VRAM
 is the honest gap: nd-world's own container doesn't get GPU passthrough by
-default — only `ollama` does, and only once docker-compose.gpu.yml's
-overlay is layered on (`swarmui` gets none from any file in this repo; a
-GM wanting SwarmUI on the GPU adds its own deploy block by hand) —
-docker-compose.gpu.yml can optionally give this container minimal,
-utility-only access too (see docs/GPU_SETUP.md), just enough for
-nvidia-smi to resolve here without granting real CUDA compute — so
-detection falls back through nvidia-smi -> AMD sysfs -> a GM-entered
-manual override -> a lower-bound inferred from whatever Ollama already has
+default — only `ollama` and `swarmui` do, and only once docker-compose.gpu.yml's
+overlay is layered on. That overlay can optionally give this container
+minimal, utility-only access too (see docs/GPU_SETUP.md), just enough for
+nvidia-smi to resolve here without granting real CUDA compute — but a GM
+who only assigned the GPU to `swarmui` (e.g. TrueNAS SCALE's per-app GPU
+picker, or a hand-written compose override that skips the `world` block)
+still gets real detection: _detect_swarmui_gpus() asks SwarmUI's own Admin
+API what it can see, since that container DOES have GPU access in that
+setup even though this one doesn't. So detection falls back through a
+GM-entered manual override -> nvidia-smi -> AMD sysfs -> SwarmUI's
+reported GPU -> a lower-bound inferred from whatever Ollama already has
 loaded (app.ai.resident_models()) -> "unknown". recommend_settings then
 picks one of a handful of coarse tiers (full_gpu/partial_gpu/cpu_only/
 unknown) rather than doing real quantization-aware VRAM math or per-
@@ -346,10 +349,12 @@ async def _detect_nvidia_gpus() -> list[dict]:
     """One GPU dict per line of `nvidia-smi --query-gpu=name,memory.total`
     — only ever produces a result when the NVIDIA container runtime has
     actually given THIS container GPU access (docker-compose.yml's `world`
-    service has none by default — only `ollama` does, and only once
-    docker-compose.gpu.yml's overlay is layered on; `swarmui` gets none
-    from any file in this repo), which is exactly the signal we want:
-    nvidia-smi simply isn't on PATH otherwise."""
+    service has none by default — `ollama` and `swarmui` do, but only once
+    docker-compose.gpu.yml's overlay is layered on), which is exactly the
+    signal we want: nvidia-smi simply isn't on PATH otherwise. A GM who
+    only wired GPU access to `swarmui` (not `world`) still gets real
+    detection via _detect_swarmui_gpus() below, which asks SwarmUI's own
+    Admin API instead of this container's own nvidia-smi."""
     if not shutil.which("nvidia-smi"):
         return []
     try:
@@ -404,6 +409,43 @@ def _detect_amd_gpus(pattern: str = "/sys/class/drm/card*/device/mem_info_vram_t
     return gpus
 
 
+async def _detect_swarmui_gpus() -> list[dict]:
+    """Fallback GPU detection via SwarmUI's own Admin API
+    (app.ai.swarmui_resource_info -> /API/GetServerResourceInfo), for
+    deployments where SwarmUI's container has GPU passthrough but
+    nd-world's own container doesn't — e.g. TrueNAS SCALE's per-app GPU
+    picker assigning the card to the swarmui app only, or a hand-written
+    compose override that skips docker-compose.gpu.yml's optional `world`
+    block. nvidia-smi and AMD sysfs above only ever see a GPU that's been
+    passed through to THIS container; this asks a neighboring container
+    that might have it instead.
+
+    Only returns anything when nd-world is actually configured to talk to
+    SwarmUI for image generation (swarmui_resource_info returns {} — not
+    an error — otherwise, which this treats the same as "no GPU here").
+    Confirmed against SwarmUI's own AdminAPI.cs: `gpus` is a JSON object
+    keyed by GPU id string (not an array), with byte-valued total_memory —
+    matching the fix already applied to the Image Gen tab's own
+    GPU/VRAM status row (see igLoadBackendStatus in ai-chat-image.js)."""
+    try:
+        from . import ai as _ai_module
+        data = await _ai_module.swarmui_resource_info()
+    except Exception:
+        return []
+    raw = data.get("gpus") or data.get("GPUs") or {}
+    entries = raw.values() if isinstance(raw, dict) else (raw if isinstance(raw, list) else [])
+    gpus = []
+    for g in entries:
+        if not isinstance(g, dict):
+            continue
+        name = str(g.get("name") or "").strip()
+        total_bytes = g.get("total_memory")
+        if not name or not isinstance(total_bytes, (int, float)) or total_bytes <= 0:
+            continue
+        gpus.append({"vendor": "nvidia", "name": name, "vram_mb": int(total_bytes // (1024 * 1024))})
+    return gpus
+
+
 # Hand-picked cards a GM might want to plan settings for BEFORE physically
 # installing them — nvidia-smi obviously can't detect hardware that isn't
 # there yet. Keyed by AppSettings.ollama_gpu_preset; `name` is matched by
@@ -423,12 +465,14 @@ async def detect_hardware(vram_override_mb: Optional[int] = None, gpu_preset: st
 
     vram_total_mb resolution order: a GM-entered override always wins
     (real knowledge beats guessing); then nvidia-smi; then AMD sysfs; then
-    `gpu_preset` (a card the GM plans to install but nvidia-smi can't see
-    yet — see GPU_PRESETS); then a LOWER BOUND inferred from whatever's
-    already loaded in Ollama right now (app.ai.resident_models(), the same
-    call the existing VRAM cockpit uses) — genuinely useful signal, just
-    not the true total; then None, with a note explaining why and pointing
-    at the manual field.
+    SwarmUI's own reported GPU (_detect_swarmui_gpus — for when SwarmUI's
+    container has GPU access but this one doesn't); then `gpu_preset` (a
+    card the GM plans to install but none of the above can see yet — see
+    GPU_PRESETS); then a LOWER BOUND inferred from whatever's already
+    loaded in Ollama right now (app.ai.resident_models(), the same call
+    the existing VRAM cockpit uses) — genuinely useful signal, just not
+    the true total; then None, with a note explaining why and pointing at
+    the manual field.
 
     gpu_preset sits below real detection (a genuinely installed card always
     wins over a "planned" one) but above the Ollama-resident lower bound —
@@ -443,8 +487,13 @@ async def detect_hardware(vram_override_mb: Optional[int] = None, gpu_preset: st
     ram_total_mb, ram_available_mb = _read_proc_meminfo()
 
     gpus = await _detect_nvidia_gpus()
+    detected_via = "nvidia-smi" if gpus else None
     if not gpus:
         gpus = _detect_amd_gpus()
+        detected_via = "amd-sysfs" if gpus else None
+    if not gpus:
+        gpus = await _detect_swarmui_gpus()
+        detected_via = "swarmui" if gpus else None
 
     vram_total_mb: Optional[int] = None
     vram_source = "none"
@@ -455,7 +504,14 @@ async def detect_hardware(vram_override_mb: Optional[int] = None, gpu_preset: st
         vram_source = "manual"
     elif gpus:
         vram_total_mb = sum(g["vram_mb"] for g in gpus if g.get("vram_mb"))
-        vram_source = f"{gpus[0]['vendor']}-{'smi' if gpus[0]['vendor'] == 'nvidia' else 'sysfs'}"
+        vram_source = detected_via
+        if detected_via == "swarmui":
+            notes.append(
+                "VRAM detected via SwarmUI's own reported GPU info, not directly — "
+                "nd-world's own container doesn't have GPU access here, but SwarmUI's "
+                "does. See docs/GPU_SETUP.md if you'd rather this container auto-detect "
+                "directly too."
+            )
     elif gpu_preset and gpu_preset in GPU_PRESETS:
         preset = GPU_PRESETS[gpu_preset]
         # Synthesize a `gpus` entry (not just a bare vram_total_mb) so
@@ -487,11 +543,21 @@ async def detect_hardware(vram_override_mb: Optional[int] = None, gpu_preset: st
 
     if vram_source == "none":
         notes.append(
-            "nd-world's own container can't see a GPU. That's normal — only the "
-            "\"ollama\" service is given GPU access in docker-compose.yml. Enter "
-            "your card's VRAM below, or give the \"world\" service the same GPU "
-            "access as \"ollama\" if you'd rather this auto-detect."
+            "nd-world's own container can't see a GPU directly, and SwarmUI (if "
+            "configured) didn't report one either. That's normal if only the "
+            "\"ollama\"/\"swarmui\" services were given GPU access in "
+            "docker-compose.yml — enter your card's VRAM below, or give the "
+            "\"world\" service the same GPU access if you'd rather this auto-detect."
         )
+
+    # Surfaced here (not just inside recommend_settings' per-model notes) so
+    # a Volta card shows this as soon as hardware is detected at all — even
+    # before a GM has picked a model to see per-model recommendations for —
+    # regardless of which detector actually found it (nvidia-smi, AMD sysfs,
+    # SwarmUI's own reported GPU, or a GM-entered preset).
+    volta = _volta_note({"gpus": gpus})
+    if volta:
+        notes.append(volta)
 
     return {
         "cpu_model": cpu_model,
@@ -580,9 +646,11 @@ def _volta_note(hardware: dict) -> Optional[str]:
     CUDA 13 toolkit dropped Volta — so a future Ollama release that moves
     to CUDA 13 builds would stop working on this card, and the fix is
     pinning the last CUDA 12 image tag (see docs/GPU_SETUP.md). Detection
-    is name-based best-effort: it only runs when nd-world's own container
-    can see nvidia-smi, so a card hidden behind the ollama-only GPU
-    passthrough (the normal setup) simply produces no note."""
+    is name-based best-effort against whatever `hardware["gpus"]` ended up
+    populated with — nvidia-smi, AMD sysfs (never matches — no AMD Volta),
+    SwarmUI's own reported GPU (_detect_swarmui_gpus), or a GM-entered
+    preset — so a card nd-world's own container can't see directly still
+    produces this note as long as one of those other sources found it."""
     for g in hardware.get("gpus") or []:
         name = str(g.get("name") or "")
         if "v100" in name.lower() or "volta" in name.lower() or "titan v" in name.lower():

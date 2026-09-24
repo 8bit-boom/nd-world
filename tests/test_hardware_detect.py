@@ -176,6 +176,50 @@ def test_amd_sysfs_no_cards_found(tmp_path):
     assert tuning._detect_amd_gpus(pattern) == []
 
 
+# ── SwarmUI (fallback via its own Admin API) ────────────────────────────────
+# SwarmUI's real /API/GetServerResourceInfo shape (AdminAPI.cs): "gpus" is an
+# OBJECT keyed by GPU id, not a list, with byte-valued total_memory — same
+# shape test_swarmui_model_downloads.py's swarmui_resource_info tests use.
+
+@pytest.mark.asyncio
+async def test_swarmui_gpus_parsed_from_dict_shape(monkeypatch):
+    async def fake_resource_info():
+        return {"gpus": {"0": {"id": 0, "name": "Tesla V100-PCIE-16GB",
+                                "used_memory": 0, "total_memory": 17179869184}}}
+    monkeypatch.setattr(ai_module, "swarmui_resource_info", fake_resource_info)
+
+    gpus = await tuning._detect_swarmui_gpus()
+    assert gpus == [{"vendor": "nvidia", "name": "Tesla V100-PCIE-16GB", "vram_mb": 16384}]
+
+
+@pytest.mark.asyncio
+async def test_swarmui_gpus_empty_when_not_configured(monkeypatch):
+    async def fake_resource_info():
+        return {}
+    monkeypatch.setattr(ai_module, "swarmui_resource_info", fake_resource_info)
+
+    assert await tuning._detect_swarmui_gpus() == []
+
+
+@pytest.mark.asyncio
+async def test_swarmui_gpus_ignores_entries_missing_name_or_memory(monkeypatch):
+    async def fake_resource_info():
+        return {"gpus": {"0": {"id": 0, "total_memory": 17179869184},   # no name
+                          "1": {"id": 1, "name": "GPU 1"}}}              # no total_memory
+    monkeypatch.setattr(ai_module, "swarmui_resource_info", fake_resource_info)
+
+    assert await tuning._detect_swarmui_gpus() == []
+
+
+@pytest.mark.asyncio
+async def test_swarmui_gpus_exception_is_not_fatal(monkeypatch):
+    async def fake_resource_info():
+        raise ConnectionError("swarmui unreachable")
+    monkeypatch.setattr(ai_module, "swarmui_resource_info", fake_resource_info)
+
+    assert await tuning._detect_swarmui_gpus() == []
+
+
 # ── detect_hardware() end-to-end resolution order ───────────────────────────
 
 @pytest.mark.asyncio
@@ -198,6 +242,32 @@ async def test_nvidia_detection_used_when_no_override(monkeypatch):
     hw = await tuning.detect_hardware()
     assert hw["vram_total_mb"] == 24564
     assert hw["vram_source"] == "nvidia-smi"
+
+
+@pytest.mark.asyncio
+async def test_volta_note_appears_directly_in_hardware_notes(monkeypatch):
+    """Settings > System's "Detected hardware" panel renders hw.notes as
+    soon as hardware is detected, with no model picked yet — the Volta
+    advisory needs to be IN that list (not just inside a per-model
+    recommendation, which recommend_settings() already covered) to act as
+    a persistent banner rather than something only a GM who's already
+    selected a model would ever see."""
+    async def fake_nvidia():
+        return [{"vendor": "nvidia", "name": "Tesla V100-PCIE-16GB", "vram_mb": 16384}]
+    monkeypatch.setattr(tuning, "_detect_nvidia_gpus", fake_nvidia)
+
+    hw = await tuning.detect_hardware()
+    assert any("volta" in n.lower() for n in hw["notes"])
+
+
+@pytest.mark.asyncio
+async def test_no_volta_note_for_a_non_volta_gpu(monkeypatch):
+    async def fake_nvidia():
+        return [{"vendor": "nvidia", "name": "RTX 4090", "vram_mb": 24564}]
+    monkeypatch.setattr(tuning, "_detect_nvidia_gpus", fake_nvidia)
+
+    hw = await tuning.detect_hardware()
+    assert not any("volta" in n.lower() for n in hw["notes"])
     assert hw["vram_is_lower_bound"] is False
 
 
@@ -214,11 +284,68 @@ async def test_amd_used_when_no_nvidia(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_swarmui_used_when_no_nvidia_or_amd(monkeypatch):
+    """The scenario this task exists for: nd-world's own container has no
+    GPU access (TrueNAS assigned the card to the swarmui app only), but
+    SwarmUI's own container does — its Admin API becomes the fallback
+    detection source instead of leaving this "none"."""
+    async def fake_nvidia():
+        return []
+    monkeypatch.setattr(tuning, "_detect_nvidia_gpus", fake_nvidia)
+    monkeypatch.setattr(tuning, "_detect_amd_gpus", lambda: [])
+
+    async def fake_resource_info():
+        return {"gpus": {"0": {"id": 0, "name": "Tesla V100-PCIE-16GB", "total_memory": 17179869184}}}
+    monkeypatch.setattr(ai_module, "swarmui_resource_info", fake_resource_info)
+
+    hw = await tuning.detect_hardware()
+    assert hw["vram_total_mb"] == 16384
+    assert hw["vram_source"] == "swarmui"
+    assert hw["vram_is_lower_bound"] is False
+    assert any("swarmui" in n.lower() for n in hw["notes"])
+
+
+@pytest.mark.asyncio
+async def test_swarmui_fallback_not_used_when_nvidia_already_found(monkeypatch):
+    async def fake_nvidia():
+        return [{"vendor": "nvidia", "name": "RTX 4090", "vram_mb": 24564}]
+    monkeypatch.setattr(tuning, "_detect_nvidia_gpus", fake_nvidia)
+
+    async def fake_resource_info():
+        raise AssertionError("swarmui_resource_info should not be called when nvidia-smi already found a GPU")
+    monkeypatch.setattr(ai_module, "swarmui_resource_info", fake_resource_info)
+
+    hw = await tuning.detect_hardware()
+    assert hw["vram_source"] == "nvidia-smi"
+
+
+@pytest.mark.asyncio
+async def test_swarmui_v100_fallback_triggers_volta_advisory_note(monkeypatch):
+    async def fake_nvidia():
+        return []
+    monkeypatch.setattr(tuning, "_detect_nvidia_gpus", fake_nvidia)
+    monkeypatch.setattr(tuning, "_detect_amd_gpus", lambda: [])
+
+    async def fake_resource_info():
+        return {"gpus": {"0": {"id": 0, "name": "Tesla V100-PCIE-16GB", "total_memory": 17179869184}}}
+    monkeypatch.setattr(ai_module, "swarmui_resource_info", fake_resource_info)
+
+    hw = await tuning.detect_hardware()
+    note = tuning._volta_note(hw)
+    assert note is not None
+    assert "volta" in note.lower()
+
+
+@pytest.mark.asyncio
 async def test_ollama_ps_lower_bound_when_nothing_else(monkeypatch):
     async def fake_nvidia():
         return []
     monkeypatch.setattr(tuning, "_detect_nvidia_gpus", fake_nvidia)
     monkeypatch.setattr(tuning, "_detect_amd_gpus", lambda: [])
+
+    async def fake_resource_info():
+        return {}
+    monkeypatch.setattr(ai_module, "swarmui_resource_info", fake_resource_info)
 
     async def fake_resident():
         return [{"model": "gemma3:9b", "size_bytes": 9_000_000_000, "size_vram_bytes": 8_500_000_000}]

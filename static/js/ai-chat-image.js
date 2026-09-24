@@ -654,6 +654,15 @@ async function igLoadBackendStatus() {
         row.appendChild(left); row.appendChild(right);
         list.appendChild(row);
       });
+      // A Volta card (V100/TITAN V) needs docs/GPU_SETUP.md §3b's torch fix
+      // to generate at all — surface that right where a GM would notice the
+      // GPU is even there, rather than only in the repo docs.
+      if (gpus.some(g => /v100|titan v|volta/i.test(g.name || ''))) {
+        const voltaRow = document.createElement('div');
+        voltaRow.style.cssText = 'padding:.15rem 0;color:var(--text-dim);font-size:.8rem;font-style:italic';
+        voltaRow.textContent = 'Volta GPU detected — see docs/GPU_SETUP.md §3b if generation fails on first run.';
+        list.appendChild(voltaRow);
+      }
     }
     wrap.style.display = 'block';
   } catch (e) { wrap.style.display = 'none'; }
