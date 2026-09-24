@@ -442,6 +442,43 @@ def test_smart_world_context_includes_hybrid_blocks_when_vault_configured(tmp_pa
         db.close()
 
 
+def test_smart_world_context_hides_vault_and_graph_blocks_from_players(tmp_path, monkeypatch, seed):
+    """Security regression: VaultChunk has no visibility column and no
+    entity link — its text is a raw slice of the GM's own Obsidian vault,
+    exactly where campaign secrets/prep notes live, with no [gmonly]/
+    :::gm/%%comment%% stripping applied anywhere in the vector_search or
+    graph_context path. A non-GM caller must get neither block at all,
+    not a "filtered" version of them, until VaultChunk/EntityRelation grow
+    their own per-note visibility."""
+    _write_vault(tmp_path)
+    world_id, bob_id, dockside_id, guild_id = _make_world_with_vault(tmp_path)
+    monkeypatch.setattr(vs._ai, "embed_text", _fake_embed_dockside)
+
+    db = SessionLocal()
+    try:
+        world = db.get(World, world_id)
+        asyncio.run(vs.sync_vault(db, world))
+
+        import app.retrieval as retrieval_module
+        monkeypatch.setattr(retrieval_module._ai, "embed_text", _fake_embed_dockside)
+
+        # Sanity check first: the GM (user=None, the unfiltered default)
+        # still gets both blocks — this isn't a blanket regression, only a
+        # player-specific one.
+        gm_context, _n, _no = smart_world_context(db, world_id, "tell me about smuggling at the docks")
+        assert "Semantically related vault notes" in gm_context
+        assert "Knowledge graph" in gm_context
+
+        player_context, _n2, _no2 = smart_world_context(
+            db, world_id, "tell me about smuggling at the docks", user=seed.player_a,
+        )
+        assert "Semantically related vault notes" not in player_context
+        assert "Knowledge graph" not in player_context
+        assert "Bob the Fence --located_in--> Dockside" not in player_context
+    finally:
+        db.close()
+
+
 # ── POST /api/knowledge/sync ─────────────────────────────────────────────────
 
 def test_knowledge_sync_route_requires_gm(client, seed):

@@ -173,6 +173,9 @@
       across AI Chat (GM and player), an entity's "Ask AI" panel, and Chronicler — unlike
       Entities/Notes/Rules/the hybrid-RAG vault above, these aren't filtered by relevance to what
       was actually asked; they always apply. Disable a file to switch it off without deleting it.
+      <strong style="color:var(--text)">By default a file is GM-only</strong> — its own text is
+      often exactly the spoiler it's meant to guard ("never reveal the killer's identity"), so it
+      never reaches a player's browser unless you explicitly mark it "Players" below.
     </p>
     {% if ai_instructions %}
     <table class="cf-dynamic-table" style="width:100%;border-collapse:collapse;margin-bottom:.75rem">
@@ -180,6 +183,7 @@
         <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Title</th>
         <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Preview</th>
         <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Status</th>
+        <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Visible to</th>
         <th></th>
       </tr></thead>
       <tbody>
@@ -188,9 +192,13 @@
           <td style="padding:.4rem .3rem">{{ instr.title }}</td>
           <td style="padding:.4rem .3rem;color:var(--text-dim);font-size:.82rem">{{ instr.content[:80] }}{% if instr.content|length > 80 %}…{% endif %}</td>
           <td style="padding:.4rem .3rem">{% if instr.enabled %}<span style="color:#4f4">Enabled</span>{% else %}<span style="color:var(--text-dim)">Disabled</span>{% endif %}</td>
+          <td style="padding:.4rem .3rem">{% if instr.applies_to_players %}<span style="color:#4f4">GM + Players</span>{% else %}<span style="color:var(--text-dim)">GM only</span>{% endif %}</td>
           <td style="padding:.4rem .3rem;white-space:nowrap">
             <form method="post" action="/worlds/{{ edit_world.id }}/ai-instructions/{{ instr.id }}/toggle" style="display:inline">
               <button type="submit" class="btn-secondary" style="padding:.2rem .5rem;font-size:.78rem">{% if instr.enabled %}Disable{% else %}Enable{% endif %}</button>
+            </form>
+            <form method="post" action="/worlds/{{ edit_world.id }}/ai-instructions/{{ instr.id }}/toggle-players" style="display:inline">
+              <button type="submit" class="btn-secondary" style="padding:.2rem .5rem;font-size:.78rem">{% if instr.applies_to_players %}Make GM-only{% else %}Allow players{% endif %}</button>
             </form>
             <form method="post" action="/worlds/{{ edit_world.id }}/ai-instructions/{{ instr.id }}/delete" style="display:inline" onsubmit="return confirm('Delete this instruction file?')">
               <button type="submit" class="btn-cancel" style="padding:.2rem .5rem;font-size:.78rem">Delete</button>
@@ -210,6 +218,10 @@
       <div class="form-dropzone" data-dropzone style="padding:.3rem .6rem;display:inline-block">
         <input type="file" name="file" accept=".md,.markdown,.txt" required/>
       </div>
+      <label style="display:flex;align-items:center;gap:.3rem;font-size:.82rem;color:var(--text-dim);white-space:nowrap">
+        <input type="checkbox" name="applies_to_players" value="1" style="width:auto">
+        Visible to players too
+      </label>
       <button type="submit" class="btn-cancel">Upload</button>
     </form>
   </div>

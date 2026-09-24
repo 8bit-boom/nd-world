@@ -1138,7 +1138,23 @@ def smart_world_context(
     # comment above vector_search) — entirely opt-in, gated on this world
     # actually having a vault configured, so a world that's never touched
     # this feature builds byte-for-byte the same context it always has.
-    vault = bool(world and (world.obsidian_vault_path or "").strip())
+    #
+    # ALSO gated on `not strip_secrets` (i.e. GM/unfiltered callers only):
+    # VaultChunk has no visibility column and no entity link at all — its
+    # text is a raw slice of whatever the GM's Obsidian vault says, which
+    # is exactly where campaign secrets/prep notes live, and nothing here
+    # strips a `:::gm`/`[gmonly]` span or an Obsidian `%%hidden comment%%`
+    # out of it the way format_context_from_entities does for Entity text.
+    # graph_context has a smaller version of the same problem: it filters
+    # the ENTITY NAMES it shows by visibility, but an edge's existence and
+    # its relation label both come from GM-only vault prose, so e.g. a
+    # `Bob --secretly_serves--> Mayor` edge (or a `mentions` edge sourced
+    # from a secret paragraph) can surface even when Bob and the Mayor are
+    # both public entities. Until VaultChunk/EntityRelation carry their own
+    # per-note visibility (see app.vault_sync's TODO), the only correct
+    # answer for a non-GM caller is "don't surface vault-derived content at
+    # all" rather than surfacing it unfiltered.
+    vault = bool(world and (world.obsidian_vault_path or "").strip()) and not strip_secrets
     vector_block = ""
     graph_block = ""
     if vault:

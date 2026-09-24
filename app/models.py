@@ -602,7 +602,15 @@ class AiInstruction(Base):
     app.ai_instructions.enabled_instructions_text, the sole reader of
     this table. `enabled` lets a GM keep a document uploaded but
     temporarily switch it off without losing/re-uploading it (e.g. an
-    instruction set for a one-shot side session, off between sessions)."""
+    instruction set for a one-shot side session, off between sessions).
+
+    `applies_to_players` gates whether this row's TEXT is ever composed
+    into a player-reachable prompt at all — defaulting to False (opt-in,
+    not opt-out) because the whole point of an instruction like "never
+    reveal the killer's identity" is that it names a spoiler, and the
+    content of the instruction itself would BE that spoiler if it reached
+    a player's browser. A GM-only instruction (the default) is still
+    included for every GM-facing surface regardless of this flag."""
     __tablename__ = "ai_instructions"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -610,6 +618,7 @@ class AiInstruction(Base):
     title = Column(String(256), nullable=False)
     content = Column(Text, nullable=False)
     enabled = Column(Boolean, default=True)
+    applies_to_players = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

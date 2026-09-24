@@ -32,6 +32,7 @@ MAX_AI_INSTRUCTION_BYTES = 200 * 1024  # a system-prompt document, not a documen
 @router.post("/worlds/{world_id}/ai-instructions/import")
 def import_ai_instruction(
     world_id: int, request: Request, file: UploadFile = File(...), title: str = Form(""),
+    applies_to_players: str = Form(""),
     db=Depends(get_db), active_world: Optional[str] = Cookie(None),
 ):
     world, _ = get_world_ctx(request, db, active_world)
@@ -44,7 +45,10 @@ def import_ai_instruction(
     content = raw.decode("utf-8", errors="replace").strip()
     if content:
         doc_title = title.strip() or Path(file.filename or "").stem or "Untitled"
-        db.add(AiInstruction(world_id=world.id, title=doc_title, content=content, enabled=True))
+        db.add(AiInstruction(
+            world_id=world.id, title=doc_title, content=content, enabled=True,
+            applies_to_players=bool(applies_to_players),
+        ))
         db.commit()
     return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
 
@@ -54,6 +58,18 @@ def toggle_ai_instruction(world_id: int, instruction_id: int, db=Depends(get_db)
     instr = db.get(AiInstruction, instruction_id)
     if instr and instr.world_id == world_id:
         instr.enabled = not instr.enabled
+        db.commit()
+    return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
+
+
+@router.post("/worlds/{world_id}/ai-instructions/{instruction_id}/toggle-players")
+def toggle_ai_instruction_players(world_id: int, instruction_id: int, db=Depends(get_db)):
+    """Flips applies_to_players independently of enabled — see that
+    column's docstring on AiInstruction for why it defaults False (opt-in:
+    an instruction's own text is often the spoiler it's meant to guard)."""
+    instr = db.get(AiInstruction, instruction_id)
+    if instr and instr.world_id == world_id:
+        instr.applies_to_players = not instr.applies_to_players
         db.commit()
     return RedirectResponse(f"/worlds/{world_id}/edit", status_code=303)
 

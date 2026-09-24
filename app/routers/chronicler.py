@@ -75,7 +75,9 @@ def build_chronicler_system_prompt(db: Session, world_id: int, question: str, us
     # duplicate never had.
     entities = _retrieval.find_relevant_entities(db, world_id, question, limit=15, user=user)
     system = _CHRONICLER_SYSTEM
-    custom_instructions = _ai_instructions.enabled_instructions_text(db, world_id)
+    custom_instructions = _ai_instructions.enabled_instructions_text(
+        db, world_id, for_players=not (user and user.is_gm),
+    )
     if custom_instructions:
         system = f"{system}\n\n{custom_instructions}"
     lines = [system, "", "## Known facts"]

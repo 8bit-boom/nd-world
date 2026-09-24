@@ -6,6 +6,13 @@ AI-answering surface's system prompt: the GM's /ai chat page, the
 player-facing /ai-chat page, an entity's "Ask AI" panel, and Chronicler.
 Distinct from RAG (app.retrieval): these are never filtered by relevance
 to the question asked.
+
+An instruction is GM-only by default (applies_to_players=False) — its own
+text is often exactly the spoiler it exists to guard ("never reveal the
+killer's identity before Act 3"), so it must never reach a player-facing
+page's source unless a GM explicitly opts it in. See the
+test_player_*_never_leaks_gm_only_instruction / *_shows_players_opted_in_
+instruction pairs below for the security-relevant coverage.
 """
 import io
 
@@ -16,10 +23,16 @@ from app.models import AiInstruction, Entity, World
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
 
-def _add_instruction(world_id, title="Tone Guide", content="Always answer in a noir detective voice.", enabled=True):
+def _add_instruction(
+    world_id, title="Tone Guide", content="Always answer in a noir detective voice.",
+    enabled=True, applies_to_players=False,
+):
     db = SessionLocal()
     try:
-        instr = AiInstruction(world_id=world_id, title=title, content=content, enabled=enabled)
+        instr = AiInstruction(
+            world_id=world_id, title=title, content=content, enabled=enabled,
+            applies_to_players=applies_to_players,
+        )
         db.add(instr)
         db.commit()
         db.refresh(instr)
@@ -101,8 +114,11 @@ def test_gm_ai_chat_no_world_has_no_instructions_block(client, seed):
     assert "Additional GM-authored instructions" not in r.text
 
 
-def test_player_ai_chat_includes_custom_instructions(client, seed):
-    _add_instruction(seed.world_a.id, title="Tone Guide", content="Always answer in a noir detective voice.")
+def test_player_ai_chat_includes_instruction_opted_in_to_players(client, seed):
+    _add_instruction(
+        seed.world_a.id, title="Tone Guide", content="Always answer in a noir detective voice.",
+        applies_to_players=True,
+    )
     db = SessionLocal()
     try:
         w = db.get(World, seed.world_a.id)
@@ -116,6 +132,49 @@ def test_player_ai_chat_includes_custom_instructions(client, seed):
     assert r.status_code == 200
     assert "Tone Guide" in r.text
     assert "Always answer in a noir detective voice." in r.text
+
+
+def test_player_ai_chat_never_leaks_gm_only_instruction(client, seed):
+    """Security regression: an instruction's default is GM-only
+    (applies_to_players=False) because its own text is often the spoiler
+    it exists to guard ("never reveal the killer's identity before Act
+    3") — that text must never reach a player-facing page's source."""
+    _add_instruction(
+        seed.world_a.id, title="Spoiler Guard",
+        content="The Mayor is secretly the killer — never reveal this before Act 3.",
+    )
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.players_can_use_ai_chat = True
+        db.commit()
+    finally:
+        db.close()
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/ai-chat")
+    assert r.status_code == 200
+    assert "Spoiler Guard" not in r.text
+    assert "secretly the killer" not in r.text
+
+
+def test_gm_ai_chat_still_sees_gm_only_instruction(client, seed):
+    """A GM visiting the same page must still get every enabled
+    instruction regardless of applies_to_players — that flag only ever
+    restricts what a non-GM sees."""
+    _add_instruction(seed.world_a.id, title="Spoiler Guard", content="Only the GM should read this.")
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.players_can_use_ai_chat = True
+        db.commit()
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/ai-chat")
+    assert r.status_code == 200
+    assert "Spoiler Guard" in r.text
 
 
 def test_player_ai_chat_no_instructions_renders_empty_constant(client, seed):
@@ -152,6 +211,24 @@ def test_entity_ask_ai_includes_custom_instructions(client, seed):
     assert "Always answer in a noir detective voice." in r.text
 
 
+def test_entity_ask_ai_never_leaks_gm_only_instruction_to_player(client, seed):
+    _add_instruction(seed.world_a.id, title="Spoiler Guard", content="Only the GM should read this.")
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=seed.world_a.id, kind="item", name="Test Item")
+        db.add(e)
+        db.commit()
+        db.refresh(e)
+        eid = e.id
+    finally:
+        db.close()
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/entity/{eid}")
+    assert r.status_code == 200
+    assert "Spoiler Guard" not in r.text
+
+
 def test_chronicler_system_prompt_includes_custom_instructions(client, seed):
     from app.routers.chronicler import build_chronicler_system_prompt
 
@@ -161,6 +238,33 @@ def test_chronicler_system_prompt_includes_custom_instructions(client, seed):
         prompt = build_chronicler_system_prompt(db, seed.world_a.id, "any question", seed.gm)
         assert "Tone Guide" in prompt
         assert "Always answer in a noir detective voice." in prompt
+    finally:
+        db.close()
+
+
+def test_chronicler_system_prompt_never_leaks_gm_only_instruction_to_player(client, seed):
+    from app.routers.chronicler import build_chronicler_system_prompt
+
+    _add_instruction(seed.world_a.id, title="Spoiler Guard", content="Only the GM should read this.")
+    db = SessionLocal()
+    try:
+        prompt = build_chronicler_system_prompt(db, seed.world_a.id, "any question", seed.player_a)
+        assert "Spoiler Guard" not in prompt
+    finally:
+        db.close()
+
+
+def test_chronicler_system_prompt_shows_opted_in_instruction_to_player(client, seed):
+    from app.routers.chronicler import build_chronicler_system_prompt
+
+    _add_instruction(
+        seed.world_a.id, title="Tone Guide", content="Always answer in a noir detective voice.",
+        applies_to_players=True,
+    )
+    db = SessionLocal()
+    try:
+        prompt = build_chronicler_system_prompt(db, seed.world_a.id, "any question", seed.player_a)
+        assert "Tone Guide" in prompt
     finally:
         db.close()
 
@@ -210,6 +314,24 @@ def test_import_uses_explicit_title_over_filename(client, seed):
     assert r.status_code == 303
     rows = _instructions_for(seed.world_a.id)
     assert rows[0].title == "My Tone Guide"
+
+
+def test_import_defaults_to_gm_only(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = _upload(client, seed.world_a.id, "tone.md", b"Content.", "text/markdown")
+    assert r.status_code == 303
+    rows = _instructions_for(seed.world_a.id)
+    assert rows[0].applies_to_players is False
+
+
+def test_import_applies_to_players_checkbox_opts_in(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = _upload(client, seed.world_a.id, "tone.md", b"Content.", "text/markdown", applies_to_players="1")
+    assert r.status_code == 303
+    rows = _instructions_for(seed.world_a.id)
+    assert rows[0].applies_to_players is True
 
 
 def test_import_rejects_unsupported_extension(client, seed):
@@ -281,6 +403,49 @@ def test_toggle_cannot_affect_another_worlds_instruction(client, seed):
         db.close()
 
 
+def test_toggle_players_flips_applies_to_players(client, seed):
+    iid = _add_instruction(seed.world_a.id, applies_to_players=False)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/worlds/{seed.world_a.id}/ai-instructions/{iid}/toggle-players", follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        assert db.get(AiInstruction, iid).applies_to_players is True
+    finally:
+        db.close()
+    client.post(f"/worlds/{seed.world_a.id}/ai-instructions/{iid}/toggle-players", follow_redirects=False)
+    db = SessionLocal()
+    try:
+        assert db.get(AiInstruction, iid).applies_to_players is False
+    finally:
+        db.close()
+
+
+def test_toggle_players_requires_gm(client, seed):
+    iid = _add_instruction(seed.world_a.id, applies_to_players=False)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post(f"/worlds/{seed.world_a.id}/ai-instructions/{iid}/toggle-players", follow_redirects=False)
+    db = SessionLocal()
+    try:
+        assert db.get(AiInstruction, iid).applies_to_players is False  # unchanged
+    finally:
+        db.close()
+
+
+def test_toggle_players_cannot_affect_another_worlds_instruction(client, seed):
+    iid = _add_instruction(seed.world_b.id, applies_to_players=False)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    client.post(f"/worlds/{seed.world_a.id}/ai-instructions/{iid}/toggle-players", follow_redirects=False)
+    db = SessionLocal()
+    try:
+        assert db.get(AiInstruction, iid).applies_to_players is False  # unchanged — wrong world_id in the URL
+    finally:
+        db.close()
+
+
 def test_delete_removes_instruction(client, seed):
     iid = _add_instruction(seed.world_a.id)
     login(client, seed.gm.email, GM_PASSWORD)
@@ -304,6 +469,21 @@ def test_delete_requires_gm(client, seed):
         assert db.get(AiInstruction, iid) is not None  # still there
     finally:
         db.close()
+
+
+# ── world_edit.html renders the new "Visible to" column/toggle ──────────────
+
+def test_world_edit_page_renders_players_column(client, seed):
+    _add_instruction(seed.world_a.id, title="GM Doc", applies_to_players=False)
+    _add_instruction(seed.world_a.id, title="Shared Doc", applies_to_players=True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get(f"/worlds/{seed.world_a.id}/edit")
+    assert r.status_code == 200
+    assert "GM only" in r.text
+    assert "GM + Players" in r.text
+    assert "Allow players" in r.text
+    assert "Make GM-only" in r.text
 
 
 # ── World delete cascade ─────────────────────────────────────────────────────

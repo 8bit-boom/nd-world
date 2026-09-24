@@ -3520,7 +3520,10 @@ def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: 
             f"Keep responses focused; expand only when asked. "
             + _GROUNDING_CLAUSE
         )
-        custom_instructions = _ai_instructions.enabled_instructions_text(db, world.id)
+        user = getattr(request.state, "user", None)
+        custom_instructions = _ai_instructions.enabled_instructions_text(
+            db, world.id, for_players=not (user and user.is_gm),
+        )
         if custom_instructions:
             world_system = f"{world_system}\n\n{custom_instructions}"
     return templates.TemplateResponse("ai_chat.html", {
@@ -3549,7 +3552,9 @@ def player_ai_chat(request: Request, db: Session = Depends(get_db), active_world
         raise HTTPException(403)
     return templates.TemplateResponse("ai_chat_player.html", {
         "request": request, "world": world, "worlds": worlds,
-        "ai_custom_instructions": _ai_instructions.enabled_instructions_text(db, world.id),
+        "ai_custom_instructions": _ai_instructions.enabled_instructions_text(
+            db, world.id, for_players=not (user and user.is_gm),
+        ),
     })
 
 @app.get("/image-gen", response_class=HTMLResponse)
@@ -5124,7 +5129,9 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         "custom_sections": custom_sections, "custom_fields": custom_fields,
         "body_sections": body_sections, "toc": toc,
         "safe_body": safe_body, "safe_summary": safe_summary,
-        "ai_custom_instructions": _ai_instructions.enabled_instructions_text(db, world.id) if world else "",
+        "ai_custom_instructions": (
+            _ai_instructions.enabled_instructions_text(db, world.id, for_players=not is_gm) if world else ""
+        ),
     })
 
 # ── Entity Field Templates ──────────────────────────────────────────────────

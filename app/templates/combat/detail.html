@@ -86,9 +86,10 @@
 
 <script>
 const COMBAT_ID = {{ combat.id }};
-// JSON.parse(...|tojson) — not |safe — so a PC/entity name containing
-// "</script>" can't break out of this inline script and execute (tojson
-// escapes <, >, & for HTML-safety; |safe on a raw json.dumps() string does not).
+// JSON.parse(...|tojson) — not |safe — so a PC/entity name containing a
+// closing script tag can't break out of this inline script and execute
+// (tojson escapes <, >, & for HTML-safety; |safe on a raw json.dumps()
+// string does not).
 const PCS = JSON.parse({{ pc_payload_json | tojson }});
 const ENTITIES = JSON.parse({{ entity_payload_json | tojson }});
 let combatants = JSON.parse({{ combatants_json | tojson }});
