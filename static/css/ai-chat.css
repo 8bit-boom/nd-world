@@ -183,7 +183,7 @@
   overflow-y: auto;
 }
 #ai-input:focus { outline: 1px solid var(--neon); }
-#ai-attach-btn, #ai-mic-btn, #ai-bgjob-btn {
+#ai-attach-btn, #ai-mic-btn, #ai-bgjob-btn, #ai-send-bg {
   background: var(--bg3);
   border: 1px solid var(--border);
   color: var(--text-dim);
@@ -193,7 +193,8 @@
   cursor: pointer;
   font-size: 1rem;
 }
-#ai-attach-btn:hover, #ai-mic-btn:hover, #ai-bgjob-btn:hover { border-color: var(--neon); color: var(--neon); }
+#ai-attach-btn:hover, #ai-mic-btn:hover, #ai-bgjob-btn:hover, #ai-send-bg:hover { border-color: var(--neon); color: var(--neon); }
+#ai-send-bg:disabled { opacity: .45; cursor: not-allowed; }
 .ai-main.drag-over { outline: 2px dashed var(--neon); outline-offset: -4px; }
 #ai-send {
   background: var(--neon);
@@ -342,8 +343,12 @@
     position: sticky;
     bottom: 0;
     z-index: 10;
+    flex-wrap: wrap;
+    gap: .4rem;
   }
-  #ai-input { font-size: 16px; } /* prevent iOS auto-zoom */
+  /* Textarea gets its own full-width row above the button row instead of
+     being squeezed to a sliver next to 5 buttons on a narrow screen. */
+  #ai-input { font-size: 16px; flex: 1 1 100%; order: -1; } /* prevent iOS auto-zoom */
 
   /* Image gen panel: auto height, stack sidebar above main */
   #image-panel { height: auto; overflow: visible; }
@@ -624,8 +629,8 @@
   .ai-main { overflow: visible; }
   .ai-messages { max-height: 55vh; overflow-y: auto; padding: .75rem; }
   .ai-bubble { font-size: .88rem; padding: .5rem .75rem; }
-  .ai-input-bar { padding: .5rem .75rem; position: sticky; bottom: 0; z-index: 10; }
-  #ai-input { font-size: 16px; }
+  .ai-input-bar { padding: .5rem .75rem; position: sticky; bottom: 0; z-index: 10; flex-wrap: wrap; gap: .4rem; }
+  #ai-input { font-size: 16px; flex: 1 1 100%; order: -1; }
 
   #image-panel { height: auto; overflow: visible; }
   .ig-wrap { flex-direction: column; overflow: visible; height: auto; }

@@ -226,6 +226,40 @@ def test_ai_sidebar_width_scales_with_root_font_size():
     assert "rem" in block
 
 
+def test_ai_send_bg_button_is_styled_like_its_sibling_icon_buttons():
+    """#ai-send-bg (the "send as background job" button) had no CSS rule at
+    all, so it rendered with raw browser-default button chrome instead of
+    matching #ai-attach-btn/#ai-mic-btn/#ai-bgjob-btn — and had no
+    :disabled styling despite sendMessageAsBackgroundJob() toggling
+    btn.disabled while the job starts (see ai-chat-core.js)."""
+    with open(Path(__file__).parent.parent / "static" / "css" / "ai-chat.css") as f:
+        content = f.read()
+    selector_line = content.split("#ai-attach-btn, #ai-mic-btn, #ai-bgjob-btn", 1)[1].split("{", 1)[0]
+    assert "#ai-send-bg" in selector_line
+    icon_btn_block = content.split("#ai-attach-btn, #ai-mic-btn, #ai-bgjob-btn", 1)[1].split("{", 1)[1].split("}", 1)[0]
+    assert "background" in icon_btn_block
+    assert "border-radius" in icon_btn_block
+    assert "#ai-send-bg:disabled" in content
+
+
+def test_mobile_input_bar_stacks_textarea_above_buttons():
+    """The desktop .ai-input-bar packs attach + mic + bgjob + send-bg +
+    textarea + send into one row — on a narrow phone that leaves almost no
+    width for the textarea itself. Both mobile media-query overrides of
+    .ai-input-bar must let it wrap, with #ai-input given its own
+    full-width first row instead of being squeezed."""
+    with open(Path(__file__).parent.parent / "static" / "css" / "ai-chat.css") as f:
+        content = f.read()
+    media_sections = content.split("@media (max-width: 768px)")[1:]
+    assert len(media_sections) >= 2
+    for section in media_sections:
+        bar_block = section.split(".ai-input-bar {", 1)[1].split("}", 1)[0]
+        assert "flex-wrap: wrap" in bar_block
+        input_block = section.split("#ai-input {", 1)[1].split("}", 1)[0]
+        assert "flex: 1 1 100%" in input_block
+        assert "order: -1" in input_block
+
+
 # ── UI scale preference ──────────────────────────────────────────────────────
 
 def test_ui_scale_css_rules_present():
