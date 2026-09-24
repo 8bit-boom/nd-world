@@ -572,6 +572,10 @@ h2 { font-size: .85rem; letter-spacing: .12em; color: var(--text-dim); margin-bo
 .view-btn:first-child { border-left: none; }
 
 /* ── Stat table (list page, table view) ── */
+/* Scrolls within its own wrapper instead of relying on the page-level
+   overflow — mobile sets overflow-x:clip on html/body, which can't even be
+   scrolled to once content is cut off there (unlike plain `hidden`). */
+.stat-table-wrap { overflow-x: auto; }
 .stat-table {
   width: 100%;
   border-collapse: collapse;
@@ -1480,9 +1484,9 @@ input[type="file"]:hover { border-color: var(--neon); }
   .dash-card { padding: .9rem .5rem; }
   .dash-count { font-size: 1.5rem; }
 
-  /* Stat table — hide less important columns */
-  .stat-table thead th:nth-child(n+4),
-  .stat-table tbody td:nth-child(n+4) { display: none; }
+  /* Stat table — scrolls horizontally (via .stat-table-wrap) instead of
+     hiding every column past the 3rd, which used to drop feat descriptions
+     and other stat columns entirely with no way to see them. */
   .stat-table { font-size: .78rem; }
   .tbl-thumb { width: 28px; height: 28px; }
 

@@ -560,11 +560,15 @@
 </div>
 
 <style>
-.settings-tab-bar { display:flex; gap:.3rem; margin:1rem 0; border-bottom:1px solid var(--border); padding-bottom:.5rem; }
+/* overflow-x:auto so a bar wider than the viewport scrolls within itself —
+   mobile sets overflow-x:clip on html/body, which can't even be scrolled to
+   once content is cut off there (unlike plain `hidden`), so the 4th tab used
+   to be un-tappable past its left sliver instead of just a swipe away. */
+.settings-tab-bar { display:flex; gap:.3rem; margin:1rem 0; border-bottom:1px solid var(--border); padding-bottom:.5rem; overflow-x:auto; }
 .settings-tab {
   background:var(--bg2); border:1px solid var(--border); color:var(--text-dim);
   padding:.35rem .9rem; border-radius:4px 4px 0 0; cursor:pointer;
-  font-family:var(--font); font-size:.85rem;
+  font-family:var(--font); font-size:.85rem; white-space:nowrap; flex-shrink:0;
 }
 .settings-tab.active { border-color:var(--neon); color:var(--neon); }
 .nav-menu-row { display:grid; grid-template-columns:1fr 70px auto auto auto; gap:.5rem; align-items:center; background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.5rem .6rem; margin-bottom:.4rem; }

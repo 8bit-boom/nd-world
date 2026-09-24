@@ -117,6 +117,7 @@
 
     {# ── Macro: renders one table (stat or text) for a list of entities ── #}
     {% macro render_table(rows) %}
+    <div class="stat-table-wrap">
     {% if table_cols %}
     <table class="stat-table">
       <thead><tr>
@@ -176,6 +177,7 @@
       </tbody>
     </table>
     {% endif %}
+    </div>
     {% endmacro %}
 
     {% if is_parent_folder %}
