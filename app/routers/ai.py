@@ -203,6 +203,19 @@ class ChatAttachment(BaseModel):
     text: str = ""
 
 
+# A non-GM /stream caller's body.system is truncated to this many chars —
+# see ai_stream's own comment on why body.system isn't a data-leak vector
+# (the actual secret-bearing RAG/custom-instructions content is already
+# server-filtered before it ever reaches the page that builds this string)
+# but a direct, off-page POST with an unbounded string is still a cheap
+# way to waste tokens/resources against the GM's shared Ollama instance.
+# Comfortably above any real page's composed system prompt (a fixed
+# instructional template plus however many AiInstruction files a GM
+# marked player-visible — see MAX_AI_INSTRUCTION_BYTES for the per-file
+# cap those draw from).
+_PLAYER_SYSTEM_PROMPT_MAX_CHARS = 50_000
+
+
 class ChatMessage(BaseModel):
     role: str
     content: str
@@ -241,9 +254,20 @@ class ChatBody(BaseModel):
 # docstring) so an existing preset that set one doesn't suddenly 400.
 _OPTION_ALLOWLIST = {
     "temperature": (float, 0.0, 2.0), "top_p": (float, 0.0, 1.0), "top_k": (int, 0, None),
-    "repeat_penalty": (float, 0.0, 5.0), "num_predict": (int, -2, None), "num_ctx": (int, 1, None),
+    "repeat_penalty": (float, 0.0, 5.0), "num_predict": (int, -2, None),
+    # num_ctx capped at MAX_AUTO_NUM_CTX — the same ceiling this app's own
+    # auto-sizing (_ctx_override_if_needed below) ever picks — rather than
+    # left unbounded: a non-GM caller (POST /api/ai/stream is reachable by
+    # any player whose world opted into Ask AI/AI Chat) could otherwise
+    # request an arbitrarily large context window against the GM's shared
+    # Ollama instance.
+    "num_ctx": (int, 1, _ai.MAX_AUTO_NUM_CTX),
     "seed": (int, None, None), "mirostat": (int, 0, 2), "mirostat_tau": (float, 0.0, 100.0),
-    "mirostat_eta": (float, 0.0, 10.0), "num_gpu": (int, 0, None),
+    "mirostat_eta": (float, 0.0, 10.0),
+    # 999 is the "every layer on GPU" sentinel app.ollama_tuning.
+    # recommend_settings itself hands out — bounded just above that rather
+    # than left unbounded, same DoS-ish concern as num_ctx above.
+    "num_gpu": (int, 0, 1000),
     "min_p": (float, 0.0, 1.0), "typical_p": (float, 0.0, 1.0), "repeat_last_n": (int, -1, 131072),
     "presence_penalty": (float, -2.0, 2.0), "frequency_penalty": (float, -2.0, 2.0),
     "num_keep": (int, 0, 131072), "num_batch": (int, 1, 4096), "num_thread": (int, 0, 256),
@@ -547,7 +571,7 @@ class AssistBody(BaseModel):
     rag_notes_limit: Optional[int] = None
 
 
-def _assist_world_context(body: AssistBody, db, world) -> str:
+def _assist_world_context(body: AssistBody, db, world, user=None) -> str:
     if not body.use_rag:
         return ""
     # The content being worked on is the best relevance signal — same
@@ -564,10 +588,16 @@ def _assist_world_context(body: AssistBody, db, world) -> str:
     query = "\n".join(
         x for x in (body.name, body.summary, body.body, body.instruction) if x
     )[:_audio_jobs._RAG_QUERY_CHAR_BUDGET]
+    # /assist is GM/Assistant-only (can_edit tier — see api_ai_assist's own
+    # docstring); user=None keeps it unfiltered for a real GM (matching
+    # smart_world_context's own default) but filters an Assistant caller
+    # to what a player could see, per AGENTS.md's "Assistants always see
+    # what players see".
     context, _non_notes, _notes = _retrieval.smart_world_context(
         db, world.id, query,
         entity_limit=body.rag_entity_limit if body.rag_entity_limit is not None else 15,
         notes_limit=body.rag_notes_limit if body.rag_notes_limit is not None else 5,
+        user=None if (user and user.is_gm) else user,
     )
     return context
 
@@ -602,12 +632,13 @@ async def api_ai_assist(
     # Empty-string model = the "assist" surface default (Models tab), same
     # per-surface convention chat/ask_ai/recap follow.
     model = body.model or _ai.get_defaults().get("assist", "")
+    user = getattr(request.state, "user", None)
     try:
         result = await _ai_assist.run_assist(
             body.op,
             content=content, meta=_assist_meta(body), instruction=body.instruction,
             model=model, think=body.think, lang=body.lang,
-            world_context=_assist_world_context(body, db, world),
+            world_context=_assist_world_context(body, db, world, user=user),
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -631,6 +662,13 @@ async def api_ai_assist_job_create(
     if not world:
         raise HTTPException(400, "No active world")
     user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
+    # RAG force-disabled for a non-GM (Assistant) caller, same reason
+    # api_world_summary_create disables it for a non-GM: this job path's
+    # _build_rag_context (app/audio_jobs.py) retrieves world entities/notes
+    # WITHOUT the per-entity visibility filter smart_world_context supports,
+    # so an Assistant-enabled RAG here could pull GM-only lore back into a
+    # background-job result.
     try:
         job_id = _audio_jobs.create_assist_job(
             world.id,
@@ -638,7 +676,7 @@ async def api_ai_assist_job_create(
             content=body.body, meta=_assist_meta(body),
             instruction=body.instruction, lang=body.lang,
             model=body.model or _ai.get_defaults().get("assist", ""),
-            think=body.think, use_rag=body.use_rag,
+            think=body.think, use_rag=body.use_rag and is_gm,
             rag_entity_limit=body.rag_entity_limit, rag_notes_limit=body.rag_notes_limit,
             created_by_user_id=user.id if user else None,
         )
@@ -1395,9 +1433,25 @@ async def ai_stream(
 ):
     _require_ask_ai_access(request, db, active_world)
 
+    user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
     msgs = _build_ollama_messages(body.messages)
-    requested = body.model or _ai.get_defaults().get(body.surface, "")
+    # A non-GM caller's own `model` choice is never honored — this route is
+    # reachable by any player whose world opted into Ask AI/AI Chat, and
+    # nothing about the client (a page it never rendered, or a direct call
+    # from devtools/curl) is validated against the model catalog. A GM
+    # picking a model in the UI is the only caller this was ever meant for.
+    requested = (body.model if is_gm else "") or _ai.get_defaults().get(body.surface, "")
     options = _clamp_options(body.options)
+    # Same reasoning as the model restriction above — body.system is framing
+    # text a page composes client-side from already server-filtered pieces
+    # (see app.ai_instructions.enabled_instructions_text's for_players
+    # gating and this route's own RAG context, which reaches messages/
+    # already-filtered separately, never through this field) — the actual
+    # secret-bearing data was never routed through this string, but an
+    # unbounded one is still a cheap way to waste tokens/resources.
+    if not is_gm and len(body.system) > _PLAYER_SYSTEM_PROMPT_MAX_CHARS:
+        body.system = body.system[:_PLAYER_SYSTEM_PROMPT_MAX_CHARS]
     # A thinking-enabled Ask AI request otherwise reaches Ollama with the
     # GM's configured num_predict completely un-widened — every other
     # think=True caller in this app (the recap family) widens it via

@@ -30,7 +30,7 @@ from . import rules_render
 from .constants import KINDS
 from .database import SessionLocal
 from .deps import load_custom_kinds
-from .models import Entity, Fact, GameSession, Quest, RandomTable, World, entity_player_access
+from .models import Entity, EntityRelation, Fact, GameSession, Quest, RandomTable, World, entity_player_access
 from .routers.chronicler import build_chronicler_system_prompt, visible_facts
 
 mcp = FastMCP(
@@ -421,6 +421,13 @@ def delete_entity(ctx: Context, entity_id: int) -> dict:
         if not e:
             raise ValueError(f"Entity {entity_id} not found")
         _load_world(db, e.world_id, user)
+        # Entity.id is a plain INTEGER PRIMARY KEY (no AUTOINCREMENT), so
+        # SQLite can reuse this id for the next entity created — leaving a
+        # stale EntityRelation row behind would silently reattach a GM's
+        # confirmed graph edge to an unrelated future entity.
+        db.query(EntityRelation).filter(
+            (EntityRelation.source_id == entity_id) | (EntityRelation.target_id == entity_id)
+        ).delete()
         db.delete(e)
         db.commit()
         return {"deleted": entity_id}

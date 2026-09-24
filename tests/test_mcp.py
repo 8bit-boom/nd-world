@@ -25,7 +25,7 @@ from app.database import SessionLocal, engine
 from app.database import _migrate as _db_migrate
 from app.main import app
 from app.models import (
-    ApiToken, Base, Entity, Fact, GameSession, Quest, RandomTable, User, World, WorldMembership,
+    ApiToken, Base, Entity, EntityRelation, Fact, GameSession, Quest, RandomTable, User, World, WorldMembership,
 )
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD
@@ -307,6 +307,40 @@ async def test_mcp_entity_full_crud_roundtrip():
 
     deleted = _result(await _call(gm_token, "delete_entity", {"entity_id": entity_id}))
     assert deleted["deleted"] == entity_id
+
+
+async def test_mcp_delete_entity_removes_entity_relation_rows():
+    """Entity.id is a plain INTEGER PRIMARY KEY (no AUTOINCREMENT) — SQLite
+    can reuse a deleted entity's id for the next one created. A stale
+    EntityRelation row left behind would silently reattach a GM's
+    confirmed graph edge to that unrelated future entity."""
+    _reset_db()
+    ids = _seed()
+    gm_token = _issue_token(ids["gm_id"], "gm")
+
+    a = _result(await _call(gm_token, "create_entity", {
+        "world_id": ids["world_a_id"], "kind": "character", "name": "Bob",
+    }))
+    b = _result(await _call(gm_token, "create_entity", {
+        "world_id": ids["world_a_id"], "kind": "organization", "name": "Guild",
+    }))
+    db = SessionLocal()
+    try:
+        db.add(EntityRelation(world_id=ids["world_a_id"], source_id=a["id"], target_id=b["id"], relation="member_of"))
+        db.commit()
+        assert db.query(EntityRelation).filter(EntityRelation.source_id == a["id"]).count() == 1
+    finally:
+        db.close()
+
+    await _call(gm_token, "delete_entity", {"entity_id": a["id"]})
+
+    db = SessionLocal()
+    try:
+        assert db.query(EntityRelation).filter(
+            (EntityRelation.source_id == a["id"]) | (EntityRelation.target_id == a["id"])
+        ).count() == 0
+    finally:
+        db.close()
 
 
 async def test_mcp_create_entity_rejects_bad_kind():

@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db, get_app_settings
 from ..deps import get_world_ctx, filter_visible_entities, world_can_view_section
 from ..imaging import convert_image, make_thumbnail
-from ..models import Entity
+from ..models import Entity, EntityRelation
 from ..rendering import render_md
 from ..templating import templates
 from ..uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, effective_upload_bytes, unique_upload_filename
@@ -266,6 +266,13 @@ def races_delete(race_id: int, request: Request, db: Session = Depends(get_db), 
     entity = db.get(Entity, race_id)
     if not entity or entity.kind != "race" or not world or entity.world_id != world.id:
         raise HTTPException(404)
+    # Entity.id is a plain INTEGER PRIMARY KEY (no AUTOINCREMENT), so
+    # SQLite can reuse this id for the next entity created — leaving a
+    # stale EntityRelation row behind would silently reattach a GM's
+    # confirmed graph edge to an unrelated future entity.
+    db.query(EntityRelation).filter(
+        (EntityRelation.source_id == race_id) | (EntityRelation.target_id == race_id)
+    ).delete()
     db.delete(entity)
     db.commit()
     return RedirectResponse("/races", status_code=303)

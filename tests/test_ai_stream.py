@@ -372,3 +372,131 @@ def test_ai_stream_falls_back_to_surface_default_when_model_blank(client, seed, 
     })
     assert r.status_code == 200
     assert captured["requested"] == "ask-ai-model"
+
+
+# ── A non-GM caller's model/system/options are never fully trusted ─────────
+# POST /api/ai/stream is reachable by any player whose world opted into Ask
+# AI/AI Chat — nothing validates that a request actually came from a page
+# this app rendered (a direct devtools/curl call reaches the same route).
+# The real secret-bearing content (RAG lore, GM-only AiInstructions) is
+# already filtered server-side before it ever reaches a page's composed
+# system string or messages, but the model/options/system fields
+# themselves still shouldn't be fully client-controlled for a non-GM
+# caller — see ai_stream's own comments for the reasoning on each.
+
+def test_ai_stream_ignores_client_model_for_player(client, seed, monkeypatch):
+    captured = {}
+
+    async def _capturing_resolve_model(requested):
+        captured["requested"] = requested
+        return "resolved-model", None
+    monkeypatch.setattr(ai_module, "resolve_model", _capturing_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _fake_stream_chat)
+
+    _set_world(seed.world_a.id, players_can_ask_ai=True)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/stream", json={
+        "messages": [{"role": "user", "content": "hi"}], "model": "some-expensive-model-i-picked-myself",
+    })
+    assert r.status_code == 200
+    assert captured["requested"] != "some-expensive-model-i-picked-myself"
+
+
+def test_ai_stream_honors_client_model_for_gm(client, seed, monkeypatch):
+    captured = {}
+
+    async def _capturing_resolve_model(requested):
+        captured["requested"] = requested
+        return "resolved-model", None
+    monkeypatch.setattr(ai_module, "resolve_model", _capturing_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _fake_stream_chat)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/stream", json={
+        "messages": [{"role": "user", "content": "hi"}], "model": "my-chosen-model",
+    })
+    assert r.status_code == 200
+    assert captured["requested"] == "my-chosen-model"
+
+
+def test_ai_stream_truncates_long_system_prompt_for_player(client, seed, monkeypatch):
+    captured = {}
+
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
+        captured["system"] = system
+        yield {"type": "content", "text": "ok"} if emit_thinking else "ok"
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
+
+    _set_world(seed.world_a.id, players_can_ask_ai=True)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    from app.routers.ai import _PLAYER_SYSTEM_PROMPT_MAX_CHARS
+    huge = "x" * (_PLAYER_SYSTEM_PROMPT_MAX_CHARS + 500)
+    r = client.post("/api/ai/stream", json={
+        "messages": [{"role": "user", "content": "hi"}], "system": huge,
+    })
+    assert r.status_code == 200
+    assert len(captured["system"]) == _PLAYER_SYSTEM_PROMPT_MAX_CHARS
+
+
+def test_ai_stream_does_not_truncate_system_prompt_for_gm(client, seed, monkeypatch):
+    captured = {}
+
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
+        captured["system"] = system
+        yield {"type": "content", "text": "ok"} if emit_thinking else "ok"
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    from app.routers.ai import _PLAYER_SYSTEM_PROMPT_MAX_CHARS
+    huge = "x" * (_PLAYER_SYSTEM_PROMPT_MAX_CHARS + 500)
+    r = client.post("/api/ai/stream", json={
+        "messages": [{"role": "user", "content": "hi"}], "system": huge,
+    })
+    assert r.status_code == 200
+    assert len(captured["system"]) == len(huge)
+
+
+def test_ai_stream_clamps_num_ctx_upper_bound(client, seed, monkeypatch):
+    captured = {}
+
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
+        captured["options"] = options
+        yield {"type": "content", "text": "ok"} if emit_thinking else "ok"
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/stream", json={
+        "messages": [{"role": "user", "content": "hi"}], "options": {"num_ctx": 999999999},
+    })
+    assert r.status_code == 200
+    # Out of range -> _clamp_options drops it; the auto-sizing fallback
+    # below (num_ctx not already in options) may then add its own, always
+    # <= MAX_AUTO_NUM_CTX — either way the caller's absurd value must never
+    # reach stream_chat.
+    assert captured["options"].get("num_ctx") != 999999999
+
+
+def test_ai_stream_clamps_num_gpu_upper_bound(client, seed, monkeypatch):
+    captured = {}
+
+    async def _capturing_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
+        captured["options"] = options
+        yield {"type": "content", "text": "ok"} if emit_thinking else "ok"
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _capturing_stream_chat)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/stream", json={
+        "messages": [{"role": "user", "content": "hi"}], "options": {"num_gpu": 5000},
+    })
+    assert r.status_code == 200
+    assert "num_gpu" not in captured["options"]

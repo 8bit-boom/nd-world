@@ -3311,44 +3311,59 @@ def schematic_delete(slug: str, db: Session = Depends(get_db)):
 
 @app.get("/api/ai/world-context")
 def ai_world_context(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """GM- or GM-Assistant-only (see _is_assistant_safe) — a plain player
+    never reaches this route. Visibility-filtered and [gmonly]-stripped
+    for a non-GM (i.e. an Assistant) caller regardless: AGENTS.md's own
+    rule is that Assistants always see what players see, and until this
+    fix this route dumped every entity (hidden ones included) and every
+    note's full, un-stripped body straight into the context an Assistant
+    could feed to the AI unfiltered."""
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         return {"context": "", "world_name": ""}
+    user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
     lines = [f"# {world.name}", world.description or "", ""]
     # Characters, locations, orgs, creatures, events: name + subtype + summary
     for kind in ["character", "location", "organization", "creature", "event"]:
-        ents = db.query(Entity).filter(
-            Entity.world_id == world.id, Entity.kind == kind
-        ).order_by(Entity.name).all()
+        q = _retrieval._visibility_filter(
+            db.query(Entity).filter(Entity.world_id == world.id, Entity.kind == kind), user,
+        )
+        ents = q.order_by(Entity.name).all()
         if not ents:
             continue
         lines.append(f"## {kind.upper()}S ({len(ents)})")
         for e in ents:
+            summary = e.summary if is_gm else strip_gm_only(e.summary)
             line = f"- **{e.name}**"
             if e.subtype:
                 line += f" [{e.subtype}]"
-            if e.summary:
-                line += f": {e.summary}"
+            if summary:
+                line += f": {summary}"
             lines.append(line)
         lines.append("")
     # Notes: full body text (lore documents)
-    notes = db.query(Entity).filter(
-        Entity.world_id == world.id, Entity.kind == "note"
-    ).order_by(Entity.name).all()
+    notes_q = _retrieval._visibility_filter(
+        db.query(Entity).filter(Entity.world_id == world.id, Entity.kind == "note"), user,
+    )
+    notes = notes_q.order_by(Entity.name).all()
     if notes:
         lines.append("## LORE DOCUMENTS (full text)")
         for e in notes:
             lines.append(f"\n### {e.name}" + (f" [{e.subtype}]" if e.subtype else ""))
-            if e.summary:
-                lines.append(e.summary)
-            if e.body:
-                lines.append(e.body[:5000])
+            summary = e.summary if is_gm else strip_gm_only(e.summary)
+            body = e.body if is_gm else strip_gm_only(e.body)
+            if summary:
+                lines.append(summary)
+            if body:
+                lines.append(body[:5000])
         lines.append("")
     # Items and feats: grouped by subtype, names only
     for kind in ["item", "feat"]:
-        ents = db.query(Entity.name, Entity.subtype).filter(
-            Entity.world_id == world.id, Entity.kind == kind
-        ).order_by(Entity.subtype, Entity.name).all()
+        q = _retrieval._visibility_filter(
+            db.query(Entity.name, Entity.subtype).filter(Entity.world_id == world.id, Entity.kind == kind), user,
+        )
+        ents = q.order_by(Entity.subtype, Entity.name).all()
         if not ents:
             continue
         lines.append(f"## {kind.upper()}S ({len(ents)} total)")
@@ -3382,9 +3397,15 @@ def ai_world_context_smart(
         return {"context": "", "count": 0, "notes": 0, "entities": []}
     # The retrieval half lives in _retrieval.smart_world_context now (shared
     # with the AI-assist panel's RAG — see its docstring for the top-up and
-    # guaranteed-notes behavior this route has always applied).
+    # guaranteed-notes behavior this route has always applied). user= keeps
+    # a GM-Assistant caller (this route is GM/Assistant-only — see
+    # _is_assistant_safe) filtered to what a player could see, per
+    # AGENTS.md's "Assistants always see what players see" — smart_world_
+    # context's own user=None default stays unfiltered for a real GM.
+    user = getattr(request.state, "user", None)
     context, non_notes, notes = _retrieval.smart_world_context(
         db, world.id, body.query, entity_limit=body.limit, notes_limit=body.notes_limit,
+        user=None if (user and user.is_gm) else user,
     )
     combined = non_notes + notes
     return {
@@ -3450,8 +3471,18 @@ async def gen_entity_smart(
     world, _ = get_world_ctx(request, db, active_world)
     related_ctx = ""
     if world:
-        related = _retrieval.find_relevant_entities(db, world.id, f"{body.name} {body.summary}", limit=12)
-        related_ctx = _retrieval.format_context_from_entities(related)
+        # This route is GM/Assistant-only (see _is_assistant_safe) — filter
+        # for a non-GM (Assistant) caller the same way every other RAG
+        # surface does, per AGENTS.md's "Assistants always see what
+        # players see".
+        user = getattr(request.state, "user", None)
+        rag_user = None if (user and user.is_gm) else user
+        related = _retrieval.find_relevant_entities(
+            db, world.id, f"{body.name} {body.summary}", limit=12, user=rag_user,
+        )
+        related_ctx = _retrieval.format_context_from_entities(
+            related, strip_gm_only=bool(rag_user), db=db,
+        )
     prompt = (
         f"Write an expanded lore entry for this {body.kind}"
         + (f" ({body.subtype})" if body.subtype else "")
@@ -5422,6 +5453,13 @@ def delete(entity_id: int, request: Request, db: Session = Depends(get_db), acti
     ))
     db.execute(entity_player_access.delete().where(entity_player_access.c.entity_id == entity_id))
     db.query(EntityNote).filter(EntityNote.entity_id == entity_id).delete()
+    # Entity.id is a plain INTEGER PRIMARY KEY (no AUTOINCREMENT), so
+    # SQLite can reuse this id for the next entity created — leaving a
+    # stale EntityRelation row behind would silently reattach a GM's
+    # confirmed graph edge to an unrelated future entity.
+    db.query(EntityRelation).filter(
+        (EntityRelation.source_id == entity_id) | (EntityRelation.target_id == entity_id)
+    ).delete()
     db.delete(entity)
     db.commit()
     return RedirectResponse("/", status_code=303)
@@ -5454,6 +5492,12 @@ async def bulk_delete_entities(kind: str, request: Request, db: Session = Depend
             ))
             db.execute(entity_player_access.delete().where(entity_player_access.c.entity_id.in_(matched_ids)))
             db.query(EntityNote).filter(EntityNote.entity_id.in_(matched_ids)).delete(synchronize_session=False)
+            # See the single-entity delete() route above for why this
+            # matters — SQLite id reuse can otherwise reattach a stale
+            # EntityRelation to an unrelated future entity.
+            db.query(EntityRelation).filter(
+                EntityRelation.source_id.in_(matched_ids) | EntityRelation.target_id.in_(matched_ids)
+            ).delete(synchronize_session=False)
             for e in entities:
                 db.delete(e)
             db.commit()
