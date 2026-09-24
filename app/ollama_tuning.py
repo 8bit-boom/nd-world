@@ -600,6 +600,16 @@ _KV_SCALE = {"f16": 1.0, "q8_0": 0.5, "q4_0": 0.25}
 # VRAM before fitting weights + KV cache into what's left.
 _RESERVE_MB = 1024
 
+# VRAM to additionally reserve for a concurrently-running SwarmUI checkpoint
+# when the caller passes recommend_settings() an `imagegen_reserve_mb` (see
+# docs/GPU_SETUP.md §3a — sizing guidance for one V100 running both Ollama
+# and SwarmUI). Deliberately sized for a GGUF-quantized SDXL/Krea-2-class
+# checkpoint (~5-6 GB per that section), not a full-precision Flux-class one
+# — reserving more would make every recommendation on a 16 GB card too small
+# to be useful, and a GM who knows their own checkpoint's real footprint can
+# still override the per-model fields by hand.
+DEFAULT_IMAGEGEN_RESERVE_MB = 6144
+
 
 def model_params_b(model: str, parameter_size: str = "", size_bytes: Optional[int] = None) -> Optional[float]:
     """Billions of parameters for `model`. Prefers Ollama's own
@@ -663,11 +673,20 @@ def _volta_note(hardware: dict) -> Optional[str]:
     return None
 
 
-def recommend_settings(*, model: str, hardware: dict, parameter_size: str = "", size_bytes: Optional[int] = None) -> dict:
+def recommend_settings(*, model: str, hardware: dict, parameter_size: str = "", size_bytes: Optional[int] = None,
+                        imagegen_reserve_mb: int = 0) -> dict:
     """A starting-point settings bundle for `model` given already-detected
     `hardware` (detect_hardware()'s own return shape). Never raises — an
     unknown model size or unknown hardware just narrows what's recommended,
-    reported honestly in `notes`, rather than guessing."""
+    reported honestly in `notes`, rather than guessing.
+
+    `imagegen_reserve_mb`: VRAM to hold back for a concurrently-running
+    SwarmUI checkpoint (see DEFAULT_IMAGEGEN_RESERVE_MB above) — without
+    this, a one-GPU-two-consumers setup (§3a) gets a recommendation that
+    happily fills the entire card with Ollama's KV cache, leaving SwarmUI
+    to fail with a CUDA out-of-memory error the moment a GM tries to
+    generate an image mid-chat. 0 (the default) recommends as if Ollama
+    had the whole card to itself."""
     params_b = model_params_b(model, parameter_size, size_bytes)
     weights_mb = int(size_bytes / (1024 * 1024)) if size_bytes else None
     vram_total_mb = hardware.get("vram_total_mb")
@@ -698,24 +717,39 @@ def recommend_settings(*, model: str, hardware: dict, parameter_size: str = "", 
             "showing a generic \"use the GPU\" setting only.",
         ]}
 
-    budget = vram_total_mb - _RESERVE_MB
+    imagegen_reserve_mb = max(0, imagegen_reserve_mb)
+    budget = vram_total_mb - _RESERVE_MB - imagegen_reserve_mb
 
     if weights_mb < budget:
         notes: list[str] = []
-        chosen_ctx = _best_ctx_fitting(weights_mb, budget, params_b, "f16")
-        chosen_kv = "f16"
-        if chosen_ctx is None:
-            chosen_ctx = _best_ctx_fitting(weights_mb, budget, params_b, "q8_0")
-            chosen_kv = "q8_0"
-            if chosen_ctx is not None and chosen_ctx < 4096:
-                q4_ctx = _best_ctx_fitting(weights_mb, budget, params_b, "q4_0")
-                if q4_ctx is not None and q4_ctx > chosen_ctx:
-                    chosen_ctx, chosen_kv = q4_ctx, "q4_0"
+        f16_ctx = _best_ctx_fitting(weights_mb, budget, params_b, "f16")
+        q8_ctx = _best_ctx_fitting(weights_mb, budget, params_b, "q8_0")
+        # Prefer q8_0 whenever it reaches a MEANINGFULLY higher context rung
+        # than f16 (not just as a last resort when f16 doesn't fit at all) —
+        # each CONTEXT_LADDER step is a doubling, so any strictly-higher
+        # result from halving the KV cache is worth the <5% speed cost.
+        if q8_ctx is not None and (f16_ctx is None or q8_ctx > f16_ctx):
+            chosen_ctx, chosen_kv = q8_ctx, "q8_0"
+        elif f16_ctx is not None:
+            chosen_ctx, chosen_kv = f16_ctx, "f16"
+        else:
+            chosen_ctx, chosen_kv = None, None
+        if chosen_kv == "q8_0" and chosen_ctx < 4096:
+            q4_ctx = _best_ctx_fitting(weights_mb, budget, params_b, "q4_0")
+            if q4_ctx is not None and q4_ctx > chosen_ctx:
+                chosen_ctx, chosen_kv = q4_ctx, "q4_0"
         if chosen_ctx is None:
             chosen_ctx, chosen_kv = CONTEXT_LADDER[0], "q4_0"
             notes.append(
                 "This model barely fits — even the smallest context size is tight. "
                 "Consider a smaller model or a more aggressive quantization."
+            )
+        if imagegen_reserve_mb:
+            notes.append(
+                f"Reserving ~{imagegen_reserve_mb / 1024:.0f} GB of VRAM for a "
+                "concurrently-running SwarmUI checkpoint (see docs/GPU_SETUP.md §3a) "
+                "— this model would fit a larger context alone. Lower or clear the "
+                "reserve if you don't generate images at the same time as chatting."
             )
         volta = _volta_note(hardware)
         if volta:
@@ -736,6 +770,13 @@ def recommend_settings(*, model: str, hardware: dict, parameter_size: str = "", 
         "Only part of this model fits — Ollama will split it across GPU and RAM "
         "automatically and run slower. Leave GPU layers blank.",
     ]
+    if imagegen_reserve_mb:
+        partial_notes.append(
+            f"This is with ~{imagegen_reserve_mb / 1024:.0f} GB reserved for a "
+            "concurrently-running SwarmUI checkpoint (see docs/GPU_SETUP.md §3a) — "
+            "without image generation running at the same time, more of this model "
+            "would fit on the GPU."
+        )
     volta = _volta_note(hardware)
     if volta:
         partial_notes.append(volta)

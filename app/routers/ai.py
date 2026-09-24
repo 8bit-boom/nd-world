@@ -1567,18 +1567,26 @@ async def ai_hardware(request: Request, db=Depends(get_db), preset: Optional[str
     `preset` optionally overrides the saved `ollama_gpu_preset` for this
     call only (never persisted) — lets the settings page live-preview what
     a preset would show as soon as it's picked, without requiring a form
-    save + reload first."""
+    save + reload first.
+
+    When image generation is configured for SwarmUI, per-model
+    recommendations reserve DEFAULT_IMAGEGEN_RESERVE_MB of VRAM for its
+    checkpoint (see docs/GPU_SETUP.md §3a) — otherwise a one-GPU install
+    gets a recommendation that fills the whole card with Ollama's KV
+    cache and leaves SwarmUI to hit CUDA out-of-memory on generation."""
     _require_gm(request)
     settings = get_app_settings(db)
     effective_preset = preset if preset is not None else (settings.ollama_gpu_preset or "")
     hardware = await _tuning.detect_hardware(settings.ollama_vram_override_mb, effective_preset)
     models = await _ai.installed_models_detail()
+    imagegen_reserve_mb = _tuning.DEFAULT_IMAGEGEN_RESERVE_MB if _ai._get_type() == "swarmui" else 0
     return {
         "hardware": hardware,
         "models": [
             {**m, "recommendation": _tuning.recommend_settings(
                 model=m["model"], hardware=hardware,
                 parameter_size=m["parameter_size"], size_bytes=m["size_bytes"],
+                imagegen_reserve_mb=imagegen_reserve_mb,
             )}
             for m in models
         ],

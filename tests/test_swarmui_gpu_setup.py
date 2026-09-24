@@ -50,3 +50,15 @@ def test_gpu_setup_doc_covers_swarmui_wiring_and_vram_sharing():
     # running both ollama and swarmui) needs.
     assert "## 3a." in text
     assert "OLLAMA_KEEP_ALIVE" in text.split("## 3a.", 1)[1].split("## 4.", 1)[0]
+
+
+def test_gpu_setup_doc_recommends_capping_max_auto_num_ctx_on_a_shared_card():
+    """MAX_AUTO_NUM_CTX (app/ai.py, default 32768) bounds the auto-sized
+    context window background jobs (recap/facts/condense) pin per-call —
+    on a shared 16 GB V100 running SwarmUI too, that default is large
+    enough to starve a concurrent image generation of VRAM."""
+    text = (_REPO_ROOT / "docs/GPU_SETUP.md").read_text()
+    assert "## 4." in text
+    section = text.split("## 4.", 1)[1].split("## 5.", 1)[0]
+    assert "MAX_AUTO_NUM_CTX=16384" in section
+    assert "32768" in section

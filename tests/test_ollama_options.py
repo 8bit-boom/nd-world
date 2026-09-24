@@ -1631,6 +1631,47 @@ def test_hardware_route_shape(client, seed, monkeypatch):
     assert body["models"][0]["recommendation"]["fit"] in ("full_gpu", "partial_gpu", "cpu_only", "unknown")
 
 
+def test_hardware_route_reserves_vram_for_swarmui_when_configured(client, seed, monkeypatch):
+    """The bug this covers: without a VRAM reserve, a per-model
+    recommendation on a shared V100 fills the whole card with Ollama's KV
+    cache and leaves SwarmUI to hit CUDA out-of-memory on generation (see
+    docs/GPU_SETUP.md §3a). GET /api/ai/hardware must pass a non-zero
+    imagegen_reserve_mb to recommend_settings() when image generation is
+    configured for SwarmUI, and 0 when it isn't."""
+    import app.ollama_tuning as tuning_module
+
+    async def fake_detect(vram_override_mb=None, gpu_preset=""):
+        return {"cpu_model": "", "cpu_cores": 8, "cpu_affinity": 8, "ram_total_mb": 16384,
+                "ram_available_mb": 8192, "gpus": [], "vram_total_mb": 16384, "vram_source": "manual",
+                "vram_is_lower_bound": False, "notes": []}
+    monkeypatch.setattr(tuning_module, "detect_hardware", fake_detect)
+
+    async def fake_installed():
+        return [{"model": "llama3.1:8b", "size_bytes": int(4.9e9), "parameter_size": "8.0B", "quantization_level": "Q4_K_M"}]
+    monkeypatch.setattr(ai_module, "installed_models_detail", fake_installed)
+
+    captured = {}
+    real_recommend = tuning_module.recommend_settings
+
+    def fake_recommend(**kwargs):
+        captured["imagegen_reserve_mb"] = kwargs.get("imagegen_reserve_mb", 0)
+        return real_recommend(**kwargs)
+    monkeypatch.setattr(tuning_module, "recommend_settings", fake_recommend)
+
+    login(client, seed.gm.email, GM_PASSWORD)
+
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "")
+    r = client.get("/api/ai/hardware")
+    assert r.status_code == 200
+    assert captured["imagegen_reserve_mb"] == 0
+
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    r = client.get("/api/ai/hardware")
+    assert r.status_code == 200
+    assert captured["imagegen_reserve_mb"] == tuning_module.DEFAULT_IMAGEGEN_RESERVE_MB
+    assert captured["imagegen_reserve_mb"] > 0
+
+
 def test_hardware_route_passes_saved_gpu_preset(client, seed, tmp_path, monkeypatch):
     import app.ollama_tuning as tuning_module
     monkeypatch.setattr(tuning_module, "OLLAMA_CONFIG_DIR", tmp_path)

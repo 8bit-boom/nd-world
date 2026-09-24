@@ -83,6 +83,73 @@ def test_tight_fit_switches_kv_cache_and_requires_flash_attention():
     assert rec["per_request"]["num_ctx"] >= 2048
 
 
+def test_prefers_q8_0_when_it_unlocks_a_meaningfully_higher_context_than_f16():
+    """Before this fix, q8_0 was only ever tried as a last resort when f16
+    didn't fit AT ALL — so a model that fit f16 at a small context rung
+    (8192 here) kept f16 even though halving the KV cache to q8_0 would
+    reach a full rung higher (16384) for the same VRAM budget. Numbers:
+    weights_mb=18120, budget=24000-1024=22976, kv_per_1k(f16)=320 ->
+    f16 tops out at ctx=8192; kv_per_1k(q8_0)=160 -> q8_0 reaches 16384."""
+    hardware = {"vram_total_mb": 24000, "ram_total_mb": 65536, "cpu_cores": 16}
+    rec = tuning.recommend_settings(model="qwen2.5:32b", hardware=hardware,
+                                     parameter_size="32.8B", size_bytes=int(19e9))
+    assert rec["fit"] == "full_gpu"
+    assert rec["server"]["OLLAMA_KV_CACHE_TYPE"] == "q8_0"
+    assert rec["per_request"]["num_ctx"] == 16384
+
+
+# ── recommend_settings: imagegen_reserve_mb (shared V100 with SwarmUI) ──────
+
+def test_imagegen_reserve_shrinks_the_recommended_context():
+    """The bug this task exists for: without a VRAM reserve for a
+    concurrently-running SwarmUI checkpoint, recommend_settings happily
+    fills the entire card with Ollama's KV cache — leaving SwarmUI to hit
+    a CUDA out-of-memory error the moment a GM generates an image mid-chat
+    (see docs/GPU_SETUP.md §3a)."""
+    hardware = {"vram_total_mb": 16384, "ram_total_mb": 65536, "cpu_cores": 16}
+    no_reserve = tuning.recommend_settings(model="gemma3:12b", hardware=hardware,
+                                            parameter_size="12.0B", size_bytes=int(7.5e9))
+    with_reserve = tuning.recommend_settings(model="gemma3:12b", hardware=hardware,
+                                              parameter_size="12.0B", size_bytes=int(7.5e9),
+                                              imagegen_reserve_mb=tuning.DEFAULT_IMAGEGEN_RESERVE_MB)
+    assert with_reserve["per_request"]["num_ctx"] < no_reserve["per_request"]["num_ctx"]
+    assert any("swarmui" in n.lower() for n in with_reserve["notes"])
+
+
+def test_imagegen_reserve_can_push_a_model_into_partial_fit():
+    hardware = {"vram_total_mb": 16384, "ram_total_mb": 65536, "cpu_cores": 16}
+    weights = 10 * 1024 * 1024 * 1024
+    without = tuning.recommend_settings(model="big:20b", hardware=hardware,
+                                         parameter_size="20.0B", size_bytes=weights)
+    assert without["fit"] == "full_gpu"
+
+    with_reserve = tuning.recommend_settings(model="big:20b", hardware=hardware,
+                                              parameter_size="20.0B", size_bytes=weights,
+                                              imagegen_reserve_mb=tuning.DEFAULT_IMAGEGEN_RESERVE_MB)
+    assert with_reserve["fit"] == "partial_gpu"
+    assert any("swarmui" in n.lower() for n in with_reserve["notes"])
+
+
+def test_imagegen_reserve_zero_by_default_changes_nothing():
+    hardware = {"vram_total_mb": 16384, "ram_total_mb": 65536, "cpu_cores": 16}
+    default = tuning.recommend_settings(model="gemma3:12b", hardware=hardware,
+                                         parameter_size="12.0B", size_bytes=int(7.5e9))
+    explicit_zero = tuning.recommend_settings(model="gemma3:12b", hardware=hardware,
+                                               parameter_size="12.0B", size_bytes=int(7.5e9),
+                                               imagegen_reserve_mb=0)
+    assert default == explicit_zero
+
+
+def test_imagegen_reserve_negative_is_clamped_to_zero():
+    hardware = {"vram_total_mb": 16384, "ram_total_mb": 65536, "cpu_cores": 16}
+    default = tuning.recommend_settings(model="gemma3:12b", hardware=hardware,
+                                         parameter_size="12.0B", size_bytes=int(7.5e9))
+    negative = tuning.recommend_settings(model="gemma3:12b", hardware=hardware,
+                                          parameter_size="12.0B", size_bytes=int(7.5e9),
+                                          imagegen_reserve_mb=-500)
+    assert negative == default
+
+
 # ── recommend_settings: partial GPU fit ─────────────────────────────────────
 
 def test_partial_fit_omits_num_gpu():

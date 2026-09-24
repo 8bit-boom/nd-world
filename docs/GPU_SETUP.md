@@ -333,7 +333,24 @@ Also in nd-world's `.env` for the **app** container:
 
 ```
 OLLAMA_JOB_CONCURRENCY=1   # serialize recap/facts/assist jobs behind the one GPU
+MAX_AUTO_NUM_CTX=16384     # cap auto-sized recap/facts/condense context (default 32768)
 ```
+
+`MAX_AUTO_NUM_CTX` bounds the auto-sized context window background jobs
+(session recaps, facts parsing, transcript condensing) pin per-call — its
+32768 default is sized for a card with nothing else competing for VRAM. On
+a shared 16 GB V100 (this card, running SwarmUI too — see §3a), lowering it
+to 16384 keeps a worst-case background job from momentarily claiming enough
+KV-cache VRAM to starve a concurrent image generation; on a 32 GB card the
+default is fine as-is. This is separate from `OLLAMA_CONTEXT_LENGTH` (the
+server default) and the per-request `num_ctx` above — those apply per
+model call, this is the ceiling those auto-sizing jobs are allowed to pin.
+
+The **Detected hardware** panel (Settings → System) also reserves ~6 GB of
+VRAM in its own per-model recommendations automatically once image
+generation is configured for SwarmUI, so the *suggested* `num_ctx` already
+accounts for a concurrently-loaded checkpoint — `MAX_AUTO_NUM_CTX` covers
+the background jobs that recommendation doesn't size.
 
 Per-model overrides (Settings → System → per-model): `num_gpu` 999
 (offload everything) once the model fits; leave blank when it doesn't
