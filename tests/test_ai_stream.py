@@ -96,6 +96,30 @@ def test_ai_stream_emits_thinking_frames_ahead_of_the_answer(client, seed, monke
     assert r.text.index('"Pondering "') < r.text.index('"Final answer."')
 
 
+def test_ai_stream_forwards_error_pieces_as_a_distinct_sse_field(client, seed, monkeypatch):
+    """stream_chat's failure sentinels (empty response, Ollama error, etc.)
+    arrive as {"type": "error", ...} pieces — the SSE relay must forward
+    them under their own "error" field, never merged into "token" where a
+    client would save/display them as a real reply (see the JS surfaces'
+    own `if (typeof _obj.error === 'string')` handling)."""
+    async def _erroring_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
+        yield {"type": "content", "text": "partial "}
+        yield {"type": "error", "text": "[AI unavailable: RuntimeError: boom]"}
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", _erroring_stream_chat)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/stream", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200
+    assert '{"token": "partial "}' in r.text
+    assert '{"error": "[AI unavailable: RuntimeError: boom]"}' in r.text
+    # The failure text must never be wire-shaped as a "token" frame — a
+    # client that only understands "token"/"thinking"/"note" would have no
+    # way to tell it apart from real content.
+    assert '{"token": "[AI unavailable: RuntimeError: boom]"}' not in r.text
+
+
 def test_ai_stream_no_thinking_frame_for_a_plain_reply(client, seed, monkeypatch):
     """A model/request that never produces reasoning must not surface an
     empty or spurious thinking frame — nothing for the UI to show a panel

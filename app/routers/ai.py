@@ -1506,6 +1506,8 @@ async def ai_stream(
                 yield ": keep-alive\n\n"
             elif piece.get("type") == "thinking":
                 yield f"data: {_json.dumps({'thinking': piece['text']})}\n\n"
+            elif piece.get("type") == "error":
+                yield f"data: {_json.dumps({'error': piece['text']})}\n\n"
             else:
                 yield f"data: {_json.dumps({'token': piece['text']})}\n\n"
         yield "data: [DONE]\n\n"

@@ -1216,11 +1216,20 @@ async def stream_chat(
     yields: False (every existing caller that predates this flag) yields
     plain content strings exactly as before, silently dropping any
     reasoning text the model produced — unchanged behavior. True yields
-    dicts instead — {"type": "content"|"thinking", "text": str} — so a
-    caller that wants to show the model's reasoning live (alongside the
-    Thinking toggle that requests it) can tell the two apart on the wire.
-    Never emitted when the model produced no reasoning at all (a
-    non-thinking model, or a thinking one Ollama silently downgraded)."""
+    dicts instead — {"type": "content"|"thinking"|"error", "text": str} —
+    so a caller that wants to show the model's reasoning live (alongside
+    the Thinking toggle that requests it) can tell the pieces apart on the
+    wire. "thinking" is never emitted when the model produced no reasoning
+    at all (a non-thinking model, or a thinking one Ollama silently
+    downgraded). "error" is this generator's diagnostic sentinels (an
+    empty response, an Ollama ResponseError, an unexpected exception) —
+    always this function's LAST piece, and always distinct from "content"
+    so a caller never mistakes a failure for a real answer worth
+    displaying/saving as one (see app.routers.ai's ai_stream and
+    app.routers.chronicler's chronicler_ask, which both forward it as its
+    own SSE `error` field rather than folding it into `token`). Callers
+    that keep emit_thinking=False are unaffected — they still just get the
+    plain sentinel string back, exactly as before."""
     m = model or effective_ollama_model()
     _log.info("stream_chat model=%s msgs=%d think=%r", m, len(messages), think)
     full = [{"role": "system", "content": system}] if system else []
@@ -1305,7 +1314,8 @@ async def stream_chat(
                 "stream_chat model=%s yielded no content (done_reason=%r, thinking_chars=%d)",
                 m, done_reason, thinking_chars,
             )
-            yield _piece(_empty_response_message(m, thinking_chars, done_reason))
+            msg = _empty_response_message(m, thinking_chars, done_reason)
+            yield {"type": "error", "text": msg} if emit_thinking else msg
     except _ollama.ResponseError as exc:
         _log.error("stream_chat Ollama error: %s %s", exc.status_code, exc.error)
         if think and "does not support thinking" in (exc.error or "") and not yielded_any:
@@ -1332,10 +1342,12 @@ async def stream_chat(
             ):
                 yield piece
             return
-        yield _piece(f"[AI error: Ollama {exc.status_code}: {exc.error}]")
+        msg = f"[AI error: Ollama {exc.status_code}: {exc.error}]"
+        yield {"type": "error", "text": msg} if emit_thinking else _piece(msg)
     except Exception as exc:
         _log.error("stream_chat unavailable: %s: %s", type(exc).__name__, exc)
-        yield _piece(f"[AI unavailable: {type(exc).__name__}: {exc}]")
+        msg = f"[AI unavailable: {type(exc).__name__}: {exc}]"
+        yield {"type": "error", "text": msg} if emit_thinking else _piece(msg)
 
 
 async def generate(prompt: str, system: str = _SYSTEM) -> str:

@@ -194,19 +194,28 @@ async def chronicler_ask(request: Request, db: Session = Depends(get_db), active
                 [{"role": "user", "content": question}], system=system,
                 model=resolved_model, options=options, think=think, emit_thinking=True,
             ):
-                if piece.get("type") != "thinking":
+                if piece.get("type") not in ("thinking", "error"):
                     chunks.append(piece["text"])
                 yield piece
 
+        had_error = False
         async for piece in _with_heartbeat(_chat()):
             if piece is None:
                 yield ": keep-alive\n\n"
             elif piece.get("type") == "thinking":
                 yield _sse({"thinking": piece["text"]})
+            elif piece.get("type") == "error":
+                # A backend failure — must not overwrite `answer` with the
+                # sentinel text nor get cached and replayed as a real
+                # answer to the next identical question (see app.ai.
+                # stream_chat's own "error" piece type).
+                had_error = True
+                yield _sse({"error": piece["text"]})
             else:
                 yield _sse({"token": piece["text"]})
         answer = "".join(chunks)
-        _ask_cache[cache_key] = (now, {"answer": answer})
+        if not had_error:
+            _ask_cache[cache_key] = (now, {"answer": answer})
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(

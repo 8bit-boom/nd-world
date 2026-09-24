@@ -900,17 +900,18 @@ async def test_stream_chat_emit_thinking_true_never_fires_for_a_non_thinking_mod
 
 @pytest.mark.asyncio
 async def test_stream_chat_emit_thinking_wraps_the_empty_response_sentinel(monkeypatch):
-    """The diagnostic sentinel is real visible-text content, same as any
-    other reply — a caller showing reasoning live must still get it as a
-    {"type": "content", ...} piece, not a bare string it wasn't expecting."""
+    """The diagnostic sentinel is a failure, not a real reply — a caller
+    showing reasoning live must get it as a distinctly-typed {"type":
+    "error", ...} piece so it's never mistaken for/saved as an actual
+    answer (see the "error" piece type added for that reason)."""
     chunks = [_FakeStreamChunk(content="", thinking="pondering ", done_reason="length")]
     monkeypatch.setattr(ai_module, "_client", lambda: _FakeStreamClient(chunks))
     pieces = [p async for p in ai_module.stream_chat([{"role": "user", "content": "hi"}], emit_thinking=True)]
     # The reasoning itself streams first as its own "thinking" piece, then
-    # the diagnostic sentinel arrives as a normal "content" piece once the
-    # stream ends with nothing else visible to show.
+    # the diagnostic sentinel arrives as an "error" piece once the stream
+    # ends with nothing else visible to show.
     assert pieces[0] == {"type": "thinking", "text": "pondering "}
-    assert pieces[-1]["type"] == "content"
+    assert pieces[-1]["type"] == "error"
     assert "hidden" in pieces[-1]["text"] and "thinking" in pieces[-1]["text"]
 
 
@@ -979,12 +980,13 @@ async def test_stream_chat_inline_think_only_response_still_yields_empty_sentine
     """A response that's ENTIRELY inline reasoning with no visible answer
     after it must still trip the empty-response diagnostic, same as the
     native-field case — a "thinking"-only piece must not count as having
-    yielded a real answer."""
+    yielded a real answer. The sentinel itself arrives as an "error" piece
+    (see the test above) so it's never mistaken for a real answer."""
     chunks = [_FakeStreamChunk(content="<think>only reasoning, no answer</think>", thinking=None, done_reason="length")]
     monkeypatch.setattr(ai_module, "_client", lambda: _FakeStreamClient(chunks))
     pieces = [p async for p in ai_module.stream_chat([{"role": "user", "content": "hi"}], emit_thinking=True)]
     assert pieces[0] == {"type": "thinking", "text": "only reasoning, no answer"}
-    assert pieces[-1]["type"] == "content"
+    assert pieces[-1]["type"] == "error"
     assert "hidden" in pieces[-1]["text"] and "thinking" in pieces[-1]["text"]
 
 

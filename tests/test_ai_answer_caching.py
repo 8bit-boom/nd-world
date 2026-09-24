@@ -121,6 +121,31 @@ def test_chronicler_question_is_case_insensitive_for_caching(client, seed, monke
     assert len(calls) == 1
 
 
+def test_chronicler_error_response_is_not_cached(client, seed, monkeypatch):
+    """A failed generation (stream_chat's "error" piece) must not get
+    cached and replayed as a real answer to the next identical question —
+    the GM/player would see a stale failure message forever instead of a
+    fresh retry actually reaching Ollama."""
+    from app import ai as ai_module
+
+    calls = []
+
+    async def failing_stream_chat(messages, system="", model="", options=None, think=False, emit_thinking=False):
+        calls.append(1)
+        yield {"type": "error", "text": "[AI unavailable: RuntimeError: boom]"}
+
+    monkeypatch.setattr(ai_module, "resolve_model", _fake_resolve_model)
+    monkeypatch.setattr(ai_module, "stream_chat", failing_stream_chat)
+
+    _login_gm_in(client, seed, seed.world_a)
+    r1 = client.post("/api/chronicler/ask", json={"question": "Who is Elyra?"})
+    r2 = client.post("/api/chronicler/ask", json={"question": "Who is Elyra?"})
+    assert r1.status_code == 200 and r2.status_code == 200
+    assert '"error"' in r1.text and '"error"' in r2.text
+    # Not cached: both requests actually reached stream_chat.
+    assert len(calls) == 2
+
+
 def test_chronicler_different_question_is_not_cached(client, seed, monkeypatch):
     calls = []
     _patch_stream_chat(monkeypatch, calls)

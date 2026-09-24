@@ -735,6 +735,7 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
       bubble.innerHTML = '';
       let full = '';
       let noteText = '';
+      let streamError = '';
       let tokenCount = 0;
       let firstToken = true;
       let startTime = 0;
@@ -759,6 +760,12 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
             // fix, corrupting the reply with the literal "undefined").
             noteText = obj.note;
             bubble.innerHTML = `<div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.4rem">ℹ️ ${_escHtml(noteText)}</div>` + _mdToHtml(full);
+            continue;
+          }
+          if (typeof obj.error === 'string') {
+            // A backend failure — never a real answer, so it must not be
+            // merged into `full`/epHistory as if it were one.
+            streamError = obj.error;
             continue;
           }
           if (typeof obj.thinking === 'string') {
@@ -794,7 +801,12 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
         }
       }
       clearInterval(statsTimer);
-      if (full && startTime) {
+      if (streamError) {
+        statsEl.textContent = full ? '⚠ interrupted' : '';
+        statsEl.style.color = '#c44';
+        bubble.innerHTML = (full ? _mdToHtml(full) : '') +
+          '<div style="color:#c44;margin-top:.4rem">⚠ ' + _escHtml(streamError) + '</div>';
+      } else if (full && startTime) {
         const elapsedSec = (Date.now() - startTime) / 1000;
         const tps = elapsedSec > 0 ? (tokenCount / elapsedSec).toFixed(1) : '—';
         statsEl.textContent = `✓ ${tokenCount} tok · ${elapsedSec.toFixed(1)}s · ${tps}/s`;
@@ -802,7 +814,7 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
       } else if (!full) {
         statsEl.textContent = '';
       }
-      epHistory.push({ role: 'assistant', content: full });
+      if (full) epHistory.push({ role: 'assistant', content: full });
     } catch(e) {
       if (statsTimer) clearInterval(statsTimer);
       statsEl.textContent = '';

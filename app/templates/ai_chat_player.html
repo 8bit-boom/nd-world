@@ -164,6 +164,7 @@ async function pcSend() {
     bubble.innerHTML = '';
     let full = '';
     let noteText = '';
+    let streamError = '';
     let reasoning = '';
     let reasoningTextEl = null;
     const reader = res.body.getReader();
@@ -182,6 +183,12 @@ async function pcSend() {
         if (obj.note) {
           noteText = obj.note;
           bubble.innerHTML = `<div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.4rem">ℹ️ ${_escHtml(noteText)}</div>` + _mdToHtml(full);
+          continue;
+        }
+        if (typeof obj.error === 'string') {
+          // A backend failure — never a real answer, so it must not be
+          // merged into `full`/pcHistory as if it were one.
+          streamError = obj.error;
           continue;
         }
         if (typeof obj.thinking === 'string') {
@@ -206,7 +213,11 @@ async function pcSend() {
       }
     }
     statsEl.textContent = '';
-    pcHistory.push({ role: 'assistant', content: full });
+    if (streamError) {
+      bubble.innerHTML = (full ? _mdToHtml(full) : '') +
+        '<div style="color:#c44;margin-top:.4rem">⚠ ' + _escHtml(streamError) + '</div>';
+    }
+    if (full) pcHistory.push({ role: 'assistant', content: full });
   } catch (e) {
     statsEl.textContent = '';
     bubble.parentElement.classList.remove('ai-thinking');

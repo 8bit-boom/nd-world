@@ -1246,6 +1246,11 @@ async function sendMessage() {
   aiBar.style.display = 'block'; aiBar.className = 'active';
   _setCtxStatus('var(--text-dim)', '⏳ Finding lore…');
   const thinking = addMessage('assistant', '<span class="thinking-dots"><span></span><span></span><span></span></span>', true);
+  // Declared above the try block (not inside it) so the finally block's own
+  // cleanup below can actually see it — a `let` inside `try { }` is a
+  // separate lexical scope from the sibling `catch`/`finally` blocks, so a
+  // declaration left inside `try` silently no-ops there instead of erroring.
+  let statsTimer = null;
 
   try {
     const { messages: messagesWithCtx, system: presetSystem } = await buildChatMessagesWithContext(undefined, _sendController.signal);
@@ -1267,6 +1272,7 @@ async function sendMessage() {
     thinking.innerHTML = '';
     let fullText = '';
     let noteText = '';
+    let streamError = '';
     let tokenCount = 0;
     let firstToken = true;
     let startTime = 0;
@@ -1275,7 +1281,6 @@ async function sendMessage() {
     const statsEl = document.getElementById('gen-stats');
     statsEl.textContent = '⏳ Connecting…';
     statsEl.style.color = 'var(--text-dim)';
-    let statsTimer = null;
 
     // Pulse the active model dot
     const _dotKey = 'dot-' + btoa(activeModel || '').replace(/=/g,'');
@@ -1303,6 +1308,14 @@ async function sendMessage() {
           // corrupting the reply with the literal string "undefined").
           noteText = _obj.note;
           thinking.innerHTML = `<div style="font-size:.75rem;color:var(--text-dim);margin-bottom:.4rem">ℹ️ ${escHtml(noteText)}</div>` + mdToHtml(fullText);
+          continue;
+        }
+        if (typeof _obj.error === 'string') {
+          // A backend failure (empty model response, Ollama error, etc.) —
+          // this is the generator's last piece, never a real answer, so it
+          // must not get merged into fullText/history as if it were one
+          // (see app.ai.stream_chat's own "error" piece type).
+          streamError = _obj.error;
           continue;
         }
         if (typeof _obj.thinking === 'string') {
@@ -1341,7 +1354,12 @@ async function sendMessage() {
     clearInterval(statsTimer);
     if (_activeDot) _activeDot.classList.remove('model-dot--active');
 
-    if (fullText && startTime) {
+    if (streamError) {
+      statsEl.textContent = fullText ? '⚠ interrupted' : '';
+      statsEl.style.color = '#c44';
+      thinking.innerHTML = (fullText ? mdToHtml(fullText) : '') +
+        '<div style="color:#c44;margin-top:.4rem">⚠ ' + escHtml(streamError) + '</div>';
+    } else if (fullText && startTime) {
       const elapsedSec = (Date.now() - startTime) / 1000;
       const tps = elapsedSec > 0 ? (tokenCount / elapsedSec).toFixed(1) : '—';
       statsEl.textContent = `✓ ${tokenCount} tok · ${elapsedSec.toFixed(1)}s · ${tps}/s`;
@@ -1368,7 +1386,7 @@ async function sendMessage() {
     }
   } finally {
     // Clean up any lingering timer / dot pulse
-    if (typeof statsTimer !== 'undefined' && statsTimer) clearInterval(statsTimer);
+    if (statsTimer) clearInterval(statsTimer);
     const _dotFinal = document.getElementById('dot-' + btoa(activeModel || '').replace(/=/g,''));
     if (_dotFinal) _dotFinal.classList.remove('model-dot--active');
     aiBar.className = 'done'; setTimeout(()=>{aiBar.style.display='none';aiBar.className='';},800);
