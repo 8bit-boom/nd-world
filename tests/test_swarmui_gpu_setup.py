@@ -118,6 +118,22 @@ def test_gpu_setup_doc_5a_mentions_vae_tile_size_and_the_oom_retry_warning():
     assert "retrying with tiled VAE decoding" in section
 
 
+def test_gpu_setup_doc_7_corrects_the_nothing_lost_int8_tensor_core_claim():
+    """§7 overstated that Volta loses "nothing... except newer kernels"
+    vs newer cards for GGUF inference — Volta's tensor cores are FP16-only
+    and have no equivalent to Turing's native INT8 tensor core
+    instructions, which llama.cpp's quantized (MMQ) kernels can use
+    directly on Turing+ (confirmed against llama.cpp's own CUDA source,
+    ggml/src/ggml-cuda/common.cuh: separate volta_mma_available() and
+    turing_mma_available() checks)."""
+    text = (_REPO_ROOT / "docs/GPU_SETUP.md").read_text()
+    assert "## 7." in text
+    section = text.split("## 7.", 1)[1]
+    assert "nothing is lost vs newer cards except their\n  newer kernels" not in section
+    assert "INT8 tensor core" in section
+    assert "volta_mma_available" in section
+
+
 def test_gpu_setup_doc_recommends_capping_max_auto_num_ctx_on_a_shared_card():
     """MAX_AUTO_NUM_CTX (app/ai.py, default 32768) bounds the auto-sized
     context window background jobs (recap/facts/condense) pin per-call —

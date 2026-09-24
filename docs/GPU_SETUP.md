@@ -528,9 +528,21 @@ faster than a typical NAS CPU — worth it if you record sessions.
   a shroud + high-static-pressure fans pointed at the heatsink, or they
   thermal-throttle within minutes. PCIe V100s usually have their own
   blower.
-- Volta tensor cores accelerate **FP16 only** — that's exactly what
-  GGUF inference uses, so nothing is lost vs newer cards except their
-  newer kernels.
+- Volta tensor cores accelerate **FP16 only** — GGUF inference's
+  quantized kernels still get a tensor-core-accelerated path here
+  (confirmed in llama.cpp's own CUDA source, `ggml/src/ggml-cuda/
+  common.cuh`: a distinct `volta_mma_available()` check exists alongside
+  `turing_mma_available()`, so Volta isn't just falling back to plain CUDA
+  cores), but **it's not literally "nothing lost" vs newer cards.**
+  Turing (sm_75) added native INT8 tensor core instructions that Volta's
+  hardware has no equivalent for at all — llama.cpp's most-optimized
+  quantized (MMQ) kernel path can use those directly on Turing+, where
+  Volta gets its own separate (still tensor-core-accelerated, just
+  FP16-based rather than native INT8) path instead. In practice this
+  shows up as a like-for-like Turing+ card outperforming a Volta card on
+  quantized models by more than clock speed and CUDA core count alone
+  would predict — not a reason to avoid a Volta card, just not a "you
+  lose nothing but newer instructions" situation either.
 - Check `nvidia-smi -q -d TEMPERATURE,POWER` under load; sustained
   throttling means cooling, not configuration.
 
