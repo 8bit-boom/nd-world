@@ -79,6 +79,45 @@ def test_gpu_setup_doc_does_not_recommend_the_nonexistent_whisper_model():
     assert "ggml-large-v3-q5_0.bin" in section
 
 
+def test_gpu_setup_doc_5a_replaces_vague_precision_advice_with_confirmed_log_lines():
+    """§5a used to tell a GM to "check whichever precision setting SwarmUI's
+    backend configuration exposes" — there is no such setting; ComfyUI
+    picks precision automatically and only ever reports it via log lines.
+    Confirmed against ComfyUI's own source (comfy/model_base.py,
+    comfy/sd.py) for the exact log line text."""
+    text = (_REPO_ROOT / "docs/GPU_SETUP.md").read_text()
+    assert "## 5a." in text
+    section = text.split("## 5a.", 1)[1].split("## 6.", 1)[0]
+    assert "whichever precision setting SwarmUI's backend configuration exposes" not in section
+    assert "model weight dtype" in section
+    assert "manual cast" in section
+
+
+def test_gpu_setup_doc_5a_covers_the_real_extra_args_field_and_default_attention():
+    """§5a used to suggest --use-pytorch-cross-attention as something a GM
+    might need to set — it's already ComfyUI's default on NVIDIA/PyTorch
+    2.x with no xformers installed (confirmed against
+    comfy/model_management.py), so the advice must say to leave it blank,
+    not to set it. Also checks the real SwarmUI field name (confirmed
+    against ComfyUI_SelfStartBackend.cs's ExtraArgs config) is named."""
+    text = (_REPO_ROOT / "docs/GPU_SETUP.md").read_text()
+    section = text.split("## 5a.", 1)[1].split("## 6.", 1)[0]
+    assert "Extra Args" in section
+    assert "leave it blank" in section.lower()
+    assert "scaled_dot_product_attention" in section or "SDPA" in section
+
+
+def test_gpu_setup_doc_5a_mentions_vae_tile_size_and_the_oom_retry_warning():
+    """Confirmed against comfy/sd.py: ComfyUI auto-retries a failed VAE
+    decode with tiling and logs a specific warning when it does — §5a
+    should point a GM at SwarmUI's real VAE Tile Size parameter instead of
+    leaving them to just wait for the automatic retry every time."""
+    text = (_REPO_ROOT / "docs/GPU_SETUP.md").read_text()
+    section = text.split("## 5a.", 1)[1].split("## 6.", 1)[0]
+    assert "VAE Tile Size" in section
+    assert "retrying with tiled VAE decoding" in section
+
+
 def test_gpu_setup_doc_recommends_capping_max_auto_num_ctx_on_a_shared_card():
     """MAX_AUTO_NUM_CTX (app/ai.py, default 32768) bounds the auto-sized
     context window background jobs (recap/facts/condense) pin per-call —

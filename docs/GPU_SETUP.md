@@ -413,23 +413,55 @@ is mostly at the model/quantization level, not a settings panel:
   your SwarmUI install, removes any conflicting `city96/ComfyUI-GGUF`
   SwarmUI may have already auto-installed (same node/class names — the
   two can't coexist), and clones the Krea-2-aware fork in its place.
-- **FP16, not BF16.** Volta's tensor cores only accelerate FP16 (§7) —
-  newer cards default to BF16 for numerical stability, which Volta has no
-  hardware path for at all (it falls back to slow FP32 math instead of
-  erroring, so a wrong-precision run doesn't fail loudly, it just runs far
-  slower than it should). SwarmUI/ComfyUI generally auto-detect this
-  correctly for a V100, but if a generation is unexpectedly slow, check
-  whichever precision setting SwarmUI's backend configuration exposes and
-  confirm it's not forcing BF16.
-- **Attention backend**: newer flash-attention builds commonly target
-  Ampere+ (sm_80+) and either skip Volta or fall back to a slower path —
-  the same category of "prebuilt binary silently doesn't cover sm_70" gap
-  whisper.cpp's CUDA image hits (§6). If SwarmUI's ComfyUI backend exposes
-  extra launch arguments, `--use-pytorch-cross-attention` is the safe,
-  universally-supported choice on Volta when the default attention path
-  underperforms; xformers wheels are hit-or-miss for sm_70 depending on
-  which one gets installed, so don't assume it's faster here the way it
-  usually is on newer cards.
+- **FP16, not BF16 — and you can check which one actually ran, per model
+  load.** Volta's tensor cores only accelerate FP16 (§7); newer cards
+  default to BF16 for numerical stability, which Volta has no hardware
+  path for at all (it falls back to slow FP32 math instead of erroring,
+  so a wrong-precision run doesn't fail loudly, it just runs far slower
+  than it should). There's no settings toggle for this — ComfyUI picks it
+  automatically per-architecture — but it logs exactly what it picked on
+  every load (confirmed against ComfyUI's own source):
+  - `model weight dtype torch.float16, manual cast: None` (`comfy/
+    model_base.py`) — the main diffusion model; `float16` is correct here.
+  - `CLIP/text encoder model load device: ..., dtype: torch.float16`
+    (`comfy/sd.py`) — same check for the text encoder.
+  - `VAE load device: ..., dtype: torch.float32` (`comfy/sd.py`) — **this
+    one showing `float32` is normal, not a Volta problem.** Many VAE
+    architectures (including the classic SD1.5/SDXL VAE) produce
+    NaN/black-image output in FP16 regardless of GPU generation, so
+    ComfyUI defaults their decode to FP32 on every card, not just Volta.
+  If the *main model's* line ever shows `torch.bfloat16` instead, that's
+  the real "unexpectedly slow" signal — check SwarmUI's console/log
+  output for it directly, there's no UI indicator for this.
+- **Attention backend: you almost certainly don't need to touch this.**
+  ComfyUI already defaults to PyTorch's own `scaled_dot_product_attention`
+  (SDPA) on any NVIDIA GPU running PyTorch 2.x with no xformers install
+  present (confirmed against `comfy/model_management.py`) — this is the
+  out-of-the-box behavior on a stock SwarmUI/ComfyUI install, not
+  something you need to opt into. PyTorch's own SDPA dispatcher then
+  automatically skips its FlashAttention backend on Volta (that one needs
+  Ampere+/sm_80) and falls back to its memory-efficient (CUTLASS-based)
+  backend instead — transparently, with nothing to configure either way.
+  SwarmUI's **Backends → (your ComfyUI backend) → Extra Args** field maps
+  straight to ComfyUI's own CLI flags (`--use-pytorch-cross-attention`,
+  `--use-split-cross-attention`, etc. — confirmed against
+  `comfy/cli_args.py`) for the rare case you need to force a specific
+  backend while troubleshooting, but **leave it blank for a stock Volta
+  install** — setting `--use-pytorch-cross-attention` explicitly gains
+  nothing when it's already the default. xformers wheels are hit-or-miss
+  for sm_70 depending on which one gets installed, so don't add
+  `--use-flash-attention` here expecting a free speedup without first
+  checking SwarmUI's own log for a FlashAttention/xFormers install
+  warning at startup.
+- **VAE decode tiling**: ComfyUI automatically retries a VAE decode with
+  tiling if it hits a CUDA out-of-memory error decoding at full
+  resolution, logging `"Ran out of memory when regular VAE decoding,
+  retrying with tiled VAE decoding"` when it does (confirmed against
+  `comfy/sd.py`). If you see that warning repeatedly on a shared V100,
+  SwarmUI's own **VAE Tile Size** generation parameter (Advanced Sampling
+  group) lets you pick a tile size proactively — trading a bit of decode
+  time for lower peak VRAM — instead of relying on the automatic OOM
+  retry every time.
 - **One GPU, two consumers**: see §3a for VRAM-sharing guidance if you run
   Ollama and SwarmUI on the same V100 (the normal single-card setup).
 
