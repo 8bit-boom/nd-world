@@ -226,6 +226,31 @@ def test_ai_sidebar_width_scales_with_root_font_size():
     assert "rem" in block
 
 
+def test_btn_primary_and_btn_secondary_are_actually_defined(client, seed):
+    """.btn-primary/.btn-secondary are used on ~60 <button>/<a> elements
+    across ~27 templates (account, auth forms, boards, character sheets,
+    schematic dialogs, world edit, export hub, ...) but neither class had a
+    CSS rule anywhere — every one of those controls rendered with raw
+    browser-default chrome instead of the app's actual button styling."""
+    primary_block = _STYLE_CSS.split(".btn-primary {", 1)[1].split("}", 1)[0]
+    assert "background" in primary_block
+    assert "cursor: pointer" in primary_block
+    assert ".btn-primary:hover" in _STYLE_CSS
+
+    secondary_block = _STYLE_CSS.split(".btn-secondary {", 1)[1].split("}", 1)[0]
+    assert "border" in secondary_block
+    assert "cursor: pointer" in secondary_block
+    assert ".btn-secondary:hover" in _STYLE_CSS
+
+    # Spot-check real pages actually use the classes this rule now styles
+    # (they'd otherwise be dead CSS with nothing left to check).
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/dice")
+    assert r.status_code == 200
+    assert 'class="btn-primary"' in r.text
+
+
 def test_ai_send_bg_button_is_styled_like_its_sibling_icon_buttons():
     """#ai-send-bg (the "send as background job" button) had no CSS rule at
     all, so it rendered with raw browser-default button chrome instead of
