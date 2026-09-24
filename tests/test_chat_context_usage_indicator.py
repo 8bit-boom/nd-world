@@ -30,15 +30,29 @@ def test_context_info_returns_default_when_unset(client, seed):
     _login_gm(client, seed)
     r = client.get("/api/ai/context-info")
     assert r.status_code == 200
-    assert r.json() == {"num_ctx": ai_module._DEFAULT_ASSUMED_CTX_TOKENS}
+    assert r.json() == {
+        "baseline": ai_module._DEFAULT_ASSUMED_CTX_TOKENS,
+        "ceiling": max(ai_module._DEFAULT_ASSUMED_CTX_TOKENS, ai_module.MAX_AUTO_NUM_CTX),
+    }
 
 
-def test_context_info_returns_configured_num_ctx(client, seed):
+def test_context_info_returns_configured_num_ctx_as_baseline(client, seed):
     ai_module.set_ollama_generation_overrides({"num_ctx": 16384})
     _login_gm(client, seed)
     r = client.get("/api/ai/context-info")
     assert r.status_code == 200
-    assert r.json() == {"num_ctx": 16384}
+    assert r.json() == {"baseline": 16384, "ceiling": max(16384, ai_module.MAX_AUTO_NUM_CTX)}
+
+
+def test_context_info_ceiling_never_shrinks_below_a_larger_configured_baseline(client, seed):
+    """A GM who's manually set num_ctx above MAX_AUTO_NUM_CTX must never see
+    the ceiling reported smaller than what they actually configured."""
+    big = ai_module.MAX_AUTO_NUM_CTX + 8192
+    ai_module.set_ollama_generation_overrides({"num_ctx": big})
+    _login_gm(client, seed)
+    r = client.get("/api/ai/context-info")
+    assert r.status_code == 200
+    assert r.json() == {"baseline": big, "ceiling": big}
 
 
 def test_ai_chat_page_ships_ctx_usage_element_and_wiring(client, seed):
@@ -52,7 +66,11 @@ def test_ai_chat_core_js_computes_and_colors_ctx_usage(client, seed):
     assert "async function _updateCtxUsage(" in js
     assert "/api/ai/context-info" in js
     assert "ndEstimateTokens(allText)" in js
-    assert "const over = tokens > numCtx" in js
-    assert "over ? '#f55'" in js
+    # The red/truncation-risk threshold is `ceiling` (what /api/ai/stream's
+    # own auto-sizing grows num_ctx up to), not the raw configured
+    # `baseline` — see api_context_info's own docstring for why using the
+    # baseline alone was a false-positive truncation warning.
+    assert "const overCeiling = tokens > ceiling" in js
+    assert "overCeiling ? '#f55'" in js
     # Wired into the live send path with what was actually sent (post-RAG).
     assert "_updateCtxUsage(messagesWithCtx, presetSystem)" in js

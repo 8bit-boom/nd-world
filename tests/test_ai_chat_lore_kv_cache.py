@@ -25,8 +25,8 @@ def _core_js() -> str:
 
 def test_lore_pair_is_injected_before_the_final_turn_not_the_front():
     content = _core_js()
-    assert "async function buildChatMessagesWithContext(extraUserMsg) {" in content
-    fn_start = content.index("async function buildChatMessagesWithContext(extraUserMsg) {")
+    assert "async function buildChatMessagesWithContext(extraUserMsg, signal) {" in content
+    fn_start = content.index("async function buildChatMessagesWithContext(extraUserMsg, signal) {")
     fn_body = content[fn_start:content.index("\nasync function sendMessage()", fn_start)]
 
     assert "...base.slice(0, -1)," in fn_body
@@ -45,7 +45,7 @@ def test_lore_pair_never_pushed_into_persistent_history():
     the outgoing messages array only) — pushing it into `history` would
     permanently bake a stale RAG snapshot into the saved conversation."""
     content = _core_js()
-    fn_start = content.index("async function buildChatMessagesWithContext(extraUserMsg) {")
+    fn_start = content.index("async function buildChatMessagesWithContext(extraUserMsg, signal) {")
     fn_body = content[fn_start:content.index("\nasync function sendMessage()", fn_start)]
     assert "history.push" not in fn_body
     assert "history.unshift" not in fn_body

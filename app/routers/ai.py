@@ -633,12 +633,24 @@ async def api_ai_assist(
     # per-surface convention chat/ask_ai/recap follow.
     model = body.model or _ai.get_defaults().get("assist", "")
     user = getattr(request.state, "user", None)
+    # _assist_world_context (via smart_world_context -> vector_search) calls
+    # asyncio.run() internally when this world has a vault configured — that
+    # function's own docstring is explicit that it's only safe to call from
+    # a plain `def` FastAPI route (which runs in a worker thread with no
+    # event loop of its own), never from already-running async code. This
+    # route IS async def, so a direct sync call here used to raise
+    # "asyncio.run() cannot be called from a running event loop" — caught
+    # and silently swallowed by vector_search's own bare except, so vault
+    # search simply never contributed to Assist, with no visible error.
+    # asyncio.to_thread runs it on an actual worker thread instead, exactly
+    # what the docstring's assumption requires.
+    world_context = await _asyncio.to_thread(_assist_world_context, body, db, world, user)
     try:
         result = await _ai_assist.run_assist(
             body.op,
             content=content, meta=_assist_meta(body), instruction=body.instruction,
             model=model, think=body.think, lang=body.lang,
-            world_context=_assist_world_context(body, db, world, user=user),
+            world_context=world_context,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -2192,14 +2204,26 @@ async def ai_status():
 
 @router.get("/context-info")
 async def api_context_info():
-    """Backs the chat context-usage indicator (plan item 4.2) — the GM's
-    configured num_ctx if one is set, else the same
+    """Backs the chat context-usage indicator (plan item 4.2).
+
+    `baseline` is the GM's configured num_ctx if one is set, else the same
     `_DEFAULT_ASSUMED_CTX_TOKENS` fallback the recap-chunking budget already
     assumes, so the two stay consistent about "how big is the model's
     context window" without a real answer from Ollama (which doesn't expose
-    the actually-loaded window size)."""
-    num_ctx = _ai.effective_ollama_options().get("num_ctx") or _ai._DEFAULT_ASSUMED_CTX_TOKENS
-    return {"num_ctx": num_ctx}
+    the actually-loaded window size).
+
+    `ceiling` is what actually matters for the indicator's red/truncation
+    warning: POST /api/ai/stream auto-grows num_ctx up to MAX_AUTO_NUM_CTX
+    whenever the caller (this page included) didn't already pin one
+    explicitly — see ai_stream's own `_ctx_override_if_needed` call — so a
+    message size the indicator used to flag as "may be getting truncated"
+    at `baseline` was routinely one the live request had already been
+    auto-widened to fit. Always >= baseline, so a GM who's manually
+    configured a larger-than-default window never sees the ceiling
+    shrink below what they set."""
+    baseline = _ai.effective_ollama_options().get("num_ctx") or _ai._DEFAULT_ASSUMED_CTX_TOKENS
+    ceiling = max(baseline, _ai.MAX_AUTO_NUM_CTX)
+    return {"baseline": baseline, "ceiling": ceiling}
 
 
 # ── Image generation routes ───────────────────────────────────────────────────

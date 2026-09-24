@@ -21,13 +21,13 @@ def test_combined_total_cap_constant_exists():
 
 
 def test_per_entity_body_is_sliced_with_a_visible_truncation_notice():
-    body = _JS.split("async function _pinnedEntitiesContext()", 1)[1]
+    body = _JS.split("async function _pinnedEntitiesContext(signal)", 1)[1]
     assert "body.slice(0, PINNED_ENTITY_BODY_CHAR_CAP)" in body
     assert "truncated — open the entity for the rest" in body
 
 
 def test_combined_budget_drops_with_a_visible_notice_keeping_insertion_order():
-    body = _JS.split("async function _pinnedEntitiesContext()", 1)[1]
+    body = _JS.split("async function _pinnedEntitiesContext(signal)", 1)[1]
     assert "usedChars + part.length > PINNED_ENTITIES_TOTAL_CHAR_CAP" in body
     assert "omitted — over the context budget" in body
     # Iterates `parts` (already in _pinnedEntities' insertion/Map order) in

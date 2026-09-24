@@ -354,6 +354,34 @@ def test_smart_world_context_leads_with_priority_content_not_matched_entities(cl
         db.close()
 
 
+def test_smart_world_context_priority_note_in_the_notes_topup_still_gets_its_excerpt(client, seed):
+    """Regression: exclude_ids used to be every id in non_notes/notes,
+    which also includes the alphabetical/most-recent-notes TOP-UP entities
+    — those only ever get a bare "- [note] Name" line in the ordinary
+    context (format_context_from_entities' excerpt_ids=matched_ids means a
+    top-up entity is never eligible for a real excerpt there). A
+    rag_priority note that FTS doesn't match at all (entity_limit=0 here,
+    the simplest way to guarantee that) but that lands in the notes
+    top-up via notes_limit still deserves its full priority excerpt — the
+    exact case rag_priority exists for — and the old exclude_ids
+    computation silently skipped it instead."""
+    _make_entity(seed.world_a.id, name="Players Guide", body=_PLAYER_GUIDE_BODY, rag_priority=True)
+    db = SessionLocal()
+    try:
+        context, _non_notes, notes = smart_world_context(
+            db, seed.world_a.id, "what weapon traits exist, like Brutal",
+            entity_limit=0, notes_limit=5,
+        )
+        # Sanity: the note really did land via the top-up path, not FTS
+        # matching (entity_limit=0 disables that entirely) — confirms this
+        # test actually exercises the top-up scenario, not some other path.
+        assert [e.name for e in notes] == ["Players Guide"]
+        assert "Players Guide" in context
+        assert "no mechanical bonus" in context  # the real excerpt, not just the bare name line
+    finally:
+        db.close()
+
+
 def test_smart_world_context_without_priority_flag_misses_it_when_entity_rag_off(client, seed):
     """Baseline confirming the flag is what does the work: the identical
     setup, minus rag_priority, finds nothing with entity RAG off — guards

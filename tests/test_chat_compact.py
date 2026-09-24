@@ -219,7 +219,7 @@ def test_js_auto_suggest_and_auto_compact_wired_into_ctx_usage():
     js = open("static/js/ai-chat-core.js").read()
     assert "function ndSetAutoCompact(" in js
     assert "function ndGetAutoCompact(" in js
-    body = js.split("async function _updateCtxUsage(", 1)[1][:1500]
+    body = js.split("async function _updateCtxUsage(", 1)[1].split("function ndSetAutoCompact(", 1)[0]
     assert "ndGetAutoCompact()" in body
     assert "compactChat()" in body
     assert "ctx-compact-suggest" in body

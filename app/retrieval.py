@@ -1130,9 +1130,20 @@ def smart_world_context(
     )
     world = db.get(World, world_id)
     rules = rules_context(world, query, limit=rules_limit, is_gm=not strip_secrets)
+    # exclude_ids=matched_ids, NOT every id in non_notes/notes: those two
+    # lists also contain the alphabetical/most-recent-notes TOP-UP entities
+    # (see the comment above matched_ids), which never get a real excerpt
+    # in `context` above — excerpt_ids=matched_ids there means a top-up
+    # entity is only ever a bare "- [kind] Name" line. Excluding every
+    # non_notes/notes id here used to skip the priority path for exactly
+    # the case it exists to handle: a GM's rag_priority-flagged reference
+    # document that FTS doesn't rank highly enough to land in matched_ids,
+    # landing in the top-up instead — it would be excluded from priority_
+    # entities_context and so never get its full excerpt, only that bare
+    # name line, silently defeating "High priority for AI" for it.
     priority = priority_entities_context(
         db, world_id, query, user=user, strip_gm_only=strip_secrets,
-        exclude_ids={e.id for e in non_notes} | {e.id for e in notes},
+        exclude_ids=matched_ids,
     )
     # Hybrid RAG + knowledge-graph layer (see this module's own section
     # comment above vector_search) — entirely opt-in, gated on this world
@@ -1332,7 +1343,20 @@ def graph_context(db: Session, world_id: int, entity_ids, user=None, max_hops: i
         adjacency.setdefault(e.source_id, []).append((e.relation, e.target_id, True))
         adjacency.setdefault(e.target_id, []).append((e.relation, e.source_id, False))
 
-    visited = set(entity_ids)
+    # `visited` controls EXPANSION only (each node's adjacency list is
+    # walked at most once, so a cycle can't loop forever) — it must NOT
+    # also gate whether an edge gets EMITTED. The old code seeded `visited`
+    # with every seed up front and skipped a neighbor already in `visited`
+    # before emitting anything for it, so a direct edge between two
+    # entities that were BOTH seeds (e.g. "how is Bob connected to the
+    # Thieves Guild" when FTS matched both names) was silently dropped —
+    # by the time either seed's adjacency was walked, the other was
+    # already marked visited from the initial seeding. `seen_edges` dedups
+    # output by the actual (src, relation, tgt) triple instead, which is
+    # what actually determines "have we already reported this edge" —
+    # independent of whether its endpoints happen to be seeds.
+    visited = set()
+    seen_edges = set()
     frontier = set(entity_ids)
     lines = []
     for _hop in range(max_hops):
@@ -1340,15 +1364,18 @@ def graph_context(db: Session, world_id: int, entity_ids, user=None, max_hops: i
             break
         next_frontier = set()
         for eid in sorted(frontier):
+            if eid in visited:
+                continue
+            visited.add(eid)
             for relation, neighbor_id, forward in adjacency.get(eid, []):
-                if neighbor_id in visited:
-                    continue
-                visited.add(neighbor_id)
-                next_frontier.add(neighbor_id)
-                if len(lines) >= GRAPH_MAX_RESULTS:
-                    continue
                 src, tgt = (eid, neighbor_id) if forward else (neighbor_id, eid)
-                lines.append(f"- {names[src]} --{relation}--> {names[tgt]}")
+                edge_key = (src, relation, tgt)
+                if edge_key not in seen_edges:
+                    seen_edges.add(edge_key)
+                    if len(lines) < GRAPH_MAX_RESULTS:
+                        lines.append(f"- {names[src]} --{relation}--> {names[tgt]}")
+                if neighbor_id not in visited:
+                    next_frontier.add(neighbor_id)
         frontier = next_frontier
         if not frontier:
             break

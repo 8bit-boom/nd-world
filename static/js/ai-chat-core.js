@@ -8,8 +8,16 @@ const chatAttachments = ndAiAttachments(document.getElementById('ai-attach-list'
 });
 let activeReader = null;
 let currentSessionId = null;
+// Spans BOTH the RAG lookup (buildChatMessagesWithContext, the "⏳ Finding
+// lore…" phase) and the /api/ai/stream fetch that follows it — activeReader
+// alone only exists once the stream fetch has already returned, so Stop
+// used to be a no-op during the (often slower, if a vault vector-search
+// embed call is involved) lore-lookup phase, and nothing guarded against a
+// second sendMessage() call landing in that same window either.
+let _sendController = null;
 
 function stopStream() {
+  if (_sendController) _sendController.abort();
   if (activeReader) activeReader.cancel();
 }
 
@@ -888,22 +896,31 @@ function _setCtxStatus(color, text) {
 // Chat context-usage indicator (plan item 4.2). History is unbounded by
 // design — trimming it loses the GM's own memory of the conversation — so
 // this gives visibility instead: after each send, show roughly how much
-// was sent and flag red once it's in the neighborhood of the model's own
+// was sent and flag it once it's in the neighborhood of the model's own
 // context window, which is when a long chat actually starts forgetting
-// its early turns or slowing down. `_ctxNumCtx` is fetched once and
-// cached for the page's lifetime — it only changes if a GM edits Settings,
-// which already requires a reload of everything else too.
-let _ctxNumCtx = null;
-async function _getCtxNumCtx() {
-  if (_ctxNumCtx != null) return _ctxNumCtx;
+// its early turns or slowing down. `_ctxInfo` is fetched once and cached
+// for the page's lifetime — it only changes if a GM edits Settings, which
+// already requires a reload of everything else too.
+//
+// Two thresholds, not one: `baseline` is the GM's configured num_ctx (or
+// the app's default assumption); `ceiling` is what POST /api/ai/stream
+// actually auto-grows num_ctx up to when a caller (this page included)
+// doesn't pin one explicitly (see that route's own _ctx_override_if_needed
+// call) — so a message size between the two is NOT at risk of truncation,
+// just a larger, slower context window. Only crossing `ceiling` is a real
+// "may be getting truncated" warning worth suggesting/auto-triggering a
+// compact over.
+let _ctxInfo = null;
+async function _getCtxInfo() {
+  if (_ctxInfo != null) return _ctxInfo;
   try {
     const r = await fetch('/api/ai/context-info');
     const d = await r.json();
-    _ctxNumCtx = d.num_ctx || 4096;
+    _ctxInfo = { baseline: d.baseline || 4096, ceiling: d.ceiling || d.baseline || 4096 };
   } catch (_) {
-    _ctxNumCtx = 4096;
+    _ctxInfo = { baseline: 4096, ceiling: 4096 };
   }
-  return _ctxNumCtx;
+  return _ctxInfo;
 }
 
 async function _updateCtxUsage(messages, system) {
@@ -911,19 +928,26 @@ async function _updateCtxUsage(messages, system) {
   if (!el) return;
   const allText = (system || '') + '\n' + messages.map((m) => m.content || '').join('\n');
   const tokens = ndEstimateTokens(allText);
-  const numCtx = await _getCtxNumCtx();
-  const over = tokens > numCtx;
+  const { baseline, ceiling } = await _getCtxInfo();
+  const overCeiling = tokens > ceiling;
+  const overBaseline = tokens > baseline;
   el.textContent = `≈${tokens.toLocaleString()} tokens sent`;
-  el.style.color = over ? '#f55' : 'var(--text-dim)';
-  el.title = over
-    ? `Over the model's ~${numCtx.toLocaleString()}-token context — earliest turns may be getting dropped or the reply may get slower/worse`
-    : `Estimated size of what was sent, out of a ~${numCtx.toLocaleString()}-token context`;
+  el.style.color = overCeiling ? '#f55' : (overBaseline ? '#fa4' : 'var(--text-dim)');
+  el.title = overCeiling
+    ? `Over the model's ~${ceiling.toLocaleString()}-token auto-sized context — earliest turns may be getting dropped or the reply may get slower/worse`
+    : overBaseline
+      ? `Over the configured ~${baseline.toLocaleString()}-token context, but still under the ~${ceiling.toLocaleString()}-token window a request this size auto-grows to — nothing should be truncated, generation may just be slower`
+      : `Estimated size of what was sent, out of a ~${baseline.toLocaleString()}-token context`;
 
   // Pairs the indicator with a way to act on it: auto-compact silently if
   // the GM opted in (ndSetAutoCompact), otherwise just surface the link —
   // never compact without either an explicit click or that explicit opt-in.
+  // Gated on overCeiling, not overBaseline — a message that's merely over
+  // the configured baseline (but still under what auto-sizing would grow
+  // to) isn't actually losing anything, so it shouldn't trigger a lossy
+  // summarization the GM never asked for.
   const suggestBtn = document.getElementById('ctx-compact-suggest');
-  if (over && history.length > COMPACT_KEEP_RECENT && !_compacting) {
+  if (overCeiling && history.length > COMPACT_KEEP_RECENT && !_compacting) {
     if (ndGetAutoCompact()) {
       compactChat();
     } else if (suggestBtn) {
@@ -1085,11 +1109,11 @@ function unpinEntity(id) {
 const PINNED_ENTITY_BODY_CHAR_CAP = 4000;
 const PINNED_ENTITIES_TOTAL_CHAR_CAP = 12000;
 
-async function _pinnedEntitiesContext() {
+async function _pinnedEntitiesContext(signal) {
   if (!_pinnedEntities.size) return '';
   const parts = await Promise.all([..._pinnedEntities.values()].map(async (e) => {
     try {
-      const d = await fetch('/api/entity/' + e.id + '/preview').then(r => r.json());
+      const d = await fetch('/api/entity/' + e.id + '/preview', { signal }).then(r => r.json());
       let body = d.body || d.summary || '';
       if (body.length > PINNED_ENTITY_BODY_CHAR_CAP) {
         body = body.slice(0, PINNED_ENTITY_BODY_CHAR_CAP) + '…[truncated — open the entity for the rest]';
@@ -1144,14 +1168,15 @@ function _getNotesLimit() {
 // background-job path, which doesn't push to `history` until "Use this" is
 // clicked); omit it for the live path, where the new turn is already in
 // `history` by the time this is called.
-async function buildChatMessagesWithContext(extraUserMsg) {
+async function buildChatMessagesWithContext(extraUserMsg, signal) {
   const queryText = extraUserMsg ? extraUserMsg.content : (history.length ? history[history.length - 1].content : '');
   let ctx = '';
   try {
     const cr = await fetch('/api/ai/world-context-smart', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: queryText, limit: _getCtxLimit(), notes_limit: _getNotesLimit() })
+      body: JSON.stringify({ query: queryText, limit: _getCtxLimit(), notes_limit: _getNotesLimit() }),
+      signal,
     });
     const cd = await cr.json();
     ctx = cd.context || '';
@@ -1163,13 +1188,17 @@ async function buildChatMessagesWithContext(extraUserMsg) {
     } else {
       _setCtxStatus('var(--text-dim)', '○ No matching lore');
     }
-  } catch(_) {
+  } catch(e) {
+    // A deliberate Stop-during-lore-lookup abort must not paint "Lore
+    // unavailable" — sendMessage's own catch already handles AbortError
+    // by showing nothing, so just let it propagate there unchanged.
+    if (e.name === 'AbortError') throw e;
     _setCtxStatus('#f55', '✗ Lore unavailable');
   }
 
   // Pinned entities/notes are always included in full, regardless of
   // whether they matched this message's RAG query.
-  const pinnedCtx = await _pinnedEntitiesContext();
+  const pinnedCtx = await _pinnedEntitiesContext(signal);
   if (pinnedCtx) ctx = ctx ? (pinnedCtx + '\n\n' + ctx) : pinnedCtx;
 
   const base = extraUserMsg ? [...history, extraUserMsg] : [...history];
@@ -1203,13 +1232,14 @@ async function sendMessage() {
   const aiBar = document.getElementById('ai-bar');
   const text = input.value.trim();
   const attachments = chatAttachments.take();
-  if ((!text && !attachments.length) || activeReader) return;
+  if ((!text && !attachments.length) || _sendController) return;
   input.value = '';
   autoResize(input);
 
   addMessage('user', text, false, attachments);
   history.push({ role: 'user', content: text, attachments });
 
+  _sendController = new AbortController();
   btn.textContent = 'Stop ■';
   btn.classList.add('stopping');
   btn.onclick = stopStream;
@@ -1218,7 +1248,7 @@ async function sendMessage() {
   const thinking = addMessage('assistant', '<span class="thinking-dots"><span></span><span></span><span></span></span>', true);
 
   try {
-    const { messages: messagesWithCtx, system: presetSystem } = await buildChatMessagesWithContext();
+    const { messages: messagesWithCtx, system: presetSystem } = await buildChatMessagesWithContext(undefined, _sendController.signal);
     _updateCtxUsage(messagesWithCtx, presetSystem);
 
     const thinkCb = document.getElementById('ai-think-checkbox');
@@ -1228,7 +1258,8 @@ async function sendMessage() {
       body: JSON.stringify({
         messages: messagesWithCtx, system: presetSystem, model: activeModel, surface: 'chat',
         options: _chatPresetOptions, think: thinkCb ? thinkCb.checked : ndGetThinkEnabled(),
-      })
+      }),
+      signal: _sendController.signal,
     });
     if (!res.ok) throw new Error('Server error ' + res.status);
 
@@ -1342,6 +1373,7 @@ async function sendMessage() {
     if (_dotFinal) _dotFinal.classList.remove('model-dot--active');
     aiBar.className = 'done'; setTimeout(()=>{aiBar.style.display='none';aiBar.className='';},800);
     activeReader = null;
+    _sendController = null;
     btn.textContent = 'Send ↵';
     btn.classList.remove('stopping');
     btn.onclick = sendMessage;
@@ -1588,6 +1620,13 @@ function saveChat() {
 
 function clearChat() {
   history = [];
+  // Same reset newChat() does — without it, the page keeps pointing at
+  // whatever session was loaded (loadSessions(true) auto-loads the latest
+  // on page load, so this is the common case, not an edge case), and the
+  // very next reply's autoSave() silently overwrites that PREVIOUSLY
+  // SAVED conversation under its old title instead of starting a new one.
+  currentSessionId = null;
+  document.querySelectorAll('.session-link').forEach(l => l.classList.remove('active'));
   chatAttachments.take();  // drop any not-yet-sent pending attachments too
   const box = document.getElementById('ai-messages');
   box.innerHTML = '';

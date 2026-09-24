@@ -345,6 +345,56 @@ def test_graph_context_traverses_edges_in_both_directions(client, seed):
         db.close()
 
 
+def test_graph_context_shows_direct_edge_between_two_seeds(client, seed):
+    """Regression: `visited` used to be seeded with every seed up front,
+    so a direct edge between two entities that were BOTH seeds (e.g. FTS
+    matched both "Bob" and "Thieves Guild" for "how is Bob connected to
+    the Thieves Guild") was silently dropped — by the time either seed's
+    adjacency was walked, the other endpoint was already marked visited
+    from that initial seeding, so the edge never got emitted."""
+    db = SessionLocal()
+    try:
+        bob = Entity(world_id=seed.world_a.id, kind="character", name="Bob")
+        guild = Entity(world_id=seed.world_a.id, kind="organization", name="Thieves Guild")
+        db.add_all([bob, guild])
+        db.commit()
+        db.refresh(bob)
+        db.refresh(guild)
+        db.add(EntityRelation(world_id=seed.world_a.id, source_id=bob.id, target_id=guild.id, relation="member_of"))
+        db.commit()
+
+        ctx = graph_context(db, seed.world_a.id, {bob.id, guild.id})
+        assert "Bob --member_of--> Thieves Guild" in ctx
+    finally:
+        db.close()
+
+
+def test_graph_context_does_not_duplicate_an_edge_reachable_two_ways(client, seed):
+    """Two seeds connected both directly AND via a shared one-hop neighbor
+    must still report the direct edge exactly once — seen_edges dedupes by
+    the real (src, relation, tgt) triple, not by whether an endpoint was
+    already `visited`."""
+    db = SessionLocal()
+    try:
+        bob = Entity(world_id=seed.world_a.id, kind="character", name="Bob")
+        guild = Entity(world_id=seed.world_a.id, kind="organization", name="Thieves Guild")
+        dockside = Entity(world_id=seed.world_a.id, kind="location", name="Dockside")
+        db.add_all([bob, guild, dockside])
+        db.commit()
+        db.refresh(bob)
+        db.refresh(guild)
+        db.refresh(dockside)
+        db.add(EntityRelation(world_id=seed.world_a.id, source_id=bob.id, target_id=guild.id, relation="member_of"))
+        db.add(EntityRelation(world_id=seed.world_a.id, source_id=bob.id, target_id=dockside.id, relation="located_in"))
+        db.add(EntityRelation(world_id=seed.world_a.id, source_id=guild.id, target_id=dockside.id, relation="located_in"))
+        db.commit()
+
+        ctx = graph_context(db, seed.world_a.id, {bob.id, guild.id})
+        assert ctx.count("Bob --member_of--> Thieves Guild") == 1
+    finally:
+        db.close()
+
+
 def test_graph_context_empty_when_no_seeds_or_no_edges(client, seed):
     db = SessionLocal()
     try:

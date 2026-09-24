@@ -18,7 +18,7 @@ from app import ai_assist as assist_module
 from app import audio_jobs as audio_jobs_module
 from app.auth import hash_password as _auth_hash
 from app.database import SessionLocal
-from app.models import AudioJob, Entity, Fact, Quest, User, WorldMembership
+from app.models import AudioJob, Entity, Fact, Quest, User, VaultChunk, World, WorldMembership
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -351,6 +351,47 @@ def test_assist_route_rag_feeds_world_context(client, seed, monkeypatch):
     })
     assert r.status_code == 200, r.text
     assert "Elyra the Blade" in captured["system"]
+
+
+def test_assist_route_rag_includes_vault_search_results(client, seed, monkeypatch, tmp_path):
+    """Regression: POST /api/ai/assist is `async def`, so a direct
+    (non-threaded) call into smart_world_context -> vector_search used to
+    hit vector_search's own asyncio.run() while already inside a running
+    event loop — RuntimeError, silently swallowed by vector_search's bare
+    except, so vault search never contributed to Assist even when a vault
+    was configured and had matching content. api_ai_assist now runs
+    _assist_world_context via asyncio.to_thread specifically to avoid
+    this; this test would have failed before that fix."""
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        w.obsidian_vault_path = str(tmp_path)
+        db.add(VaultChunk(
+            world_id=seed.world_a.id, source_path="smuggling.md", heading="Docks",
+            text="The Rusty Anchor smuggles contraband through the eastern docks at midnight.",
+            embedding=ai_module.pack_embedding([1.0, 0.0, 0.0]),
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+    async def fake_embed_text(text, model=""):
+        return [1.0, 0.0, 0.0]  # identical to the stored chunk's vector -> perfect match
+    monkeypatch.setattr(ai_module, "embed_text", fake_embed_text)
+
+    captured = {}
+
+    async def fake_generate_chat(messages, system="", model="", options=None, think=False):
+        captured["system"] = system
+        return "ok"
+    monkeypatch.setattr(ai_module, "generate_chat", fake_generate_chat)
+
+    _login_gm(client, seed)
+    r = client.post("/api/ai/assist", json={
+        "op": "improve", "body": "Who runs contraband through the docks at night?", "use_rag": True,
+    })
+    assert r.status_code == 200, r.text
+    assert "Rusty Anchor" in captured["system"]
 
 
 # ── The ai_assist job purpose ───────────────────────────────────────────────
