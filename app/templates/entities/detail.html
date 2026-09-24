@@ -650,12 +650,16 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
   // inventing an answer, nor any push toward quoting a retrieved table's
   // actual rows instead of summarizing them.
   // GM-authored standing instructions (app.ai_instructions — a per-world
-  // collection of uploaded .md files, e.g. "always answer in a noir
-  // detective's voice") — "" when this world has none enabled. Applied
-  // to the Ask mode only, not Roleplay — a GM asked for this on "chat,
-  // ask AI, Chronicler" specifically, and an in-character roleplay
-  // response has its own, different "never break character" contract
-  // this would risk stepping on.
+  // collection of uploaded .md files, e.g. "the kingdom is currently at
+  // war" or "always answer in a noir detective's voice") — "" when this
+  // world has none enabled. Applied to BOTH modes: this is exactly the
+  // kind of standing world-building context a roleplay conversation with
+  // an NPC should also respect (a war the whole setting is in the middle
+  // of doesn't stop mattering just because the GM switched to talking AS
+  // a character), not just narrator-style Ask answers. Framed differently
+  // per mode below (EP_SYSTEM_ROLEPLAY wraps it as in-character guidance
+  // rather than appending it verbatim) so it can't read as the character
+  // suddenly breaking into out-of-character meta-commentary.
   const EP_CUSTOM_INSTRUCTIONS = {{ (ai_custom_instructions or "") | tojson }};
   const EP_SYSTEM_ASK = (
     "You are a world-building assistant. Answer questions about the entity provided. "
@@ -680,12 +684,29 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
     + "asked about something the character wouldn't plausibly know, respond the way the character "
     + "actually would (deflect, guess, get confused, or admit ignorance in-character) rather than "
     + "stepping outside the role to say you don't have that information."
+    + (EP_CUSTOM_INSTRUCTIONS
+        ? "\n\nStanding setting notes from the GM — let these inform how you portray the character "
+          + "(what the world/situation currently is), but never break character to mention them "
+          + "explicitly:\n\n" + EP_CUSTOM_INSTRUCTIONS
+        : "")
   );
   let epMode = 'ask';
   let epHistory = [];
 
   window.epSetMode = function(mode) {
+    if (mode === epMode) return;
+    // Ask and Roleplay carry contradictory system prompts (a narrator
+    // answering questions ABOUT the entity vs. the model speaking AS it
+    // in first person) — reusing the same epHistory/transcript across a
+    // mode switch used to mix both voices into one conversation the model
+    // could see in its own history, undermining whichever mode was
+    // actually active (a "never break character" instruction sitting
+    // right next to the model's own prior out-of-character narrator
+    // replies). Starting a fresh conversation on every switch keeps each
+    // mode's transcript internally consistent.
     epMode = mode;
+    epHistory = [];
+    document.getElementById('ep-messages').innerHTML = '';
     document.getElementById('ep-mode-ask').classList.toggle('ep-mode-active', mode === 'ask');
     document.getElementById('ep-mode-roleplay').classList.toggle('ep-mode-active', mode === 'roleplay');
     document.getElementById('ep-input').placeholder = mode === 'roleplay'
