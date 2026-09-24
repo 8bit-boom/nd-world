@@ -456,21 +456,19 @@ async function pullModel(modelId, btn, dot) {
   }
 }
 async function forceRepull(modelId, btn, dot, row) {
-  if (!confirm('Delete "' + modelId + '" from Ollama storage and re-download it?\n\nThis fixes corrupted model files. The model will be unavailable during download.')) return;
+  // Deliberately does NOT delete the model from Ollama first (that used
+  // to happen here, before this pull even started) — Ollama's own model
+  // store is content-addressed and a normal pull already re-verifies
+  // every layer against the registry, re-fetching anything that doesn't
+  // match, which is the standard way to repair a corrupted model. Pre-
+  // deleting only added a real data-loss window: if the re-download then
+  // failed for any reason (network hiccup, registry hiccup, disk full),
+  // the GM was left with no model at all instead of the corrupted-but-
+  // still-present one they started with. Not deleting means a failed
+  // re-pull here leaves the existing file exactly as it was.
+  if (!confirm('Re-download "' + modelId + '"?\n\nOllama re-verifies every file against the registry and re-fetches anything that doesn\'t match, which fixes most corrupted model files. The existing file is left untouched unless the download succeeds.')) return;
   btn.disabled = true;
-  btn.textContent = '⏳ Removing…';
   dot.className = 'model-dot model-dot--unloaded';
-  try {
-    await fetch('/api/ai/models/remove', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model_id: modelId, delete_from_ollama: true })
-    });
-  } catch(e) {
-    btn.textContent = '✗ Remove failed';
-    btn.disabled = false;
-    return;
-  }
   btn.textContent = '⏳ 0%';
   try {
     const res = await fetch('/api/ai/pull', {
@@ -507,6 +505,12 @@ async function forceRepull(modelId, btn, dot, row) {
     btn.textContent = '🔄';
     btn.disabled = false;
   } catch(e) {
+    // The model was never deleted (see this function's own comment
+    // above), so a failed re-pull leaves the existing file exactly as it
+    // was — restore the dot to "loaded" rather than leaving it on the
+    // "unloaded" state set before the pull started, which would now
+    // wrongly suggest the model is gone.
+    dot.className = 'model-dot model-dot--loaded';
     btn.textContent = '✗ Pull failed';
     btn.disabled = false;
   }
