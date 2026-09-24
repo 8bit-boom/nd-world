@@ -960,6 +960,78 @@ def format_context_from_entities(
     return "\n".join(lines)
 
 
+def entity_extra_context(
+    custom_sections: list, custom_fields: dict, notes: list,
+    related: list, backlinks: list, strip_gm_only: bool = False,
+) -> str:
+    """Custom fields + notes + linked-entity relations for ONE entity,
+    formatted for the entity detail page's Ask AI/Roleplay panel
+    (app.main.detail, baked once into ENTITY_HEADER — see entities/
+    detail.html) — previously invisible to that panel entirely, the same
+    gap format_context_from_entities' own notes-inclusion already closed
+    for the main world-wide AI Chat/Chronicler RAG path. A GM's stat-block
+    custom fields and discrete notes are often the actual answer to a
+    question ("what's this NPC's AC?", "who do they report to?") that the
+    entity's own free-text body may never mention at all.
+
+    Every input here must already be the caller's own visibility-filtered
+    data (custom_sections/custom_fields from app.main.detail's own
+    template-field lookup, notes from _visible_entity_notes, related/
+    backlinks from app.deps.filter_visible_entities) — this function only
+    formats, it doesn't re-check anything itself.
+
+    strip_gm_only=True additionally drops a GM-only note entirely (not
+    just strips [gmonly] spans within an otherwise-visible one) and strips
+    [gmonly]...[/gmonly] blocks out of every custom-field value/note text
+    left — same convention format_context_from_entities' own docstring
+    uses, for a caller building context that could reach a non-GM."""
+    parts = []
+
+    field_lines = []
+    for _section_name, fields in (custom_sections or []):
+        for f in fields:
+            if f.get("type") == "list":
+                for row in (custom_fields.get(f["id"]) or []):
+                    row_bits = [
+                        f"{sf['label']}: {row[sf['id']]}"
+                        for sf in (f.get("item_fields") or [])
+                        if row.get(sf["id"])
+                    ]
+                    if row_bits:
+                        field_lines.append(f"- {f['label']}: " + "; ".join(row_bits))
+                continue
+            val = custom_fields.get(f["id"])
+            if not val:
+                continue
+            val = str(val)
+            if strip_gm_only:
+                val = _strip_gm_only(val)
+            val = val.strip()
+            if val:
+                field_lines.append(f"- {f['label']}: {val}")
+    if field_lines:
+        parts.append("Custom fields:\n" + "\n".join(field_lines))
+
+    note_lines = []
+    for n in (notes or []):
+        if strip_gm_only and not n.visible_to_players:
+            continue
+        content = _html_to_markdown(n.content) if n.content_is_html else (n.content or "")
+        if strip_gm_only:
+            content = _strip_gm_only(content)
+        content = content.strip()
+        if content:
+            note_lines.append(f"- {content}")
+    if note_lines:
+        parts.append("Notes:\n" + "\n".join(note_lines))
+
+    rel_names = sorted({e.name for e in (related or [])} | {e.name for e in (backlinks or [])})
+    if rel_names:
+        parts.append("Related entities: " + ", ".join(rel_names))
+
+    return "\n\n".join(parts)
+
+
 # Independent of entity_limit/notes_limit the same way Rules text is (see
 # smart_world_context's own docstring on rules_context) — a GM-flagged
 # Entity.rag_priority row is always searched regardless of those limits,

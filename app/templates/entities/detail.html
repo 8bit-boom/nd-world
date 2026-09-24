@@ -359,9 +359,9 @@
 
   <section class="relations">
     <h2>// CONNECTIONS</h2>
-    {% if entity.related %}
+    {% if visible_related %}
     <div class="card-grid small">
-      {% for r in entity.related %}
+      {% for r in visible_related %}
       <div class="entity-card kind-{{ r.kind }} rel-card">
         <a href="{{ ('/entity/' + r.id|string)|wq }}" class="rel-link">
           <span class="entity-kind">{{ kind_icons[r.kind] }}</span>
@@ -623,6 +623,7 @@ function _escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').repla
     entity.kind|capitalize + ': ' + entity.name
     + ('\nSubtype: ' + entity.subtype if entity.subtype else '')
     + ('\nSummary: ' + safe_summary if safe_summary else '')
+    + ('\n\n' + entity_ai_extra if entity_ai_extra else '')
   ) | tojson }};
 
   // Best-effort per-question relevant excerpt of this entity's own body —

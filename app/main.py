@@ -5153,6 +5153,26 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         content_html = autolink_entities(render_md(_RULES_LEGACY_ANCHOR_RE.sub("", safe_body)), autolink_names)
         content_html, toc = _rules_toc(content_html, levels="123")
         body_sections = split_rules_sections(content_html, include_h1=True)
+    # entity.related is the raw, UNFILTERED relationship — a real bug: the
+    # template's own "// CONNECTIONS" section used to render it as-is,
+    # leaking a hidden (visible_to_players=False) related entity's name/
+    # kind/subtype to any player who views an entity linking to it, the one
+    # place on this page that skipped the visibility filter every other
+    # entity list here already applies (see backlinks, right below, which
+    # never had this problem). Re-queried and filtered the same way, and
+    # reused for the Ask AI/Roleplay panel's own context below, so a hidden
+    # related entity can't leak into that either.
+    related_ids = [r.id for r in entity.related]
+    visible_related = _filter_visible_entities(
+        db.query(Entity).filter(Entity.id.in_(related_ids)), request,
+    ).order_by(Entity.kind, Entity.name).all() if related_ids else []
+    # Custom fields/notes/relations for the "Ask/Roleplay this entity" panel
+    # (entities/detail.html's ENTITY_HEADER) — previously invisible to it
+    # entirely; see _retrieval.entity_extra_context's own docstring.
+    entity_ai_extra = _retrieval.entity_extra_context(
+        custom_sections, custom_fields, entity_notes, visible_related, backlinks,
+        strip_gm_only=not is_gm,
+    )
     return templates.TemplateResponse("entities/detail.html", {
         "request": request, "entity": entity,
         "world": world, "worlds": worlds, "backlinks": backlinks,
@@ -5160,6 +5180,7 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         "custom_sections": custom_sections, "custom_fields": custom_fields,
         "body_sections": body_sections, "toc": toc,
         "safe_body": safe_body, "safe_summary": safe_summary,
+        "visible_related": visible_related, "entity_ai_extra": entity_ai_extra,
         "ai_custom_instructions": (
             _ai_instructions.enabled_instructions_text(db, world.id, for_players=not is_gm) if world else ""
         ),
