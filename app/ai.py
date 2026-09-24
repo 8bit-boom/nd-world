@@ -5220,20 +5220,58 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                 if vae:
                     payload["vae"] = vae
                 if clip_skip > 0:
-                    payload["clipstop"] = -clip_skip
+                    # Real T2IParamType ID is "clipstopatlayer" (Name "CLIP
+                    # Stop At Layer") — verified against SwarmUI's own
+                    # src/Text2Image/T2IParamTypes.cs, whose IDs are always
+                    # the human-readable Name with spaces/punctuation
+                    # stripped and lowercased (CleanTypeName). The bare
+                    # "clipstop" this used to send matches no real param, so
+                    # CLIP Skip silently never took effect.
+                    payload["clipstopatlayer"] = -clip_skip
                 if init_image:
                     payload["initimage"] = init_image
                     payload["initimagecreativity"] = init_strength
                 if upscale_model:
-                    payload["upscalemodel"] = upscale_model
-                    payload["upscalemultiplier"] = upscale_factor
+                    # Real IDs are "refinerupscale" (a plain multiplier) and
+                    # "refinerupscalemethod" (a curated dropdown whose
+                    # file-backed entries are "model-<filename>", built from
+                    # the same Models/Upscale folder imagegen_upscalers()
+                    # already lists bare filenames from — see SwarmUI's
+                    # ComfyUIBackendExtension.cs UpscalerModels/
+                    # ConcatDropdownValsClean). "upscalemodel"/
+                    # "upscalemultiplier" match no real params. This also
+                    # means Upscale and the separate Refiner Model/Control
+                    # fields below now correctly compose into ONE real
+                    # upscale-then-refine pass (SwarmUI's actual design),
+                    # instead of two silently-inert, unrelated-seeming
+                    # panels.
+                    payload["refinerupscalemethod"] = f"model-{upscale_model}"
+                    payload["refinerupscale"] = upscale_factor
                 if controlnet_image:
-                    payload["controlnetimage"] = controlnet_image
+                    # Real ID is "controlnetimageinput" (Name "ControlNet
+                    # Image Input") — "controlnetimage" matches no real
+                    # param. "controlnetmodel"/"controlnetstrength" below
+                    # are already correct. There is no real "preprocessor"
+                    # param at all (verified: SwarmUI's ControlNet group
+                    # registers only Image/Model/Strength/Start/End) — never
+                    # sent, since it never did anything.
+                    payload["controlnetimageinput"] = controlnet_image
                     payload["controlnetstrength"] = controlnet_strength
-                    if controlnet_preprocessor:
-                        payload["controlnetpreprocessor"] = controlnet_preprocessor
                     if controlnet_model:
                         payload["controlnetmodel"] = controlnet_model
+                # NOTE: Hi-Res Fix (hiresfix/hireswidth/hiresheight/
+                # hiresdenoisestrength/hiressteps) is a KNOWN, still-open
+                # bug — verified against the real SwarmUI source that NONE
+                # of these keys correspond to an actual param; there is no
+                # width/height-target-based hires mechanism at all. The
+                # real equivalent is the same "Refiner Upscale" multiplier
+                # Upscale now correctly uses above, plus the existing
+                # Refiner Model/Control Percentage/Steps fields — but
+                # reconciling three GM-facing panels (Upscale, Hi-Res Fix,
+                # Refiner) that would all write the same underlying keys
+                # needs a real precedence decision, not a one-line rename,
+                # so this is intentionally left broken rather than guessed
+                # at and shipped half-right. Tracked as a follow-up.
                 if hiresfix and hireswidth > 0:
                     payload["hireswidth"] = hireswidth
                     payload["hiresheight"] = hiresheight
@@ -5243,29 +5281,66 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                 if refiner_model:
                     payload["refinermodel"] = refiner_model
                     payload["refinercontrolpercentage"] = refiner_control
-                if seamless_x:
-                    payload["seamlessx"] = True
-                if seamless_y:
-                    payload["seamlessy"] = True
+                # Real ID is "seamlesstileable", a single string enum
+                # ("true"/"X-Only"/"Y-Only") — not two separate booleans.
+                # "seamlessx"/"seamlessy" match no real param.
+                if seamless_x and seamless_y:
+                    payload["seamlesstileable"] = "true"
+                elif seamless_x:
+                    payload["seamlesstileable"] = "X-Only"
+                elif seamless_y:
+                    payload["seamlesstileable"] = "Y-Only"
                 if variation_seed >= 0 and variation_strength > 0:
                     payload["variationseed"] = variation_seed
                     payload["variationseedstrength"] = variation_strength
                 if freeu_enabled:
-                    payload["freeu_b1"] = freeu_b1
-                    payload["freeu_b2"] = freeu_b2
-                    payload["freeu_s1"] = freeu_s1
-                    payload["freeu_s2"] = freeu_s2
+                    # Real IDs spell out "One"/"Two", not "1"/"2" — Names
+                    # are "[FreeU] Block One"/"Block Two"/"Skip One"/"Skip
+                    # Two", and CleanTypeName keeps letters only (digits are
+                    # stripped too), so "freeu_b1" etc. match no real param.
+                    payload["freeublockone"] = freeu_b1
+                    payload["freeublocktwo"] = freeu_b2
+                    payload["freeuskipone"] = freeu_s1
+                    payload["freeuskiptwo"] = freeu_s2
                 if dynthresh_enabled:
-                    payload["dynamicthresh_enabled"] = True
-                    payload["dynamicthresh_mimic_scale"] = dynthresh_mimic_scale
-                    payload["dynamicthresh_threshold_percentile"] = dynthresh_percentile
+                    # Real IDs are "dtmimicscale"/"dtthresholdpercentile"
+                    # (Names "[DT] Mimic Scale"/"[DT] Threshold
+                    # Percentile", from the DynamicThresholding built-in
+                    # extension — a separate, OPTIONAL installable comfy
+                    # node, not core SwarmUI). There is no "enabled" param
+                    # at all; per the real param's own description, "1"
+                    # disables and anything below it enables, so merely
+                    # sending a real percentile value (already this
+                    # function's own contract — nd-world's own enabled
+                    # toggle gates whether to send it at all) is what
+                    # "enables" it — the old "dynamicthresh_enabled" key
+                    # matched no real param.
+                    payload["dtmimicscale"] = dynthresh_mimic_scale
+                    payload["dtthresholdpercentile"] = dynthresh_percentile
                 if cfg_rescale > 0:
-                    payload["cfgrescale"] = cfg_rescale
+                    # Real ID is "rescalecfgmultiplier" (Name "Rescale CFG
+                    # Multiplier") — "cfgrescale" matches no real param.
+                    payload["rescalecfgmultiplier"] = cfg_rescale
                 if ipadapter_image:
-                    payload["ipadapterimage"] = ipadapter_image
-                    payload["ipadapterstrength"] = ipadapter_strength
+                    # Real IDs: the reference image goes under
+                    # "promptimages" (SwarmUI's shared Image-Prompting/
+                    # ReVision/IP-Adapter image list — verified as a normal
+                    # List<Image> param accepting the same base64/data-URL
+                    # string format as initimage, just hidden from the
+                    # interactive UI in favor of drag-and-drop), strength is
+                    # "ipadapterweight" (not "ipadapterstrength"), and the
+                    # model selector is "useipadapterforrevision" whose
+                    # file-backed values are "file:<filename>" (verified
+                    # against SwarmUI's ComfyUIBackendExtension.cs
+                    # IPAdapterModelLoader handling — the same Models/
+                    # IPAdapter folder imagegen_ipadapter_models() already
+                    # lists bare filenames from). "ipadapterimage"/
+                    # "ipadapterstrength"/"ipadaptermodel" matched no real
+                    # params, so this feature never took effect at all.
+                    payload["promptimages"] = ipadapter_image
+                    payload["ipadapterweight"] = ipadapter_strength
                     if ipadapter_model:
-                        payload["ipadaptermodel"] = ipadapter_model
+                        payload["useipadapterforrevision"] = f"file:{ipadapter_model}"
 
                 async def _save_swarmui_image(img_raw: str) -> str:
                     """Decode/save one SwarmUI image entry to ai_img_dir

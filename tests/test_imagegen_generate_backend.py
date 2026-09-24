@@ -222,6 +222,130 @@ async def test_swarmui_path_response_fetch_failure_raises(tmp_path, monkeypatch)
         await ai_module.imagegen_generate(**_gen_kwargs(tmp_path))
 
 
+# ── SwarmUI: advanced param payload keys ────────────────────────────────────
+#
+# Verified against SwarmUI's own src/Text2Image/T2IParamTypes.cs and its
+# DynamicThresholding/ComfyUIBackend built-in extensions (param IDs are
+# always the human-readable Name with spaces/punctuation/digits stripped
+# and lowercased) — every one of these keys was wrong before, matching no
+# real SwarmUI param, so the corresponding advanced setting silently never
+# took effect no matter what a GM configured.
+
+async def _generate(tmp_path, monkeypatch, **overrides):
+    monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
+    monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
+    b64 = base64.b64encode(_PNG_BYTES).decode()
+    fake = _patch_httpx(monkeypatch, post_map={
+        "/API/GetNewSession": _FakeResponse(200, {"session_id": "s1"}),
+        "/API/GenerateText2Image": _FakeResponse(200, {"images": [f"data:image/png;base64,{b64}"]}),
+    })
+    await ai_module.imagegen_generate(**_gen_kwargs(tmp_path, **overrides))
+    gen_payload = next(j for u, j in fake.post_calls if u.endswith("/API/GenerateText2Image"))
+    return gen_payload
+
+
+@pytest.mark.asyncio
+async def test_clip_skip_uses_real_param_id(tmp_path, monkeypatch):
+    payload = await _generate(tmp_path, monkeypatch, clip_skip=2)
+    assert payload["clipstopatlayer"] == -2
+    assert "clipstop" not in payload
+
+
+@pytest.mark.asyncio
+async def test_freeu_uses_real_param_ids(tmp_path, monkeypatch):
+    payload = await _generate(
+        tmp_path, monkeypatch,
+        freeu_enabled=True, freeu_b1=1.1, freeu_b2=1.2, freeu_s1=0.9, freeu_s2=0.2,
+    )
+    assert payload["freeublockone"] == 1.1
+    assert payload["freeublocktwo"] == 1.2
+    assert payload["freeuskipone"] == 0.9
+    assert payload["freeuskiptwo"] == 0.2
+    assert not any(k.startswith("freeu_") for k in payload)
+
+
+@pytest.mark.asyncio
+async def test_seamless_both_axes_combine_into_one_string_param(tmp_path, monkeypatch):
+    payload = await _generate(tmp_path, monkeypatch, seamless_x=True, seamless_y=True)
+    assert payload["seamlesstileable"] == "true"
+    assert "seamlessx" not in payload and "seamlessy" not in payload
+
+
+@pytest.mark.asyncio
+async def test_seamless_x_only(tmp_path, monkeypatch):
+    payload = await _generate(tmp_path, monkeypatch, seamless_x=True)
+    assert payload["seamlesstileable"] == "X-Only"
+
+
+@pytest.mark.asyncio
+async def test_seamless_y_only(tmp_path, monkeypatch):
+    payload = await _generate(tmp_path, monkeypatch, seamless_y=True)
+    assert payload["seamlesstileable"] == "Y-Only"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_thresholding_uses_real_param_ids_and_no_fake_enabled_flag(tmp_path, monkeypatch):
+    payload = await _generate(
+        tmp_path, monkeypatch, dynthresh_enabled=True, dynthresh_mimic_scale=7.0, dynthresh_percentile=0.95,
+    )
+    assert payload["dtmimicscale"] == 7.0
+    assert payload["dtthresholdpercentile"] == 0.95
+    assert "dynamicthresh_enabled" not in payload
+    assert "dynamicthresh_mimic_scale" not in payload
+
+
+@pytest.mark.asyncio
+async def test_cfg_rescale_uses_real_param_id(tmp_path, monkeypatch):
+    payload = await _generate(tmp_path, monkeypatch, cfg_rescale=0.7)
+    assert payload["rescalecfgmultiplier"] == 0.7
+    assert "cfgrescale" not in payload
+
+
+@pytest.mark.asyncio
+async def test_controlnet_image_uses_real_param_id_and_drops_fake_preprocessor(tmp_path, monkeypatch):
+    payload = await _generate(
+        tmp_path, monkeypatch, controlnet_image="abc123", controlnet_strength=0.8,
+        controlnet_preprocessor="canny", controlnet_model="control-model",
+    )
+    assert payload["controlnetimageinput"] == "abc123"
+    assert payload["controlnetmodel"] == "control-model"
+    assert "controlnetimage" not in payload
+    # No real "preprocessor" param exists at all — must never be sent.
+    assert "controlnetpreprocessor" not in payload
+
+
+@pytest.mark.asyncio
+async def test_upscale_maps_onto_the_real_refiner_upscale_mechanism(tmp_path, monkeypatch):
+    """upscalemodel/upscalemultiplier matched no real param — the actual
+    mechanism is "Refiner Upscale" (a plain multiplier) + "Refiner Upscale
+    Method" (a dropdown whose file-backed values need a "model-" prefix,
+    per SwarmUI's own ComfyUIBackendExtension.cs UpscalerModels list)."""
+    payload = await _generate(tmp_path, monkeypatch, upscale_model="4x-UltraSharp.pth", upscale_factor=2.0)
+    assert payload["refinerupscalemethod"] == "model-4x-UltraSharp.pth"
+    assert payload["refinerupscale"] == 2.0
+    assert "upscalemodel" not in payload
+    assert "upscalemultiplier" not in payload
+
+
+@pytest.mark.asyncio
+async def test_ipadapter_uses_real_param_ids(tmp_path, monkeypatch):
+    """ipadapterimage/ipadapterstrength/ipadaptermodel matched no real
+    param — the image goes under the shared "promptimages" list param
+    (same base64/data-URL format as initimage), strength is
+    "ipadapterweight", and the model selector is
+    "useipadapterforrevision" whose file-backed values need a "file:"
+    prefix (per SwarmUI's own IPAdapterModelLoader handling)."""
+    payload = await _generate(
+        tmp_path, monkeypatch, ipadapter_image="deadbeef", ipadapter_strength=0.6, ipadapter_model="my-ipa.safetensors",
+    )
+    assert payload["promptimages"] == "deadbeef"
+    assert payload["ipadapterweight"] == 0.6
+    assert payload["useipadapterforrevision"] == "file:my-ipa.safetensors"
+    assert "ipadapterimage" not in payload
+    assert "ipadapterstrength" not in payload
+    assert "ipadaptermodel" not in payload
+
+
 # ── SwarmUI: error surfacing ───────────────────────────────────────────────
 
 @pytest.mark.asyncio
