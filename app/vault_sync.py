@@ -140,6 +140,29 @@ def _entity_name_map(db: Session, world_id: int) -> dict[str, int]:
     return names
 
 
+def _match_note_entity(name_map: dict, rel_path: str, frontmatter: dict, body: str) -> tuple[str, int | None]:
+    """(display_title, matched Entity id or None) for one vault note — the
+    same three-candidate priority order sync_vault and
+    suggest_relations_for_vault both need: an explicit frontmatter title (a
+    GM saying so directly), the note's own H1 heading (Obsidian's own
+    convention — the filename is often just a slug, e.g. "bob.md" titled
+    "# Bob the Fence" inside), or finally the filename stem. Tried in that
+    order rather than only the first that exists, since a note titled in
+    its H1 only might still fail to match on frontmatter alone."""
+    h1_match = _H1_RE.search(body)
+    stem_title = Path(rel_path).stem
+    title_candidates = [
+        str(frontmatter["title"]) if frontmatter.get("title") else None,
+        h1_match.group(1) if h1_match else None,
+        stem_title,
+    ]
+    display_title = next((t for t in title_candidates if t), stem_title)
+    entity_id = next(
+        (name_map[t.lower()] for t in title_candidates if t and t.lower() in name_map), None,
+    )
+    return display_title, entity_id
+
+
 async def sync_vault(db: Session, world) -> dict:
     """Rebuilds `world`'s VaultChunk/EntityRelation rows from its
     configured obsidian_vault_path. Returns a plain summary dict —
@@ -163,25 +186,7 @@ async def sync_vault(db: Session, world) -> dict:
 
     for rel_path, raw in notes:
         frontmatter, body = parse_frontmatter(raw)
-        h1_match = _H1_RE.search(body)
-        stem_title = Path(rel_path).stem
-        # A note's real "name" for matching against an existing Entity can
-        # come from three places, in priority order: an explicit
-        # frontmatter title (a GM saying so directly), the note's own H1
-        # heading (Obsidian's own convention — the filename is often just
-        # a slug, e.g. "bob.md" titled "# Bob the Fence" inside), or
-        # finally the filename stem itself. Tried in that order rather
-        # than only the first that exists, since a note titled in its H1
-        # only might still fail to match on frontmatter alone.
-        title_candidates = [
-            str(frontmatter["title"]) if frontmatter.get("title") else None,
-            h1_match.group(1) if h1_match else None,
-            stem_title,
-        ]
-        display_title = next((t for t in title_candidates if t), stem_title)
-        source_entity_id = next(
-            (name_map[t.lower()] for t in title_candidates if t and t.lower() in name_map), None,
-        )
+        display_title, source_entity_id = _match_note_entity(name_map, rel_path, frontmatter, body)
         if source_entity_id is None:
             unmatched_notes.append(rel_path)
 
@@ -246,3 +251,80 @@ async def sync_vault(db: Session, world) -> dict:
         "edges": len(edge_rows),
         "unmatched_notes": unmatched_notes,
     }
+
+
+async def suggest_relations_for_vault(db: Session, world, model: str = "") -> list[dict]:
+    """Runs app.ai.suggest_relations_from_text over every vault note that
+    already matches an existing Entity (same matching sync_vault uses),
+    looking for relationships a note's PROSE states that its
+    [[wikilink]]/frontmatter pass didn't already capture. Returns a plain
+    list of suggestions for GM review — each a
+    {"source_id", "source_name", "target_id", "target_name", "relation",
+    "source_path"} dict — and writes nothing to the database itself; only
+    POST /api/knowledge/relations/bulk actually inserts EntityRelation
+    rows, once a GM has picked which suggestions to keep.
+
+    Raises ValueError for the same "no/bad vault path" cases sync_vault
+    raises for. A single note's extraction failing (a model error,
+    malformed JSON, whatever) is logged and skipped rather than aborting
+    the whole run — one bad note must not blank out every other note's
+    suggestions, the same tolerance parse_facts_from_recap gives a single
+    failed chunk.
+
+    A suggestion is kept only if the note's OWN matched entity is one side
+    of it (source OR target — prose naturally puts the note's subject on
+    either side, e.g. a note titled "Dockside" saying "The Rusty Anchor is
+    located in Dockside" has Dockside as the target) — a relation the model
+    names between two OTHER known entities isn't anchored to this note
+    being about it, so it's dropped rather than trusted. Also dropped:
+    anything that already exists as a confirmed EntityRelation (from a
+    prior confirmation, or from sync_vault's own wikilink pass) and exact
+    duplicate suggestions surfaced by more than one note — both compared
+    case-insensitively on the relation label."""
+    vault_path = (getattr(world, "obsidian_vault_path", None) or "").strip()
+    if not vault_path:
+        raise ValueError("This world has no Obsidian vault path configured.")
+    vault_root = Path(vault_path)
+    if not vault_root.is_dir():
+        raise ValueError(f"Vault path does not exist or is not a directory: {vault_path}")
+
+    rows = db.query(Entity.id, Entity.name).filter(Entity.world_id == world.id).all()
+    id_by_name = {name: entity_id for entity_id, name in rows if name}
+    known_names = sorted(id_by_name)
+    if len(known_names) < 2:
+        return []
+
+    name_map = _entity_name_map(db, world.id)
+    existing_edges = {
+        (r.source_id, r.target_id, r.relation.strip().lower())
+        for r in db.query(EntityRelation.source_id, EntityRelation.target_id, EntityRelation.relation)
+                    .filter(EntityRelation.world_id == world.id)
+    }
+
+    suggestions: list[dict] = []
+    seen: set[tuple] = set()
+    for rel_path, raw in _iter_vault_notes(vault_root):
+        frontmatter, body = parse_frontmatter(raw)
+        _title, source_entity_id = _match_note_entity(name_map, rel_path, frontmatter, body)
+        if source_entity_id is None or not body.strip():
+            continue
+        try:
+            relations = await _ai.suggest_relations_from_text(body, known_names, model=model)
+        except ValueError:
+            _log.warning("suggest_relations_for_vault: extraction failed for %s — skipping", rel_path, exc_info=True)
+            continue
+        for r in relations:
+            source_id = id_by_name.get(r["source"])
+            target_id = id_by_name.get(r["target"])
+            if source_id is None or target_id is None or source_entity_id not in (source_id, target_id):
+                continue
+            key = (source_id, target_id, r["relation"].strip().lower())
+            if key in existing_edges or key in seen:
+                continue
+            seen.add(key)
+            suggestions.append({
+                "source_id": source_id, "source_name": r["source"],
+                "target_id": target_id, "target_name": r["target"],
+                "relation": r["relation"], "source_path": rel_path,
+            })
+    return suggestions

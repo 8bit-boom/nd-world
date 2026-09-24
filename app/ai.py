@@ -1850,6 +1850,104 @@ async def parse_entity_from_text(raw_text: str, kinds: list[str], model: str = "
         raise ValueError("Could not turn that reply into an entity — try rephrasing or picking a shorter passage.") from exc
 
 
+_RELATION_SUGGEST_SYSTEM = (
+    "You read one page from a tabletop RPG GM's worldbuilding notes and find relationships "
+    "it EXPLICITLY states between two of the KNOWN entities listed in the schema below — "
+    "never a relationship you have to infer or guess, and never an entity outside that list. "
+    "For each relationship you find, give \"source\" and \"target\" (the exact known-entity "
+    "names involved) and \"relation\": a short snake_case label for what connects them, "
+    "written from source to target (e.g. located_in, member_of, owns, allied_with, enemy_of, "
+    "parent_of, works_for, rules). Do not report a relationship just because two names appear "
+    "in the same paragraph — only ones the text actually states. If the page states no "
+    "relationships between known entities, return an empty list. Respond with JSON only."
+)
+
+
+def _relation_suggest_schema(known_names: list[str]) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "relations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string", "enum": known_names},
+                        "target": {"type": "string", "enum": known_names},
+                        "relation": {"type": "string"},
+                    },
+                    "required": ["source", "target", "relation"],
+                },
+            },
+        },
+        "required": ["relations"],
+    }
+
+
+async def suggest_relations_from_text(text: str, known_names: list[str], model: str = "") -> list[dict]:
+    """Turn one vault note's body text into draft graph edges between
+    entities the GM already has — same JSON-schema-constrained pattern as
+    parse_entity_from_text, and just as side-effect-free: raises ValueError
+    on any failure so the caller can surface a clear error, otherwise
+    returns a plain list of {"source", "target", "relation"} dicts (entity
+    NAMES, not ids — app.vault_sync.suggest_relations_for_vault resolves
+    those against this world's entities). Nothing is written to the
+    database here or by that caller until a GM explicitly confirms a
+    suggestion via POST /api/knowledge/relations/bulk.
+
+    `known_names` is constrained into the response schema itself as a JSON
+    Schema `enum` on both "source" and "target" — Ollama's grammar-
+    constrained decoding then makes it structurally impossible for the
+    model to name an entity that doesn't exist, rather than just asking it
+    nicely in the system prompt (the same enum trick parse_entity_from_text
+    already uses for `kind`). Still worth a defensive re-check below in
+    case a given model/runtime doesn't enforce the grammar as strictly as
+    Ollama's own docs promise.
+
+    Deliberately no chunking (unlike parse_facts_from_recap): a single
+    vault note is already a bounded unit — a GM's worldbuilding page, not a
+    whole session transcript — so one call is enough, same assumption
+    ai_assist._structured_call makes for editor content."""
+    if len(known_names) < 2:
+        return []  # nothing to relate
+    m = model or effective_ollama_model()
+    try:
+        resp = await _client().chat(
+            model=m,
+            messages=[
+                {"role": "system", "content": _RELATION_SUGGEST_SYSTEM},
+                {"role": "user", "content": text},
+            ],
+            format=_relation_suggest_schema(known_names),
+            **(await _chat_kwargs(model=m)),
+        )
+    except _ollama.ResponseError as exc:
+        raise ValueError(f"Ollama error {exc.status_code}: {exc.error}") from exc
+    except Exception as exc:
+        raise ValueError(f"AI unavailable: {type(exc).__name__}: {exc}") from exc
+    try:
+        parsed = _json.loads(resp.message.content or "")
+        relations = parsed["relations"]
+        if not isinstance(relations, list):
+            raise ValueError
+    except Exception as exc:
+        raise ValueError("Could not extract relations from that note — try again or switch models.") from exc
+    known_set = set(known_names)
+    out = []
+    for r in relations:
+        if not isinstance(r, dict):
+            continue
+        source = str(r.get("source") or "").strip()
+        target = str(r.get("target") or "").strip()
+        relation = str(r.get("relation") or "").strip()
+        if not source or not target or not relation or source == target:
+            continue
+        if source not in known_set or target not in known_set:
+            continue  # defensive — see docstring; the schema enum should already prevent this
+        out.append({"source": source, "target": target, "relation": relation})
+    return out
+
+
 # Photos of physical/scanned character sheets or handouts → structured drafts.
 # Both functions below reuse the exact same JSON-schema-constrained-chat
 # contract as parse_entity_from_text (ValueError on any failure; a plain dict

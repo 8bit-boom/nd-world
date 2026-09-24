@@ -99,8 +99,14 @@
         AI Chat/Ask AI then also draw on semantic vault search and entity relationship graph traversal. Save this
         field first, then rebuild:
         <button type="button" class="btn-secondary" onclick="ndSyncKnowledgeVault({{ edit_world.id }})">🔄 Rebuild indexes now</button>
+        <button type="button" class="btn-secondary" onclick="ndSuggestRelations()">Suggest relations (AI)</button>
         <span id="knowledge-sync-status" style="margin-left:.5rem"></span>
       </p>
+      <p style="color:var(--text-dim);font-size:.78rem;margin-top:.2rem">
+        "Suggest relations" reads each matched note's own text (not just its <code>[[wikilinks]]</code>) for
+        relationships it states but doesn't explicitly link — nothing is added to the graph until you confirm it below.
+      </p>
+      <div id="relation-suggestions-panel"></div>
     </div>
     <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
       <input type="checkbox" id="players-world-summary" name="players_can_view_world_summary" value="1"
@@ -360,6 +366,170 @@ async function ndSyncKnowledgeVault(worldId) {
       msg += ` (${data.unmatched_notes.length} note(s) didn't match an existing entity by name/title — still searchable, just not graph-linked)`;
     }
     status.textContent = msg;
+  } catch (e) {
+    status.style.color = '#f55';
+    status.textContent = '✗ Request failed';
+  }
+}
+
+// POST /api/knowledge/suggest-relations (see app/routers/knowledge.py) —
+// an AI pass over the vault's own matched notes for relationships their
+// PROSE states but sync_vault's [[wikilink]]/frontmatter pass above
+// didn't already capture. Writes nothing itself; renders a review table a
+// GM checks/edits before ndConfirmRelationSuggestions() actually saves
+// anything (same two-step shape as the Facts page's recap-parse review).
+let ndRelationSuggestions = [];
+
+async function ndSuggestRelations() {
+  const status = document.getElementById('knowledge-sync-status');
+  const panel = document.getElementById('relation-suggestions-panel');
+  status.style.color = 'var(--text-dim)';
+  status.textContent = '⏳ Scanning vault notes…';
+  panel.innerHTML = '';
+  try {
+    const res = await fetch('/api/knowledge/suggest-relations', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      status.style.color = '#f55';
+      status.textContent = '✗ ' + (data.detail || 'Failed');
+      return;
+    }
+    ndRelationSuggestions = Array.isArray(data.suggestions) ? data.suggestions : [];
+    if (!ndRelationSuggestions.length) {
+      status.style.color = '#4f4';
+      status.textContent = '✓ No new relations found.';
+      return;
+    }
+    status.style.color = '#4f4';
+    status.textContent = `✓ Found ${ndRelationSuggestions.length} suggestion(s) — review below.`;
+    ndRenderRelationSuggestions();
+  } catch (e) {
+    status.style.color = '#f55';
+    status.textContent = '✗ Request failed';
+  }
+}
+
+// Builds the review table via DOM APIs (createElement + .textContent/
+// .value), never by interpolating suggestion text into an innerHTML
+// string — a suggestion's relation label and source_path both trace back
+// to vault note content an LLM read, so they're treated the same as any
+// other untrusted-origin string this app renders.
+function ndRenderRelationSuggestions() {
+  const panel = document.getElementById('relation-suggestions-panel');
+  panel.innerHTML = '';
+  const table = document.createElement('table');
+  table.style.cssText = 'width:100%;border-collapse:collapse;margin:.75rem 0;font-size:.85rem';
+  table.innerHTML = `
+    <thead><tr>
+      <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem"></th>
+      <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Source</th>
+      <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Relation</th>
+      <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">Target</th>
+      <th style="text-align:left;color:var(--text-dim);font-size:.7rem;text-transform:uppercase;padding:.3rem">From note</th>
+    </tr></thead>
+  `;
+  const tbody = document.createElement('tbody');
+  ndRelationSuggestions.forEach((s, i) => {
+    const row = document.createElement('tr');
+    row.style.borderTop = '1px solid var(--border)';
+
+    const checkCell = document.createElement('td');
+    checkCell.style.padding = '.3rem';
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    check.checked = true;
+    check.style.width = 'auto';
+    check.dataset.i = String(i);
+    check.className = 'rel-sugg-check';
+    checkCell.appendChild(check);
+
+    const sourceCell = document.createElement('td');
+    sourceCell.style.padding = '.3rem';
+    sourceCell.textContent = s.source_name || '';
+
+    const relationCell = document.createElement('td');
+    relationCell.style.padding = '.3rem';
+    const relationInput = document.createElement('input');
+    relationInput.type = 'text';
+    relationInput.value = s.relation || '';
+    relationInput.className = 'rel-sugg-relation';
+    relationInput.dataset.i = String(i);
+    relationInput.style.cssText = 'width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:.2rem .4rem';
+    relationCell.appendChild(relationInput);
+
+    const targetCell = document.createElement('td');
+    targetCell.style.padding = '.3rem';
+    targetCell.textContent = s.target_name || '';
+
+    const pathCell = document.createElement('td');
+    pathCell.style.cssText = 'padding:.3rem;color:var(--text-dim);font-size:.78rem';
+    pathCell.textContent = s.source_path || '';
+
+    row.append(checkCell, sourceCell, relationCell, targetCell, pathCell);
+    tbody.appendChild(row);
+  });
+  table.appendChild(tbody);
+  panel.appendChild(table);
+
+  const confirmBtn = document.createElement('button');
+  confirmBtn.type = 'button';
+  confirmBtn.className = 'btn-secondary';
+  confirmBtn.textContent = 'Confirm & Save checked';
+  confirmBtn.onclick = ndConfirmRelationSuggestions;
+
+  const dismissBtn = document.createElement('button');
+  dismissBtn.type = 'button';
+  dismissBtn.className = 'btn-cancel';
+  dismissBtn.style.marginLeft = '.5rem';
+  dismissBtn.textContent = 'Dismiss all';
+  dismissBtn.onclick = () => { panel.innerHTML = ''; ndRelationSuggestions = []; };
+
+  panel.append(confirmBtn, dismissBtn);
+}
+
+// POST /api/knowledge/relations/bulk — the review table's Confirm & Save
+// action. Only checked rows are sent, using each row's (possibly GM-
+// edited) relation label rather than the original suggestion's.
+async function ndConfirmRelationSuggestions() {
+  const panel = document.getElementById('relation-suggestions-panel');
+  const status = document.getElementById('knowledge-sync-status');
+  const relations = [];
+  panel.querySelectorAll('.rel-sugg-check').forEach((cb) => {
+    if (!cb.checked) return;
+    const i = parseInt(cb.dataset.i, 10);
+    const s = ndRelationSuggestions[i];
+    if (!s) return;
+    const relationInput = panel.querySelector(`.rel-sugg-relation[data-i="${i}"]`);
+    relations.push({
+      source_id: s.source_id,
+      target_id: s.target_id,
+      relation: (relationInput ? relationInput.value : s.relation || '').trim(),
+    });
+  });
+  if (!relations.length) {
+    status.style.color = '#f55';
+    status.textContent = '✗ Nothing checked.';
+    return;
+  }
+  status.style.color = 'var(--text-dim)';
+  status.textContent = '⏳ Saving…';
+  try {
+    const res = await fetch('/api/knowledge/relations/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ relations }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      status.style.color = '#f55';
+      status.textContent = '✗ ' + (data.detail || 'Failed');
+      return;
+    }
+    status.style.color = '#4f4';
+    status.textContent = `✓ Saved ${data.created} relation(s)` +
+      (data.skipped_duplicates ? `, skipped ${data.skipped_duplicates} duplicate(s)` : '') + '.';
+    panel.innerHTML = '';
+    ndRelationSuggestions = [];
   } catch (e) {
     status.style.color = '#f55';
     status.textContent = '✗ Request failed';
