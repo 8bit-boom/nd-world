@@ -11,10 +11,12 @@
     </div>
     <!-- Section-filter count line: hidden until a query filters the page -->
     <div id="rules-search-count" style="display:none;font-size:.72rem;color:var(--neon);margin-bottom:.4rem"></div>
-    <div style="font-size:.7rem;color:#555;margin-bottom:.4rem;text-transform:uppercase;letter-spacing:.05em">Contents</div>
-    {% for entry in toc %}
-    <a href="#{{ entry.id }}" class="toc-entry toc-h{{ entry.level }}" onclick="return rulesTocClick(this)">{{ entry.text }}</a>
-    {% endfor %}
+    <details class="toc-details" id="rules-toc-details" open>
+      <summary>Contents</summary>
+      {% for entry in toc %}
+      <a href="#{{ entry.id }}" class="toc-entry toc-h{{ entry.level }}" onclick="return rulesTocClick(this)">{{ entry.text }}</a>
+      {% endfor %}
+    </details>
   </div>
 
   <!-- Rules content -->
@@ -72,6 +74,12 @@
   .rules-toc-wrap { width:100%; flex-shrink:1; position:static; height:auto; max-height:40vh; border-right:none; border-bottom:1px solid #222; }
   .rules-content { padding:1rem; max-width:100%; }
 }
+/* Contents list as a <details> — always rendered open (so desktop/no-JS
+   mobile keeps today's always-visible sidebar), collapsed by a small script
+   below specifically on narrow viewports, where it otherwise ate up to
+   40vh above the actual rules content on every visit. */
+.toc-details summary { font-size:.7rem; color:#555; margin-bottom:.4rem; text-transform:uppercase; letter-spacing:.05em; cursor:pointer; user-select:none; }
+.toc-details[open] summary { margin-bottom:.4rem; }
 .toc-entry { display:block; padding:.28rem .5rem; color:#aaa; text-decoration:none; border-radius:3px; font-size:.8rem; line-height:1.3; transition:background .12s,color .12s; }
 .toc-entry:hover { background:#1e1e1e; color:var(--neon); }
 .toc-h2 { font-weight:600; margin-top:.3rem; }
@@ -230,6 +238,14 @@ document.addEventListener('keydown', e => {
     if (inp) { e.preventDefault(); inp.focus(); inp.select(); }
   }
 });
+// Rendered <details open> so desktop/no-JS mobile keeps the sidebar visible
+// exactly as before — collapse it only where it actually crowds the page:
+// narrow viewports, where the sidebar becomes a horizontal block above the
+// content instead of a side rail (see the max-width:768px CSS above).
+(function () {
+  const d = document.getElementById('rules-toc-details');
+  if (d && window.matchMedia('(max-width: 768px)').matches) d.open = false;
+})();
 
 // ── Statblock copy buttons ───────────────────────────────────────────────
 // One delegated listener wires every .nd-statblock-copy (statblocks are

@@ -14,10 +14,12 @@
         style="width:100%;background:#1a1a1a;border:1px solid #333;border-radius:4px;padding:.35rem .5rem;color:#e0e0e0;font-size:.82rem"/>
     </div>
     <div id="ed-search-count" style="display:none;font-size:.72rem;color:var(--neon);margin-bottom:.4rem"></div>
-    <div style="font-size:.7rem;color:#555;margin-bottom:.4rem;text-transform:uppercase;letter-spacing:.05em">Contents</div>
-    {% for entry in toc %}
-    <a href="#{{ entry.id }}" class="toc-entry toc-h{{ entry.level }}">{{ entry.text }}</a>
-    {% endfor %}
+    <details class="toc-details" id="ed-toc-details" open>
+      <summary>Contents</summary>
+      {% for entry in toc %}
+      <a href="#{{ entry.id }}" class="toc-entry toc-h{{ entry.level }}">{{ entry.text }}</a>
+      {% endfor %}
+    </details>
   </div>
   <div class="ed-content">
 {% endif %}
@@ -470,6 +472,12 @@
   .ai-panel .ep-bar textarea { font-size:16px; flex:1 1 100%; order:-1; }
   .ep-mode-row { flex-wrap:wrap; }
 }
+/* Contents list as a <details> — always rendered open (so desktop/no-JS
+   mobile keeps today's always-visible sidebar), collapsed by a small script
+   below specifically on narrow viewports, where it otherwise ate up to
+   40vh above the actual entity content on every visit. */
+.toc-details summary { font-size:.7rem; color:#555; margin-bottom:.4rem; text-transform:uppercase; letter-spacing:.05em; cursor:pointer; user-select:none; }
+.toc-details[open] summary { margin-bottom:.4rem; }
 .toc-entry { display:block; padding:.28rem .5rem; color:#aaa; text-decoration:none; border-radius:3px; font-size:.8rem; line-height:1.3; transition:background .12s,color .12s; }
 .toc-entry:hover { background:#1e1e1e; color:var(--neon); }
 .toc-h1 { font-weight:700; color:var(--text); margin-top:.5rem; }
@@ -968,6 +976,14 @@ document.addEventListener('keydown', e => {
     if (inp) { e.preventDefault(); inp.focus(); inp.select(); }
   }
 });
+// Rendered <details open> so desktop/no-JS mobile keeps the sidebar visible
+// exactly as before — collapse it only where it actually crowds the page:
+// narrow viewports, where the sidebar becomes a horizontal block above the
+// content instead of a side rail (see the max-width:768px CSS above).
+(function () {
+  var d = document.getElementById('ed-toc-details');
+  if (d && window.matchMedia('(max-width: 768px)').matches) d.open = false;
+})();
 </script>
 {% endif %}
 <script src="/static/js/ai-assist.js"></script>
