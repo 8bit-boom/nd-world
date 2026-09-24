@@ -149,6 +149,168 @@ def test_delete_returns_false_for_unknown_job():
     assert image_jobs.delete_job(999999) is False
 
 
+# ── delete_job's own file cleanup ────────────────────────────────────────────
+#
+# A real bug: delete_job used to only remove the ImageJob ROW — the actual
+# generated file(s) under <uploads_dir>/ai-images/ were never touched, so a
+# player could cycle {generate, delete, generate, delete, ...} to accumulate
+# unbounded disk usage despite nominally staying under app.routers.ai's own
+# _MAX_IMAGE_JOBS_PER_PLAYER/_MAX_IMAGE_JOBS_PER_WORLD cap the whole time —
+# that cap counts ROWS, and disk usage is what it was actually meant to
+# bound.
+
+def _make_image_job(world_id, uploads_dir, urls, **overrides):
+    db = SessionLocal()
+    try:
+        job = ImageJob(
+            world_id=world_id, prompt="x", status="done",
+            result_urls_json=json.dumps(urls),
+            params_json=json.dumps({"uploads_dir": str(uploads_dir)}),
+            **overrides,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        return job.id
+    finally:
+        db.close()
+
+
+def test_delete_removes_the_generated_image_file(client, seed, tmp_path):
+    ai_img_dir = tmp_path / "ai-images"
+    ai_img_dir.mkdir()
+    img = ai_img_dir / "abc123.png"
+    img.write_bytes(b"fake png")
+    job_id = _make_image_job(seed.world_a.id, tmp_path, ["/uploads/ai-images/abc123.png"])
+
+    assert image_jobs.delete_job(job_id) is True
+    assert not img.exists()
+
+
+def test_delete_removes_the_thumbnail_alongside_the_image(client, seed, tmp_path):
+    from app.imaging import thumbnail_path_for
+
+    ai_img_dir = tmp_path / "ai-images"
+    ai_img_dir.mkdir()
+    img = ai_img_dir / "abc123.png"
+    img.write_bytes(b"fake png")
+    thumb = thumbnail_path_for(img)
+    thumb.write_bytes(b"fake thumb")
+    job_id = _make_image_job(seed.world_a.id, tmp_path, ["/uploads/ai-images/abc123.png"])
+
+    assert image_jobs.delete_job(job_id) is True
+    assert not img.exists()
+    assert not thumb.exists()
+
+
+def test_delete_removes_every_image_in_a_batch(client, seed, tmp_path):
+    ai_img_dir = tmp_path / "ai-images"
+    ai_img_dir.mkdir()
+    imgs = [ai_img_dir / f"img{i}.png" for i in range(3)]
+    for img in imgs:
+        img.write_bytes(b"x")
+    job_id = _make_image_job(
+        seed.world_a.id, tmp_path, [f"/uploads/ai-images/{p.name}" for p in imgs],
+    )
+
+    assert image_jobs.delete_job(job_id) is True
+    assert not any(img.exists() for img in imgs)
+
+
+def test_delete_never_removes_a_still_starred_image(client, seed, tmp_path):
+    """Starring copies nothing — a StarredImage row just keeps referencing
+    the same /uploads/ai-images/... URL a job produced, so deleting the
+    originating job must never take the file (and therefore the star)
+    down with it."""
+    from app.models import StarredImage
+
+    ai_img_dir = tmp_path / "ai-images"
+    ai_img_dir.mkdir()
+    img = ai_img_dir / "starred.png"
+    img.write_bytes(b"fake png")
+    url = "/uploads/ai-images/starred.png"
+    job_id = _make_image_job(seed.world_a.id, tmp_path, [url])
+
+    db = SessionLocal()
+    try:
+        db.add(StarredImage(url=url))
+        db.commit()
+    finally:
+        db.close()
+
+    assert image_jobs.delete_job(job_id) is True
+    assert img.exists()
+
+    db = SessionLocal()
+    try:
+        assert db.query(StarredImage).filter(StarredImage.url == url).first() is not None
+    finally:
+        db.close()
+
+
+def test_delete_only_skips_the_specific_starred_image_in_a_batch(client, seed, tmp_path):
+    """A batch job's images can be starred individually — the unstarred
+    sibling(s) must still be cleaned up even when one is protected."""
+    from app.models import StarredImage
+
+    ai_img_dir = tmp_path / "ai-images"
+    ai_img_dir.mkdir()
+    starred_img = ai_img_dir / "keep.png"
+    other_img = ai_img_dir / "gone.png"
+    starred_img.write_bytes(b"x")
+    other_img.write_bytes(b"x")
+    starred_url = "/uploads/ai-images/keep.png"
+    other_url = "/uploads/ai-images/gone.png"
+    job_id = _make_image_job(seed.world_a.id, tmp_path, [starred_url, other_url])
+
+    db = SessionLocal()
+    try:
+        db.add(StarredImage(url=starred_url))
+        db.commit()
+    finally:
+        db.close()
+
+    assert image_jobs.delete_job(job_id) is True
+    assert starred_img.exists()
+    assert not other_img.exists()
+
+
+def test_delete_tolerates_missing_uploads_dir_in_params(client, seed):
+    """An old/degraded job row with no params_json at all (or no
+    uploads_dir in it) must not crash the delete — there's simply nothing
+    safe to clean up."""
+    db = SessionLocal()
+    try:
+        job = ImageJob(
+            world_id=seed.world_a.id, prompt="x", status="done",
+            result_urls_json=json.dumps(["/uploads/ai-images/orphan.png"]),
+            params_json="{}",
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    assert image_jobs.delete_job(job_id) is True
+
+
+def test_delete_rejects_a_path_traversal_filename(client, seed, tmp_path):
+    """A corrupted/malicious result_urls_json entry must never be used to
+    delete a file outside ai-images — the filename portion is rejected
+    outright if it carries a path separator, same hardening as
+    app.ai._swarmui_model_path."""
+    ai_img_dir = tmp_path / "ai-images"
+    ai_img_dir.mkdir()
+    outside_file = tmp_path / "important.txt"
+    outside_file.write_bytes(b"do not delete me")
+    job_id = _make_image_job(seed.world_a.id, tmp_path, ["/uploads/ai-images/../important.txt"])
+
+    assert image_jobs.delete_job(job_id) is True
+    assert outside_file.exists()
+
+
 def test_sweep_interrupted_jobs_marks_in_progress_as_interrupted(client, seed):
     """A job still mid-flight at boot means the process died UNCLEANLY (a
     crash/OOM/SIGKILL — job_shutdown's own drain()/mark_stragglers_interrupted

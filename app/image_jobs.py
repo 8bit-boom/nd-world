@@ -13,7 +13,8 @@ from pathlib import Path
 from . import ai as _ai_module
 from . import job_shutdown as _job_shutdown
 from .database import SessionLocal
-from .models import ImageJob
+from .imaging import thumbnail_path_for
+from .models import ImageJob, StarredImage
 
 _log = logging.getLogger("nd.image_jobs")
 
@@ -135,15 +136,65 @@ def cancel_job(job_id: int) -> bool:
     return True
 
 
+def _delete_job_image_files(db, job: ImageJob) -> None:
+    """Deletes the generated image file(s) (and their thumbnails) a
+    finished job produced. Without this, deleting a job's ROW only freed
+    up its slot against app.routers.ai's _MAX_IMAGE_JOBS_PER_PLAYER/
+    _MAX_IMAGE_JOBS_PER_WORLD while leaving the actual file on disk
+    forever — a player could cycle {generate, delete, generate, delete,
+    ...} to accumulate unbounded disk usage despite nominally staying
+    "under the cap" the whole time, since the cap counts rows, and disk
+    usage is what it was actually meant to bound.
+
+    Never deletes a file a StarredImage row still references — starring
+    doesn't copy the file, it just keeps the same /uploads/ai-images/...
+    URL referenced from a second place, so a starred image must survive
+    its originating job being deleted."""
+    try:
+        urls = json.loads(job.result_urls_json or "[]")
+    except Exception:
+        return
+    if not urls:
+        return
+    try:
+        params = json.loads(job.params_json or "{}")
+    except Exception:
+        params = {}
+    uploads_dir = params.get("uploads_dir")
+    if not uploads_dir:
+        return
+    ai_img_dir = Path(uploads_dir) / "ai-images"
+    for url in urls:
+        if not isinstance(url, str) or not url.startswith("/uploads/ai-images/"):
+            continue
+        if db.query(StarredImage).filter(StarredImage.url == url).first():
+            continue
+        fname = url[len("/uploads/ai-images/"):]
+        # Rejects a path-separator-bearing "filename" rather than letting
+        # Path(...) silently escape ai_img_dir — same hardening as
+        # app.ai._swarmui_model_path.
+        if not fname or "/" in fname or "\\" in fname:
+            continue
+        path = ai_img_dir / fname
+        for candidate in (path, thumbnail_path_for(path)):
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                _log.warning("could not delete image file %s for job %s", candidate, job.id, exc_info=True)
+
+
 def delete_job(job_id: int) -> bool:
-    """Permanently remove a finished job's row. Returns False (a no-op, not
-    an error) if the job is still in progress — cancel it first — or the id
-    is unknown, so the caller can 400/404 accordingly."""
+    """Permanently remove a finished job's row (and, unless still starred,
+    the image file(s) it produced — see _delete_job_image_files). Returns
+    False (a no-op, not an error) if the job is still in progress — cancel
+    it first — or the id is unknown, so the caller can 400/404
+    accordingly."""
     db = SessionLocal()
     try:
         job = db.get(ImageJob, job_id)
         if not job or job.status in IN_PROGRESS_STATUSES:
             return False
+        _delete_job_image_files(db, job)
         db.delete(job)
         db.commit()
         return True
