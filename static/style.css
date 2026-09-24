@@ -1559,6 +1559,11 @@ input[type="file"]:hover { border-color: var(--neon); }
   .btn-edit, .btn-delete, .btn-save, .btn-cancel, .btn-export { min-height: 40px; padding: .5rem .9rem; }
   .folder-item { min-height: 40px; }
   .nav-kind, .dash-card { min-height: 36px; }
+  /* World switcher (always visible in the topbar) and the Tools submenu
+     (nested inside the hamburger's .nav-kinds panel, right alongside the
+     already-bumped .nav-kind links above) were left out of this bump —
+     smaller than their sibling nav controls on the exact same menu. */
+  .world-btn, .tools-btn, .tools-option, .world-option { min-height: 36px; }
   input:not([type="file"]):not([type="checkbox"]),
   select,
   textarea {

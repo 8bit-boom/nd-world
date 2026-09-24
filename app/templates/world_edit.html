@@ -50,29 +50,29 @@
       </div>
       <p style="color:var(--text-dim);font-size:.78rem;margin-top:.3rem">The world-wide baseline everyone sees — a player's own personal UI-scale zoom (Settings ▸ Options) still applies on top of this.</p>
     </div>
-    <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+    <div class="form-group" style="display:flex;align-items:flex-start;gap:.5rem">
       <input type="checkbox" id="players-see-party" name="players_see_party" value="1"
-             style="width:auto;accent-color:var(--neon)" {% if edit_world.players_see_party %}checked{% endif %}>
+             style="width:auto;accent-color:var(--neon);margin-top:.2rem;flex-shrink:0" {% if edit_world.players_see_party %}checked{% endif %}>
       <label for="players-see-party" style="margin:0">Players can see each other's characters (party roster)</label>
     </div>
-    <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+    <div class="form-group" style="display:flex;align-items:flex-start;gap:.5rem">
       <input type="checkbox" id="players-download-rules" name="players_can_download_rules" value="1"
-             style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_download_rules %}checked{% endif %}>
+             style="width:auto;accent-color:var(--neon);margin-top:.2rem;flex-shrink:0" {% if edit_world.players_can_download_rules %}checked{% endif %}>
       <label for="players-download-rules" style="margin:0">Players can download the Rules as a .md file</label>
     </div>
-    <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+    <div class="form-group" style="display:flex;align-items:flex-start;gap:.5rem">
       <input type="checkbox" id="players-download-entities" name="players_can_download_entities" value="1"
-             style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_download_entities %}checked{% endif %}>
+             style="width:auto;accent-color:var(--neon);margin-top:.2rem;flex-shrink:0" {% if edit_world.players_can_download_entities %}checked{% endif %}>
       <label for="players-download-entities" style="margin:0">Players can download entities as .md/.zip files</label>
     </div>
-    <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+    <div class="form-group" style="display:flex;align-items:flex-start;gap:.5rem">
       <input type="checkbox" id="players-ask-ai" name="players_can_ask_ai" value="1"
-             style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_ask_ai %}checked{% endif %}>
+             style="width:auto;accent-color:var(--neon);margin-top:.2rem;flex-shrink:0" {% if edit_world.players_can_ask_ai %}checked{% endif %}>
       <label for="players-ask-ai" style="margin:0">Players can use the "Ask AI" panel on entity pages</label>
     </div>
-    <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+    <div class="form-group" style="display:flex;align-items:flex-start;gap:.5rem">
       <input type="checkbox" id="players-ai-chat" name="players_can_use_ai_chat" value="1"
-             style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_use_ai_chat %}checked{% endif %}>
+             style="width:auto;accent-color:var(--neon);margin-top:.2rem;flex-shrink:0" {% if edit_world.players_can_use_ai_chat %}checked{% endif %}>
       <label for="players-ai-chat" style="margin:0">Players can use a standalone AI Chat page (general-purpose, not tied to an entity)</label>
     </div>
     <div class="form-group" style="margin-left:1.7rem">
@@ -108,14 +108,14 @@
       </p>
       <div id="relation-suggestions-panel"></div>
     </div>
-    <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+    <div class="form-group" style="display:flex;align-items:flex-start;gap:.5rem">
       <input type="checkbox" id="players-world-summary" name="players_can_view_world_summary" value="1"
-             style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_view_world_summary %}checked{% endif %}>
+             style="width:auto;accent-color:var(--neon);margin-top:.2rem;flex-shrink:0" {% if edit_world.players_can_view_world_summary %}checked{% endif %}>
       <label for="players-world-summary" style="margin:0">Players can view the AI-generated World Summary (read-only — they can't generate or clear it)</label>
     </div>
-    <div class="form-group" style="display:flex;align-items:center;gap:.5rem">
+    <div class="form-group" style="display:flex;align-items:flex-start;gap:.5rem">
       <input type="checkbox" id="players-image-gen" name="players_can_use_image_gen" value="1"
-             style="width:auto;accent-color:var(--neon)" {% if edit_world.players_can_use_image_gen %}checked{% endif %}>
+             style="width:auto;accent-color:var(--neon);margin-top:.2rem;flex-shrink:0" {% if edit_world.players_can_use_image_gen %}checked{% endif %}>
       <label for="players-image-gen" style="margin:0">Players can generate images for their own character (private to them and you — other players never see it)</label>
     </div>
     <div class="form-group">
