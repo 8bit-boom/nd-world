@@ -183,7 +183,7 @@ function buildListItem(fieldDef, data) {
     rm.className = 'cx-list-remove';
     rm.textContent = '✕';
     rm.title = 'Remove';
-    rm.onclick = function () { item.remove(); };
+    rm.onclick = function () { if (confirm('Remove this entry?')) item.remove(); };
     item.appendChild(rm);
   }
   (fieldDef.item_fields || []).forEach(function (sf) {

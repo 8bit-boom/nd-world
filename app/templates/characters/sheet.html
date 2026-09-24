@@ -584,6 +584,8 @@ async function addFeatQuick() {
   renderFeatsList();
 }
 async function removeFeatQuick(index) {
+  const name = FEATS[index]?.name || 'this feat';
+  if (!confirm(`Remove ${name}?`)) return;
   const r = await fetch(`/api/characters/${PC_ID}/feats`, {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({action:'remove', index}),
@@ -614,6 +616,8 @@ async function addEquipmentQuick() {
   document.getElementById('equipment-total-weight').textContent = Math.trunc(d.total_weight);
 }
 async function removeEquipmentQuick(index) {
+  const name = EQUIPMENT[index]?.name || 'this item';
+  if (!confirm(`Remove ${name}?`)) return;
   const r = await fetch(`/api/characters/${PC_ID}/equipment`, {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({action:'remove', index}),

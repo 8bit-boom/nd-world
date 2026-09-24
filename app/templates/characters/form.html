@@ -46,6 +46,12 @@
 .cf-preset-btn:hover { border-color:var(--neon);color:var(--neon); }
 .cf-del-btn { background:transparent;border:none;color:#555;cursor:pointer;font-size:1rem;padding:0 .3rem; }
 .cf-del-btn:hover { color:var(--neon2); }
+/* Feats/Equipment/Cyberware/Currency rows are full-width <input>s, which
+   have a browser-default intrinsic min-width regardless of width:100% —
+   on a narrow phone the table can end up wider than the viewport, and
+   without this wrapper that overflow is unreachable (mobile sets
+   overflow-x:clip on html/body, which can't even be scrolled to). */
+.cf-dynamic-table-wrap { overflow-x:auto; }
 
 /* N&D stats layout */
 .cf-stats-dual { display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:.75rem; }
@@ -249,6 +255,7 @@
     <!-- Feats -->
     <div class="cf-section">
       <div class="cf-section-title"><span>Feats</span></div>
+      <div class="cf-dynamic-table-wrap">
       <table class="cf-dynamic-table">
         <thead>
           <tr>
@@ -261,6 +268,7 @@
         </thead>
         <tbody id="feats-body"></tbody>
       </table>
+      </div>
       <button type="button" class="cf-add-btn" onclick="addFeat()">+ Add Feat</button>
       <input type="hidden" name="feats_json" id="feats_json">
     </div>
@@ -268,10 +276,12 @@
     <!-- Equipment -->
     <div class="cf-section">
       <div class="cf-section-title"><span>Equipment</span></div>
+      <div class="cf-dynamic-table-wrap">
       <table class="cf-dynamic-table">
         <thead><tr><th>Item Name</th><th>Qty</th><th>Weight</th><th>Equipped</th><th>Notes</th><th></th></tr></thead>
         <tbody id="equipment-body"></tbody>
       </table>
+      </div>
       <button type="button" class="cf-add-btn" onclick="addEquipment()">+ Add Item</button>
       <input type="hidden" name="equipment_json" id="equipment_json">
     </div>
@@ -279,6 +289,7 @@
     <!-- Cyberware -->
     <div class="cf-section">
       <div class="cf-section-title"><span>Cyberware</span></div>
+      <div class="cf-dynamic-table-wrap">
       <table class="cf-dynamic-table">
         <thead>
           <tr>
@@ -290,6 +301,7 @@
         </thead>
         <tbody id="cyberware-body"></tbody>
       </table>
+      </div>
       <button type="button" class="cf-add-btn" onclick="addCyberware()">+ Add Implant</button>
       <input type="hidden" name="cyberware_json" id="cyberware_json">
     </div>
@@ -300,10 +312,12 @@
         <span>Currency</span>
         <button type="button" class="cf-preset-btn" onclick="loadNdCurrency()">↺ N&amp;D Defaults</button>
       </div>
+      <div class="cf-dynamic-table-wrap">
       <table class="cf-dynamic-table">
         <thead><tr><th>Currency Name</th><th>Abbr</th><th>Amount</th><th></th></tr></thead>
         <tbody id="currency-body"></tbody>
       </table>
+      </div>
       <button type="button" class="cf-add-btn" onclick="addCurrency()">+ Add Currency</button>
       <input type="hidden" name="currency_json" id="currency_json">
     </div>
@@ -452,7 +466,7 @@ function renderCurrency() {
 }
 
 function addCurrency() { _currency.push({label:'',abbr:'',value:0}); renderCurrency(); }
-function delCurrency(i) { _currency.splice(i,1); renderCurrency(); }
+function delCurrency(i) { if (!confirm('Remove this currency row?')) return; _currency.splice(i,1); renderCurrency(); }
 
 function loadNdCurrency() {
   if (_currency.length && !confirm('Replace current currency with N&D defaults?')) return;
@@ -490,7 +504,7 @@ function renderFeats() {
 }
 
 function addFeat()  { _feats.push({name:'',type:'Common',rank:1,notes:''}); renderFeats(); }
-function delFeat(i) { _feats.splice(i,1); renderFeats(); }
+function delFeat(i) { if (!confirm('Remove this feat?')) return; _feats.splice(i,1); renderFeats(); }
 
 function serializeFeats() {
   return [...document.querySelectorAll('#feats-body tr')].map(row => {
@@ -534,7 +548,7 @@ function renderEquipment() {
 }
 
 function addEquipment()  { _equipment.push({name:'',qty:1,weight:0,equipped:false,notes:''}); renderEquipment(); }
-function delEquipment(i) { _equipment.splice(i,1); renderEquipment(); }
+function delEquipment(i) { if (!confirm('Remove this equipment item?')) return; _equipment.splice(i,1); renderEquipment(); }
 
 // ── Cyberware ─────────────────────────────────────────────────────────────────
 function renderCyberware() {
@@ -550,7 +564,7 @@ function renderCyberware() {
 }
 
 function addCyberware()  { _cyberware.push({name:'',ca_cost:0,notes:''}); renderCyberware(); }
-function delCyberware(i) { _cyberware.splice(i,1); renderCyberware(); }
+function delCyberware(i) { if (!confirm('Remove this cyberware implant?')) return; _cyberware.splice(i,1); renderCyberware(); }
 
 function serializeCyberware() {
   return [...document.querySelectorAll('#cyberware-body tr')].map(row => {
