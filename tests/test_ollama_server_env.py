@@ -201,7 +201,12 @@ def test_status_reports_restart_commands(tmp_path, monkeypatch):
     monkeypatch.setattr(tuning, "OLLAMA_CONFIG_DIR", tmp_path)
     status = tuning.server_env_status({})
     assert status["restart_command"] == "docker compose restart ollama"
-    assert "truenas-compose.yml" in status["restart_command_truenas"]
+    # NOT a `docker compose -f truenas-compose.yml ...` command — a TrueNAS
+    # Custom App has no such project directory on the host; `docker ps` to
+    # find the real ix-<app>-ollama-1 container name is what actually works.
+    assert "docker ps" in status["restart_command_truenas"]
+    assert "docker restart" in status["restart_command_truenas"]
+    assert "truenas-compose.yml" not in status["restart_command_truenas"]
 
 
 # os.geteuid() doesn't exist on Windows (the suite's original target was the

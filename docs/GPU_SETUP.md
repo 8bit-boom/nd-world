@@ -72,9 +72,15 @@ services:
     image: ollama/ollama:0.12.9   # example — use the newest tag that still works
 ```
 
-Watchtower users (TrueNAS): pinning applies to the *ollama* container,
-which you run yourself — Watchtower only updates the nd-world app image,
-so an ollama tag you set stays put.
+Watchtower users (TrueNAS): by default Watchtower auto-updates *every*
+running container, `ollama`/`swarmui` included — an unpinned
+`ollama/ollama:latest` or `swarmui:latest` moving to a newer CUDA version
+would otherwise silently break inference on an older card between one
+restart and the next, with no error until the next generation attempt.
+`truenas-compose.yml`'s `ollama` and `swarmui` services both carry a
+`com.centurylinklabs.watchtower.enable: "false"` label for exactly this
+reason, so pinning the image tag above is what actually decides the
+version you run — Watchtower won't override it.
 
 ## 3. Wiring it up
 
@@ -91,45 +97,81 @@ device reservation for `ollama`, a matching `utility`-only reservation for
 `world` (nd-world's own container, so its hardware detector can see the
 card — see above), plus a commented CUDA whisper switch.
 
-### TrueNAS SCALE (Electric Eel / Fangtooth)
+### TrueNAS SCALE
 
-1. **Install the NVIDIA driver**: Apps → Discover → search "NVIDIA" →
-   install the *Nvidia Driver* (official) app. It loads the host kernel
-   driver and exposes `nvidia-smi`.
-2. **Give the ollama container the GPU** in your nd-world app config:
-   - If nd-world runs as a **custom app / compose stack**: edit the app →
-     **Resources** → **GPU(s)** → add the NVIDIA V100. TrueNAS translates
-     this into the same `deploy.resources.reservations.devices` block for
-     you.
-   - If your app UI has no GPU screen (older releases), add to the
-     ollama service YAML:
+**⚠️ TrueNAS 25.10 "Goldeye" and later dropped Volta (V100) support from
+the official *Nvidia Driver* app** — it now ships NVIDIA's open-source
+kernel modules, which only support Turing-and-newer GPUs. On 25.10+ you
+have three options before anything else here will work:
 
-     ```yaml
-     gpus:
-       - nvidia:v100
-     ```
+- **Stay on, or roll back to, TrueNAS 25.04 "Fangtooth" or earlier**,
+  where the official driver app still supports Volta. Simplest if you
+  haven't already moved past it.
+- **Use the community driver sysext** —
+  [truenas-community-sysexts/nvidia-driver-support](https://github.com/truenas-community-sysexts/nvidia-driver-support)
+  builds the proprietary `legacy-580` driver branch (the last one to
+  support Volta) for 25.10+. Unofficial, and needs re-running with
+  `--rebuild` after any TrueNAS update that changes the kernel. Confirm it
+  worked with `docker info | grep -i runtimes` — you should see `nvidia`
+  listed.
+- **Pass the card through to a separate Ubuntu/Debian VM** and run
+  `docker-compose.yml` + `docker-compose.gpu.yml` there instead (see
+  "Separate GPU box" below) — sidesteps TrueNAS's driver story entirely at
+  the cost of a VM to manage.
 
-     or the raw compose block:
+Once the driver is sorted (`nvidia-smi` on the TrueNAS host itself lists
+the V100):
 
-     ```yaml
-     deploy:
-       resources:
-         reservations:
-           devices:
-             - driver: nvidia
-               count: all
-               capabilities: [gpu]
-     ```
-3. **Verify**: shell into the ollama container (`docker exec -it <ollama> nvidia-smi`)
-   — it must list the V100 — then check `docker logs <ollama>` for
-   `inference compute` detection on startup.
-4. The nd-world **app container itself gets no GPU by default** on
-   TrueNAS's own GPU screen (it assigns full access per-app, not the
-   `utility`-only scoping `docker-compose.gpu.yml` uses for plain Docker
-   hosts — see step 2 above). Settings → System's "Detected hardware"
-   panel may therefore show no GPU; if you don't want to also assign the
-   GPU to nd-world's own app, just set **Ollama VRAM (MB)** to
-   `16384`/`32768` manually so the tuning recommendations size correctly.
+1. **Give the ollama container the GPU.** This repo's own README documents
+   deploying via **Apps → Discover Apps → Custom App**, pasting
+   `truenas-compose.yml` in directly under "Compose" mode — **that pasted-
+   YAML Custom App does NOT get a per-app Resources → GPU(s) picker
+   screen** (that picker exists for apps built through TrueNAS's own
+   catalog/image-launch wizard, a different flow from pasting a full
+   compose file). Uncomment the `deploy:` block already scaffolded under
+   the `ollama` service in `truenas-compose.yml` yourself, in the YAML you
+   paste:
+
+   ```yaml
+   deploy:
+     resources:
+       reservations:
+         devices:
+           - driver: nvidia
+             count: all
+             capabilities: [gpu]
+   ```
+
+   If you instead built the app through TrueNAS's catalog/wizard flow
+   (which does offer that screen for apps created that way), assign the
+   GPU there and leave the YAML block commented — don't do both.
+2. **Verify**: shell into the ollama container (find its real name with
+   `docker ps` — TrueNAS names a Custom App's containers
+   `ix-<app-name>-<service>-1`) and run `nvidia-smi` inside it — it must
+   list the V100 — then check `docker logs <that container>` for
+   `inference compute` detection on startup. Also confirm
+   `CUDA_VISIBLE_DEVICES` isn't set to an empty string inside the
+   container (`docker exec <container> env | grep ^CUDA_VISIBLE`) — an
+   explicitly-empty value hides every GPU from CUDA even with the deploy
+   block correctly in place; `truenas-compose.yml` no longer sets this by
+   default for exactly that reason (see its `ollama` service's own
+   `environment:` comment), but a `.env` override could still reintroduce
+   it.
+3. The nd-world **app container itself gets no GPU by default**, and
+   there's no `utility`-only overlay for it on TrueNAS the way
+   `docker-compose.gpu.yml` provides for plain Docker hosts — Settings →
+   System's "Detected hardware" panel will show no GPU here regardless.
+   Set **Ollama VRAM (MB)** to `16384`/`32768` manually (or pick the
+   matching V100 preset in that same panel) so the tuning recommendations
+   size correctly without needing `nvidia-smi` access from nd-world's own
+   container.
+4. **Watchtower**: `truenas-compose.yml`'s `ollama` and `swarmui` services
+   both carry a `com.centurylinklabs.watchtower.enable: "false"` label —
+   Watchtower auto-updates every other container by default, and an
+   unpinned image update silently moving to a newer CUDA version would
+   otherwise break inference on this card with no error until the next
+   generation attempt. Pin the image tag once you've confirmed a version
+   works (see the callout above §3).
 
 ### Separate GPU box
 

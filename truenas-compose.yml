@@ -77,6 +77,15 @@ services:
       net.ix-portals.swarmui.port: "7801"
       net.ix-portals.swarmui.path: "/"
       net.ix-portals.swarmui.host: ""
+      # watchtower (below) watches/auto-updates every running container by
+      # default (no --label-enable, so this label is what opts a container
+      # OUT rather than in). SwarmUI's bundled ComfyUI backend can pull in a
+      # newer CUDA-version PyTorch on an update, silently breaking inference
+      # on an older card (e.g. CUDA 13 doesn't run on a Volta/V100) with no
+      # error until the next generation attempt — pin the image tag above
+      # once you've confirmed a version works on your GPU, and leave
+      # auto-update off here rather than discovering the break days later.
+      com.centurylinklabs.watchtower.enable: "false"
 
   # Optional: local AI chat. Only starts if the "ollama" profile is active —
   # set COMPOSE_PROFILES=ollama (or ollama,swarmui) in .env, or run
@@ -114,9 +123,20 @@ services:
       OLLAMA_VULKAN: ${OLLAMA_VULKAN:-}
       # AMD (ROCm) GPU selection — e.g. an RX 9070 XT is gfx1201, natively
       # supported on Linux via ROCm 7+, no HSA_OVERRIDE_GFX_VERSION needed.
-      HSA_OVERRIDE_GFX_VERSION: ${HSA_OVERRIDE_GFX_VERSION:-}
-      ROCR_VISIBLE_DEVICES: ${ROCR_VISIBLE_DEVICES:-}
-      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-}
+      #
+      # These three are deliberately NOT listed here with a `${VAR:-}`
+      # default the way the OLLAMA_* vars above are: Compose's `environment:`
+      # map always sets the key inside the container once it's listed at
+      # all, even when the substitution is empty — and CUDA specifically
+      # treats an explicitly-set-but-EMPTY CUDA_VISIBLE_DEVICES as "zero
+      # GPUs visible", not "unset/use the default of every GPU". A host that
+      # never touches these three in .env would otherwise silently run
+      # Ollama on CPU even with a correctly reserved/passed-through GPU.
+      # Set them (if you ever need to, e.g. to pick a card on a multi-GPU
+      # host) via Settings > System > "Ollama server tuning" in nd-world
+      # instead — that mechanism already gets this right (a blank field
+      # omits the var entirely rather than writing it empty) and its
+      # ollama.env WINS over anything set here regardless.
     volumes:
       - /mnt/DeadPool/apps/ollama:/root/.ollama
       - /mnt/DeadPool/apps/nd-world-ollama-config:/ollama-config  # shared with world — see docs/DEPLOYMENT.md and the entrypoint below
@@ -139,11 +159,24 @@ services:
       net.ix-portals.ollama.port: "11434"
       net.ix-portals.ollama.path: "/"
       net.ix-portals.ollama.host: ""
+      # See the identical label on the swarmui service above for why:
+      # watchtower auto-updates every container by default, and an
+      # unpinned ollama/ollama:latest update can silently drop support for
+      # an older card's CUDA version between one restart and the next.
+      # Pin the image tag above once you've confirmed a version works, and
+      # leave auto-update off here.
+      com.centurylinklabs.watchtower.enable: "false"
     # To pull a model after first start:
     #   docker compose exec ollama ollama pull gemma4:26b
-    # For an NVIDIA GPU on TrueNAS SCALE: assign the GPU from the app's
-# Resources/GPU screen (Electric Eel+) instead of editing compose — full
-# walkthrough incl. V100/Volta specifics: docs/GPU_SETUP.md in the repo.
+    # For an NVIDIA GPU on TrueNAS SCALE: IF you built this app through
+    # TrueNAS's own app-creation wizard (picking images/services with its
+    # per-service GPU picker), assign the GPU from that app's Resources/GPU
+    # screen (Electric Eel+) instead of editing compose. If you deployed
+    # this file the way the README documents — as a TrueNAS "Custom App"
+    # with this YAML pasted in directly — that Resources/GPU screen is NOT
+    # available for a pasted-YAML app; uncomment the block below yourself
+    # instead. Full walkthrough incl. V100/Volta specifics:
+    # docs/GPU_SETUP.md in the repo.
     # deploy:
     #   resources:
     #     reservations:

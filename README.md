@@ -607,6 +607,10 @@ for the full explanation.
 
 **GPU acceleration:** change the image to `ghcr.io/ggml-org/whisper.cpp:main-cuda` and
 uncomment the `deploy` block in the Whisper service (same shape as Ollama's, above).
+**Volta (V100, sm_70) owners:** that prebuilt image does NOT work on this card — its
+build only targets `CMAKE_CUDA_ARCHITECTURES='75;80;86;90'` (Turing and newer), so
+whisper-server never finds a usable GPU kernel on a V100. Build the Volta-targeted
+image from this repo instead: `docker/whisper-cuda` (see [docs/GPU_SETUP.md](docs/GPU_SETUP.md) §6).
 
 ### ComfyUI (alternative backend)
 

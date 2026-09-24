@@ -103,9 +103,20 @@ services:
       # AMD (ROCm) GPU selection — e.g. an RX 9070 XT is gfx1201, natively
       # supported on Linux via ROCm 7+, no HSA_OVERRIDE_GFX_VERSION needed.
       # Leave blank on NVIDIA/CPU-only hosts.
-      HSA_OVERRIDE_GFX_VERSION: ${HSA_OVERRIDE_GFX_VERSION:-}
-      ROCR_VISIBLE_DEVICES: ${ROCR_VISIBLE_DEVICES:-}
-      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-}
+      #
+      # These three are deliberately NOT listed here with a `${VAR:-}`
+      # default the way the OLLAMA_* vars above are: Compose's `environment:`
+      # map always sets the key inside the container once it's listed at
+      # all, even when the substitution is empty — and CUDA specifically
+      # treats an explicitly-set-but-EMPTY CUDA_VISIBLE_DEVICES as "zero
+      # GPUs visible", not "unset/use the default of every GPU". A host that
+      # never touches these three in .env would otherwise silently run
+      # Ollama on CPU even with a correctly reserved/passed-through GPU.
+      # Set them (if you ever need to, e.g. to pick a card on a multi-GPU
+      # host) via Settings > System > "Ollama server tuning" in nd-world
+      # instead — that mechanism already gets this right (a blank field
+      # omits the var entirely rather than writing it empty) and its
+      # ollama.env WINS over anything set here regardless.
     volumes:
       # Same parent directory as swarmui's model volume below (see
       # AI_MODELS_DIR) — not because Ollama and SwarmUI can read each

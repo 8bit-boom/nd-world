@@ -55,7 +55,9 @@ not a fleet-management VRAM planner. CPU core count and system RAM are
 reliably readable from nd-world's own container (they reflect the host, not
 the container, since /proc is a fresh view of the same kernel). GPU/VRAM
 is the honest gap: nd-world's own container doesn't get GPU passthrough by
-default (only the ollama/swarmui services do, in docker-compose.yml) —
+default — only `ollama` does, and only once docker-compose.gpu.yml's
+overlay is layered on (`swarmui` gets none from any file in this repo; a
+GM wanting SwarmUI on the GPU adds its own deploy block by hand) —
 docker-compose.gpu.yml can optionally give this container minimal,
 utility-only access too (see docs/GPU_SETUP.md), just enough for
 nvidia-smi to resolve here without granting real CUDA compute — so
@@ -280,7 +282,16 @@ def server_env_status(desired: dict) -> dict:
         "desired": desired,
         "applied": applied,
         "restart_command": "docker compose restart ollama",
-        "restart_command_truenas": "docker compose -f truenas-compose.yml restart ollama",
+        # NOT "docker compose -f truenas-compose.yml restart ollama" — a
+        # TrueNAS "Custom App" (the pasted-YAML deployment this repo's own
+        # README documents) is managed by TrueNAS's own app orchestration,
+        # not a docker-compose project directory a GM has direct CLI access
+        # to the same way; that command has no truenas-compose.yml to find
+        # on the host and does nothing. TrueNAS SCALE names a Custom App's
+        # containers ix-<app-name>-<service>-1 (confirm with `docker ps`,
+        # since <app-name> is whatever the GM named the app), so `docker
+        # restart` on the real container name is what actually works.
+        "restart_command_truenas": "docker ps | grep ollama   # then: docker restart <that container name>",
     }
 
 
@@ -335,8 +346,10 @@ async def _detect_nvidia_gpus() -> list[dict]:
     """One GPU dict per line of `nvidia-smi --query-gpu=name,memory.total`
     — only ever produces a result when the NVIDIA container runtime has
     actually given THIS container GPU access (docker-compose.yml's `world`
-    service has none by default; only `ollama`/`swarmui` do), which is
-    exactly the signal we want: nvidia-smi simply isn't on PATH otherwise."""
+    service has none by default — only `ollama` does, and only once
+    docker-compose.gpu.yml's overlay is layered on; `swarmui` gets none
+    from any file in this repo), which is exactly the signal we want:
+    nvidia-smi simply isn't on PATH otherwise."""
     if not shutil.which("nvidia-smi"):
         return []
     try:
@@ -399,6 +412,7 @@ def _detect_amd_gpus(pattern: str = "/sys/class/drm/card*/device/mem_info_vram_t
 # advisory a physically-detected V100 would.
 GPU_PRESETS = {
     "v100_16gb": {"name": "NVIDIA Tesla V100 16GB", "vram_mb": 16384},
+    "v100_32gb": {"name": "NVIDIA Tesla V100 32GB", "vram_mb": 32768},
 }
 
 
