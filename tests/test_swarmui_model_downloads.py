@@ -768,7 +768,12 @@ async def test_swarmui_backends_empty_on_unreachable(monkeypatch):
 async def test_swarmui_resource_info_returns_dict_verbatim(monkeypatch):
     monkeypatch.setattr(ai_module, "_get_type", lambda: "swarmui")
     monkeypatch.setattr(ai_module, "_get_url", lambda: "http://fake-swarmui")
-    payload = {"gpus": [{"name": "GPU 0", "used_memory": 4096, "total_memory": 24576}]}
+    # SwarmUI's real /API/GetServerResourceInfo shape (AdminAPI.cs
+    # GetServerResourceInfo): "gpus" is an OBJECT keyed by GPU id, not a
+    # list, and memory fields are in bytes, not MB — see
+    # static/js/ai-chat-image.js's igLoadBackendStatus, which used to
+    # assume the wrong shape/units and never rendered this row.
+    payload = {"gpus": {"0": {"id": 0, "name": "GPU 0", "used_memory": 4294967296, "total_memory": 17179869184}}}
     _patch_httpx(monkeypatch, post_map={
         "/API/GetNewSession": {"session_id": "sess1"},
         "/API/GetServerResourceInfo": payload,
@@ -787,12 +792,32 @@ def test_backends_route_returns_backends_and_resources(client, seed, monkeypatch
     _patch_httpx(monkeypatch, post_map={
         "/API/GetNewSession": {"session_id": "sess1"},
         "/API/ListBackends": [{"id": 0, "status": "running"}],
-        "/API/GetServerResourceInfo": {"gpus": []},
+        "/API/GetServerResourceInfo": {"gpus": {}},
     })
     login(client, seed.gm.email, GM_PASSWORD)
     r = client.get("/api/ai/imagegen/backends")
     assert r.status_code == 200
-    assert r.json() == {"backends": [{"id": 0, "status": "running"}], "resources": {"gpus": []}}
+    assert r.json() == {"backends": [{"id": 0, "status": "running"}], "resources": {"gpus": {}}}
+
+
+def test_backend_status_js_handles_gpus_as_an_object_not_just_an_array(client, seed):
+    """SwarmUI's real /API/GetServerResourceInfo returns "gpus" as an
+    OBJECT keyed by GPU id (confirmed against AdminAPI.cs's
+    GetServerResourceInfo — gpus[$"{gpu.ID}"] = {...}), not an array —
+    `Array.isArray(gpus)` was always false against the real API, so the
+    GPU/VRAM status row never rendered. Also checks the byte→GB math:
+    SwarmUI reports total_memory/used_memory/free_memory in bytes
+    (gpu.TotalMemory.InBytes etc.), not MB."""
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get("/static/js/ai-chat-image.js")
+    assert r.status_code == 200
+    js = r.text.replace("\r\n", "\n")
+    fn_start = js.index("async function igLoadBackendStatus")
+    fn_end = js.index("\nasync function", fn_start + 1)
+    fn_body = js[fn_start:fn_end]
+    assert "Object.values(gpusRaw)" in fn_body
+    assert "Array.isArray(gpusRaw)" in fn_body
+    assert "1073741824" in fn_body  # bytes -> GB
 
 
 # ── swarmui_free_memory() / POST /imagegen/free-memory ──────────────────────

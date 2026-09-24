@@ -232,6 +232,89 @@ a smaller/quantized SwarmUI checkpoint, drop to an 8–9B Ollama model
 instead of 12B, or shorten `OLLAMA_KEEP_ALIVE` so the two rarely overlap
 in practice. A 32 GB V100 removes this concern almost entirely — see §5.
 
+## 3b. SwarmUI's PyTorch on a V100 — read this before assuming it "just works"
+
+**A GPU device reservation alone is not enough for SwarmUI.** SwarmUI
+installs its own PyTorch at first run (`launchtools/comfy-install-linux.sh`,
+run automatically the first time SwarmUI starts with no `dlbackend/ComfyUI`
+present yet) — and for an NVIDIA GPU, that script currently does:
+
+```sh
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+```
+
+**CUDA 13 wheels have no Volta (compute capability 7.0 / sm_70) support at
+all.** PyTorch dropped Volta from its CUDA 13 builds outright, and even
+CUDA 12's own coverage has been narrowing release over release —
+**`cu126` is the last CUDA-12.x wheel index that still includes sm_70, and
+PyTorch 2.14 is the last version published under it.** A stock SwarmUI
+install on a V100, right now, installs a build that flatly cannot use this
+card — not a slow fallback, a hard failure. (An earlier version of this
+guide said Volta "has remained inside PyTorch's default compiled
+compute-capability set… this should just work" — that was wrong for any
+SwarmUI install done after this cu130 switch; see below for the fix.)
+
+**Failure signatures:**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `…sm_70 is not compatible with the current PyTorch installation` in SwarmUI/ComfyUI logs at startup | This section | Reinstall torch below |
+| `CUDA error: no kernel image is available for execution on the device` on the first generation attempt | Same — the warning above was ignored/missed | Reinstall torch below |
+| Ollama: `CUDA error: device kernel image is invalid` | Driver older than 550 (Ollama's CUDA 12 build needs ≥550) | Upgrade the driver — see §2 |
+| Whisper: never finds a GPU, silently runs on CPU | The prebuilt CUDA image doesn't target Volta at all (§6) | Build `docker/whisper-cuda` instead |
+
+**Check** (run on the SwarmUI host; find the container name with `docker ps`
+— TrueNAS names it `ix-<app-name>-swarmui-1`):
+
+```sh
+C=$(docker ps --format '{{.Names}}' | grep -i swarmui | head -1)
+docker exec "$C" /SwarmUI/dlbackend/ComfyUI/venv/bin/python -c \
+  "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.get_arch_list())"
+```
+
+If `sm_70` is **not** in the printed list, fix it:
+
+```sh
+docker exec "$C" /SwarmUI/dlbackend/ComfyUI/venv/bin/python -s -m pip uninstall -y torch torchvision torchaudio
+docker exec "$C" /SwarmUI/dlbackend/ComfyUI/venv/bin/python -s -m pip install torch torchvision \
+  --index-url https://download.pytorch.org/whl/cu126 --no-cache-dir
+```
+
+(Only reinstall `torchaudio` too if it was present in the uninstall output —
+SwarmUI's own install doesn't request it.) Then restart SwarmUI (nd-world's
+🔄 restart button on the Image Gen tab, or `docker restart "$C"`) and
+re-run the check to confirm `sm_70` now appears.
+
+A repo-root script does the check-then-fix for you:
+
+```sh
+./fix-swarmui-volta-torch.sh
+```
+
+**This is not a one-time fix — it doesn't survive everything:**
+
+- **Pinning the SwarmUI image tag does NOT protect you.** Unlike Ollama's
+  CUDA version (baked into its image), SwarmUI's torch install lives in
+  the `dlbackend` volume/bind-mount, installed by a script the container
+  runs at startup — the image tag barely matters here. The
+  `com.centurylinklabs.watchtower.enable: "false"` label on `swarmui` in
+  `truenas-compose.yml` still matters (an image update changing that
+  install script would matter), but it's not sufficient on its own the way
+  it is for Ollama.
+- **Deleting/reinstalling the `dlbackend` folder** (a fresh SwarmUI
+  install, or troubleshooting steps that involve wiping it) re-runs the
+  cu130 install and re-breaks it — re-run the check after.
+- **Installing any ComfyUI custom node or feature that pulls its own
+  torch from PyPI** (rather than SwarmUI's own installer) can also
+  silently upgrade to a CUDA-13 build, since PyPI's default `pip install
+  torch` now resolves to CUDA 13 wheels. Re-run the check after installing
+  new custom nodes, especially ones with their own `requirements.txt`
+  that lists `torch`.
+- The `cu126`/2.14 pin isn't going anywhere on its own — PyTorch won't
+  publish a newer cu126 build that drops Volta, since cu126 itself is
+  Volta's last home. It just won't get any NEWER either; that's the real
+  tradeoff of keeping this card running at all going forward.
+
 ## 4. Optimization — what to actually set
 
 The single best place is **Settings → System → "Ollama server

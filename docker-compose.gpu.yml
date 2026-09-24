@@ -42,15 +42,16 @@ services:
 
   # SwarmUI's bundled ComfyUI/PyTorch backend is installed at first-run (not
   # baked into the image — see README's "performs a first-run setup on
-  # initial boot" note), so unlike Ollama there's no single CUDA version to
-  # call out here: whatever PyTorch build that installer picks is what you
-  # get. Volta (sm_70/V100) has remained inside PyTorch's default compiled
-  # compute-capability set for a long time, so this should just work — but
-  # if a future SwarmUI update ever installs a PyTorch build that drops it,
-  # the failure mode is the same as Ollama's CUDA-13 case (silently stops
-  # seeing the GPU): check the SwarmUI container's startup logs for CUDA
-  # errors after any update, and pin the image tag below once you've
-  # confirmed a version works.
+  # initial boot" note). As of SwarmUI's current install script, that
+  # first-run install pulls torch from the CUDA 13 wheel index — and CUDA 13
+  # DROPPED Volta (sm_70/V100) support entirely, so a fresh install on this
+  # card cannot generate images at all until fixed. Pinning the image tag
+  # below does NOT protect you here the way it does for Ollama (torch lives
+  # in the dlbackend volume, installed by a startup script, largely
+  # independent of the image tag) — run ./fix-swarmui-volta-torch.sh (repo
+  # root) after first start, and again after any dlbackend reinstall or new
+  # custom node with its own torch requirement. Full explanation and manual
+  # steps: docs/GPU_SETUP.md §3b.
   swarmui:
     image: ghcr.io/mcmonkeyprojects/swarmui:latest   # V100 owners: pin here if a future backend install breaks it
     deploy:

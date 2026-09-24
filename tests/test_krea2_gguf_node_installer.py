@@ -46,9 +46,13 @@ def test_script_removes_the_conflicting_upstream_node_before_cloning():
     assert 'UPSTREAM_NODE_NAME="ComfyUI-GGUF"' in text
     # Backs it up (mv), doesn't delete it outright.
     assert 'mv "$UPSTREAM_DIR" "$BACKUP_DIR"' in text
-    # The removal must happen before the clone, not after.
-    remove_idx = text.index('mv "$UPSTREAM_DIR"')
-    clone_idx = text.index('git clone "$GGUF_REPO"')
+    # The removal must happen before the clone, not after — scoped to the
+    # host-filesystem fallback path (install_via_docker() has its own
+    # earlier clone/mv pair, checked separately in
+    # test_comfyui_node_installers_docker_exec.py).
+    fallback_text = text.split("Fall back: host filesystem search", 1)[1]
+    remove_idx = fallback_text.index('mv "$UPSTREAM_DIR"')
+    clone_idx = fallback_text.index('git clone "$GGUF_REPO"')
     assert remove_idx < clone_idx
 
 

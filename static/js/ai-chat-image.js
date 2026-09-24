@@ -634,16 +634,23 @@ async function igLoadBackendStatus() {
       list.appendChild(row);
     });
     const res = data.resources || {};
-    const gpus = res.gpus || res.GPUs || [];
-    if (Array.isArray(gpus) && gpus.length) {
+    // SwarmUI's own /API/GetServerResourceInfo returns "gpus" as an OBJECT
+    // keyed by GPU id (e.g. {"0": {...}}), not an array — Array.isArray()
+    // was always false against the real API, so this row never rendered.
+    const gpusRaw = res.gpus || res.GPUs || {};
+    const gpus = Array.isArray(gpusRaw) ? gpusRaw : Object.values(gpusRaw);
+    if (gpus.length) {
       gpus.forEach(g => {
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;justify-content:space-between;gap:.5rem;padding:.15rem 0;border-top:1px solid var(--border);margin-top:.2rem';
-        const usedMb = g.used_memory ?? g.vram_used ?? null;
-        const totalMb = g.total_memory ?? g.vram_total ?? null;
+        // SwarmUI reports memory in bytes (total_memory/used_memory), not MB.
+        const usedBytes = g.used_memory ?? g.vram_used ?? null;
+        const totalBytes = g.total_memory ?? g.vram_total ?? null;
         const left = document.createElement('span'); left.textContent = g.name || g.id || 'GPU';
         const right = document.createElement('span'); right.style.color = 'var(--text-dim)';
-        right.textContent = (usedMb != null && totalMb) ? `${Math.round(usedMb / 1024)} / ${Math.round(totalMb / 1024)} GB VRAM` : '';
+        right.textContent = (usedBytes != null && totalBytes)
+          ? `${(usedBytes / 1073741824).toFixed(1)} / ${(totalBytes / 1073741824).toFixed(1)} GB VRAM`
+          : '';
         row.appendChild(left); row.appendChild(right);
         list.appendChild(row);
       });

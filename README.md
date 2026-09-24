@@ -478,6 +478,12 @@ Ollama and SwarmUI on the *same* card at once, the flash-attention /
 q8_0-KV / single-parallel tuning set, and the CUDA 13 / driver-580
 caveats specific to Volta cards.
 
+**V100 owners:** SwarmUI's own first-run install currently pulls a
+PyTorch build that cannot run on Volta at all — a device reservation
+alone doesn't fix this. Run `./fix-swarmui-volta-torch.sh` (repo root)
+after SwarmUI's first start; see GPU_SETUP.md §3b for why and how to
+check it's still needed after updates.
+
 ### Ollama (chat)
 
 Ollama is defined in both `docker-compose.yml` and `truenas-compose.yml` behind the

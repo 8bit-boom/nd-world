@@ -82,9 +82,14 @@ services:
       # OUT rather than in). SwarmUI's bundled ComfyUI backend can pull in a
       # newer CUDA-version PyTorch on an update, silently breaking inference
       # on an older card (e.g. CUDA 13 doesn't run on a Volta/V100) with no
-      # error until the next generation attempt — pin the image tag above
-      # once you've confirmed a version works on your GPU, and leave
-      # auto-update off here rather than discovering the break days later.
+      # error until the next generation attempt — leave auto-update off here
+      # rather than discovering the break days later. NOTE: on a V100
+      # specifically, pinning the image tag above is NOT enough on its own —
+      # SwarmUI's torch install lives in the dlbackend volume, installed by a
+      # startup script largely independent of the image tag, and a FRESH
+      # install already pulls a CUDA-13 build that can't run on this card at
+      # all. See docs/GPU_SETUP.md §3b and run ./fix-swarmui-volta-torch.sh
+      # (repo root) after first start.
       com.centurylinklabs.watchtower.enable: "false"
     # For an NVIDIA GPU on TrueNAS SCALE: IF you built this app through
     # TrueNAS's own app-creation wizard, assign the GPU from that app's
@@ -93,7 +98,8 @@ services:
     # a pasted-YAML Custom App (that screen isn't available then — see the
     # ollama service below), uncomment this block instead. One V100 can
     # back both ollama and swarmui — see docs/GPU_SETUP.md §3a for VRAM-
-    # sharing sizing guidance if you run both at once on a 16 GB card.
+    # sharing sizing guidance if you run both at once on a 16 GB card, and
+    # §3b for the torch/CUDA-13 fix this card needs regardless of GPU wiring.
     # deploy:
     #   resources:
     #     reservations:
