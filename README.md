@@ -468,11 +468,13 @@ it's worth leaving any of them off you don't plan to use.
 
 ### GPU acceleration (incl. the Tesla V100)
 
-Ollama and whisper.cpp both run much faster with an NVIDIA GPU — see
-**[docs/GPU_SETUP.md](docs/GPU_SETUP.md)** for the full walkthrough: host
-driver + nvidia-container-toolkit setup, the ready-made
-`docker-compose.gpu.yml` override, TrueNAS SCALE GPU assignment, model
-recommendations by VRAM (16 GB vs 32 GB V100), the flash-attention /
+Ollama, SwarmUI, and whisper.cpp all run much faster with an NVIDIA GPU —
+see **[docs/GPU_SETUP.md](docs/GPU_SETUP.md)** for the full walkthrough:
+host driver + nvidia-container-toolkit setup, the ready-made
+`docker-compose.gpu.yml` override (gives both `ollama` and `swarmui` the
+card), TrueNAS SCALE GPU assignment for each service, model
+recommendations by VRAM (16 GB vs 32 GB V100), sizing guidance for running
+Ollama and SwarmUI on the *same* card at once, the flash-attention /
 q8_0-KV / single-parallel tuning set, and the CUDA 13 / driver-580
 caveats specific to Volta cards.
 
@@ -573,6 +575,9 @@ The **AI → Image Gen** panel supports:
 - **Upscaling** — model selector (pulls from SwarmUI Upscale model folder) + ×1.5/×2/×3/×4 scale factor
 - Image-to-image (img2img) — upload an init image and set denoising strength
 - **Generation history** — last 50 generations stored in browser localStorage with one-click parameter reuse
+- **⚡ Krea 2 GGUF Quick Setup** — a one-click panel that downloads a matching Krea 2 Turbo GGUF diffusion model + Qwen3-VL-4B-Instruct text encoder pair, for running Krea 2 in far less VRAM than the full-precision checkpoint (see `docs/GPU_SETUP.md` §5a for why this matters on a V100). One manual step remains outside nd-world's reach: run `install-comfyui-gguf-krea2.sh` (repo root) once on the machine where SwarmUI itself runs, to install the ComfyUI custom node Krea 2's GGUF files actually need.
+
+See **[docs/GPU_SETUP.md](docs/GPU_SETUP.md)** for GPU passthrough (incl. sharing one V100 between Ollama and SwarmUI) and Volta-specific performance notes.
 
 ### Whisper (audio transcription)
 

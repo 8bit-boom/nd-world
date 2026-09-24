@@ -1,18 +1,24 @@
-# GPU Setup Guide — Ollama, Whisper, and the NVIDIA V100
+# GPU Setup Guide — Ollama, SwarmUI, Whisper, and the NVIDIA V100
 
 How to give nd-world's bundled AI stack (Ollama for chat/recaps/facts,
-whisper.cpp for transcription) a real GPU — with a dedicated section for
-the **Tesla V100**, the Volta-era datacenter card that is now the
-cheapest way to get serious local-LLM performance.
+SwarmUI for image generation, whisper.cpp for transcription) a real GPU —
+with a dedicated section for the **Tesla V100**, the Volta-era datacenter
+card that is now the cheapest way to get serious local-AI performance.
 
 nd-world's own container never needs the GPU for AI inference — it talks
-to Ollama over HTTP (`OLLAMA_URL`). Only the `ollama` (and optionally
-`whisper`) service needs full GPU access. `docker-compose.gpu.yml` also
-optionally gives nd-world's own container minimal, `utility`-only GPU
-access (no real CUDA compute) — just enough for `nvidia-smi` to work
-inside it, so Settings → System's "Detected hardware" panel can
-auto-detect your real card instead of relying on a manual VRAM override or
-hardware preset.
+to Ollama and SwarmUI over HTTP (`OLLAMA_URL`/`IMAGEGEN_URL`). Only the
+`ollama`, `swarmui`, and (optionally) `whisper` services need full GPU
+access. `docker-compose.gpu.yml` also optionally gives nd-world's own
+container minimal, `utility`-only GPU access (no real CUDA compute) —
+just enough for `nvidia-smi` to work inside it, so Settings → System's
+"Detected hardware" panel can auto-detect your real card instead of
+relying on a manual VRAM override or hardware preset.
+
+**Only ollama's hardware detection reads the card from `nvidia-smi`.**
+SwarmUI has no equivalent panel in nd-world — it manages its own backend
+and VRAM usage independently once it has GPU access, so there's nothing
+further to configure on the nd-world side for it beyond the passthrough
+itself.
 
 ---
 
@@ -87,15 +93,21 @@ version you run — Watchtower won't override it.
 ### Plain Linux Docker
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+docker compose -f docker-compose.yml --profile ollama --profile swarmui \
+  -f docker-compose.gpu.yml up -d
 docker compose exec ollama ollama pull gemma4:26b
 docker compose logs ollama | grep -i "inference compute"   # should say CUDA / 0
+docker compose logs swarmui | grep -i cuda                 # should mention your GPU, not "cpu"
 ```
 
 `docker-compose.gpu.yml` (in this repo) contains exactly this: the NVIDIA
-device reservation for `ollama`, a matching `utility`-only reservation for
-`world` (nd-world's own container, so its hardware detector can see the
-card — see above), plus a commented CUDA whisper switch.
+device reservation for `ollama` and `swarmui`, a matching `utility`-only
+reservation for `world` (nd-world's own container, so its hardware
+detector can see the card — see above), plus a commented CUDA whisper
+switch. SwarmUI installs its own backend on first start (the "performs a
+first-run setup" step in the README) — that first-run install is what
+actually detects and uses the passed-through GPU, so give it a few
+minutes before checking the logs above.
 
 ### TrueNAS SCALE
 
@@ -122,15 +134,16 @@ have three options before anything else here will work:
 Once the driver is sorted (`nvidia-smi` on the TrueNAS host itself lists
 the V100):
 
-1. **Give the ollama container the GPU.** This repo's own README documents
-   deploying via **Apps → Discover Apps → Custom App**, pasting
+1. **Give the ollama AND swarmui containers the GPU** — these are two
+   separate reservations, not one shared setting. This repo's own README
+   documents deploying via **Apps → Discover Apps → Custom App**, pasting
    `truenas-compose.yml` in directly under "Compose" mode — **that pasted-
    YAML Custom App does NOT get a per-app Resources → GPU(s) picker
    screen** (that picker exists for apps built through TrueNAS's own
    catalog/image-launch wizard, a different flow from pasting a full
    compose file). Uncomment the `deploy:` block already scaffolded under
-   the `ollama` service in `truenas-compose.yml` yourself, in the YAML you
-   paste:
+   **both** the `ollama` and `swarmui` services in `truenas-compose.yml`
+   yourself, in the YAML you paste — same block under each:
 
    ```yaml
    deploy:
@@ -144,19 +157,23 @@ the V100):
 
    If you instead built the app through TrueNAS's catalog/wizard flow
    (which does offer that screen for apps created that way), assign the
-   GPU there and leave the YAML block commented — don't do both.
-2. **Verify**: shell into the ollama container (find its real name with
+   GPU to **each** service there individually and leave both YAML blocks
+   commented — don't do both for the same service. A single V100 can be
+   assigned to more than one container this way; see §3a below for what
+   that means for VRAM.
+2. **Verify**: shell into each container (find its real name with
    `docker ps` — TrueNAS names a Custom App's containers
    `ix-<app-name>-<service>-1`) and run `nvidia-smi` inside it — it must
    list the V100 — then check `docker logs <that container>` for
-   `inference compute` detection on startup. Also confirm
-   `CUDA_VISIBLE_DEVICES` isn't set to an empty string inside the
-   container (`docker exec <container> env | grep ^CUDA_VISIBLE`) — an
-   explicitly-empty value hides every GPU from CUDA even with the deploy
-   block correctly in place; `truenas-compose.yml` no longer sets this by
-   default for exactly that reason (see its `ollama` service's own
-   `environment:` comment), but a `.env` override could still reintroduce
-   it.
+   `inference compute` detection on startup (ollama) or a CUDA/GPU mention
+   rather than "cpu" (swarmui, after its first-run backend install
+   finishes — give it a few minutes). Also confirm `CUDA_VISIBLE_DEVICES`
+   isn't set to an empty string inside either container (`docker exec
+   <container> env | grep ^CUDA_VISIBLE`) — an explicitly-empty value
+   hides every GPU from CUDA even with the deploy block correctly in
+   place; `truenas-compose.yml` no longer sets this by default for
+   exactly that reason (see its `ollama` service's own `environment:`
+   comment), but a `.env` override could still reintroduce it.
 3. The nd-world **app container itself gets no GPU by default**, and
    there's no `utility`-only overlay for it on TrueNAS the way
    `docker-compose.gpu.yml` provides for plain Docker hosts — Settings →
@@ -177,7 +194,43 @@ the V100):
 
 Nothing about nd-world changes — point `OLLAMA_URL` at the GPU machine
 (`http://gpu-box:11434`) and set up that machine like a plain Linux host
-above. The Settings → System URL override works too.
+above. The Settings → System URL override works too. If SwarmUI is on
+that same separate box, point `IMAGEGEN_URL` at it too
+(`http://gpu-box:7801`) — same idea.
+
+## 3a. Sharing one V100 between Ollama and SwarmUI
+
+A device reservation (`capabilities: [gpu]`) doesn't reserve the card
+exclusively — it just grants that container access to it. Assigning the
+same physical V100 to both `ollama` and `swarmui` (the normal single-GPU
+setup) works: CUDA lets multiple processes share one GPU, each with its
+own context. What's actually shared and finite is **VRAM**, not access.
+
+On a **16 GB** card, running a chat model and generating an image at the
+*exact same moment* can hit a CUDA out-of-memory error if both together
+exceed 16 GB:
+
+- A 12B-class Ollama model (the §5 recommendation for 16 GB) typically
+  resident at ~7–9 GB with `q8_0` KV cache.
+- An SDXL-class SwarmUI checkpoint is commonly ~6–8 GB; Flux-class models
+  run noticeably higher (often 12+ GB) unless SwarmUI is using a quantized
+  build.
+
+Neither one keeps VRAM reserved forever, though:
+
+- **Ollama** evicts an idle model after `OLLAMA_KEEP_ALIVE` (§4) — set it
+  shorter (e.g. `5m`) if you regularly alternate between chatting and
+  generating images and want the previous one's VRAM back sooner, at the
+  cost of a reload delay on the next chat message.
+- **SwarmUI** only loads a checkpoint into VRAM while actively rendering
+  (or per its own backend idle-unload setting, if you've changed it) —
+  check its Backends tab if you want to tune that further.
+
+If real simultaneous use (a GM generating an NPC portrait mid-chat) is
+common at your table and you hit OOM errors, the practical fixes are: pick
+a smaller/quantized SwarmUI checkpoint, drop to an 8–9B Ollama model
+instead of 12B, or shorten `OLLAMA_KEEP_ALIVE` so the two rarely overlap
+in practice. A 32 GB V100 removes this concern almost entirely — see §5.
 
 ## 4. Optimization — what to actually set
 
@@ -224,6 +277,47 @@ a dramatically better experience than a strangled 26B.
 
 The **Models tab** on the AI page shows each installed model's size next
 to your VRAM; the benchmark button measures real tok/s after any change.
+
+## 5a. SwarmUI / image generation on the V100
+
+nd-world has no equivalent of Ollama's per-model tuning panel for
+SwarmUI — it manages its own ComfyUI backend and VRAM usage independently
+once it has GPU access (see §3). What actually moves the needle on a V100
+is mostly at the model/quantization level, not a settings panel:
+
+- **GGUF quantization is the single biggest VRAM lever for image models
+  on 16 GB**, the same way Q4_K_M is for Ollama. A Krea 2 Turbo GGUF
+  build (Q4–Q6) fits comfortably where the full-precision `Comfy-Org/
+  Krea-2` checkpoint would not, alongside whatever Ollama model is also
+  loaded (see §3a). nd-world's Image Gen tab has a **"⚡ Krea 2 GGUF Quick
+  Setup"** panel that downloads a matching diffusion-model + text-encoder
+  GGUF pair automatically — the one step it can't do (no filesystem
+  access into SwarmUI's own backend) is installing the ComfyUI custom
+  node that reads Krea 2's specific GGUF ops: run
+  `install-comfyui-gguf-krea2.sh` (repo root) once, on the machine where
+  SwarmUI itself runs, not on the nd-world host if they differ. It finds
+  your SwarmUI install, removes any conflicting `city96/ComfyUI-GGUF`
+  SwarmUI may have already auto-installed (same node/class names — the
+  two can't coexist), and clones the Krea-2-aware fork in its place.
+- **FP16, not BF16.** Volta's tensor cores only accelerate FP16 (§7) —
+  newer cards default to BF16 for numerical stability, which Volta has no
+  hardware path for at all (it falls back to slow FP32 math instead of
+  erroring, so a wrong-precision run doesn't fail loudly, it just runs far
+  slower than it should). SwarmUI/ComfyUI generally auto-detect this
+  correctly for a V100, but if a generation is unexpectedly slow, check
+  whichever precision setting SwarmUI's backend configuration exposes and
+  confirm it's not forcing BF16.
+- **Attention backend**: newer flash-attention builds commonly target
+  Ampere+ (sm_80+) and either skip Volta or fall back to a slower path —
+  the same category of "prebuilt binary silently doesn't cover sm_70" gap
+  whisper.cpp's CUDA image hits (§6). If SwarmUI's ComfyUI backend exposes
+  extra launch arguments, `--use-pytorch-cross-attention` is the safe,
+  universally-supported choice on Volta when the default attention path
+  underperforms; xformers wheels are hit-or-miss for sm_70 depending on
+  which one gets installed, so don't assume it's faster here the way it
+  usually is on newer cards.
+- **One GPU, two consumers**: see §3a for VRAM-sharing guidance if you run
+  Ollama and SwarmUI on the same V100 (the normal single-card setup).
 
 ## 6. Whisper on the GPU
 

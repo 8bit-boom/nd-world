@@ -86,6 +86,21 @@ services:
       # once you've confirmed a version works on your GPU, and leave
       # auto-update off here rather than discovering the break days later.
       com.centurylinklabs.watchtower.enable: "false"
+    # For an NVIDIA GPU on TrueNAS SCALE: IF you built this app through
+    # TrueNAS's own app-creation wizard, assign the GPU from that app's
+    # Resources/GPU screen for the swarmui service specifically (a separate
+    # picker from ollama's) instead of editing compose. If you deployed via
+    # a pasted-YAML Custom App (that screen isn't available then — see the
+    # ollama service below), uncomment this block instead. One V100 can
+    # back both ollama and swarmui — see docs/GPU_SETUP.md §3a for VRAM-
+    # sharing sizing guidance if you run both at once on a 16 GB card.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
 
   # Optional: local AI chat. Only starts if the "ollama" profile is active —
   # set COMPOSE_PROFILES=ollama (or ollama,swarmui) in .env, or run

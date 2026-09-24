@@ -1,13 +1,16 @@
 # ── NVIDIA GPU override for nd-world's bundled AI stack ─────────────────────
 #
-# Layer ON TOP of the main compose file to give the "ollama" (and GPU
-# whisper) services an NVIDIA GPU, plus minimal (nvidia-smi-only) access to
-# nd-world's own container so its hardware detector can see the real card:
+# Layer ON TOP of the main compose file to give the "ollama" and "swarmui"
+# (and GPU whisper) services an NVIDIA GPU, plus minimal (nvidia-smi-only)
+# access to nd-world's own container so its hardware detector can see the
+# real card:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 #
 # TrueNAS SCALE users: don't use this file — assign the GPU from the app's
-# Resources/GPU screen instead (see docs/GPU_SETUP.md §TrueNAS).
+# Resources/GPU screen instead, or uncomment the matching blocks in
+# truenas-compose.yml if you deployed via a pasted-YAML Custom App (see
+# docs/GPU_SETUP.md §TrueNAS).
 #
 # Host prerequisites (full walkthrough: docs/GPU_SETUP.md):
 #   - NVIDIA driver 550 or newer (the 580 branch is the LAST to support
@@ -18,10 +21,38 @@
 # ship CUDA 12 and work fine; if a future update stops seeing your GPU,
 # pin the last CUDA 12 tag (e.g. image: ollama/ollama:0.12.x) instead of
 # tracking :latest — details in docs/GPU_SETUP.md.
+#
+# One V100 running BOTH ollama and swarmui: the reservations below just
+# grant each container full access to the same physical card — CUDA lets
+# multiple processes share one GPU, but VRAM is still one shared 16/32 GB
+# pool between whatever chat model is loaded and whatever image checkpoint
+# SwarmUI has resident. See docs/GPU_SETUP.md §3a for sizing guidance if
+# you hit CUDA out-of-memory errors running both at once.
 
 services:
   ollama:
     image: ollama/ollama:latest   # V100 owners: pin here if a CUDA 13 update breaks it
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # SwarmUI's bundled ComfyUI/PyTorch backend is installed at first-run (not
+  # baked into the image — see README's "performs a first-run setup on
+  # initial boot" note), so unlike Ollama there's no single CUDA version to
+  # call out here: whatever PyTorch build that installer picks is what you
+  # get. Volta (sm_70/V100) has remained inside PyTorch's default compiled
+  # compute-capability set for a long time, so this should just work — but
+  # if a future SwarmUI update ever installs a PyTorch build that drops it,
+  # the failure mode is the same as Ollama's CUDA-13 case (silently stops
+  # seeing the GPU): check the SwarmUI container's startup logs for CUDA
+  # errors after any update, and pin the image tag below once you've
+  # confirmed a version works.
+  swarmui:
+    image: ghcr.io/mcmonkeyprojects/swarmui:latest   # V100 owners: pin here if a future backend install breaks it
     deploy:
       resources:
         reservations:

@@ -85,7 +85,10 @@
            so this is "automatic" for everything nd-world can actually
            reach — the one step it can't do is install the ComfyUI custom
            node inside SwarmUI's own backend (no shared volume exposes
-           that path the way SWARMUI_MODELS_DIR does for model files). -->
+           that path the way SWARMUI_MODELS_DIR does for model files).
+           install-comfyui-gguf-krea2.sh (repo root) covers that one
+           remaining step as a standalone script, run on the SwarmUI host
+           itself rather than from inside nd-world. -->
       <details class="ig-collapsible">
         <summary>⚡ Krea 2 GGUF Quick Setup</summary>
         <div class="ig-section-body">
@@ -102,7 +105,7 @@
           </div>
           <div id="k2-status" style="font-size:.78rem;color:var(--text-dim);margin-top:.5rem"></div>
           <div style="font-size:.72rem;color:var(--text-dim);margin-top:.7rem;line-height:1.4;border-top:1px solid var(--border);padding-top:.5rem">
-            <strong style="color:var(--neon)">One manual step remains:</strong> the first time SwarmUI sees a .gguf file it offers to install <code>city96/ComfyUI-GGUF</code> — that release doesn't parse Krea 2's ops yet, so replace it with the <code>RealRebelAI/ComfyUI-GGUF_KREA-2</code> fork instead (same node names, drop-in) in SwarmUI's own ComfyUI custom_nodes folder. nd-world has no access to that folder to do this step for you.
+            <strong style="color:var(--neon)">One manual step remains:</strong> the first time SwarmUI sees a .gguf file it offers to install <code>city96/ComfyUI-GGUF</code> — that release doesn't parse Krea 2's ops yet, so replace it with the <code>RealRebelAI/ComfyUI-GGUF_KREA-2</code> fork instead (same node names, drop-in). nd-world's own container has no filesystem access to SwarmUI's custom_nodes folder to do this step for you — run <code>install-comfyui-gguf-krea2.sh</code> (repo root) once, on the machine/VM/jail where SwarmUI itself runs, instead: it finds your SwarmUI install, removes any conflicting upstream node, and clones the fork in its place.
           </div>
         </div>
       </details>
