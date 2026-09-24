@@ -467,7 +467,13 @@ def test_context_sized_options_reserves_headroom_beyond_the_raw_token_count():
     text = "word " * 5000
     tokens = ai_module._chars_per_token_estimate(text)
     input_tokens = -(-len(text) // tokens)
-    assert ai_module.context_sized_options(text)["num_ctx"] == input_tokens + ai_module._CONTEXT_FIT_RESERVED_TOKENS
+    raw_needed = input_tokens + ai_module._CONTEXT_FIT_RESERVED_TOKENS
+    # Rounded up to the next power-of-two bucket (see _round_up_num_ctx) —
+    # never the exact raw sum (that's what used to force a model reload
+    # on nearly every call), but never less than it either.
+    result = ai_module.context_sized_options(text)["num_ctx"]
+    assert result >= raw_needed
+    assert result == ai_module._round_up_num_ctx(raw_needed)
 
 
 def test_context_sized_options_is_tighter_for_non_ascii_script():

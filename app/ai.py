@@ -3062,7 +3062,35 @@ def context_sized_options(text: str, reserve_tokens: int = _CONTEXT_FIT_RESERVED
     relying on this clamp alone."""
     chars_per_token = _chars_per_token_estimate(text)
     input_tokens = -(-len(text) // chars_per_token)  # ceil division
-    return {"num_ctx": min(MAX_AUTO_NUM_CTX, max(_CONTEXT_FIT_FLOOR_TOKENS, input_tokens + reserve_tokens))}
+    needed = max(_CONTEXT_FIT_FLOOR_TOKENS, input_tokens + reserve_tokens)
+    return {"num_ctx": min(MAX_AUTO_NUM_CTX, _round_up_num_ctx(needed))}
+
+
+def _round_up_num_ctx(tokens: int) -> int:
+    """Rounds `tokens` up to the next power-of-two bucket starting at
+    _CONTEXT_FIT_FLOOR_TOKENS (1024, 2048, 4096, ...) instead of returning
+    the exact byte-for-byte-fitted value context_sized_options would
+    otherwise compute.
+
+    The real bug this fixes: Ollama allocates a model's KV-cache at
+    load time, sized to the exact num_ctx it was asked for — a SECOND
+    call with even a slightly different num_ctx (one token longer input
+    is enough) doesn't reuse that allocation, it reloads the model from
+    scratch to reallocate it, the multi-second-plus cost keep_alive/
+    "keep the model warm between calls" exists specifically to avoid.
+    Every caller of context_sized_options computes num_ctx from that
+    CALL's own input length, and a real conversation's input only ever
+    grows turn to turn (more history each time) — so once a chat crosses
+    the GM's configured baseline at all, the un-rounded exact-fit value
+    used to come out different on nearly every subsequent turn, forcing
+    a reload on nearly every message. Bucketing means most turns land on
+    the SAME num_ctx as the turn before (only crossing into the next
+    bucket occasionally, still well ahead of ever truncating), so the
+    model stays loaded and warm the way it's supposed to."""
+    bucket = _CONTEXT_FIT_FLOOR_TOKENS
+    while bucket < tokens:
+        bucket *= 2
+    return bucket
 
 
 def _ctx_override_if_needed(text: str, reserve_tokens: int) -> dict:

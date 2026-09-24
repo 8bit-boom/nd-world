@@ -363,6 +363,40 @@ def test_context_sized_options_reserve_tokens_widens_num_ctx():
     assert wider_reserve["num_ctx"] > default_reserve["num_ctx"]
 
 
+# ── _round_up_num_ctx (avoids reload-thrashing Ollama's KV-cache on every
+# slightly-different-sized call — see its own docstring) ───────────────────
+
+def test_round_up_num_ctx_leaves_an_exact_bucket_boundary_unchanged():
+    assert ai_module._round_up_num_ctx(ai_module._CONTEXT_FIT_FLOOR_TOKENS) == (
+        ai_module._CONTEXT_FIT_FLOOR_TOKENS
+    )
+    assert ai_module._round_up_num_ctx(2048) == 2048
+    assert ai_module._round_up_num_ctx(4096) == 4096
+
+
+def test_round_up_num_ctx_rounds_up_to_the_next_bucket():
+    assert ai_module._round_up_num_ctx(ai_module._CONTEXT_FIT_FLOOR_TOKENS + 1) == (
+        ai_module._CONTEXT_FIT_FLOOR_TOKENS * 2
+    )
+    assert ai_module._round_up_num_ctx(2049) == 4096
+    assert ai_module._round_up_num_ctx(4097) == 8192
+
+
+def test_round_up_num_ctx_never_goes_below_the_floor():
+    assert ai_module._round_up_num_ctx(0) == ai_module._CONTEXT_FIT_FLOOR_TOKENS
+    assert ai_module._round_up_num_ctx(1) == ai_module._CONTEXT_FIT_FLOOR_TOKENS
+
+
+def test_context_sized_options_same_bucket_for_nearby_growing_input():
+    """The whole point: a real conversation's input grows a little every
+    turn (more history each time) — two calls whose exact token counts
+    differ slightly must still land on the SAME num_ctx, or Ollama reloads
+    the model on nearly every turn instead of reusing the warm KV-cache."""
+    shorter = ai_module.context_sized_options("word " * 1000)
+    longer = ai_module.context_sized_options("word " * 1001)
+    assert shorter["num_ctx"] == longer["num_ctx"]
+
+
 # ── condense_call_options (context-overflow safety net for plain Condense) ──
 #
 # A long transcript/recap that overflows the model's real context gets
@@ -386,20 +420,26 @@ def test_condense_call_options_widens_when_input_exceeds_assumed_default():
 
 
 def test_condense_call_options_accounts_for_extra_instructions_and_world_context_length():
-    long_transcript = "word " * 20000
-    bare = ai_module.condense_call_options(long_transcript)
+    # Sized so "bare" lands just past _DEFAULT_ASSUMED_CTX_TOKENS (still
+    # returns a real value, not None) and inside a low bucket (see
+    # _round_up_num_ctx) rather than already at MAX_AUTO_NUM_CTX, leaving
+    # room to actually observe the padded case widen into a higher one.
+    medium_transcript = "word " * 3000
+    bare = ai_module.condense_call_options(medium_transcript)
     padded = ai_module.condense_call_options(
-        long_transcript,
+        medium_transcript,
         extra_instructions="x" * 20000,
         world_context="y" * 20000,
     )
+    assert bare is not None
     assert padded["num_ctx"] > bare["num_ctx"]
 
 
 def test_condense_call_options_accounts_for_max_tokens_headroom():
-    long_transcript = "word " * 20000
-    without_max = ai_module.condense_call_options(long_transcript)
-    with_max = ai_module.condense_call_options(long_transcript, max_tokens=8000)
+    medium_transcript = "word " * 3000
+    without_max = ai_module.condense_call_options(medium_transcript)
+    with_max = ai_module.condense_call_options(medium_transcript, max_tokens=8000)
+    assert without_max is not None
     assert with_max["num_ctx"] > without_max["num_ctx"]
 
 
@@ -442,10 +482,13 @@ def test_condense_call_options_widens_further_for_thinking_plus_max_tokens():
     """A thinking model's hidden reasoning shares condense_recap's
     num_predict budget with the visible answer (see condense_recap's own
     docstring) — num_ctx needs matching extra headroom, or reasoning plus
-    an uncapped answer could still overflow the window."""
-    long_transcript = "word " * 20000  # long enough that both sides widen
-    thinking_off = ai_module.condense_call_options(long_transcript, max_tokens=500, think=False)
-    thinking_on = ai_module.condense_call_options(long_transcript, max_tokens=500, think=True)
+    an uncapped answer could still overflow the window.
+
+    Sized (see _round_up_num_ctx) so the two reserves land in distinct
+    buckets rather than both saturating at MAX_AUTO_NUM_CTX."""
+    medium_transcript = "word " * 3000
+    thinking_off = ai_module.condense_call_options(medium_transcript, max_tokens=500, think=False)
+    thinking_on = ai_module.condense_call_options(medium_transcript, max_tokens=500, think=True)
     assert thinking_off is not None and thinking_on is not None
     assert thinking_on["num_ctx"] > thinking_off["num_ctx"]
 
@@ -466,9 +509,11 @@ def test_condense_call_options_expanded_always_returns_a_value_even_for_a_short_
 
 
 def test_condense_call_options_expanded_reserves_more_than_normal_thinking_headroom():
-    long_transcript = "word " * 20000
-    normal = ai_module.condense_call_options(long_transcript, think=True, max_tokens=500)
-    expanded = ai_module.condense_call_options(long_transcript, think=True, max_tokens=500, expanded=True)
+    # Sized (see _round_up_num_ctx) so normal and expanded land in distinct
+    # buckets rather than both saturating at MAX_AUTO_NUM_CTX.
+    medium_transcript = "word " * 3000
+    normal = ai_module.condense_call_options(medium_transcript, think=True, max_tokens=500)
+    expanded = ai_module.condense_call_options(medium_transcript, think=True, max_tokens=500, expanded=True)
     assert expanded["num_ctx"] > normal["num_ctx"]
 
 
@@ -484,12 +529,17 @@ def test_condense_call_options_widens_for_thinking_plus_configured_num_predict()
     max_tokens argument) now also gets widened by condense_recap when
     think=True (see test_condense_recap_widens_a_configured_num_predict_
     when_thinking) — condense_call_options' num_ctx headroom must widen to
-    match, or that wider generation could overflow the context window."""
-    long_transcript = "word " * 20000
+    match, or that wider generation could overflow the context window.
+
+    Sized (see _round_up_num_ctx) so both cases still clear the
+    _DEFAULT_ASSUMED_CTX_TOKENS baseline (neither returns None) while
+    landing in distinct buckets."""
+    medium_transcript = "word " * 3000
     ai_module.set_ollama_generation_overrides({"num_predict": 512})
     try:
-        without_thinking = ai_module.condense_call_options(long_transcript, think=False)
-        with_thinking = ai_module.condense_call_options(long_transcript, think=True)
+        without_thinking = ai_module.condense_call_options(medium_transcript, think=False)
+        with_thinking = ai_module.condense_call_options(medium_transcript, think=True)
+        assert without_thinking is not None and with_thinking is not None
         assert with_thinking["num_ctx"] > without_thinking["num_ctx"]
     finally:
         ai_module.set_ollama_generation_overrides({})
