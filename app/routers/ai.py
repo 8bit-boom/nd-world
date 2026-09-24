@@ -3044,6 +3044,17 @@ _PLAYER_IMAGEGEN_COOLDOWN_SECONDS = 20.0
 # ImagegenBody's own default ("") so _imagegen_params falls back to the
 # GM's configured "image" surface default, same as the Illustrate button —
 # a player never picks (or learns) which models are installed.
+#
+# steps/cfg/sampler/scheduler below are only the FALLBACK for a model
+# family imagegen_templates.suggest_template doesn't recognize — the
+# player route applies its match, same as the GM's own picker does
+# client-side, once the model is resolved below. Without that, a GM whose
+# configured "image" default is a distilled few-step model (Turbo/LCM/
+# Lightning/Flux-family, which want CFG ~1 and 4-8 steps) would have every
+# player generation silently use these generic CFG-7/30-step settings
+# instead — exactly the "prompt did nothing, output looks random" failure
+# mode imagegen_templates.py's own docstring describes, but for players
+# with no picker UI to notice or correct it themselves.
 _PLAYER_IMAGEGEN_FIXED_PARAMS = dict(
     width=512, height=768, steps=30, cfg=7.0, seed=-1,
     sampler="euler", scheduler="normal", batch_size=1,
@@ -3113,6 +3124,17 @@ async def api_imagegen_player_generate(
         raise HTTPException(400, f"This world already has the maximum of {_MAX_IMAGE_JOBS_PER_WORLD} generated images.")
     imagegen_body = ImagegenBody(prompt=prompt, negative=negative, **_PLAYER_IMAGEGEN_FIXED_PARAMS)
     params = _imagegen_params(imagegen_body, _imagegen_uploads_dir())
+    # See _PLAYER_IMAGEGEN_FIXED_PARAMS' own comment — params["model"] is
+    # already resolved to the GM's configured "image" default by
+    # _imagegen_params above, so this is the same match the GM's own
+    # picker applies client-side, just automatic here since players have
+    # no picker UI of their own.
+    template = _ig_templates.suggest_template(params["model"])
+    if template:
+        params["steps"] = template["steps"]
+        params["cfg"] = template["cfg"]
+        params["sampler"] = template["sampler"]
+        params["scheduler"] = template["scheduler"]
     params["uploads_dir"] = str(params["uploads_dir"])  # JSON-serializable for params_json
     job_id = _image_jobs.create_job(
         world_id=world.id, prompt=prompt, params=params, created_by_user_id=owner_id,

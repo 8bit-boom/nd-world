@@ -156,6 +156,68 @@ def test_generate_fixed_params_ignore_client_size_and_steps(client, seed, monkey
     assert captured["batch_size"] == 1
 
 
+def test_generate_applies_the_suggested_template_for_the_configured_model(client, seed, monkeypatch):
+    """A real bug: app.imagegen_templates.suggest_template exists
+    specifically so a model family that needs very different generation
+    settings (a distilled Turbo/LCM/Lightning model wants CFG ~1 and 4-8
+    steps, not the generic CFG-7/30-step defaults every other family
+    tolerates) doesn't produce broken/garbage output — the GM's own Image
+    Studio picker applies it client-side, but the player route had no
+    picker at all and always used _PLAYER_IMAGEGEN_FIXED_PARAMS verbatim,
+    regardless of which model the GM had configured as the "image"
+    surface default. If that default happens to be a Turbo/LCM model, a
+    player's steps=30/cfg=7.0 generation is exactly the "prompt did
+    nothing, output looks random" failure mode imagegen_templates.py's
+    own docstring describes — with no GM picker for the player to correct
+    it from."""
+    captured = {}
+
+    async def _capture(**kwargs):
+        captured.update(kwargs)
+        return ["/uploads/ai-images/x.png"]
+    monkeypatch.setattr(ai_module, "imagegen_generate", _capture)
+    _set_world(seed.world_a.id, players_can_use_image_gen=True)
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.post("/api/ai/defaults", json={"surface": "image", "model_id": "sdxl_lightning_8step.safetensors"})
+
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/imagegen/player/generate", json={"prompt": "a hero"})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    _poll_until_terminal(client, f"/api/ai/imagegen/player/jobs/{job_id}")
+    assert captured["steps"] == 4
+    assert captured["cfg"] == 1.0
+    assert captured["sampler"] == "lcm"
+    assert captured["scheduler"] == "turbo"
+    # Everything the template doesn't govern stays the player-fixed value.
+    assert captured["width"] == 512
+    assert captured["height"] == 768
+    assert captured["batch_size"] == 1
+
+
+def test_generate_keeps_fixed_settings_when_no_template_matches(client, seed, monkeypatch):
+    """No configured default (or one no template recognizes) must not
+    crash — falls back to the plain fixed params exactly as before."""
+    captured = {}
+
+    async def _capture(**kwargs):
+        captured.update(kwargs)
+        return ["/uploads/ai-images/x.png"]
+    monkeypatch.setattr(ai_module, "imagegen_generate", _capture)
+    _set_world(seed.world_a.id, players_can_use_image_gen=True)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post("/api/ai/imagegen/player/generate", json={"prompt": "a hero"})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    _poll_until_terminal(client, f"/api/ai/imagegen/player/jobs/{job_id}")
+    assert captured["steps"] == 30
+    assert captured["cfg"] == 7.0
+    assert captured["sampler"] == "euler"
+    assert captured["scheduler"] == "normal"
+
+
 # ── Privacy: every job scoped to its own creator, GM sees everyone's ────────
 
 def test_player_cannot_see_another_players_job_in_the_same_world(client, seed, monkeypatch):
