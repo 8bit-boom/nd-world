@@ -4923,6 +4923,11 @@ def _visible_entity_notes(db: Session, entity_id: int, request: Request):
     return notes_q.order_by(EntityNote.created_at).all()
 
 
+# (world_id, exclude_entity_id) -> (signature, names) — see the GM-tier
+# caching note inside _autolink_name_map.
+_autolink_map_cache: dict = {}
+
+
 def _autolink_name_map(db: Session, world_id: int, request: Request, exclude_entity_id: int | None = None) -> dict:
     """{name or alias: entity id} for every OTHER entity in this world the
     current viewer may see — see rendering.autolink_entities, which this
@@ -4946,6 +4951,27 @@ def _autolink_name_map(db: Session, world_id: int, request: Request, exclude_ent
     explicit name/alias is already in `names`, so a real name or alias
     (this entity's own, or another entity's) always wins over an
     auto-derived guess rather than being silently shadowed by one."""
+    # GM-tier result cache (B10): every entity-detail/private-notes render
+    # rebuilt the full name map — one whole-table query + regex-compiled
+    # alternation downstream — for data that only changes when an entity
+    # row changes. Keyed on (world_id, exclude_id) and invalidated by a
+    # cheap (count, max(updated_at)) signature, so edits fall out
+    # naturally. Non-GM renders keep the uncached path: per-player entity
+    # shares make the visibility filter viewer-specific.
+    user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
+    cache_key = (world_id, exclude_entity_id)
+    if is_gm:
+        sig = tuple(
+            db.query(func.count(Entity.id), func.max(Entity.updated_at))
+            .filter(Entity.world_id == world_id)
+            .first()
+            or (None, None)
+        )
+        cached = _autolink_map_cache.get(cache_key)
+        if cached is not None and cached[0] == sig:
+            return cached[1]
+
     q = db.query(Entity.id, Entity.name, Entity.aliases).filter(Entity.world_id == world_id)
     if exclude_entity_id is not None:
         q = q.filter(Entity.id != exclude_entity_id)
@@ -4969,6 +4995,10 @@ def _autolink_name_map(db: Session, world_id: int, request: Request, exclude_ent
         for variant in derive_name_variants(name):
             names.setdefault(variant, entity_id)
 
+    if is_gm:
+        if len(_autolink_map_cache) > 64:  # coarse bound; entries are small
+            _autolink_map_cache.clear()
+        _autolink_map_cache[cache_key] = (sig, names)
     return names
 
 
