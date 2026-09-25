@@ -875,7 +875,7 @@ async def api_summarize_from_audio_complete(
 
 @router.post("/api/sessions/ai/summarize-transcript")
 async def api_summarize_transcript_only(
-    request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
+    request: Request, active_world: str = Cookie(None),
 ):
     """Re-run just the summarize step over an ALREADY-transcribed transcript
     — the retry path for when .../summarize-from-audio(/complete) transcribed
@@ -887,14 +887,21 @@ async def api_summarize_transcript_only(
     cookie, not a session id) — nothing here needs a GameSession row to
     exist. GM-only by architecture (no _is_player_safe entry), matching
     every other AI-assist route on this page."""
-    world, _ = get_world_ctx(request, db, active_world)
-    _require_edit_section(request, world)
+    # DB bookends (LIVE_RECORDING_AUDIT item 12's pattern): short-lived
+    # session for the world read, released before the summarize await.
+    db = SessionLocal()
+    try:
+        world, _ = get_world_ctx(request, db, active_world)
+        _require_edit_section(request, world)
+        instructions = _recap_instructions_for_world(world)
+    finally:
+        db.close()
     body = await request.json()
     transcript = str(body.get("transcript", "")).strip()
     if not transcript:
         raise HTTPException(400, "No transcript provided")
     extra_instructions = str(body.get("extra_instructions", "")).strip()
-    instructions = _combine_recap_instructions(_recap_instructions_for_world(world), extra_instructions)
+    instructions = _combine_recap_instructions(instructions, extra_instructions)
     recap = await _ai_module.summarize_transcript(
         transcript, model=_recap_model(""), extra_instructions=instructions, think=_think_from_body(body),
     )
@@ -1430,27 +1437,37 @@ def api_live_transcript_clear(session_id: int, request: Request, db: Session = D
 
 
 @router.post("/api/sessions/{session_id}/ai/summarize-live-transcript")
-async def api_summarize_live_transcript(session_id: int, request: Request, db: Session = Depends(get_db)):
-    gs = db.query(GameSession).filter(GameSession.id == session_id).first()
-    if not gs:
-        raise HTTPException(404)
-    if not (gs.live_transcript or "").strip():
-        raise HTTPException(400, "No live transcript recorded for this session yet.")
-    # world_id comes from the session itself, not the active_world cookie —
-    # this route has no cookie param, and the session's own world is always
-    # the right one regardless of which world tab is currently active.
-    world = db.get(World, gs.world_id)
-    _require_edit_section(request, world)
+async def api_summarize_live_transcript(session_id: int, request: Request):
+    # DB bookends (LIVE_RECORDING_AUDIT item 12's pattern): no request-scoped
+    # session dependency — the minutes-long summarize await must not hold a
+    # checked-out pool connection. Prelude reads get a short-lived session;
+    # the transcript text itself is captured before the await.
+    db = SessionLocal()
+    try:
+        gs = db.query(GameSession).filter(GameSession.id == session_id).first()
+        if not gs:
+            raise HTTPException(404)
+        if not (gs.live_transcript or "").strip():
+            raise HTTPException(400, "No live transcript recorded for this session yet.")
+        # world_id comes from the session itself, not the active_world cookie —
+        # this route has no cookie param, and the session's own world is always
+        # the right one regardless of which world tab is currently active.
+        world = db.get(World, gs.world_id)
+        _require_edit_section(request, world)
+        transcript = gs.live_transcript
+        instructions = _recap_instructions_for_world(world)
+    finally:
+        db.close()
     # Same "predates taking a body" situation summarize-from-facts is in —
     # read think optionally rather than requiring a caller to start sending
     # an otherwise-pointless empty JSON body.
     raw = await request.body()
     body = json.loads(raw) if raw else {}
     recap = await _ai_module.summarize_transcript(
-        gs.live_transcript, model=_recap_model(""), extra_instructions=_recap_instructions_for_world(world),
+        transcript, model=_recap_model(""), extra_instructions=instructions,
         think=_think_from_body(body),
     )
-    return {"transcript": gs.live_transcript, "recap": recap}
+    return {"transcript": transcript, "recap": recap}
 
 
 @router.post("/api/sessions/{session_id}/ai/summarize-live-transcript-job")

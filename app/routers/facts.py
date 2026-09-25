@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from .. import ai as _ai_module
 from .. import ai_assist as _ai_assist
 from .. import audio_jobs as _audio_jobs
-from ..database import get_db
+from ..database import SessionLocal, get_db
 from ..deps import get_world_ctx, is_gm, world_can_edit_section, world_can_view_section
 from ..models import AudioJob, Fact, GameSession
 from ..templating import templates
@@ -296,7 +296,7 @@ async def fact_delete(
 
 
 @router.post("/api/facts/parse")
-async def api_facts_parse(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+async def api_facts_parse(request: Request, active_world: str = Cookie(None)):
     """Turns a rough recap into draft facts via the local model — returns the
     draft list without writing anything to the DB. The GM reviews/edits in
     the UI, then POST /api/facts/bulk does the actual write once confirmed.
@@ -316,9 +316,13 @@ async def api_facts_parse(request: Request, db: Session = Depends(get_db), activ
     # Dial-down enforcement for this assistant-reachable route (no DB write,
     # but it drives the world's model): enforced only when a world is active,
     # preserving the world-less API call this documented route always allowed.
-    world, _ = get_world_ctx(request, db, active_world)
-    if world:
-        _require_edit_section(request, world)
+    db = SessionLocal()
+    try:
+        world, _ = get_world_ctx(request, db, active_world)
+        if world:
+            _require_edit_section(request, world)
+    finally:
+        db.close()
     # Same option reading/ validation as api_facts_parse_job below — one
     # shared shape, so a caller can switch a request between the sync and
     # job variants without changing anything else.
@@ -357,7 +361,7 @@ async def api_facts_parse(request: Request, db: Session = Depends(get_db), activ
 
 
 @router.post("/api/facts/folk-tale")
-async def api_facts_folk_tale(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+async def api_facts_folk_tale(request: Request, active_world: str = Cookie(None)):
     """Turns this world's logged Facts into an in-world folk tale/legend/song
     via app.ai_assist's folk_tale op (see app/routers/sessions.py's sibling
     button, which works from a session's Summary field instead — this one is
@@ -368,14 +372,22 @@ async def api_facts_folk_tale(request: Request, db: Session = Depends(get_db), a
     /api/facts/parse above — a joined Facts list is short GM-editorial
     content, not a long transcript, so a job's create/poll round-trip isn't
     worth it here either."""
+    # DB bookends (LIVE_RECORDING_AUDIT item 12 pattern): the facts read
+    # gets a short-lived session, released long before the minutes-long
+    # run_assist await below — holding a pooled connection across it is
+    # the exact freeze class the diagnostics watchdog exists for.
     body = await request.json()
-    world, _ = get_world_ctx(request, db, active_world)
-    _require_edit_section(request, world)
-    game_session_id = body.get("game_session_id")
-    q = db.query(Fact).filter(Fact.world_id == world.id)
-    if game_session_id:
-        q = q.filter(Fact.game_session_id == int(game_session_id))
-    facts = q.order_by(Fact.created_at).all()
+    db = SessionLocal()
+    try:
+        world, _ = get_world_ctx(request, db, active_world)
+        _require_edit_section(request, world)
+        game_session_id = body.get("game_session_id")
+        q = db.query(Fact).filter(Fact.world_id == world.id)
+        if game_session_id:
+            q = q.filter(Fact.game_session_id == int(game_session_id))
+        facts = q.order_by(Fact.created_at).all()
+    finally:
+        db.close()
     if not facts:
         raise HTTPException(400, "No facts logged yet" + (" for that session" if game_session_id else "") + ".")
     content = "\n".join(f"- {f.content}" for f in facts)

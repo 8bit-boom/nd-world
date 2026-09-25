@@ -35,7 +35,7 @@ from sqlalchemy.orm import Session
 from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
 from .. import media_albums
-from ..database import get_app_settings, get_db
+from ..database import get_app_settings, get_db, SessionLocal
 from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit, world_can_edit_section, world_can_view_section
 from ..models import VideoAlbum, VideoClip
 from ..templating import templates
@@ -653,7 +653,7 @@ async def video_edit(
 
 @router.post("/video/{clip_id}/transcribe")
 async def video_transcribe(
-    clip_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None),
+    clip_id: int, request: Request, active_world: str = Cookie(None),
 ):
     """Generate an AI transcript + WebVTT subtitle track for one clip via
     Whisper (see app.ai.transcribe_audio_with_subtitles — it works directly
@@ -661,19 +661,30 @@ async def video_transcribe(
     the audio track from any container it's given). Mirrors app/routers/
     audio.py's audio_transcribe exactly — same world-level glossary/
     language/denoise settings, same "synchronous, not a background job"
-    rationale, same "re-running overwrites" behavior."""
+    rationale, same "re-running overwrites" behavior.
+
+    DB bookends (see docs/LIVE_RECORDING_AUDIT.md item 12's pattern): the
+    request-scoped session dependency is deliberately absent — holding a
+    checked-out pool connection across the minutes-long Whisper call is
+    exactly the freeze class the diagnostics watchdog exists for. Prelude
+    reads and the post-await write each get a short-lived SessionLocal."""
     _require_can_edit(request)
-    world, _ = get_world_ctx(request, db, active_world)
-    if not world:
-        raise HTTPException(404)
-    _require_edit_section(request, world)
-    clip = _clip_or_404(db, world.id, clip_id)
-    path = _resolve_upload_path(clip.file_url)
-    if not path:
-        raise HTTPException(404, "Clip file not found")
-    glossary = _audio_jobs._glossary_for_world(world.id)
-    language = _audio_jobs._whisper_language_for_world(world.id)
-    denoise = _audio_jobs._denoise_for_world(world.id)
+    db = SessionLocal()
+    try:
+        world, _ = get_world_ctx(request, db, active_world)
+        if not world:
+            raise HTTPException(404)
+        _require_edit_section(request, world)
+        clip = _clip_or_404(db, world.id, clip_id)
+        path = _resolve_upload_path(clip.file_url)
+        if not path:
+            raise HTTPException(404, "Clip file not found")
+        clip_id = clip.id
+        glossary = _audio_jobs._glossary_for_world(world.id)
+        language = _audio_jobs._whisper_language_for_world(world.id)
+        denoise = _audio_jobs._denoise_for_world(world.id)
+    finally:
+        db.close()
     try:
         transcript, vtt = await _ai_module.transcribe_audio_with_subtitles(
             path, glossary=glossary, language=language, denoise=denoise,
@@ -682,9 +693,14 @@ async def video_transcribe(
         raise HTTPException(400, str(exc)) from exc
     if not transcript:
         raise HTTPException(400, "Whisper transcribed this clip successfully but found no speech in it.")
-    clip.transcript = transcript
-    clip.subtitles_vtt = vtt
-    db.commit()
+    db = SessionLocal()
+    try:
+        clip = db.get(VideoClip, clip_id)
+        clip.transcript = transcript
+        clip.subtitles_vtt = vtt
+        db.commit()
+    finally:
+        db.close()
     return JSONResponse({"ok": True})
 
 
