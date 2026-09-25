@@ -910,6 +910,11 @@ def api_chat_sessions_save(
     if body.session_id:
         session = db.query(ChatSession).filter(
             ChatSession.id == body.session_id, ChatSession.world_id == world.id,
+            # surface pin: an id from another surface (an npc-talk
+            # conversation) must never be hijackable through this route —
+            # it would overwrite that thread's messages under chat's
+            # save-on-every-turn upsert.
+            ChatSession.surface == "chat",
         ).first()
     if not session:
         user = getattr(request.state, "user", None)
@@ -932,6 +937,7 @@ def api_chat_session_get(session_id: int, request: Request, db=Depends(get_db), 
         raise HTTPException(404)
     session = db.query(ChatSession).filter(
         ChatSession.id == session_id, ChatSession.world_id == world.id,
+        ChatSession.surface == "chat",  # never read/delete another surface's rows by id
     ).first()
     if not session:
         raise HTTPException(404)
@@ -946,6 +952,7 @@ def api_chat_session_delete(session_id: int, request: Request, db=Depends(get_db
         raise HTTPException(404)
     session = db.query(ChatSession).filter(
         ChatSession.id == session_id, ChatSession.world_id == world.id,
+        ChatSession.surface == "chat",  # never read/delete another surface's rows by id
     ).first()
     if not session:
         raise HTTPException(404)

@@ -1,0 +1,231 @@
+{% extends "base.html" %}
+{% block title %}Talk to NPCs — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div id="npc-talk" style="max-width:1100px;margin:0 auto;display:flex;gap:1rem;align-items:stretch;min-height:70vh">
+  <aside id="npc-picker" style="width:260px;flex-shrink:0;display:flex;flex-direction:column;gap:.6rem">
+    <h1 style="font-size:1.05rem;margin:.2rem 0 0">💬 Talk to NPCs</h1>
+    <input id="npc-filter" type="search" placeholder="Filter by name…"
+           style="background:var(--bg2);border:1px solid var(--border);color:var(--text);padding:.45rem .6rem;border-radius:4px;font-family:var(--font)">
+    <ul id="npc-list" style="list-style:none;margin:0;padding:0;overflow-y:auto;max-height:70vh;display:flex;flex-direction:column;gap:.25rem">
+      {% for e in npcs %}
+      <li>
+        <button type="button" class="npc-row" data-id="{{ e.id }}" data-name="{{ e.name }}"
+                onclick="ndNpcSelect({{ e.id }})"
+                style="display:flex;align-items:center;gap:.55rem;width:100%;text-align:left;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:.4rem .55rem;cursor:pointer;color:var(--text)">
+          {% if e.image_url %}<img src="{{ e.image_url|thumb }}" alt="" style="width:28px;height:28px;border-radius:3px;object-fit:cover"/>{% else %}<span style="width:28px;text-align:center">{{ kind_icons.get(e.kind, '▸') }}</span>{% endif %}
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.85rem">{{ e.name }}</span>
+        </button>
+      </li>
+      {% endfor %}
+      {% if not npcs %}<li style="font-size:.82rem;color:var(--text-dim);padding:.4rem">No entities visible to you in this world yet.</li>{% endif %}
+    </ul>
+  </aside>
+
+  <main id="npc-chat" style="flex:1;display:flex;flex-direction:column;background:var(--bg2);border:1px solid var(--border);border-radius:6px;min-width:0">
+    <div id="npc-chat-empty" style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:.9rem;padding:2rem;text-align:center">
+      Pick someone from the list and just start talking — they answer in character, and each conversation is saved separately for you.
+    </div>
+    <div id="npc-chat-main" style="display:none;flex-direction:column;flex:1;min-height:0">
+      <div style="display:flex;align-items:center;gap:.6rem;padding:.6rem .8rem;border-bottom:1px solid var(--border);flex-wrap:wrap">
+        <strong id="npc-chat-name" style="font-size:.95rem"></strong>
+        <span style="flex:1"></span>
+        {% if is_gm %}
+        <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
+               title="Uses the model's thinking/reasoning mode — better in-character answers, slower">🧠 <input type="checkbox" id="npc-think"/></label>
+        <label style="display:inline-flex;align-items:center;gap:.3rem;font-size:.78rem;color:var(--text-dim);cursor:pointer"
+               title="Also retrieves world lore relevant to your message (GM-only: retrieval includes GM-only content)">📚 <input type="checkbox" id="npc-rag"/></label>
+        <select id="npc-model" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);font-size:.78rem;border-radius:3px;padding:.2rem .35rem;max-width:180px"
+                title="Model for this conversation — leave on Default to use the Ask AI default">
+          <option value="">Default model</option>
+        </select>
+        {% endif %}
+        <button type="button" id="npc-export" class="btn-secondary" style="font-size:.78rem">⬇ .md</button>
+        <button type="button" id="npc-restart" class="btn-secondary" style="font-size:.78rem"
+                title="Forget this conversation and start fresh">↺ Restart</button>
+      </div>
+      <div id="npc-messages" style="flex:1;overflow-y:auto;padding:.9rem;display:flex;flex-direction:column;gap:.7rem;min-height:0"></div>
+      <div style="display:flex;gap:.5rem;padding:.6rem .8rem;border-top:1px solid var(--border);align-items:flex-end">
+        <textarea id="npc-input" rows="1" placeholder="Say something… (Enter to send, Shift+Enter for a new line)"
+                  style="flex:1;resize:none;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.5rem .65rem;border-radius:4px;font-family:var(--font);font-size:.9rem;max-height:8em"></textarea>
+        <button type="button" id="npc-send" class="btn-primary" style="font-size:.85rem">Send</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<style>
+#npc-list .npc-row.active { border-color: var(--neon); }
+@media (max-width: 760px) {
+  #npc-talk { flex-direction: column; }
+  #npc-picker { width: auto; }
+  #npc-list { max-height: 24vh; }
+}
+.npc-msg { max-width: 85%; padding: .55rem .75rem; border-radius: 8px; font-size: .88rem; line-height: 1.45; overflow-wrap: break-word; }
+.npc-msg.user { align-self: flex-end; background: var(--bg3); border: 1px solid var(--border); }
+.npc-msg.assistant { align-self: flex-start; background: var(--bg2); border: 1px solid var(--border); }
+.npc-msg .npc-thinking { font-size: .75rem; color: var(--text-dim); border-left: 2px solid var(--border); padding-left: .5rem; margin-bottom: .4rem; white-space: pre-wrap; max-height: 7em; overflow-y: auto; }
+.npc-msg.error { align-self: stretch; text-align: center; color: var(--neon2); font-size: .8rem; }
+.npc-msg pre { background: var(--bg3); padding: .4rem .55rem; border-radius: 4px; overflow-x: auto; }
+</style>
+
+<script>
+(function () {
+  const el = (id) => document.getElementById(id);
+  let npcId = null, npcName = '', sending = false;
+
+  function _escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function _mdToHtml(text) {
+    let h = _escHtml(text)
+      .replace(/```[\s\S]*?```/g, m => '<pre><code>' + m.slice(3,-3).replace(/^\w+\n/,'') + '</code></pre>')
+      .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+      .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>')
+      .replace(/^### (.+)$/gm,'<h3>$1</h3>').replace(/^## (.+)$/gm,'<h2>$1</h2>').replace(/^# (.+)$/gm,'<h1>$1</h1>')
+      .replace(/^[-*] (.+)$/gm,'<li>$1</li>').replace(/(<li>[\s\S]+?<\/li>)/g,'<ul>$1</ul>')
+      .replace(/\n\n/g,'</p><p>').replace(/\n/g,'<br>');
+    return '<p>' + h + '</p>';
+  }
+
+  el('npc-filter').addEventListener('input', () => {
+    const q = el('npc-filter').value.trim().toLowerCase();
+    document.querySelectorAll('#npc-list .npc-row').forEach(b => {
+      b.parentElement.style.display = !q || (b.dataset.name || '').toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+
+  function addMsg(role, html, cls) {
+    const d = document.createElement('div');
+    d.className = 'npc-msg ' + role + (cls ? ' ' + cls : '');
+    d.innerHTML = html;
+    el('npc-messages').appendChild(d);
+    el('npc-messages').scrollTop = el('npc-messages').scrollHeight;
+    return d;
+  }
+
+  window.ndNpcSelect = async function (id) {
+    if (sending) return;
+    npcId = id;
+    document.querySelectorAll('#npc-list .npc-row').forEach(b => b.classList.toggle('active', +b.dataset.id === id));
+    const btn = document.querySelector(`#npc-list .npc-row[data-id="${id}"]`);
+    npcName = btn ? btn.dataset.name : '';
+    el('npc-chat-empty').style.display = 'none';
+    el('npc-chat-main').style.display = 'flex';
+    el('npc-chat-name').textContent = npcName;
+    el('npc-messages').innerHTML = '';
+    el('npc-input').placeholder = 'Say something to ' + npcName + '… (Enter to send, Shift+Enter for a new line)';
+    try {
+      const res = await fetch(`/api/npc-talk/${id}/history`);
+      if (res.ok) {
+        const data = await res.json();
+        for (const m of data.messages || []) {
+          addMsg(m.role, m.role === 'user' ? _escHtml(m.content) : _mdToHtml(m.content));
+        }
+      }
+    } catch (e) { /* fresh conversation */ }
+    el('npc-input').focus();
+  };
+
+  el('npc-restart').addEventListener('click', async () => {
+    if (!npcId || sending) return;
+    if (!confirm(`Forget your whole conversation with ${npcName}?`)) return;
+    await fetch(`/api/npc-talk/${npcId}/history`, { method: 'DELETE' }).catch(() => {});
+    el('npc-messages').innerHTML = '';
+  });
+
+  el('npc-export').addEventListener('click', () => {
+    if (npcId) window.location.href = `/api/npc-talk/${npcId}/export.md`;
+  });
+
+  const inp = el('npc-input');
+  inp.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); send(); }
+  });
+  inp.addEventListener('input', () => {
+    inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 128) + 'px';
+  });
+  el('npc-send').addEventListener('click', send);
+
+  async function send() {
+    const text = inp.value.trim();
+    if (!text || !npcId || sending) return;
+    sending = true; el('npc-send').disabled = true;
+    inp.value = ''; inp.style.height = 'auto';
+    addMsg('user', _escHtml(text));
+    const bubble = addMsg('assistant', '…');
+    let thinkingEl = null, full = '';
+    try {
+      const body = { message: text };
+      const think = document.getElementById('npc-think');
+      const rag = document.getElementById('npc-rag');
+      const model = document.getElementById('npc-model');
+      if (think) body.think = think.checked;
+      if (rag) body.use_rag = rag.checked;
+      if (model && model.value) body.model = model.value;
+      const res = await fetch(`/api/npc-talk/${npcId}/stream`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error('Server error ' + res.status);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '', sawError = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split('\n\n'); buf = parts.pop();
+        for (const p of parts) {
+          if (!p.startsWith('data: ')) continue;
+          const pay = p.slice(6);
+          if (pay === '[DONE]') continue;
+          let obj; try { obj = JSON.parse(pay); } catch (e) { continue; }
+          if (obj.thinking) {
+            if (!thinkingEl) {
+              thinkingEl = document.createElement('div');
+              thinkingEl.className = 'npc-thinking';
+              bubble.insertBefore(thinkingEl, bubble.firstChild);
+            }
+            thinkingEl.textContent += obj.thinking;
+            continue;
+          }
+          if (typeof obj.error === 'string') { sawError = obj.error; continue; }
+          if (obj.token) {
+            full += obj.token;
+            bubble.innerHTML = (thinkingEl ? '' : '') + _mdToHtml(full);
+            if (thinkingEl) bubble.insertBefore(thinkingEl, bubble.firstChild);
+            el('npc-messages').scrollTop = el('npc-messages').scrollHeight;
+          }
+        }
+      }
+      if (sawError) {
+        bubble.className = 'npc-msg error';
+        bubble.textContent = '⚠️ ' + sawError;
+      } else if (!full) {
+        bubble.className = 'npc-msg error';
+        bubble.textContent = '⚠️ No reply — try again.';
+      }
+    } catch (e) {
+      bubble.className = 'npc-msg error';
+      bubble.textContent = '⚠️ ' + e.message;
+    } finally {
+      sending = false; el('npc-send').disabled = false;
+      inp.focus();
+    }
+  }
+
+  // GM-only model picker (players' model choice is ignored server-side)
+  const modelSel = document.getElementById('npc-model');
+  if (modelSel) {
+    fetch('/api/ai/models').then(r => r.json()).then(d => {
+      (d.models || []).forEach(m => {
+        const o = document.createElement('option');
+        o.value = m.id; o.textContent = m.label + (m.loaded ? '' : ' (not downloaded)');
+        modelSel.appendChild(o);
+      });
+    }).catch(() => {});
+  }
+
+  {% if selected %}ndNpcSelect({{ selected.id }});{% endif %}
+})();
+</script>
+{% endblock %}

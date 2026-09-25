@@ -74,6 +74,10 @@ STATIC_CATALOG = [
     {"id": "character_sheets", "label": "My Character Sheets", "icon": "🧬", "href": "/pages/sheets", "exact": True, "gm_only": False},
     {"id": "ai_chat_player", "label": "Chat with AI", "icon": "🤖", "href": "/ai-chat", "exact": True,
      "condition": "players_can_use_ai_chat", "gm_only": False},
+    {"id": "npc_talk", "label": "Talk to NPCs", "icon": "💬", "href": "/npc-talk", "exact": True,
+     "gm_only": True},
+    {"id": "npc_talk_player", "label": "Talk to NPCs", "icon": "💬", "href": "/npc-talk", "exact": True,
+     "condition": "players_can_ask_ai", "gm_only": False},
     {"id": "image_gen_player", "label": "Create Art", "icon": "🎨", "href": "/image-gen", "exact": True,
      "condition": "players_can_use_image_gen", "gm_only": False},
     {"id": "androidapp", "label": "Android App", "icon": "📱", "href": "/androidapp", "exact": True, "gm_only": False, "player_section": "androidapp"},
@@ -212,8 +216,17 @@ def resolve_nav_menus(world, dreamlands_enabled: bool, king_in_yellow_enabled: b
     is_gm = bool(user and user.is_gm)
     catalog = build_catalog(world)
     catalog_by_id = {item["id"]: item for item in catalog}
+    # Same-page GM/player entry pairs (npc_talk + npc_talk_player, both
+    # /npc-talk): the player-variant entry is condition-gated, and a GM
+    # whose world flag is on would otherwise render BOTH. Any player entry
+    # whose href a GM-only entry already covers collapses for GM viewers.
+    # (The /ai + /ai-chat pair is unaffected — different hrefs, different
+    # pages, both legitimately in a GM's nav.)
+    _gm_only_hrefs = {i["href"] for i in catalog if i.get("gm_only")}
 
     def _visible(item):
+        if is_gm and not item.get("gm_only") and item.get("href") in _gm_only_hrefs:
+            return False
         cond = item.get("condition")
         if cond == "dreamlands_enabled" and not dreamlands_enabled:
             return False

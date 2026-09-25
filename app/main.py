@@ -63,6 +63,7 @@ from .routers.importer import _resolve_entity_template
 from .routers.kinds_admin import router as kinds_admin_router
 from .routers.facts import router as facts_router
 from .routers.chronicler import router as chronicler_router
+from .routers.npc_talk import router as npc_talk_router
 from .routers.gallery import router as gallery_router
 from .routers.audio import router as audio_router
 from .routers.audio_jobs import router as audio_jobs_router
@@ -155,6 +156,7 @@ app.include_router(export_router)
 app.include_router(kinds_admin_router)
 app.include_router(facts_router)
 app.include_router(chronicler_router)
+app.include_router(npc_talk_router)
 app.include_router(gallery_router)
 app.include_router(audio_router)
 app.include_router(audio_jobs_router)
@@ -387,6 +389,21 @@ def _is_player_safe(method: str, path: str) -> bool:
         # equivalent visibility check as that page itself) — not that
         # page's GM-only quick-prompt toolkit or the unfiltered
         # /api/ai/world-context-smart GM/assistant route.
+        return True
+    if path == "/npc-talk" and method == "GET":
+        # NPC Talk (app/routers/npc_talk.py) — same shape as the /api/ai
+        # block above: every handler applies the identical
+        # players_can_ask_ai/players_can_use_ai_chat gate
+        # (_require_ask_ai_access), the page's picker only ever lists
+        # entities the caller's own visibility already allows, and each
+        # conversation row is user-scoped — a player can only ever read,
+        # continue, restart, or export their OWN thread with an NPC.
+        return True
+    if re.match(r"^/api/npc-talk/\d+/history$", path) and method in ("GET", "DELETE"):
+        return True
+    if re.match(r"^/api/npc-talk/\d+/export\.md$", path) and method == "GET":
+        return True
+    if re.match(r"^/api/npc-talk/\d+/stream$", path) and method == "POST":
         return True
     if path in (
         "/api/ai/attachments/upload",

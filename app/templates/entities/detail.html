@@ -407,6 +407,10 @@
   </section>
 
   {% if (request.state.user and request.state.user.is_gm) or world.players_can_ask_ai %}
+  <div style="margin:0.9rem 0 0.3rem">
+    <a href="{{ ('/npc-talk?entity=' ~ (entity.id|string)) | wq }}" class="btn-secondary" style="font-size:.8rem;text-decoration:none"
+       title="Open a saved, in-character conversation with {{ entity.name }} on the NPC Talk page">💬 Talk with {{ entity.name }}…</a>
+  </div>
   <details class="ai-panel" id="ep-panel" data-dropzone>
     <summary>🤖 Ask AI about {{ entity.name }}</summary>
     <div class="ai-panel-body">

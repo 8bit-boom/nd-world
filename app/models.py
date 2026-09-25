@@ -1539,20 +1539,23 @@ class ChatJob(Base):
 
 
 class ChatSession(Base):
-    """A saved AI Chat conversation (app/templates/ai_chat.html's History
-    sidebar) — one row per conversation, upserted on every completed
-    assistant turn (see the client's autoSave(), which POSTs the full
-    messages array with session_id=None the first time, then the returned
-    id on every save after). GM-only for now, same as the /ai page itself —
-    see app.routers.ai's chat-session routes. `surface` mirrors ChatBody's
-    own field (currently only "chat" is used; reserved for a future AI
-    surface — e.g. per-entity "talk to this NPC" — reusing the same table)."""
+    """A saved AI Chat conversation — one row per conversation, upserted on
+    every completed assistant turn. The /ai History sidebar lists
+    surface="chat" rows (see app.routers.ai's chat-session routes).
+    `surface` separates the surfaces sharing this table: "chat" (the /ai
+    page) and "npc" — the per-entity "Talk to this NPC" conversations
+    (app/routers/npc_talk.py), which additionally set entity_id and are
+    one-per (user, entity, world) instead of free-titled threads."""
     __tablename__ = "chat_sessions"
 
     id = Column(Integer, primary_key=True, index=True)
     world_id = Column(Integer, ForeignKey("worlds.id"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     surface = Column(String(32), default="chat")
+    # surface="npc" only: which entity this conversation is with. Nullable
+    # for surface="chat" rows; the column is healed in on existing installs
+    # by _heal_table_from_model (chat_sessions is in its list).
+    entity_id = Column(Integer, ForeignKey("entities.id"), nullable=True, index=True)
     title = Column(String(256), default="")
     messages_json = Column(Text, default="[]")
     created_at = Column(DateTime, default=datetime.utcnow)
