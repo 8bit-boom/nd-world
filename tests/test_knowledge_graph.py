@@ -566,3 +566,29 @@ def test_knowledge_sync_route_success(client, seed, tmp_path, monkeypatch):
     data = r.json()
     assert data["notes"] == 3
     assert data["edges"] == 4
+
+
+def test_concurrent_sync_is_busy_gated(tmp_path, monkeypatch):
+    """B9: two overlapping syncs used to interleave delete→insert→commit
+    and leave duplicated chunks. A second sync while one holds the world's
+    lock now returns a busy marker instead of touching the DB."""
+    _write_vault(tmp_path)
+    world_id, _bob, _dock, _guild = _make_world_with_vault(tmp_path)
+
+    db = SessionLocal()
+    try:
+        world = db.get(World, world_id)
+        # Simulate a sync already in flight by holding this world's lock
+        with vs._world_sync_lock(world_id):
+            result = asyncio.run(vs.sync_vault(db, world))
+            assert result.get("busy") is True
+            assert result["notes"] == 0
+            # Nothing was written under the held lock
+            assert db.query(EntityRelation).filter(EntityRelation.world_id == world_id).count() == 0
+        # Once released, a sync proceeds normally
+        monkeypatch.setattr(vs._ai, "embed_text", _fake_embed_dockside)
+        result = asyncio.run(vs.sync_vault(db, world))
+        assert "busy" not in result
+        assert result["notes"] == 3
+    finally:
+        db.close()

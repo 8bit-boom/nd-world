@@ -20,6 +20,7 @@ complete truth for these two indexes, so there is no stale-edge case to
 reason about. Safe to re-run any time; nothing here is ever hand-edited
 afterward."""
 import logging
+import threading
 import os
 import re
 from pathlib import Path
@@ -176,6 +177,22 @@ def _match_note_entity(name_map: dict, rel_path: str, frontmatter: dict, body: s
     return display_title, entity_id
 
 
+# One lock per world id: sync is a delete→insert→commit rebuild, and two
+# overlapping runs (a double-clicked Sync button) used to interleave so
+# both insert-sets survived as duplicates.
+_SYNC_LOCKS: dict = {}
+_SYNC_LOCKS_GUARD = threading.Lock()
+
+
+def _world_sync_lock(world_id: int) -> threading.Lock:
+    with _SYNC_LOCKS_GUARD:
+        lock = _SYNC_LOCKS.get(world_id)
+        if lock is None:
+            lock = threading.Lock()
+            _SYNC_LOCKS[world_id] = lock
+        return lock
+
+
 async def sync_vault(db: Session, world) -> dict:
     """Rebuilds `world`'s VaultChunk/EntityRelation rows from its
     configured obsidian_vault_path. Returns a plain summary dict —
@@ -190,6 +207,18 @@ async def sync_vault(db: Session, world) -> dict:
     if not vault_root.is_dir():
         raise ValueError(f"Vault path does not exist or is not a directory: {vault_path}")
 
+    if not _world_sync_lock(world.id).acquire(blocking=False):
+        return {
+            "notes": 0, "chunks": 0, "edges": 0, "unmatched_notes": 0,
+            "vault_path": vault_path, "busy": True,
+        }
+    try:
+        return await _sync_vault_locked(db, world, vault_root, vault_path)
+    finally:
+        _world_sync_lock(world.id).release()
+
+
+async def _sync_vault_locked(db: Session, world, vault_root: Path, vault_path: str) -> dict:
     name_map = _entity_name_map(db, world.id)
     notes = list(_iter_vault_notes(vault_root))
 
