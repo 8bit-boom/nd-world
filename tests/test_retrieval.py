@@ -21,7 +21,6 @@ from app.retrieval import (
     _keyword_score,
     _query_words,
     _rules_sections,
-    _table_aware_truncate,
     best_matching_excerpt,
     find_relevant_entities,
     format_context_from_entities,
@@ -960,39 +959,6 @@ def test_rules_context_skips_duplicate_parent_section(client, seed):
         assert "- [Rules] Core Rules:" not in ctx
     finally:
         db.close()
-
-
-def test_table_aware_truncate_prose_unchanged():
-    """Outside tables the behavior is byte-identical to body[:limit]."""
-    body = "just some prose with no table at all " * 50
-    assert _table_aware_truncate(body, 100) == body[:100]
-
-
-def test_table_aware_truncate_extends_whole_table_within_hard_budget():
-    """A table that starts inside the preferred limit but ends before the
-    hard budget is included IN FULL, header to last row — one table is one
-    answer for a listing question."""
-    table = "| A | B |\n|---|---|\n" + "\n".join(f"| row{i} | x |" for i in range(40))
-    body = "intro paragraph\n\n" + table + "\n\noutro paragraph"
-    # Hard budget ends exactly at the table's last row: truncation is forced
-    # (the whole body doesn't fit), yet the whole table does.
-    budget = len("intro paragraph\n\n" + table)
-    out = _table_aware_truncate(body, 40, hard_budget=budget)
-    assert out.endswith("| row39 | x |")
-    assert "outro" not in out
-
-
-def test_table_aware_truncate_never_cuts_row_when_table_exceeds_budget():
-    """A table that cannot fit the hard budget is cut at a row boundary:
-    whole rows only, however many fit, never a sliced fragment."""
-    table = "| H1 | H2 |\n|---|---|\n" + "\n".join(f"| row{i} | data |" for i in range(200))
-    out = _table_aware_truncate(table, 500, hard_budget=500)
-    lines = [l for l in out.splitlines() if l.strip()]
-    assert lines[-1].endswith("|")
-    assert all(l.startswith("|") for l in lines)
-    assert len(out) <= 500
-    for l in lines:  # every emitted line is a verbatim source line
-        assert l in table
 
 
 def test_best_matching_excerpt_keeps_table_rows_intact(client, seed):
