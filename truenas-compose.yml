@@ -39,6 +39,17 @@ services:
       WHISPER_URL: http://whisper:8080
       WHISPER_MODELS_DIR: /data/whisper-models
       WHISPER_MODEL_FILE: ggml-large-v3-turbo.bin   # must match the "whisper" service's own -m filename below
+      # Unsloth Studio — the single AI backend (chat + embeddings + image gen)
+      # for the "unsloth" profile below, replacing ollama+swarmui. Chat works
+      # the moment the key is set; without it nd-world shows AI features as
+      # unavailable, same as before. UNSLOTH_API_KEY must be created in the
+      # Studio UI once (does NOT survive container recreation — see the
+      # "unsloth" service comment below). Enable Studio's "Model auto-switch"
+      # so requesting a model by name loads it on demand.
+      UNSLOTH_URL: http://unsloth:8000
+      UNSLOTH_API_KEY: ${UNSLOTH_API_KEY:-}
+      UNSLOTH_MODEL: ${UNSLOTH_MODEL:-unsloth/gemma-4-26B-A4B-it-GGUF}
+      UNSLOTH_IMAGE_MODEL: ${UNSLOTH_IMAGE_MODEL:-unsloth/z-image-turbo-GGUF}
       # Auth — see .env.example. GM_EMAIL/GM_PASSWORD bootstrap the one GM account;
       # everyone else joins as a player via a GM-issued invite link.
       SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env — see scripts/setup.sh or .env.example}
@@ -215,6 +226,58 @@ services:
     # group_add:
     #   - video
     #   - render
+
+  # Optional: Unsloth Studio — the single AI backend for chat, embeddings
+  # and image generation (see docs/UNSLOTH_PHASE0_FINDINGS.md for the
+  # verified API surface this app talks to). Replaces the "ollama" and
+  # "swarmui" services once cut over. Only starts if the "unsloth" profile
+  # is active — set COMPOSE_PROFILES=unsloth (or unsloth,whisper) in .env.
+  #
+  # One-time provisioning after first start (see docs/DEPLOYMENT.md):
+  #   1. Open Studio at http://<nas>:8000 and sign in (password from
+  #      UNSLOTH_STUDIO_PASSWORD below).
+  #   2. Settings → API → create a key named "nd-world" → paste into .env
+  #      as UNSLOTH_API_KEY. NOTE: keys do NOT survive container recreation
+  #      (they do survive `docker restart`) — after any TrueNAS app
+  #      redeploy, re-create the key and update .env.
+  #   3. Settings → API → enable "Model auto-switch" (and media auto-switch)
+  #      so requesting a downloaded model by name loads it on demand; set
+  #      idle auto-unload (e.g. 300 s) on a single-GPU box.
+  #   4. Download models in the Model Hub — the chat GGUF (default below:
+  #      gemma-4-26B UD-IQ4_NL) and an image model (Krea 2 Turbo or
+  #      Z-Image-Turbo). V100: set Precision fp16, non-flash attention,
+  #      Low VRAM for image models — and check docs/UNSLOTH_PHASE0_FINDINGS.md
+  #      I-7 FIRST: recent images may lack sm_70 kernels, in which case pin
+  #      an older unsloth image tag here.
+  unsloth:
+    profiles: ["unsloth"]
+    image: unsloth/unsloth:latest        # see I-7: pin a tag with sm_70 if latest drops Volta
+    container_name: nd-world-unsloth
+    restart: unless-stopped
+    stop_grace_period: 60s               # model unload can be slow
+    ipc: host                            # required per Unsloth's own docker docs
+    ports:
+      - "8000:8000"                      # Studio UI + /v1 API on one port
+    environment:
+      UNSLOTH_STUDIO_PASSWORD: ${UNSLOTH_STUDIO_PASSWORD:?set in .env}
+      # Do NOT set HF_TOKEN here unless needed for gated models; prefer Studio Settings.
+    volumes:
+      - /mnt/DeadPool/apps/unsloth/studio:/opt/unsloth-studio
+      - /mnt/DeadPool/apps/unsloth/hf-cache:/workspace/.cache/huggingface
+      - /mnt/DeadPool/apps/unsloth/host:/workspace/host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"   # same deliberate freeze as swarmui/ollama
+      net.ix-portals.unsloth.scheme: "http"
+      net.ix-portals.unsloth.port: "8000"
+      net.ix-portals.unsloth.path: "/"
+      net.ix-portals.unsloth.host: ""
 
   # Optional: transcribe an audio file attached to an AI chat message into
   # text (see /ai and an entity's "Ask AI" panel), using a self-hosted

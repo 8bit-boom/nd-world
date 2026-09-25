@@ -830,6 +830,14 @@ def _migrate():
                 ("max_video_mb", "INTEGER"),
                 ("max_audio_mb", "INTEGER"),
                 ("max_ai_attachment_mb", "INTEGER"),
+                # Unsloth backend overrides (migration plan §8's additive
+                # rename) — blank/NULL falls back to the legacy ollama_*
+                # fields above, then to the UNSLOTH_* env vars, so existing
+                # installs keep working untouched.
+                ("llm_url", "VARCHAR(512) DEFAULT ''"),
+                ("llm_model", "VARCHAR(256) DEFAULT ''"),
+                ("llm_api_key", "VARCHAR(256) DEFAULT ''"),
+                ("llm_context_tokens", "INTEGER"),
             ]:
                 if col not in as_cols:
                     conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN {col} {defn}"))

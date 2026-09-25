@@ -1773,6 +1773,19 @@ class AppSettings(Base):
     # (see app.ai.effective_ollama_*() and main.py's imagestudio()).
     ollama_model = Column(String(256), default="")
     ollama_url = Column(String(512), default="")
+    # Unsloth Studio backend overrides (migration plan §8's additive rename —
+    # never destructive). Blank/NULL means "fall back to the legacy ollama_*
+    # fields above, then to the UNSLOTH_* env vars", so an existing install
+    # keeps working untouched and a GM can flip backends from Settings
+    # without a restart (see main.py's _refresh_settings_overrides, which
+    # pushes these into app.ai's set_llm_override).
+    llm_url = Column(String(512), default="")
+    llm_model = Column(String(256), default="")
+    llm_api_key = Column(String(256), default="")
+    # The load-time context window the Studio model was loaded with — the
+    # chunk-sizing budget source under Unsloth (see app.ai.llm_context_tokens
+    # and the migration plan §6.3). Must match Studio's per-model setting.
+    llm_context_tokens = Column(Integer, nullable=True)
     swarmui_external_url = Column(String(512), default="")
     # Same idea as swarmui_external_url, for the embedded Android app viewer
     # at /androidapp — see app.main's ANDROID_EMULATOR_URL and docs/DEPLOYMENT.md.

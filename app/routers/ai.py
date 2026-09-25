@@ -1750,6 +1750,13 @@ async def ai_pull(body: PullBody):
     _log.info("pull model=%r", body.model_id)
 
     async def _gen():
+        if _ai.effective_llm_api_key():
+            # Ollama's pull has no Unsloth equivalent — models are added
+            # through Studio's own Model Hub (migration plan §6.2). Say so
+            # on the stream instead of AttributeErroring mid-SSE.
+            yield f"data: {_json.dumps({'error': 'Model pull needs the Ollama backend. With Unsloth, download the model in Studio Model Hub instead (the id to use there: ' + body.model_id + ')'})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
         try:
             async for progress in await _ai._client().pull(body.model_id, stream=True):
                 yield f"data: {_json.dumps(progress.model_dump())}\n\n"

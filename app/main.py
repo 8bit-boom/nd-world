@@ -196,7 +196,17 @@ def _refresh_settings_overrides(db: Session = None):
         db = SessionLocal()
     try:
         settings = get_app_settings(db)
-        _ai_module.set_ollama_override(settings.ollama_url or "", settings.ollama_model or "")
+        # Unsloth backend overrides with additive read-fallback (migration
+        # plan §8): llm_* wins when set, else the legacy ollama_* fields,
+        # else the env vars. A GM can therefore keep one Settings page
+        # through the cutover — filling llm_api_key is what flips the app
+        # onto the Unsloth backend (app.ai gates on the effective key).
+        _ai_module.set_llm_override(
+            url=settings.llm_url or settings.ollama_url or "",
+            model=settings.llm_model or settings.ollama_model or "",
+            api_key=settings.llm_api_key or "",
+            context_tokens=settings.llm_context_tokens or 0,
+        )
         _ai_module.set_whisper_override(settings.whisper_url or "")
         gen_options = {
             k: v for k, v in {
@@ -3608,12 +3618,25 @@ def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: 
         "list every row you were given and say the list continues in the full Rules text "
         "rather than treating the partial list as complete."
     )
+    # Small/local models (the Gemma/Qwen-class models this app typically runs
+    # under Ollama) strongly prefer explicit output-format instructions over
+    # implied ones: left unstated, they answer a listing question like "list
+    # ordinary weapons" with a summary of two or three example rows ("the list
+    # includes combat knives, pistols...") even when the retrieved table sits
+    # complete in front of them. Mechanical rule, stated mechanically.
+    _TABLE_LISTING_CLAUSE = (
+        "When the provided lore or Rules text contains a table and the question asks "
+        "to list, enumerate, or compare its entries, reproduce ALL of its rows in "
+        "your answer — as a markdown table or a complete list. Never answer with a "
+        "summary, a few examples, or 'the list includes...'. Mention missing rows "
+        "only if the provided text itself is visibly cut off mid-table."
+    )
     entity_counts = {}
     world_system = (
         "You are a creative world-building AI assistant for a Neon & Dragons "
         "cyberpunk-fantasy TTRPG setting. Help the Game Master with world-building, "
         "lore, NPC backstories, plot hooks, and creative writing. Be vivid and immersive. "
-        + _GROUNDING_CLAUSE
+        + _GROUNDING_CLAUSE + " " + _TABLE_LISTING_CLAUSE
     )
     if world:
         entity_counts = _kind_counts(db, world, request)
@@ -3625,7 +3648,7 @@ def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: 
             f"Help the Game Master with world-building, lore, NPC backstories, plot hooks, "
             f"and creative writing. Be vivid, immersive, and consistent with the cyberpunk-fantasy tone. "
             f"Keep responses focused; expand only when asked. "
-            + _GROUNDING_CLAUSE
+            + _GROUNDING_CLAUSE + " " + _TABLE_LISTING_CLAUSE
         )
         user = getattr(request.state, "user", None)
         custom_instructions = _ai_instructions.enabled_instructions_text(
