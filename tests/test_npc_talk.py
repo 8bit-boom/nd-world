@@ -13,7 +13,7 @@ import app.ai as ai_module
 import app.retrieval as retrieval_module
 
 from app.database import SessionLocal
-from app.models import ChatSession, Entity
+from app.models import ChatSession, Entity, WorldMembership
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -260,3 +260,101 @@ def test_npc_sessions_are_isolated_from_the_ai_chat_history_surface(client, seed
         assert "hijack" not in npc_row.messages_json
     finally:
         db.close()
+
+
+# ── Plan A2: test gaps ────────────────────────────────────────────────────────
+
+def test_empty_message_is_400(client, seed, monkeypatch):
+    _patch_ai(monkeypatch)
+    eid = _npc(seed)
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    assert client.post(f"/api/npc-talk/{eid}/stream", json={"message": "   "}).status_code == 400
+
+
+def test_assistant_tier_needs_world_opt_in(client, seed, monkeypatch):
+    """An assistant is not a GM: the same world opt-in players need gates
+    the surface for them too (off by default)."""
+    _patch_ai(monkeypatch)
+    eid = _npc(seed)
+    db = SessionLocal()
+    try:
+        m = db.query(WorldMembership).filter(
+            WorldMembership.world_id == seed.world_a.id, WorldMembership.user_id == seed.player_a.id
+        ).first()
+        m.role = "assistant"
+        db.commit()
+    finally:
+        db.close()
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    _pin(client)
+    assert client.get("/npc-talk").status_code == 403
+    assert client.post(f"/api/npc-talk/{eid}/stream", json={"message": "hi"}).status_code == 403
+    _opt_in(seed)
+    assert client.get("/npc-talk").status_code == 200
+    assert client.post(f"/api/npc-talk/{eid}/stream", json={"message": "hi"}).status_code == 200
+
+
+def test_model_turn_cap(client, seed, monkeypatch):
+    """The DB row keeps the whole conversation; only the last
+    _MAX_MODEL_TURNS turns go to the model."""
+    cap = {}
+    _patch_ai(monkeypatch, reply="Ok.", capture=cap)
+    eid = _npc(seed)
+    long_history = []
+    for i in range(50):
+        long_history += [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": f"a{i}"}]
+    db = SessionLocal()
+    try:
+        db.add(ChatSession(
+            world_id=seed.world_a.id, user_id=seed.gm.id, surface="npc",
+            entity_id=eid, title="Elyra", messages_json=json.dumps(long_history),
+        ))
+        db.commit()
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    assert client.post(f"/api/npc-talk/{eid}/stream", json={"message": "still there?"}).status_code == 200
+    assert len(cap["msgs"]) <= 40
+    # ...while the stored thread kept everything (100 + this exchange)
+    msgs = client.get(f"/api/npc-talk/{eid}/history").json()["messages"]
+    assert len(msgs) == 102
+
+
+def test_nav_shows_npc_talk_exactly_once(client, seed):
+    """GM/player same-href entry pair must collapse to ONE nav item — for a
+    GM whose world flag is on (both entries would match), and for an
+    opted-in player (gm-only entry hidden, player entry shown). Flag off →
+    players see none at all."""
+    from app.nav_menus import resolve_nav_menus
+    from .conftest import fake_request
+
+    def _count(world, request):
+        menus, ungrouped = resolve_nav_menus(world, True, True, request)
+        items = [i for m in menus for i in m["links"]] + ungrouped
+        return sum(1 for i in items if i.get("href") == "/npc-talk")
+
+    gm_req = fake_request(is_gm=True)
+    assert _count(seed.world_a, gm_req) == 1  # flag off — the GM entry alone
+
+    db = SessionLocal()
+    try:
+        w = db.get(type(seed.world_a), seed.world_a.id)
+        w.players_can_ask_ai = True
+        db.commit()
+    finally:
+        db.close()
+    seed.world_a.players_can_ask_ai = True  # the fixture's in-memory copy
+    assert _count(seed.world_a, gm_req) == 1  # flag on — still exactly one
+    assert _count(seed.world_a, fake_request(is_gm=False)) == 1  # opted-in player
+
+    db = SessionLocal()
+    try:
+        w = db.get(type(seed.world_a), seed.world_a.id)
+        w.players_can_ask_ai = False
+        db.commit()
+    finally:
+        db.close()
+    seed.world_a.players_can_ask_ai = False  # the fixture's in-memory copy again
+    assert _count(seed.world_a, fake_request(is_gm=False)) == 0  # flag off — none
