@@ -91,10 +91,45 @@ async def test_imagegen_status_probes_v1_models_with_auth(unsloth_image_mode, mo
 
 
 @pytest.mark.asyncio
-async def test_imagegen_models_returns_configured_model(unsloth_image_mode):
+async def test_imagegen_models_falls_back_to_configured_model_when_nothing_cached(unsloth_image_mode, monkeypatch):
+    def handler(method, url, headers, body):
+        assert url == "http://unsloth:8000/api/hub/cached-gguf"
+        assert headers == {"Authorization": "Bearer sk-test"}
+        return _FakeResponse(200, payload={"cached": []})
+
+    _patch_http(monkeypatch, unsloth_image_mode, handler)
     assert await ai_module.imagegen_models() == ["unsloth/z-image-turbo-GGUF"]
     assert await ai_module.imagegen_loras() == []
     assert await ai_module.imagegen_upscalers() == []
+
+
+@pytest.mark.asyncio
+async def test_imagegen_models_lists_cached_supported_image_models(unsloth_image_mode, monkeypatch):
+    """Real-world shape from /api/hub/cached-gguf: a downloaded checkpoint
+    Studio's own diffusion pipeline can't run reports task
+    "image-diffusion-unsupported" (verified against a live Studio instance
+    with an SDXL-family anime finetune) rather than plain "image-diffusion"
+    — offering it in nd-world's picker would just fail on first use, so
+    only the supported ones should come back, and take priority over the
+    configured UNSLOTH_IMAGE_MODEL fallback."""
+    def handler(method, url, headers, body):
+        return _FakeResponse(200, payload={"cached": [
+            {"repo_id": "unsloth/Krea-2-Turbo-GGUF", "task": "image-diffusion"},
+            {"repo_id": "E-stick/anima-aesthetic-v1.1-GGUF", "task": "image-diffusion-unsupported"},
+            {"repo_id": "kazzy1337/some-chat-model", "task": "text-generation"},
+        ]})
+
+    _patch_http(monkeypatch, unsloth_image_mode, handler)
+    assert await ai_module.imagegen_models() == ["unsloth/Krea-2-Turbo-GGUF"]
+
+
+@pytest.mark.asyncio
+async def test_unsloth_cached_image_models_swallows_request_errors(unsloth_image_mode, monkeypatch):
+    def handler(method, url, headers, body):
+        raise RuntimeError("connection refused")
+
+    _patch_http(monkeypatch, unsloth_image_mode, handler)
+    assert await ai_module.unsloth_cached_image_models() == []
 
 
 @pytest.mark.asyncio

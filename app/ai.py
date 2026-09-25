@@ -5068,13 +5068,38 @@ async def imagegen_samplers_schedulers() -> dict:
     }
 
 
+async def unsloth_cached_image_models() -> list:
+    """Image-diffusion GGUFs Studio actually has on disk, per its own
+    /api/hub/cached-gguf (Studio-internal, not part of the documented /v1
+    surface — /v1/models lists chat models only, findings I-1). Each cached
+    entry carries a "task" field; verified against a real Studio instance
+    that a downloaded-but-unrunnable checkpoint (e.g. an SDXL-family anime
+    finetune Studio's bundled pipeline doesn't support) reports
+    "image-diffusion-unsupported" rather than plain "image-diffusion" — so
+    this only returns the latter, never offering a model in nd-world's
+    picker that would just fail on first use."""
+    u = effective_llm_url()
+    if not u:
+        return []
+    try:
+        async with _httpx.AsyncClient(timeout=8) as c:
+            r = await c.get(f"{u}/api/hub/cached-gguf", headers=_unsloth_image_headers())
+            cached = r.json().get("cached", [])
+    except Exception:
+        return []
+    return [m["repo_id"] for m in cached if m.get("task") == "image-diffusion" and m.get("repo_id")]
+
+
 async def imagegen_models() -> list:
     t, u = _get_type(), _get_url()
     if not t or not u:
         return []
     if t == "unsloth":
-        # /v1/models lists chat models only (findings I-1) — the configured
-        # image model is the honest answer for v1.
+        cached = await unsloth_cached_image_models()
+        if cached:
+            return cached
+        # Nothing cached (or the query failed) — fall back to the
+        # configured default so the picker isn't left completely empty.
         return [UNSLOTH_IMAGE_MODEL] if UNSLOTH_IMAGE_MODEL else []
     try:
         async with _httpx.AsyncClient(timeout=8) as c:
