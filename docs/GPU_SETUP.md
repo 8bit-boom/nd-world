@@ -1,30 +1,29 @@
-# GPU Setup Guide — Ollama, SwarmUI, Whisper, and the NVIDIA V100
+# GPU Setup Guide — Unsloth Studio, Ollama/SwarmUI (legacy), Whisper, and the NVIDIA V100
 
-How to give nd-world's bundled AI stack (Ollama for chat/recaps/facts,
-SwarmUI for image generation, whisper.cpp for transcription) a real GPU —
-with a dedicated section for the **Tesla V100**, the Volta-era datacenter
-card that is now the cheapest way to get serious local-AI performance.
+How to give nd-world's bundled AI stack a real GPU. **Unsloth Studio** is
+the current default backend for chat/recaps/facts AND image generation —
+the legacy **Ollama** (chat) + **SwarmUI** (image generation) pair is kept
+running behind its own Compose profiles as a rollback path, not deleted, so
+most of this guide covers both. **whisper.cpp** (transcription) is
+independent of either. Dedicated section for the **Tesla V100**, the
+Volta-era datacenter card that is now the cheapest way to get serious
+local-AI performance.
 
-nd-world's own container never needs the GPU for AI inference — it talks
-to Ollama and SwarmUI over HTTP (`OLLAMA_URL`/`IMAGEGEN_URL`). Only the
-`ollama`, `swarmui`, and (optionally) `whisper` services need full GPU
-access. `docker-compose.gpu.yml` also optionally gives nd-world's own
-container minimal, `utility`-only GPU access (no real CUDA compute) —
-just enough for `nvidia-smi` to work inside it, so Settings → System's
-"Detected hardware" panel can auto-detect your real card instead of
-relying on a manual VRAM override or hardware preset.
-
-**Only ollama's hardware detection reads the card from `nvidia-smi`.**
-SwarmUI has no equivalent panel in nd-world — it manages its own backend
-and VRAM usage independently once it has GPU access, so there's nothing
-further to configure on the nd-world side for it beyond the passthrough
-itself.
+nd-world's own container never needs the GPU for AI inference — it talks to
+whichever backend is active over HTTP (`UNSLOTH_URL`, or the legacy
+`OLLAMA_URL`/`IMAGEGEN_URL`). Only the `unsloth` service (or, on the legacy
+path, `ollama` and `swarmui`) and optionally `whisper` need full GPU access.
+`docker-compose.gpu.yml` also optionally gives nd-world's own container
+minimal, `utility`-only GPU access (no real CUDA compute) — just enough for
+`nvidia-smi` to work inside it, so Settings → System's "Detected hardware"
+panel can auto-detect your real card instead of relying on a manual VRAM
+override or hardware preset.
 
 ---
 
 ## 1. Which V100 do you have?
 
-Check on the GPU host (the machine/VM that runs the `ollama` container):
+Check on the GPU host (the machine/VM that runs the `unsloth` container):
 
 ```sh
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
@@ -37,8 +36,7 @@ nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
 | `Tesla V100-SXM2-32GB` / `PCIE-32GB` | 32 GB | The LLM sweet spot at current used prices |
 | `TITAN V` | 12 GB | Same Volta architecture, consumer board |
 
-The 16 GB vs 32 GB answer changes which models fit fully in VRAM — see
-§5.
+The 16 GB vs 32 GB answer changes which models fit fully in VRAM — see §5.
 
 ## 2. Host prerequisites (any Linux Docker host)
 
@@ -57,40 +55,69 @@ The 16 GB vs 32 GB answer changes which models fit fully in VRAM — see
    sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
    ```
 
-3. **Verify**: `docker run --rm --gpus all nvidia-smi` should list your
-   card.
+3. **Verify**: `docker run --rm --gpus all nvidia-smi` should list your card.
 
 ### ⚠️ Driver upgrades and Volta — read before you upgrade
 
 NVIDIA has **sunset the Volta architecture at the driver level**: the
 **580 driver branch is the last one to support V100**. Do not blindly
 upgrade to the next major driver branch — check the release notes first.
-Similarly, **CUDA 13 removed Volta (compute capability 7.0)**. Ollama's
-current release images still build on CUDA 12 and support Volta
-(Ollama's documented floor is compute capability 5.0, with V100
-explicitly listed), but if a future `ollama/ollama` image moves to CUDA
-13 and your GPU disappears from the logs, **pin the last CUDA 12-based
-image tag** in your compose file:
+Similarly, **CUDA 13 removed Volta (compute capability 7.0)**. The Unsloth
+Studio image currently ships CUDA 12 builds with Volta kernels, but if a
+future `unsloth/unsloth:latest` moves to CUDA 13-only and your GPU
+disappears from the logs, **pin the last working image tag** in your compose
+file:
 
 ```yaml
 services:
-  ollama:
-    image: ollama/ollama:0.12.9   # example — use the newest tag that still works
+  unsloth:
+    image: unsloth/unsloth:<known-good-tag>   # pin before the CUDA 13 cutoff
 ```
 
+This is the single biggest V100 risk in the migration to Unsloth — finding
+I-7 in [UNSLOTH_PHASE0_FINDINGS.md](UNSLOTH_PHASE0_FINDINGS.md): verify that
+the tag you deploy actually contains sm_70 kernels before relying on it, and
+prefer a pinned tag over `:latest`.
+
 Watchtower users (TrueNAS): by default Watchtower auto-updates *every*
-running container, `ollama`/`swarmui` included — an unpinned
-`ollama/ollama:latest` or `swarmui:latest` moving to a newer CUDA version
-would otherwise silently break inference on an older card between one
-restart and the next, with no error until the next generation attempt.
-`truenas-compose.yml`'s `ollama` and `swarmui` services both carry a
-`com.centurylinklabs.watchtower.enable: "false"` label for exactly this
-reason, so pinning the image tag above is what actually decides the
-version you run — Watchtower won't override it.
+running container — an unpinned `unsloth/unsloth:latest` (or, on the legacy
+path, `ollama/ollama:latest`/`swarmui:latest`) moving to a newer CUDA version
+would otherwise silently break inference on this card between one restart
+and the next, with no error until the next generation attempt.
+`truenas-compose.yml`'s `unsloth`, `ollama`, and `swarmui` services all
+already carry a `com.centurylinklabs.watchtower.enable: "false"` label for
+exactly this reason, so pinning the image tag above is what actually decides
+the version you run — Watchtower won't override it.
 
 ## 3. Wiring it up
 
 ### Plain Linux Docker
+
+```sh
+docker compose --profile unsloth up -d
+```
+
+Unsloth's own GPU reservation is unconditional in `docker-compose.yml`
+itself, not the `docker-compose.gpu.yml` overlay (Unsloth needs a GPU to be
+worth running at all, unlike the optional legacy Ollama/SwarmUI pair) — no
+extra `-f` flag needed just to get the card passed through to it. Layer
+`docker-compose.gpu.yml` on top only if you also want nd-world's own
+container to see the card directly for the "Detected hardware" panel:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile unsloth up -d
+```
+
+Then do the one-time Studio setup (full detail in
+[DEPLOYMENT.md](DEPLOYMENT.md)):
+
+1. Open the Studio UI (port 8000) → log in → Settings → API → create an
+   API key.
+2. Paste the key into nd-world → ⚙️ Settings → Unsloth backend. AI chat
+   and image generation switch over immediately — no restart.
+3. Download the chat and image models in Studio's Model Hub.
+
+**Legacy Ollama/SwarmUI path** (rollback, or if you haven't switched yet):
 
 ```sh
 docker compose -f docker-compose.yml --profile ollama --profile swarmui \
@@ -100,13 +127,12 @@ docker compose logs ollama | grep -i "inference compute"   # should say CUDA / 0
 docker compose logs swarmui | grep -i cuda                 # should mention your GPU, not "cpu"
 ```
 
-`docker-compose.gpu.yml` (in this repo) contains exactly this: the NVIDIA
-device reservation for `ollama` and `swarmui`, a matching `utility`-only
-reservation for `world` (nd-world's own container, so its hardware
-detector can see the card — see above), plus a commented CUDA whisper
-switch. SwarmUI installs its own backend on first start (the "performs a
-first-run setup" step in the README) — that first-run install is what
-actually detects and uses the passed-through GPU, so give it a few
+Here `docker-compose.gpu.yml` is required — it's what contains the NVIDIA
+device reservation for `ollama` and `swarmui` (a matching `utility`-only
+reservation for `world` either way — see above), plus a commented CUDA
+whisper switch. SwarmUI installs its own backend on first start (the
+"performs a first-run setup" step in the README) — that first-run install is
+what actually detects and uses the passed-through GPU, so give it a few
 minutes before checking the logs above.
 
 ### TrueNAS SCALE
@@ -114,7 +140,8 @@ minutes before checking the logs above.
 **⚠️ TrueNAS 25.10 "Goldeye" and later dropped Volta (V100) support from
 the official *Nvidia Driver* app** — it now ships NVIDIA's open-source
 kernel modules, which only support Turing-and-newer GPUs. On 25.10+ you
-have three options before anything else here will work:
+have three options before anything else here will work (Unsloth or legacy
+— this is a host driver issue, not backend-specific):
 
 - **Stay on, or roll back to, TrueNAS 25.04 "Fangtooth" or earlier**,
   where the official driver app still supports Volta. Simplest if you
@@ -132,18 +159,27 @@ have three options before anything else here will work:
   the cost of a VM to manage.
 
 Once the driver is sorted (`nvidia-smi` on the TrueNAS host itself lists
-the V100):
+the V100), deploying via **Apps → Discover Apps → Custom App**, pasting
+`truenas-compose.yml` directly under "Compose" mode (this repo's own
+documented path):
 
-1. **Give the ollama AND swarmui containers the GPU** — these are two
-   separate reservations, not one shared setting. This repo's own README
-   documents deploying via **Apps → Discover Apps → Custom App**, pasting
-   `truenas-compose.yml` in directly under "Compose" mode — **that pasted-
-   YAML Custom App does NOT get a per-app Resources → GPU(s) picker
-   screen** (that picker exists for apps built through TrueNAS's own
-   catalog/image-launch wizard, a different flow from pasting a full
-   compose file). Uncomment the `deploy:` block already scaffolded under
-   **both** the `ollama` and `swarmui` services in `truenas-compose.yml`
-   yourself, in the YAML you paste — same block under each:
+1. **Unsloth already gets the GPU with no extra step.** Unlike the legacy
+   pair below, `truenas-compose.yml`'s `unsloth` service's
+   `deploy.resources.reservations.devices` block is uncommented by default
+   — a pasted-YAML Custom App picks it up as soon as the driver/toolkit are
+   in place, nothing to uncomment. (If you instead built the app through
+   TrueNAS's catalog/wizard flow, which *does* offer a per-app
+   Resources → GPU(s) picker screen for apps created that way, assign the
+   GPU there instead and comment this block out — don't do both, or you'll
+   have two reservations for one container.)
+2. **Legacy Ollama + SwarmUI: give both containers the GPU** — these are
+   two separate reservations, not one shared setting, and unlike Unsloth's
+   block, both start **commented** in `truenas-compose.yml` (a pasted-YAML
+   Custom App does NOT get the Resources → GPU(s) picker screen, so nothing
+   assigns it for you automatically the way it might for Unsloth's own
+   already-uncommented block). Uncomment the `deploy:` block scaffolded
+   under **both** the `ollama` and `swarmui` services yourself, in the YAML
+   you paste — same block under each:
 
    ```yaml
    deploy:
@@ -155,50 +191,49 @@ the V100):
              capabilities: [gpu]
    ```
 
-   If you instead built the app through TrueNAS's catalog/wizard flow
-   (which does offer that screen for apps created that way), assign the
-   GPU to **each** service there individually and leave both YAML blocks
-   commented — don't do both for the same service. A single V100 can be
-   assigned to more than one container this way; see §3a below for what
-   that means for VRAM.
-2. **Verify**: shell into each container (find its real name with
+   A single V100 can be assigned to more than one container this way (all
+   three, if you're running Unsloth alongside a legacy rollback instance);
+   see §3a below for what that means for VRAM.
+3. **Verify**: shell into each container (find its real name with
    `docker ps` — TrueNAS names a Custom App's containers
    `ix-<app-name>-<service>-1`) and run `nvidia-smi` inside it — it must
-   list the V100 — then check `docker logs <that container>` for
-   `inference compute` detection on startup (ollama) or a CUDA/GPU mention
+   list the V100. Then check `docker logs <that container>` for GPU
+   detection on startup: the Studio UI's resource panel after loading a
+   model (unsloth), `inference compute` (ollama), or a CUDA/GPU mention
    rather than "cpu" (swarmui, after its first-run backend install
    finishes — give it a few minutes). Also confirm `CUDA_VISIBLE_DEVICES`
-   isn't set to an empty string inside either container (`docker exec
+   isn't set to an empty string inside any of them (`docker exec
    <container> env | grep ^CUDA_VISIBLE`) — an explicitly-empty value
    hides every GPU from CUDA even with the deploy block correctly in
-   place; `truenas-compose.yml` no longer sets this by default for
-   exactly that reason (see its `ollama` service's own `environment:`
-   comment), but a `.env` override could still reintroduce it.
-3. The nd-world **app container itself gets no GPU by default**, and
+   place; `truenas-compose.yml` no longer sets this by default for exactly
+   that reason (see its `ollama` service's own `environment:` comment),
+   but a `.env` override could still reintroduce it.
+4. The nd-world **app container itself gets no GPU by default**, and
    there's no `utility`-only overlay for it on TrueNAS the way
    `docker-compose.gpu.yml` provides for plain Docker hosts — Settings →
    System's "Detected hardware" panel will show no GPU here regardless.
-   Set **Ollama VRAM (MB)** to `16384`/`32768` manually (or pick the
+   Set **VRAM override (MB)** to `16384`/`32768` manually (or pick the
    matching V100 preset in that same panel) so the tuning recommendations
    size correctly without needing `nvidia-smi` access from nd-world's own
    container.
-4. **Watchtower**: `truenas-compose.yml`'s `ollama` and `swarmui` services
-   both carry a `com.centurylinklabs.watchtower.enable: "false"` label —
-   Watchtower auto-updates every other container by default, and an
-   unpinned image update silently moving to a newer CUDA version would
-   otherwise break inference on this card with no error until the next
-   generation attempt. Pin the image tag once you've confirmed a version
-   works (see the callout above §3).
+5. **Watchtower**: `truenas-compose.yml`'s `unsloth`, `ollama`, and
+   `swarmui` services all carry a
+   `com.centurylinklabs.watchtower.enable: "false"` label — Watchtower
+   auto-updates every other container by default, and an unpinned image
+   update silently moving to a newer CUDA version would otherwise break
+   inference on this card with no error until the next generation attempt.
+   Pin the image tag once you've confirmed a version works (see the
+   callout above §2).
 
 ### Separate GPU box
 
-Nothing about nd-world changes — point `OLLAMA_URL` at the GPU machine
-(`http://gpu-box:11434`) and set up that machine like a plain Linux host
-above. The Settings → System URL override works too. If SwarmUI is on
-that same separate box, point `IMAGEGEN_URL` at it too
-(`http://gpu-box:7801`) — same idea.
+Nothing about nd-world changes — point `UNSLOTH_URL` at the GPU machine
+(`http://gpu-box:8000`) and set up that machine like a plain Linux host
+above. The Settings → System URL override works too. On the legacy path,
+point `OLLAMA_URL` (`http://gpu-box:11434`) and, if SwarmUI is on that same
+box, `IMAGEGEN_URL` (`http://gpu-box:7801`) there instead.
 
-## 3a. Sharing one V100 between Ollama and SwarmUI
+## 3a. Sharing one V100 between Ollama and SwarmUI (legacy backend)
 
 A device reservation (`capabilities: [gpu]`) doesn't reserve the card
 exclusively — it just grants that container access to it. Assigning the
@@ -246,7 +281,7 @@ instead of 12B, or lower `OLLAMA_KEEP_ALIVE` and/or SwarmUI's
 practice — lowering only one side still leaves the other's hold window to
 collide with it. A 32 GB V100 removes this concern almost entirely — see §5.
 
-## 3b. SwarmUI's PyTorch on a V100 — read this before assuming it "just works"
+## 3b. SwarmUI's PyTorch on a V100 (legacy backend) — read this before assuming it "just works"
 
 **A GPU device reservation alone is not enough for SwarmUI.** SwarmUI
 installs its own PyTorch at first run (`launchtools/comfy-install-linux.sh`,
@@ -329,21 +364,33 @@ A repo-root script does the check-then-fix for you:
   Volta's last home. It just won't get any NEWER either; that's the real
   tradeoff of keeping this card running at all going forward.
 
-## 4. Optimization — what to actually set
+## 4. Optimization — the V100 profile (fp16 everywhere, no flash attention)
 
-The single best place is **Settings → System → "Ollama server
-tuning"** in nd-world (written to the ollama container's env on save —
-no restart of nd-world):
+The V100 profile from the migration plan, applied in the **Studio UI's
+model-load (expert) settings** for each downloaded model:
 
 | Setting | Value | Why |
 |---|---|---|
-| `OLLAMA_FLASH_ATTENTION` | `1` | Works on Volta (llama.cpp ships Volta mma kernels) — faster and enables KV quantization |
-| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | Halves KV-cache memory for <5% speed loss — effectively doubles the context that fits in VRAM |
-| `OLLAMA_NUM_PARALLEL` | `1` | One request at a time; a V100 is fast per-token, not wide — parallel slots multiply KV memory |
-| `OLLAMA_MAX_LOADED_MODELS` | `1` (16 GB) / `2` (32 GB) | Keep the big model resident instead of thrashing |
-| `OLLAMA_KEEP_ALIVE` | `30m` | Model stays warm between session pages |
+| Load dtype / cache dtype | `fp16` | Volta tensor cores accelerate FP16 only; bf16/fp8 kernels don't exist on sm_70 |
+| Attention implementation | non-flash (e.g. SDPA / pytorch) | FA2/FA3 binaries are not built for sm_70; flash attention on Volta falls back or fails |
+| Max loaded models | `1` (16 GB) / `2` (32 GB) | Keep the big model resident instead of thrashing |
+| Context length | match `LLM_CONTEXT_TOKENS` (default 16384) | llama.cpp fixes context at load time; the app sizes recap chunking from this value |
 
-Also in nd-world's `.env` for the **app** container:
+**VRAM eviction expectation:** with 16 GB, expect the Studio to evict or
+partially offload when a second large model is loaded — keep the chat model
+as the resident one and treat image models as load-on-demand, or accept the
+reload latency.
+
+**Training is gated off** on the V100 profile: full fine-tuning and LoRA
+training workloads assume Ampere+ features; use the chat/inference path
+only.
+
+**Numbers to expect** (single V100 PCIe, fp16 GGUF): a 12B-class model runs
+~30–45 tok/s fully offloaded; a 26B (fully resident on 32 GB) runs ~15–20
+tok/s. Partial offload on 16 GB (26B split with RAM) drops to ~2–6 tok/s —
+usable for overnight recaps, painful interactively.
+
+For nd-world's own app container, keep the AI job queue serialized:
 
 ```
 OLLAMA_JOB_CONCURRENCY=1   # serialize recap/facts/assist jobs behind the one GPU
@@ -353,46 +400,45 @@ MAX_AUTO_NUM_CTX=16384     # cap auto-sized recap/facts/condense context (defaul
 `MAX_AUTO_NUM_CTX` bounds the auto-sized context window background jobs
 (session recaps, facts parsing, transcript condensing) pin per-call — its
 32768 default is sized for a card with nothing else competing for VRAM. On
-a shared 16 GB V100 (this card, running SwarmUI too — see §3a), lowering it
-to 16384 keeps a worst-case background job from momentarily claiming enough
-KV-cache VRAM to starve a concurrent image generation; on a 32 GB card the
-default is fine as-is. This is separate from `OLLAMA_CONTEXT_LENGTH` (the
-server default) and the per-request `num_ctx` above — those apply per
-model call, this is the ceiling those auto-sizing jobs are allowed to pin.
+a shared 16 GB V100 running an image-generation backend too (see §3a for
+the legacy Ollama+SwarmUI case), lowering it to 16384 keeps a worst-case
+background job from momentarily claiming enough KV-cache VRAM to starve a
+concurrent image generation; on a 32 GB card the default is fine as-is.
+This is separate from `OLLAMA_CONTEXT_LENGTH`/Unsloth's own per-model
+context setting and the per-request `num_ctx` — those apply per model call,
+this is the ceiling those auto-sizing jobs are allowed to pin. (Both env
+var names — `OLLAMA_JOB_CONCURRENCY` and `MAX_AUTO_NUM_CTX` — are
+historical; both apply to whichever backend is active, Unsloth included.)
 
-The **Detected hardware** panel (Settings → System) also reserves ~6 GB of
-VRAM in its own per-model recommendations automatically once image
-generation is configured for SwarmUI, so the *suggested* `num_ctx` already
-accounts for a concurrently-loaded checkpoint — `MAX_AUTO_NUM_CTX` covers
-the background jobs that recommendation doesn't size.
+The legacy **Detected hardware** panel (Settings → System) also reserves
+~6 GB of VRAM in its own per-model recommendations automatically once
+image generation is configured for SwarmUI, so the *suggested* `num_ctx`
+already accounts for a concurrently-loaded checkpoint — `MAX_AUTO_NUM_CTX`
+covers the background jobs that recommendation doesn't size. On Unsloth,
+the equivalent per-model context/precision knobs live in Studio's own
+model-load settings (see §4's table above), not this panel.
 
-Per-model overrides (Settings → System → per-model): `num_gpu` 999
-(offload everything) once the model fits; leave blank when it doesn't
-and let Ollama's splitter place layers.
+Legacy per-model overrides (Settings → System → per-model, Ollama only):
+`num_gpu` 999 (offload everything) once the model fits; leave blank when
+it doesn't and let Ollama's splitter place layers.
 
-**Numbers to expect** (single V100 PCIe, Q4_K_M, flash attention on):
-a 12B-class model runs ~30–45 tok/s fully offloaded; a 26B (only fully
-resident on 32 GB) runs ~15–20 tok/s. Partial offload on 16 GB (26B
-split with RAM) drops to ~2–6 tok/s — usable for overnight recaps,
-painful interactively.
+## 5. Which models fit (fp16 ≈ 2 GB per billion params, GGUF Q4 ≈ 0.6 GB)
 
-## 5. Which models fit (Q4_K_M ≈ 0.6 GB per billion params)
-
-| Model class | Weights (Q4) | V100 16 GB | V100 32 GB |
+| Model class | Weights (Q4 GGUF) | V100 16 GB | V100 32 GB |
 |---|---|---|---|
 | 8–9B (gemma-class small) | ~5–6 GB | ✅ fully + 32k context | ✅ trivially |
-| 12–14B | ~7–9 GB | ✅ fully + 8–16k context (q8_0 KV) | ✅ + 32k |
-| 24–27B (`gemma4:26b`, Qwen 32B is over) | ~15–17 GB | ⚠️ partial offload — slow, or use a Q3/IQ4_XS quant | ✅ fully + 8–16k context |
+| 12–14B | ~7–9 GB | ✅ fully + 8–16k context | ✅ + 32k |
+| 24–27B (`gemma-4-26B-A4B-it`, Qwen 32B is over) | ~15–17 GB | ⚠️ partial offload — slow, or use a Q3/IQ4_XS quant | ✅ fully + 8–16k context |
 | 32B+ | ~19 GB+ | ❌ | ⚠️ Q4 32B barely; 27B is the sweet spot |
 
-The nd-world defaults (`gemma4:26b`) want the **32 GB** variant or a
-smaller quant. On 16 GB, a 12B-class model at Q4/Q5 with `q8_0` KV gives
-a dramatically better experience than a strangled 26B.
+The nd-world default chat model (`unsloth/gemma-4-26B-A4B-it-GGUF`) wants
+the **32 GB** variant or a smaller quant. On 16 GB, a 12B-class model at
+Q4/Q5 gives a dramatically better experience than a strangled 26B.
 
-The **Models tab** on the AI page shows each installed model's size next
-to your VRAM; the benchmark button measures real tok/s after any change.
+The **Models tab** on the AI page shows each installed model's size next to
+your VRAM.
 
-## 5a. SwarmUI / image generation on the V100
+## 5a. SwarmUI / image generation on the V100 (legacy backend)
 
 nd-world has no equivalent of Ollama's per-model tuning panel for
 SwarmUI — it manages its own ComfyUI backend and VRAM usage independently

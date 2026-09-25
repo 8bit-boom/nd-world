@@ -21,6 +21,7 @@ from app.retrieval import (
     _keyword_score,
     _query_words,
     _rules_sections,
+    best_matching_excerpt,
     find_relevant_entities,
     format_context_from_entities,
     rules_context,
@@ -904,3 +905,75 @@ def test_world_context_player_route_surfaces_rules_content(client, seed):
     r = client.post("/api/ai/world-context-player", json={"query": "how much does chainmail armor cost"})
     assert r.status_code == 200
     assert "120 crowns" in r.json()["context"]
+
+
+# ── Table-aware excerpts: "list ordinary weapons"-style questions ───────────
+#
+# A rules section whose body IS a markdown table used to reach the model as
+# body[:1200] — sliced mid-row ("| Pe"), most rows discarded, so a listing
+# question got an unusable fragment and the model (per the grounding clause)
+    # correctly reported it could only see part of the list.
+
+def _weapons_rules_md(row_count=30):
+    rows = "\n".join(f"| Weapon {i} | {i}d6 | {i * 10} cr |" for i in range(1, row_count + 1))
+    return (
+        "# Core Rules\n\n"
+        "## Attributes\n\nStrength, Dexterity.\n\n"
+        "## Ordinary Weapons\n\nOrdinary weapons available to all characters:\n\n"
+        "| Name | Damage | Cost |\n|------|--------|------|\n" + rows + "\n\n"
+        "## Armor\n\nChainmail costs 500 cr.\n"
+    )
+
+
+def test_rules_context_listing_query_returns_complete_table(client, seed):
+    """Every row of the weapons table reaches the context — the question
+    'list ordinary weapons' is only answerable with the whole list."""
+    _set_world_rules(seed.world_a.id, _weapons_rules_md())
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        ctx = rules_context(w, "list ordinary weapons")
+        for i in range(1, 31):
+            assert f"Weapon {i} |" in ctx
+        # No dangling partial row: every emitted table line is complete.
+        for line in ctx.splitlines():
+            if line.strip().startswith("|"):
+                assert line.rstrip().endswith("|"), f"partial table row leaked: {line!r}"
+    finally:
+        db.close()
+
+
+def test_rules_context_skips_duplicate_parent_section(client, seed):
+    """The hierarchy-aware merge makes the H1 parent's body CONTAIN the
+    matching child's table, so both used to be excerpted — the duplicate
+    burned a slot and the shared budget re-sending rows already present.
+    The parent must now be skipped and its slot left for different
+    content (or simply unused)."""
+    _set_world_rules(seed.world_a.id, _weapons_rules_md())
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        ctx = rules_context(w, "list ordinary weapons")
+        # Each table row appears exactly once — the H1 re-quote is gone.
+        assert ctx.count("Weapon 1 |") == 1
+        assert "- [Rules] Core Rules:" not in ctx
+    finally:
+        db.close()
+
+
+def test_best_matching_excerpt_keeps_table_rows_intact(client, seed):
+    """Entity-bodies (catalog notes etc.) get the same guarantee via
+    best_matching_excerpt, not just World Rules text."""
+    rows = "\n".join(f"| Catalog Weapon {i} | {i}d6 |" for i in range(1, 26))
+    body = (
+        "# Player Guide\n\nRevision history and front matter filler.\n\n"
+        "## Equipment Catalog\n\nAll ordinary weapons in the game:\n\n"
+        "| Name | Damage |\n|------|--------|\n" + rows + "\n\n"
+        "## Spells\n\nFireball does 8d6.\n"
+    )
+    excerpt = best_matching_excerpt(body, "list the catalog weapons", 1200)
+    for i in range(1, 26):
+        assert f"Catalog Weapon {i}" in excerpt
+    for line in excerpt.splitlines():
+        if line.strip().startswith("|"):
+            assert line.rstrip().endswith("|"), f"partial table row leaked: {line!r}"

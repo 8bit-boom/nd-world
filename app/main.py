@@ -196,7 +196,17 @@ def _refresh_settings_overrides(db: Session = None):
         db = SessionLocal()
     try:
         settings = get_app_settings(db)
-        _ai_module.set_ollama_override(settings.ollama_url or "", settings.ollama_model or "")
+        # Unsloth backend overrides with additive read-fallback (migration
+        # plan §8): llm_* wins when set, else the legacy ollama_* fields,
+        # else the env vars. A GM can therefore keep one Settings page
+        # through the cutover — filling llm_api_key is what flips the app
+        # onto the Unsloth backend (app.ai gates on the effective key).
+        _ai_module.set_llm_override(
+            url=settings.llm_url or settings.ollama_url or "",
+            model=settings.llm_model or settings.ollama_model or "",
+            api_key=settings.llm_api_key or "",
+            context_tokens=settings.llm_context_tokens or 0,
+        )
         _ai_module.set_whisper_override(settings.whisper_url or "")
         gen_options = {
             k: v for k, v in {
@@ -3608,12 +3618,25 @@ def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: 
         "list every row you were given and say the list continues in the full Rules text "
         "rather than treating the partial list as complete."
     )
+    # Small/local models (the Gemma/Qwen-class models this app typically runs
+    # under Ollama) strongly prefer explicit output-format instructions over
+    # implied ones: left unstated, they answer a listing question like "list
+    # ordinary weapons" with a summary of two or three example rows ("the list
+    # includes combat knives, pistols...") even when the retrieved table sits
+    # complete in front of them. Mechanical rule, stated mechanically.
+    _TABLE_LISTING_CLAUSE = (
+        "When the provided lore or Rules text contains a table and the question asks "
+        "to list, enumerate, or compare its entries, reproduce ALL of its rows in "
+        "your answer — as a markdown table or a complete list. Never answer with a "
+        "summary, a few examples, or 'the list includes...'. Mention missing rows "
+        "only if the provided text itself is visibly cut off mid-table."
+    )
     entity_counts = {}
     world_system = (
         "You are a creative world-building AI assistant for a Neon & Dragons "
         "cyberpunk-fantasy TTRPG setting. Help the Game Master with world-building, "
         "lore, NPC backstories, plot hooks, and creative writing. Be vivid and immersive. "
-        + _GROUNDING_CLAUSE
+        + _GROUNDING_CLAUSE + " " + _TABLE_LISTING_CLAUSE
     )
     if world:
         entity_counts = _kind_counts(db, world, request)
@@ -3625,7 +3648,7 @@ def ai_chat_page(request: Request, db: Session = Depends(get_db), active_world: 
             f"Help the Game Master with world-building, lore, NPC backstories, plot hooks, "
             f"and creative writing. Be vivid, immersive, and consistent with the cyberpunk-fantasy tone. "
             f"Keep responses focused; expand only when asked. "
-            + _GROUNDING_CLAUSE
+            + _GROUNDING_CLAUSE + " " + _TABLE_LISTING_CLAUSE
         )
         user = getattr(request.state, "user", None)
         custom_instructions = _ai_instructions.enabled_instructions_text(
@@ -3782,6 +3805,11 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "active_tab": tab if tab in ("options", "system", "visibility", "navigation", "diagnostics") else "options",
         "env_ollama_model": _ai_module.OLLAMA_MODEL,
         "env_ollama_url": _ai_module.OLLAMA_URL,
+        "env_unsloth_url": _ai_module.UNSLOTH_URL,
+        "env_unsloth_model": _ai_module.UNSLOTH_MODEL,
+        "env_unsloth_api_key": _ai_module.UNSLOTH_API_KEY,
+        "env_llm_context_tokens": _ai_module.LLM_CONTEXT_TOKENS,
+        "llm_active": bool(_ai_module.effective_llm_api_key()),
         "env_swarmui_external_url": SWARMUI_EXTERNAL_URL,
         "env_android_emulator_url": ANDROID_EMULATOR_URL,
         "env_editor_external_url": EDITOR_EXTERNAL_URL,
@@ -3900,6 +3928,10 @@ def settings_system_save(
     request: Request,
     ollama_model: str = Form(""),
     ollama_url: str = Form(""),
+    llm_url: str = Form(""),
+    llm_model: str = Form(""),
+    llm_api_key: str = Form(""),
+    llm_context_tokens: str = Form(""),
     swarmui_external_url: str = Form(""),
     android_emulator_url: str = Form(""),
     editor_external_url: str = Form(""),
@@ -3956,6 +3988,10 @@ def settings_system_save(
 ):
     ollama_model = ollama_model.strip()
     ollama_url = ollama_url.strip().rstrip("/")
+    llm_url = llm_url.strip().rstrip("/")
+    llm_model = llm_model.strip()
+    llm_api_key = llm_api_key.strip()
+    llm_context_tokens = llm_context_tokens.strip()
     swarmui_external_url = swarmui_external_url.strip().rstrip("/")
     android_emulator_url = android_emulator_url.strip().rstrip("/")
     editor_external_url = editor_external_url.strip().rstrip("/")
@@ -3963,6 +3999,7 @@ def settings_system_save(
     ollama_keep_alive = ollama_keep_alive.strip()[:32]
     for label, val in (
         ("Ollama URL", ollama_url),
+        ("Unsloth URL", llm_url),
         ("SwarmUI external URL", swarmui_external_url),
         ("Android emulator URL", android_emulator_url),
         ("Content editor URL", editor_external_url),
@@ -4002,6 +4039,7 @@ def settings_system_save(
         ("ollama_num_thread", "CPU threads", ollama_num_thread, int, 0, 256),
         ("ollama_main_gpu", "Primary GPU index", ollama_main_gpu, int, 0, 15),
         ("ollama_vram_override_mb", "VRAM override (MB)", ollama_vram_override_mb, int, 0, 1048576),
+        ("llm_context_tokens", "Unsloth context window (tokens)", llm_context_tokens, int, 1024, 1048576),
     ):
         val, err = _parse_optional_number(label, raw, kind, lo, hi)
         if err:
@@ -4067,6 +4105,9 @@ def settings_system_save(
     settings = get_app_settings(db)
     settings.ollama_model = ollama_model
     settings.ollama_url = ollama_url
+    settings.llm_url = llm_url
+    settings.llm_model = llm_model
+    settings.llm_api_key = llm_api_key
     settings.swarmui_external_url = swarmui_external_url
     settings.android_emulator_url = android_emulator_url
     settings.editor_external_url = editor_external_url

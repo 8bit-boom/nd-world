@@ -41,7 +41,7 @@ async def test_status_hits_ollama_once_across_repeated_calls_within_ttl(monkeypa
 
     r1 = await ai_module.status()
     r2 = await ai_module.status()
-    assert r1 == r2 == {"status": "ok", "model": ai_module.effective_ollama_model(), "loaded_models": ["gemma3:12b"]}
+    assert r1 == r2 == {"status": "ok", "model": ai_module.effective_ollama_model(), "loaded_models": ["gemma3:12b"], "backend": "ollama"}
     assert len(calls) == 1
 
 

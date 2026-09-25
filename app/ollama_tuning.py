@@ -651,12 +651,17 @@ def _best_ctx_fitting(weights_mb: int, budget_mb: float, params_b: float, kv_typ
 
 def _volta_note(hardware: dict) -> Optional[str]:
     """One advisory note when the detected GPU is a Volta-class card (V100 /
-    TITAN V). Ollama still officially supports Volta (compute capability
-    7.0) and flash attention + q8_0 KV cache both work on it, but NVIDIA's
-    CUDA 13 toolkit dropped Volta — so a future Ollama release that moves
-    to CUDA 13 builds would stop working on this card, and the fix is
-    pinning the last CUDA 12 image tag (see docs/GPU_SETUP.md). Detection
-    is name-based best-effort against whatever `hardware["gpus"]` ended up
+    TITAN V), for the legacy Ollama/SwarmUI recommendation this function
+    backs (recommend_settings() below) — see _unsloth_recommendation() for
+    the Studio-side equivalent advice. Ollama still officially supports
+    Volta (compute capability 7.0) and flash attention + q8_0 KV cache both
+    work on it, but NVIDIA's CUDA 13 toolkit dropped Volta — so a future
+    Ollama release that moves to CUDA 13 builds would stop working on this
+    card, and the fix is pinning the last CUDA 12 image tag (see
+    docs/GPU_SETUP.md). The same CUDA-13-drops-Volta risk applies to the
+    Unsloth image too (verified: docs/UNSLOTH_PHASE0_FINDINGS.md I-7) — pin
+    its tag the same way once that's the active backend. Detection is
+    name-based best-effort against whatever `hardware["gpus"]` ended up
     populated with — nvidia-smi, AMD sysfs (never matches — no AMD Volta),
     SwarmUI's own reported GPU (_detect_swarmui_gpus), or a GM-entered
     preset — so a card nd-world's own container can't see directly still
@@ -671,6 +676,46 @@ def _volta_note(hardware: dict) -> Optional[str]:
                 "ollama image tag (see docs/GPU_SETUP.md in the repo)."
             )
     return None
+
+
+def _unsloth_recommendation(*, model: str, params_b: Optional[float], weights_mb: Optional[int],
+                            vram_total_mb: Optional[int]) -> dict:
+    """The Studio-side counterpart of an Ollama recommendation (migration
+    plan §8): which quant tier to download, what load-time context to set,
+    and the Precision/Low-VRAM toggles — everything the "Detected hardware"
+    panel can honestly advise for the Unsloth backend, where those knobs
+    live in Studio's per-model settings rather than in any request or env
+    file. Kept advisory-only; Studio's Model Hub is where the choices
+    actually get applied."""
+    rec: dict = {"model": model}
+    if params_b is None and not weights_mb:
+        rec["notes"] = ["Couldn't determine this model's size — no quant recommendation."]
+        return rec
+    p = params_b or 7.0
+    w = weights_mb or int(p * 1000 * 0.6)  # rough GGUF weight guess from params
+    if vram_total_mb and w >= vram_total_mb * 0.75:
+        rec["quant"] = "a 4-bit quant (e.g. UD-IQ4_NL / Q4_K_M)"
+        rec["notes"] = [
+            f"~{w} MB of weights against {vram_total_mb} MB VRAM is tight — a 4-bit quant "
+            "is the realistic tier, and expect the image model to evict this model "
+            "on a single card (Studio auto-swaps; a chat→image→chat round trip "
+            "costs a model load each way).",
+        ]
+    elif vram_total_mb and w >= vram_total_mb * 0.4:
+        rec["quant"] = "a 4–5-bit quant"
+        rec["notes"] = [
+            f"~{w} MB of weights fits {vram_total_mb} MB VRAM with room for context "
+            "at a 4–5-bit quant.",
+        ]
+    else:
+        rec["quant"] = "an 8-bit quant (e.g. Q8_0)"
+        rec["notes"] = [f"~{w} MB of weights fits comfortably — an 8-bit quant preserves quality."]
+    rec["notes"].append(
+        "Set the load-time context in Studio's per-model settings to match "
+        "LLM_CONTEXT_TOKENS (default 16384), and on a Volta/V100 use Precision "
+        "fp16 + non-flash attention + Low VRAM for image models."
+    )
+    return rec
 
 
 def recommend_settings(*, model: str, hardware: dict, parameter_size: str = "", size_bytes: Optional[int] = None,
@@ -699,7 +744,8 @@ def recommend_settings(*, model: str, hardware: dict, parameter_size: str = "", 
         return {**base, "fit": "unknown", "per_request": {}, "server": {}, "notes": [
             "No GPU was detected and no VRAM was entered below — enter your "
             "card's total VRAM (or 0 if you have none) for a real recommendation.",
-        ]}
+        ], "unsloth": _unsloth_recommendation(
+            model=model, params_b=params_b, weights_mb=weights_mb, vram_total_mb=None)}
 
     if vram_total_mb <= 0:
         ram_budget = (ram_total_mb or 8192) // 2
@@ -709,13 +755,16 @@ def recommend_settings(*, model: str, hardware: dict, parameter_size: str = "", 
             "quantization are GPU-side and won't help here.",
         ], "per_request": {
             "num_gpu": 0, "num_thread": max(1, min(cpu_cores, 16)), "num_ctx": num_ctx,
-        }, "server": {"OLLAMA_NUM_PARALLEL": "1", "OLLAMA_KEEP_ALIVE": "30m"}}
+        }, "server": {"OLLAMA_NUM_PARALLEL": "1", "OLLAMA_KEEP_ALIVE": "30m"},
+        "unsloth": _unsloth_recommendation(
+            model=model, params_b=params_b, weights_mb=weights_mb, vram_total_mb=vram_total_mb)}
 
     if weights_mb is None or params_b is None:
         return {**base, "fit": "unknown", "per_request": {"num_gpu": 999}, "server": {}, "notes": [
             "Couldn't determine this model's size, so context/bitrate can't be sized — "
             "showing a generic \"use the GPU\" setting only.",
-        ]}
+        ], "unsloth": _unsloth_recommendation(
+            model=model, params_b=params_b, weights_mb=weights_mb, vram_total_mb=vram_total_mb)}
 
     imagegen_reserve_mb = max(0, imagegen_reserve_mb)
     budget = vram_total_mb - _RESERVE_MB - imagegen_reserve_mb
@@ -764,7 +813,9 @@ def recommend_settings(*, model: str, hardware: dict, parameter_size: str = "", 
             )
         return {**base, "fit": "full_gpu", "per_request": {
             "num_gpu": 999, "num_batch": 512, "num_ctx": chosen_ctx,
-        }, "server": server, "notes": notes}
+        }, "server": server, "notes": notes,
+        "unsloth": _unsloth_recommendation(
+            model=model, params_b=params_b, weights_mb=weights_mb, vram_total_mb=vram_total_mb)}
 
     partial_notes = [
         "Only part of this model fits — Ollama will split it across GPU and RAM "
@@ -782,4 +833,6 @@ def recommend_settings(*, model: str, hardware: dict, parameter_size: str = "", 
         partial_notes.append(volta)
     return {**base, "fit": "partial_gpu", "per_request": {"num_ctx": 4096}, "server": {
         "OLLAMA_KEEP_ALIVE": "5m", "OLLAMA_MAX_LOADED_MODELS": "1",
-    }, "notes": partial_notes}
+    }, "notes": partial_notes,
+    "unsloth": _unsloth_recommendation(
+        model=model, params_b=params_b, weights_mb=weights_mb, vram_total_mb=vram_total_mb)}

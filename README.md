@@ -423,11 +423,8 @@ Then open the **AI → Image Gen** tab and refresh the model dropdown.
 
 ### Step 7 — Install ComfyUI-Manager (optional)
 
-```bash
-bash install-comfyui-manager.sh /mnt/DeadPool/apps/swarmui/dlbackend/ComfyUI
-```
-
-The script auto-detects the correct path and installs ComfyUI-Manager into `custom_nodes/`.
+With the legacy SwarmUI stack deprecated, this helper script was removed. Install
+ComfyUI-Manager manually if you still run the legacy `swarmui` profile.
 
 ### Auto-updates (Watchtower)
 
@@ -440,9 +437,15 @@ The script auto-detects the correct path and installs ComfyUI-Manager into `cust
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DB_PATH` | `/data/world.db` | Path to the SQLite database file |
-| `OLLAMA_URL` | `http://ollama:11434` | URL of the Ollama instance (pre-configured to bundled container) |
-| `OLLAMA_MODEL` | `gemma4:26b` | Default LLM model for AI chat |
-| `IMAGEGEN_TYPE` | `swarmui` | Image generator backend: `swarmui` or `comfyui` |
+| `OLLAMA_URL` | `http://ollama:11434` | URL of the Ollama instance (pre-configured to bundled container) — legacy backend, used only while `UNSLOTH_API_KEY` is unset |
+| `OLLAMA_MODEL` | `gemma4:26b` | Default LLM model for AI chat (legacy Ollama backend) |
+| `UNSLOTH_URL` | `http://unsloth:8000` | Unsloth Studio URL — the single AI backend (chat + image gen) when an API key is set |
+| `UNSLOTH_API_KEY` | _(empty)_ | Studio API key (create in Studio → Settings → API). Setting this switches AI chat **and** image generation to Unsloth; blank = legacy Ollama/SwarmUI backends |
+| `UNSLOTH_MODEL` | `unsloth/gemma-4-26B-A4B-it-GGUF` | Chat model — a repo id downloaded in Studio's Model Hub |
+| `UNSLOTH_IMAGE_MODEL` | `unsloth/z-image-turbo-GGUF` | Image model downloaded in Studio's Model Hub |
+| `UNSLOTH_STUDIO_PASSWORD` | _(empty)_ | Login password for the Studio web UI (port 8000) |
+| `LLM_CONTEXT_TOKENS` | `16384` | The load-time context window the Studio chat model was loaded with — sizes the recap chunking math (llama.cpp fixes context at load, unlike Ollama's per-request `num_ctx`) |
+| `IMAGEGEN_TYPE` | `swarmui` | Legacy image generator backend: `swarmui` or `comfyui`. Ignored while the Unsloth backend is active |
 | `IMAGEGEN_URL` | `http://swarmui:7801` | Internal URL of the image generator API |
 | `SWARMUI_EXTERNAL_URL` | _(empty)_ | Browser-accessible SwarmUI URL for the Image Studio iframe |
 | `ND_ALLOWED_HOSTS` | `*` | Comma-separated allowed `Host` headers (security hardening) |
@@ -451,7 +454,7 @@ The script auto-detects the correct path and installs ComfyUI-Manager into `cust
 | `GM_NAME` | `GM` | Display name for the bootstrapped GM account |
 | `GM_PASSWORD_RESET` | _(empty)_ | Set (alongside `GM_EMAIL`) and restart to force-reset a locked-out GM's password — the GM has no one else with admin rights over their own account, unlike a player (who the GM can reset from the world's Members list). Logs out every session/trusted device for that account. **Remove it after the restart** — it re-applies (and re-logs-everyone-out) on every boot while set |
 | `COOKIE_SECURE` | `false` | Set `true` once served over HTTPS (see [Accounts, Invites & Going Public](#accounts-invites--going-public)) |
-| `COMPOSE_PROFILES` | _(empty)_ | Not read by the app itself — Docker Compose reads it to decide which optional services to start. Empty starts just `world`; set any comma-separated combination of `ollama`, `whisper`, `swarmui` to also start those containers |
+| `COMPOSE_PROFILES` | _(empty)_ | Not read by the app itself — Docker Compose reads it to decide which optional services to start. Empty starts just `world`; set any comma-separated combination of `unsloth`, `whisper`, `android`, `editor` — or the legacy pair `ollama,swarmui` (kept until the migration cutover; don't mix with `unsloth`) |
 | `AI_MODELS_DIR` | `./ai-models` | Not read by the app itself — Docker Compose reads it to pick where Ollama's text models, Whisper's transcription model, and SwarmUI's image checkpoints/LoRAs/VAEs are stored on the host (in `ollama/`, `whisper/`, and `swarmui/` subfolders), instead of separate Docker-managed volumes. Only matters if the corresponding profile(s) are enabled |
 | `WHISPER_MODEL_FILE` | `ggml-large-v3-turbo.bin` | Not read by the app itself — Docker Compose reads it to pick which file under `<AI_MODELS_DIR>/whisper/` the Whisper server loads. Only matters if the `whisper` profile is enabled |
 
@@ -459,33 +462,65 @@ The script auto-detects the correct path and installs ComfyUI-Manager into `cust
 
 ## AI Setup
 
-Ollama (AI chat), Whisper (audio-attachment transcription), and SwarmUI (AI image
-generation) are all **optional** — nd-world runs fine without any of them and just
-shows those features as unavailable (grey status dot, "AI unavailable"). They're
-skipped by default; `bash scripts/setup.sh` asks whether to enable them, or set
-`COMPOSE_PROFILES` in `.env` yourself (see table above) and run `docker compose up -d`.
-All three are sizeable downloads and Ollama in particular wants a decent CPU/GPU, so
-it's worth leaving any of them off you don't plan to use.
+**Unsloth Studio** is the primary AI backend — it serves both AI chat and image
+generation from a single container. Whisper (audio-attachment transcription) is
+optional and unchanged. The legacy Ollama (chat) + SwarmUI (image) pair is still
+shipped for rollback, but everything below marked "legacy" is scheduled for
+removal after the migration cutover — see [docs/UNSLOTH_PHASE0_FINDINGS.md](docs/UNSLOTH_PHASE0_FINDINGS.md).
+
+### Unsloth Studio (chat + images)
+
+Unsloth Studio is defined in all compose files behind the `unsloth` Compose
+profile — enable it via `bash scripts/setup.sh` or set `COMPOSE_PROFILES=unsloth`
+in `.env` and run `docker compose up -d`. The first boot downloads the Studio
+image (several GB); chat and image models are then fetched from the Studio's
+Model Hub.
+
+**One-time setup:**
+
+1. Open the Studio UI (port 8000) and log in (username `unsloth`, password from
+   `UNSLOTH_STUDIO_PASSWORD`).
+2. Studio → Settings → API → create an API key.
+3. Paste the key into nd-world → ⚙️ Settings → **Unsloth (AI backend)** →
+   *API key*. The moment a key is saved, AI chat **and** image generation switch
+   to Unsloth automatically (no restart); clear the key to fall back to the
+   legacy Ollama/SwarmUI backends.
+4. Download models in Studio's Model Hub. Defaults (overridable via
+   `UNSLOTH_MODEL` / `UNSLOTH_IMAGE_MODEL`):
+   - Chat: `unsloth/gemma-4-26B-A4B-it-GGUF`
+   - Images: `unsloth/z-image-turbo-GGUF`
+
+Notes:
+- **Context size is fixed at model load** (llama.cpp semantics): set
+  *Context tokens* in Settings to match what the model was loaded with
+  (`LLM_CONTEXT_TOKENS`, default 16384) so recap chunking math is correct.
+- Idle models can be unloaded from the Studio UI; with an API key set the app
+  reloads on demand.
+- On a Tesla V100 (sm_70), pin the Studio image tag — `:latest` may not ship
+  sm_70 kernels (see findings doc, I-7) — and use fp16 everywhere (see
+  [docs/GPU_SETUP.md](docs/GPU_SETUP.md)).
+- API keys do not survive Studio container recreation — re-create the key and
+  update Settings after a rebuild.
 
 ### GPU acceleration (incl. the Tesla V100)
 
-Ollama, SwarmUI, and whisper.cpp all run much faster with an NVIDIA GPU —
-see **[docs/GPU_SETUP.md](docs/GPU_SETUP.md)** for the full walkthrough:
-host driver + nvidia-container-toolkit setup, the ready-made
-`docker-compose.gpu.yml` override (gives both `ollama` and `swarmui` the
-card), TrueNAS SCALE GPU assignment for each service, model
-recommendations by VRAM (16 GB vs 32 GB V100), sizing guidance for running
-Ollama and SwarmUI on the *same* card at once, the flash-attention /
-q8_0-KV / single-parallel tuning set, and the CUDA 13 / driver-580
-caveats specific to Volta cards.
+Unsloth Studio, the legacy Ollama/SwarmUI pair, and whisper.cpp all run much
+faster with an NVIDIA GPU — see **[docs/GPU_SETUP.md](docs/GPU_SETUP.md)** for
+the full walkthrough: host driver + nvidia-container-toolkit setup, the
+ready-made `docker-compose.gpu.yml` override, TrueNAS SCALE GPU assignment,
+model recommendations by VRAM (16 GB vs 32 GB V100), the fp16-everywhere /
+non-flash-attention tuning set for the V100 profile, and the CUDA 13 /
+driver-580 caveats specific to Volta cards (this same CUDA-13-drops-Volta risk
+applies to the Unsloth image too — see finding I-7 in
+[docs/UNSLOTH_PHASE0_FINDINGS.md](docs/UNSLOTH_PHASE0_FINDINGS.md)).
 
-**V100 owners:** SwarmUI's own first-run install currently pulls a
-PyTorch build that cannot run on Volta at all — a device reservation
-alone doesn't fix this. Run `./fix-swarmui-volta-torch.sh` (repo root)
-after SwarmUI's first start; see GPU_SETUP.md §3b for why and how to
+**Still running the legacy SwarmUI backend?** Its own first-run install
+currently pulls a PyTorch build that cannot run on Volta at all — a device
+reservation alone doesn't fix this. Run `./fix-swarmui-volta-torch.sh` (repo
+root) after SwarmUI's first start; see GPU_SETUP.md §3b for why and how to
 check it's still needed after updates.
 
-### Ollama (chat)
+### Ollama (chat) — legacy backend
 
 Ollama is defined in both `docker-compose.yml` and `truenas-compose.yml` behind the
 `ollama` Compose profile — it only starts if that profile is active.
@@ -565,7 +600,7 @@ indexed for semantic search; it just doesn't contribute graph edges (auto-creati
 new Entities from unmatched notes may come later). Leave the vault path blank to
 disable this entirely — a world that never sets it behaves exactly as before.
 
-### SwarmUI (image generation)
+### SwarmUI (image generation) — legacy backend
 
 SwarmUI is defined in all compose files behind the `swarmui` Compose profile — see
 [AI Setup](#ai-setup) above to enable it. On first boot it downloads the ComfyUI backend — this takes **5–15 minutes** the first time.
@@ -1004,7 +1039,6 @@ nd-world/
 ├── .env.example             # SECRET_KEY / GM_EMAIL / GM_PASSWORD / COOKIE_SECURE template
 ├── Dockerfile
 ├── requirements.txt
-└── install-comfyui-manager.sh
 ```
 
 ---

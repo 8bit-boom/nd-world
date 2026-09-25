@@ -17,6 +17,16 @@
         ⚠ ComfyUI backend: only Model, Size, Steps, CFG, Seed, Sampler, Scheduler, Batch, and Upscale are sent. LoRA, VAE, CLIP skip, img2img, ControlNet, hires-fix, Refiner, FreeU, DynThresh, and IP-Adapter settings below are not supported on ComfyUI yet and will be ignored.
       </div>
 
+      <!-- Shown only when the configured backend is Unsloth Studio — the
+           /v1 images endpoint takes prompt/size/seed/batch/model only, and
+           models come from Studio's own Model Hub, so every SwarmUI-specific
+           panel below (admin buttons, backend status, Download Models,
+           Krea 2 quick setup, Download LoRA) is hidden by ai-chat-image.js
+           in that case rather than left as dead controls. -->
+      <div id="ig-unsloth-note" style="display:none;font-size:.72rem;color:var(--text-dim);background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:.4rem .55rem;margin-bottom:.5rem;line-height:1.4">
+        ℹ Unsloth backend: only Prompt, Model, Size, Seed, and Batch are sent — steps/CFG/sampler/negative and every advanced panel below are ignored (turbo models don't need them). Models are downloaded and switched in Studio's Model Hub; the image model is loaded automatically on first request.
+      </div>
+
       <!-- Model -->
       <div>
         <label class="ig-label">Model</label>
@@ -48,7 +58,7 @@
       </div>
 
       <!-- Download models -->
-      <details class="ig-collapsible">
+      <details class="ig-collapsible" id="ig-dl-models-section">
         <summary>⬇ Download Models</summary>
         <div class="ig-section-body">
           <div style="font-size:.72rem;color:var(--text-dim);margin-bottom:.5rem;line-height:1.4">
@@ -88,8 +98,9 @@
            that path the way SWARMUI_MODELS_DIR does for model files).
            install-comfyui-gguf-krea2.sh (repo root) covers that one
            remaining step as a standalone script, run on the SwarmUI host
-           itself rather than from inside nd-world. -->
-      <details class="ig-collapsible">
+           itself rather than from inside nd-world — legacy SwarmUI backend
+           only; Unsloth selects Krea 2 GGUF natively with no such step. -->
+      <details class="ig-collapsible" id="ig-krea2-section">
         <summary>⚡ Krea 2 GGUF Quick Setup</summary>
         <div class="ig-section-body">
           <div style="font-size:.72rem;color:var(--text-dim);margin-bottom:.5rem;line-height:1.4">
@@ -114,7 +125,7 @@
            Models" above (subfolder="LoRA" is already one of its datalist
            suggestions), just given its own discoverable section instead of
            requiring a GM to know to type "LoRA" into a free-text field. -->
-      <details class="ig-collapsible">
+      <details class="ig-collapsible" id="ig-dl-lora-section">
         <summary>⬇ Download LoRA</summary>
         <div class="ig-section-body">
           <div style="font-size:.72rem;color:var(--text-dim);margin-bottom:.5rem;line-height:1.4">

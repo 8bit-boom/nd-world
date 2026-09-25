@@ -175,6 +175,40 @@
       <p style="color:var(--neon2);font-size:.82rem">{{ system_error }}</p>
       {% endif %}
       <div class="form-group">
+        <label for="llm-api-key">Unsloth Studio API key (AI backend — blank = legacy Ollama/SwarmUI)</label>
+        <input id="llm-api-key" name="llm_api_key" value="{{ settings.llm_api_key or '' }}" placeholder="{{ env_unsloth_api_key or 'not set' }}" autocomplete="off">
+        <small style="color:var(--text-dim);font-size:.75rem;display:block;margin-top:.2rem">
+          Setting this switches AI chat, embeddings and image generation to Unsloth Studio
+          (see the <code>unsloth</code> service in docker-compose.yml). Create the key in
+          Studio → Settings → API. The key does not survive container recreation — after a
+          redeploy, re-create it here.
+        </small>
+      </div>
+      <div class="form-group">
+        <label for="llm-url">Unsloth URL</label>
+        <input id="llm-url" name="llm_url" value="{{ settings.llm_url or '' }}" placeholder="{{ env_unsloth_url or 'not set' }}">
+      </div>
+      <div class="form-group">
+        <label for="llm-model">Unsloth chat model</label>
+        <input id="llm-model" name="llm_model" value="{{ settings.llm_model or '' }}" placeholder="{{ env_unsloth_model or 'not set' }}">
+      </div>
+      <div class="form-group">
+        <label for="llm-context-tokens">Unsloth context window (tokens)</label>
+        <input id="llm-context-tokens" type="number" step="1" min="1024" name="llm_context_tokens"
+               value="{{ settings.llm_context_tokens if settings.llm_context_tokens is not none else '' }}" placeholder="{{ env_llm_context_tokens }} (env default)"
+               style="max-width:160px">
+        <small style="color:var(--text-dim);font-size:.75rem;display:block;margin-top:.2rem">
+          Must match the load-time context set in Studio's per-model settings — unlike
+          Ollama, llama.cpp fixes context at model load, so this value sizes the
+          chunking math rather than being sent per request.
+        </small>
+      </div>
+      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Legacy Ollama backend</h2>
+      <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
+        Only used while the Unsloth API key above is blank (the <code>ollama</code> Compose
+        profile). These fields keep working unchanged through the migration cutover.
+      </p>
+      <div class="form-group">
         <label for="ollama-model">Ollama model (AI chat)</label>
         <input id="ollama-model" name="ollama_model" value="{{ settings.ollama_model or '' }}" placeholder="{{ env_ollama_model }} (env default)">
       </div>
@@ -211,16 +245,19 @@
                style="max-width:160px">
       </div>
       {% endfor %}
-      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Ollama generation tuning</h2>
+      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Generation tuning</h2>
       <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
         Two different things live on this page. <strong>Generation tuning</strong> below is
         sent with every AI request (recaps, Ask AI, fact extraction) — it applies
-        immediately, no restart. <strong>Server tuning</strong> further down configures the
-        Ollama <em>process</em> itself (flash attention, KV cache type, parallelism);
-        Ollama only reads those at start-up and has no runtime API for them, so saving
-        that section writes them to a file the "ollama" container reads on its next
-        restart, and tells you when a restart is due. Leave any field blank here to fall
-        back to Ollama's/the model's own default.
+        immediately, no restart, on both the Unsloth and the legacy Ollama backend
+        (under Unsloth, temperature/top-p/top-k/seed/min-p/repeat-penalty/max-tokens pass
+        through; Ollama-only knobs are ignored there). <strong>Server tuning</strong> further
+        down configures the legacy Ollama <em>process</em> itself (flash attention, KV cache
+        type, parallelism); Ollama only reads those at start-up and has no runtime API for
+        them, so saving that section writes them to a file the "ollama" container reads on
+        its next restart, and tells you when a restart is due. (Unsloth's equivalents live
+        in Studio's per-model settings, not here.) Leave any field blank here to fall
+        back to the backend's/the model's own default.
       </p>
       <div class="form-group">
         <label for="ollama-temperature">Temperature (0–2)</label>
@@ -258,6 +295,7 @@
       <div class="form-group">
         <label for="ollama-keep-alive">Keep-alive (how long to keep the model loaded, e.g. 5m, 1h, -1, 0)</label>
         <input id="ollama-keep-alive" name="ollama_keep_alive" value="{{ settings.ollama_keep_alive or '' }}" placeholder="5m (Ollama default)">
+        <small style="color:var(--text-dim);font-size:.75rem;display:block;margin-top:.2rem">Ollama backend only — Unsloth manages model residency via Studio's idle auto-unload.</small>
       </div>
 
       <details style="margin:.8rem 0">
@@ -364,7 +402,12 @@
         <button type="button" id="hw-apply" class="btn-secondary" style="display:none;margin-top:.6rem">Apply recommended to the fields below</button>
       </div>
 
-      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">🖥 Ollama server tuning (needs a restart)</h2>
+      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">🖥 Ollama server tuning (legacy backend — needs a restart)</h2>
+      <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
+        Only applies while the legacy Ollama backend is in use (no Unsloth API key set).
+        Under Unsloth these knobs don't exist — the equivalents (context length, precision,
+        attention) are per-model settings inside Studio.
+      </p>
       <div id="ollama-srv-status" style="border:1px solid var(--border);border-radius:6px;padding:.7rem 1rem;font-size:.8rem;margin-bottom:1rem
         {%- if not ollama_server_status.writable %};background:rgba(255,180,60,.1);border-color:#e0a030
         {%- elif not ollama_server_status.wired %};background:rgba(255,180,60,.1);border-color:#e0a030

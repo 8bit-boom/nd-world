@@ -21,6 +21,31 @@ _log = logging.getLogger("nd.ai")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:26b")
 
+# Unsloth Studio — the single AI backend for chat (and, per Phase 3, image
+# generation) once the migration cuts over; see docs/UNSLOTH_PHASE0_FINDINGS.md
+# for the verified /v1 API surface and docs/nd-world-unsloth-migration-plan.md
+# for the plan. When UNSLOTH_API_KEY is set, every LLM call goes through
+# app.llm_client's OpenAI-dialect shim; when unset, nd-world keeps talking to
+# the legacy Ollama backend below (kept until the Phase 7 cutover — the
+# rollback story in the migration plan §11 is "flip COMPOSE_PROFILES back AND
+# run the old app code", so this dual-mode bridge exists only for the
+# transition window, not as a permanent two-backend design).
+UNSLOTH_URL = os.getenv("UNSLOTH_URL", "").rstrip("/")
+UNSLOTH_API_KEY = os.getenv("UNSLOTH_API_KEY", "")
+UNSLOTH_MODEL = os.getenv("UNSLOTH_MODEL", "")
+# Image-generation model downloaded in Studio's Model Hub (e.g. z-image-turbo
+# or Krea 2 Turbo). When this AND the API key are set, Unsloth also owns
+# image generation (migration plan §7) — the legacy IMAGEGEN_TYPE backend
+# below only runs while the swarmui/comfyui profiles are still in use.
+UNSLOTH_IMAGE_MODEL = os.getenv("UNSLOTH_IMAGE_MODEL", "")
+
+# The context window the chat model was loaded with in Studio. Unlike
+# Ollama's per-request num_ctx, llama.cpp fixes context at model load, so
+# this is now the single source the chunk-sizing math budgets against
+# (migration plan §6.3) — it MUST match the load-time setting in Studio or
+# chunks will mis-size. Clamped to MAX_AUTO_NUM_CTX like any computed ctx.
+LLM_CONTEXT_TOKENS = max(1024, int(os.getenv("LLM_CONTEXT_TOKENS", "16384")))
+
 # Concurrency limits for BACKGROUND-JOB work only (app/audio_jobs.py,
 # app/chat_jobs.py) — not the interactive chat/ask-AI/condense routes a GM
 # is actively waiting on, which should never queue behind a background job.
@@ -64,23 +89,73 @@ WHISPER_TIMEOUT_SECONDS = float(os.getenv("WHISPER_TIMEOUT_SECONDS", str(8 * 360
 # Runtime overrides (set from AppSettings via POST /settings/system, without
 # needing a restart — see main.py's _refresh_settings_overrides()). Blank means
 # "use the env-var default above."
-_ollama_url_override: str = ""
-_ollama_model_override: str = ""
+_llm_url_override: str = ""
+_llm_model_override: str = ""
+_llm_api_key_override: str = ""
+_llm_context_tokens_override: int = 0
 _whisper_url_override: str = ""
 
 
-def set_ollama_override(url: str, model: str) -> None:
-    global _ollama_url_override, _ollama_model_override
-    _ollama_url_override = (url or "").rstrip("/")
-    _ollama_model_override = model or ""
+def set_llm_override(url: str = "", model: str = "", api_key: str = "", context_tokens: int = 0) -> None:
+    global _llm_url_override, _llm_model_override, _llm_api_key_override, _llm_context_tokens_override
+    _llm_url_override = (url or "").rstrip("/")
+    _llm_model_override = model or ""
+    _llm_api_key_override = api_key or ""
+    _llm_context_tokens_override = max(0, int(context_tokens or 0))
+
+
+def effective_llm_api_key() -> str:
+    """The Unsloth Studio API key (Bearer on every /v1 call). Empty = the
+    legacy Ollama backend is in use — this is the ONE switch that decides
+    which dialect _client() speaks, so gating here keeps every other
+    effective_* helper honest."""
+    return _llm_api_key_override or UNSLOTH_API_KEY
+
+
+def effective_llm_url() -> str:
+    if _llm_url_override:
+        return _llm_url_override
+    if effective_llm_api_key() and UNSLOTH_URL:
+        return UNSLOTH_URL
+    return OLLAMA_URL
+
+
+def effective_llm_model() -> str:
+    if _llm_model_override:
+        return _llm_model_override
+    if effective_llm_api_key() and UNSLOTH_MODEL:
+        return UNSLOTH_MODEL
+    return OLLAMA_MODEL
+
+
+def llm_context_tokens() -> int:
+    """The configured load-time context window (see LLM_CONTEXT_TOKENS
+    above) — runtime-overridable from Settings like the url/model."""
+    return _llm_context_tokens_override or LLM_CONTEXT_TOKENS
+
+
+def llm_backend_name() -> str:
+    """"unsloth" or "ollama" — used in error/sentinel strings and status
+    payloads so a mixed-deployment GM can tell which backend answered."""
+    return "unsloth" if effective_llm_api_key() else "ollama"
+
+
+def _backend_label() -> str:
+    return "Unsloth" if effective_llm_api_key() else "Ollama"
+
+
+# Legacy names, kept as one-release shims per migration plan §6.1 — every
+# caller still saying "ollama" keeps working until the Phase 4 wiring
+# renames them for real.
+set_ollama_override = set_llm_override
 
 
 def effective_ollama_url() -> str:
-    return _ollama_url_override or OLLAMA_URL
+    return effective_llm_url()
 
 
 def effective_ollama_model() -> str:
-    return _ollama_model_override or OLLAMA_MODEL
+    return effective_llm_model()
 
 
 def set_whisper_override(url: str) -> None:
@@ -373,7 +448,7 @@ def _known_model_thinks(model: str) -> bool:
     (currently just the Unsloth IQ4_NL quantisation) — see
     _model_override_thinks just below for the GM-editable equivalent that
     covers everything else without needing a code change."""
-    return any(m.get("id") == model and m.get("thinking") for m in KNOWN_MODELS)
+    return any(m.get("id") == model and m.get("thinking") for m in _builtin_models())
 
 
 def _model_override_thinks(model: str) -> bool:
@@ -479,6 +554,20 @@ async def _chat_kwargs(extra_options: dict = None, think: bool = False, model: s
         kwargs["keep_alive"] = keep_alive
     return kwargs
 
+
+def _is_thinking_rejection(exc: Exception) -> bool:
+    """True if `exc` is an upfront backend rejection of a think=true request
+    (migration plan §6.4). Ollama's exact wording is the historical trigger;
+    llama.cpp/Unsloth says something else entirely, so under the Unsloth
+    backend ANY 400 on a request that carried the thinking kwarg means the
+    same thing. Only the status code is trusted there — never the message —
+    and the retry path in generate_chat/stream_chat is guarded by think=
+    False on the recursion, so a same-cause 400 during the retry surfaces
+    as a normal sentinel instead of looping."""
+    if "does not support thinking" in (getattr(exc, "error", None) or ""):
+        return True
+    return bool(effective_llm_api_key()) and getattr(exc, "status_code", None) == 400
+
 _DATA_DIR = Path(os.getenv("DB_PATH", "/data/world.db")).parent
 _CUSTOM_MODELS_FILE = _DATA_DIR / "ai_models.json"
 
@@ -495,9 +584,36 @@ KNOWN_MODELS = [
     },
 ]
 
+# The same registry for the Unsloth backend — Studio model ids (the /v1
+# layer names models by repo id, with the quant picked at download/load
+# time — see findings I-5). Kept as a SEPARATE list from KNOWN_MODELS (not
+# merged) because the two backends' id namespaces are disjoint: a legacy
+# ollama-style id means nothing to Studio and vice versa (migration plan
+# §11: unknown stored ids degrade to "unavailable", never crash).
+UNSLOTH_KNOWN_MODELS = [
+    {
+        "id": "unsloth/gemma-4-26B-A4B-it-GGUF",
+        "label": "Gemma 4 26B (Unsloth, IQ4_NL)",
+        "thinking": True,
+    },
+]
 
-def _client() -> _ollama.AsyncClient:
-    return _ollama.AsyncClient(host=effective_ollama_url())
+
+def _builtin_models() -> list[dict]:
+    """The builtin model registry for whichever LLM backend is active."""
+    return UNSLOTH_KNOWN_MODELS if effective_llm_api_key() else KNOWN_MODELS
+
+
+def _client():
+    """The LLM backend client for this process. Unsloth mode (an API key is
+    configured) returns app.llm_client's OpenAI-dialect shim over httpx;
+    otherwise the legacy ollama AsyncClient — the dual-mode bridge the
+    migration plan's rollback story needs until the Phase 7 cutover (see
+    module header)."""
+    if effective_llm_api_key():
+        from .llm_client import UnslothClient
+        return UnslothClient(effective_llm_url(), effective_llm_api_key())
+    return _ollama.AsyncClient(host=effective_llm_url())
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────
@@ -664,8 +780,9 @@ def delete_preset(label: str) -> None:
 def all_models() -> list[dict]:
     hidden = load_hidden_ids()
     custom = load_custom_models()
-    seen = {m["id"] for m in KNOWN_MODELS}
-    visible_builtins = [m for m in KNOWN_MODELS if m["id"] not in hidden]
+    builtins = _builtin_models()
+    seen = {m["id"] for m in builtins}
+    visible_builtins = [m for m in builtins if m["id"] not in hidden]
     extra = [m for m in custom if m["id"] not in seen and m["id"] not in hidden]
     return visible_builtins + extra
 
@@ -898,6 +1015,12 @@ async def import_local_gguf_model(path: Path, model_name: str) -> AsyncGenerator
     if not model_name:
         yield {"error": "No model name given"}
         return
+    if effective_llm_api_key():
+        # Ollama's blob-push upload has no Unsloth equivalent — models are
+        # added through Studio's own Model Hub. Clear error instead of the
+        # AttributeError the shim would raise (see app.llm_client).
+        yield {"error": "Upload-from-PC needs the Ollama backend. With Unsloth, add the GGUF via Studio's Model Hub instead."}
+        return
     if not path.is_file():
         yield {"error": "Uploaded file is missing"}
         return
@@ -1017,12 +1140,29 @@ async def resident_models() -> list[dict]:
     in VRAM" section, since a 16GB card can't hold an LLM and a diffusion
     model at once and a GM needs to see what's actually using it.
 
+    Under Unsloth there is no .ps() equivalent — but /v1/models tags each
+    entry with a `loaded` bool (findings I-5), so the same panel degrades to
+    "currently loaded models" (no per-model size/VRAM split — Studio's own
+    UI shows that). Under the legacy Ollama backend this is .ps() exactly as
+    before.
+
     A model doesn't have to fit in VRAM entirely — Ollama offloads whatever
     doesn't fit to system RAM (running slower, but still working), so
     size_ram_bytes (size minus size_vram) is how much of THIS model is
     sitting in system RAM rather than on the GPU. unload_model() below frees
     both at once — Ollama has no notion of evicting only the RAM-resident
     part of a model that's split across both."""
+    if effective_llm_api_key():
+        try:
+            resp = await _client().list()
+        except Exception:
+            return []
+        return [
+            {"model": m.model, "size_bytes": None, "size_vram_bytes": None,
+             "size_ram_bytes": None, "expires_at": None}
+            for m in resp.models
+            if getattr(m, "loaded", False)
+        ]
     try:
         resp = await _client().ps()
     except Exception:
@@ -1047,7 +1187,12 @@ async def unload_model(model_id: str) -> bool:
     than waiting out its normal keep-alive timer). Returns False (not an
     exception) on failure so the caller can show a plain error instead of a
     500 — this is a manual "free up my GPU" action, not something that
-    should ever look like a crash."""
+    should ever look like a crash. Under Unsloth there is no equivalent
+    call at all — Studio's idle auto-unload owns residency — so this is a
+    documented no-op returning False there."""
+    if effective_llm_api_key():
+        _log.info("unload_model(%r): no-op under Unsloth — idle auto-unload owns residency", model_id)
+        return False
     try:
         await _client().generate(model=model_id, keep_alive=0)
         return True
@@ -1080,7 +1225,7 @@ def _empty_response_message(model: str, thinking_chars: int, done_reason: str | 
             "or a non-reasoning model.]"
         )
     detail = f"done_reason={done_reason}" if done_reason else "no done_reason reported"
-    return f"[empty response from {model} ({detail}) — try a different model, or check the Ollama server logs]"
+    return f"[empty response from {model} ({detail}) — try a different model, or check the {_backend_label()} server logs]"
 
 
 async def generate_chat(messages: list[dict], system: str = "", model: str = "", options: dict = None, think: bool = False) -> str:
@@ -1139,7 +1284,7 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
         return _empty_response_message(m, thinking_chars, done_reason)
     except _ollama.ResponseError as exc:
         _log.error("generate_chat Ollama error: %s %s", exc.status_code, exc.error)
-        if think and "does not support thinking" in (exc.error or ""):
+        if think and _is_thinking_rejection(exc):
             _record_thinking_result(m, think, failed=True)
             # Ollama flatly refused think=true for this model — not a
             # transient error, so retrying the identical call would just
@@ -1166,7 +1311,7 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
             else:
                 _log.warning("generate_chat model=%s: does not support thinking — retrying with think=False", m)
             return await generate_chat(retry_full, system="", model=m, options=options, think=False)
-        return f"[AI error: Ollama {exc.status_code}: {exc.error}]"
+        return f"[AI error: {_backend_label()} {exc.status_code}: {exc.error}]"
     except Exception as exc:
         _log.error("generate_chat unavailable: %s: %s", type(exc).__name__, exc)
         return f"[AI unavailable: {type(exc).__name__}: {exc}]"
@@ -1318,7 +1463,7 @@ async def stream_chat(
             yield {"type": "error", "text": msg} if emit_thinking else msg
     except _ollama.ResponseError as exc:
         _log.error("stream_chat Ollama error: %s %s", exc.status_code, exc.error)
-        if think and "does not support thinking" in (exc.error or "") and not yielded_any:
+        if think and _is_thinking_rejection(exc) and not yielded_any:
             _record_thinking_result(m, think, failed=True)
             # Same recovery as generate_chat — an upfront rejection means
             # no tokens have been yielded yet (guarded above defensively:
@@ -1342,7 +1487,7 @@ async def stream_chat(
             ):
                 yield piece
             return
-        msg = f"[AI error: Ollama {exc.status_code}: {exc.error}]"
+        msg = f"[AI error: {_backend_label()} {exc.status_code}: {exc.error}]"
         yield {"type": "error", "text": msg} if emit_thinking else _piece(msg)
     except Exception as exc:
         _log.error("stream_chat unavailable: %s: %s", type(exc).__name__, exc)
@@ -3163,17 +3308,23 @@ def _chars_per_token_estimate(text: str) -> int:
 
 
 def _effective_ctx_tokens() -> int:
-    """The context window window-first chunk callers budget against — the
-    GM's configured num_ctx (Settings > System) if set, else the
-    conservative low-end default. Kept as one helper (not inlined) because
-    every summarize-path budget goes through _transcript_chunk_char_budget,
-    which must derive its chunk size from exactly this window — a second
-    copy of the expression could silently drift and put a chunk that no
-    longer fits into the enforced context. (parse_facts_from_recap is
-    deliberately NOT on this list anymore: its chunk calls pin their own
-    num_ctx via _facts_parse_chunk_plan, so a small configured/default
-    window shrank its chunks to the 500-token floor instead of only
-    bounding what the pin needed to cover — see _facts_parse_chunk_plan.)"""
+    """The context window window-first chunk callers budget against. Under
+    Unsloth this is the load-time window (llm_context_tokens() — context is
+    fixed at model load in llama.cpp, unlike Ollama's per-request num_ctx;
+    see the migration plan §6.3), clamped to MAX_AUTO_NUM_CTX. Under the
+    legacy Ollama backend it stays the GM's configured num_ctx (Settings >
+    System) if set, else the conservative low-end default. Kept as one
+    helper (not inlined) because every summarize-path budget goes through
+    _transcript_chunk_char_budget, which must derive its chunk size from
+    exactly this window — a second copy of the expression could silently
+    drift and put a chunk that no longer fits into the enforced context.
+    (parse_facts_from_recap is deliberately NOT on this list anymore: its
+    chunk calls pin their own num_ctx via _facts_parse_chunk_plan, so a
+    small configured/default window shrank its chunks to the 500-token
+    floor instead of only bounding what the pin needed to cover — see
+    _facts_parse_chunk_plan.)"""
+    if effective_llm_api_key():
+        return min(MAX_AUTO_NUM_CTX, llm_context_tokens())
     return effective_ollama_options().get("num_ctx") or _DEFAULT_ASSUMED_CTX_TOKENS
 
 
@@ -3585,9 +3736,11 @@ async def status() -> dict:
     try:
         resp = await _client().list()
         models = [m.model for m in resp.models]
-        result = {"status": "ok", "model": effective_ollama_model(), "loaded_models": models}
+        result = {"status": "ok", "model": effective_ollama_model(), "loaded_models": models,
+                  "backend": llm_backend_name()}
     except Exception:
-        result = {"status": "unavailable", "model": effective_ollama_model()}
+        result = {"status": "unavailable", "model": effective_ollama_model(),
+                  "backend": llm_backend_name()}
     _status_cache = (now, result)
     return result
 
@@ -3600,6 +3753,7 @@ async def debug_info() -> dict:
         return {
             "ollama_url": effective_ollama_url(),
             "ollama_reachable": True,
+            "backend": llm_backend_name(),
             "loaded_models": models,
             "default_model": effective_ollama_model(),
             "whisper": whisper,
@@ -3608,6 +3762,7 @@ async def debug_info() -> dict:
         return {
             "ollama_url": effective_ollama_url(),
             "ollama_reachable": False,
+            "backend": llm_backend_name(),
             "error": f"{type(exc).__name__}: {exc}",
             "default_model": effective_ollama_model(),
             "whisper": whisper,
@@ -3621,11 +3776,21 @@ _IMAGEGEN_URL  = os.environ.get("IMAGEGEN_URL", "").rstrip("/")
 
 
 def _get_type() -> str:
+    # Unsloth wins when it's active (same rule as the chat backend) — the
+    # IMAGEGEN_TYPE env only describes the legacy add-on backends.
+    if effective_llm_api_key() and UNSLOTH_IMAGE_MODEL:
+        return "unsloth"
     return _IMAGEGEN_TYPE
 
 
 def _get_url() -> str:
+    if _get_type() == "unsloth":
+        return effective_llm_url()
     return _IMAGEGEN_URL
+
+
+def _unsloth_image_headers() -> dict:
+    return {"Authorization": f"Bearer {effective_llm_api_key()}"}
 
 
 # Live progress for whatever SwarmUI generation is currently in flight —
@@ -4813,6 +4978,12 @@ async def imagegen_status() -> dict:
         return {"ok": False, "reason": "not configured"}
     try:
         async with _httpx.AsyncClient(timeout=5) as c:
+            if t == "unsloth":
+                # Reachability of the Studio /v1 layer (auth required) — the
+                # image model itself loads on first request via media
+                # auto-switch (see the compose provisioning comments).
+                r = await c.get(f"{u}/v1/models", headers=_unsloth_image_headers())
+                return {"ok": r.status_code < 400, "type": t, "url": u}
             if t == "swarmui":
                 r = await c.post(f"{u}/API/GetNewSession", json={})
                 return {"ok": r.status_code < 400, "type": t, "url": u}
@@ -4826,6 +4997,10 @@ async def imagegen_status() -> dict:
 async def imagegen_loras() -> list:
     t, u = _get_type(), _get_url()
     if not t or not u:
+        return []
+    if t == "unsloth":
+        # The native endpoint accepts loras (findings I-1) but exposes no
+        # discovery shape we verified — report none rather than guessing.
         return []
     try:
         async with _httpx.AsyncClient(timeout=8) as c:
@@ -4897,6 +5072,10 @@ async def imagegen_models() -> list:
     t, u = _get_type(), _get_url()
     if not t or not u:
         return []
+    if t == "unsloth":
+        # /v1/models lists chat models only (findings I-1) — the configured
+        # image model is the honest answer for v1.
+        return [UNSLOTH_IMAGE_MODEL] if UNSLOTH_IMAGE_MODEL else []
     try:
         async with _httpx.AsyncClient(timeout=8) as c:
             if t == "swarmui":
@@ -4917,6 +5096,8 @@ async def imagegen_upscalers() -> list:
     t, u = _get_type(), _get_url()
     if not t or not u:
         return []
+    if t == "unsloth":
+        return []  # no verified discovery shape (same reasoning as loras)
     try:
         async with _httpx.AsyncClient(timeout=8) as c:
             if t == "swarmui":
@@ -4937,6 +5118,8 @@ async def imagegen_ipadapter_models() -> list:
     t, u = _get_type(), _get_url()
     if not t or not u:
         return []
+    if t == "unsloth":
+        return []
     try:
         async with _httpx.AsyncClient(timeout=8) as c:
             if t == "swarmui":
@@ -4955,6 +5138,8 @@ async def imagegen_refiners() -> list:
     t, u = _get_type(), _get_url()
     if not t or not u:
         return []
+    if t == "unsloth":
+        return []
     try:
         async with _httpx.AsyncClient(timeout=8) as c:
             if t == "swarmui":
@@ -4970,13 +5155,12 @@ async def imagegen_refiners() -> list:
 
 
 async def imagegen_progress() -> dict:
-    """Live progress for the SwarmUI generation currently in flight, if
-    any — see _imagegen_progress_state's own docstring for why this reads
-    in-memory state updated by the websocket path instead of polling
-    SwarmUI itself (its plain HTTP status route has no per-step progress
-    fields to poll in the first place). ComfyUI has no equivalent live
-    signal at all — the UI already falls back to an indeterminate/
-    elapsed-time display for that backend (see ai-chat-image.js)."""
+    """Live progress for the generation currently in flight, if any. Only
+    the legacy SwarmUI websocket path has real per-step progress (see
+    _imagegen_progress_state's own docstring); every other backend —
+    ComfyUI and Unsloth alike — returns the inactive contract, and the UI
+    already falls back to an indeterminate/elapsed-time display for that
+    (see ai-chat-image.js)."""
     if _get_type() != "swarmui":
         return {"active": False, "percent": 0.0, "current_percent": 0.0, "preview": ""}
     return dict(_imagegen_progress_state)
@@ -5236,11 +5420,63 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
     # and why, matching the bar generate_chat's own Ollama errors already
     # set (see its ResponseError handling) — a bare "connection refused"
     # or a stray dict-key KeyError previously reached the GM instead.
-    backend_label = "SwarmUI" if t == "swarmui" else "ComfyUI"
+    backend_label = {"swarmui": "SwarmUI", "comfyui": "ComfyUI"}.get(t, "Unsloth")
 
     try:
         async with _httpx.AsyncClient(timeout=600) as c:
-            if t == "swarmui":
+            if t == "unsloth":
+                # POST /v1/images/generations — the OpenAI dialect endpoint
+                # verified end-to-end in Phase 0 (findings I-1): b64_json in,
+                # PNG out, image model auto-loaded by name when Studio's
+                # media auto-switch is on (the compose provisioning steps).
+                # v1 deliberately sends only the verified field set — prompt,
+                # size, seed, batch, model; the turbo-family templates this
+                # backend targets barely use steps/guidance anyway.
+                body: dict = {
+                    "model": UNSLOTH_IMAGE_MODEL,
+                    "prompt": prompt,
+                    "size": f"{width}x{height}",
+                    "n": max(1, min(batch_size, 8)),
+                    "response_format": "b64_json",
+                }
+                if seed >= 0:
+                    body["seed"] = seed
+                if negative:
+                    _log.info("Unsloth imagegen: negative prompt not supported by the /v1 images endpoint — ignoring")
+                _imagegen_progress_state.update({"active": True, "percent": 0.0, "current_percent": 0.0, "preview": ""})
+                try:
+                    gr = await c.post(f"{u}/v1/images/generations", json=body,
+                                      headers=_unsloth_image_headers())
+                finally:
+                    _reset_imagegen_progress()
+                if gr.status_code >= 400:
+                    detail = gr.text[:300]
+                    try:
+                        err = gr.json().get("error") or {}
+                        detail = str(err.get("message") or detail)
+                    except ValueError:
+                        pass
+                    hint = ""
+                    if gr.status_code == 503 and "No image model loaded" in detail:
+                        hint = " — enable Studio's media auto-switch (Settings → API) or load the image model once"
+                    raise ValueError(f"Unsloth returned HTTP {gr.status_code}: {detail}{hint}")
+                try:
+                    data = gr.json()
+                except ValueError as exc:
+                    raise ValueError(f"Unsloth returned an unreadable response: {gr.text[:300]}") from exc
+                images = data.get("data") or []
+                if not images:
+                    raise ValueError(f"Unsloth returned no image: {str(data)[:300]}")
+                for entry in images:
+                    b64 = entry.get("b64_json") if isinstance(entry, dict) else None
+                    if not b64:
+                        raise ValueError("Unsloth returned an image entry without b64_json data")
+                    fname = str(_uuid.uuid4()) + ".png"
+                    out_path = ai_img_dir / fname
+                    out_path.write_bytes(_b64.b64decode(b64))
+                    make_thumbnail(out_path)  # best-effort, same as the SwarmUI path
+                    urls.append(f"/uploads/ai-images/{fname}")
+            elif t == "swarmui":
                 sr = await c.post(f"{u}/API/GetNewSession", json={})
                 session_id = sr.json().get("session_id", "ndworld")
                 model_name = model.rsplit(".", 1)[0] if model.endswith((".safetensors", ".ckpt", ".bin")) else model
