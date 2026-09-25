@@ -5069,15 +5069,21 @@ async def imagegen_samplers_schedulers() -> dict:
 
 
 async def unsloth_cached_image_models() -> list:
-    """Image-diffusion GGUFs Studio actually has on disk, per its own
-    /api/hub/cached-gguf (Studio-internal, not part of the documented /v1
-    surface — /v1/models lists chat models only, findings I-1). Each cached
-    entry carries a "task" field; verified against a real Studio instance
-    that a downloaded-but-unrunnable checkpoint (e.g. an SDXL-family anime
-    finetune Studio's bundled pipeline doesn't support) reports
-    "image-diffusion-unsupported" rather than plain "image-diffusion" — so
-    this only returns the latter, never offering a model in nd-world's
-    picker that would just fail on first use."""
+    """Image-generation GGUFs Studio actually has on disk and can run, per
+    its own /api/hub/cached-gguf (Studio-internal, not part of the
+    documented /v1 surface — /v1/models lists chat models only, findings
+    I-1). Each cached entry carries a "task" field; verified against a real
+    Studio instance across several downloaded checkpoints that the values
+    aren't a simple "image-diffusion" / "image-diffusion-unsupported" pair
+    as first assumed — a working, natively-supported model (Krea 2 Turbo)
+    reports "text-to-image", while an unrunnable one (an SDXL-family anime
+    finetune) reports "image-diffusion-unsupported", and a not-yet-
+    classified one reports task: null. Rather than chase every exact label
+    Studio might use, this includes anything mentioning "image" that
+    doesn't end in "unsupported" — so a chat model ("text-generation")
+    stays excluded, an explicitly-unsupported checkpoint stays excluded,
+    and an unclassified one (null) is excluded too since Studio hasn't
+    itself vouched it'll run, but any real image-capable label passes."""
     u = effective_llm_url()
     if not u:
         return []
@@ -5087,7 +5093,12 @@ async def unsloth_cached_image_models() -> list:
             cached = r.json().get("cached", [])
     except Exception:
         return []
-    return [m["repo_id"] for m in cached if m.get("task") == "image-diffusion" and m.get("repo_id")]
+    out = []
+    for m in cached:
+        task = (m.get("task") or "").lower()
+        if m.get("repo_id") and "image" in task and not task.endswith("unsupported"):
+            out.append(m["repo_id"])
+    return out
 
 
 async def imagegen_models() -> list:

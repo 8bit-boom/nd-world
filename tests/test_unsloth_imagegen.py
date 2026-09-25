@@ -105,22 +105,25 @@ async def test_imagegen_models_falls_back_to_configured_model_when_nothing_cache
 
 @pytest.mark.asyncio
 async def test_imagegen_models_lists_cached_supported_image_models(unsloth_image_mode, monkeypatch):
-    """Real-world shape from /api/hub/cached-gguf: a downloaded checkpoint
-    Studio's own diffusion pipeline can't run reports task
-    "image-diffusion-unsupported" (verified against a live Studio instance
-    with an SDXL-family anime finetune) rather than plain "image-diffusion"
-    — offering it in nd-world's picker would just fail on first use, so
-    only the supported ones should come back, and take priority over the
-    configured UNSLOTH_IMAGE_MODEL fallback."""
+    """Real-world shape from /api/hub/cached-gguf, verified against a live
+    Studio instance across several actually-downloaded checkpoints: a
+    working, natively-supported model (Krea 2 Turbo) reports task
+    "text-to-image" — NOT plain "image-diffusion" as first assumed — an
+    SDXL-family anime finetune Studio's pipeline can't run reports
+    "image-diffusion-unsupported", a chat model reports "text-generation",
+    and a not-yet-classified checkpoint reports task: null. Only the first
+    should come back, taking priority over the configured
+    UNSLOTH_IMAGE_MODEL fallback."""
     def handler(method, url, headers, body):
         return _FakeResponse(200, payload={"cached": [
-            {"repo_id": "unsloth/Krea-2-Turbo-GGUF", "task": "image-diffusion"},
+            {"repo_id": "vantagewithai/Krea-2-Turbo-GGUF", "task": "text-to-image"},
             {"repo_id": "E-stick/anima-aesthetic-v1.1-GGUF", "task": "image-diffusion-unsupported"},
             {"repo_id": "kazzy1337/some-chat-model", "task": "text-generation"},
+            {"repo_id": "voldemir/Kroma-GGUF", "task": None},
         ]})
 
     _patch_http(monkeypatch, unsloth_image_mode, handler)
-    assert await ai_module.imagegen_models() == ["unsloth/Krea-2-Turbo-GGUF"]
+    assert await ai_module.imagegen_models() == ["vantagewithai/Krea-2-Turbo-GGUF"]
 
 
 @pytest.mark.asyncio
