@@ -94,6 +94,7 @@ from . import chat_jobs as _chat_jobs
 from . import image_jobs as _image_jobs
 from . import job_shutdown as _job_shutdown
 from . import backups as _backups
+from . import diagnostics as _diagnostics
 from . import auth as _auth
 from .constants import KINDS, SUBTYPES, KIND_ICONS
 
@@ -283,6 +284,10 @@ def _startup_tasks():
     # Optional scheduled DB snapshots — no-op unless ND_BACKUP_DIR is set,
     # so the test suite (which never sets it) never grows a thread.
     _backups.start()
+    # Event-loop stall / pool-pressure watchdog + restart journal — writes
+    # to <DB dir>/diagnostics (ND_DIAG_* env knobs, see app/diagnostics.py).
+    # Always on: it exists precisely for the incidents nothing else logs.
+    _diagnostics.start()
 
 
 async def _shutdown_tasks():
@@ -298,6 +303,10 @@ async def _shutdown_tasks():
     _image_jobs.mark_stragglers_interrupted()
     _chat_jobs.mark_stragglers_interrupted()
     _backups.stop()
+    # Await, not just cancel, the diagnostics heartbeat so it reaps cleanly
+    # inside this still-running loop (see its docstring for the TestClient
+    # pending-task warning this avoids) — and journals the shutdown.
+    await _diagnostics.stop()
 
 
 
