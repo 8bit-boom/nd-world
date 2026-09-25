@@ -568,6 +568,32 @@ SIGKILLed before a longer wait would ever pay off.
 
 ---
 
+## When the site stops responding: the diagnostics watchdog
+
+A hung request logs nothing — the app is a single uvicorn worker, and when its
+event loop wedges (starved DB connection pool, SQLite write-lock pileup) the
+process is alive but silent, and `docker restart` destroys the in-process state
+that would explain it. An always-on watchdog (`app/diagnostics.py`, zero config)
+captures the evidence instead:
+
+- **Event-loop stall** (no heartbeat for `ND_DIAG_STALL_SECONDS`, default 15s)
+  or **DB-pool saturation** → a full dump (all thread stacks, the asyncio task
+  snapshot, pool status, RSS) is written to `/data/diagnostics/` right then,
+  rate-limited to one dump per `ND_DIAG_DUMP_COOLDOWN_SECONDS` (default 300s).
+- Every **startup/shutdown** is journaled to `/data/diagnostics/events.log` —
+  a `startup` line with no `shutdown` before it means the process was killed
+  (OOM/SIGKILL/watchtower), which is invisible in docker logs. Stall, recovery,
+  and pool events go to the same journal, so one file reconstructs the whole
+  incident.
+
+On a bind-mounted `/data` the dumps survive container restarts. Read them from
+**⚙ Settings → Diagnostics** (GM-only) — watcher status, journal tail, dump
+list — or `GET /admin/diagnostics/events` / `GET /admin/diagnostics/dump/{name}`
+as plain text. `ND_DIAG_DISABLED=1` turns it off; every knob is in
+`.env.example`.
+
+---
+
 ## Inviting players
 
 Once nd-world is reachable (locally or over the internet):

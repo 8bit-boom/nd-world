@@ -13,6 +13,8 @@ import pytest
 
 import app.diagnostics as diag
 
+from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+
 
 def _reset():
     """Pristine watcher state — module globals the white-box tests below
@@ -23,6 +25,7 @@ def _reset():
     diag._stall_since = None
     diag._last_dump = 0.0
     diag._last_pool_warn = 0.0
+    diag._pool_saturated = False
     diag._task_snapshot = []
     diag._last_beat = time.monotonic()
 
@@ -144,6 +147,37 @@ def test_pool_below_size_is_silent(tmp_path, monkeypatch):
     assert not list(tmp_path.glob("wedge-*.txt"))
 
 
+def test_pool_counts_introspects_the_real_pool():
+    """Regression: SQLAlchemy 2.x Pool.checkedout() returns an int, and
+    len()-ing it raised TypeError — caught, turned into None, and silently
+    disabled the pool watcher everywhere (the live Settings tab showed
+    'DB pool right now: unavailable'). Must always introspect for real."""
+    counts = diag._pool_counts()
+    assert counts is not None
+    checked_out, size = counts
+    assert isinstance(checked_out, int) and isinstance(size, int)
+    assert size >= 1
+    assert 0 <= checked_out <= size + 10  # +10: the pool's overflow headroom
+
+
+def test_pool_recovery_is_journaled_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("ND_DIAG_DIR", str(tmp_path))
+    monkeypatch.setattr(diag, "_pool_counts", lambda: (5, 5))
+    _reset()
+    diag._ready = True
+    diag._pool_check(time.monotonic())            # saturates: warns + dumps
+    assert "pool-saturated" in _events(tmp_path)
+    monkeypatch.setattr(diag, "_pool_counts", lambda: (2, 5))
+    diag._pool_check(time.monotonic() + 1.0)      # pressure clears → recovery
+    diag._pool_check(time.monotonic() + 2.0)      # stays healthy — one line
+    assert _events(tmp_path).count("pool-recovered") == 1
+    # And re-saturating re-warns (the flag flipped back, not latched shut)
+    monkeypatch.setattr(diag, "_pool_counts", lambda: (5, 5))
+    diag._last_pool_warn = 0.0                    # outside the warn cooldown
+    diag._pool_check(time.monotonic() + 3.0)
+    assert _events(tmp_path).count(" pool-saturated checked_out=") == 2
+
+
 def test_journal_line_format(tmp_path, monkeypatch):
     monkeypatch.setenv("ND_DIAG_DIR", str(tmp_path))
     diag._journal("startup", pid=123)
@@ -176,3 +210,61 @@ async def test_start_stop_roundtrip(tmp_path, monkeypatch):
     # it — a pending-destroyed task would make every TestClient shutdown in
     # the suite emit a "Task was destroyed but it is pending" warning.
     await asyncio.sleep(0)
+
+
+# ── Settings → Diagnostics tab + GM-only viewer routes ───────────────────────
+
+def test_settings_diagnostics_tab_renders_journal_and_dumps(client, seed, tmp_path, monkeypatch):
+    monkeypatch.setenv("ND_DIAG_DIR", str(tmp_path))
+    login(client, seed.gm.email, GM_PASSWORD)
+    diag._journal("loop-stalled", seconds="20.0")
+    (tmp_path / "wedge-20260925-000000.txt").write_text(
+        "event-loop-stall\nevent loop stalled for: 20.0s", encoding="utf-8")
+    r = client.get("/settings", params={"tab": "diagnostics"})
+    assert r.status_code == 200
+    assert "loop-stalled" in r.text                      # journal tail rendered
+    assert "wedge-20260925-000000.txt" in r.text         # dump listed
+    assert "/admin/diagnostics/dump/wedge-20260925-000000.txt" in r.text
+
+
+def test_settings_diagnostics_tab_empty_state(client, seed, tmp_path, monkeypatch):
+    monkeypatch.setenv("ND_DIAG_DIR", str(tmp_path))
+    login(client, seed.gm.email, GM_PASSWORD)
+    r = client.get("/settings", params={"tab": "diagnostics"})
+    assert r.status_code == 200
+    assert "No events recorded yet" in r.text
+    assert "No stall or pool-saturation dumps" in r.text
+
+
+def test_events_route_serves_full_journal(client, seed, tmp_path, monkeypatch):
+    monkeypatch.setenv("ND_DIAG_DIR", str(tmp_path))
+    login(client, seed.gm.email, GM_PASSWORD)
+    diag._journal("startup", pid=1)
+    diag._journal("shutdown", pid=1)
+    r = client.get("/admin/diagnostics/events")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/plain")
+    assert "startup pid=1" in r.text
+    assert "shutdown pid=1" in r.text
+
+
+def test_dump_route_serves_only_valid_dump_files(client, seed, tmp_path, monkeypatch):
+    monkeypatch.setenv("ND_DIAG_DIR", str(tmp_path))
+    login(client, seed.gm.email, GM_PASSWORD)
+    (tmp_path / "wedge-20260925-000000.txt").write_text("stack evidence", encoding="utf-8")
+    (tmp_path / "events.log").write_text("startup pid=1\n", encoding="utf-8")
+    r = client.get("/admin/diagnostics/dump/wedge-20260925-000000.txt")
+    assert r.status_code == 200
+    assert "stack evidence" in r.text
+    # A non-dump file in the same dir, an encoded traversal, and a
+    # well-formed but nonexistent dump name all 404.
+    assert client.get("/admin/diagnostics/dump/events.log").status_code == 404
+    assert client.get("/admin/diagnostics/dump/..%2Fevents.log").status_code == 404
+    assert client.get("/admin/diagnostics/dump/wedge-20990101-000000.txt").status_code == 404
+
+
+def test_diagnostics_routes_are_gm_only(client, seed, tmp_path, monkeypatch):
+    monkeypatch.setenv("ND_DIAG_DIR", str(tmp_path))
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    assert client.get("/admin/diagnostics/events").status_code == 403
+    assert client.get("/admin/diagnostics/dump/wedge-20260925-000000.txt").status_code == 403

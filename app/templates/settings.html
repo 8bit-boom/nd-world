@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Settings — {{ world.name if world else 'N&D World' }}{% endblock %}
 {% block content %}
-<div class="form-page" style="max-width:{{ '960px' if active_tab in ('visibility', 'navigation') else '640px' }}">
+<div class="form-page" style="max-width:{{ '960px' if active_tab in ('visibility', 'navigation', 'diagnostics') else '640px' }}">
   <h1>⚙ Settings</h1>
 
   <div class="settings-tab-bar">
@@ -9,6 +9,7 @@
     <button type="button" class="settings-tab {% if active_tab == 'visibility' %}active{% endif %}" id="tab-visibility" onclick="switchSettingsTab('visibility')">Visibility</button>
     <button type="button" class="settings-tab {% if active_tab == 'system' %}active{% endif %}" id="tab-system" onclick="switchSettingsTab('system')">System</button>
     <button type="button" class="settings-tab {% if active_tab == 'navigation' %}active{% endif %}" id="tab-navigation" onclick="switchSettingsTab('navigation')">Navigation</button>
+    <button type="button" class="settings-tab {% if active_tab == 'diagnostics' %}active{% endif %}" id="tab-diagnostics" onclick="switchSettingsTab('diagnostics')">Diagnostics</button>
   </div>
 
   <div id="pane-options" {% if active_tab != 'options' %}style="display:none"{% endif %}>
@@ -555,6 +556,63 @@
     </form>
     {% else %}
     <p style="font-size:.82rem;color:var(--text-dim);margin:1rem 0">Select a world first to manage its nav menus.</p>
+    {% endif %}
+  </div>
+
+  <div id="pane-diagnostics" {% if active_tab != 'diagnostics' %}style="display:none"{% endif %}>
+    <h2 style="font-size:.9rem;color:var(--text-dim);margin:1rem 0 .5rem">Diagnostics watchdog</h2>
+    <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
+      An always-on watchdog captures evidence when the site stops responding: a full
+      stack/thread dump the moment the event loop stalls or the DB connection pool
+      saturates, plus a persistent startup/shutdown journal. Files live under
+      <code style="background:var(--bg3);padding:.15rem .4rem;border-radius:3px">{{ diag_status.dir or '(directory unavailable — watchers degrade to plain logging)' }}</code>
+      on the server{% if not diag_status.enabled %} — <strong>currently disabled via ND_DIAG_DISABLED</strong>{% endif %}.
+    </p>
+    <div class="stat-table-wrap">
+      <table class="stat-table">
+        <tbody>
+          <tr><td>Watchdog thread</td><td>{{ 'running' if diag_status.watchdog_thread_alive else 'not started' }}</td></tr>
+          <tr><td>Event-loop heartbeat</td><td>{{ 'active' if diag_status.heartbeat_active else 'inactive' }}</td></tr>
+          <tr><td>DB pool right now</td><td>{% if diag_status.pool_size %}{{ diag_status.pool_checked_out }} / {{ diag_status.pool_size }} checked out{% else %}unavailable{% endif %}</td></tr>
+          <tr><td>Stall threshold</td><td>{{ diag_status.stall_seconds }}s</td></tr>
+          <tr><td>Dump cooldown</td><td>{{ diag_status.dump_cooldown_seconds }}s</td></tr>
+          <tr><td>Pool-warning cooldown</td><td>{{ diag_status.pool_warn_cooldown_seconds }}s</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Recent events</h2>
+    {% if diag_events %}
+    <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
+      Last {{ diag_events | length }} journal lines, oldest first —
+      <a href="/admin/diagnostics/events" target="_blank">full events.log</a>.
+    </p>
+    <pre style="max-height:260px;overflow:auto;background:var(--bg3);padding:.6rem .8rem;border-radius:4px;font-size:.78rem;line-height:1.5;white-space:pre-wrap;word-break:break-all">{{ diag_events | join('\n') }}</pre>
+    {% else %}
+    <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
+      No events recorded yet. — <a href="/admin/diagnostics/events" target="_blank">full events.log</a>.
+    </p>
+    {% endif %}
+
+    <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Captured dumps</h2>
+    {% if diag_dumps %}
+    <div class="stat-table-wrap">
+      <table class="stat-table">
+        <thead><tr><th>File</th><th>Size</th><th>Modified (UTC)</th><th></th></tr></thead>
+        <tbody>
+          {% for d in diag_dumps %}
+          <tr>
+            <td>{{ d.name }}</td>
+            <td>{{ (d.size / 1024) | round(1) }} KB</td>
+            <td>{{ d.modified.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+            <td><a href="/admin/diagnostics/dump/{{ d.name }}" target="_blank">View</a></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p style="font-size:.82rem;color:var(--text-dim)">No stall or pool-saturation dumps captured{% if diag_status.enabled %} — the loop hasn't wedged since the last dump cooldown window{% endif %}.</p>
     {% endif %}
   </div>
 </div>

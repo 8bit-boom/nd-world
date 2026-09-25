@@ -634,6 +634,7 @@ Set `IMAGEGEN_TYPE=comfyui` and `IMAGEGEN_URL` to your ComfyUI instance address 
 All persistent data lives in the `/data` volume:
 - `world.db` — SQLite database with all worlds, entities, and relationships
 - `uploads/` — uploaded images and AI-generated images (`uploads/ai-images/`)
+- `diagnostics/` — watchdog evidence: stack dumps captured the moment the app wedges, plus its startup/shutdown journal (see [Diagnostics watchdog](#diagnostics-watchdog) below)
 
 ### Export & Backup hub
 
@@ -738,6 +739,26 @@ docker cp nd-world:/data ./backup-$(date +%Y%m%d)
 # TrueNAS bind mount — just copy the directory
 cp -r /mnt/DeadPool/apps/nd-world ./backup-$(date +%Y%m%d)
 ```
+
+### Diagnostics watchdog
+
+The app freezes silently when its single event loop wedges (a starved DB
+connection pool, a SQLite write-lock pileup) — unhandled exceptions leave
+tracebacks, but a hang leaves nothing. An always-on watchdog
+(`app/diagnostics.py`) closes that gap:
+
+- If the event loop stalls past `ND_DIAG_STALL_SECONDS` (default 15s), or the
+  DB pool saturates, it writes a full dump — every thread's stack, the asyncio
+  task snapshot, pool status — to `/data/diagnostics/` at the moment it's
+  stuck, rate-limited by `ND_DIAG_DUMP_COOLDOWN_SECONDS`.
+- Every startup/shutdown/stall/recovery is journaled to
+  `/data/diagnostics/events.log`, so after an outage you can tell a kill
+  (startup with no shutdown before it) from a clean restart at a glance.
+
+Read it all from **⚙ Settings → Diagnostics** (GM-only): live watcher status,
+the journal tail, and the captured dumps with one-click viewing — no shell
+access to the container needed. `ND_DIAG_DISABLED=1` turns the whole thing off;
+see `.env.example` for every knob.
 
 ---
 

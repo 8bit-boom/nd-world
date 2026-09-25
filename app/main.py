@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request, Depends, Form, HTTPException, UploadFile, File, Cookie, Query
 from pydantic import BaseModel
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, StreamingResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, StreamingResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -3712,7 +3712,7 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
     return {
         "request": request, "world": world, "worlds": worlds,
         "settings": settings,
-        "active_tab": tab if tab in ("options", "system", "visibility", "navigation") else "options",
+        "active_tab": tab if tab in ("options", "system", "visibility", "navigation", "diagnostics") else "options",
         "env_ollama_model": _ai_module.OLLAMA_MODEL,
         "env_ollama_url": _ai_module.OLLAMA_URL,
         "env_swarmui_external_url": SWARMUI_EXTERNAL_URL,
@@ -3751,11 +3751,40 @@ def _settings_context(request: Request, db: Session, active_world: str, tab: str
         "ollama_model_overrides": ollama_model_overrides,
         "ollama_thinking_failures": _ai_module._model_thinking_failures,
         "gpu_presets": _tuning.GPU_PRESETS,
+        # Settings → Diagnostics — the watchdog viewer (app/diagnostics.py).
+        # Passive reads; all three helpers are cheap and empty-safe when the
+        # diagnostics dir is disabled or unwritable.
+        "diag_status": _diagnostics.status(),
+        "diag_events": _diagnostics.read_events(),
+        "diag_dumps": _diagnostics.list_dumps(),
     }
 
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None), tab: str = "options"):
     return templates.TemplateResponse("settings.html", _settings_context(request, db, active_world, tab))
+
+
+@app.get("/admin/diagnostics/events")
+def admin_diagnostics_events():
+    # Not in _is_player_safe, so the auth_gate middleware already denies this
+    # to non-GM users by default — events.log reconstructs incident timelines
+    # (restarts, stalls, dumps) and names server-side paths.
+    lines = _diagnostics.read_events(limit=None)
+    if not lines:
+        return PlainTextResponse("(no events recorded yet)\n")
+    return PlainTextResponse("\n".join(lines) + "\n")
+
+
+@app.get("/admin/diagnostics/dump/{name}")
+def admin_diagnostics_dump(name: str):
+    # GM-only like the events route above. read_dump pattern-validates the
+    # name against the wedge-dump filename format and containment-checks it
+    # inside the diagnostics dir — anything else (an encoded ../, events.log,
+    # a nonexistent file) 404s instead of serving.
+    text = _diagnostics.read_dump(name)
+    if text is None:
+        raise HTTPException(404)
+    return PlainTextResponse(text)
 
 @app.post("/settings")
 def settings_save(

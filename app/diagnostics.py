@@ -34,6 +34,10 @@ This module adds three always-on, zero-config watchers:
    subsequent startup = it never came back. Stall/dump/pool events go to
    the same journal, so one file reconstructs the whole incident.
 
+Settings → Diagnostics (GM-only) renders the journal tail, the dump list,
+and the current watcher status; `/admin/diagnostics/events` and
+`/admin/diagnostics/dump/{name}` serve the full files as plain text.
+
 All file writes are best-effort (unwritable dir → the watchers still log
 to stdout/stderr, which docker captures); nothing here may ever raise into
 the app. Configuration (all env, all read at call time so tests can
@@ -54,6 +58,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -67,6 +72,7 @@ _CHECK_INTERVAL = 2.0        # watchdog thread poll period
 _HEARTBEAT_INTERVAL = 1.0    # loop task beat period
 _TASK_SNAPSHOT_EVERY = 10    # beats between asyncio-task snapshot refreshes
 _DUMP_STACK_LIMIT = 12       # frames per thread in a dump
+_DUMP_NAME_RE = re.compile(r"^wedge-\d{8}-\d{6}(?:-\d+)?\.txt$")
 
 
 # Module state. `_last_beat`/`_ready` are written by the event loop thread
@@ -85,6 +91,8 @@ _task_snapshot: list[str] = []
 _stall_since: float | None = None
 _last_dump: float = 0.0
 _last_pool_warn: float = 0.0
+_pool_saturated = False      # last observed at/past base size — set when the
+                             # pool-recovered journal line has a left edge
 
 
 def _env_float(name: str, default: float) -> float:
@@ -153,7 +161,13 @@ def _pool_counts() -> tuple[int, int] | None:
     """(checked_out, base_size) — None if the pool can't be introspected."""
     try:
         from .database import engine
-        return len(engine.pool.checkedout()), engine.pool.size()
+        # SQLAlchemy 2.x Pool.checkedout() returns the count as an int
+        # (1.x returned a sequence of connections — len() of the int raised
+        # TypeError, which turned the whole watcher silently "unavailable").
+        checked = engine.pool.checkedout()
+        if not isinstance(checked, int):
+            checked = len(checked)
+        return checked, engine.pool.size()
     except Exception:
         return None
 
@@ -266,19 +280,21 @@ def _evaluate(now: float) -> None:
 
 
 def _pool_check(now: float) -> None:
-    """One watchdog check of connection-pool pressure. `checkedout >= size`
+    """One watchdog check of connection-pool pressure. `checked_out >= size`
     means the pool is dipping into its overflow — every further checkout is
     one of the finite 10 overflow slots away from blocking requests 30s
     each (SQLAlchemy's default pool_timeout), which with this app's
     async-routes-over-sync-sessions architecture freezes the event loop
-    30s at a time. Warn and dump while there's still headroom.
+    30s at a time. Warn and dump while there's still headroom. Pressure
+    clearing journals a matching pool-recovered line, so events.log shows
+    both edges of the episode.
 
     Gated on _ready like _evaluate: the watchers run only while a lifespan
     is active, which in production is always (the first heartbeat lands
     milliseconds after startup) and in the test suite is never between
     TestClient boots — so a background thread iteration can never race a
     white-box test's own direct _pool_check call."""
-    global _last_pool_warn
+    global _last_pool_warn, _pool_saturated
     if not _ready:
         return
     counts = _pool_counts()
@@ -286,7 +302,11 @@ def _pool_check(now: float) -> None:
         return
     checked_out, size = counts
     if not size or checked_out < size:
+        if _pool_saturated:
+            _pool_saturated = False
+            _journal("pool-recovered", checked_out=checked_out, size=size)
         return
+    _pool_saturated = True
     if now - _last_pool_warn < _env_float("ND_DIAG_POOL_WARN_COOLDOWN_SECONDS", 300.0):
         return
     _last_pool_warn = now
@@ -385,3 +405,86 @@ async def stop() -> None:
     _ready = False
     _stall_since = None
     _journal("shutdown", pid=os.getpid())
+
+
+# ── Read-only viewer surface: Settings → Diagnostics + /admin/diagnostics ────
+# Everything below is passive introspection for the GM-only tab and routes;
+# none of it touches watcher state.
+
+
+def status() -> dict:
+    """One snapshot for the Settings → Diagnostics tab: whether the watchdog
+    is on, where its files land, the configured thresholds, and the pool's
+    state right now. Runs on every /settings render, so it stays cheap."""
+    d = diag_dir()
+    counts = _pool_counts()
+    return {
+        "enabled": not _disabled(),
+        "dir": str(d) if d is not None else None,
+        "stall_seconds": _env_float("ND_DIAG_STALL_SECONDS", 15.0),
+        "dump_cooldown_seconds": _env_float("ND_DIAG_DUMP_COOLDOWN_SECONDS", 300.0),
+        "pool_warn_cooldown_seconds": _env_float("ND_DIAG_POOL_WARN_COOLDOWN_SECONDS", 300.0),
+        "pool_checked_out": counts[0] if counts else None,
+        "pool_size": counts[1] if counts else None,
+        "watchdog_thread_alive": _thread is not None and _thread.is_alive(),
+        "heartbeat_active": _heartbeat_task is not None and not _heartbeat_task.done(),
+    }
+
+
+def list_dumps() -> list[dict]:
+    """Dump files newest-first: {name, size, modified}. Empty when files are
+    disabled or the directory can't be listed."""
+    d = diag_dir()
+    if d is None:
+        return []
+    out = []
+    try:
+        for p in d.iterdir():
+            if not _DUMP_NAME_RE.match(p.name) or not p.is_file():
+                continue
+            st = p.stat()
+            out.append({
+                "name": p.name,
+                "size": st.st_size,
+                "modified": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc),
+            })
+    except OSError:
+        return []
+    out.sort(key=lambda item: item["modified"], reverse=True)
+    return out
+
+
+def read_events(limit: int | None = 200) -> list[str]:
+    """Tail of events.log, oldest→newest; `limit=None` reads the whole file
+    (what /admin/diagnostics/events serves). Empty list when files are
+    disabled or nothing has been journaled yet."""
+    d = diag_dir()
+    if d is None:
+        return []
+    try:
+        lines = (d / "events.log").read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    return lines if limit is None else lines[-limit:]
+
+
+def read_dump(name: str) -> str | None:
+    """One dump file's text, or None. `name` must match the exact wedge-dump
+    filename pattern AND resolve inside the diagnostics dir — the same
+    containment idea as /uploads' serve_upload, so an encoded ../ traversal
+    or a non-dump file (events.log, world.db, ...) can't be served through
+    the dump route."""
+    d = diag_dir()
+    if d is None or not _DUMP_NAME_RE.match(name):
+        return None
+    try:
+        root = d.resolve()
+        path = (d / name).resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not path.is_relative_to(root) or not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
