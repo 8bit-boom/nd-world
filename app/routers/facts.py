@@ -313,6 +313,11 @@ async def api_facts_parse(request: Request, active_world: str = Cookie(None)):
     text = str(body.get("text", "")).strip()
     if not text:
         raise HTTPException(400, "No recap text provided")
+    # The parser chunks long input into one AI call per chunk inside a single
+    # blocking request — a multi-hundred-kB paste would mean thousands of
+    # sequential model calls. Above this size, use /api/facts/parse-job.
+    if len(text) > 200_000:
+        raise HTTPException(400, "Recap too long to parse in one request (over 200k chars) — split it up or use the background parse")
     # Dial-down enforcement for this assistant-reachable route (no DB write,
     # but it drives the world's model): enforced only when a world is active,
     # preserving the world-less API call this documented route always allowed.

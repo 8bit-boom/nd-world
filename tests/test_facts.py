@@ -1052,3 +1052,26 @@ def test_from_job_dedups_against_existing_facts(client, seed):
         assert db.query(Fact).filter(Fact.world_id == seed.world_a.id).count() == 2  # the pre-existing one + the new one
     finally:
         db.close()
+
+
+def test_parse_rejects_oversized_input(client, seed, monkeypatch):
+    """B12: the sync parse chunks input into sequential AI calls inside one
+    request — a multi-hundred-kB paste would mean thousands of model calls.
+    Above the cap the route must refuse (the background job is the tool)."""
+    import pytest
+    from fastapi import HTTPException
+    from app.routers import facts as facts_module
+    import asyncio
+
+    body = {"text": "x" * 200_001}
+    request = types.SimpleNamespace(json=lambda: body)
+    request = types.SimpleNamespace(state=types.SimpleNamespace(user=None))
+    # Drive the handler directly with a stubbed Request exposing .json()
+    class _Req:
+        state = types.SimpleNamespace(user=None)
+        async def json(self):
+            return body
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(facts_module.api_facts_parse(_Req(), active_world=None))
+    assert exc.value.status_code == 400
+    assert "200k" in exc.value.detail

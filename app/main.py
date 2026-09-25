@@ -348,6 +348,11 @@ def _is_player_safe(method: str, path: str) -> bool:
     if path.startswith("/characters/templates"):
         return False
     if path.startswith("/characters") or path.startswith("/api/characters/"):
+        # Deliberately blanket: even at characters="none" in the matrix, a
+        # player's OWN-character actions (edit/delete/hp/xp via
+        # _can_manage_character) stay reachable — own data, same stance as
+        # My Character Sheets. "none" hides the LIST, not a player's own
+        # sheet management.
         return True
     if path == "/api/me":
         return True
@@ -583,11 +588,12 @@ def _is_player_safe(method: str, path: str) -> bool:
         # write, /parties/new, /parties/{id}/delete, every /api/parties*
         # location/combat action, /tables/export, /tables/import stay
         # GM+Assistant ("full" level) only regardless of this toggle.
-        # Combat Tracker (live, often spoiler-heavy encounter state) and
-        # Investigation Boards (a large, drag-and-drop canvas editor with
-        # no read/edit separation anywhere in its JS — retrofitting a safe
-        # read-only mode there is its own project) deliberately have no
-        # player_section entry at all and stay fully GM-only.
+        # Combat Tracker and Investigation Boards DO have matrix entries
+        # now (player_section ids "combat"/"boards"), but their GETs carry
+        # their own handler gates and every write stays GM+Assistant-only:
+        # the live, often spoiler-heavy encounter state and the
+        # drag-and-drop canvas editor (no read/edit separation in its JS)
+        # never open to a player's WRITES even when a world grants read.
         return True
     if path.startswith("/kind/") or path.startswith("/uploads/"):
         return True
@@ -5490,6 +5496,29 @@ def new_form(request: Request, kind: str = "character", folder: str = "",
         "gallery_images": gallery_images,
     })
 
+def _normalize_aliases(raw: str) -> str | None:
+    """Entity.aliases hygiene at save time (the autolinker reads this column
+    verbatim): split on comma, trim, drop empties and case-insensitive
+    duplicates, cap each alias at 64 chars and the list at 20 — SQLite
+    ignores the String(512) length, so an unbounded paste would otherwise
+    sit in the DB forever and bloat every autolink regex build."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for part in (raw or "").split(","):
+        alias = part.strip()
+        if not alias:
+            continue
+        alias = alias[:64]
+        key = alias.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(alias)
+        if len(out) >= 20:
+            break
+    return ", ".join(out) or None
+
+
 @app.post("/new")
 async def create(
     request: Request,
@@ -5511,7 +5540,7 @@ async def create(
     except Exception:
         custom_fields_json = "{}"
     e = Entity(world_id=world.id, kind=kind, subtype=subtype or None, name=name,
-               folder=folder.strip() or None, tags=tags or None, aliases=aliases or None,
+               folder=folder.strip() or None, tags=tags or None, aliases=_normalize_aliases(aliases),
                image_url=final_image, summary=summary or None, body=body or None,
                visible_to_players=(visibility_mode == "everyone"),
                template_id=int(template_id) if template_id and template_id.isdigit() else None,
@@ -5610,7 +5639,7 @@ async def update(
     entity.folder = folder.strip() or None
     entity.name = name
     entity.tags = tags or None
-    entity.aliases = aliases or None
+    entity.aliases = _normalize_aliases(aliases)
     # A new upload or pasted URL replaces the image; the "Remove image" checkbox
     # clears it explicitly; otherwise leave the existing image untouched — the
     # image_url text field is deliberately blank for uploaded images (an internal

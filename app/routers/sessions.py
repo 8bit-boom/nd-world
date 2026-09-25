@@ -20,7 +20,7 @@ from .. import audio_jobs as _audio_jobs
 from ..database import SessionLocal, get_db
 from ..deps import check_llm_cooldown, get_world_ctx, paginate, world_can_edit_section, world_can_view_section, world_row_visible
 from ..models import AudioClip, AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, Quest, World
-from ..rendering import render_md
+from ..rendering import render_md, strip_gm_only
 from ..templating import templates
 from ..uploads import CHUNK_ID_RE, copy_upload_bounded, reassemble_upload_chunks, save_upload_chunk
 
@@ -372,8 +372,12 @@ def session_download_summary(session_id: int, request: Request, db: Session = De
         raise HTTPException(404)
     if not gs.summary:
         raise HTTPException(404, "This session has no summary yet")
+    user = getattr(request.state, "user", None)
+    # Same rule the detail page's rendered views follow: a non-GM download
+    # must not carry [gmonly] blocks the page strips.
+    summary = gs.summary if (user and user.is_gm) else strip_gm_only(gs.summary)
     return StreamingResponse(
-        io.BytesIO(gs.summary.encode()), media_type="text/markdown",
+        io.BytesIO(summary.encode()), media_type="text/markdown",
         headers={"Content-Disposition": f'attachment; filename="{_session_download_filename(gs, "summary")}"'},
     )
 
@@ -385,8 +389,10 @@ def session_download_transcript(session_id: int, request: Request, db: Session =
         raise HTTPException(404)
     if not gs.live_transcript:
         raise HTTPException(404, "This session has no live transcript yet")
+    user = getattr(request.state, "user", None)
+    transcript = gs.live_transcript if (user and user.is_gm) else strip_gm_only(gs.live_transcript)
     return StreamingResponse(
-        io.BytesIO(gs.live_transcript.encode()), media_type="text/markdown",
+        io.BytesIO(transcript.encode()), media_type="text/markdown",
         headers={"Content-Disposition": f'attachment; filename="{_session_download_filename(gs, "transcript")}"'},
     )
 
