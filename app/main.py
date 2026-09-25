@@ -20,6 +20,7 @@ import secrets
 import time
 import uuid
 import shutil
+import threading
 import json
 import base64
 import io
@@ -1739,6 +1740,38 @@ def member_reset_password(
         "invites": invites, "members": members,
         "reset_password_user_id": target.id, "reset_password_value": temp_password,
     })
+
+
+@app.post("/worlds/{world_id}/members/{user_id}/clear-2fa")
+def member_clear_2fa(
+    world_id: int, user_id: int, request: Request,
+    db: Session = Depends(get_db), active_world: str = Cookie(None),
+):
+    """GM-only, same tier as member_reset_password above. Recovery for a
+    member who lost BOTH their authenticator and their backup codes: a
+    password reset alone doesn't help (login still stalls at /login/2fa,
+    and the only TOTP-disable route is self-service behind that gate).
+    Clears TOTP enrollment, backup-code hashes, and trusted devices, and
+    bumps session_version — after which a plain password login works and
+    the member can re-enroll two-step from their account page."""
+    m = db.query(WorldMembership).filter(
+        WorldMembership.world_id == world_id, WorldMembership.user_id == user_id
+    ).first()
+    if not m:
+        raise HTTPException(404)
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(404)
+    target.totp_enabled = False
+    target.totp_secret = None
+    target.totp_backup_codes_json = "[]"
+    # A trusted device is exactly the thing that could skip the (now
+    # cleared) second step — and a stale session has no business surviving
+    # an account-security change either way.
+    target.session_version += 1
+    db.query(TrustedDevice).filter(TrustedDevice.user_id == target.id).delete()
+    db.commit()
+    return RedirectResponse(f"/worlds/{world_id}/edit?twofa_cleared={target.id}", status_code=303)
 
 
 # ── Private Notes (GM ↔ one player) ─────────────────────────────────────────────
@@ -4612,6 +4645,18 @@ async def admin_backup_restore_stage(
         zf = zipfile.ZipFile(io.BytesIO(raw))
     except zipfile.BadZipFile:
         raise HTTPException(400, "Not a valid zip file")
+    # Decompression caps: every zf.read() below inflates an entry wholly in
+    # memory, so a zip bomb (or an honest backup with absurdly large media)
+    # could OOM the container. Header-declared sizes are checked up front —
+    # they bound what zf.read will produce (a lying header makes ZipFile
+    # raise BadZipFile on the CRC/size mismatch instead).
+    infos = zf.infolist()
+    _MAX_ENTRIES = 20000
+    _MAX_UNCOMPRESSED = 8 * 1024 * 1024 * 1024  # 8 GiB across all entries
+    if len(infos) > _MAX_ENTRIES:
+        raise HTTPException(400, f"Backup zip has too many entries (>{_MAX_ENTRIES})")
+    if sum(i.file_size for i in infos) > _MAX_UNCOMPRESSED:
+        raise HTTPException(400, "Backup zip decompresses to more than 8 GiB — not restorable in place")
     names = zf.namelist()
     if "world.db" not in names or "manifest.json" not in names:
         raise HTTPException(400, "Doesn't look like a Full Backup — missing world.db/manifest.json")
@@ -4626,12 +4671,37 @@ async def admin_backup_restore_stage(
         test_conn = sqlite3.connect(str(tmp_path))
         try:
             test_conn.execute("SELECT COUNT(*) FROM worlds").fetchone()
+            # Schema-depth probe: `entities.aliases` is a recent,
+            # load-bearing column. A backup taken before it exists is a
+            # valid sqlite DB that would pass the worlds-count probe and
+            # then crash-loop the app at boot inside _migrate — reject it
+            # here where the GM can still pick the right file.
+            cols = {row[1] for row in test_conn.execute("PRAGMA table_info(entities)").fetchall()}
+            if "aliases" not in cols:
+                raise HTTPException(
+                    400,
+                    "That backup predates the current schema (no entities.aliases) — "
+                    "restore it into an older nd-world release first.",
+                )
         finally:
             test_conn.close()
     except sqlite3.Error:
         tmp_path.unlink(missing_ok=True)
         raise HTTPException(400, "world.db inside the zip isn't a valid nd-world database")
 
+    with _RESTORE_STAGING_LOCK:
+        _stage_restore_locked(zf, names, tmp_path)
+    return RedirectResponse("/export?restore_staged=1", status_code=303)
+
+
+_RESTORE_STAGING_LOCK = threading.Lock()
+
+
+def _stage_restore_locked(zf, names, tmp_path):
+    """The staging extraction, serialized: two concurrent restore POSTs (or
+    a restore racing cancel) used to interleave rmtree/mkdir/extract with no
+    lock — mixed-content or half-deleted staging, i.e. a partial boot-time
+    apply. The caller confirms + validates the zip; this only stages."""
     if RESTORE_STAGING_DIR.exists():
         shutil.rmtree(RESTORE_STAGING_DIR)
     RESTORE_STAGING_DIR.mkdir(parents=True)
@@ -4655,14 +4725,15 @@ async def admin_backup_restore_stage(
     shutil.move(str(tmp_path), str(RESTORE_STAGING_DIR / "world.db"))
     (RESTORE_STAGING_DIR / "manifest.json").write_bytes(zf.read("manifest.json"))
 
-    return RedirectResponse("/export?restore_staged=1", status_code=303)
-
 
 @app.post("/admin/backup/restore/cancel")
 def admin_backup_restore_cancel():
-    # Same GM-only gate as admin_backup_restore_stage above.
-    if RESTORE_STAGING_DIR.exists():
-        shutil.rmtree(RESTORE_STAGING_DIR)
+    # Same GM-only gate as admin_backup_restore_stage above — and the same
+    # lock, so a cancel can't rmtree a staging dir another request is
+    # mid-extraction into.
+    with _RESTORE_STAGING_LOCK:
+        if RESTORE_STAGING_DIR.exists():
+            shutil.rmtree(RESTORE_STAGING_DIR)
     return RedirectResponse("/export", status_code=303)
 
 

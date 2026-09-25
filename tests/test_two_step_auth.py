@@ -8,6 +8,8 @@ import pyotp
 import pytest
 
 from app.database import SessionLocal
+import json
+
 from app.models import InviteCode, User
 from app.routers import account as account_router
 from app.routers import auth as auth_router
@@ -384,3 +386,42 @@ def test_player_can_enable_and_use_2fa(client, seed):
     r2 = client.post("/login/2fa", data={"code": code}, follow_redirects=False)
     assert r2.status_code == 303
     assert client.get("/account").status_code == 200
+
+
+def test_gm_can_clear_a_members_lost_2fa(client, seed):
+    """Recovery for a member who lost their authenticator AND backup codes:
+    a password reset alone leaves login stalled at /login/2fa (and the only
+    TOTP-disable route is self-service behind that gate). GM-only
+    clear-2fa wipes enrollment + backup-code hashes + trusted devices, so
+    the next password login just works."""
+    import pyotp
+
+    # Player enables 2FA
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    secret, _codes = _enable_2fa(client, seed.player_a.email, PLAYER_PASSWORD)
+    assert _totp_enabled_in_db(seed.player_a.id) is True
+
+    # GM clears it
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/worlds/{seed.world_a.id}/members/{seed.player_a.id}/clear-2fa",
+                    follow_redirects=False)
+    assert r.status_code == 303
+    assert _totp_enabled_in_db(seed.player_a.id) is False
+    db = SessionLocal()
+    try:
+        u = db.get(User, seed.player_a.id)
+        assert u.totp_secret is None
+        assert json.loads(u.totp_backup_codes_json or "[]") == []
+    finally:
+        db.close()
+
+    # Player logs in with just the password — no /login/2fa hop
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 200  # not a redirect to /login/2fa
+
+    # Player 403s on the route itself
+    r = client.post(f"/worlds/{seed.world_a.id}/members/{seed.gm.id}/clear-2fa",
+                    follow_redirects=False)
+    assert r.status_code == 403

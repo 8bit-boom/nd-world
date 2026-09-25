@@ -39,25 +39,32 @@ def _default_db_path() -> Path:
     return Path(DB_PATH)
 
 
+_SNAPSHOT_LOCK = threading.Lock()
+
+
 def create_snapshot(db_path: Path, dest_dir: Path) -> Path:
-    """VACUUM INTO a new snapshot of db_path inside dest_dir. Returns the
-    snapshot's path. Raises OSError/sqlite3.Error through if the source is
-    missing or the destination isn't writable — callers (the scheduler
-    thread, the API route) log/report but don't mask the cause."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    candidate = dest_dir / f"world-{stamp}.db"
-    n = 1
-    while candidate.exists():
-        # Two snapshots in the same second (a manual API run racing the
-        # scheduler): VACUUM INTO refuses to overwrite, so disambiguate.
-        candidate = dest_dir / f"world-{stamp}-{n}.db"
-        n += 1
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute("VACUUM INTO ?", (str(candidate),))
-    finally:
-        conn.close()
+    # Serialized: the scheduler thread and a manual POST /api/backups/run
+    # can both pass the candidate.exists() probe in the same second —
+    # the loser's VACUUM INTO would then fail on an existing file.
+    with _SNAPSHOT_LOCK:
+        """VACUUM INTO a new snapshot of db_path inside dest_dir. Returns the
+        snapshot's path. Raises OSError/sqlite3.Error through if the source is
+        missing or the destination isn't writable — callers (the scheduler
+        thread, the API route) log/report but don't mask the cause."""
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        candidate = dest_dir / f"world-{stamp}.db"
+        n = 1
+        while candidate.exists():
+            # Two snapshots in the same second (a manual API run racing the
+            # scheduler): VACUUM INTO refuses to overwrite, so disambiguate.
+            candidate = dest_dir / f"world-{stamp}-{n}.db"
+            n += 1
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("VACUUM INTO ?", (str(candidate),))
+        finally:
+            conn.close()
     return candidate
 
 

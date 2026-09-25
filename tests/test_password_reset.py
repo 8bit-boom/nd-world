@@ -205,3 +205,4 @@ def test_gm_password_reset_env_var_noop_when_unset(seed, monkeypatch):
     unchanged = _get_user(seed.gm.id)
     assert unchanged.password_hash == seed.gm.password_hash
     assert unchanged.session_version == seed.gm.session_version
+

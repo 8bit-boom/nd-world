@@ -276,6 +276,14 @@
               <button type="submit" title="Generate a new temporary password"
                       style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.2rem .6rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.78rem">🔑 Reset password</button>
             </form>
+            {% if u.totp_enabled %}
+            <form method="post" action="/worlds/{{ edit_world.id }}/members/{{ u.id }}/clear-2fa"
+                  onsubmit="return confirm('Clear two-step auth for {{ u.display_name }}? They can log in with just their password afterwards and should re-enable 2FA from their account page.');"
+                  style="display:inline;margin-right:.4rem">
+              <button type="submit" title="Clear two-step auth (lost authenticator AND backup codes)"
+                      style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:.2rem .6rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.78rem">🔓 Clear 2FA</button>
+            </form>
+            {% endif %}
             <form method="post" action="/worlds/{{ edit_world.id }}/members/{{ u.id }}/remove"
                   onsubmit="return confirm('Remove {{ u.display_name }} from this world?');" style="display:inline">
               <button type="submit" style="background:transparent;border:1px solid var(--neon2);color:var(--neon2);padding:.2rem .6rem;border-radius:4px;cursor:pointer;font-family:var(--font);font-size:.78rem">Remove</button>

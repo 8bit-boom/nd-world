@@ -88,3 +88,34 @@ def test_scheduler_noop_without_env_dir(monkeypatch):
     monkeypatch.delenv("ND_BACKUP_DIR", raising=False)
     backups.start()
     assert backups._thread is None
+
+
+def test_concurrent_snapshots_never_collide(tmp_path):
+    """B6: the scheduler thread and a manual /api/backups/run can race —
+    serialized by _SNAPSHOT_LOCK, both snapshots land with distinct names
+    (the loser of the exists() probe retries with a -N suffix)."""
+    import threading
+
+    db_path = tmp_path / "world.db"
+    conn = __import__("sqlite3").connect(str(db_path))
+    conn.execute("CREATE TABLE t (x)")
+    conn.commit()
+    conn.close()
+
+    dest_dir = tmp_path / "snaps"
+    dest_dir.mkdir()
+    results = []
+
+    def run():
+        results.append(backups.create_snapshot(db_path, dest_dir))
+
+    threads = [threading.Thread(target=run) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(results) == 4
+    assert len({r.name for r in results}) == 4  # all distinct
+    for r in results:
+        assert r.exists()

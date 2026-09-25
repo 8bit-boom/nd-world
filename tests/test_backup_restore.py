@@ -46,6 +46,13 @@ def _make_backup_zip(*, world_db_bytes=None, manifest=None, extra_files=None, va
                     conn = sqlite3.connect(str(p))
                     conn.execute("CREATE TABLE worlds (id INTEGER PRIMARY KEY, name TEXT)")
                     conn.execute("INSERT INTO worlds (name) VALUES ('Backed Up World')")
+                    # Current-schema marker: the staging route's schema-depth
+                    # probe rejects backups whose entities table lacks the
+                    # aliases column (a pre-aliases backup would crash-loop
+                    # boot in _migrate), so the fixture models a CURRENT backup.
+                    conn.execute(
+                        "CREATE TABLE entities (id INTEGER PRIMARY KEY, aliases TEXT)"
+                    )
                     conn.commit()
                     conn.close()
                     world_db_bytes = p.read_bytes()
@@ -309,3 +316,55 @@ def test_incomplete_staging_without_world_db_is_discarded(tmp_path, monkeypatch)
     assert live_db.read_bytes() == b"OLD-DB-CONTENT"   # nothing applied
     assert not staging.exists()                         # incomplete stage cleaned
     assert not (tmp_path / "uploads").exists()          # media NOT merged
+
+
+def test_restore_rejects_zip_with_too_many_entries(client, seed):
+    """B4 decompression caps: the entry-count guard rejects a zip with an
+    absurd number of entries before any zf.read() inflates content into
+    memory (ZipFile.writestr overrides claimed file_size with the real
+    length, so the total-uncompressed guard can't be exercised from a
+    test zip — the count guard proves the cap code runs first)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("world.db", b"x")
+        zf.writestr("manifest.json", json.dumps({"app": "nd-world"}))
+        for i in range(20001):
+            zf.writestr(f"uploads/pad-{i}.txt", "x")
+    _login_gm_for_restore(client, seed)
+    r = client.post(
+        "/admin/backup/restore",
+        files={"file": ("backup.zip", buf.getvalue(), "application/zip")},
+        data={"confirm_name": seed.world_a.name},
+    )
+    assert r.status_code == 400
+    assert "too many" in r.text
+
+
+def test_restore_rejects_pre_aliases_schema(client, seed):
+    """B7: a valid sqlite backup from before entities.aliases existed must
+    be rejected at staging (it would crash-loop boot in _migrate), not
+    accepted to fail at restart."""
+    import sqlite3
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        tmp = io.BytesIO()
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE worlds (id INTEGER PRIMARY KEY, name TEXT)")
+        conn.execute("INSERT INTO worlds (name) VALUES ('Old')")
+        conn.commit()
+        tmp.write(conn.serialize())
+        zf.writestr("world.db", tmp.getvalue())
+        zf.writestr("manifest.json", json.dumps({"app": "nd-world"}))
+    _login_gm_for_restore(client, seed)
+    r = client.post(
+        "/admin/backup/restore",
+        files={"file": ("backup.zip", buf.getvalue(), "application/zip")},
+        data={"confirm_name": seed.world_a.name},
+    )
+    assert r.status_code == 400
+    assert "aliases" in r.text
+
+
+def _login_gm_for_restore(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
