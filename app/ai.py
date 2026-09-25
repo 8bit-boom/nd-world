@@ -1140,12 +1140,29 @@ async def resident_models() -> list[dict]:
     in VRAM" section, since a 16GB card can't hold an LLM and a diffusion
     model at once and a GM needs to see what's actually using it.
 
+    Under Unsloth there is no .ps() equivalent — but /v1/models tags each
+    entry with a `loaded` bool (findings I-5), so the same panel degrades to
+    "currently loaded models" (no per-model size/VRAM split — Studio's own
+    UI shows that). Under the legacy Ollama backend this is .ps() exactly as
+    before.
+
     A model doesn't have to fit in VRAM entirely — Ollama offloads whatever
     doesn't fit to system RAM (running slower, but still working), so
     size_ram_bytes (size minus size_vram) is how much of THIS model is
     sitting in system RAM rather than on the GPU. unload_model() below frees
     both at once — Ollama has no notion of evicting only the RAM-resident
     part of a model that's split across both."""
+    if effective_llm_api_key():
+        try:
+            resp = await _client().list()
+        except Exception:
+            return []
+        return [
+            {"model": m.model, "size_bytes": None, "size_vram_bytes": None,
+             "size_ram_bytes": None, "expires_at": None}
+            for m in resp.models
+            if getattr(m, "loaded", False)
+        ]
     try:
         resp = await _client().ps()
     except Exception:

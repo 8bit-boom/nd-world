@@ -84,6 +84,18 @@ function igClearCN() {
     _igIsComfyUI = st.type === 'comfyui';
     const note = document.getElementById('ig-comfyui-note');
     if (note) note.style.display = _igIsComfyUI ? 'block' : 'none';
+    // Unsloth backend: hide every SwarmUI-only control (admin buttons,
+    // backend/VRAM status, the three shared-volume download panels) and
+    // show the Unsloth capability note instead — same pattern as the
+    // ComfyUI note above.
+    const isUnsloth = st.type === 'unsloth';
+    const unote = document.getElementById('ig-unsloth-note');
+    if (unote) unote.style.display = isUnsloth ? 'block' : 'none';
+    if (isUnsloth) {
+      ['ig-restart-swarmui-btn', 'ig-check-updates-btn', 'ig-update-restart-btn',
+       'ig-backend-status', 'ig-dl-models-section', 'ig-krea2-section', 'ig-dl-lora-section']
+        .forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+    }
     await igReloadModels();
     igRenderLoras();
     igRenderPresets();
@@ -98,7 +110,7 @@ function igClearCN() {
     igLoadSourcesPanel();
     igLoadStarred();
     igLoadJobs();
-    if (!_igIsComfyUI) igLoadBackendStatus();
+    if (!_igIsComfyUI && !isUnsloth) igLoadBackendStatus();
     // Init auto-resize on prompt textareas
     const promptEl = document.getElementById('ig-prompt');
     const negEl = document.getElementById('ig-negative');

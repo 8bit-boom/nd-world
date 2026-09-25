@@ -272,8 +272,12 @@ class UnslothClient:
         if resp.status_code >= 400:
             raise _error_from_response(resp)
         data = resp.json()
+        # /v1/models entries carry a `loaded` bool (findings I-5) — exposed
+        # so resident_models() can show "currently loaded" under Unsloth
+        # the way .ps() did under Ollama.
         models = [
-            SimpleNamespace(model=m.get("id", ""), size=None, details=None)
+            SimpleNamespace(model=m.get("id", ""), size=None, details=None,
+                            loaded=bool(m.get("loaded")))
             for m in data.get("data") or []
             if isinstance(m, dict) and m.get("id")
         ]

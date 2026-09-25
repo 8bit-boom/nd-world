@@ -21,7 +21,8 @@ stack. This doc explains what that does and covers Part B in detail.
    ```
 3. The script creates `.env` (a random `SECRET_KEY`, and it'll ask for the
    email/password you want to use as the GM), then builds and starts
-   nd-world, SwarmUI (image generation), and Ollama (AI chat).
+   nd-world and Unsloth Studio (the AI backend for chat + image generation;
+   the legacy Ollama/SwarmUI pair is still available for rollback).
 4. Once it prints a URL, open it and log in with the GM email/password you
    set. At this point the app works for anyone on your home WiFi/network, but
    not yet from the internet — that's Part B.
@@ -43,6 +44,37 @@ to `127.0.0.1:` instead of leaving the host address blank in each
 service's `ports:` list — just be aware that on TrueNAS this also breaks
 the **Apps → Discover Apps → &lt;app&gt; → Web Portal** shortcut for that
 service, since it relies on reaching the published port directly.
+
+### One-time Unsloth setup (AI chat + images)
+
+The `unsloth` profile starts Unsloth Studio alongside the app — the single
+backend for both AI chat and image generation. After `docker compose up -d`:
+
+1. **Log in to Studio** — open `http://<host>:8000` and sign in with
+   username `unsloth` and the password from `UNSLOTH_STUDIO_PASSWORD`.
+2. **Create an API key** — Studio → Settings → API → create a key.
+3. **Save it in nd-world** — ⚙️ Settings → **Unsloth (AI backend)** →
+   *API key*. The moment a key is saved, AI chat **and** image generation
+   (including media generated inline in chat) switch to Unsloth
+   automatically — no restart. Clearing the key falls back to the legacy
+   Ollama/SwarmUI backends (kept for rollback until the migration
+   cutover).
+4. **Download models** — in Studio's Model Hub, fetch the chat model
+   (`unsloth/gemma-4-26B-A4B-it-GGUF` by default, override with
+   `UNSLOTH_MODEL`) and the image model (`unsloth/z-image-turbo-GGUF`,
+   override with `UNSLOTH_IMAGE_MODEL`). Consider enabling Studio's idle
+   unload (~300 s) so VRAM is released between sessions.
+5. **On a Tesla V100** — load models with fp16 + non-flash attention and
+   pin the Studio image tag (see [GPU_SETUP.md](GPU_SETUP.md) §4; the
+   sm_70 kernel risk is finding I-7 in
+   [UNSLOTH_PHASE0_FINDINGS.md](UNSLOTH_PHASE0_FINDINGS.md)).
+
+Remember: Studio API keys do not survive container recreation — after a
+Studio rebuild, create a fresh key and update Settings.
+
+The other AI profiles: `whisper` (audio transcription, unchanged),
+`android` and `editor` (see below), and the legacy `ollama`/`swarmui`
+pair (don't combine with `unsloth`).
 
 ---
 
