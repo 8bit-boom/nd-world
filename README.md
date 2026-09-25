@@ -23,6 +23,7 @@ A self-hosted worldbuilding and lore management system for the **Neon & Dragons*
 - **Schematics** — SVG-based canvas editor for drawing station/dungeon layouts
 - **Investment boards** — node-and-edge graph boards for plotting organization structures and story threads
 - **AI chat** — Ollama LLM integration with streaming responses and world-lore RAG context
+- **Talk to NPCs** — persistent in-character conversations with any entity (saved per user × NPC, so every player has their own private thread); GMs get model/thinking/lore-retrieval toggles, players get it under the same per-world "players can use Ask AI" opt-in as the other AI surfaces
 - **AI Models tab** — download, manage, and delete Ollama models directly from the app UI with live progress bars; popular model quick-picks included
 - **Ollama tuning from the browser** — full per-request generation options (temperature, sampling, context length, and more) plus server-level tuning (flash attention, KV cache quantization, parallelism, GPU selection, ...) from Settings → System, no `.env` editing required; a "Detected hardware" panel reads the host's CPU/RAM/GPU and recommends a starting-point configuration per installed model (see [Deploying nd-world](docs/DEPLOYMENT.md))
 - **AI image generation** — SwarmUI or ComfyUI backend with sampler/scheduler, LoRA, VAE, CLIP skip, upscaling, img2img, batch output, and generation history with parameter reuse
