@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from .. import media_albums
 from ..database import get_db
-from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit, world_can_view_section
+from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit, world_can_edit_section, world_can_view_section
 from ..models import CharacterSheet, PageAlbum, PageDoc
 from ..templating import templates
 from ..uploads import (
@@ -39,6 +39,15 @@ from ..uploads import (
 )
 
 router = APIRouter()
+
+def _require_edit_section(request: Request, world) -> None:
+    """Write-tier enforcement for Settings → Navigation dial-downs:
+    _is_assistant_safe admits an assistant unconditionally, so each write
+    handler checks the section matrix itself (GM always passes; quests.py
+    is the established pattern)."""
+    if not world or not world_can_edit_section(request, world, "pages"):
+        raise HTTPException(403)
+
 
 _MAX_NAME = 256
 _MAX_DESCRIPTION = 512
@@ -250,6 +259,7 @@ async def pages_album_create(request: Request, db: Session = Depends(get_db), ac
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     form = await request.form()
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME] or "Untitled Album"
     count = db.query(PageAlbum).filter(PageAlbum.world_id == world.id).count()
@@ -272,6 +282,7 @@ async def pages_album_rename(album_id: int, request: Request, db: Session = Depe
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
     form = await request.form()
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME]
@@ -287,6 +298,7 @@ def pages_album_delete(album_id: int, request: Request, db: Session = Depends(ge
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
     descendants = _descendant_albums(db, album.id)
     all_album_ids = [album.id] + [d.id for d in descendants]
@@ -334,6 +346,7 @@ async def pages_upload(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     if db.query(PageDoc).filter(PageDoc.world_id == world.id).count() >= _MAX_DOCS_PER_WORLD:
         raise HTTPException(400, f"This world already has the maximum of {_MAX_DOCS_PER_WORLD} pages.")
     if not file or not file.filename:
@@ -373,6 +386,7 @@ async def pages_upload_chunk(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     save_upload_chunk(_CHUNKS_ROOT, upload_id, chunk_index, file, max_bytes=_MAX_PAGE_BYTES)
     return JSONResponse({"ok": True})
 
@@ -394,6 +408,7 @@ async def pages_upload_complete(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     if not filename:
         raise HTTPException(400, "No filename given")
     ext = Path(filename).suffix.lower()
@@ -432,6 +447,7 @@ async def pages_edit(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     doc = _doc_or_404(db, world.id, doc_id)
     name = name.strip()[:_MAX_NAME]
     if name:
@@ -451,6 +467,7 @@ def pages_delete(doc_id: int, request: Request, db: Session = Depends(get_db), a
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     doc = _doc_or_404(db, world.id, doc_id)
     sheet_count = _sheets_referencing_count(db, [doc.id])
     if sheet_count:

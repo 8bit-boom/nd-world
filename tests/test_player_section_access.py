@@ -820,3 +820,56 @@ def test_navigation_settings_save_denies_invalid_levels_and_floors_maps(client, 
         db.close()
     assert access["maps"]["player"] == "read"  # floored, not denied outright
     assert access["quests"]["player"] == "none"  # invalid value -> denied
+
+
+def test_assistant_facts_dial_down_blocks_writes_not_reads(client, seed):
+    """facts=read for assistants: the Facts page GET still works but every
+    write route (form + API) must 403 — previously only the GETs honored
+    the dial-down while the writes sailed through the blanket
+    _is_assistant_safe allowlist."""
+    _set_access(seed.world_a.id, facts={"assistant": "read"})
+    _make_assistant(seed.world_a.id, seed.player_a.id)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get("/facts").status_code == 200
+    assert client.post("/facts/new", data={"content": "x"}).status_code == 403
+    assert client.post("/api/facts/bulk", json={"facts": [{"content": "x"}]}).status_code == 403
+    assert client.post("/api/facts/parse-job", json={"text": "recap text"}).status_code == 403
+    # facts=edit (default) → writes work again
+    _set_access(seed.world_a.id, facts={"assistant": "edit"})
+    assert client.post("/facts/new", data={"content": "assistant fact"}, follow_redirects=False).status_code == 303
+
+
+def test_assistant_background_jobs_dial_down_blocks_job_management(client, seed):
+    _set_access(seed.world_a.id, background_jobs={"assistant": "read"})
+    _make_assistant(seed.world_a.id, seed.player_a.id)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get("/background-jobs").status_code == 200
+    assert client.post("/api/audio-jobs/1/cancel").status_code == 403
+    assert client.delete("/api/audio-jobs/1").status_code == 403
+
+
+def test_assistant_import_dial_down_blocks_execute(client, seed):
+    _set_access_raw(seed.world_a.id, "import", {"assistant": "read"})
+    _make_assistant(seed.world_a.id, seed.player_a.id)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get("/import").status_code == 200
+    assert client.post("/api/import/execute", json={"json_text": "{}"}).status_code == 403
+
+
+def _set_access_raw(world_id, section_id, levels):
+    """_set_access with a section id that isn't a valid Python kwarg name."""
+    import json as _json
+    from app.deps import world_section_access
+    from app.models import World
+    db = SessionLocal()
+    try:
+        w = db.get(World, world_id)
+        current = world_section_access(w)
+        current[section_id].update(levels)
+        w.section_access_json = _json.dumps(current)
+        db.commit()
+    finally:
+        db.close()

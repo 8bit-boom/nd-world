@@ -15,7 +15,7 @@ from .. import ai as _ai
 from .. import auth, deps
 from ..constants import KINDS, ND_DEFAULT_CURRENCY, ND_DEFAULT_STATS
 from ..database import get_db
-from ..deps import get_world_ctx, world_can_view_section
+from ..deps import get_world_ctx, world_can_edit_section, world_can_view_section
 from ..imaging import CONVERT_QUALITY, convert_image_to
 from ..models import Entity, EntityTemplate, ImageAlbum, InvestBoard, MapOverlay, PlayerCharacter, RandomTable, Schematic, SheetTemplate, World
 from ..templating import templates
@@ -24,6 +24,15 @@ from .characters import _apply_form, _current_user
 from .tables import _slugify as _table_slugify
 
 router = APIRouter()
+
+def _require_edit_section(request: Request, world) -> None:
+    """Write-tier enforcement for Settings → Navigation dial-downs:
+    _is_assistant_safe admits an assistant unconditionally, so each write
+    handler checks the section matrix itself (GM always passes; quests.py
+    is the established pattern)."""
+    if not world or not world_can_edit_section(request, world, "import"):
+        raise HTTPException(403)
+
 
 _MAPS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "maps"
 _UPLOADS_DIR = Path(os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads"
@@ -925,6 +934,7 @@ async def import_execute(request: Request, db: Session = Depends(get_db), active
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
+    _require_edit_section(request, world)
     body = await request.json()
     raw = body.get("json_text", "")
     try:

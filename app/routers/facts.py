@@ -12,7 +12,7 @@ from .. import ai as _ai_module
 from .. import ai_assist as _ai_assist
 from .. import audio_jobs as _audio_jobs
 from ..database import get_db
-from ..deps import get_world_ctx, is_gm, world_can_view_section
+from ..deps import get_world_ctx, is_gm, world_can_edit_section, world_can_view_section
 from ..models import AudioJob, Fact, GameSession
 from ..templating import templates
 from .sessions import _rag_options_from_body
@@ -149,6 +149,16 @@ def _fact_groups(db: Session, world_id: int, sessions: dict, visible_only: bool 
 _NEXT_SESSION_RE = re.compile(r"^/sessions/\d+$")
 
 
+def _require_edit_section(request: Request, world) -> None:
+    """Every write in this router enforces Settings → Navigation's edit tier
+    itself: _is_assistant_safe admits an assistant unconditionally, so a GM
+    dialing facts down to read/none for assistants would otherwise only
+    hide the GETs while the writes kept working (the quests/calendar
+    routers are the established per-handler pattern). GM always passes."""
+    if not world or not world_can_edit_section(request, world, "facts"):
+        raise HTTPException(403)
+
+
 def _safe_next(form_value) -> str:
     """Whitelist for the plain-form Facts routes' post-action redirect: the
     Facts page itself ("/facts", the historical/default target) or a
@@ -197,6 +207,7 @@ def facts_list(request: Request, db: Session = Depends(get_db), active_world: st
 @router.post("/facts/new")
 async def fact_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, _ = get_world_ctx(request, db, active_world)
+    _require_edit_section(request, world)
     form = await request.form()
     user = getattr(request.state, "user", None)
     next_url = _safe_next(form.get("next"))
@@ -235,6 +246,7 @@ async def fact_edit(fact_id: int, request: Request, db: Session = Depends(get_db
     fact = db.get(Fact, fact_id)
     if not fact or not world or fact.world_id != world.id:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     form = await request.form()
     next_url = _safe_next(form.get("next"))
     content = str(form.get("content", "")).strip()
@@ -267,6 +279,7 @@ async def fact_delete(
     fact = db.get(Fact, fact_id)
     if not fact or not world or fact.world_id != world.id:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     form = await request.form()
     next_url = _safe_next(form.get("next"))
     db.delete(fact)
@@ -300,6 +313,12 @@ async def api_facts_parse(request: Request, db: Session = Depends(get_db), activ
     text = str(body.get("text", "")).strip()
     if not text:
         raise HTTPException(400, "No recap text provided")
+    # Dial-down enforcement for this assistant-reachable route (no DB write,
+    # but it drives the world's model): enforced only when a world is active,
+    # preserving the world-less API call this documented route always allowed.
+    world, _ = get_world_ctx(request, db, active_world)
+    if world:
+        _require_edit_section(request, world)
     # Same option reading/ validation as api_facts_parse_job below — one
     # shared shape, so a caller can switch a request between the sync and
     # job variants without changing anything else.
@@ -319,7 +338,6 @@ async def api_facts_parse(request: Request, db: Session = Depends(get_db), activ
         # the module's own defaults. World-scoped like parse-job below (that
         # route needs the world for its job row; this one only needs it for
         # the lore query, and refuses the same way when there isn't one).
-        world, _ = get_world_ctx(request, db, active_world)
         if not world:
             raise HTTPException(400, "No active world")
         world_context = _audio_jobs._build_rag_context(
@@ -352,8 +370,7 @@ async def api_facts_folk_tale(request: Request, db: Session = Depends(get_db), a
     worth it here either."""
     body = await request.json()
     world, _ = get_world_ctx(request, db, active_world)
-    if not world:
-        raise HTTPException(400, "No active world")
+    _require_edit_section(request, world)
     game_session_id = body.get("game_session_id")
     q = db.query(Fact).filter(Fact.world_id == world.id)
     if game_session_id:
@@ -398,8 +415,7 @@ async def api_facts_parse_job(request: Request, db: Session = Depends(get_db), a
     here, unlike the sync route: the job row is world-addressable so "Restore
     last parse" (GET /api/facts/last-parse) can find it again after a reload."""
     world, _ = get_world_ctx(request, db, active_world)
-    if not world:
-        raise HTTPException(400, "No active world")
+    _require_edit_section(request, world)
     body = await request.json()
     text = str(body.get("text", "")).strip()
     if not text:
@@ -488,8 +504,7 @@ async def api_facts_bulk(request: Request, db: Session = Depends(get_db), active
     flagged draft_consumed so GET /api/facts/last-parse stops offering the
     just-saved draft for a second round."""
     world, _ = get_world_ctx(request, db, active_world)
-    if not world:
-        raise HTTPException(400, "No active world")
+    _require_edit_section(request, world)
     body = await request.json()
     user = getattr(request.state, "user", None)
     items = body.get("facts")
@@ -534,6 +549,7 @@ async def api_facts_from_job(job_id: int, request: Request, db: Session = Depend
     world, _ = get_world_ctx(request, db, active_world)
     if not world or job.world_id != world.id:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     body = await request.json()
     items = body.get("facts")
     if not isinstance(items, list):

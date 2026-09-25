@@ -24,12 +24,21 @@ from .. import ai as _ai_module
 from .. import ai_assist as _ai_assist
 from .. import audio_jobs as _audio_jobs
 from ..database import get_db
-from ..deps import get_world_ctx, paginate, can_edit_content, world_can_view_section
+from ..deps import get_world_ctx, paginate, can_edit_content, world_can_edit_section, world_can_view_section
 from ..models import AudioJob
 from ..templating import templates
 from .ai import _world_summary_audience_filter
 
 router = APIRouter()
+
+def _require_edit_section(request: Request, world) -> None:
+    """Write-tier enforcement for Settings → Navigation dial-downs:
+    _is_assistant_safe admits an assistant unconditionally, so each write
+    handler checks the section matrix itself (GM always passes; quests.py
+    is the established pattern)."""
+    if not world or not world_can_edit_section(request, world, "background_jobs"):
+        raise HTTPException(403)
+
 
 PURPOSE_LABELS = {
     "session_recap": "Session Recap", "attachment": "Voice Attachment", "condense": "Condense",
@@ -313,6 +322,7 @@ def api_audio_job_download_recap(job_id: int, request: Request, db: Session = De
 def api_audio_job_cancel(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
+    _require_edit_section(request, world)
     if not world:
         raise HTTPException(404)
     job = db.query(AudioJob).filter(AudioJob.id == job_id, AudioJob.world_id == world.id).first()
@@ -329,6 +339,7 @@ def api_audio_job_cancel(job_id: int, request: Request, db: Session = Depends(ge
 def api_audio_job_delete(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
+    _require_edit_section(request, world)
     if not world:
         raise HTTPException(404)
     job = db.query(AudioJob).filter(AudioJob.id == job_id, AudioJob.world_id == world.id).first()
@@ -359,6 +370,7 @@ async def api_audio_job_resummarize(
     other in-flight job on this page."""
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
+    _require_edit_section(request, world)
     if not world:
         raise HTTPException(404)
     job = db.query(AudioJob).filter(AudioJob.id == job_id, AudioJob.world_id == world.id).first()
@@ -382,6 +394,7 @@ async def api_audio_job_resume(job_id: int, request: Request, db: Session = Depe
     hand without immediately re-hitting that same cap."""
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
+    _require_edit_section(request, world)
     if not world:
         raise HTTPException(404)
     job = db.query(AudioJob).filter(AudioJob.id == job_id, AudioJob.world_id == world.id).first()

@@ -36,7 +36,7 @@ from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
 from .. import media_albums
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit, world_can_view_section
+from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit, world_can_edit_section, world_can_view_section
 from ..models import VideoAlbum, VideoClip
 from ..templating import templates
 from ..uploads import (
@@ -48,6 +48,15 @@ from ..uploads import (
 )
 
 router = APIRouter()
+
+def _require_edit_section(request: Request, world) -> None:
+    """Write-tier enforcement for Settings → Navigation dial-downs:
+    _is_assistant_safe admits an assistant unconditionally, so each write
+    handler checks the section matrix itself (GM always passes; quests.py
+    is the established pattern)."""
+    if not world or not world_can_edit_section(request, world, "video"):
+        raise HTTPException(403)
+
 
 _MAX_NAME = 256
 _MAX_DESCRIPTION = 512
@@ -434,6 +443,7 @@ async def video_settings_save(request: Request, db: Session = Depends(get_db), a
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     form = await request.form()
     world.video_convert_enabled = bool(form.get("video_convert_enabled"))
     max_height_raw = str(form.get("video_convert_max_height", "")).strip()
@@ -450,6 +460,7 @@ async def video_album_create(request: Request, db: Session = Depends(get_db), ac
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     form = await request.form()
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME] or "Untitled Album"
     count = db.query(VideoAlbum).filter(VideoAlbum.world_id == world.id).count()
@@ -472,6 +483,7 @@ async def video_album_rename(album_id: int, request: Request, db: Session = Depe
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
     form = await request.form()
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME]
@@ -487,6 +499,7 @@ def video_album_delete(album_id: int, request: Request, db: Session = Depends(ge
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
     descendants = _descendant_albums(db, album.id)
     all_album_ids = [album.id] + [d.id for d in descendants]
@@ -516,6 +529,7 @@ async def video_upload(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     if db.query(VideoClip).filter(VideoClip.world_id == world.id).count() >= _MAX_CLIPS_PER_WORLD:
         raise HTTPException(400, f"This world already has the maximum of {_MAX_CLIPS_PER_WORLD} video clips.")
     if not file or not file.filename:
@@ -560,6 +574,7 @@ async def video_upload_chunk(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     save_upload_chunk(_CHUNKS_ROOT, upload_id, chunk_index, file, max_bytes=_effective_video_bytes(db))
     return JSONResponse({"ok": True})
 
@@ -580,6 +595,7 @@ async def video_upload_complete(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     if not filename:
         raise HTTPException(400, "No filename given")
     ext = Path(filename).suffix.lower()
@@ -621,6 +637,7 @@ async def video_edit(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     clip = _clip_or_404(db, world.id, clip_id)
     name = name.strip()[:_MAX_NAME]
     if name:
@@ -649,6 +666,7 @@ async def video_transcribe(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     clip = _clip_or_404(db, world.id, clip_id)
     path = _resolve_upload_path(clip.file_url)
     if not path:
@@ -678,6 +696,7 @@ def video_delete(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     clip = _clip_or_404(db, world.id, clip_id)
     dest = f"/video/albums/{clip.album_id}" if clip.album_id else "/video"
     _delete_clip_file(clip)

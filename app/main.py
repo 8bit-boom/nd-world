@@ -4186,6 +4186,8 @@ def board_new_post(
     active_world: str = Cookie(None),
 ):
     world, _ = get_world_ctx(request, db, active_world)
+    if not world or not world_can_edit_section(request, world, "boards"):
+        raise HTTPException(403)
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "board"
     base_slug = slug
     i = 2
@@ -4228,6 +4230,8 @@ def board_view(slug: str, request: Request, db: Session = Depends(get_db), activ
 async def board_save(slug: str, request: Request, db: Session = Depends(get_db)):
     b = db.query(InvestBoard).filter(InvestBoard.slug == slug).first()
     if not b: raise HTTPException(404)
+    if not world_can_edit_section(request, db.get(World, b.world_id), "boards"):
+        raise HTTPException(403)
     body = await request.json()
     # stash nodes + groups together to avoid schema change
     b.nodes_json = json.dumps({"nodes": body.get("nodes", []), "groups": body.get("groups", [])})
@@ -4236,9 +4240,11 @@ async def board_save(slug: str, request: Request, db: Session = Depends(get_db))
     return {"ok": True}
 
 @app.post("/boards/{slug}/delete")
-def board_delete(slug: str, db: Session = Depends(get_db)):
+def board_delete(slug: str, request: Request, db: Session = Depends(get_db)):
     b = db.query(InvestBoard).filter(InvestBoard.slug == slug).first()
     if not b: raise HTTPException(404)
+    if not world_can_edit_section(request, db.get(World, b.world_id), "boards"):
+        raise HTTPException(403)
     db.delete(b); db.commit()
     return RedirectResponse("/boards", status_code=303)
 

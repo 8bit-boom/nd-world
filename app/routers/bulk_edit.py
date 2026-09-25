@@ -24,11 +24,20 @@ from sqlalchemy.orm import Session
 
 from .. import ai as _ai
 from ..database import get_db
-from ..deps import get_world_ctx, require_can_edit, world_can_view_section
+from ..deps import get_world_ctx, require_can_edit, world_can_view_section, world_can_edit_section
 from ..models import Entity, EntityNote, PlayerCharacter
 from ..templating import templates
 
 router = APIRouter(tags=["bulk-edit"])
+
+def _require_edit_section(request: Request, world) -> None:
+    """Write-tier enforcement for Settings → Navigation dial-downs:
+    _is_assistant_safe admits an assistant unconditionally, so each write
+    handler checks the section matrix itself (GM always passes; quests.py
+    is the established pattern)."""
+    if not world or not world_can_edit_section(request, world, "bulk_edit"):
+        raise HTTPException(403)
+
 
 
 @router.get("/tools/bulk-edit", response_class=HTMLResponse)
@@ -114,6 +123,7 @@ async def bulk_edit_parse(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
+    _require_edit_section(request, world)
     instruction = body.instruction.strip()
     if not instruction:
         raise HTTPException(400, "No instruction provided")
@@ -137,6 +147,7 @@ def bulk_edit_preview(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
+    _require_edit_section(request, world)
     find = body.find.strip()
     if not find:
         raise HTTPException(400, "No search text provided")
@@ -219,6 +230,7 @@ def bulk_edit_apply(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(400, "No active world")
+    _require_edit_section(request, world)
     find = body.find.strip()
     if not find:
         raise HTTPException(400, "No search text provided")

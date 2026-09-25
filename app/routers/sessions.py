@@ -18,13 +18,22 @@ from .. import auth
 from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
 from ..database import SessionLocal, get_db
-from ..deps import check_llm_cooldown, get_world_ctx, paginate, world_can_view_section, world_row_visible
+from ..deps import check_llm_cooldown, get_world_ctx, paginate, world_can_edit_section, world_can_view_section, world_row_visible
 from ..models import AudioClip, AudioJob, CombatSession, Entity, Fact, GameSession, Party, PlayerCharacter, Quest, World
 from ..rendering import render_md
 from ..templating import templates
 from ..uploads import CHUNK_ID_RE, copy_upload_bounded, reassemble_upload_chunks, save_upload_chunk
 
 router = APIRouter()
+
+def _require_edit_section(request: Request, world) -> None:
+    """Write-tier enforcement for Settings → Navigation dial-downs:
+    _is_assistant_safe admits an assistant unconditionally, so each write
+    handler checks the section matrix itself (GM always passes; quests.py
+    is the established pattern)."""
+    if not world or not world_can_edit_section(request, world, "sessions"):
+        raise HTTPException(403)
+
 
 # Same name/approach as video.py's and ai.py's module loggers — ffmpeg
 # failures in the live-audio concat path warn here instead of 500-ing.
@@ -189,6 +198,7 @@ def session_new_form(request: Request, db: Session = Depends(get_db), active_wor
 @router.post("/sessions/new")
 async def session_create(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, _ = get_world_ctx(request, db, active_world)
+    _require_edit_section(request, world)
     form = await request.form()
     gs = GameSession(
         world_id=world.id if world else 1,
@@ -386,6 +396,7 @@ async def session_edit(session_id: int, request: Request, db: Session = Depends(
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
+    _require_edit_section(request, db.get(World, gs.world_id))
     form = await request.form()
     gs.title = str(form.get("title", gs.title)).strip() or gs.title
     gs.session_num = int(form.get("session_num") or gs.session_num)
@@ -412,10 +423,11 @@ async def session_edit(session_id: int, request: Request, db: Session = Depends(
 
 
 @router.post("/sessions/{session_id}/delete")
-def session_delete(session_id: int, db: Session = Depends(get_db)):
+def session_delete(session_id: int, request: Request, db: Session = Depends(get_db)):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
+    _require_edit_section(request, db.get(World, gs.world_id))
     db.query(CombatSession).filter(CombatSession.game_session_id == session_id).update({"game_session_id": None})
     # Facts are content in their own right (the whole point of the feature
     # is outliving any one session's page) — unlike CombatSession above,
@@ -441,6 +453,7 @@ async def prep_toggle(session_id: int, request: Request, db: Session = Depends(g
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
+    _require_edit_section(request, db.get(World, gs.world_id))
     body = await request.json()
     idx = int(body.get("index", -1))
     prep = json.loads(gs.prep_json or "[]")
@@ -456,6 +469,7 @@ async def prep_add(session_id: int, request: Request, db: Session = Depends(get_
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
+    _require_edit_section(request, db.get(World, gs.world_id))
     body = await request.json()
     task = str(body.get("task", "")).strip()
     prep = json.loads(gs.prep_json or "[]")
@@ -467,10 +481,11 @@ async def prep_add(session_id: int, request: Request, db: Session = Depends(get_
 
 
 @router.post("/api/sessions/{session_id}/prep/{idx}/delete")
-def prep_delete(session_id: int, idx: int, db: Session = Depends(get_db)):
+def prep_delete(session_id: int, idx: int, request: Request, db: Session = Depends(get_db)):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
+    _require_edit_section(request, db.get(World, gs.world_id))
     prep = json.loads(gs.prep_json or "[]")
     if 0 <= idx < len(prep):
         prep.pop(idx)
@@ -515,7 +530,7 @@ def _session_prep_context(db: Session, gs: GameSession) -> str:
 
 
 @router.post("/api/sessions/{session_id}/prep/generate")
-async def prep_generate(session_id: int, db: Session = Depends(get_db)):
+async def prep_generate(session_id: int, request: Request, db: Session = Depends(get_db)):
     """Drafts a prep checklist from world state (see _session_prep_context)
     via the local model — returns the draft without writing anything. The
     client reviews/unchecks items, then adds confirmed ones through the
@@ -524,6 +539,7 @@ async def prep_generate(session_id: int, db: Session = Depends(get_db)):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
+    _require_edit_section(request, db.get(World, gs.world_id))
     context = _session_prep_context(db, gs)
     if not context.strip():
         raise HTTPException(400, "Nothing to generate from yet — add a recap/facts to a prior session, an open quest, or a party first.")
@@ -539,6 +555,7 @@ async def session_xp(session_id: int, request: Request, db: Session = Depends(ge
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
+    _require_edit_section(request, db.get(World, gs.world_id))
     body = await request.json()
     delta = int(body.get("delta", 0))
     pc_ids = body.get("pc_ids")
@@ -559,6 +576,7 @@ async def session_loot_transfer(session_id: int, request: Request, db: Session =
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
+    _require_edit_section(request, db.get(World, gs.world_id))
     body = await request.json()
     action = body.get("action")
     loot = json.loads(gs.loot_json or "[]")
@@ -679,6 +697,7 @@ async def api_expand_recap_notes(
     model and ignored a GM's "always write in Spanish"-style standing
     instruction."""
     world, _ = get_world_ctx(request, db, active_world)
+    _require_edit_section(request, world)
     body = await request.json()
     notes = str(body.get("notes", "")).strip()
     if not notes:
@@ -738,6 +757,7 @@ async def api_condense_job_create(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     body = await request.json()
     recap = str(body.get("recap", "")).strip()
     if not recap:
@@ -780,6 +800,7 @@ async def api_summarize_from_audio(
     transcription call and is never saved permanently; a GM who wants to
     keep the recording should upload it to the Audio Library separately."""
     world, _ = get_world_ctx(request, db, active_world)
+    _require_edit_section(request, world)
     try:
         transcript = await _transcribe_chunk(file, max_bytes=MAX_SESSION_AUDIO_BYTES, glossary=_glossary_for_world(world), language=_language_for_world(world), denoise=_denoise_for_world(world))
     except _ai_module.WhisperError as exc:
@@ -827,6 +848,7 @@ async def api_summarize_from_audio_complete(
     that route, the reassembled audio only ever sits in a temp file for the
     duration of transcription and is never saved permanently."""
     world, _ = get_world_ctx(request, db, active_world)
+    _require_edit_section(request, world)
     ext = Path(filename or "").suffix.lower()
     if ext not in _SESSION_AUDIO_EXTS:
         raise HTTPException(400, f"Unsupported audio type {ext!r} — allowed: {', '.join(sorted(_SESSION_AUDIO_EXTS))}")
@@ -866,6 +888,7 @@ async def api_summarize_transcript_only(
     exist. GM-only by architecture (no _is_player_safe entry), matching
     every other AI-assist route on this page."""
     world, _ = get_world_ctx(request, db, active_world)
+    _require_edit_section(request, world)
     body = await request.json()
     transcript = str(body.get("transcript", "")).strip()
     if not transcript:
@@ -920,6 +943,7 @@ async def api_audio_job_create(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     ext = Path(file.filename or "").suffix.lower()
     if ext not in _SESSION_AUDIO_EXTS:
         raise HTTPException(400, f"Unsupported audio type {ext!r} — allowed: {', '.join(sorted(_SESSION_AUDIO_EXTS))}")
@@ -965,6 +989,7 @@ async def api_audio_job_complete(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     ext = Path(filename or "").suffix.lower()
     if ext not in _SESSION_AUDIO_EXTS:
         raise HTTPException(400, f"Unsupported audio type {ext!r} — allowed: {', '.join(sorted(_SESSION_AUDIO_EXTS))}")
@@ -1022,6 +1047,7 @@ async def api_audio_job_create_from_clip(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     clip = db.query(AudioClip).filter(AudioClip.id == clip_id, AudioClip.world_id == world.id).first()
     if not clip:
         raise HTTPException(404)
@@ -1388,10 +1414,11 @@ async def api_live_audio_download(session_id: int):
 
 
 @router.post("/api/sessions/{session_id}/live-transcript/clear")
-def api_live_transcript_clear(session_id: int, db: Session = Depends(get_db)):
+def api_live_transcript_clear(session_id: int, request: Request, db: Session = Depends(get_db)):
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
+    _require_edit_section(request, db.get(World, gs.world_id))
     gs.live_transcript = ""
     # Reset alongside the transcript itself — otherwise a fresh recording
     # that reuses (extremely unlikely, but not impossible) the same
@@ -1413,6 +1440,7 @@ async def api_summarize_live_transcript(session_id: int, request: Request, db: S
     # this route has no cookie param, and the session's own world is always
     # the right one regardless of which world tab is currently active.
     world = db.get(World, gs.world_id)
+    _require_edit_section(request, world)
     # Same "predates taking a body" situation summarize-from-facts is in —
     # read think optionally rather than requiring a caller to start sending
     # an otherwise-pointless empty JSON body.
@@ -1441,6 +1469,7 @@ async def api_summarize_live_transcript_job(session_id: int, request: Request, d
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
+    _require_edit_section(request, db.get(World, gs.world_id))
     if not (gs.live_transcript or "").strip():
         raise HTTPException(400, "No live transcript recorded for this session yet.")
     raw = await request.body()
@@ -1477,6 +1506,7 @@ async def api_summarize_from_facts(session_id: int, request: Request, db: Sessio
     if not facts:
         raise HTTPException(400, "No facts logged for this session yet — log some on the Facts page first.")
     world = db.get(World, gs.world_id)
+    _require_edit_section(request, world)
     # This route predates taking a body at all (the client's existing call
     # sends none) — read think optionally rather than requiring every
     # caller to start sending an (otherwise pointless) empty JSON body.
@@ -1516,6 +1546,7 @@ def session_recap_publish(
     gs = db.query(GameSession).filter(GameSession.id == session_id).first()
     if not gs:
         raise HTTPException(404)
+    _require_edit_section(request, db.get(World, gs.world_id))
     gs.player_summary = player_summary
     # Publishing an empty text is a no-op publish (there'd be nothing to
     # show) — but the TEXT is still saved, so an in-progress draft survives.

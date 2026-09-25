@@ -26,12 +26,21 @@ from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
 from .. import media_albums
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit, world_can_view_section
+from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit, world_can_edit_section, world_can_view_section
 from ..models import AudioAlbum, AudioClip
 from ..templating import templates
 from ..uploads import copy_upload_bounded, effective_upload_bytes, unique_upload_filename
 
 router = APIRouter()
+
+def _require_edit_section(request: Request, world) -> None:
+    """Write-tier enforcement for Settings → Navigation dial-downs:
+    _is_assistant_safe admits an assistant unconditionally, so each write
+    handler checks the section matrix itself (GM always passes; quests.py
+    is the established pattern)."""
+    if not world or not world_can_edit_section(request, world, "audio"):
+        raise HTTPException(403)
+
 
 _MAX_NAME = 256
 _MAX_DESCRIPTION = 512
@@ -229,6 +238,7 @@ async def audio_album_create(request: Request, db: Session = Depends(get_db), ac
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     form = await request.form()
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME] or "Untitled Album"
     count = db.query(AudioAlbum).filter(AudioAlbum.world_id == world.id).count()
@@ -251,6 +261,7 @@ async def audio_album_rename(album_id: int, request: Request, db: Session = Depe
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
     form = await request.form()
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME]
@@ -266,6 +277,7 @@ def audio_album_delete(album_id: int, request: Request, db: Session = Depends(ge
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
     descendants = _descendant_albums(db, album.id)
     all_album_ids = [album.id] + [d.id for d in descendants]
@@ -295,6 +307,7 @@ async def audio_upload(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     if db.query(AudioClip).filter(AudioClip.world_id == world.id).count() >= _MAX_CLIPS_PER_WORLD:
         raise HTTPException(400, f"This world already has the maximum of {_MAX_CLIPS_PER_WORLD} audio clips.")
     if not file or not file.filename:
@@ -337,6 +350,7 @@ async def audio_upload_chunk(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     if not _CHUNK_ID_RE.match(upload_id):
         raise HTTPException(400, "Invalid upload id")
     if not (0 <= chunk_index <= _MAX_CHUNK_INDEX):
@@ -368,6 +382,7 @@ async def audio_upload_complete(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     if not _CHUNK_ID_RE.match(upload_id):
         raise HTTPException(400, "Invalid upload id")
     if not filename:
@@ -438,6 +453,7 @@ async def audio_edit(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     clip = _clip_or_404(db, world.id, clip_id)
     name = name.strip()[:_MAX_NAME]
     if name:
@@ -476,6 +492,7 @@ async def audio_transcribe(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     clip = _clip_or_404(db, world.id, clip_id)
     path = _clip_abs_path(clip)
     if not path:
@@ -505,6 +522,7 @@ def audio_delete(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     clip = _clip_or_404(db, world.id, clip_id)
     dest = f"/audio/albums/{clip.album_id}" if clip.album_id else "/audio"
     # Don't leave players' floating widget pointing at a file that's about
@@ -540,6 +558,7 @@ def audio_play_for_players(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     clip = _clip_or_404(db, world.id, clip_id)
     if not clip.visible_to_players:
         raise HTTPException(400, "Only a clip visible to players can be played for them")
@@ -561,6 +580,7 @@ def audio_now_playing_stop(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     _clear_now_playing(world)
     db.commit()
     from .. import main as _main_module

@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from .. import media_albums
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx, world_can_view_section
+from ..deps import get_world_ctx, world_can_edit_section, world_can_view_section
 from ..gallery import all_world_image_urls, discover_world_images, image_display_name
 from ..imaging import convert_image, make_thumbnail
 from ..models import ImageAlbum, World
@@ -25,6 +25,15 @@ from ..uploads import (
 )
 
 router = APIRouter()
+
+def _require_edit_section(request: Request, world) -> None:
+    """Write-tier enforcement for Settings → Navigation dial-downs:
+    _is_assistant_safe admits an assistant unconditionally, so each write
+    handler checks the section matrix itself (GM always passes; quests.py
+    is the established pattern)."""
+    if not world or not world_can_edit_section(request, world, "images"):
+        raise HTTPException(403)
+
 
 _MAX_ALBUMS_PER_WORLD = 100
 _MAX_ALBUM_NAME = 120
@@ -218,6 +227,7 @@ async def image_delete(request: Request, db: Session = Depends(get_db), active_w
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(400, "Invalid payload")
@@ -264,6 +274,7 @@ async def image_spotlight_send(request: Request, db: Session = Depends(get_db), 
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     payload = await request.json()
     if not isinstance(payload, dict):
         raise HTTPException(400, "Invalid payload")
@@ -291,6 +302,7 @@ def image_spotlight_clear(request: Request, db: Session = Depends(get_db), activ
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     world.spotlight_image_url = None
     world.spotlight_label = None
     world.spotlight_version = (world.spotlight_version or 0) + 1
@@ -351,6 +363,7 @@ async def album_create(request: Request, db: Session = Depends(get_db), active_w
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     form = await request.form()
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME] or "Untitled Album"
     count = db.query(ImageAlbum).filter(ImageAlbum.world_id == world.id).count()
@@ -397,6 +410,7 @@ async def album_rename(album_id: int, request: Request, db: Session = Depends(ge
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
     form = await request.form()
     name = str(form.get("name", "")).strip()[:_MAX_ALBUM_NAME]
@@ -417,6 +431,7 @@ async def album_move(album_id: int, request: Request, db: Session = Depends(get_
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
     form = await request.form()
     parent_id_raw = str(form.get("parent_id", "")).strip()
@@ -439,6 +454,7 @@ def album_delete(album_id: int, request: Request, db: Session = Depends(get_db),
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
     # Deleting a folder/album removes its sub-albums with it — they have no
     # meaning without their parent. The images themselves are just URLs
@@ -455,6 +471,7 @@ async def album_add_images(album_id: int, request: Request, db: Session = Depend
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
     payload = await request.json()
     if not isinstance(payload, dict):
@@ -476,6 +493,7 @@ async def album_remove_image(album_id: int, request: Request, db: Session = Depe
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
     payload = await request.json()
     if not isinstance(payload, dict):
@@ -495,6 +513,7 @@ async def album_upload_image(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     album = _album_or_404(db, world.id, album_id)
     url = _upload_album_image(file, db)
     if not url:
@@ -521,6 +540,7 @@ async def album_upload_chunk(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     # A lowered Settings limit applies per part too: min() keeps a saved
     # total cap below the 128 MB default from letting one /chunk request
     # write bytes reassembly would only reject afterward.
@@ -545,6 +565,7 @@ async def album_upload_chunk_complete(
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
+    _require_edit_section(request, world)
     ext = Path(filename).suffix.lower()
     # Validate the extension before spending any I/O on reassembly — a
     # rejected type should never write a byte into uploads/gallery.
