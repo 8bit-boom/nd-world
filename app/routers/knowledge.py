@@ -61,7 +61,10 @@ async def api_knowledge_suggest_relations(
     if not world:
         raise HTTPException(404)
     raw = await request.body()
-    model = str((_json.loads(raw).get("model", "") if raw else "")).strip()
+    try:
+        model = str((_json.loads(raw).get("model", "") if raw else "")).strip()
+    except ValueError:
+        model = ""  # a non-JSON body picks the default model, not a 500
     try:
         suggestions = await _vault_sync.suggest_relations_for_vault(db, world, model=model)
     except ValueError as exc:

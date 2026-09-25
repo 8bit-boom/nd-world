@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..deps import get_world_ctx, world_can_edit_row, world_can_edit_section, world_can_view_section, world_row_visible
+from ..deps import get_world_ctx, is_gm, world_can_edit_row, world_can_edit_section, world_can_view_section, world_row_visible
 from ..models import Entity, Party, Quest, World
 from ..templating import templates
 
@@ -27,7 +27,14 @@ def quests_list(request: Request, db: Session = Depends(get_db), active_world: s
         raise HTTPException(404)
     if not world_can_view_section(request, world, "quests"):
         raise HTTPException(403)
-    quests = db.query(Quest).filter(Quest.world_id == world.id).order_by(Quest.title).all()
+    q = db.query(Quest).filter(Quest.world_id == world.id)
+    if not is_gm(request):
+        # visible_to_players=False is the GM's "hide this quest from the
+        # table entirely" flag — the MCP list tool and the world-summary
+        # pipeline already honor it; the web list must too, or a player
+        # granted quests-read sees hidden titles/summaries/bodies.
+        q = q.filter(Quest.visible_to_players.isnot(False))
+    quests = q.order_by(Quest.title).all()
     grouped: dict = {s: [] for s in STATUSES}
     for q in quests:
         grouped.setdefault(q.status or "active", []).append(q)
@@ -94,6 +101,10 @@ def quest_detail(quest_id: int, request: Request, db: Session = Depends(get_db),
     world, worlds = get_world_ctx(request, db, active_world)
     quest = db.query(Quest).filter(Quest.id == quest_id).first()
     if not quest or not world_row_visible(request, db, quest.world_id, "quests"):
+        raise HTTPException(404)
+    # Same hidden-quest rule as the list route: a non-GM gets a 404, not the
+    # body of a quest the GM explicitly hid (guessable sequential ids).
+    if not quest.visible_to_players and not is_gm(request):
         raise HTTPException(404)
     quest_world = world if (world and world.id == quest.world_id) else db.get(World, quest.world_id)
     parties = db.query(Party).filter(Party.world_id == quest.world_id).order_by(Party.name).all()

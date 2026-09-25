@@ -126,7 +126,12 @@ def _list_source_files() -> list[str]:
             for name in sorted(filenames):
                 p = Path(dirpath) / name
                 if p.suffix.lower() in _ALLOWED_EXTS:
-                    out.append(str(p.relative_to(_INSTALL_ROOT)))
+                    # as_posix(): str(relative_to(...)) yields backslash
+                    # separators on Windows, and these strings double as
+                    # both the datalist values and the API's rel-path
+                    # contract ("app/routers/races.py") wherever the repo
+                    # is checked out.
+                    out.append(p.relative_to(_INSTALL_ROOT).as_posix())
                     if len(out) >= _MAX_LISTED_FILES:
                         return out
     return out
@@ -174,7 +179,10 @@ async def code_assist_generate(
             "a local coding model can't reliably re-emit a file this large in full, "
             "so the result would likely be a truncated, misleading diff.",
         )
-    relpath = str(path.relative_to(_INSTALL_ROOT))
+    # as_posix() to match _list_source_files()'s forward-slash rel-path
+    # contract on every OS — the meta line is both displayed and parsed
+    # back apart in code_assist_status.
+    relpath = path.relative_to(_INSTALL_ROOT).as_posix()
     user = getattr(request.state, "user", None)
     job_id = create_assist_job(
         world.id, op=_ai_assist.OP_CODE_EDIT, surface="code_assist",

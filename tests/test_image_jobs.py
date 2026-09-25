@@ -621,3 +621,32 @@ def test_job_create_blank_model_falls_back_to_configured_default(client, seed, m
     while time.time() < deadline and "model" not in captured:
         time.sleep(0.02)
     assert captured.get("model") == "configured-image-model"
+
+
+def test_resume_marks_corrupt_params_json_error_instead_of_crashing(client, seed):
+    """Regression: a malformed params_json blob used to raise out of
+    resume_interrupted_jobs (runs inside _startup_tasks, nothing catching
+    it) — one corrupt row crash-looped the app on every boot."""
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        job = ImageJob(world_id=seed.world_a.id, prompt="x", status="interrupted",
+                       params_json="{not-json")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    import app.image_jobs as image_jobs_module
+    assert image_jobs_module.resume_interrupted_jobs() == 0
+
+    db = SessionLocal()
+    try:
+        job = db.get(ImageJob, job_id)
+        assert job.status == "error"
+        assert "corrupt" in (job.error or "").lower()
+    finally:
+        db.close()

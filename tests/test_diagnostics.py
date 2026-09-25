@@ -23,8 +23,8 @@ def _reset():
     diag._heartbeat_task = None
     diag._ready = False
     diag._stall_since = None
-    diag._last_dump = 0.0
-    diag._last_pool_warn = 0.0
+    diag._last_dump = None
+    diag._last_pool_warn = None
     diag._pool_saturated = False
     diag._task_snapshot = []
     diag._last_beat = time.monotonic()
@@ -118,6 +118,26 @@ def test_not_ready_never_dumps(tmp_path, monkeypatch):
     assert not list(tmp_path.iterdir())
 
 
+def test_first_dump_not_suppressed_on_fresh_boot(tmp_path, monkeypatch):
+    """Regression: the cooldown sentinels used to be 0.0, and on a freshly
+    booted CI runner (or a watchtower-recreated container) time.monotonic()
+    stays under 300 for the first minutes of the process's life —
+    `now - 0.0 < cooldown` then read as 'still cooling down' and the FIRST
+    dump/warn of the whole episode was silently skipped. CI caught it; the
+    same window exists in production after every container recreation."""
+    monkeypatch.setenv("ND_DIAG_DIR", str(tmp_path))
+    _reset()
+    now = 50.0  # a plausible monotonic() reading seconds after machine boot
+    diag._ready = True
+    diag._last_beat = now - 30.0
+    diag._evaluate(now)
+    assert len(list(tmp_path.glob("wedge-*.txt"))) == 1
+    assert "loop-stalled" in _events(tmp_path)
+    monkeypatch.setattr(diag, "_pool_counts", lambda: (5, 5))
+    diag._pool_check(now + 1.0)
+    assert "pool-saturated" in _events(tmp_path)
+
+
 def test_pool_saturation_warns_and_dumps(tmp_path, monkeypatch):
     monkeypatch.setenv("ND_DIAG_DIR", str(tmp_path))
     monkeypatch.setattr(diag, "_pool_counts", lambda: (5, 5))
@@ -173,7 +193,7 @@ def test_pool_recovery_is_journaled_once(tmp_path, monkeypatch):
     assert _events(tmp_path).count("pool-recovered") == 1
     # And re-saturating re-warns (the flag flipped back, not latched shut)
     monkeypatch.setattr(diag, "_pool_counts", lambda: (5, 5))
-    diag._last_pool_warn = 0.0                    # outside the warn cooldown
+    diag._last_pool_warn = None                  # outside the warn cooldown
     diag._pool_check(time.monotonic() + 3.0)
     assert _events(tmp_path).count(" pool-saturated checked_out=") == 2
 

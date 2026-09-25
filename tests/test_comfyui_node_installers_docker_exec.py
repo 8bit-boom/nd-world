@@ -15,8 +15,11 @@ search for a genuinely non-containerized (bare VM/jail) install.
 Plain-text/shell-syntax checks, matching this repo's existing convention
 for install-script regression coverage (test_krea2_gguf_node_installer.py,
 test_swarmui_volta_torch_fix.py) — no live Docker/SwarmUI in CI."""
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 _REPO_ROOT = Path(__file__).parent.parent
 _MANAGER_SCRIPT = _REPO_ROOT / "install-comfyui-manager.sh"
@@ -24,6 +27,9 @@ _KREA2_SCRIPT = _REPO_ROOT / "install-comfyui-gguf-krea2.sh"
 _SCRIPTS = {"manager": _MANAGER_SCRIPT, "krea2": _KREA2_SCRIPT}
 
 
+# See test_krea2_gguf_node_installer.py's skipif: the +x mode bit is a git
+# index fact that NTFS checkouts cannot materialize.
+@pytest.mark.skipif(os.name == "nt", reason="NTFS cannot materialize the git +x mode bit")
 def test_both_scripts_exist_and_are_executable():
     for script in _SCRIPTS.values():
         assert script.exists()

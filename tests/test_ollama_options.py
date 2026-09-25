@@ -1568,6 +1568,10 @@ def test_server_env_invalid_value_returns_400_and_does_not_write(client, seed, t
     assert tuning_module.read_server_env_file() is None
 
 
+# Windows: chmod 0o555 doesn't block writes (ACL-based permissions), so the
+# "unwritable dir" precondition can't be set up there — the Linux container
+# is where this warning path actually matters.
+@pytest.mark.skipif(os.name == "nt", reason="needs a filesystem where chmod 0o555 actually blocks writes")
 def test_server_env_unwritable_dir_saves_db_but_reports_a_warning(client, seed, tmp_path, monkeypatch):
     import app.ollama_tuning as tuning_module
     unwritable = tmp_path / "readonly"

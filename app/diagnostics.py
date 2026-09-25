@@ -89,8 +89,13 @@ _ready = False               # True only once the first beat landed (a
 _beats = 0
 _task_snapshot: list[str] = []
 _stall_since: float | None = None
-_last_dump: float = 0.0
-_last_pool_warn: float = 0.0
+# None = "hasn't happened yet". NOT 0.0: time.monotonic() starts near zero on
+# a freshly booted machine/container, and `now - 0.0 < cooldown` would then
+# read as "still cooling down" — silently suppressing the FIRST dump/warn of
+# a process's life for up to the whole cooldown window (exactly when a
+# watchtower/OOM recreation loop needs evidence most).
+_last_dump: float | None = None
+_last_pool_warn: float | None = None
 _pool_saturated = False      # last observed at/past base size — set when the
                              # pool-recovered journal line has a left edge
 
@@ -245,7 +250,7 @@ def _maybe_dump(reason: str, lag: float | None = None, **journal_fields) -> None
     """Dump + journal + log, once per ND_DIAG_DUMP_COOLDOWN_SECONDS window."""
     global _last_dump
     now = time.monotonic()
-    if now - _last_dump < _env_float("ND_DIAG_DUMP_COOLDOWN_SECONDS", 300.0):
+    if _last_dump is not None and now - _last_dump < _env_float("ND_DIAG_DUMP_COOLDOWN_SECONDS", 300.0):
         return
     _last_dump = now
     path = _write_dump(reason, lag=lag)
@@ -307,7 +312,7 @@ def _pool_check(now: float) -> None:
             _journal("pool-recovered", checked_out=checked_out, size=size)
         return
     _pool_saturated = True
-    if now - _last_pool_warn < _env_float("ND_DIAG_POOL_WARN_COOLDOWN_SECONDS", 300.0):
+    if _last_pool_warn is not None and now - _last_pool_warn < _env_float("ND_DIAG_POOL_WARN_COOLDOWN_SECONDS", 300.0):
         return
     _last_pool_warn = now
     _log.warning(

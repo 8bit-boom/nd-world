@@ -1453,7 +1453,12 @@ async def ai_stream(
     # nothing about the client (a page it never rendered, or a direct call
     # from devtools/curl) is validated against the model catalog. A GM
     # picking a model in the UI is the only caller this was ever meant for.
-    requested = (body.model if is_gm else "") or _ai.get_defaults().get(body.surface, "")
+    # Same for `surface`: it's an unvalidated key into the GM's per-surface
+    # default-model table, so a non-GM is pinned to the two surfaces this
+    # route actually serves rather than being able to fall back to any
+    # GM-configured default (recap/assist/image).
+    surface = body.surface if (is_gm or body.surface in ("chat", "ask_ai")) else "chat"
+    requested = (body.model if is_gm else "") or _ai.get_defaults().get(surface, "")
     options = _clamp_options(body.options)
     # Same reasoning as the model restriction above — body.system is framing
     # text a page composes client-side from already server-filtered pieces

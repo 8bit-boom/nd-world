@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import time
 from pathlib import Path
 from sqlalchemy import create_engine, event, text
@@ -507,13 +508,42 @@ def _apply_staged_restore():
     """
     staged_db = RESTORE_STAGING_DIR / "world.db"
     if not staged_db.exists():
+        # Staging exists but world.db doesn't = an extraction that died
+        # partway (media is staged first, the DB last — see
+        # admin_backup_restore_stage). That's an incomplete stage, not a
+        # restore to apply: clean it up instead of leaving the /export
+        # banner claiming a restore is pending forever.
+        if RESTORE_STAGING_DIR.exists():
+            _log.warning(
+                "Discarding an incomplete staged restore (no world.db) from %s", RESTORE_STAGING_DIR,
+            )
+            shutil.rmtree(RESTORE_STAGING_DIR, ignore_errors=True)
         return
     _log.warning("Applying a staged Full Backup restore from %s", RESTORE_STAGING_DIR)
     db_path = Path(DB_PATH)
     if db_path.exists():
+        # Fold any committed-but-uncheckpointed WAL content into the main
+        # file FIRST: the aside copy below copies only world.db, and if the
+        # previous process died with a non-empty -wal, its committed writes
+        # would exist in neither the aside copy nor the replacement DB —
+        # and the sidecar unlink further down would destroy them for good.
+        try:
+            _ckpt = sqlite3.connect(str(db_path))
+            try:
+                _ckpt.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            finally:
+                _ckpt.close()
+        except sqlite3.Error:
+            _log.exception("Pre-restore WAL checkpoint failed; copying sidecars alongside the aside backup")
         stamp = time.strftime("%Y%m%d-%H%M%S")
         aside = db_path.parent / f"{db_path.name}.pre-restore-{stamp}"
         shutil.copy2(db_path, aside)
+        for ext in ("-wal", "-shm"):
+            # Belt and braces alongside the checkpoint: even after
+            # TRUNCATE the files may legitimately still exist (empty).
+            sidecar = db_path.parent / (db_path.name + ext)
+            if sidecar.exists() and sidecar.stat().st_size > 0:
+                shutil.copy2(sidecar, aside.parent / (aside.name + ext))
         _log.warning("Pre-restore database backed up to %s", aside)
     os.replace(staged_db, db_path)
     for ext in ("-wal", "-shm"):
@@ -1275,6 +1305,15 @@ def _seed():
                     "nothing was reset.",
                     gm_email,
                 )
+        elif gm_password_reset:
+            # Without this, an operator who set GM_PASSWORD_RESET but
+            # omitted/typo'd GM_EMAIL gets NO signal at all and stays
+            # locked out with no hint why.
+            _log.warning(
+                "GM_PASSWORD_RESET is set but GM_EMAIL is empty — it can't be "
+                "applied to any account. Set GM_EMAIL too, or remove "
+                "GM_PASSWORD_RESET."
+            )
     finally:
         db.close()
 

@@ -107,7 +107,7 @@
       {% endif %}{% endfor %}
     </div>
     {% if quest.summary %}<p style="color:var(--text-dim);margin-bottom:.75rem">{{ quest.summary }}</p>{% endif %}
-    {% if quest.body %}<div class="rendered-md">{{ quest.body|md|safe }}</div>{% endif %}
+    {% if quest.body %}<div class="rendered-md">{{ quest.body|md_for(request)|safe }}</div>{% endif %}
   </div>
   {% if linked_entities %}
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.25rem;margin-bottom:1rem">

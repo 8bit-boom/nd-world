@@ -23,7 +23,7 @@ from . import nav_menus as _nav_menus
 from .constants import KIND_ICONS, KINDS, SUBTYPES
 from .database import SessionLocal, get_app_settings_flags_cached
 from .imaging import thumbnail_path_for
-from .rendering import body_summary, entry_text, parse_stats, render_md, strip_md
+from .rendering import body_summary, entry_text, parse_stats, render_md, strip_gm_only, strip_md
 
 # Duplicated from main.py's DEFAULT_WORLD_COOKIE — same rationale as this
 # file's own docstring: importing from main.py here would be circular.
@@ -128,6 +128,23 @@ templates.env.filters["body_summary"] = body_summary
 templates.env.filters["parse_stats"] = parse_stats
 templates.env.filters["entry_text"] = entry_text
 templates.env.filters["fromjson"] = lambda s: json.loads(s) if s else []
+
+
+def _md_for(text, request):
+    """`|md`, but viewer-aware: on surfaces where the SAME field can carry
+    [gmonly] blocks and the handler has no strip pass of its own (facts,
+    quest/party bodies, character notes, session summaries), an intact tag
+    would otherwise render as a labeled "GM ONLY" box *with its content* to
+    players. Usage: {{ fact.content|md_for(request) }}. GMs see everything;
+    everyone else gets the stripped text rendered. Handlers that already
+    strip (entity detail, private notes) keep using plain |md."""
+    user = getattr(request.state, "user", None)
+    if user is not None and user.is_gm:
+        return render_md(text or "")
+    return render_md(strip_gm_only(text or ""))
+
+
+templates.env.filters["md_for"] = _md_for
 
 
 @jinja2.pass_context

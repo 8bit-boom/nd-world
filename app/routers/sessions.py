@@ -239,12 +239,13 @@ def session_detail(session_id: int, request: Request, db: Session = Depends(get_
     # This session's own Facts, oldest first — the embedded Facts panel
     # below (see facts/list.html's grouped-by-session equivalent) so a GM
     # can log/review/parse facts without leaving the session page.
-    facts = (
-        db.query(Fact)
-        .filter(Fact.game_session_id == gs.id)
-        .order_by(Fact.created_at.asc(), Fact.id.asc())
-        .all()
-    )
+    # visible_to_players=False rows are GM-only (same rule as the Facts
+    # page's _fact_groups) — filtered here for any non-GM viewer.
+    _user = getattr(request.state, "user", None)
+    _facts_q = db.query(Fact).filter(Fact.game_session_id == gs.id)
+    if not (_user and _user.is_gm):
+        _facts_q = _facts_q.filter(Fact.visible_to_players.isnot(False))
+    facts = _facts_q.order_by(Fact.created_at.asc(), Fact.id.asc()).all()
     # This session's own tag cloud — same aggregation facts.py's facts_list
     # runs world-wide, scoped down to just these already-loaded rows so a
     # session with 40-50 facts still has a click-to-filter shortcut instead
@@ -630,6 +631,16 @@ def _condense_strictness(body: dict) -> str:
     return strictness
 
 
+def _rag_gm_only(request: Request, use_rag: bool) -> bool:
+    """RAG lore retrieval includes GM-only content (hidden entities, secret
+    notes) and is built with no per-viewer filter — every route in this
+    file is assistant/player-reachable, so only a GM may opt in. Same gate
+    as routers/ai.py's use_rag handling (the recap route enforces it via
+    its audience check instead)."""
+    user = getattr(request.state, "user", None)
+    return bool(use_rag) and bool(user and user.is_gm)
+
+
 def _rag_options_from_body(body: dict) -> tuple[bool, Optional[int], Optional[int]]:
     """Parse+validate Condense/Summarize's optional RAG opt-in from a JSON
     request body — same "blank means unset" convention _condense_token_bounds
@@ -736,6 +747,7 @@ async def api_condense_job_create(
     extra_instructions = str(body.get("extra_instructions", "")).strip()
     _reject_if_too_long_to_condense(recap, extra_instructions)
     use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
+    use_rag = _rag_gm_only(request, use_rag)
     game_session_id = body.get("game_session_id")
     gs_id = int(game_session_id) if game_session_id else None
     job_id = _audio_jobs.create_condense_job(
@@ -921,7 +933,7 @@ async def api_audio_job_create(
         audio_path=dest, delete_after=True, game_session_id=gs_id,
         created_by_user_id=_current_user_id(request), model=model.strip(),
         extra_instructions=extra_instructions.strip(), think=think,
-        use_rag=use_rag,
+        use_rag=_rag_gm_only(request, use_rag),
         rag_entity_limit=int(rag_entity_limit) if rag_entity_limit.strip().isdigit() else None,
         rag_notes_limit=int(rag_notes_limit) if rag_notes_limit.strip().isdigit() else None,
     )
@@ -966,7 +978,7 @@ async def api_audio_job_complete(
         audio_path=dest, delete_after=True, game_session_id=gs_id,
         created_by_user_id=_current_user_id(request), model=model.strip(),
         extra_instructions=extra_instructions.strip(), think=think,
-        use_rag=use_rag,
+        use_rag=_rag_gm_only(request, use_rag),
         rag_entity_limit=int(rag_entity_limit) if rag_entity_limit.strip().isdigit() else None,
         rag_notes_limit=int(rag_notes_limit) if rag_notes_limit.strip().isdigit() else None,
     )
@@ -1022,7 +1034,7 @@ async def api_audio_job_create_from_clip(
         audio_path=path, delete_after=False, game_session_id=gs_id,
         created_by_user_id=_current_user_id(request), model=model.strip(),
         extra_instructions=extra_instructions.strip(), think=think,
-        use_rag=use_rag,
+        use_rag=_rag_gm_only(request, use_rag),
         rag_entity_limit=int(rag_entity_limit) if rag_entity_limit.strip().isdigit() else None,
         rag_notes_limit=int(rag_notes_limit) if rag_notes_limit.strip().isdigit() else None,
     )
@@ -1434,6 +1446,7 @@ async def api_summarize_live_transcript_job(session_id: int, request: Request, d
     raw = await request.body()
     body = json.loads(raw) if raw else {}
     use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
+    use_rag = _rag_gm_only(request, use_rag)
     job_id = _audio_jobs.create_text_recap_job(
         world_id=gs.world_id, text=gs.live_transcript, model=str(body.get("model", "")).strip(),
         think=_think_from_body(body), extra_instructions=str(body.get("extra_instructions", "")).strip(),

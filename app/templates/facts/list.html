@@ -175,7 +175,7 @@
       <div style="display:flex;flex-direction:column;gap:.5rem;padding-bottom:.75rem">
         {% for f in group.facts %}
         <div class="en-note" data-facts-card{% if not f.visible_to_players %} en-hidden{% endif %} style="background:var(--bg3)">
-          <div class="en-note-content rendered-md" id="fact-view-{{ f.id }}">{{ f.content | md | safe }}</div>
+          <div class="en-note-content rendered-md" id="fact-view-{{ f.id }}">{{ f.content | md_for(request) | safe }}</div>
           {% if f.tags %}
           <div class="tags">{% for t in f.tags.split(',') if t.strip() %}<span class="tag">{{ t.strip() }}</span>{% endfor %}</div>
           {% endif %}

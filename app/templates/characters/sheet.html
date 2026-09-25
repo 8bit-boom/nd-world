@@ -436,7 +436,7 @@
   {% if pc.notes %}
   <div class="cs-prose">
     <div class="cs-prose-title">Notes</div>
-    <div class="rendered-md">{{ pc.notes | md | safe }}</div>
+    <div class="rendered-md">{{ pc.notes | md_for(request) | safe }}</div>
   </div>
   {% endif %}
 

@@ -16,13 +16,19 @@ Plain-text/shell-syntax checks, matching this repo's established
 convention for compose/doc/script regression coverage (no live SwarmUI
 instance to test against in CI) — see test_swarmui_gpu_setup.py,
 test_krea2_gguf_node_installer.py."""
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 _REPO_ROOT = Path(__file__).parent.parent
 _SCRIPT = _REPO_ROOT / "fix-swarmui-volta-torch.sh"
 
 
+# See test_krea2_gguf_node_installer.py's skipif: the +x mode bit is a git
+# index fact that NTFS checkouts cannot materialize.
+@pytest.mark.skipif(os.name == "nt", reason="NTFS cannot materialize the git +x mode bit")
 def test_script_exists_and_is_executable():
     assert _SCRIPT.exists()
     assert _SCRIPT.stat().st_mode & 0o111, "fix-swarmui-volta-torch.sh is not executable"

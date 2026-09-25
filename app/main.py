@@ -35,7 +35,7 @@ from .deps import get_world_ctx, resolve_world_slug, with_world, PAGE_SIZE, can_
 from .imaging import convert_image, make_thumbnail
 from .rendering import parse_stats, parse_stats_cached, render_md, html_to_markdown, sanitize_note_html, autolink_entities, derive_name_variants, strip_gm_only
 from .rules_render import (apply_rules_overlay, extract_blocks, parse_rules_overlay,
-                           restore_blocks, split_rules_sections, suggest_tabs_overlay)
+                           restore_blocks, split_rules_sections, strip_gm_directives, suggest_tabs_overlay)
 from .templating import templates
 from .uploads import MAX_UPLOAD_BYTES, copy_upload_bounded, read_upload_bounded, unique_upload_filename, BULK_IMAGE_MAX_FILES, effective_upload_bytes, save_inline_av
 from .models import Entity, World, Schematic, MapOverlay, InvestBoard, entity_links, entity_player_access, User, InviteCode, WorldMembership, PrivateNote, EntityNote, EntityTemplate, SheetTemplate, GameSession, Quest, Party, CombatSession, PlayerCharacter, RandomTable, WorldCalendar, CalendarEvent, CalendarDayIcon, ApiToken, ImageAlbum, AudioClip, AudioAlbum, VideoClip, VideoAlbum, PageDoc, PageAlbum, Fact, ChatSession, PromptPreset, AudioJob, ImageJob, ChatJob, DiceRoll, CharacterSheet, TrustedDevice, EntityRelation, VaultChunk, AiInstruction
@@ -2544,9 +2544,20 @@ def rules_download(request: Request, db: Session = Depends(get_db), active_world
     world = get_active_world(request, db, active_world)
     user = getattr(request.state, "user", None)
     if not (user and user.is_gm):
-        if not (world and world.players_can_download_rules):
+        # Same section gate as GET /rules itself — a GM who set rules=None
+        # hid the page, and the raw download must not stay reachable around
+        # it (the download also carries :::gm blocks the page strips).
+        if not world or not world_can_view_section(request, world, "rules"):
+            raise HTTPException(403)
+        if not world.players_can_download_rules:
             raise HTTPException(403)
     content = _world_rules_markdown(world)
+    if not (user and user.is_gm):
+        # The rendered page strips :::gm blocks server-side for non-GM
+        # viewers (rules_render's own docstring: "it is never sent to a
+        # player completely unfiltered") — the downloaded .md must not
+        # carry them verbatim around that.
+        content = strip_gm_directives(content)
     filename = f"{world.slug}-rules.md" if world else "core-rules.md"
     return StreamingResponse(
         io.BytesIO(content.encode()), media_type="text/markdown",
@@ -4601,8 +4612,12 @@ async def admin_backup_restore_stage(
     if RESTORE_STAGING_DIR.exists():
         shutil.rmtree(RESTORE_STAGING_DIR)
     RESTORE_STAGING_DIR.mkdir(parents=True)
-    shutil.move(str(tmp_path), str(RESTORE_STAGING_DIR / "world.db"))
     resolved_staging = RESTORE_STAGING_DIR.resolve()
+    # Media first, world.db LAST: _apply_staged_restore keys entirely on
+    # world.db's presence, so if the process dies mid-extraction a staging
+    # dir without world.db is an *incomplete* stage the boot path cleans up
+    # — committing the DB first would instead apply a silently partial
+    # restore (DB swapped in, only the media that happened to land merged).
     for name in names:
         if name in ("world.db", "manifest.json") or name.endswith("/"):
             continue
@@ -4614,6 +4629,7 @@ async def admin_backup_restore_stage(
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(zf.read(name))
+    shutil.move(str(tmp_path), str(RESTORE_STAGING_DIR / "world.db"))
     (RESTORE_STAGING_DIR / "manifest.json").write_bytes(zf.read("manifest.json"))
 
     return RedirectResponse("/export?restore_staged=1", status_code=303)
@@ -4839,17 +4855,21 @@ def _autolink_name_map(db: Session, world_id: int, request: Request, exclude_ent
     q = db.query(Entity.id, Entity.name, Entity.aliases).filter(Entity.world_id == world_id)
     if exclude_entity_id is not None:
         q = q.filter(Entity.id != exclude_entity_id)
+    # Deterministic order so a name/alias claimed by two entities always
+    # resolves to the same one (lowest id) instead of whichever the DB
+    # happens to return last — setdefault below makes that first-wins.
+    q = q.order_by(Entity.id)
     q = _filter_visible_entities(q, request)
     rows = q.all()
 
     names: dict[str, int] = {}
     for entity_id, name, aliases in rows:
         if name:
-            names[name] = entity_id
+            names.setdefault(name, entity_id)
         for alias in (aliases or "").split(","):
             alias = alias.strip()
             if alias:
-                names[alias] = entity_id
+                names.setdefault(alias, entity_id)
 
     for entity_id, name, _aliases in rows:
         for variant in derive_name_variants(name):
@@ -4998,7 +5018,7 @@ def entity_preview(entity_id: int, request: Request, db: Session = Depends(get_d
         "kind": entity.kind,
         "kind_icon": deps.effective_kinds(ent_world)[1].get(entity.kind, ""),
         "subtype": entity.subtype,
-        "summary": entity.summary,
+        "summary": entity.summary if (user and user.is_gm) else strip_gm_only(entity.summary or ""),
         "image_url": entity.image_url,
         "tags": [t.strip() for t in (entity.tags or "").split(",") if t.strip()],
         "body_html": render_md(body) if body else "",
@@ -5937,8 +5957,14 @@ def _search_notes(db: Session, world: World, request: Request, q: str) -> list[d
         note_q = note_q.filter(EntityNote.visible_to_players.is_(True))
     out = []
     for note, ent_name, ent_id in note_q.limit(_SEARCH_RESULT_CAP).all():
+        content = note.content or ""
+        if not is_gm:
+            # The detail page strips [gmonly] blocks; the snippet here must
+            # not become the one surface that serves them raw — searching a
+            # word unique to the secret would actively extract it.
+            content = strip_gm_only(content)
         out.append({"title": ent_name, "subtitle": "Note", "url": f"/entity/{ent_id}",
-                    "icon": "🔒", "snippet": _snippet(note.content or "", q)})
+                    "icon": "🔒", "snippet": _snippet(content, q)})
     return out
 
 
@@ -5952,22 +5978,26 @@ def search(request: Request, q: str = "", kind: str = "",
     grouped: dict[str, list] = {}
     snippets: dict[int, str] = {}
     other_grouped: dict[str, list] = {}
+    user = getattr(request.state, "user", None)
+    is_gm = bool(user and user.is_gm)
 
     if q:
         results = _search_entities(db, world, request, q, kind)
 
         for e in results:
             grouped.setdefault(e.kind, []).append(e)
-            # build snippet from body if name/summary didn't match
+            # build snippet from body if name/summary didn't match. Non-GM:
+            # strip [gmonly] blocks first — the detail page strips them, and
+            # a search snippet must not become the one raw surface (searching
+            # a word unique to a secret would otherwise quote it back).
             if q.lower() not in (e.name or "").lower() and q.lower() not in (e.summary or "").lower():
-                snippets[e.id] = _snippet(e.body or "", q)
+                body = e.body or ""
+                snippets[e.id] = _snippet(body if is_gm else strip_gm_only(body), q)
 
         # The entity-kind filter dropdown only makes sense against entities —
         # characters/quests/sessions/notes aren't entity kinds, so leave them
         # out of a kind-filtered search rather than force them under it.
         if not kind:
-            user = getattr(request.state, "user", None)
-            is_gm = bool(user and user.is_gm)
             other_sections = [("Characters", _search_characters(db, world, request, q))]
             if is_gm:
                 other_sections += [
@@ -5977,10 +6007,17 @@ def search(request: Request, q: str = "", kind: str = "",
             other_sections.append(("Notes", _search_notes(db, world, request, q)))
             other_grouped = {label: items for label, items in other_sections if items}
 
+    # Same [gmonly] rule for the summary line the results list renders —
+    # passed separately so the ORM rows themselves are never mutated.
+    summaries = {
+        e.id: (e.summary or "") if is_gm else strip_gm_only(e.summary or "")
+        for e in results
+    }
+
     worlds = _visible_worlds(request, db)
     return templates.TemplateResponse("search.html", {
         "request": request, "results": results, "grouped": grouped, "other_grouped": other_grouped,
-        "snippets": snippets, "q": q, "kind_filter": kind,
+        "snippets": snippets, "summaries": summaries, "q": q, "kind_filter": kind,
         "world": world, "worlds": worlds,
     })
 

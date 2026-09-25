@@ -40,7 +40,7 @@
               {% if e.subtype %}<span class="entity-sub">{{ e.subtype }}</span>{% endif %}
               {% if e.folder %}<span class="entity-sub">📂 {{ e.folder }}</span>{% endif %}
             </div>
-            {% if e.summary %}<p>{{ e.summary }}</p>{% endif %}
+            {% set smry = summaries.get(e.id) %}{% if smry %}<p>{{ smry }}</p>{% endif %}
             {% if snippets.get(e.id) %}
             <p class="search-snippet">{{ snippets[e.id] | safe }}</p>
             {% endif %}

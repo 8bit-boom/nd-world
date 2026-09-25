@@ -12,7 +12,7 @@ from .. import ai as _ai_module
 from .. import ai_assist as _ai_assist
 from .. import audio_jobs as _audio_jobs
 from ..database import get_db
-from ..deps import get_world_ctx, world_can_view_section
+from ..deps import get_world_ctx, is_gm, world_can_view_section
 from ..models import AudioJob, Fact, GameSession
 from ..templating import templates
 from .sessions import _rag_options_from_body
@@ -98,7 +98,7 @@ def _bump_recap_content_touch(world) -> None:
     world.recap_content_touch = datetime.utcnow()
 
 
-def _fact_groups(db: Session, world_id: int, sessions: dict) -> list:
+def _fact_groups(db: Session, world_id: int, sessions: dict, visible_only: bool = False) -> list:
     """Buckets every Fact in the world by its game_session — the flat,
     single reverse-chronological list this used to build became unusable
     once a world had more than one session's worth of facts logged: every
@@ -114,12 +114,13 @@ def _fact_groups(db: Session, world_id: int, sessions: dict) -> list:
     first, since those are unfiled and more likely to need attention —
     comes first when non-empty; the rest follow with the most recent
     session first, oldest last."""
-    facts = (
-        db.query(Fact)
-        .filter(Fact.world_id == world_id)
-        .order_by(Fact.created_at.asc(), Fact.id.asc())
-        .all()
-    )
+    q = db.query(Fact).filter(Fact.world_id == world_id)
+    if visible_only:
+        # Fact.visible_to_players=False is a GM-only row — a non-GM viewer
+        # (player or assistant) must not get it listed at all, matching
+        # EntityNote's visible_to_players.is_(True) filter on entity notes.
+        q = q.filter(Fact.visible_to_players.isnot(False))
+    facts = q.order_by(Fact.created_at.asc(), Fact.id.asc()).all()
     by_session: dict = {}
     unsessioned = []
     for f in facts:
@@ -171,7 +172,7 @@ def facts_list(request: Request, db: Session = Depends(get_db), active_world: st
     sessions = {
         s.id: s for s in db.query(GameSession).filter(GameSession.world_id == world_id).all()
     }
-    groups = _fact_groups(db, world_id, sessions)
+    groups = _fact_groups(db, world_id, sessions, visible_only=not is_gm(request))
     # Tag cloud — same comma-split/strip/count-and-sort aggregation
     # app.main's homepage tag cloud runs over Entity.tags, over every fact
     # already loaded above rather than a second query. A GM with 40-50
@@ -306,6 +307,10 @@ async def api_facts_parse(request: Request, db: Session = Depends(get_db), activ
     think = bool(body.get("think", False))
     extra_instructions = str(body.get("extra_instructions", "")).strip()
     use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
+    # RAG lore retrieval includes GM-only content (hidden entities, secret
+    # notes) — this route is assistant/player-reachable, so only a GM may
+    # opt in. Same gate as routers/ai.py's use_rag handling.
+    use_rag = use_rag and is_gm(request)
     world_context = ""
     if use_rag:
         # RAG lore for name accuracy, same construction the job runner uses
@@ -361,6 +366,7 @@ async def api_facts_folk_tale(request: Request, db: Session = Depends(get_db), a
     model = str(body.get("model", "")).strip()
     think = bool(body.get("think", False))
     use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
+    use_rag = use_rag and is_gm(request)  # RAG includes GM-only lore — GM-only opt-in
     world_context = ""
     if use_rag:
         world_context = _audio_jobs._build_rag_context(
@@ -406,6 +412,7 @@ async def api_facts_parse_job(request: Request, db: Session = Depends(get_db), a
     # helper the Sessions routes use so 0-vs-unset limits mean the same
     # thing on both pages.
     use_rag, rag_entity_limit, rag_notes_limit = _rag_options_from_body(body)
+    use_rag = use_rag and is_gm(request)  # RAG includes GM-only lore — GM-only opt-in
     job_id = _audio_jobs.create_facts_parse_job(
         world_id=world.id, text=text,
         game_session_id=int(session_id) if session_id else None,
@@ -506,7 +513,7 @@ async def api_facts_bulk(request: Request, db: Session = Depends(get_db), active
 
 
 @router.post("/api/facts/from-job/{job_id}")
-async def api_facts_from_job(job_id: int, request: Request, db: Session = Depends(get_db)):
+async def api_facts_from_job(job_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     """Confirm (or dismiss) the Facts a session_recap job auto-drafted on
     completion (AudioJob.pending_facts_json — see app.audio_jobs.
     _auto_extract_pending_facts) — the review step on the Background Jobs
@@ -519,6 +526,13 @@ async def api_facts_from_job(job_id: int, request: Request, db: Session = Depend
     parse-review flow this shares its creation/dedup logic with."""
     job = db.get(AudioJob, job_id)
     if not job:
+        raise HTTPException(404)
+    # World scoping, same as every /api/audio-jobs route: this prefix is
+    # assistant-reachable, and without this check an assistant of world A
+    # could enumerate job ids and write facts into (and clear the pending
+    # draft of) world B.
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world or job.world_id != world.id:
         raise HTTPException(404)
     body = await request.json()
     items = body.get("facts")

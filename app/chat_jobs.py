@@ -245,10 +245,21 @@ def resume_interrupted_jobs() -> int:
                 )
                 db.commit()
                 continue
-            messages = json.loads(job.messages_json or "[]")
+            try:
+                messages = json.loads(job.messages_json or "[]")
+                options = json.loads(job.options_json or "{}")
+            except ValueError:
+                # A corrupt blob must not brick boot: resume runs inside
+                # _startup_tasks with nothing catching it, so one malformed
+                # row would crash-loop the process forever. Mark the row
+                # and move on — same policy audio_jobs' resume applies.
+                job.status = "error"
+                job.error = "Stored job data was corrupt (unreadable JSON) and could not be resumed."
+                db.commit()
+                _log.exception("ChatJob %s has a corrupt JSON blob; marked error instead of resuming", job_id)
+                continue
             system = job.system or ""
             model = job.model or ""
-            options = json.loads(job.options_json or "{}")
             job.status = "pending"
             job.error = ""
             job.resumed_count += 1

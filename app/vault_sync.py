@@ -20,6 +20,7 @@ complete truth for these two indexes, so there is no stale-edge case to
 reason about. Safe to re-run any time; nothing here is ever hand-edited
 afterward."""
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -109,13 +110,25 @@ def parse_frontmatter(md: str) -> tuple[dict, str]:
 
 
 def _iter_vault_notes(vault_root: Path):
-    for path in sorted(vault_root.rglob("*.md")):
-        try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            _log.warning("vault_sync: could not read %s", path, exc_info=True)
-            continue
-        yield path.relative_to(vault_root).as_posix(), text
+    # Walk with pruning, NOT rglob: rglob descends into everything, so a
+    # normal Obsidian vault would sync .obsidian/plugins/*/README.md and
+    # .trash/ (Obsidian's soft-delete — spoiler notes a GM "deleted" would
+    # stay chunked and retrievable), and a repo-backed vault its whole
+    # node_modules tree.
+    for dirpath, dirnames, filenames in os.walk(vault_root):
+        dirnames[:] = sorted(
+            d for d in dirnames if not d.startswith(".") and d != "node_modules"
+        )
+        for fn in sorted(filenames):
+            if not fn.lower().endswith(".md"):
+                continue
+            path = Path(dirpath) / fn
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                _log.warning("vault_sync: could not read %s", path, exc_info=True)
+                continue
+            yield path.relative_to(vault_root).as_posix(), text
 
 
 def _entity_name_map(db: Session, world_id: int) -> dict[str, int]:

@@ -12,8 +12,11 @@ These are plain-text/shell-syntax checks, not a real install (no SwarmUI
 instance to install against in CI) — matching this repo's existing
 convention for compose/doc-file regression coverage (see
 test_job_shutdown.py, test_swarmui_gpu_setup.py)."""
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from .conftest import GM_PASSWORD, login
 
@@ -21,6 +24,10 @@ _REPO_ROOT = Path(__file__).parent.parent
 _SCRIPT = _REPO_ROOT / "install-comfyui-gguf-krea2.sh"
 
 
+# The +x bit lives in the git index; POSIX filesystems materialize it on
+# checkout, NTFS cannot. CI (docker-publish, Ubuntu) and the SwarmUI host
+# where this script actually runs are POSIX — a Windows dev checkout is not.
+@pytest.mark.skipif(os.name == "nt", reason="NTFS cannot materialize the git +x mode bit")
 def test_script_exists_and_is_executable():
     assert _SCRIPT.exists()
     assert _SCRIPT.stat().st_mode & 0o111, "install-comfyui-gguf-krea2.sh is not executable"

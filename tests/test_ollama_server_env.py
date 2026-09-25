@@ -210,8 +210,13 @@ def test_status_reports_restart_commands(tmp_path, monkeypatch):
 
 
 # os.geteuid() doesn't exist on Windows (the suite's original target was the
-# Linux Docker container) — there, and for any non-root Unix user, the test runs.
-@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root can write through a chmod 0o555 directory")
+# Linux Docker container) — there, and for any non-root Unix user, the test
+# runs. On Windows, chmod 0o555 doesn't make a directory unwritable at all
+# (permissions are ACL-based), so there is nothing the test could observe.
+@pytest.mark.skipif(
+    os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="needs a filesystem where chmod 0o555 actually blocks writes (non-root POSIX)",
+)
 def test_status_reports_unwritable_dir(tmp_path, monkeypatch):
     target = tmp_path / "readonly"
     target.mkdir()

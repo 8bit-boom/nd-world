@@ -599,3 +599,30 @@ def test_job_create_passes_messages_system_and_model_through(client, seed, monke
     assert captured["system"] == "Be terse."
     assert captured["model"] == "llama3.1"
     assert captured["messages"][-1]["content"] == "hi"
+
+
+def test_resume_marks_corrupt_json_row_error_instead_of_crashing(client, seed):
+    """Regression: one malformed messages_json/options_json blob used to
+    raise straight out of resume_interrupted_jobs — which runs inside
+    _startup_tasks with nothing catching it, so a single corrupt row
+    crash-looped the whole app on every boot."""
+    db = SessionLocal()
+    try:
+        job = ChatJob(world_id=seed.world_a.id, prompt="hi", status="interrupted",
+                      messages_json='{"corrupt', options_json="{not-json")
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+    finally:
+        db.close()
+
+    assert chat_jobs.resume_interrupted_jobs() == 0
+
+    db = SessionLocal()
+    try:
+        job = db.get(ChatJob, job_id)
+        assert job.status == "error"
+        assert "corrupt" in (job.error or "").lower()
+    finally:
+        db.close()

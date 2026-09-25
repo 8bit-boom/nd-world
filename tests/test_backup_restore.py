@@ -285,3 +285,27 @@ def test_apply_staged_restore_swaps_db_backs_up_the_old_one_and_merges_media(tmp
     assert (live_uploads / "only-in-backup.png").read_bytes() == b"backup-only"
 
     assert not staging.exists()
+
+
+def test_incomplete_staging_without_world_db_is_discarded(tmp_path, monkeypatch):
+    """A staging dir without world.db = an extraction that died partway
+    (media is staged first, the DB is moved in last). Boot must discard it
+    rather than leave the /export banner claiming a restore is pending
+    forever — and must certainly not merge half-extracted media."""
+    import app.database as database_module
+
+    live_db = tmp_path / "world.db"
+    live_db.write_bytes(b"OLD-DB-CONTENT")
+    staging = tmp_path / "restore_staging"
+    (staging / "uploads").mkdir(parents=True)
+    (staging / "uploads" / "half.png").write_bytes(b"half-extracted")
+    (staging / "manifest.json").write_text("{}")
+
+    monkeypatch.setattr(database_module, "DB_PATH", str(live_db))
+    monkeypatch.setattr(database_module, "RESTORE_STAGING_DIR", staging)
+
+    database_module._apply_staged_restore()
+
+    assert live_db.read_bytes() == b"OLD-DB-CONTENT"   # nothing applied
+    assert not staging.exists()                         # incomplete stage cleaned
+    assert not (tmp_path / "uploads").exists()          # media NOT merged
