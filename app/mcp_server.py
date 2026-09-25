@@ -29,7 +29,7 @@ from . import retrieval as _retrieval
 from . import rules_render
 from .constants import KINDS
 from .database import SessionLocal
-from .deps import load_custom_kinds
+from .deps import load_custom_kinds, world_can_view_section
 from .models import Entity, EntityRelation, Fact, GameSession, Quest, RandomTable, World, entity_player_access
 from .routers.chronicler import build_chronicler_system_prompt, visible_facts
 
@@ -68,6 +68,24 @@ def _load_world(db, world_id: int, user) -> World:
 def _require_gm(user):
     if not user.is_gm:
         raise PermissionError("This action requires a GM token")
+
+
+def _require_view_section(ctx: Context, world: World, section_id: str) -> None:
+    """The section-permission matrix gate for MCP read tools — the same
+    deps.world_can_view_section rule the matching web route enforces, so a
+    player/assistant token can't read through the API what the web UI 403s
+    (this module's instructions promise "a player's token only ever sees
+    what the player could see in the web UI" — that includes Settings →
+    Navigation's per-section None/Read/Edit levels). The MCP request's
+    state carries .user from the auth wrapper; is_assistant is never set
+    on it, so an assistant token conservatively reads at the player tier
+    via _role_for_request's getattr default — a GM bypasses via the
+    is_gm check inside world_section_level itself."""
+    request = ctx.request_context.request
+    if not world_can_view_section(request, world, section_id):
+        raise PermissionError(
+            f"This token's role has no access to the '{section_id}' section of this world"
+        )
 
 
 def _bump_recap_content_touch(world) -> None:
@@ -141,6 +159,7 @@ def list_facts(ctx: Context, world_id: int, game_session_id: Optional[int] = Non
     try:
         user = _current_user(ctx)
         world = _load_world(db, world_id, user)
+        _require_view_section(ctx, world, "facts")
         facts = visible_facts(db, world.id, user)
         if game_session_id is not None:
             facts = [f for f in facts if f.game_session_id == game_session_id]
@@ -208,9 +227,17 @@ def search_entities(ctx: Context, world_id: int, query: str, kind: Optional[str]
     try:
         user = _current_user(ctx)
         world = _load_world(db, world_id, user)
+        # Same rule the /kind/{kind} list pages enforce for a non-GM: an
+        # explicit kind the caller's role can't view is an error, and a
+        # cross-kind search drops every row whose own kind section is shut.
+        if kind:
+            _require_view_section(ctx, world, f"kind_{kind}")
         entities = _retrieval.find_relevant_entities(db, world.id, query, limit=25, user=user)
         if kind:
             entities = [e for e in entities if e.kind == kind]
+        if not user.is_gm:
+            entities = [e for e in entities if world_can_view_section(
+                ctx.request_context.request, world, f"kind_{e.kind}")]
         return [
             {"id": e.id, "kind": e.kind, "subtype": e.subtype, "name": e.name, "summary": e.summary}
             for e in entities
@@ -227,6 +254,7 @@ def list_quests(ctx: Context, world_id: int, status: Optional[str] = None) -> li
     try:
         user = _current_user(ctx)
         world = _load_world(db, world_id, user)
+        _require_view_section(ctx, world, "quests")
         q = db.query(Quest).filter(Quest.world_id == world.id)
         if not user.is_gm:
             q = q.filter(Quest.visible_to_players.isnot(False))
@@ -300,7 +328,11 @@ def get_entity(ctx: Context, entity_id: int) -> dict:
         e = db.get(Entity, entity_id)
         if not e:
             raise ValueError(f"Entity {entity_id} not found")
-        _load_world(db, e.world_id, user)
+        world = _load_world(db, e.world_id, user)
+        # Same kind-section gate the web detail page's _entity_view_gate
+        # enforces — a player with kind_{kind} = none must not read the
+        # entity through MCP either.
+        _require_view_section(ctx, world, f"kind_{e.kind}")
         if not _entity_visible_to(db, e, user):
             raise PermissionError(f"Entity {entity_id} is not visible to this token")
         return {
@@ -461,6 +493,7 @@ def get_rules(ctx: Context, world_id: int) -> dict:
     try:
         user = _current_user(ctx)
         world = _load_world(db, world_id, user)
+        _require_view_section(ctx, world, "rules")
         md = world.rules_md or ""
         if not md.strip():
             return {"rules_md": "", "note": "This world has no custom rules — the app's bundled core rules apply."}
@@ -479,6 +512,7 @@ def list_sessions(ctx: Context, world_id: int) -> list[dict]:
     try:
         user = _current_user(ctx)
         world = _load_world(db, world_id, user)
+        _require_view_section(ctx, world, "sessions")
         q = db.query(GameSession).filter(GameSession.world_id == world.id)
         out = []
         for gs in q.order_by(GameSession.session_num.desc()).all():
@@ -508,7 +542,8 @@ def get_session(ctx: Context, session_id: int) -> dict:
         gs = db.get(GameSession, session_id)
         if not gs:
             raise ValueError(f"Session {session_id} not found")
-        _load_world(db, gs.world_id, user)
+        world = _load_world(db, gs.world_id, user)
+        _require_view_section(ctx, world, "sessions")
         base = {"id": gs.id, "session_num": gs.session_num, "title": gs.title, "session_date": gs.session_date}
         if user.is_gm:
             base["summary"] = gs.summary or ""

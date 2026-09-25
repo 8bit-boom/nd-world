@@ -164,6 +164,7 @@ async def test_mcp_player_never_sees_gm_only_facts():
     ids = _seed()
     gm_token = _issue_token(ids["gm_id"], "gm")
     player_token = _issue_token(ids["player_id"], "player")
+    _grant_section(ids["world_a_id"], "facts")  # player "read" — this test is about row filtering
     await _call(gm_token, "create_fact", {
         "world_id": ids["world_a_id"], "content": "Public fact", "visible_to_players": True,
     })
@@ -426,6 +427,7 @@ async def test_mcp_sessions_publish_boundary():
     ids = _seed()
     gm_token = _issue_token(ids["gm_id"], "gm")
     player_token = _issue_token(ids["player_id"], "player")
+    _grant_section(ids["world_a_id"], "sessions")  # player "read" — publish-boundary test
     db = SessionLocal()
     try:
         s1 = GameSession(world_id=ids["world_a_id"], title="The Moonfall", session_num=1,
@@ -504,3 +506,108 @@ async def test_mcp_quest_create_update():
         "quest_id": created["id"], "status": "complete",
     }))
     assert updated["status"] == "complete"
+
+
+# ── Section-permission matrix on read tools (audit round 2, item B1) ─────────
+
+def _set_player_section(world_id: int, section_id: str, level: str):
+    """Set section_access_json so the PLAYER role has `level` on section_id."""
+    from app.deps import world_section_access
+    import json as _json
+    db = SessionLocal()
+    try:
+        w = db.get(World, world_id)
+        current = world_section_access(w)
+        current[section_id]["player"] = level
+        w.section_access_json = _json.dumps(current)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _deny_section(world_id: int, section_id: str):
+    _set_player_section(world_id, section_id, "none")
+
+
+def _grant_section(world_id: int, section_id: str):
+    _set_player_section(world_id, section_id, "read")
+
+
+async def test_mcp_player_blocked_by_section_matrix_on_reads():
+    """A player token with a section set to None must get the same denial
+    through MCP read tools as the web UI gives them — previously
+    list_facts/list_quests/get_rules/list_sessions/get_session skipped the
+    matrix entirely."""
+    _reset_db()
+    ids = _seed()
+    player_token = _issue_token(ids["player_id"], "player")
+
+    # Sanity: with defaults (facts=none for players already) — facts denied
+    res = await _call(player_token, "list_facts", {"world_id": ids["world_a_id"]})
+    assert res.isError
+    assert "facts" in res.content[0].text
+
+    # Dial quests/rules/sessions to none for the player and re-check
+    for tool, args, sid in (
+        ("list_quests", {"world_id": ids["world_a_id"]}, "quests"),
+        ("get_rules", {"world_id": ids["world_a_id"]}, "rules"),
+        ("list_sessions", {"world_id": ids["world_a_id"]}, "sessions"),
+    ):
+        _deny_section(ids["world_a_id"], sid)
+        res = await _call(player_token, tool, args)
+        assert res.isError, f"{tool} should be denied with {sid}=none"
+        assert sid in res.content[0].text
+
+    # The GM is unaffected by the same dial-downs
+    gm_token = _issue_token(ids["gm_id"], "gm")
+    assert not (await _call(gm_token, "list_quests", {"world_id": ids["world_a_id"]})).isError
+    assert not (await _call(gm_token, "get_rules", {"world_id": ids["world_a_id"]})).isError
+    assert not (await _call(gm_token, "list_sessions", {"world_id": ids["world_a_id"]})).isError
+
+
+async def test_mcp_get_session_blocked_by_section_matrix():
+    _reset_db()
+    ids = _seed()
+    db = SessionLocal()
+    try:
+        gs = GameSession(world_id=ids["world_a_id"], session_num=1, title="One")
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        gs_id = gs.id
+    finally:
+        db.close()
+    _deny_section(ids["world_a_id"], "sessions")
+    player_token = _issue_token(ids["player_id"], "player")
+    res = await _call(player_token, "get_session", {"session_id": gs_id})
+    assert res.isError
+    assert "sessions" in res.content[0].text
+
+
+async def test_mcp_get_entity_blocked_by_kind_section():
+    """get_entity must honor the per-kind 'kind_{kind}' section the web
+    detail page enforces, not just entity visibility."""
+    _reset_db()
+    ids = _seed()
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=ids["world_a_id"], kind="character", name="Hidden Kind",
+                   summary="s", body="b", visible_to_players=True)
+        db.add(e)
+        db.commit()
+        db.refresh(e)
+        eid = e.id
+    finally:
+        db.close()
+    _deny_section(ids["world_a_id"], "kind_character")
+    player_token = _issue_token(ids["player_id"], "player")
+    res = await _call(player_token, "get_entity", {"entity_id": eid})
+    assert res.isError
+    assert "kind_character" in res.content[0].text
+    # search filtered by that kind is denied too; cross-kind search drops its rows
+    res = await _call(player_token, "search_entities",
+                      {"world_id": ids["world_a_id"], "query": "hidden", "kind": "character"})
+    assert res.isError
+    # GM unaffected
+    gm_token = _issue_token(ids["gm_id"], "gm")
+    assert not (await _call(gm_token, "get_entity", {"entity_id": eid})).isError
