@@ -10,6 +10,7 @@ import urllib.request as _urllib
 import uuid as _uuid
 from datetime import datetime
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
+from sqlalchemy.orm import Session
 from fastapi.responses import StreamingResponse as _SR
 from pydantic import BaseModel
 from typing import List, Optional
@@ -3364,3 +3365,237 @@ async def ai_ping():
         media_type="text/event-stream",
         headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
     )
+
+
+# ── Unsloth Studio extras ────────────────────────────────────────────────────
+# Model-hub management, image-model load/unload, auto-switch settings, TTS —
+# the Studio server surfaces beyond chat, all via app.unsloth_extras against
+# the live-verified endpoints (docs/UNSLOTH_PHASE0_FINDINGS.md, Phase 0.5
+# appendix). Every route here is GM-only by default (none are in
+# _is_player_safe/_is_assistant_safe); all degrade with the server's own
+# error text when a Studio build lacks an endpoint.
+
+from .. import unsloth_extras as _unsloth_extras
+from ..models import AudioClip
+from ..database import SessionLocal
+
+
+def _unsloth_or_400():
+    if not _ai.effective_llm_api_key():
+        raise HTTPException(400, "No Unsloth backend configured — set UNSLOTH_API_KEY (Settings → System).")
+
+
+@router.get("/unsloth/models")
+async def unsloth_models_list():
+    """Merged view for the Models tab under Unsloth: every cached hub GGUF
+    (chat + image + audio, `task` per row) joined with the /v1/models
+    `loaded` flag."""
+    _unsloth_or_400()
+    try:
+        cached = await _unsloth_extras.hub_cached()
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, str(exc))
+    try:
+        loaded_ids = {m.model for m in (await _ai._list_loaded() or [])}
+    except Exception:
+        loaded_ids = set()
+    return {"models": [
+        {
+            "repo_id": c.get("repo_id", ""),
+            "task": c.get("task", ""),
+            "size_bytes": c.get("size_bytes"),
+            "requires_variant": bool((c.get("capabilities") or {}).get("requires_variant")),
+            "can_download": bool((c.get("capabilities") or {}).get("can_download", True)),
+            "loaded": c.get("load_id") in loaded_ids or c.get("repo_id") in loaded_ids,
+        }
+        for c in cached
+    ]}
+
+
+@router.post("/unsloth/hub/download")
+async def unsloth_hub_download(body: dict):
+    """Start downloading a hub model (returns immediately — poll
+    /unsloth/hub/download-progress). gguf_variant selects the quant for
+    repos that require one."""
+    _unsloth_or_400()
+    repo_id = str(body.get("repo_id") or "").strip()
+    if not repo_id:
+        raise HTTPException(400, "repo_id is required")
+    payload = {"repo_id": repo_id}
+    variant = str(body.get("gguf_variant") or "").strip()
+    if variant:
+        payload["gguf_variant"] = variant
+    try:
+        return await _unsloth_extras._request(
+            "POST", "/api/hub/download", json_body=payload, timeout=_unsloth_extras._ACTION_TIMEOUT)
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, str(exc))
+
+
+@router.get("/unsloth/hub/download-progress")
+async def unsloth_hub_download_progress(repo_id: str):
+    _unsloth_or_400()
+    try:
+        return await _unsloth_extras.hub_download_progress(repo_id)
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, str(exc))
+
+
+@router.get("/unsloth/gguf-variants")
+async def unsloth_gguf_variants(repo_id: str):
+    """Quant variant filenames for a hub GGUF — what the image-load flow
+    needs for requires_variant repos."""
+    _unsloth_or_400()
+    try:
+        return await _unsloth_extras.gguf_variants(repo_id)
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, str(exc))
+
+
+@router.post("/unsloth/image/load")
+async def unsloth_image_load(body: dict):
+    """Load an image-diffusion model. Single-file GGUF repos need
+    gguf_filename. Loading continues server-side — poll load-progress."""
+    _unsloth_or_400()
+    repo_id = str(body.get("repo_id") or "").strip()
+    if not repo_id:
+        raise HTTPException(400, "repo_id is required")
+    try:
+        return await _unsloth_extras.image_load(repo_id, str(body.get("gguf_filename") or "").strip())
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, str(exc))
+
+
+@router.get("/unsloth/image/load-progress")
+async def unsloth_image_load_progress():
+    _unsloth_or_400()
+    try:
+        return await _unsloth_extras.image_load_progress()
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, str(exc))
+
+
+@router.post("/unsloth/image/unload")
+async def unsloth_image_unload():
+    _unsloth_or_400()
+    try:
+        return await _unsloth_extras.image_unload()
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, str(exc))
+
+
+@router.get("/unsloth/image/status")
+async def unsloth_image_status():
+    _unsloth_or_400()
+    try:
+        return await _unsloth_extras.image_status()
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, str(exc))
+
+
+@router.get("/unsloth/auto-switch")
+async def unsloth_auto_switch_get():
+    _unsloth_or_400()
+    try:
+        return await _unsloth_extras.auto_switch_get()
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, str(exc))
+
+
+@router.post("/unsloth/auto-switch")
+async def unsloth_auto_switch_set(body: dict):
+    """Writes through to Studio itself (PUT /api/settings/openai-auto-switch)
+    — Studio-side settings, applied with no Studio restart."""
+    _unsloth_or_400()
+    try:
+        return await _unsloth_extras.auto_switch_update(
+            enabled=body.get("enabled"),
+            media_auto_switch_model=body.get("media_auto_switch_model"),
+            auto_unload_idle_seconds=body.get("auto_unload_idle_seconds"),
+        )
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, str(exc))
+
+
+@router.get("/unsloth/prefs")
+async def unsloth_prefs_get():
+    """TTS/STT preference values stored nd-world-side (ai_models.json)."""
+    return {
+        "tts_model": _ai.get_tts_model(),
+        "tts_voice": _ai.get_tts_voice(),
+        "stt_backend": _ai.get_stt_backend(),
+        "stt_model": _ai.get_stt_model(),
+        "studio_console_url": _ai.get_studio_console_url(),
+    }
+
+
+@router.post("/unsloth/prefs")
+async def unsloth_prefs_set(body: dict):
+    if "tts_model" in body:
+        _ai.set_tts_model(str(body.get("tts_model") or "").strip())
+    if "tts_voice" in body:
+        _ai.set_tts_voice(str(body.get("tts_voice") or "").strip())
+    if "stt_backend" in body:
+        try:
+            _ai.set_stt_backend(str(body.get("stt_backend") or "").strip())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    if "stt_model" in body:
+        _ai.set_stt_model(str(body.get("stt_model") or "").strip())
+    if "studio_console_url" in body:
+        _ai.set_studio_console_url(str(body.get("studio_console_url") or "").strip())
+    return {"ok": True}
+
+
+class TtsBody(BaseModel):
+    text: str
+    name: str = ""
+    description: str = ""
+    voice: str = ""
+    model: str = ""
+
+
+@router.post("/tts")
+async def unsloth_tts(body: TtsBody, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Generate speech from `text` via Studio's /v1/audio/speech and save it
+    as a normal AudioClip in the active world — instant NPC voices, ambiance
+    lines, read-aloud passages. GM-only by default; clips start
+    GM-only-visible until reviewed, like any other draft asset."""
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "No text to speak")
+    if len(text) > 20000:
+        raise HTTPException(400, "Text too long for one TTS call (over 20k chars) — split it up")
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    try:
+        audio, content_type = await _unsloth_extras.tts(
+            text,
+            model=(body.model or "").strip() or _ai.get_tts_model(),
+            voice=(body.voice or "").strip() or _ai.get_tts_voice(),
+        )
+    except _unsloth_extras.StudioMissing as exc:
+        raise HTTPException(400, str(exc))
+    except _unsloth_extras.StudioError as exc:
+        raise HTTPException(exc.status_code, f"Unsloth Studio TTS: {exc}")
+
+    ext = ".wav" if "wav" in content_type else ".mp3"
+    target_dir = _Path(_os.environ.get("DB_PATH", "/data/world.db")).parent / "uploads" / "audio"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / unique_upload_filename(f"tts-{_uuid.uuid4().hex[:8]}{ext}", ext)
+    dest.write_bytes(audio)
+    clip = AudioClip(
+        world_id=world.id,
+        name=(body.name or "").strip()[:80] or f"TTS {_time.strftime('%H:%M')}",
+        description=(body.description or "").strip()[:200] or f"Generated speech ({body.model or _ai.get_tts_model()})",
+        file_url=f"/uploads/audio/{dest.name}",
+        visible_to_players=False,
+    )
+    db.add(clip)
+    db.commit()
+    db.refresh(clip)
+    return {"id": clip.id, "name": clip.name, "file_url": clip.file_url, "bytes": len(audio)}

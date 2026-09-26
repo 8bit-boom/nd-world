@@ -14,10 +14,13 @@ import app.ai as ai_module
 
 
 class _FakeResponse:
-    def __init__(self, status_code=200, payload=None, text=""):
+    def __init__(self, status_code=200, payload=None, text="", content=b""):
         self.status_code = status_code
         self._payload = payload
         self.text = text or (json.dumps(payload) if payload is not None else "")
+        # real responses always carry the body as content — unsloth_extras
+        # treats empty content as "no body" and returns {}.
+        self.content = content or self.text.encode()
 
     def json(self):
         if self._payload is None:
@@ -46,6 +49,13 @@ class _FakeAsyncClient:
     async def post(self, url, json=None, headers=None):
         self._state["requests"].append(("POST", url, headers, json))
         return self._handler("POST", url, headers, json)
+
+    async def request(self, method, url, json=None, headers=None, params=None,
+                      content=None, files=None):
+        # unsloth_extras uses the generic c.request(...) form for its
+        # /api/inference + /api/hub calls.
+        self._state["requests"].append((method, url, headers, json))
+        return self._handler(method, url, headers, json)
 
 
 @pytest.fixture
@@ -145,6 +155,10 @@ async def test_imagegen_progress_is_indeterminate(unsloth_image_mode):
 @pytest.mark.asyncio
 async def test_imagegen_generate_posts_b64_json_and_saves_png(unsloth_image_mode, monkeypatch, tmp_path):
     def handler(method, url, headers, body):
+        if "/api/inference/images/generate" in url:
+            # No native endpoint on this (simulated) Studio build → the code
+            # must fall back to the /v1 flow.
+            return _FakeResponse(404, payload={"detail": "API endpoint not found"})
         assert url == "http://unsloth:8000/v1/images/generations"
         assert body["model"] == "unsloth/z-image-turbo-GGUF"
         assert body["size"] == "1024x1024"
@@ -169,6 +183,8 @@ async def test_imagegen_generate_posts_b64_json_and_saves_png(unsloth_image_mode
 @pytest.mark.asyncio
 async def test_imagegen_generate_503_explains_media_auto_switch(unsloth_image_mode, monkeypatch, tmp_path):
     def handler(method, url, headers, body):
+        if "/api/inference/images/generate" in url:
+            return _FakeResponse(404, payload={"detail": "API endpoint not found"})
         return _FakeResponse(503, payload={"error": {"message": "No image model loaded"}})
 
     _patch_http(monkeypatch, unsloth_image_mode, handler)
@@ -183,6 +199,8 @@ async def test_imagegen_generate_503_explains_media_auto_switch(unsloth_image_mo
 @pytest.mark.asyncio
 async def test_imagegen_generate_empty_data_raises(unsloth_image_mode, monkeypatch, tmp_path):
     def handler(method, url, headers, body):
+        if "/api/inference/images/generate" in url:
+            return _FakeResponse(404, payload={"detail": "API endpoint not found"})
         return _FakeResponse(200, payload={"data": []})
 
     _patch_http(monkeypatch, unsloth_image_mode, handler)
@@ -191,3 +209,39 @@ async def test_imagegen_generate_empty_data_raises(unsloth_image_mode, monkeypat
             prompt="x", negative="", model="m", width=512, height=512,
             steps=4, cfg=1.0, seed=-1, uploads_dir=tmp_path,
         )
+
+
+@pytest.mark.asyncio
+async def test_imagegen_generate_uses_native_endpoint_and_gallery(monkeypatch, unsloth_image_mode, tmp_path):
+    """When Studio has the native /api/inference/images/generate, generation
+    goes through it — negative prompt and img2img reach the body, and the
+    returned gallery records' files are fetched and saved as PNGs."""
+    from app import unsloth_extras as _unsloth_extras
+
+    def handler(method, url, headers, body):
+        if "/api/inference/images/generate" in url and method == "POST":
+            assert body["prompt"] == "a dragon"
+            assert body["negative_prompt"] == "blurry"
+            assert body["steps"] == 4
+            assert body["init_image"].startswith("data:image/png;base64,")
+            assert body["strength"] == 0.6
+            return _FakeResponse(200, payload={"images": [
+                {"id": "img1", "url": "/api/inference/images/gallery/img1/file"},
+            ]})
+        if "/api/inference/images/gallery/img1/file" in url:
+            return _FakeResponse(200, content=_PNG_BYTES)
+        raise AssertionError("unexpected call: " + url)
+
+    _patch_http(monkeypatch, unsloth_image_mode, handler)
+
+    init = tmp_path / "ai-images" / "init.png"
+    init.parent.mkdir(parents=True, exist_ok=True)
+    init.write_bytes(_PNG_BYTES)
+
+    urls = await ai_module.imagegen_generate(
+        prompt="a dragon", negative="blurry", model="unsloth/z-image-turbo-GGUF",
+        width=512, height=512, steps=4, cfg=1.0, seed=42, uploads_dir=tmp_path,
+        init_image="/uploads/ai-images/init.png", init_strength=0.6,
+    )
+    assert len(urls) == 1
+    assert (tmp_path / "ai-images" / urls[0].rsplit("/", 1)[1]).read_bytes() == _PNG_BYTES

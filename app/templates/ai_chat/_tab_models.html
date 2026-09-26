@@ -66,6 +66,34 @@
     <div style="color:var(--text-dim);font-size:.82rem">⏳ Loading…</div>
   </div>
 
+  <!-- Unsloth Studio hub (shown only when the Unsloth backend is active) -->
+  <div id="mp-unsloth-hub" style="display:none;border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-bottom:1rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.55rem">
+      <span style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em">🌐 Studio Model Hub</span>
+      <button class="ig-btn" onclick="mpUnslothLoad()" style="font-size:.7rem;padding:.15rem .5rem">↺</button>
+    </div>
+    <p style="font-size:.72rem;color:var(--text-dim);margin:0 0 .6rem">
+      Every model cached in the Studio server's hub — chat, image, and audio — with load
+      controls for image models. Studio's own hub UI (search, quant choice, training) is on the
+      <a href="/studio" target="_blank">🧠 Studio Console</a> page.
+    </p>
+    <div style="display:flex;gap:.5rem;margin-bottom:.7rem;flex-wrap:wrap">
+      <input id="mp-unsloth-dl-id" type="text" placeholder="Download by hub repo id — e.g. unsloth/Qwen3.5-4B-GGUF"
+             style="flex:1;min-width:220px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .55rem;font-family:var(--font);font-size:.8rem;border-radius:3px"/>
+      <button class="ig-btn" onclick="mpUnslothDownload()" style="font-size:.75rem;padding:.25rem .7rem">⬇ Download</button>
+    </div>
+    <div id="mp-unsloth-download-progress" style="display:none;margin-bottom:.7rem">
+      <div style="font-size:.78rem;color:var(--neon);margin-bottom:.25rem" id="mp-unsloth-dl-label">Downloading…</div>
+      <div style="background:var(--bg3);border-radius:3px;height:8px;overflow:hidden">
+        <div id="mp-unsloth-dl-bar" style="height:100%;width:0%;background:var(--neon);border-radius:3px;transition:width .3s"></div>
+      </div>
+      <div id="mp-unsloth-dl-bytes" style="font-size:.7rem;color:var(--text-dim);margin-top:.25rem"></div>
+    </div>
+    <div id="mp-unsloth-list" style="display:flex;flex-direction:column;gap:.45rem">
+      <div style="color:var(--text-dim);font-size:.8rem">⏳ Loading…</div>
+    </div>
+  </div>
+
   <!-- Add custom model -->
   <div style="border:1px solid var(--border);border-radius:6px;padding:.8rem 1rem;background:var(--bg2);margin-bottom:1rem">
     <div style="font-size:.75rem;color:var(--neon);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.55rem">+ Add / Download Model</div>

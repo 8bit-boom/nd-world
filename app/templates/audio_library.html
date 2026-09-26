@@ -50,6 +50,29 @@
     </form>
   </div>
 
+  {% if request.state.user and request.state.user.is_gm %}
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.5rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">🗣 Generate speech (Unsloth TTS)</h2>
+    <p style="font-size:.75rem;color:var(--text-dim);margin:0 0 .6rem">
+      Text-to-speech via the Studio server — instant NPC voice lines or read-aloud passages.
+      The TTS model is set under Settings → System (it must be downloaded in Studio); clips
+      land here as GM-only until you share them.
+    </p>
+    <div style="display:flex;flex-direction:column;gap:.5rem">
+      <textarea id="tts-text" rows="3" maxlength="20000" placeholder="Text to speak…"
+                style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px;resize:vertical"></textarea>
+      <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center">
+        <input type="text" id="tts-name" placeholder="Clip name (optional)" maxlength="80"
+               style="flex:1;min-width:180px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
+        <input type="text" id="tts-voice" placeholder="Voice (optional)" maxlength="64"
+               style="width:160px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
+        <button type="button" class="btn-save" id="tts-generate-btn">🗣 Generate</button>
+      </div>
+      <div id="tts-status" style="font-size:.78rem;color:var(--text-dim)"></div>
+    </div>
+  </div>
+  {% endif %}
+
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem;margin-bottom:1.5rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">⬆ Upload Clips</h2>
     <form method="post" action="{{ '/audio/upload'|wq }}" enctype="multipart/form-data" id="audio-upload-form" style="display:flex;flex-direction:column;gap:.6rem">
@@ -217,6 +240,37 @@ function audioToggleAlbumRename() {
   const form = document.getElementById('audio-album-rename-form');
   if (form) form.style.display = form.style.display === 'none' ? 'flex' : 'none';
 }
+
+// TTS: generate speech via the Studio server and land it as a GM-only clip.
+(function () {
+  const btn = document.getElementById('tts-generate-btn');
+  if (!btn) return;
+  const statusEl = document.getElementById('tts-status');
+  btn.addEventListener('click', async () => {
+    const text = document.getElementById('tts-text').value.trim();
+    if (!text) { statusEl.textContent = 'Write something to speak first.'; return; }
+    btn.disabled = true;
+    statusEl.textContent = '⏳ Generating speech…';
+    try {
+      const r = await fetch('/api/ai/tts', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          name: document.getElementById('tts-name').value,
+          voice: document.getElementById('tts-voice').value,
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
+      statusEl.innerHTML = '✓ Saved as <a href="' + data.file_url + '" target="_blank">' + data.name + '</a> (GM-only) — reload to see it in the list.';
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (err) {
+      statusEl.textContent = '⚠ ' + err.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+})();
 
 // Upload: the file input accepts multiple files, but the server route
 // (POST /audio/upload) only ever takes one — so this always uploads one

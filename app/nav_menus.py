@@ -60,6 +60,7 @@ STATIC_CATALOG = [
      "exact": True, "condition": "king_in_yellow_enabled", "gm_only": True, "player_section": "king-in-yellow"},
     {"id": "ai", "label": "AI Chat", "icon": "🤖", "href": "/ai", "exact": True, "gm_only": True, "player_section": "ai"},
     {"id": "imagestudio", "label": "Image Studio", "icon": "🎨", "href": "/imagestudio", "exact": True, "gm_only": True, "player_section": "imagestudio"},
+    {"id": "studio_console", "label": "Studio Console", "icon": "🧠", "href": "/studio", "exact": True, "gm_only": True, "player_section": "studio_console"},
     {"id": "editor", "label": "Content Editor", "icon": "🛠", "href": "/editor", "exact": True, "gm_only": True, "player_section": "editor"},
     {"id": "code_assist", "label": "Code Assist", "icon": "🧩", "href": "/tools/code-assist", "exact": True, "gm_only": True, "player_section": "code_assist"},
 

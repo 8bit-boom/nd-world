@@ -76,6 +76,38 @@ Every answer below was produced by live calls against the running server, not do
 - Hub download progress endpoint **lies** (`/api/hub/download-progress` showed 0 % / 0 bytes for completed downloads) — for progress UI trust container logs or on-disk size, not that endpoint.
 - Model ids are case-sensitive repo ids as listed by the hub (`unsloth/gemma-4-26B-A4B-it-GGUF`), with quant selection at download/load time (variant), matching plan §5.2's `UNSLOTH_MODEL` default. `UD-IQ4_NL` = 13.6 GB confirmed on HF.
 
+## Appendix — Phase 0.5 live verification (Desktop Studio, 2026-09-26)
+
+Verified live against the Desktop app (`unsloth-studio.exe`, server on
+**127.0.0.1:8888** — not 8000; the Docker image publishes 8000, Desktop
+binds 8888 on loopback). API key minted via `POST /api/auth/login`
+(username `unsloth`, password from the app's own bootstrap flow — Desktop
+keeps it in `~/.unsloth/studio/auth/`) → `POST /api/auth/api-keys`.
+
+| Endpoint | Method | Verified shape / behavior |
+|---|---|---|
+| `/v1/models` | GET | `{object:"list", data:[{id, object:"model", created, owned_by:"unsloth-studio", loaded:bool, quant?, display_name}]}` — chat models. **Slow (~10 s first call)** — client timeout must be generous |
+| `/api/hub/cached-gguf` | GET | `{cached:[{repo_id, size_bytes, load_id, task ("text-generation"\|"text-to-image"\|…\|"image-diffusion-unsupported"), capabilities:{can_chat,can_delete,can_download,requires_variant,supports_lora,supports_vision}, format_variant, has_variant_state, …}]}` — ALL cached GGUFs incl. chat + image |
+| `/api/hub/download` | POST `{repo_id}` (JSON) | `{job_key:"<repo>::", state:"running", accepted:true, generation, transport:"xet"}` — **download start works**; quant/variant selection unverified |
+| `/api/hub/download-progress?repo_id=` | GET | `{downloaded_bytes, completed_bytes, complete_on_disk, expected_bytes, progress, cache_path, cache_measured}` — real per-repo progress |
+| `/api/settings/openai-auto-switch` | GET / PUT | GET returns `{enabled, auto_unload_idle_seconds, auto_unload_keep_kv, auto_download_model, media_auto_switch_model, media_auto_unload_idle_seconds, …}`; PUT accepts any subset of the same fields and returns the merged state — full round-trip verified |
+| `/api/inference/images/load` | POST `{model_path, model_kind:"gguf", gguf_filename}` | Big status object: `{loaded, engine, fallback_reason, device, dtype, cpu_offload, memory_mode, speed_mode, supports_lora, …}`. Without `gguf_filename` a single-file GGUF repo 400s with a message teaching the field. Response arrives immediately (load continues server-side; poll `loaded`) |
+| `/api/inference/images/generate-progress` | GET | `{active, step, total_steps, fraction, eta_seconds}` — real generation progress |
+| `/v1/audio/speech` | POST `{model, input, voice, …}` | No TTS model loaded → 400 `{"error":{"message":"No model loaded."…}}`; TTS/STT models are managed in Studio's own **Settings → Voice** UI |
+| `/v1/audio/transcriptions` | POST multipart `file` + `model` | STT model missing → 409 `{"error":{"message":"STT model 'small' is not downloaded. Download it in Settings, then Voice…"}}` — `model` maps to a Studio-managed STT model name (e.g. `"small"`) |
+| `/v1/videos` | GET | OpenAI list shape `{object:"list", data:[]}` |
+| `/api/chat/projects` | GET | `{projects:[]}` |
+
+Not found (404 "API endpoint not found"): `/api/hub/files`, `/api/hub/model`,
+`/api/hub/search`, `/api/inference/images/load-status`. GGUF variant
+filenames (e.g. `krea2_turbo-Q8_0.gguf`) live in the on-disk HF cache
+(`~/.cache/huggingface/hub/models--*--*/snapshots/`) and are accepted by
+the load endpoint by plain filename.
+
+Studio's own "Voice" settings page manages TTS/STT models — nd-world
+surfaces them as settings/defaults and passes errors through gracefully
+rather than reimplementing model management for them.
+
 ## Decisions unlocked by these findings
 
 1. **Plan A for image generation** (§7.1) — `/v1/images/generations` + native generate for progress/LoRA.

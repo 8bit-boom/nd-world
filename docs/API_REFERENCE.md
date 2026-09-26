@@ -682,6 +682,20 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/api/ai/models` | GM | Lists available/known Ollama models with loaded/builtin flags. |
 | GET | `/api/ai/resident` | GM | Models actually resident in memory (VRAM/RAM), for the Models tab's residency cockpit. |
 | GET | `/api/ai/hardware` | GM | Best-effort CPU/RAM/GPU detection plus a coarse per-model settings recommendation (per-request options and server env vars) for each installed Ollama model, for the Settings → System "Detected hardware" panel. |
+| GET | `/api/ai/unsloth/models` | GM | Every model cached in the Unsloth Studio hub (chat, image, audio — with `task` per row), joined with the `loaded` flag. Backs the Models tab's Studio hub section under the Unsloth backend. |
+| POST | `/api/ai/unsloth/hub/download` | GM | Starts downloading a hub model by repo id (returns immediately; poll the progress route). Optional `gguf_variant` for repos requiring one. |
+| GET | `/api/ai/unsloth/hub/download-progress` | GM | Real per-repo download progress (bytes + fraction) from Studio. |
+| GET | `/api/ai/unsloth/gguf-variants` | GM | Quant variant filenames for a hub GGUF — the choices the image-load flow needs. |
+| POST | `/api/ai/unsloth/image/load` | GM | Loads an image-diffusion model in Studio (`repo_id` + optional `gguf_filename`); loading continues server-side — poll `/api/ai/unsloth/image/load-progress`. |
+| GET | `/api/ai/unsloth/image/load-progress` | GM | Loading progress for the in-flight diffusion model load. |
+| POST | `/api/ai/unsloth/image/unload` | GM | Unloads the diffusion model, freeing VRAM. |
+| GET | `/api/ai/unsloth/image/status` | GM | The loaded diffusion model's full status (repo, device, dtype, engine). |
+| GET | `/api/ai/unsloth/auto-switch` | GM | Studio's model auto-switch settings (chat + media + idle unload), read live from the Studio server. |
+| POST | `/api/ai/unsloth/auto-switch` | GM | Writes auto-switch settings through to Studio (applied immediately, no Studio restart). |
+| GET | `/api/ai/unsloth/prefs` | GM | nd-world-side Studio preferences: TTS model/voice, STT backend/model, Studio Console URL. |
+| POST | `/api/ai/unsloth/prefs` | GM | Saves those preferences. |
+| POST | `/api/ai/tts` | GM | Generates speech from `text` via Studio's /v1/audio/speech and saves it as an AudioClip in the active world (GM-only visible until shared) — NPC voice lines and read-aloud passages. Uses the Settings → System TTS defaults unless overridden per call. |
+| GET | `/studio` | GM | The full Unsloth Studio web UI embedded (projects, fine-tuning/recipe workflows, agent skills, voice settings, model hub, video generation). Embeds the Studio server URL — an explicit Studio Console override or UNSLOTH_URL. |
 | POST | `/api/ai/unload` | GM | Unloads a model from memory. |
 | GET | `/api/ai/defaults` | GM | Per-surface (`chat`/`ask_ai`/`image`) default model ids. |
 | POST | `/api/ai/defaults` | GM | Sets a surface's default model. |

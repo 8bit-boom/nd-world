@@ -232,6 +232,59 @@
         <label for="whisper-url">Whisper URL (audio attachment transcription)</label>
         <input id="whisper-url" name="whisper_url" value="{{ settings.whisper_url or '' }}" placeholder="{{ env_whisper_url or 'not set' }}">
       </div>
+      <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Unsloth Studio server</h2>
+      <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
+        Writes through to the running Studio server immediately (no restart). Auto-switch
+        loads a requested model by name on demand; media auto-switch covers image/TTS/STT
+        models; idle auto-unload frees VRAM after the given seconds — set it (e.g. 300) on a
+        single-GPU box. TTS defaults feed the Audio Library's "Generate speech" panel; the
+        STT backend picks who transcribes audio (Studio's STT models live in its own
+        Settings → Voice page). Preferences apply on save.
+      </p>
+      <div class="form-group">
+        <label>Chat model auto-switch</label>
+        <label style="display:inline-flex;align-items:center;gap:.4rem;font-size:.85rem">
+          <input type="checkbox" id="studio-autoswitch"/> Enabled — request a downloaded model by name and Studio loads it
+        </label>
+        <label style="display:inline-flex;align-items:center;gap:.4rem;font-size:.85rem;margin-top:.3rem">
+          <input type="checkbox" id="studio-media-autoswitch"/> Media auto-switch (image/TTS/STT models load by name too)
+        </label>
+      </div>
+      <div class="form-group">
+        <label for="studio-idle-unload">Idle auto-unload (seconds, 0 = never)</label>
+        <input id="studio-idle-unload" type="number" min="0" step="30" style="max-width:160px" placeholder="0"/>
+      </div>
+      <div class="form-group">
+        <label for="studio-tts-model">TTS model (hub repo id)</label>
+        <input id="studio-tts-model" style="max-width:420px" placeholder="e.g. unsloth/orpheus-3b — must be downloaded in Studio"/>
+      </div>
+      <div class="form-group">
+        <label for="studio-tts-voice">TTS voice (optional)</label>
+        <input id="studio-tts-voice" style="max-width:220px" placeholder="voice name, blank = model default"/>
+      </div>
+      <div class="form-group">
+        <label for="studio-stt-backend">Speech-to-text backend</label>
+        <select id="studio-stt-backend" style="max-width:220px">
+          <option value="whisper">whisper.cpp sidecar</option>
+          <option value="unsloth">Unsloth Studio</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="studio-stt-model">Studio STT model name (when backend is Unsloth)</label>
+        <input id="studio-stt-model" style="max-width:160px" placeholder="small"/>
+      </div>
+      <div class="form-group">
+        <label for="studio-console-url">Studio Console URL override (optional)</label>
+        <input id="studio-console-url" style="max-width:420px" placeholder="blank = same as UNSLOTH_URL"/>
+        <p style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 0">
+          Where the 🧠 Studio Console page embeds Studio's UI — only needed when Studio runs on a
+          different host/port than UNSLOTH_URL (e.g. the Desktop app binds 127.0.0.1:8888).
+        </p>
+      </div>
+      <div class="form-actions" style="margin:.5rem 0 1rem">
+        <button type="button" class="btn-primary" id="studio-save">Save Studio settings</button>
+        <span id="studio-save-status" style="font-size:.8rem;color:var(--text-dim);margin-left:.6rem"></span>
+      </div>
       <h2 style="font-size:.9rem;color:var(--text-dim);margin:1.5rem 0 .5rem">Upload limits</h2>
       <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:1rem">
         Per-kind upload size caps, in MB. Blank = use the built-in default. Limits
@@ -901,6 +954,79 @@ function ndCopyRestartCmd() {
   if (presetSelect) presetSelect.addEventListener('change', () => { loaded = true; fetchHardware(); });
 
   if ({{ 'true' if active_tab == 'system' else 'false' }}) window.ndLoadHardwarePanel();
+})();
+
+// ── Unsloth Studio server card (System tab) ─────────────────────────────────
+(function () {
+  const saveBtn = document.getElementById('studio-save');
+  if (!saveBtn) return;
+  const el = (id) => document.getElementById(id);
+  const status = (msg, ok) => {
+    const s = el('studio-save-status');
+    s.textContent = msg;
+    s.style.color = ok ? 'var(--neon)' : 'var(--neon2)';
+  };
+
+  function loadPrefs() {
+    // Studio-side auto-switch state (404/400 when no backend — degrade)
+    fetch('/api/ai/unsloth/auto-switch').then(r => r.ok ? r.json() : Promise.reject(r.status)).then(d => {
+      el('studio-autoswitch').checked = !!d.enabled;
+      el('studio-media-autoswitch').checked = !!d.media_auto_switch_model;
+      el('studio-idle-unload').value = d.auto_unload_idle_seconds ?? 0;
+    }).catch(() => status('Studio not configured — showing saved prefs only', false));
+    fetch('/api/ai/unsloth/prefs').then(r => r.json()).then(d => {
+      el('studio-tts-model').value = d.tts_model || '';
+      el('studio-tts-voice').value = d.tts_voice || '';
+      el('studio-stt-backend').value = d.stt_backend || 'whisper';
+      el('studio-stt-model').value = d.stt_model || '';
+    }).catch(() => {});
+  }
+
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true;
+    status('Saving…', true);
+    try {
+      const autoswitch = el('studio-autoswitch').checked || el('studio-media-autoswitch').checked;
+      const r1 = await fetch('/api/ai/unsloth/auto-switch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: autoswitch,
+          media_auto_switch_model: el('studio-media-autoswitch').checked,
+          auto_unload_idle_seconds: parseInt(el('studio-idle-unload').value || '0', 10) || 0,
+        }),
+      });
+      if (!r1.ok) {
+        const t = await r1.text();
+        throw new Error('Studio: ' + t.slice(0, 200));
+      }
+      const r2 = await fetch('/api/ai/unsloth/prefs', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tts_model: el('studio-tts-model').value,
+          tts_voice: el('studio-tts-voice').value,
+          stt_backend: el('studio-stt-backend').value,
+          stt_model: el('studio-stt-model').value,
+          studio_console_url: el('studio-console-url').value,
+        }),
+      });
+      if (!r2.ok) throw new Error('prefs: HTTP ' + r2.status);
+      status('✓ Saved — applied to Studio immediately', true);
+    } catch (err) {
+      status('⚠ ' + err.message, false);
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+
+  if ({{ 'true' if active_tab == 'system' else 'false' }}) loadPrefs();
+  // Also load when the tab is first opened (switchSettingsTab lazy-load hook)
+  const origSwitch = window.switchSettingsTab;
+  if (origSwitch) {
+    window.switchSettingsTab = function (t) {
+      origSwitch(t);
+      if (t === 'system') loadPrefs();
+    };
+  }
 })();
 
 // ── Bulk visibility ─────────────────────────────────────────────────────────

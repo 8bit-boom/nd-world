@@ -51,6 +51,10 @@ _log = logging.getLogger("nd.llm")
 # far past any configured num_predict. Connect gets its own short timeout so
 # "backend is down" fails fast instead of eating the whole budget.
 _CHAT_TIMEOUT = _httpx.Timeout(600.0, connect=10.0)
+# Embeddings are tiny and fast — but a not-yet-downloaded embed model may
+# make the server pull it first (findings Phase 0.5: the hub download of
+# bge-small is real), so don't fail fast on a cold embed call either.
+_EMBED_TIMEOUT = _httpx.Timeout(300.0, connect=10.0)
 
 # Ollama option keys the OpenAI dialect has a direct name for.
 _OPTION_RENAMES = {
@@ -282,6 +286,26 @@ class UnslothClient:
             if isinstance(m, dict) and m.get("id")
         ]
         return SimpleNamespace(models=models)
+
+    async def embed(self, model: str, input):
+        """POST /v1/embeddings → ollama's ``embed()`` response shape
+        (``resp.embeddings[0]`` — see app.ai.embed_text). Verified live
+        (findings I-2, Phase 0.5 appendix): OpenAI shape
+        ``{data: [{embedding: [...], index}, ...]}``. `input` may be a
+        string or a list; OpenAI accepts both."""
+        if isinstance(input, str):
+            input = [input]
+        async with self._http() as c:
+            resp = await c.post(f"{self._base}/v1/embeddings",
+                                json={"model": model, "input": input},
+                                headers=self._headers(), timeout=_EMBED_TIMEOUT)
+        if resp.status_code >= 400:
+            raise _error_from_response(resp)
+        data = resp.json()
+        return SimpleNamespace(
+            model=data.get("model") or model,
+            embeddings=[d.get("embedding") or [] for d in data.get("data") or []],
+        )
 
     async def generate(self, *args, **kwargs):
         """ollama's unload idiom (empty generate + keep_alive=0) has no

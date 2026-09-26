@@ -706,10 +706,23 @@ def set_default(surface: str, model_id: str) -> None:
 # actually configure a World.obsidian_vault_path (see app.vault_sync);
 # nothing calls embed_text otherwise.
 DEFAULT_EMBED_MODEL = "nomic-embed-text"
+# Unsloth's /v1/embeddings needs a hub model id, not an Ollama tag. Verified
+# live (findings I-2 + Phase 0.5 appendix) with unsloth's bge-small GGUF —
+# the embeddings model is downloaded from Studio's hub on first use, so a
+# cold call may take a while (the client's embed timeout covers that).
+DEFAULT_UNSLOTH_EMBED_MODEL = os.getenv("UNSLOTH_EMBED_MODEL", "") or "unsloth/bge-small-en-v1.5"
 
 
 def get_embed_model() -> str:
-    return _load_data().get("embed_model") or DEFAULT_EMBED_MODEL
+    # An explicitly-saved choice always wins; otherwise the default depends
+    # on which backend is active (an Ollama tag can't resolve on Studio's
+    # /v1/embeddings and vice versa).
+    stored = _load_data().get("embed_model")
+    if stored:
+        return stored
+    if effective_llm_api_key():
+        return DEFAULT_UNSLOTH_EMBED_MODEL
+    return DEFAULT_EMBED_MODEL
 
 
 def set_embed_model(model_id: str) -> None:
@@ -731,6 +744,74 @@ async def embed_text(text: str, model: str = "") -> list[float]:
     m = model or get_embed_model()
     resp = await _client().embed(model=m, input=text)
     return list(resp.embeddings[0])
+# ── Studio extras preferences (TTS / STT / console) ─────────────────────────
+# Stored in ai_models.json like embed_model — deployment facts, not campaign
+# content, so no per-world rows and no AppSettings migration.
+
+DEFAULT_TTS_MODEL = "unsloth/orpheus-3b"
+DEFAULT_TTS_VOICE = ""
+DEFAULT_STT_MODEL = "small"
+
+
+def get_tts_model() -> str:
+    return _load_data().get("tts_model") or DEFAULT_TTS_MODEL
+
+
+def set_tts_model(model_id: str) -> None:
+    data = _load_data()
+    data["tts_model"] = model_id
+    _save_data(data)
+
+
+def get_tts_voice() -> str:
+    return _load_data().get("tts_voice") or DEFAULT_TTS_VOICE
+
+
+def set_tts_voice(voice: str) -> None:
+    data = _load_data()
+    data["tts_voice"] = voice
+    _save_data(data)
+
+
+def get_stt_backend() -> str:
+    """'whisper' (the whisper.cpp sidecar, default) or 'unsloth' (Studio's
+    /v1/audio/transcriptions — STT models are managed in Studio's own
+    Settings -> Voice page)."""
+    return _load_data().get("stt_backend") or "whisper"
+
+
+def set_stt_backend(backend: str) -> None:
+    if backend not in ("whisper", "unsloth"):
+        raise ValueError("stt backend must be 'whisper' or 'unsloth'")
+    data = _load_data()
+    data["stt_backend"] = backend
+    _save_data(data)
+
+
+def get_stt_model() -> str:
+    return _load_data().get("stt_model") or DEFAULT_STT_MODEL
+
+
+def set_stt_model(model_id: str) -> None:
+    data = _load_data()
+    data["stt_model"] = model_id
+    _save_data(data)
+
+
+def get_studio_console_url() -> str:
+    """Explicit override for where the Studio web UI lives (the /studio
+    console embed). Empty = fall back to the AI backend's own URL — the same
+    server in the standard deployment. Needed when Studio runs on a
+    different host/port than UNSLOTH_URL exposes (e.g. the Desktop app binds
+    127.0.0.1:8888 while nd-world runs elsewhere)."""
+    return _load_data().get("studio_console_url") or ""
+
+
+def set_studio_console_url(url: str) -> None:
+    data = _load_data()
+    data["studio_console_url"] = url
+    _save_data(data)
+
 
 
 def pack_embedding(vec: list) -> str:
@@ -4050,6 +4131,19 @@ async def swarmui_free_memory() -> dict:
 # the chat model itself has any native audio understanding.
 
 async def whisper_status() -> dict:
+    """Health probe for the ACTIVE STT backend — whisper.cpp /health by
+    default, or a cheap authenticated Studio call when the STT backend is
+    'unsloth' (Studio has no /health; /api/hub/cached-gguf answers quickly
+    and exercises the same auth path the transcription call uses)."""
+    if get_stt_backend() == "unsloth":
+        if not effective_llm_api_key():
+            return {"ok": False, "reason": "STT backend is 'unsloth' but no API key is configured", "backend": "unsloth"}
+        from . import unsloth_extras as _unsloth_extras
+        try:
+            await _unsloth_extras.hub_cached()
+            return {"ok": True, "backend": "unsloth", "url": effective_llm_url()}
+        except Exception as e:
+            return {"ok": False, "reason": str(e), "backend": "unsloth"}
     url = effective_whisper_url()
     if not url:
         return {"ok": False, "reason": "not configured"}
@@ -4289,10 +4383,14 @@ async def denoise_audio_file(path: Path) -> Path:
 
 
 async def _transcribe_one_file(path: Path, glossary: str, language: str, denoise: bool = False) -> str:
-    """The actual whisper.cpp /inference call for a single audio file —
-    see transcribe_audio's docstring for the parameters this sends and
-    why. Kept separate from transcribe_audio so the chunking orchestrator
-    below can call it once per chunk without duplicating any of this."""
+    """Transcribe one audio file — via the whisper.cpp /inference sidecar
+    (default), or via Studio's /v1/audio/transcriptions when the GM set the
+    STT backend to 'unsloth' (Settings → System). Kept separate from
+    transcribe_audio so the chunking orchestrator below can call it once
+    per chunk without duplicating any of this. Both backends return plain
+    text; the denoise pre-pass applies to either (it's a local ffmpeg step)."""
+    if get_stt_backend() == "unsloth":
+        return await _transcribe_one_file_unsloth(path)
     url = effective_whisper_url()
     if not url:
         raise WhisperError("Whisper isn't configured (no Whisper URL set) — see the AI page's 🎙 Whisper tab.")
@@ -4355,6 +4453,27 @@ async def _transcribe_one_file(path: Path, glossary: str, language: str, denoise
     finally:
         if send_path != path:
             send_path.unlink(missing_ok=True)
+
+
+async def _transcribe_one_file_unsloth(path: Path) -> str:
+    """One audio file through Studio's /v1/audio/transcriptions (OpenAI
+    multipart dialect — file + model, verified Phase 0.5). The `model`
+    name maps to an STT model managed in Studio's own Settings → Voice;
+    a missing one 409s with Studio's instructions, surfaced verbatim via
+    WhisperError so the existing job pipeline shows it to the GM. Note
+    the whisper.cpp-specific knobs (glossary prompt, beam size, denoise
+    flag) have no OpenAI-dialect equivalent — Studio's own STT settings
+    own those."""
+    from . import unsloth_extras as _unsloth_extras
+    if not effective_llm_api_key():
+        raise WhisperError("STT backend is set to Unsloth but no UNSLOTH_API_KEY is configured (Settings → System).")
+    if not path.is_file():
+        raise WhisperError(f"Audio file not found: {path.name}")
+    try:
+        text = await _unsloth_extras.stt(path.read_bytes(), path.name, model=get_stt_model())
+    except _unsloth_extras.StudioError as exc:
+        raise WhisperError(f"Unsloth Studio STT: {exc}") from exc
+    return (text or "").strip()
 
 
 async def transcribe_audio(path: Path, glossary: str = "", language: str = "", on_progress=None,
@@ -4640,7 +4759,14 @@ async def transcribe_audio_with_subtitles(path: Path, glossary: str = "", langua
     whisper.cpp repetition-loop run first (_collapse_repeated_transcript_
     lines / _collapse_repeated_segments). Raises WhisperError exactly like
     transcribe_audio; the caller decides what an empty transcript means
-    (no error — a genuinely silent/captionless clip transcribes fine)."""
+    (no error — a genuinely silent/captionless clip transcribes fine).
+
+    STT backend 'unsloth' (Settings → System): the OpenAI dialect here
+    returns plain text without whisper.cpp's segment timestamps, so this
+    returns (text, "") — a transcript with no subtitle track."""
+    if get_stt_backend() == "unsloth":
+        text = await _transcribe_one_file_unsloth(path)
+        return _collapse_repeated_transcript_lines(text), ""
     duration = await _probe_audio_duration(path)
     if not duration or duration <= _WHISPER_CHUNK_MIN_DURATION:
         text, segments = await _transcribe_one_file_verbose(path, glossary, language, denoise)
@@ -5445,6 +5571,9 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
                             ipadapter_strength: float = 0.6,
                             ipadapter_model: str = "") -> list[str]:
     import copy, random, asyncio, base64 as _b64, binascii as _binascii, uuid as _uuid
+    # Lazy: unsloth_extras imports this module back (for the effective_*
+    # resolvers) — a module-level import here would be circular.
+    from . import unsloth_extras as _unsloth_extras
     t, u = _get_type(), _get_url()
     if not t or not u:
         raise ValueError("Image generation is not configured — set IMAGEGEN_TYPE/IMAGEGEN_URL (see docker-compose.yml).")
@@ -5461,57 +5590,113 @@ async def imagegen_generate(prompt: str, negative: str, model: str,
     try:
         async with _httpx.AsyncClient(timeout=600) as c:
             if t == "unsloth":
-                # POST /v1/images/generations — the OpenAI dialect endpoint
-                # verified end-to-end in Phase 0 (findings I-1): b64_json in,
-                # PNG out, image model auto-loaded by name when Studio's
-                # media auto-switch is on (the compose provisioning steps).
-                # v1 deliberately sends only the verified field set — prompt,
-                # size, seed, batch, model; the turbo-family templates this
-                # backend targets barely use steps/guidance anyway.
-                body: dict = {
-                    "model": UNSLOTH_IMAGE_MODEL,
+                # Preferred: the native /api/inference/images/generate —
+                # unlocks negative prompt, steps/guidance, and img2img
+                # (init_image + strength), none of which /v1 accepts. Its
+                # response is Studio-gallery records ({images:[{url,...}]});
+                # bytes are fetched per record. Falls back to the
+                # Phase-0-verified /v1/images/generations on Studio builds
+                # without the native endpoint (404).
+                native_model = model or UNSLOTH_IMAGE_MODEL
+                native_body = {
+                    "model": native_model,
                     "prompt": prompt,
-                    "size": f"{width}x{height}",
-                    "n": max(1, min(batch_size, 8)),
-                    "response_format": "b64_json",
+                    "width": width,
+                    "height": height,
+                    "steps": steps if steps > 0 else 9,
+                    "batch_size": max(1, min(batch_size, 8)),
                 }
-                if seed >= 0:
-                    body["seed"] = seed
                 if negative:
-                    _log.info("Unsloth imagegen: negative prompt not supported by the /v1 images endpoint — ignoring")
-                _imagegen_progress_state.update({"active": True, "percent": 0.0, "current_percent": 0.0, "preview": ""})
+                    native_body["negative_prompt"] = negative
+                if cfg and cfg > 0:
+                    native_body["guidance"] = float(cfg)
+                if seed >= 0:
+                    native_body["seed"] = seed
+                if init_image:
+                    # init_image arrives as an /uploads/... URL — inline it
+                    # as a data URL (the format Studio's own UI sends).
+                    init_path = Path(uploads_dir) / init_image.split("/uploads/", 1)[-1]
+                    if init_path.is_file():
+                        native_body["init_image"] = (
+                            "data:image/png;base64,"
+                            + _b64.b64encode(init_path.read_bytes()).decode()
+                        )
+                        native_body["strength"] = float(init_strength)
+                used_native = True
                 try:
-                    gr = await c.post(f"{u}/v1/images/generations", json=body,
-                                      headers=_unsloth_image_headers())
-                finally:
-                    _reset_imagegen_progress()
-                if gr.status_code >= 400:
-                    detail = gr.text[:300]
-                    try:
-                        err = gr.json().get("error") or {}
-                        detail = str(err.get("message") or detail)
-                    except ValueError:
-                        pass
+                    gallery_records = await _unsloth_extras.image_generate_native(native_body)
+                except _unsloth_extras.StudioEndpointMissing:
+                    used_native = False
+                    gallery_records = []
+                except _unsloth_extras.StudioError as exc:
                     hint = ""
-                    if gr.status_code == 503 and "No image model loaded" in detail:
-                        hint = " — enable Studio's media auto-switch (Settings → API) or load the image model once"
-                    raise ValueError(f"Unsloth returned HTTP {gr.status_code}: {detail}{hint}")
-                try:
-                    data = gr.json()
-                except ValueError as exc:
-                    raise ValueError(f"Unsloth returned an unreadable response: {gr.text[:300]}") from exc
-                images = data.get("data") or []
-                if not images:
-                    raise ValueError(f"Unsloth returned no image: {str(data)[:300]}")
-                for entry in images:
-                    b64 = entry.get("b64_json") if isinstance(entry, dict) else None
-                    if not b64:
-                        raise ValueError("Unsloth returned an image entry without b64_json data")
-                    fname = str(_uuid.uuid4()) + ".png"
-                    out_path = ai_img_dir / fname
-                    out_path.write_bytes(_b64.b64decode(b64))
-                    make_thumbnail(out_path)  # best-effort, same as the SwarmUI path
-                    urls.append(f"/uploads/ai-images/{fname}")
+                    if "No diffusion model is loaded" in str(exc) or exc.status_code == 409:
+                        hint = (" — enable Studio's media auto-switch (Settings → API, or "
+                                "Settings → System → Studio server here) or load the image model "
+                                "once from the Models tab")
+                    raise ValueError(f"Unsloth Studio: {exc}{hint}") from exc
+                if used_native:
+                    _log.info("Unsloth imagegen: native generate, %d image(s)", len(gallery_records))
+                    for rec in gallery_records:
+                        raw = await _unsloth_extras.image_gallery_file(rec)
+                        fname = str(_uuid.uuid4()) + ".png"
+                        out_path = ai_img_dir / fname
+                        out_path.write_bytes(raw)
+                        make_thumbnail(out_path)
+                        urls.append(f"/uploads/ai-images/{fname}")
+                else:
+                    # POST /v1/images/generations — the OpenAI dialect endpoint
+                    # verified end-to-end in Phase 0 (findings I-1): b64_json in,
+                    # PNG out, image model auto-loaded by name when Studio's
+                    # media auto-switch is on (the compose provisioning steps).
+                    # v1 deliberately sends only the verified field set — prompt,
+                    # size, seed, batch, model; the turbo-family templates this
+                    # backend targets barely use steps/guidance anyway.
+                    _log.info("Unsloth imagegen: native endpoint missing — falling back to /v1/images/generations")
+                    v1_body = {
+                        "model": UNSLOTH_IMAGE_MODEL,
+                        "prompt": prompt,
+                        "size": f"{width}x{height}",
+                        "n": max(1, min(batch_size, 8)),
+                        "response_format": "b64_json",
+                    }
+                    if seed >= 0:
+                        v1_body["seed"] = seed
+                    if negative:
+                        _log.info("Unsloth imagegen: negative prompt not supported by the /v1 images endpoint — ignoring")
+                    _imagegen_progress_state.update({"active": True, "percent": 0.0, "current_percent": 0.0, "preview": ""})
+                    try:
+                        gr = await c.post(f"{u}/v1/images/generations", json=v1_body,
+                                          headers=_unsloth_image_headers())
+                    finally:
+                        _reset_imagegen_progress()
+                    if gr.status_code >= 400:
+                        detail = gr.text[:300]
+                        try:
+                            err = gr.json().get("error") or {}
+                            detail = str(err.get("message") or detail)
+                        except ValueError:
+                            pass
+                        hint = ""
+                        if gr.status_code == 503 and "No image model loaded" in detail:
+                            hint = " — enable Studio's media auto-switch (Settings → API) or load the image model once"
+                        raise ValueError(f"Unsloth returned HTTP {gr.status_code}: {detail}{hint}")
+                    try:
+                        data = gr.json()
+                    except ValueError as exc:
+                        raise ValueError(f"Unsloth returned an unreadable response: {gr.text[:300]}") from exc
+                    images = data.get("data") or []
+                    if not images:
+                        raise ValueError(f"Unsloth returned no image: {str(data)[:300]}")
+                    for entry in images:
+                        b64 = entry.get("b64_json") if isinstance(entry, dict) else None
+                        if not b64:
+                            raise ValueError("Unsloth returned an image entry without b64_json data")
+                        fname = str(_uuid.uuid4()) + ".png"
+                        out_path = ai_img_dir / fname
+                        out_path.write_bytes(_b64.b64decode(b64))
+                        make_thumbnail(out_path)  # best-effort, same as the SwarmUI path
+                        urls.append(f"/uploads/ai-images/{fname}")
             elif t == "swarmui":
                 sr = await c.post(f"{u}/API/GetNewSession", json={})
                 session_id = sr.json().get("session_id", "ndworld")

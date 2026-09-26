@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Studio Console — {{ world.name if world else 'N&D World' }}{% endblock %}
+{% block content %}
+<div style="max-width:1400px;margin:0 auto">
+  <h1>🧠 Studio Console</h1>
+  {% if studio_url %}
+  <p style="font-size:.82rem;color:var(--text-dim);margin:.4rem 0 .8rem">
+    The full Unsloth Studio UI — projects, fine-tuning/recipe workflows, agent skills,
+    voice settings, the model hub with download progress, and video generation.
+    This page embeds the Studio server at <code style="background:var(--bg3);padding:.15rem .4rem;border-radius:3px">{{ studio_url }}</code>.
+    If the frame stays blank, <a href="{{ studio_url }}" target="_blank">open Studio directly</a>
+    and sign in there once.
+  </p>
+  <iframe src="{{ studio_url }}" title="Unsloth Studio"
+          style="width:100%;height:calc(100vh - 190px);border:1px solid var(--border);border-radius:6px;background:#111"
+          allow="clipboard-read; clipboard-write; microphone" loading="lazy"></iframe>
+  {% else %}
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.5rem;max-width:640px;margin-top:1rem">
+    <h2 style="font-size:.95rem;color:var(--neon);margin:0 0 .6rem">Studio isn't configured</h2>
+    <p style="font-size:.85rem;color:var(--text-dim);margin:0 0 .8rem">
+      Set <strong>UNSLOTH_URL</strong> (and <strong>UNSLOTH_API_KEY</strong>) in the environment
+      or under Settings → System, then reload this page. The console embeds the Studio
+      server directly, so it needs a reachable URL — on a separate machine, set the
+      Studio Console URL override in Settings → System instead.
+    </p>
+    <a class="btn-primary" href="/settings?tab=system" style="text-decoration:none;font-size:.85rem">Open Settings → System</a>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

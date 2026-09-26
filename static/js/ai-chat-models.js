@@ -656,3 +656,148 @@ async function mpUploadModel() {
   }
 }
 
+
+// ── Unsloth Studio hub section ───────────────────────────────────────────────
+// Shown only when the Unsloth backend is active (probed via the hub route —
+// a 400 means no backend configured and the section stays hidden). Lists
+// every cached hub GGUF (chat + image + audio) with load/unload controls for
+// image models and a download-by-repo-id flow with real progress polling
+// (docs/UNSLOTH_PHASE0_FINDINGS.md Phase 0.5).
+let _mpUnslothPollTimer = null;
+let _mpUnslothPollRepo = '';
+
+function _mpUnslothSize(bytes) {
+  if (!bytes && bytes !== 0) return '';
+  const gb = bytes / 1e9;
+  return gb >= 1 ? gb.toFixed(1) + ' GB' : Math.round(bytes / 1e6) + ' MB';
+}
+
+function _mpUnslothEsc(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+async function mpUnslothLoad() {
+  const listEl = document.getElementById('mp-unsloth-list');
+  const hubEl = document.getElementById('mp-unsloth-hub');
+  if (!listEl) return;
+  let data;
+  try {
+    const r = await fetch('/api/ai/unsloth/models');
+    if (!r.ok) { hubEl.style.display = 'none'; return; }  // no unsloth backend
+    data = await r.json();
+  } catch (e) { hubEl.style.display = 'none'; return; }
+  hubEl.style.display = '';
+  const models = data.models || [];
+  if (!models.length) {
+    listEl.innerHTML = '<div style="color:var(--text-dim);font-size:.8rem">The Studio hub cache is empty — download models via the box above or the 🧠 Studio Console.</div>';
+    return;
+  }
+  listEl.innerHTML = models.map(m => {
+    const task = m.task || 'model';
+    const isImage = task.includes('image');
+    const isUnsupported = task.includes('unsupported');
+    const badge = isUnsupported
+      ? '<span style="font-size:.68rem;color:var(--text-dim);border:1px solid var(--border);border-radius:3px;padding:.05rem .35rem">image: unsupported</span>'
+      : isImage
+        ? '<span style="font-size:.68rem;color:var(--neon);border:1px solid var(--neon);border-radius:3px;padding:.05rem .35rem">image</span>'
+        : '<span style="font-size:.68rem;color:var(--text-dim);border:1px solid var(--border);border-radius:3px;padding:.05rem .35rem">' + _mpUnslothEsc(task) + '</span>';
+    const loaded = m.loaded
+      ? '<span style="font-size:.68rem;color:#4c4;background:rgba(68,204,68,.08);border-radius:3px;padding:.1rem .4rem">● loaded</span>'
+      : '';
+    const actions = [];
+    if (isImage && !isUnsupported) {
+      actions.push('<button class="ig-btn" style="font-size:.7rem;padding:.15rem .5rem" onclick="mpUnslothImageLoad(\'' + _mpUnslothEsc(m.repo_id) + '\')">Load</button>');
+      if (m.loaded) {
+        actions.push('<button class="ig-btn" style="font-size:.7rem;padding:.15rem .5rem" onclick="mpUnslothImageUnload()">Unload</button>');
+      }
+    }
+    return '<div style="display:flex;align-items:center;gap:.55rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.45rem .6rem;flex-wrap:wrap">' +
+      '<span style="font-size:.82rem;flex:1;min-width:200px;overflow:hidden;text-overflow:ellipsis" title="' + _mpUnslothEsc(m.repo_id) + '">' + _mpUnslothEsc(m.repo_id) + '</span>' +
+      badge + loaded +
+      (m.size_bytes ? '<span style="font-size:.72rem;color:var(--text-dim)">' + _mpUnslothSize(m.size_bytes) + '</span>' : '') +
+      actions.join('') +
+      '</div>';
+  }).join('');
+}
+
+async function mpUnslothImageLoad(repoId) {
+  let ggufFilename = '';
+  try {
+    const vr = await fetch('/api/ai/unsloth/gguf-variants?repo_id=' + encodeURIComponent(repoId));
+    if (vr.ok) {
+      const vd = await vr.json();
+      const variants = vd.variants || [];
+      const defaultVariant = vd.default_variant || (variants.length === 1 ? variants[0] : '');
+      ggufFilename = prompt('GGUF file to load' + (variants.length ? ' (one of: ' + variants.slice(0, 6).join(', ') + (variants.length > 6 ? ', …' : '') + ')' : '') + ':', typeof defaultVariant === 'string' ? defaultVariant : '');
+      if (ggufFilename === null) return;
+    }
+  } catch (e) { /* variants endpoint optional — load without */ }
+  try {
+    const r = await fetch('/api/ai/unsloth/image/load', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_id: repoId, gguf_filename: ggufFilename }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || 'HTTP ' + r.status);
+    alert('Load started server-side' + (d.loaded ? ' — loaded.' : ' — poll the status or just generate.'));
+    mpUnslothLoad();
+  } catch (e) {
+    alert('Load failed: ' + e.message);
+  }
+}
+
+async function mpUnslothImageUnload() {
+  try {
+    const r = await fetch('/api/ai/unsloth/image/unload', { method: 'POST' });
+    if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || 'HTTP ' + r.status); }
+    mpUnslothLoad();
+  } catch (e) {
+    alert('Unload failed: ' + e.message);
+  }
+}
+
+async function mpUnslothDownload() {
+  const inp = document.getElementById('mp-unsloth-dl-id');
+  const repoId = (inp.value || '').trim();
+  if (!repoId) return;
+  const prog = document.getElementById('mp-unsloth-download-progress');
+  const lbl = document.getElementById('mp-unsloth-dl-label');
+  const bar = document.getElementById('mp-unsloth-dl-bar');
+  const bytesEl = document.getElementById('mp-unsloth-dl-bytes');
+  try {
+    const r = await fetch('/api/ai/unsloth/hub/download', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_id: repoId }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || 'HTTP ' + r.status);
+    prog.style.display = '';
+    lbl.textContent = 'Downloading ' + repoId + '…';
+    _mpUnslothPollRepo = repoId;
+    clearInterval(_mpUnslothPollTimer);
+    _mpUnslothPollTimer = setInterval(async () => {
+      try {
+        const pr = await fetch('/api/ai/unsloth/hub/download-progress?repo_id=' + encodeURIComponent(_mpUnslothPollRepo));
+        const pd = await pr.json();
+        const pct = Math.round((pd.progress || 0) * 100);
+        bar.style.width = pct + '%';
+        const done = pd.completed_bytes || pd.downloaded_bytes || 0;
+        const exp = pd.expected_bytes || 0;
+        bytesEl.textContent = exp
+          ? (done / 1e9).toFixed(2) + ' / ' + (exp / 1e9).toFixed(2) + ' GB — ' + pct + '%'
+          : 'waiting for size…';
+        if (pd.complete_on_disk) {
+          clearInterval(_mpUnslothPollTimer);
+          lbl.textContent = '✓ Downloaded';
+          setTimeout(() => { prog.style.display = 'none'; mpUnslothLoad(); }, 1500);
+        }
+      } catch (e) { /* transient poll errors are fine */ }
+    }, 1500);
+  } catch (e) {
+    alert('Download failed: ' + e.message);
+    prog.style.display = 'none';
+  }
+}
+
+// Probe once at load: an Unsloth backend shows the hub section, others hide it.
+mpUnslothLoad().catch(() => {});

@@ -3727,6 +3727,34 @@ def imagestudio(request: Request, db: Session = Depends(get_db), active_world: s
         "swarmui_url": swarmui_url,
     })
 
+
+@app.get("/studio", response_class=HTMLResponse)
+def studio_console(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """The full Unsloth Studio UI, embedded — projects, fine-tuning/recipe
+    workflows, agent skills, voice settings, the model hub, video generation:
+    everything Studio offers that nd-world doesn't reimplement natively.
+    GM-only by default (not in any allowlist). URL resolution: an explicit
+    Studio Console URL override (ai_models.json, Settings → System) wins —
+    it covers Desktop installs where Studio binds another host/port — then
+    falls back to the UNSLOTH_URL the AI backend already uses."""
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
+    override = ""
+    try:
+        override = (_ai.get_studio_console_url() or "").strip()
+    except Exception:
+        override = ""
+    studio_url = (override or _ai.effective_llm_url() or "").rstrip("/") if _ai.effective_llm_api_key() else override
+    return templates.TemplateResponse("studio_console.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "kinds": KINDS, "kind_icons": KIND_ICONS,
+        "studio_url": studio_url or "",
+    })
+
 @app.get("/androidapp", response_class=HTMLResponse)
 def androidapp(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
