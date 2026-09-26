@@ -1,13 +1,16 @@
-# GPU Setup Guide — Unsloth Studio, Ollama/SwarmUI (legacy), Whisper, and the NVIDIA V100
+# GPU Setup Guide — Unsloth Studio, Ollama/SwarmUI (legacy), Whisper, and pre-Ampere NVIDIA cards
 
 How to give nd-world's bundled AI stack a real GPU. **Unsloth Studio** is
 the current default backend for chat/recaps/facts AND image generation —
 the legacy **Ollama** (chat) + **SwarmUI** (image generation) pair is kept
 running behind its own Compose profiles as a rollback path, not deleted, so
 most of this guide covers both. **whisper.cpp** (transcription) is
-independent of either. Dedicated section for the **Tesla V100**, the
-Volta-era datacenter card that is now the cheapest way to get serious
-local-AI performance.
+independent of either. Dedicated sections for the two cheapest ways to get
+serious local-AI performance from the used market: the **Tesla T10**
+(Turing, 16 GB) — the current recommendation, fully inside the support
+envelope of every current driver/CUDA stack — and the **Tesla V100**
+(Volta), the previous pick, now carrying real end-of-life caveats (§2's
+Volta callout).
 
 nd-world's own container never needs the GPU for AI inference — it talks to
 whichever backend is active over HTTP (`UNSLOTH_URL`, or the legacy
@@ -21,13 +24,29 @@ override or hardware preset.
 
 ---
 
-## 1. Which V100 do you have?
+## 1. Which card do you have?
 
 Check on the GPU host (the machine/VM that runs the `unsloth` container):
 
 ```sh
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
 ```
+
+**Tesla T10 16GB — the recommended card (Turing, sm_75):**
+
+| Output name | VRAM | Notes |
+|---|---|---|
+| `Tesla T10 16GB` / `NVIDIA Tesla T10` | 16 GB | Turing TU102-class OEM datacenter card, passive cooled; commonly on secondary markets. Compute capability 7.5 — the *oldest* architecture current CUDA/toolkit builds still fully support |
+
+Turing is the sweet spot for this app on the used market: supported by the
+current (and foreseeable) NVIDIA driver branches and CUDA toolkits, gets
+llama.cpp's flash attention and its native-INT8 MMQ quantized-kernel path
+(Volta doesn't — see §7), and the current `unsloth/unsloth` image ships
+sm_75 kernels — it's the first architecture in that build's arch list
+(`UNSLOTH_PHASE0_FINDINGS.md` I-7's arch list starts at sm_75). No image
+tag pinning, no driver gymnastics: `:latest` just works.
+
+**Tesla V100 — the previous pick (Volta, sm_70):**
 
 | Output name | VRAM | Notes |
 |---|---|---|
@@ -36,7 +55,10 @@ nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
 | `Tesla V100-SXM2-32GB` / `PCIE-32GB` | 32 GB | The LLM sweet spot at current used prices |
 | `TITAN V` | 12 GB | Same Volta architecture, consumer board |
 
-The 16 GB vs 32 GB answer changes which models fit fully in VRAM — see §5.
+Both 16 GB cards fit the same models — see §5 (a T10 16GB reads the same
+column as a V100 16GB). The V100 generates tokens faster (higher memory
+bandwidth); the T10 wins on software longevity and flash attention. If you
+have the choice, prefer the T10.
 
 ## 2. Host prerequisites (any Linux Docker host)
 
@@ -57,9 +79,16 @@ The 16 GB vs 32 GB answer changes which models fit fully in VRAM — see §5.
 
 3. **Verify**: `docker run --rm --gpus all nvidia-smi` should list your card.
 
-### ⚠️ Driver upgrades and Volta — read before you upgrade
+### ⚠️ Driver upgrades — Volta (V100) owners only, read before you upgrade
 
-NVIDIA has **sunset the Volta architecture at the driver level**: the
+**Turing cards (T4/T10): nothing to do here — skip this callout entirely.**
+Turing is supported by current NVIDIA driver branches (no 580 ceiling), by
+CUDA 13 (which only dropped Maxwell/Pascal/Volta), and by the current
+`unsloth/unsloth` image (sm_75 kernels ship in it). Unpinned `:latest` is
+safe on Turing.
+
+**V100 owners:** NVIDIA has **sunset the Volta architecture at the driver
+level**: the
 **580 driver branch is the last one to support V100**. Do not blindly
 upgrade to the next major driver branch — check the release notes first.
 Similarly, **CUDA 13 removed Volta (compute capability 7.0)**. The Unsloth
@@ -77,13 +106,14 @@ services:
 This is the single biggest V100 risk in the migration to Unsloth — finding
 I-7 in [UNSLOTH_PHASE0_FINDINGS.md](UNSLOTH_PHASE0_FINDINGS.md): verify that
 the tag you deploy actually contains sm_70 kernels before relying on it, and
-prefer a pinned tag over `:latest`.
+prefer a pinned tag over `:latest`. (A T10/T4 makes this entire callout
+moot — sm_75 kernels ship in every current image.)
 
 Watchtower users (TrueNAS): by default Watchtower auto-updates *every*
-running container — an unpinned `unsloth/unsloth:latest` (or, on the legacy
-path, `ollama/ollama:latest`/`swarmui:latest`) moving to a newer CUDA version
-would otherwise silently break inference on this card between one restart
-and the next, with no error until the next generation attempt.
+running container — on a V100, an unpinned `unsloth/unsloth:latest` (or, on
+the legacy path, `ollama/ollama:latest`/`swarmui:latest`) moving to a newer
+CUDA version would otherwise silently break inference on this card between
+one restart and the next, with no error until the next generation attempt.
 `truenas-compose.yml`'s `unsloth`, `ollama`, and `swarmui` services all
 already carry a `com.centurylinklabs.watchtower.enable: "false"` label for
 exactly this reason, so pinning the image tag above is what actually decides
@@ -137,7 +167,11 @@ minutes before checking the logs above.
 
 ### TrueNAS SCALE
 
-**⚠️ TrueNAS 25.10 "Goldeye" and later dropped Volta (V100) support from
+**Turing cards (T4/T10): the stock NVIDIA driver app on any current
+TrueNAS — 25.10 "Goldeye" included — supports your card.** Skip the
+following block entirely and go straight to the deployment steps.
+
+**⚠️ V100 only: TrueNAS 25.10 "Goldeye" and later dropped Volta support from
 the official *Nvidia Driver* app** — it now ships NVIDIA's open-source
 kernel modules, which only support Turing-and-newer GPUs. On 25.10+ you
 have three options before anything else here will work (Unsloth or legacy
@@ -213,9 +247,9 @@ documented path):
    `docker-compose.gpu.yml` provides for plain Docker hosts — Settings →
    System's "Detected hardware" panel will show no GPU here regardless.
    Set **VRAM override (MB)** to `16384`/`32768` manually (or pick the
-   matching V100 preset in that same panel) so the tuning recommendations
-   size correctly without needing `nvidia-smi` access from nd-world's own
-   container.
+   matching card preset — Tesla T10 16GB or V100 — in that same panel) so
+   the tuning recommendations size correctly without needing `nvidia-smi`
+   access from nd-world's own container.
 5. **Watchtower**: `truenas-compose.yml`'s `unsloth`, `ollama`, and
    `swarmui` services all carry a
    `com.centurylinklabs.watchtower.enable: "false"` label — Watchtower
@@ -282,6 +316,11 @@ practice — lowering only one side still leaves the other's hold window to
 collide with it. A 32 GB V100 removes this concern almost entirely — see §5.
 
 ## 3b. SwarmUI's PyTorch on a V100 (legacy backend) — read this before assuming it "just works"
+
+**Turing (T4/T10) users: this section doesn't apply to you** — the current
+image stack ships sm_75 torch kernels, so no wheel surgery is needed.
+Everything below is about Volta (sm_70) being absent from modern torch
+builds.
 
 **A GPU device reservation alone is not enough for SwarmUI.** SwarmUI
 installs its own PyTorch at first run (`launchtools/comfy-install-linux.sh`,
@@ -364,15 +403,15 @@ A repo-root script does the check-then-fix for you:
   Volta's last home. It just won't get any NEWER either; that's the real
   tradeoff of keeping this card running at all going forward.
 
-## 4. Optimization — the V100 profile (fp16 everywhere, no flash attention)
+## 4. Optimization — the pre-Ampere profile (fp16 everywhere; flash attention per-arch)
 
-The V100 profile from the migration plan, applied in the **Studio UI's
-model-load (expert) settings** for each downloaded model:
+The migration-plan profile, applied in the **Studio UI's model-load
+(expert) settings** for each downloaded model:
 
 | Setting | Value | Why |
 |---|---|---|
-| Load dtype / cache dtype | `fp16` | Volta tensor cores accelerate FP16 only; bf16/fp8 kernels don't exist on sm_70 |
-| Attention implementation | non-flash (e.g. SDPA / pytorch) | FA2/FA3 binaries are not built for sm_70; flash attention on Volta falls back or fails |
+| Load dtype / cache dtype | `fp16` | Both pre-Ampere cards accelerate FP16 only — bf16/fp8 kernels don't exist on sm_70 (Volta) *or* sm_75 (Turing) |
+| Attention implementation | **V100:** non-flash (SDPA/pytorch) — FA2/FA3 binaries aren't built for sm_70. **T4/T10:** flash attention is fine (sm_75 is where llama.cpp's FA support starts) — leave it enabled | Per-architecture |
 | Max loaded models | `1` (16 GB) / `2` (32 GB) | Keep the big model resident instead of thrashing |
 | Context length | match `LLM_CONTEXT_TOKENS` (default 16384) | llama.cpp fixes context at load time; the app sizes recap chunking from this value |
 
@@ -381,14 +420,19 @@ partially offload when a second large model is loaded — keep the chat model
 as the resident one and treat image models as load-on-demand, or accept the
 reload latency.
 
-**Training is gated off** on the V100 profile: full fine-tuning and LoRA
-training workloads assume Ampere+ features; use the chat/inference path
-only.
+**Training is gated off** on the pre-Ampere profile: full fine-tuning and
+LoRA training workloads assume Ampere+ features; use the chat/inference
+path only.
 
-**Numbers to expect** (single V100 PCIe, fp16 GGUF): a 12B-class model runs
-~30–45 tok/s fully offloaded; a 26B (fully resident on 32 GB) runs ~15–20
-tok/s. Partial offload on 16 GB (26B split with RAM) drops to ~2–6 tok/s —
-usable for overnight recaps, painful interactively.
+**Numbers to expect** (fp16 GGUF, fully offloaded): on a V100 PCIe, a
+12B-class model runs ~30–45 tok/s and a 26B (fully resident on 32 GB)
+~15–20 tok/s; partial offload on 16 GB (26B split with RAM) drops to
+~2–6 tok/s — usable for overnight recaps, painful interactively. A T10
+has notably less memory bandwidth than a V100 (256-bit GDDR6 vs V100's
+HBM2), so expect token generation roughly in the "half to a third of the
+V100 figure" range — its flash-attention and INT8-MMQ advantages don't
+change the decode-bandwidth bound. A fully-resident 12B–14B Q4/Q5 is the
+comfortable interactive tier on either 16 GB card.
 
 For nd-world's own app container, keep the AI job queue serialized:
 
@@ -424,12 +468,15 @@ it doesn't and let Ollama's splitter place layers.
 
 ## 5. Which models fit (fp16 ≈ 2 GB per billion params, GGUF Q4 ≈ 0.6 GB)
 
-| Model class | Weights (Q4 GGUF) | V100 16 GB | V100 32 GB |
+| Model class | Weights (Q4 GGUF) | 16 GB (T10 *or* V100 16) | V100 32 GB |
 |---|---|---|---|
 | 8–9B (gemma-class small) | ~5–6 GB | ✅ fully + 32k context | ✅ trivially |
 | 12–14B | ~7–9 GB | ✅ fully + 8–16k context | ✅ + 32k |
 | 24–27B (`gemma-4-26B-A4B-it`, Qwen 32B is over) | ~15–17 GB | ⚠️ partial offload — slow, or use a Q3/IQ4_XS quant | ✅ fully + 8–16k context |
 | 32B+ | ~19 GB+ | ❌ | ⚠️ Q4 32B barely; 27B is the sweet spot |
+
+VRAM fit depends on capacity, not architecture — a T10 16GB reads the same
+column as a V100 16GB (the cards differ in *speed*, §4, not in what fits).
 
 The nd-world default chat model (`unsloth/gemma-4-26B-A4B-it-GGUF`) wants
 the **32 GB** variant or a smaller quant. On 16 GB, a 12B-class model at
@@ -566,8 +613,23 @@ A V100 transcribes `whisper-large-v3-turbo` (or the more accurate
 `ggml-large-v3-q5_0.bin` above, once GPU-accelerated) several times
 faster than a typical NAS CPU — worth it if you record sessions.
 
-## 7. V100 hardware notes (used cards)
+## 7. Hardware notes (used cards)
 
+**Tesla T10 16GB (Turing):**
+- Passive-cooled OEM datacenter card — like an SXM2 V100, it needs a
+  shroud + high-static-pressure fans or it thermal-throttles; there is no
+  blower variant.
+- Turing's advantages over Volta are structural: flash attention works
+  (§4), llama.cpp's native-INT8 MMQ kernel path runs on its tensor cores
+  (see the Volta note below — Turing+ gets the most-optimized quantized
+  path), and — the decisive one — it's inside current driver/CUDA support
+  with no end-of-life horizon.
+- **Memory bandwidth is the trade**: 256-bit GDDR6 (~320 GB/s) vs the
+  V100's HBM2 — token generation is decode-bandwidth-bound, so expect
+  roughly half to a third of the V100's tok/s figures. Image generation
+  and model *loading* are less affected.
+
+**Tesla V100 (Volta):**
 - **300 W** under load — plan PCIe cabling (8-pin EPS/PCIe adapters on
   many SXM2→PCIe adapters) and case airflow.
 - **SXM2 modules are passive**: without the server's fan wall they need

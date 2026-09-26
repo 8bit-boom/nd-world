@@ -478,3 +478,20 @@ async def test_v100_preset_triggers_volta_advisory_note(monkeypatch):
 # once that route exists — see tests/test_ollama_options.py-style route
 # tests added alongside the route implementation instead, to avoid this
 # file depending on code that doesn't exist yet.)
+
+
+async def test_tesla_t10_preset_sizes_and_skips_volta_advisory(monkeypatch):
+    """The T10 (Turing, sm_75) preset must size recommendations at 16 GB
+    like the V100 preset does — but must NOT fire the Volta/CUDA-13
+    advisory: Turing is fully inside current driver/CUDA support and the
+    current Unsloth image ships sm_75 kernels (UNSLOTH_PHASE0_FINDINGS I-7
+    applies to Volta only)."""
+    async def fake_nvidia():
+        return []
+    monkeypatch.setattr(tuning, "_detect_nvidia_gpus", fake_nvidia)
+    monkeypatch.setattr(tuning, "_detect_amd_gpus", lambda: [])
+
+    assert tuning.GPU_PRESETS["tesla_t10_16gb"]["vram_mb"] == 16384
+    hw = await tuning.detect_hardware(gpu_preset="tesla_t10_16gb")
+    assert hw["vram_total_mb"] == 16384
+    assert tuning._volta_note(hw) is None

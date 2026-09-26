@@ -251,7 +251,7 @@ services:
   #      an older unsloth image tag here.
   unsloth:
     profiles: ["unsloth"]
-    image: unsloth/unsloth:latest        # see I-7: pin a tag with sm_70 if latest drops Volta
+    image: unsloth/unsloth:latest        # sm_75+ (Turing T4/T10 and newer): :latest is safe; V100 owners see docs/GPU_SETUP.md §2
     container_name: nd-world-unsloth
     restart: unless-stopped
     stop_grace_period: 60s               # model unload can be slow

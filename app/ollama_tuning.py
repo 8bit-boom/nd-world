@@ -451,8 +451,12 @@ async def _detect_swarmui_gpus() -> list[dict]:
 # there yet. Keyed by AppSettings.ollama_gpu_preset; `name` is matched by
 # _volta_note the same way a real nvidia-smi-reported name would be, so
 # picking "NVIDIA Tesla V100 16GB" here gets the identical Volta/CUDA-13
-# advisory a physically-detected V100 would.
+# advisory a physically-detected V100 would. The T10 (Turing, sm_75) is
+# deliberately here too and deliberately does NOT match _volta_note —
+# it's fully inside current CUDA/driver support, so its only advisory
+# differences show up in _unsloth_recommendation's precision note.
 GPU_PRESETS = {
+    "tesla_t10_16gb": {"name": "NVIDIA Tesla T10 16GB", "vram_mb": 16384},
     "v100_16gb": {"name": "NVIDIA Tesla V100 16GB", "vram_mb": 16384},
     "v100_32gb": {"name": "NVIDIA Tesla V100 32GB", "vram_mb": 32768},
 }
@@ -712,8 +716,11 @@ def _unsloth_recommendation(*, model: str, params_b: Optional[float], weights_mb
         rec["notes"] = [f"~{w} MB of weights fits comfortably — an 8-bit quant preserves quality."]
     rec["notes"].append(
         "Set the load-time context in Studio's per-model settings to match "
-        "LLM_CONTEXT_TOKENS (default 16384), and on a Volta/V100 use Precision "
-        "fp16 + non-flash attention + Low VRAM for image models."
+        "LLM_CONTEXT_TOKENS (default 16384). Precision fp16 on any pre-Ampere "
+        "card — Volta (V100) AND Turing (T4/T10) have no bf16/fp8 kernels — "
+        "but flash attention differs: disable it on a V100, leave it on for a "
+        "Turing card (sm_75 is where llama.cpp's flash-attention support "
+        "starts)."
     )
     return rec
 

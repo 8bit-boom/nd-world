@@ -227,3 +227,15 @@ def test_recommend_settings_never_raises_for_edge_case_hardware():
     ):
         rec = tuning.recommend_settings(model="something:7b", hardware=hardware)
         assert "fit" in rec
+
+
+def test_unsloth_recommendation_precision_note_is_arch_aware():
+    """The fp16/flash-attention guidance must cover both pre-Ampere cards
+    correctly: fp16 everywhere (no bf16/fp8 kernels on Volta OR Turing),
+    but flash attention only disabled on Volta — Turing (T4/T10, sm_75) is
+    where llama.cpp's flash-attention support starts."""
+    rec = tuning._unsloth_recommendation(model="m", params_b=26.0, weights_mb=13600, vram_total_mb=16384)
+    note = " ".join(rec["notes"])
+    assert "fp16" in note
+    assert "Turing" in note and "Volta" in note
+    assert "flash attention" in note.lower()
