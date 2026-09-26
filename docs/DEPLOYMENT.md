@@ -197,6 +197,65 @@ default) instead of by Cloudflare. Any other large non-audio upload (a map
 image, a portrait) has no such split and is still subject to Cloudflare's
 raw cap.
 
+### Studio Console over Cloudflare Tunnel (optional)
+
+The 🧠 **Studio Console** page (`/studio`) embeds the Unsloth Studio web UI —
+projects, fine-tuning/recipe workflows, agent skills, voice settings, the
+model hub, video generation. Out of the box its embed URL falls back to
+`UNSLOTH_URL` (e.g. `http://unsloth:8000`) — a **Docker-internal hostname
+that only resolves between containers**, so the frame shows a
+"Server Not Found" error in any browser. To make it work remotely:
+
+1. **Give Studio its own public hostname on the same tunnel.** In the
+   Cloudflare Zero Trust dashboard → Networks → Tunnels → your tunnel →
+   Public Hostname → Add: subdomain `studio` (or your choice), your domain,
+   Service **HTTP**, URL `<TrueNAS-LAN-IP>:8000` (the `unsloth` container
+   publishes port 8000 on the host).
+
+2. **Strip Studio's frame-blocking headers with a Worker.** Studio sends
+   `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors
+   'none'` — it refuses to be embedded by *any* site, so the iframe stays
+   blank until you relax those. Workers & Pages → Create Worker:
+
+   ```js
+   export default {
+     async fetch(request) {
+       const response = await fetch(request);
+       const headers = new Headers(response.headers);
+       headers.delete("x-frame-options");
+       const csp = headers.get("content-security-policy");
+       if (csp) {
+         headers.set("content-security-policy",
+           csp.replace("frame-ancestors 'none'",
+                       "frame-ancestors https://world.YOURSITE.com"));
+       }
+       return new Response(response.body,
+         { status: response.status, statusText: response.statusText, headers });
+     },
+   };
+   ```
+
+   Then add a route `studio.YOURSITE.com/*` for it (Worker → Settings →
+   Domains & Routes). The `frame-ancestors` replacement scopes embedding to
+   your site only — every other referrer still gets blocked.
+
+3. **Point nd-world at it.** ⚙️ Settings → System → **Studio Console URL**
+   → `https://studio.YOURSITE.com` → Save Studio settings.
+
+   ⚠️ The override **must be https** when your site is. An `http://` URL
+   (e.g. a raw LAN IP) gets silently auto-upgraded to https by the browser,
+   which fails against Studio's plain-HTTP server with
+   `SSL_ERROR_RX_RECORD_TOO_LONG` — the /studio page detects this and shows
+   a warning in-place.
+
+4. **Gate it (recommended).** Studio's own login (with rate limiting) is
+   now a public brute-force surface. Zero Trust → Access → Applications →
+   self-hosted app for `studio.YOURSITE.com` with an email-OTP "Allow"
+   policy puts a second door in front of it. Studio auth uses
+   localStorage-held JWT tokens (not cookies), so sign-in works fine inside
+   the cross-origin iframe; with Access enabled you authenticate to Access
+   once per session and then to Studio itself.
+
 ### Option 2: Port forwarding + reverse proxy (more advanced)
 
 Only do this if Option 1 doesn't work for your situation. This method opens a

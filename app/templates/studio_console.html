@@ -11,6 +11,17 @@
     If the frame stays blank, <a href="{{ studio_url }}" target="_blank">open Studio directly</a>
     and sign in there once.
   </p>
+  <div id="studio-mixed-content-warning" style="display:none;background:var(--bg2);border:1px solid var(--neon2);border-radius:6px;padding:1rem;margin-bottom:.8rem">
+    <strong style="color:var(--neon2);font-size:.9rem">⚠ Mixed-content embed impossible</strong>
+    <p style="font-size:.82rem;color:var(--text-dim);margin:.5rem 0 0">
+      Your site is served over <strong>https</strong>, but the Studio Console URL above is
+      <strong>http</strong>. Browsers silently upgrade the frame to https, which fails against
+      Studio's plain-HTTP server ("SSL_ERROR_RX_RECORD_TOO_LONG" is this exact symptom).
+      Serve Studio over https — e.g. route it through your Cloudflare Tunnel on its own
+      hostname (see docs/DEPLOYMENT.md → "Studio Console over Cloudflare Tunnel") — then
+      set that https URL as the Studio Console override in Settings → System.
+    </p>
+  </div>
   <iframe src="{{ studio_url }}" title="Unsloth Studio"
           style="width:100%;height:calc(100vh - 190px);border:1px solid var(--border);border-radius:6px;background:#111"
           allow="clipboard-read; clipboard-write; microphone" loading="lazy"></iframe>
@@ -27,4 +38,20 @@
   </div>
   {% endif %}
 </div>
+
+<script>
+// Mixed-content detection: an http:// embed inside an https:// page is
+// auto-upgraded by the browser to https://, which then fails against
+// Studio's plain-HTTP server with an unhelpful browser SSL error page.
+// Warn about it in-place instead.
+(function () {
+  if (location.protocol !== 'https:') return;
+  const frame = document.querySelector('iframe[title="Unsloth Studio"]');
+  if (!frame) return;
+  let src;
+  try { src = new URL(frame.src); } catch (e) { return; }
+  if (src.protocol === 'https:') return;
+  document.getElementById('studio-mixed-content-warning').style.display = '';
+})();
+</script>
 {% endblock %}
