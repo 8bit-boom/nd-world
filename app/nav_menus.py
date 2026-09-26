@@ -92,21 +92,38 @@ for _item in STATIC_CATALOG:
     _item.setdefault("ql_ref", None)
     _item.setdefault("player_section", None)
 
-# Shipped so every world keeps today's exact grouping (Tools / AI Tools)
-# until a GM explicitly customizes it from Settings -> Navigation — see
-# load_nav_menus: a world whose nav_menus_json is still NULL (never saved)
-# falls back to this, while an explicitly-saved empty list ([], meaning "no
-# menus, everything flat") is respected as real. Every catalog item not
-# claimed here (every kind tab, Maps/Races/Professions, Chronicler/Session
-# Log/Rules/Player Characters/Android App) renders as a flat ungrouped tab
-# by default, same as it always has.
+# Shipped as the default navigation template (see DEFAULT_NAV_MENUS above):
+# a world whose nav_menus_json is still NULL (never saved) gets these four
+# menus verbatim, while an explicitly-saved empty list ([], meaning "no
+# menus, everything flat") is respected as real. Every STATIC_CATALOG item
+# is claimed by the template; the only things that render as flat ungrouped
+# tabs by default are custom entity kinds not listed in the Entities/Notes
+# menus (e.g. a kind created after this template shipped). A GM can always
+# re-group everything from Settings -> Navigation.
+# The shipped navigation template: four menus covering every static item,
+# kind tabs first in Entities, condition-gated items (player-facing AI,
+# Dreamlands/King-in-Yellow) included and simply hidden while their flags
+# are off. Worlds that never saved nav_menus_json get this verbatim; kind
+# ids not listed here (custom kinds created later) fall back to flat tabs.
+# Missing ids are dropped harmlessly at resolve time, so the template is
+# forward/backward compatible with catalog changes.
 DEFAULT_NAV_MENUS = [
+    {"id": "menu_entities", "label": "Entities", "icon": "👤",
+     "item_ids": ["kind_character", "kind_location", "kind_organization",
+                  "kind_creature", "kind_item", "kind_feat", "kind_event",
+                  "kind_race", "kind_profession",
+                  "maps", "races", "professions", "characters"]},
     {"id": "menu_tools", "label": "Tools", "icon": "🎯",
      "item_ids": ["boards", "tables", "combat", "parties", "quests", "sessions",
-                  "facts", "calendar", "images", "import", "export", "background_jobs",
-                  "dreamlands", "king-in-yellow"]},
+                  "facts", "calendar", "images", "import", "export",
+                  "dreamlands", "king-in-yellow", "androidapp", "audio", "video", "dice"]},
+    {"id": "menu_notes", "label": "Notes, Logs", "icon": "📝",
+     "item_ids": ["kind_note", "chronicler", "session_log", "rules", "pages",
+                  "character_sheets"]},
     {"id": "menu_ai_tools", "label": "AI Tools", "icon": "🤖",
-     "item_ids": ["ai", "imagestudio", "editor", "code_assist"]},
+     "item_ids": ["ai", "imagestudio", "editor", "background_jobs", "code_assist",
+                  "ai_chat_player", "image_gen_player", "bulk_edit",
+                  "npc_talk", "npc_talk_player", "studio_console"]},
 ]
 
 

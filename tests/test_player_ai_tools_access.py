@@ -217,10 +217,13 @@ def test_nav_ai_chat_item_visible_when_toggle_on(seed):
     db = SessionLocal()
     try:
         world = db.get(World, seed.world_a.id)
-        _, ungrouped = resolve_nav_menus(world, False, False, request=fake_request())
+        menus, ungrouped = resolve_nav_menus(world, False, False, request=fake_request())
     finally:
         db.close()
-    item = next((i for i in ungrouped if i["id"] == "ai_chat_player"), None)
+    # The default template groups player-facing AI items into "AI Tools" —
+    # search menus and ungrouped flat tabs alike.
+    everywhere = [i for m in menus for i in m["links"]] + ungrouped
+    item = next((i for i in everywhere if i["id"] == "ai_chat_player"), None)
     assert item is not None
     assert item["href"] == "/ai-chat"
 

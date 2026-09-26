@@ -101,13 +101,29 @@ def test_gm_nav_still_reaches_every_relocated_page(client, seed):
     assert client.get("/boards").status_code == 200
 
 
-def test_player_nav_unaffected_by_gm_only_regroup(client, seed):
+def test_player_nav_shows_no_gm_only_links_inside_shared_menus(client, seed):
+    """The default template groups player-visible items (Audio/Video/Dice,
+    Talk to NPCs under the AI toggle) INTO the gm_labeled Tools/AI Tools
+    menus — those menus render for players now. What must never leak is
+    the GM-ONLY links themselves (Combat Tracker, Export & Backup, AI
+    Chat, Code Assist, Studio Console)."""
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/")
     assert r.status_code == 200
-    assert "🎯 Tools" not in r.text
-    assert "🤖 AI Tools" not in r.text
+    for gm_only_label in ("Combat Tracker", "Export & Backup", "Code Assist",
+                          "Studio Console", "Find & Replace (AI)",
+                          "Random Tables", "Images", "Import"):
+        assert gm_only_label not in r.text, gm_only_label
+    # AI Tools drops out entirely for this player (every item in it is
+    # GM-only or flag-gated off) — the GM-only "AI Chat" page label must
+    # not leak either way.
+    assert ">AI Chat<" not in r.text
+    # Tools DOES render (Audio/Video/Dice/Android App are player-visible)
+    # with its gm-only members stripped.
+    assert "🎯 Tools" in r.text
+    assert ">Combat Tracker<" not in r.text
+    assert ">Export & Backup<" not in r.text
 
 
 # ── Empty-world onboarding hint ──────────────────────────────────────────────

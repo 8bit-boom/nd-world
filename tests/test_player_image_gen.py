@@ -469,19 +469,21 @@ def test_nav_image_gen_item_visible_only_when_toggle_on(seed):
     db = SessionLocal()
     try:
         world = db.get(World, seed.world_a.id)
-        _, ungrouped = resolve_nav_menus(world, False, False, request=fake_request())
+        menus, ungrouped = resolve_nav_menus(world, False, False, request=fake_request())
     finally:
         db.close()
-    assert not any(i["id"] == "image_gen_player" for i in ungrouped)
+    everywhere = [i for m in menus for i in m["links"]] + ungrouped
+    assert not any(i["id"] == "image_gen_player" for i in everywhere)
 
     _set_world(seed.world_a.id, players_can_use_image_gen=True)
     db = SessionLocal()
     try:
         world = db.get(World, seed.world_a.id)
-        _, ungrouped = resolve_nav_menus(world, False, False, request=fake_request())
+        menus, ungrouped = resolve_nav_menus(world, False, False, request=fake_request())
     finally:
         db.close()
-    item = next((i for i in ungrouped if i["id"] == "image_gen_player"), None)
+    everywhere = [i for m in menus for i in m["links"]] + ungrouped
+    item = next((i for i in everywhere if i["id"] == "image_gen_player"), None)
     assert item is not None
     assert item["href"] == "/image-gen"
 

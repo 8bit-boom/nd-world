@@ -52,12 +52,12 @@ def test_load_nav_menus_null_column_falls_back_to_default(client, seed):
         menus = load_nav_menus(w)
     finally:
         db.close()
-    assert [m["id"] for m in menus] == ["menu_tools", "menu_ai_tools"]
+    assert [m["id"] for m in menus] == ["menu_entities", "menu_tools", "menu_notes", "menu_ai_tools"]
 
     # No world at all (e.g. a GM logged in with nothing active) hits the
     # same "never customized" path as a real, un-customized world.
     menus, ungrouped = resolve_nav_menus(None, dreamlands_enabled=False, king_in_yellow_enabled=False, request=fake_request(is_gm=True))
-    assert [m["id"] for m in menus] == ["menu_tools", "menu_ai_tools"]
+    assert [m["id"] for m in menus] == ["menu_entities", "menu_tools", "menu_notes", "menu_ai_tools"]
 
 
 def test_explicit_empty_list_is_honored_as_all_flat(client, seed):
@@ -282,3 +282,28 @@ def test_kind_item_keeps_kind_drag_type_when_grouped(client, seed):
     r = client.get("/")
     assert "Lore" in r.text
     assert 'data-ql-type="kind" data-ql-ref="character"' in r.text
+
+
+def test_default_template_claims_every_static_item(client, seed):
+    """The shipped 4-menu template must reference only real catalog ids and
+    must claim every STATIC_CATALOG item — so a fresh world's nav bar is
+    fully grouped with nothing leaking into ungrouped flat tabs except
+    custom kinds created after the template shipped."""
+    from app.nav_menus import DEFAULT_NAV_MENUS, STATIC_CATALOG, build_catalog
+
+    known = {i["id"] for i in build_catalog(seed.world_a)}
+    for m in DEFAULT_NAV_MENUS:
+        for iid in m["item_ids"]:
+            assert iid in known, f"{m['id']} references unknown item {iid}"
+
+    claimed = set()
+    for m in DEFAULT_NAV_MENUS:
+        claimed.update(m["item_ids"])
+    unclaimed = [i["id"] for i in STATIC_CATALOG if i["id"] not in claimed]
+    assert not unclaimed, f"static items missing from the default template: {unclaimed}"
+
+    # Condition-gated items ride along and are simply hidden while their
+    # flag is off — they must never be silently dropped from the template.
+    for gated in ("ai_chat_player", "image_gen_player", "npc_talk_player",
+                  "dreamlands", "king-in-yellow"):
+        assert any(gated in m["item_ids"] for m in DEFAULT_NAV_MENUS), gated
