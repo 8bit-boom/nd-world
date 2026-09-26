@@ -3745,10 +3745,10 @@ def studio_console(request: Request, db: Session = Depends(get_db), active_world
         raise HTTPException(403)
     override = ""
     try:
-        override = (_ai.get_studio_console_url() or "").strip()
+        override = (_ai_module.get_studio_console_url() or "").strip()
     except Exception:
         override = ""
-    studio_url = (override or _ai.effective_llm_url() or "").rstrip("/") if _ai.effective_llm_api_key() else override
+    studio_url = (override or _ai_module.effective_llm_url() or "").rstrip("/") if _ai_module.effective_llm_api_key() else override
     return templates.TemplateResponse("studio_console.html", {
         "request": request, "world": world, "worlds": worlds,
         "kinds": KINDS, "kind_icons": KIND_ICONS,

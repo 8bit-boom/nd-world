@@ -223,3 +223,20 @@ def test_tts_route_requires_world_and_text(client, seed, monkeypatch):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     assert client.post("/api/ai/tts", json={"text": "   "}).status_code == 400
+
+
+def test_studio_console_page_renders_for_gm(client, seed):
+    """Regression: the /studio handler used the wrong module alias (_ai vs
+    main.py's _ai_module) — NameError → 500 on every visit, uncaught by CI
+    because the page itself had no test."""
+    from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/studio")
+    assert r.status_code == 200
+    # Without a backend URL the page shows the not-configured card (seed has
+    # no UNSLOTH key) — either way it must render, never 500.
+    assert "Studio Console" in r.text
+    # Players are denied (GM-only route).
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    assert client.get("/studio").status_code == 403
