@@ -26,7 +26,8 @@ from .. import ai as _ai_module
 from .. import audio_jobs as _audio_jobs
 from .. import media_albums
 from ..database import get_app_settings, get_db
-from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit, world_can_edit_section, world_can_view_section
+from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit, world_can_edit_section, world_can_view_section, filter_visible_entities
+from .. import deps as _deps
 from ..models import AudioAlbum, AudioClip
 from ..templating import templates
 from ..uploads import copy_upload_bounded, effective_upload_bytes, unique_upload_filename
@@ -155,6 +156,26 @@ def _visible_clips_query(db: Session, request: Request, world_id: int, album_id)
     return q.order_by(AudioClip.name)
 
 
+def _visible_entities_sorted(db: Session, request: Request, world_id: int) -> list:
+    """All visible entities of the world, kind-then-name — options for the
+    per-clip entity attach dropdown."""
+    from ..models import Entity
+    from ..deps import filter_visible_entities
+    return filter_visible_entities(
+        db.query(Entity).filter(Entity.world_id == world_id), request,
+    ).order_by(Entity.kind, Entity.name).all()
+
+
+def _resolve_entity_id(db: Session, world_id: int, raw: str):
+    """entity_id form value → validated id (same world, real entity), else None."""
+    raw = (raw or "").strip()
+    if not raw.isdigit():
+        return None
+    from ..models import Entity
+    e = db.query(Entity).filter(Entity.id == int(raw), Entity.world_id == world_id).first()
+    return e.id if e else None
+
+
 def _sub_album_counts(db: Session, album_ids: list) -> dict:
     return media_albums.sub_album_counts(db, AudioAlbum, album_ids)
 
@@ -199,6 +220,9 @@ def audio_library(request: Request, db: Session = Depends(get_db), active_world:
     )
     clips = _visible_clips_query(db, request, world.id, None).all()
     album_ids = [a.id for a in albums]
+    # Entity picker options for per-clip attachment (edit forms).
+    entities = _visible_entities_sorted(db, request, world.id)
+    kind_icons = _deps.effective_kinds(world)[1]
     return templates.TemplateResponse("audio_library.html", {
         "request": request, "world": world, "worlds": worlds,
         "clips": clips,
@@ -206,6 +230,7 @@ def audio_library(request: Request, db: Session = Depends(get_db), active_world:
         "sub_album_counts": _sub_album_counts(db, album_ids),
         "clip_counts": _clip_counts(db, request, album_ids),
         "max_audio_mb": _effective_audio_bytes(db) // (1024 * 1024),
+        "entities": entities, "kind_icons": kind_icons,
     })
 
 
@@ -300,7 +325,7 @@ def audio_album_delete(album_id: int, request: Request, db: Session = Depends(ge
 async def audio_upload(
     request: Request, file: UploadFile = File(...), name: str = Form(""),
     description: str = Form(""), visible_to_players: Optional[str] = Form(None),
-    album_id: str = Form(""),
+    album_id: str = Form(""), entity_id: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     _require_can_edit(request)
@@ -330,11 +355,28 @@ async def audio_upload(
     clip = AudioClip(
         world_id=world.id, name=clip_name, description=description.strip()[:_MAX_DESCRIPTION],
         file_url=f"/uploads/audio/{dest.name}", visible_to_players=bool(visible_to_players),
-        album_id=target_album_id,
+        album_id=target_album_id, entity_id=_resolve_entity_id(db, world.id, entity_id),
     )
     db.add(clip)
     db.commit()
     return RedirectResponse(f"/audio/albums/{target_album_id}" if target_album_id else "/audio", status_code=303)
+
+
+@router.post("/audio/{clip_id}/attach")
+async def audio_attach(clip_id: int, request: Request, db: Session = Depends(get_db),
+                       active_world: str = Cookie(None)):
+    """Attach this clip to a lore entity (empty entity_id detaches). The clip
+    and the entity must share a world. Entity-edit level (GM/assistant)."""
+    clip = db.query(AudioClip).filter(AudioClip.id == clip_id).first()
+    if not clip:
+        raise HTTPException(404)
+    _require_can_edit(request)
+    form = await request.form()
+    raw = str(form.get("entity_id") or "").strip()
+    clip.entity_id = _resolve_entity_id(db, clip.world_id, raw) if raw else None
+    db.commit()
+    dest = f"/entity/{clip.entity_id}" if clip.entity_id else "/audio"
+    return RedirectResponse(dest, status_code=303)
 
 
 @router.post("/audio/upload/chunk")
@@ -447,6 +489,7 @@ async def audio_upload_complete(
 async def audio_edit(
     clip_id: int, request: Request, name: str = Form(""), description: str = Form(""),
     visible_to_players: Optional[str] = Form(None), album_id: str = Form(""),
+    entity_id: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     _require_can_edit(request)
@@ -460,6 +503,8 @@ async def audio_edit(
         clip.name = name
     clip.description = description.strip()[:_MAX_DESCRIPTION]
     clip.visible_to_players = bool(visible_to_players)
+    # Entity attachment ("" = detach): only an entity of this clip's world.
+    clip.entity_id = _resolve_entity_id(db, world.id, entity_id)
     # A GM who broadcasts a clip and then hides it must not keep playing it
     # for players — this is the exact "GM hides something and it stays
     # visible" failure the visible_to_players model exists to prevent.

@@ -406,6 +406,32 @@
     </details>
   </section>
 
+  {% if entity_media_audio or entity_media_video %}
+  <section style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem;margin:1rem 0">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .7rem">🎧 Media</h2>
+    {% for clip in entity_media_audio %}
+    <div style="margin-bottom:.7rem">
+      <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
+        <span style="font-size:.85rem">{{ clip.name }}</span>
+        {% if not clip.visible_to_players %}<span style="font-size:.65rem;color:var(--text-dim);border:1px solid var(--border);border-radius:3px;padding:.05rem .35rem">GM-only</span>{% endif %}
+        <a href="/audio" style="font-size:.72rem;color:var(--text-dim)">↗ Audio Library</a>
+      </div>
+      <audio controls preload="none" src="{{ clip.file_url }}" style="width:100%;max-width:560px;margin-top:.3rem"></audio>
+    </div>
+    {% endfor %}
+    {% for v in entity_media_video %}
+    <div style="margin-bottom:.7rem">
+      <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
+        <span style="font-size:.85rem">{{ v.name }}</span>
+        {% if not v.visible_to_players %}<span style="font-size:.65rem;color:var(--text-dim);border:1px solid var(--border);border-radius:3px;padding:.05rem .35rem">GM-only</span>{% endif %}
+        <a href="/video" style="font-size:.72rem;color:var(--text-dim)">↗ Video Library</a>
+      </div>
+      <video controls preload="none" src="{{ v.file_url }}" {% if v.poster_url %}poster="{{ v.poster_url }}"{% endif %} style="width:100%;max-width:560px;margin-top:.3rem;border-radius:4px"></video>
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
   {% if (request.state.user and request.state.user.is_gm) or world.players_can_ask_ai %}
   {% if entity.kind in ('character', 'creature', 'organization') %}
   <div style="margin:0.9rem 0 0.3rem">

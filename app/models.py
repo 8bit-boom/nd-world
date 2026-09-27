@@ -1028,6 +1028,10 @@ class AudioClip(Base):
     file_url = Column(String(512), nullable=False)  # "/uploads/audio/<file>"
     visible_to_players = Column(Boolean, default=True)
     album_id = Column(Integer, ForeignKey("audio_albums.id"), nullable=True, index=True)
+    # Optional attachment: the lore Entity (character, location, item…) this
+    # clip belongs to — renders in the entity page's Media section and links
+    # the library back to the lore. Healed via _heal_table_from_model.
+    entity_id = Column(Integer, ForeignKey("entities.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     # AI-generated via Whisper (see app.ai.transcribe_audio_with_subtitles and
     # POST /audio/{id}/transcribe) — both blank until a GM/assistant clicks
@@ -1075,7 +1079,9 @@ class VideoClip(Base):
     file_url = Column(String(512), nullable=False)  # "/uploads/video/<file>"
     poster_url = Column(String(512), nullable=True)  # "/uploads/video/<file>.jpg", best-effort
     visible_to_players = Column(Boolean, default=True)
-    album_id = Column(Integer, ForeignKey("video_albums.id"), nullable=True, index=True)
+    album_id = Column(Integer, ForeignKey("video_albums.id"), nullable=True, index=True)    # Optional attachment: the lore Entity this video belongs to (entity
+    # page Media section). Healed via _heal_table_from_model.
+    entity_id = Column(Integer, ForeignKey("entities.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     # Same AI-generated pair as AudioClip's own transcript/subtitles_vtt —
     # see that class's docstring. Here subtitles_vtt also drives a real

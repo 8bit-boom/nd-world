@@ -514,6 +514,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/audio/upload` | GM / Assistant | Uploads one audio clip (single request, up to `MAX_AUDIO_UPLOAD_BYTES`). |
 | POST | `/audio/upload/chunk`, `/audio/upload/complete` | GM / Assistant | Client-split large-upload pair (see `app/uploads.py`) for a clip too big for a single request behind a reverse proxy's body-size cap. |
 | POST | `/audio/{clip_id}/edit` | GM / Assistant | Updates a clip's name/description/visibility/album. |
+| POST | `/audio/{clip_id}/attach` | GM / Assistant | Attaches the clip to a lore entity (form `entity_id`; empty detaches) — the clip then renders in that entity page's 🎧 Media section. Clip and entity must share a world. |
 | POST | `/audio/{clip_id}/transcribe` | GM / Assistant | Generates an AI transcript + WebVTT subtitle track via Whisper (`app.ai.transcribe_audio_with_subtitles`), honoring the world's glossary/language/denoise settings. Synchronous; overwrites any existing transcript/subtitles. |
 | POST | `/audio/{clip_id}/delete` | GM / Assistant | Deletes a clip and its file. If it's the clip currently playing for players (below), clears that broadcast too. |
 | POST | `/audio/{clip_id}/play-for-players` | GM / Assistant | Pushes a clip (must already be `visible_to_players`) to every player's screen to auto-play in a persistent floating widget that survives page navigation — same broadcast mechanism as the image Spotlight (`/images/spotlight`), reported via `GET /api/spotlight`'s `audio_*` fields. Optional `loop` form field. |
@@ -535,6 +536,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/video/upload` | GM / Assistant | Uploads one video clip (single request, up to `MAX_VIDEO_UPLOAD_BYTES`); converts to AV1 if the world has opted in, then generates a poster frame best-effort. |
 | POST | `/video/upload/chunk`, `/video/upload/complete` | GM / Assistant | Client-split large-upload pair, same as the Audio Library's. |
 | POST | `/video/{clip_id}/edit` | GM / Assistant | Updates a clip's name/description/visibility/album. |
+| POST | `/video/{clip_id}/attach` | GM / Assistant | Attaches the video to a lore entity (form `entity_id`; empty detaches) — renders in that entity page's 🎧 Media section. Clip and entity must share a world. |
 | POST | `/video/{clip_id}/transcribe` | GM / Assistant | Generates an AI transcript + WebVTT subtitle track via Whisper — same as the Audio Library's, and works directly on the video file (ffmpeg decodes its audio track). |
 | POST | `/video/{clip_id}/delete` | GM / Assistant | Deletes a clip and its file (and poster, if one was generated). |
 

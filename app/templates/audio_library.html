@@ -162,6 +162,13 @@
                  style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.82rem;border-radius:3px;width:100%;box-sizing:border-box;margin-bottom:.4rem"/>
           <textarea name="description" maxlength="512" rows="2" placeholder="Description"
                     style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.82rem;border-radius:3px;width:100%;box-sizing:border-box;resize:vertical;margin-bottom:.4rem">{{ c.description }}</textarea>
+          <div style="margin-bottom:.4rem">
+            <label style="font-size:.78rem;color:var(--text-dim)">Attached entity (shows on its page):</label>
+            <select name="entity_id" style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
+              <option value="">— none —</option>
+              {% for e in entities %}<option value="{{ e.id }}" {% if c.entity_id == e.id %}selected{% endif %}>{{ kind_icons.get(e.kind, '🏷') }} {{ e.name }}</option>{% endfor %}
+            </select>
+          </div>
           <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin-bottom:.4rem">
             <label style="font-size:.78rem;color:var(--text-dim)">Album:</label>
             <select name="album_id" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.3rem .5rem;font-family:var(--font);font-size:.8rem;border-radius:3px">

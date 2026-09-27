@@ -5530,6 +5530,20 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
     is_gm = bool(user and user.is_gm)
     world = get_active_world(request, db, active_world)
     worlds = _visible_worlds(request, db)
+    # Media attached to this entity — audio/video library clips linked via
+    # their entity_id. Player-visible rows only (mirrors each library's own
+    # visibility model); GMs also see which clips they can manage there.
+    entity_media_audio = []
+    entity_media_video = []
+    if world is not None:
+        from .models import AudioClip as _AC, VideoClip as _VC
+        _aq = db.query(_AC).filter(_AC.entity_id == entity.id, _AC.world_id == world.id)
+        _vq = db.query(_VC).filter(_VC.entity_id == entity.id, _VC.world_id == world.id)
+        if not is_gm:
+            _aq = _aq.filter(_AC.visible_to_players.is_(True))
+            _vq = _vq.filter(_VC.visible_to_players.is_(True))
+        entity_media_audio = _aq.order_by(_AC.created_at.desc()).all()
+        entity_media_video = _vq.order_by(_VC.created_at.desc()).all()
     backlinks = _filter_visible_entities(
         db.query(Entity)
         .join(entity_links, entity_links.c.source_id == Entity.id)
@@ -5608,6 +5622,8 @@ def detail(request: Request, entity_id: int, db: Session = Depends(get_db), acti
         "body_sections": body_sections, "toc": toc,
         "safe_body": safe_body, "safe_summary": safe_summary,
         "visible_related": visible_related, "entity_ai_extra": entity_ai_extra,
+        "entity_media_audio": entity_media_audio,
+        "entity_media_video": entity_media_video,
         "ai_custom_instructions": (
             _ai_instructions.enabled_instructions_text(db, world.id, for_players=not is_gm) if world else ""
         ),

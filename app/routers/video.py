@@ -37,6 +37,7 @@ from .. import audio_jobs as _audio_jobs
 from .. import media_albums
 from ..database import get_app_settings, get_db, SessionLocal
 from ..deps import get_world_ctx, is_gm as _is_gm, require_can_edit as _require_can_edit, world_can_edit_section, world_can_view_section
+from .. import deps as _deps
 from ..models import VideoAlbum, VideoClip
 from ..templating import templates
 from ..uploads import (
@@ -166,6 +167,16 @@ def _visible_clips_query(db: Session, request: Request, world_id: int, album_id)
     if not _is_gm(request):
         q = q.filter(VideoClip.visible_to_players.is_(True))
     return q.order_by(VideoClip.name)
+
+
+def _resolve_entity_id(db, world_id: int, raw: str):
+    """entity_id form value → validated id (same world, real entity), else None."""
+    raw = (raw or "").strip()
+    if not raw.isdigit():
+        return None
+    from ..models import Entity
+    e = db.query(Entity).filter(Entity.id == int(raw), Entity.world_id == world_id).first()
+    return e.id if e else None
 
 
 def _sub_album_counts(db: Session, album_ids: list) -> dict:
@@ -399,6 +410,10 @@ def video_library(request: Request, db: Session = Depends(get_db), active_world:
     )
     clips = _visible_clips_query(db, request, world.id, None).all()
     album_ids = [a.id for a in albums]
+    from ..deps import filter_visible_entities as _fve
+    from ..models import Entity as _Entity
+    entities = _fve(db.query(_Entity).filter(_Entity.world_id == world.id), request)         .order_by(_Entity.kind, _Entity.name).all()
+    kind_icons = _deps.effective_kinds(world)[1]
     return templates.TemplateResponse("video_library.html", {
         "request": request, "world": world, "worlds": worlds,
         "clips": clips,
@@ -406,6 +421,7 @@ def video_library(request: Request, db: Session = Depends(get_db), active_world:
         "sub_album_counts": _sub_album_counts(db, album_ids),
         "clip_counts": _clip_counts(db, request, album_ids),
         "max_video_mb": _effective_video_bytes(db) // (1024 * 1024),
+            "entities": entities, "kind_icons": kind_icons,
     })
 
 
@@ -522,7 +538,7 @@ def video_album_delete(album_id: int, request: Request, db: Session = Depends(ge
 async def video_upload(
     request: Request, file: UploadFile = File(...), name: str = Form(""),
     description: str = Form(""), visible_to_players: Optional[str] = Form(None),
-    album_id: str = Form(""),
+    album_id: str = Form(""), entity_id: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
 ):
     _require_can_edit(request)
@@ -555,10 +571,28 @@ async def video_upload(
         world_id=world.id, name=clip_name, description=description.strip()[:_MAX_DESCRIPTION],
         file_url=f"/uploads/video/{final_path.name}", poster_url=poster_url,
         visible_to_players=bool(visible_to_players), album_id=target_album_id,
+        entity_id=_resolve_entity_id(db, world.id, entity_id),
     )
     db.add(clip)
     db.commit()
     return RedirectResponse(f"/video/albums/{target_album_id}" if target_album_id else "/video", status_code=303)
+
+
+@router.post("/video/{clip_id}/attach")
+async def video_attach(clip_id: int, request: Request, db: Session = Depends(get_db),
+                       active_world: str = Cookie(None)):
+    """Attach this video to a lore entity (empty entity_id detaches). The
+    video and the entity must share a world. Entity-edit level (GM/assistant)."""
+    clip = db.query(VideoClip).filter(VideoClip.id == clip_id).first()
+    if not clip:
+        raise HTTPException(404)
+    _require_can_edit(request)
+    form = await request.form()
+    raw = str(form.get("entity_id") or "").strip()
+    clip.entity_id = _resolve_entity_id(db, clip.world_id, raw) if raw else None
+    db.commit()
+    dest = f"/entity/{clip.entity_id}" if clip.entity_id else "/video"
+    return RedirectResponse(dest, status_code=303)
 
 
 @router.post("/video/upload/chunk")
@@ -632,7 +666,7 @@ async def video_edit(
     clip_id: int, request: Request, name: str = Form(""), description: str = Form(""),
     visible_to_players: Optional[str] = Form(None), album_id: str = Form(""),
     db: Session = Depends(get_db), active_world: str = Cookie(None),
-):
+    entity_id: str = Form(""),):
     _require_can_edit(request)
     world, _ = get_world_ctx(request, db, active_world)
     if not world:
@@ -644,6 +678,7 @@ async def video_edit(
         clip.name = name
     clip.description = description.strip()[:_MAX_DESCRIPTION]
     clip.visible_to_players = bool(visible_to_players)
+    clip.entity_id = _resolve_entity_id(db, world.id, entity_id)
     album_id = (album_id or "").strip()
     clip.album_id = _album_or_404(db, world.id, int(album_id)).id if album_id.isdigit() else None
     db.commit()
