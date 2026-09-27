@@ -3313,197 +3313,6 @@ async def schematic_save_elements(slug: str, request: Request, db: Session = Dep
 
 
 
-@app.post("/maps/schematic/{slug}/ai-build")
-async def schematic_ai_build(
-    slug: str,
-    request: Request,
-    description: str = Form(...),
-    replace: str = Form(""),
-    images: List[UploadFile] = File(None),
-    db: Session = Depends(get_db),
-    active_world: str = Cookie(None),
-):
-    """AI-build a schematic layout: the GM describes the space ("a smuggler's
-    den: L-shaped bar, two storage rooms, hidden cargo crawl-space") and —
-    optionally — attaches sketch/floorplan images for the model to base the
-    layout on. The model returns a strict JSON element list (rects, circles,
-    lines, text labels in the editor's own element schema), which is
-    validated, clamped to the canvas, id-stamped, and appended to (or
-    replaces) the schematic's elements. Structured output rides the
-    JSON-schema `format` the Ask AI pipeline verified (findings I-3); sketch
-    understanding rides the vision path (I-6)."""
-    sch = db.query(Schematic).filter(Schematic.slug == slug).first()
-    if not sch:
-        raise HTTPException(404)
-    if not world_can_edit_section(request, db.get(World, sch.world_id), "maps"):
-        raise HTTPException(403)
-    desc = (description or "").strip()[:4000]
-    if not desc:
-        raise HTTPException(400, "Describe the space to build")
-
-    import base64 as _b64
-    image_b64s = []
-    for f in (images or [])[:3]:
-        if f and f.filename:
-            raw = await f.read()
-            if raw:
-                image_b64s.append(_b64.b64encode(raw).decode("ascii"))
-
-    canvas_w = sch.canvas_width or 2000
-    canvas_h = sch.canvas_height or 1500
-    system = (
-        "You are a battlemap layout architect for an SVG canvas editor. "
-        f"The canvas is {canvas_w} x {canvas_h} units, origin top-left, +y downward. "
-        "Return STRICT JSON only: {\"elements\": [ ... ]} — an array of 8 to 60 simple "
-        "shapes that draw the requested space as a clean top-down map. "
-        "Allowed element shapes:\n"
-        "- room: {\"type\":\"rect\",\"x\":..,\"y\":..,\"w\":..,\"h\":..,\"fill\":\"#hex\",\"stroke\":\"#hex\",\"strokeW\":2,\"label\":\"Room name\"}\n"
-        "- circle feature: {\"type\":\"circle\",\"cx\":..,\"cy\":..,\"rx\":..,\"ry\":..,\"fill\":\"#hex\",\"stroke\":\"#hex\"}\n"
-        "- wall/door/line: {\"type\":\"line\",\"x1\":..,\"y1\":..,\"x2\":..,\"y2\":..,\"stroke\":\"#hex\",\"strokeW\":3}\n"
-        "- label: {\"type\":\"text\",\"x\":..,\"y\":..,\"label\":\"short text\"}\n"
-        "Rules: keep every shape fully inside the canvas; label rooms with their "
-        "name; use a muted, readable palette (fills #2a2a35-range, strokes grey/accent "
-        "hex); make rooms large enough to read (200+ units wide); include doors as "
-        "short line segments on room walls; no other keys, no comments, no markdown "
-        "fences."
-    )
-
-    user_msg: dict = {"role": "user", "content": desc}
-    if image_b64s:
-        user_msg["images"] = image_b64s
-
-    # RAG grounding: the world's own lore for the described space, so "city
-    # of Yorm" builds Yorm's districts and architecture, not generic
-    # fantasy. GM-gated route → unfiltered context is fine.
-    world_ctx = ""
-    sch_world = db.get(World, sch.world_id)
-    if sch_world is not None:
-        try:
-            from . import retrieval as _retrieval
-            rag, _n, _notes = _retrieval.smart_world_context(
-                db, sch.world_id, desc, entity_limit=8, notes_limit=2,
-            )
-            if rag:
-                world_ctx = (
-                    "\n=== World lore — match the setting, names, architecture, "
-                    "and factions described below ===\n" + rag
-                )
-        except Exception:
-            world_ctx = ""  # RAG is enhancement, never a hard dependency
-    full_system = system + world_ctx
-
-    fmt = {"type": "object",
-           "properties": {"elements": {"type": "array"}},
-           "required": ["elements"]}
-
-    # Thinking on (Studio parity — better layouts from reasoning through the
-    # space); response_format (structured output) is best-effort: Studio's
-    # llama.cpp engine rejects it unless a GGUF chat model is loaded
-    # ("response_format needs the llama.cpp grammar engine"), so on that
-    # specific rejection retry without it — the defensive JSON extractor
-    # below handles a plain reply.
-    async def _call(with_format: bool):
-        return await _ai_module.generate_chat(
-            [user_msg], system=full_system, think=True, format=(fmt if with_format else None),
-        )
-
-    try:
-        raw = await _call(with_format=True)
-    except Exception as exc:
-        msg = str(exc)
-        if "response_format" in msg and ("grammar" in msg or "unsupported" in msg.lower()):
-            try:
-                raw = await _call(with_format=False)
-            except Exception as exc2:
-                raise HTTPException(502, f"AI schematic build failed: {exc2}")
-        else:
-            raise HTTPException(502, f"AI schematic build failed: {exc}")
-    if not (raw or "").strip():
-        raise HTTPException(502, "The model returned nothing — try a more concrete description.")
-
-    def _extract_json(text: str) -> dict:
-        text = text.strip()
-        if text.startswith("```"):
-            text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
-            text = re.sub(r"\n?```$", "", text)
-        try:
-            return json.loads(text)
-        except ValueError:
-            start, end = text.find("{"), text.rfind("}")
-            if start != -1 and end > start:
-                return json.loads(text[start:end + 1])
-            raise
-
-    try:
-        raw_elements = _extract_json(raw).get("elements")
-    except ValueError:
-        raw_elements = None
-    if not isinstance(raw_elements, list) or not raw_elements:
-        raise HTTPException(502, "The model's reply contained no usable elements — try rephrasing.")
-
-    _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{3,8}$")
-    _ALLOWED_SHAPES = {"rect", "circle", "line", "arrow", "text"}
-
-    def _num(v, default=0.0):
-        try:
-            return max(0.0, min(float(v), 20000.0))
-        except (TypeError, ValueError):
-            return default
-
-    def _color(v, fallback):
-        s = str(v or "").strip()
-        return s if _COLOR_RE.match(s) else fallback
-
-    new_elements = []
-    for e in raw_elements[:400]:
-        if not isinstance(e, dict):
-            continue
-        etype = str(e.get("type") or "").strip().lower()
-        if etype not in _ALLOWED_SHAPES:
-            continue
-        ne: dict = {"id": "ai-" + uuid.uuid4().hex[:10], "type": etype}
-        if etype == "rect":
-            ne["x"] = _num(e.get("x")); ne["y"] = _num(e.get("y"))
-            ne["w"] = min(_num(e.get("w"), 100), canvas_w)
-            ne["h"] = min(_num(e.get("h"), 100), canvas_h)
-            ne["fill"] = _color(e.get("fill"), "#2a2a35")
-            ne["stroke"] = _color(e.get("stroke"), "#888888")
-            ne["strokeW"] = _num(e.get("strokeW"), 2)
-        elif etype == "circle":
-            ne["cx"] = _num(e.get("cx")); ne["cy"] = _num(e.get("cy"))
-            ne["rx"] = _num(e.get("rx"), 50); ne["ry"] = _num(e.get("ry"), 50)
-            ne["fill"] = _color(e.get("fill"), "#2a2a35")
-            ne["stroke"] = _color(e.get("stroke"), "#888888")
-            ne["strokeW"] = _num(e.get("strokeW"), 2)
-        elif etype in ("line", "arrow"):
-            ne["x1"] = _num(e.get("x1")); ne["y1"] = _num(e.get("y1"))
-            ne["x2"] = _num(e.get("x2")); ne["y2"] = _num(e.get("y2"))
-            ne["stroke"] = _color(e.get("stroke"), "#aaaaaa")
-            ne["strokeW"] = _num(e.get("strokeW"), 3)
-        elif etype == "text":
-            ne["x"] = _num(e.get("x")); ne["y"] = _num(e.get("y"))
-        label = str(e.get("label") or "")[:200]
-        if label:
-            ne["label"] = label
-        new_elements.append(ne)
-
-    if not new_elements:
-        raise HTTPException(502, "The model's elements were all invalid for this canvas — try rephrasing.")
-
-    try:
-        elements = json.loads(sch.elements_json or "[]")
-    except ValueError:
-        elements = []
-    if (replace or "").strip().lower() in ("1", "true", "yes"):
-        elements = new_elements
-    else:
-        elements = elements + new_elements
-    sch.elements_json = json.dumps(elements)
-    db.commit()
-    # Full merged list — the editor adopts it wholesale (same contract as
-    # pull-combat), so the client can never save a stale copy over the append.
-    return {"added": len(new_elements), "total": len(elements), "elements": elements}
-
 @app.post("/maps/schematic/{slug}/upload")
 async def schematic_upload_image(slug: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
     s = db.query(Schematic).filter(Schematic.slug == slug).first()
@@ -6716,6 +6525,300 @@ async def _mcp_auth_wrapper(scope, receive, send):
 
     scope.setdefault("state", {})["user"] = user
     await _mcp_entrypoint(scope, receive, send)
+
+
+
+# AI Build runs as an in-process background job: reasoning + RAG + layout
+# generation routinely exceeds Cloudflare Tunnel's ~100 s no-byte timeout,
+# which killed the synchronous route with HTTP 524. POST starts the job and
+# returns an id; GET polls for the finished element list. Results are held
+# in-process (single worker) and pruned — this is a GM actively waiting on
+# one dialog, not durable state; a restart just means re-clicking Build.
+
+
+SYSTEM_TEMPLATE = (
+    "You are a battlemap layout architect for an SVG canvas editor. "
+    "The canvas is {W} x {H} units, origin top-left, +y downward. "
+    'Return STRICT JSON only: {"elements": [ ... ]} — an array of 8 to 60 simple '
+    "shapes that draw the requested space as a clean top-down map. "
+    "Allowed element shapes:\n"
+    '- room: {"type":"rect","x":..,"y":..,"w":..,"h":..,"fill":"#hex","stroke":"#hex","strokeW":2,"label":"Room name"}\n'
+    '- circle feature: {"type":"circle","cx":..,"cy":..,"rx":..,"ry":..,"fill":"#hex","stroke":"#hex"}\n'
+    '- wall/door/line: {"type":"line","x1":..,"y1":..,"x2":..,"y2":..,"stroke":"#hex","strokeW":3}\n'
+    '- label: {"type":"text","x":..,"y":..,"label":"short text"}\n'
+    "Rules: keep every shape fully inside the canvas; label rooms with their "
+    "name; use a muted, readable palette (fills #2a2a35-range, strokes grey/accent "
+    "hex); make rooms large enough to read (200+ units wide); include doors as "
+    "short line segments on room walls; no other keys, no comments, no markdown "
+    "fences."
+)
+
+
+_AI_BUILD_JOBS: dict = {}
+_AI_BUILD_SEQ: list = [0]
+_AI_BUILD_KEEP = 12
+
+
+def _ai_build_put(status: str, **fields) -> int:
+    _AI_BUILD_SEQ[0] += 1
+    job_id = _AI_BUILD_SEQ[0]
+    _AI_BUILD_JOBS[job_id] = {"status": status, "slug": slug if False else None, **fields}
+    done = [j for j, v in _AI_BUILD_JOBS.items() if v["status"] != "running"]
+    while len(done) > _AI_BUILD_KEEP:
+        _AI_BUILD_JOBS.pop(done.pop(0), None)
+    return job_id
+
+
+async def _schematic_ai_build_task_inner(job_id: int, slug: str, world_id: int,
+                                       desc: str, replace_flag: bool, image_b64s: list):
+        """The AI Build worker: RAG-ground the description, generate elements
+        (thinking on, structured output with a plain-mode fallback), validate,
+        and persist. Never raises — failures land in the job row for the poll
+        route to surface. DB access uses short-lived sessions (no pool holds
+        across the model call)."""
+        db = SessionLocal()
+        try:
+            sch = db.query(Schematic).filter(
+                Schematic.slug == slug, Schematic.world_id == world_id).first()
+            if not sch:
+                _AI_BUILD_JOBS[job_id].update(status="error", error="Schematic no longer exists.")
+                return
+            canvas_w = sch.canvas_width or 2000
+            canvas_h = sch.canvas_height or 1500
+        finally:
+            db.close()
+
+        system = SYSTEM_TEMPLATE.replace("{W}", str(canvas_w)).replace("{H}", str(canvas_h))
+
+        # RAG grounding from the world's own lore — "city of Yorm" should build
+        # Yorm's actual districts, not generic fantasy. Enhancement, not a gate.
+        try:
+            db = SessionLocal()
+            try:
+                from . import retrieval as _retrieval
+                rag, _n, _notes = _retrieval.smart_world_context(
+                    db, world_id, desc, entity_limit=8, notes_limit=2,
+                )
+            finally:
+                db.close()
+            if rag:
+                system += (
+                    "\\n=== World lore — match the setting, names, architecture, and "
+                    "factions described below ===\\n" + rag
+                )
+        except Exception:
+            pass
+
+        user_msg: dict = {"role": "user", "content": desc}
+        if image_b64s:
+            user_msg["images"] = image_b64s
+
+        fmt = {"type": "object",
+               "properties": {"elements": {"type": "array"}},
+               "required": ["elements"]}
+
+        async def _call(with_format: bool):
+            return await _ai_module.generate_chat(
+                [user_msg], system=system, think=True, format=(fmt if with_format else None),
+            )
+
+        raw = None
+        fmt_err = ""
+        try:
+            raw = await _call(with_format=True)
+        except Exception as exc:
+            msg = str(exc)
+            if "response_format" in msg and ("grammar" in msg or "unsupported" in msg.lower()):
+                # Studio's llama.cpp engine rejects response_format unless a GGUF
+                # chat model is loaded — retry in plain mode; the defensive JSON
+                # extraction below handles a free-form reply.
+                try:
+                    raw = await _call(with_format=False)
+                except Exception as exc2:
+                    _AI_BUILD_JOBS[job_id].update(status="error", error=f"AI build failed: {exc2}")
+                    return
+            else:
+                _AI_BUILD_JOBS[job_id].update(status="error", error=f"AI build failed: {exc}")
+                return
+
+        def _extract_json(text: str) -> dict:
+            text = text.strip()
+            if text.startswith("```"):
+                text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+                text = re.sub(r"\n?```$", "", text)
+            try:
+                return json.loads(text)
+            except ValueError:
+                start, end = text.find("{"), text.rfind("}")
+                if start != -1 and end > start:
+                    return json.loads(text[start:end + 1])
+                raise
+
+        try:
+            raw_elements = _extract_json(raw or "").get("elements")
+        except ValueError:
+            raw_elements = None
+        if not isinstance(raw_elements, list) or not raw_elements:
+            hint = f" ({fmt_err})" if fmt_err else ""
+            _AI_BUILD_JOBS[job_id].update(
+                status="error",
+                error=f"The model's reply contained no usable elements — try rephrasing.{hint}",
+            )
+            return
+
+        _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{3,8}$")
+        _ALLOWED_SHAPES = {"rect", "circle", "line", "arrow", "text"}
+
+        def _num(v, default=0.0):
+            try:
+                return max(0.0, min(float(v), 20000.0))
+            except (TypeError, ValueError):
+                return default
+
+        def _color(v, fallback):
+            s = str(v or "").strip()
+            return s if _COLOR_RE.match(s) else fallback
+
+        new_elements = []
+        for e in raw_elements[:400]:
+            if not isinstance(e, dict):
+                continue
+            etype = str(e.get("type") or "").strip().lower()
+            if etype not in _ALLOWED_SHAPES:
+                continue
+            ne: dict = {"id": "ai-" + uuid.uuid4().hex[:10], "type": etype}
+            if etype == "rect":
+                ne["x"] = _num(e.get("x")); ne["y"] = _num(e.get("y"))
+                ne["w"] = min(_num(e.get("w"), 100), canvas_w)
+                ne["h"] = min(_num(e.get("h"), 100), canvas_h)
+                ne["fill"] = _color(e.get("fill"), "#2a2a35")
+                ne["stroke"] = _color(e.get("stroke"), "#888888")
+                ne["strokeW"] = _num(e.get("strokeW"), 2)
+            elif etype == "circle":
+                ne["cx"] = _num(e.get("cx")); ne["cy"] = _num(e.get("cy"))
+                ne["rx"] = _num(e.get("rx"), 50); ne["ry"] = _num(e.get("ry"), 50)
+                ne["fill"] = _color(e.get("fill"), "#2a2a35")
+                ne["stroke"] = _color(e.get("stroke"), "#888888")
+                ne["strokeW"] = _num(e.get("strokeW"), 2)
+            elif etype in ("line", "arrow"):
+                ne["x1"] = _num(e.get("x1")); ne["y1"] = _num(e.get("y1"))
+                ne["x2"] = _num(e.get("x2")); ne["y2"] = _num(e.get("y2"))
+                ne["stroke"] = _color(e.get("stroke"), "#aaaaaa")
+                ne["strokeW"] = _num(e.get("strokeW"), 3)
+            elif etype == "text":
+                ne["x"] = _num(e.get("x")); ne["y"] = _num(e.get("y"))
+            label = str(e.get("label") or "")[:200]
+            if label:
+                ne["label"] = label
+            new_elements.append(ne)
+
+        if not new_elements:
+            _AI_BUILD_JOBS[job_id].update(
+                status="error",
+                error="The model's elements were all invalid for this canvas — try rephrasing.",
+            )
+            return
+
+        db = SessionLocal()
+        try:
+            sch = db.query(Schematic).filter(
+                Schematic.slug == slug, Schematic.world_id == world_id).first()
+            if not sch:
+                _AI_BUILD_JOBS[job_id].update(status="error", error="Schematic no longer exists.")
+                return
+            try:
+                elements = json.loads(sch.elements_json or "[]")
+            except ValueError:
+                elements = []
+            if replace_flag:
+                elements = new_elements
+            else:
+                elements = elements + new_elements
+            sch.elements_json = json.dumps(elements)
+            db.commit()
+            total = len(elements)
+        finally:
+            db.close()
+        _AI_BUILD_JOBS[job_id].update(
+            status="done", added=len(new_elements), total=total, elements=new_elements,
+        )
+
+
+async def _schematic_ai_build_task(job_id: int, slug: str, world_id: int,
+                                   desc: str, replace_flag: bool, image_b64s: list):
+    """Thin crash-capture wrapper: any exception in the build task lands in
+    the job row (status=error) instead of dying silently on the loop."""
+    try:
+        await _schematic_ai_build_task_inner(job_id, slug, world_id, desc,
+                                             replace_flag, image_b64s)
+    except Exception as exc:
+        _AI_BUILD_JOBS.setdefault(job_id, {"status": "error", "slug": slug})
+        _AI_BUILD_JOBS[job_id].update(status="error", error=f"AI build crashed: {exc}")
+
+
+
+
+@app.post("/maps/schematic/{slug}/ai-build/start")
+async def schematic_ai_build_start(
+    slug: str,
+    request: Request,
+    description: str = Form(...),
+    replace: str = Form(""),
+    images: List[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    active_world: str = Cookie(None),
+):
+    """Start an AI layout build for this schematic — returns {"job_id"} for
+    the poll route. Runs in-process (single worker); reasoning + RAG +
+    generation routinely exceeds Cloudflare's ~100 s no-byte timeout, which
+    is why this is a job rather than a synchronous route."""
+    sch = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not sch:
+        raise HTTPException(404)
+    if not world_can_edit_section(request, db.get(World, sch.world_id), "maps"):
+        raise HTTPException(403)
+    desc = (description or "").strip()[:4000]
+    if not desc:
+        raise HTTPException(400, "Describe the space to build")
+
+    import base64 as _b64
+    image_b64s = []
+    for f in (images or [])[:3]:
+        if f and f.filename:
+            raw = await f.read()
+            if raw:
+                image_b64s.append(_b64.b64encode(raw).decode("ascii"))
+
+    job_id = _AI_BUILD_SEQ[0] + 1
+    _AI_BUILD_SEQ[0] = job_id
+    replace_flag = (replace or "").strip().lower() in ("1", "true", "yes")
+    _AI_BUILD_JOBS[job_id] = {"status": "running", "slug": slug,
+                              "added": 0, "total": 0, "elements": [], "error": ""}
+    done = [j for j, v in _AI_BUILD_JOBS.items() if v["status"] != "running"]
+    while len(done) > _AI_BUILD_KEEP:
+        _AI_BUILD_JOBS.pop(done.pop(0), None)
+
+    asyncio.get_event_loop().create_task(
+        _schematic_ai_build_task(job_id, slug, sch.world_id, desc, replace_flag, image_b64s)
+    )
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.get("/maps/schematic/{slug}/ai-build/{job_id}")
+async def schematic_ai_build_poll(slug: str, job_id: int):
+    """Poll an AI Build job: {status: running|done|error}; done carries the
+    appended count, the authoritative total, and the new elements."""
+    job = _AI_BUILD_JOBS.get(job_id)
+    if not job or job.get("slug") != slug:
+        raise HTTPException(404, "Unknown AI build job")
+    if job["status"] == "error":
+        return {"status": "error", "error": job.get("error") or "AI build failed"}
+    if job["status"] == "running":
+        return {"status": "running"}
+    return {"status": "done", "added": job["added"], "total": job["total"],
+            "elements": job["elements"]}
+
+
 
 
 _fastapi_app = app  # the real FastAPI instance, kept under this name so every

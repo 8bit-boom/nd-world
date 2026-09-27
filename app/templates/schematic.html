@@ -568,21 +568,41 @@ function aiBuildClose() {
     const replace = document.getElementById('ai-build-replace').checked ? '1' : '';
     const files = document.getElementById('ai-build-images').files;
     go.disabled = true;
-    statusEl.textContent = '⏳ The model is drafting the layout… (can take up to a minute)';
+    statusEl.textContent = '⏳ Starting AI build…';
     try {
       const fd = new FormData();
       fd.append('description', desc);
       fd.append('replace', replace);
       for (const f of files) fd.append('images', f);
-      const r = await fetch(`/maps/schematic/${SLUG}/ai-build`, { method: 'POST', body: fd });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
-      // Same contract as pull-combat: the server appended and returns the
-      // authoritative full list — adopt it wholesale.
-      elements = data.elements;
-      selIds.clear(); redraw(); snapshot(); markClean();
-      statusEl.textContent = `✓ Added ${data.added} element(s).`;
-      setTimeout(aiBuildClose, 900);
+      // Start (returns immediately) — the build runs in the background,
+      // because reasoning + RAG + generation exceeds Cloudflare's ~100 s
+      // no-byte timeout that a synchronous request would hit with HTTP 524.
+      const r = await fetch(`/maps/schematic/${SLUG}/ai-build/start`, { method: 'POST', body: fd });
+      const startData = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(startData.detail || ('HTTP ' + r.status));
+      const jobId = startData.job_id;
+      // Poll until done/error (generous — a cold model load takes a minute).
+      const deadline = Date.now() + 8 * 60 * 1000;
+      while (true) {
+        if (Date.now() > deadline) throw new Error('Timed out waiting for the AI build.');
+        await new Promise(res => setTimeout(res, 2000));
+        const pr = await fetch(`/maps/schematic/${SLUG}/ai-build/${jobId}`);
+        if (!pr.ok) continue;
+        const pd = await pr.json();
+        if (pd.status === 'running') {
+          statusEl.textContent = '⏳ The model is drafting the layout…';
+          continue;
+        }
+        if (pd.status === 'error') throw new Error(pd.error || 'AI build failed');
+        // done — adopt the authoritative merged element list (pull-combat
+        // contract), then persist so a reload keeps it.
+        elements = pd.elements;
+        selIds.clear(); redraw(); snapshot(); markClean();
+        await save();
+        statusEl.textContent = `✓ Added ${pd.added} element(s).`;
+        setTimeout(aiBuildClose, 900);
+        break;
+      }
     } catch (e) {
       statusEl.textContent = '⚠ ' + e.message;
     } finally {

@@ -30,6 +30,18 @@ def _pin(client, slug="world-a"):
     client.cookies.set("active_world", slug)
 
 
+def _poll_job(client, slug, job_id, tries=40):
+    """Poll an AI build job to completion (the task runs on the app's loop;
+    give it scheduling ticks)."""
+    import time
+    for _ in range(tries):
+        data = client.get(f"/maps/schematic/{slug}/ai-build/{job_id}").json()
+        if data.get("status") != "running":
+            return data
+        time.sleep(0.05)
+    return data
+
+
 _CANNED_ELEMENTS = {
     "elements": [
         {"type": "rect", "x": 100, "y": 100, "w": 600, "h": 400,
@@ -64,11 +76,13 @@ def test_ai_build_appends_validated_elements(client, seed, monkeypatch):
     _schematic(seed, elements=existing)
     login(client, seed.gm.email, GM_PASSWORD)
     _pin(client)
-    r = client.post("/maps/schematic/ai-den/ai-build", data={
+    r = client.post("/maps/schematic/ai-den/ai-build/start", data={
         "description": "A smuggler's den with an L-shaped bar.",
     })
     assert r.status_code == 200, r.text
-    data = r.json()
+    job_id = r.json()["job_id"]
+    data = _poll_job(client, "ai-den", job_id)
+    assert data["status"] == "done", data
     # 5 added: the unknown "dragon" type dropped; the NaN-coords rect kept
     # with its coordinate clamped to the 0 default (clamping, not dropping).
     assert data["added"] == 5
@@ -98,11 +112,14 @@ def test_ai_build_replace_mode(client, seed, monkeypatch):
     _schematic(seed, slug="ai-replace", elements=[{"id": "old", "type": "rect", "x": 1}])
     login(client, seed.gm.email, GM_PASSWORD)
     _pin(client)
-    r = client.post("/maps/schematic/ai-replace/ai-build", data={
+    r = client.post("/maps/schematic/ai-replace/ai-build/start", data={
         "description": "a shrine", "replace": "1",
     })
     assert r.status_code == 200
-    assert r.json()["total"] == 5                      # old canvas gone
+    job_id = r.json()["job_id"]
+    data = _poll_job(client, "ai-replace", job_id)
+    assert data["status"] == "done"
+    assert data["total"] == 5                          # old canvas gone
 
 
 def test_ai_build_rejects_bad_model_output(client, seed, monkeypatch):
@@ -116,9 +133,12 @@ def test_ai_build_rejects_bad_model_output(client, seed, monkeypatch):
     _schematic(seed, slug="ai-bad")
     login(client, seed.gm.email, GM_PASSWORD)
     _pin(client)
-    r = client.post("/maps/schematic/ai-bad/ai-build", data={"description": "a den"})
-    assert r.status_code == 502
-    assert "no usable elements" in r.json()["detail"]
+    r = client.post("/maps/schematic/ai-bad/ai-build/start", data={"description": "a den"})
+    assert r.status_code == 200
+    job_id = r.json()["job_id"]
+    data = _poll_job(client, "ai-bad", job_id)
+    assert data["status"] == "error"
+    assert "no usable elements" in data["error"]
 
 
 def test_ai_build_is_gm_only_and_world_scoped(client, seed):
@@ -128,7 +148,7 @@ def test_ai_build_is_gm_only_and_world_scoped(client, seed):
     _schematic(seed, slug="ai-deny")
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     _pin(client)
-    assert client.post("/maps/schematic/ai-deny/ai-build",
+    assert client.post("/maps/schematic/ai-deny/ai-build/start",
                        data={"description": "x"}).status_code == 403
 
 
