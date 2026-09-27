@@ -29,6 +29,32 @@ def _current_user_id(request: Request):
     return user.id if user else None
 
 
+@router.get("/api/quests/board")
+async def quests_board(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Active top-level quests as JSON for the GM Cockpit's quests panel —
+    the same slice the old fixed cockpit rendered server-side. GM-only
+    (not in _is_player_safe; the handler re-checks)."""
+    if not is_gm(request):
+        raise HTTPException(403)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    quests = (
+        db.query(Quest)
+        .filter(Quest.world_id == world.id, Quest.status == "active", Quest.parent_id.is_(None))
+        .order_by(Quest.category, Quest.title)
+        .limit(12)
+        .all()
+    )
+    party_names = {p.id: p.name for p in db.query(Party).filter(Party.world_id == world.id).all()}
+    return {"quests": [{
+        "id": q.id, "title": q.title, "category": q.category or "main",
+        "summary": q.summary or "",
+        "party_id": q.assigned_party_id,
+        "party": party_names.get(q.assigned_party_id),
+    } for q in quests]}
+
+
 @router.get("/quests", response_class=HTMLResponse)
 def quests_list(request: Request, q: str = "", category: str = "", party: str = "",
                 db: Session = Depends(get_db), active_world: str = Cookie(None)):

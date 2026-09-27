@@ -1005,6 +1005,10 @@ def _migrate():
             # pattern above.
             if "rules_json" not in w_cols:
                 conn.execute(text("ALTER TABLE worlds ADD COLUMN rules_json TEXT DEFAULT ''"))
+            # GM Cockpit workspace layouts (app/routers/cockpit.py) — written
+            # only through the sanitizing save route, read on cockpit load.
+            if "cockpit_ws_json" not in w_cols:
+                conn.execute(text("ALTER TABLE worlds ADD COLUMN cockpit_ws_json TEXT"))
             # recap_content_touch (durable session-log-recap staleness
             # watermark — see World.recap_content_touch's own docstring in
             # app/models.py) heals the same way. Deliberately NO DEFAULT

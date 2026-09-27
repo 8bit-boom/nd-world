@@ -260,9 +260,11 @@ def test_floated_dice_page_uses_fetch_rolling(client, seed):
 
 # ── Phase 3: GM Cockpit ──────────────────────────────────────────────────────
 
-def test_cockpit_gm_renders_panels(client, seed):
-    pc_id = _mk_pc(seed.world_a.id, "Vex", current_hp=10, max_hp=20)
-    party_id = _mk_party(seed.world_a.id, "Vanguard", pc_ids=[pc_id])
+def test_cockpit_gm_renders_workspace_shell(client, seed):
+    """The cockpit is a modular window workspace now: the page renders the
+    shell (toolbar, add-panel modal, window manager JS) plus the per-world
+    picker data; the windows themselves are built client-side."""
+    _mk_party(seed.world_a.id, "Vanguard")
     _mk_map(seed.world_a.id, "tavern-map", "Tavern")
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
@@ -270,16 +272,12 @@ def test_cockpit_gm_renders_panels(client, seed):
     assert r.status_code == 200
     html = r.text
     assert "GM Cockpit" in html
-    assert 'id="ck-map"' in html                       # map dock
-    assert 'id="ck-map-select"' in html
-    assert "/maps/schematic/tavern-map/view" in html   # docked player view
-    assert 'id="ck-dice"' in html                      # dice tray
-    assert "/dice" in html
-    assert 'id="cockpit-vitals"' in html               # live partials
-    assert 'id="cockpit-quests"' in html
-    assert "Vanguard" in html and "Vex" in html        # stacked party vitals
-    assert "ndLiveRefetch('#cockpit-vitals')" in html
-    assert "ndLiveRefetch('#cockpit-quests')" in html
+    assert 'id="ck-viewport"' in html
+    assert 'id="ck-add-overlay"' in html and "Add panel" in html
+    assert 'id="ck-save-preset"' in html          # named layouts
+    assert "/static/js/cockpit.js" in html
+    assert '"slug": "tavern-map"' in html          # picker data for the modal
+    assert '"name": "Vanguard"' in html
 
 
 def test_cockpit_player_forbidden(client, seed):
@@ -305,10 +303,115 @@ def test_cockpit_nav_entry_hidden_for_player(client, seed):
     assert "GM Cockpit" not in html
 
 
-def test_cockpit_empty_world_renders_hints(client, seed):
+def test_cockpit_empty_world_renders_shell(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get("/cockpit")
     assert r.status_code == 200
-    assert "No floatable maps yet" in r.text
-    assert "No parties yet" in r.text
+    assert "Empty cockpit" in r.text
+    # with no maps/parties the picker data is empty lists, not errors
+    assert '"maps_json": []' in r.text or 'CK_MAPS = []' in r.text
+
+
+# ── Phase 3: cockpit workspace persistence ───────────────────────────────────
+
+def _login_gm(client, seed):
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+
+def test_workspace_roundtrip(client, seed):
+    _login_gm(client, seed)
+    assert client.get("/api/cockpit/workspace").json() == {"workspace": None}
+
+    ws = {"current": {"panels": [
+        {"id": "p1", "type": "map", "ref": "tavern", "title": "🗺 Tavern",
+         "x": 10, "y": 20, "w": 700, "h": 500, "z": 11, "collapsed": False},
+        {"id": "p2", "type": "notes", "ref": "", "title": "📝 Notes",
+         "x": 0, "y": 0, "w": 300, "h": 200, "z": 12, "collapsed": False,
+         "data": {"text": "Vex took 6 HP from the trap"}},
+        {"id": "p3", "type": "hax", "ref": "", "title": "?", "x": 0, "y": 0,
+         "w": 1, "h": 1, "z": 1},  # unknown type — dropped
+    ]}, "presets": {"Combat": {"panels": [
+        {"id": "p1", "type": "dice", "ref": "", "title": "🎲", "x": 5, "y": 5,
+         "w": 420, "h": 480, "z": 1},
+    ]}}}
+    r = client.post("/api/cockpit/workspace", json=ws)
+    assert r.status_code == 200
+    back = client.get("/api/cockpit/workspace").json()["workspace"]
+    assert len(back["current"]["panels"]) == 2  # the "hax" panel was dropped
+    assert back["current"]["panels"][0]["ref"] == "tavern"
+    assert back["current"]["panels"][1]["data"]["text"].startswith("Vex took 6 HP")
+    assert back["presets"]["Combat"]["panels"][0]["type"] == "dice"
+
+
+def test_workspace_sanitizes_geometry_and_strings(client, seed):
+    _login_gm(client, seed)
+    ws = {"current": {"panels": [
+        {"id": "x" * 99, "type": "map", "ref": "m", "title": "t" * 300,
+         "x": -500, "y": 99999, "w": 5, "h": 10 ** 9, "z": 10 ** 9,
+         "data": {"text": "n" * 40000}},
+    ]}, "presets": {}}
+    r = client.post("/api/cockpit/workspace", json=ws)
+    assert r.status_code == 200
+    panel = client.get("/api/cockpit/workspace").json()["workspace"]["current"]["panels"][0]
+    assert len(panel["id"]) <= 40 and len(panel["title"]) <= 120
+    assert panel["x"] == 0 and panel["y"] == 8000          # clamped
+    assert panel["w"] >= 160 and panel["h"] <= 8000
+    assert len(panel["data"]["text"]) <= 8000
+
+
+def test_workspace_rejects_structural_nonsense(client, seed):
+    _login_gm(client, seed)
+    assert client.post("/api/cockpit/workspace", json=["not", "a", "dict"]).status_code == 400
+    assert client.post("/api/cockpit/workspace",
+                       json={"current": {"panels": "nope"}, "presets": {}}).status_code == 400
+    big = {"current": {"panels": [
+        {"id": f"p{i}", "type": "dice", "x": 0, "y": 0, "w": 300, "h": 200, "z": i}
+        for i in range(30)
+    ]}, "presets": {}}
+    assert client.post("/api/cockpit/workspace", json=big).status_code == 400
+
+
+def test_workspace_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get("/api/cockpit/workspace").status_code == 403
+    assert client.post("/api/cockpit/workspace", json={}).status_code == 403
+
+
+def test_quests_board_json(client, seed):
+    from app.models import Quest
+
+    db = SessionLocal()
+    try:
+        db.add_all([
+            Quest(world_id=seed.world_a.id, title="Witching Hour", status="active",
+                  category="main", summary="The prologue thread"),
+            Quest(world_id=seed.world_a.id, title="Old Business", status="complete"),
+        ])
+        db.commit()
+    finally:
+        db.close()
+    party_id = _mk_party(seed.world_a.id, "Vanguard")
+    db = SessionLocal()
+    try:
+        q = db.query(Quest).filter(Quest.title == "Witching Hour").one()
+        q.assigned_party_id = party_id
+        db.commit()
+    finally:
+        db.close()
+
+    _login_gm(client, seed)
+    r = client.get("/api/quests/board")
+    assert r.status_code == 200
+    quests = r.json()["quests"]
+    assert [q["title"] for q in quests] == ["Witching Hour"]
+    assert quests[0]["party"] == "Vanguard"
+    assert quests[0]["summary"] == "The prologue thread"
+
+
+def test_quests_board_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get("/api/quests/board").status_code == 403

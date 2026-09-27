@@ -295,6 +295,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/quests/new` | GM | Creates a quest. |
 | GET | `/quests/{quest_id}` | GM / Player* | Quest detail. *Same opt-in as the list above; 404s (not 403) for an id belonging to a world the viewer can't access, same hidden-content convention as `pages_viewer`. |
 | POST | `/quests/{quest_id}/edit` | GM | Saves quest edits. |
+| GET | `/api/quests/board` | GM | Active top-level quests as JSON (party names attached) for the GM Cockpit's quests panel. |
 | POST | `/api/quests/{quest_id}/status` | GM | Updates quest status (active/completed/failed). |
 | POST | `/api/quests/suggest/start` | GM | Starts an AI session-sync background job: reads the session's summary/transcript/facts, diffs them against the current quest board (RAG-grounded in world lore, thinking on), and drafts suggestions — new quests to add and status changes/notes for existing ones. Returns `{"job_id"}` immediately (poll the GET route; reasoning + RAG + generation exceeds Cloudflare's ~100 s no-byte timeout). Hallucinated quest ids are filtered; nothing is written until `/api/quests/apply`. Body `{session_id}` or `{text}`, optional `{model, use_rag}`. |
 | GET | `/api/quests/suggest/{job_id}` | GM | Polls a quest-sync job: `running` (with elapsed seconds), `done` (with the draft suggestions), or `error` (with the reason). Runs in-process — reasoning + RAG + generation exceeds Cloudflare's ~100 s no-byte timeout, so the AI sync is a background job like AI Build. | AI session-sync: reads a session's summary/transcript/facts, diffs them against the current quest board (RAG-grounded in world lore, thinking on), and returns draft suggestions — new quests to add and status changes/notes for existing ones. Hallucinated quest ids are filtered; nothing is written until `/api/quests/apply`. Body `{session_id}` or `{text}`, optional `{model, use_rag}`. |
@@ -387,11 +388,13 @@ worlds they've been invited into (`WorldMembership`).
 
 ## GM Cockpit
 
-`app/routers/cockpit.py` — full-screen session dashboard composing the live battle map (embed-mode player view), every party's member-vitals strip, the dice tray, and the active-quest list; vitals/quests re-fetch over the live-sync bus. Pairs with the ⇱ Float / 📌 Always-on-top panel buttons (static/js/nd-float.js) on the map viewer, dice, party, and NPC-talk pages.
+`app/routers/cockpit.py` + `static/js/cockpit.js` — a modular window workspace: the GM pins any number of draggable/resizable panels (battle map, dice tray, party vitals, active quests, any entity's page, scratch notes, AI Chat), adds/removes them from an Add-panel modal, and saves named layouts ("Combat", "Exploration", …). The arrangement autosaves per world and follows the GM across devices. Live panels (vitals/quests) re-fetch over the live-sync bus; other panels are embedded live pages in `?embed=1` chrome-less mode. Pairs with the ⇱ Float / 📌 Always-on-top panel buttons (static/js/nd-float.js) on the map viewer, dice, party, and NPC-talk pages.
 
 | Method | Path | Access | Description |
 |---|---|---|---|
-| GET | `/cockpit` | GM | Session-mode dashboard (map dock with picker, stacked party vitals, dice tray, active quests). GM-only. |
+| GET | `/cockpit` | GM | The cockpit workspace (window shell + per-world map/party pickers). GM-only. |
+| GET | `/api/cockpit/workspace` | GM | The active world's saved workspace (`{"workspace": null}` if never arranged). |
+| POST | `/api/cockpit/workspace` | GM | Save current panels + named presets. Sanitized (panel allowlist, geometry clamps, 24 panels/12 presets, 128 KB cap). |
 
 ## Dice
 

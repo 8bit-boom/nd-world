@@ -6,212 +6,187 @@
     <span id="ck-title">🎛 GM Cockpit</span>
     <span id="ck-world">{{ world.name }}</span>
     <div id="ck-head-actions">
-      {% if maps %}
-      <select id="ck-map-select" title="Map on the dock">
-        {% for m in maps %}
-        <option value="{{ m.slug }}">{{ m.name }}</option>
-        {% endfor %}
-      </select>
-      <button type="button" class="nd-float-btn" id="ck-float-map" title="Float the selected map in its own window"
-              onclick="void(0)">⇱ Map</button>
-      {% endif %}
-      <button type="button" class="nd-float-btn" title="Float the dice tray"
-              onclick="ndFloat('{{ '/dice'|wq }}', {title:'🎲 Dice', w:480, h:680})">⇱ Dice</button>
-      <button type="button" class="nd-float-btn" title="Float Talk to NPCs"
-              onclick="ndFloat('{{ '/npc-talk'|wq }}', {title:'💬 Talk to NPCs', w:820, h:640})">⇱ NPCs</button>
-      <button type="button" class="nd-float-btn" title="Float AI Chat"
-              onclick="ndFloat('{{ '/ai'|wq }}', {title:'🤖 AI Chat', w:640, h:760})">⇱ AI</button>
-      <a class="ck-link" href="{{ '/combat'|wq }}" title="Combat Tracker">⚔</a>
-      <a class="ck-link" href="{{ '/sessions'|wq }}" title="Sessions">📓</a>
-      <a class="ck-link" href="{{ '/'|wq }}" title="Exit the cockpit">✕</a>
+      <select id="ck-preset-select" title="Saved layouts" style="display:none"></select>
+      <button type="button" class="ck-btn" id="ck-save-preset" title="Save the current windows as a named layout">💾 Save layout</button>
+      <button type="button" class="ck-btn" id="ck-delete-preset" title="Delete the selected saved layout" style="display:none">🗑</button>
+      <button type="button" class="ck-btn ck-btn-primary" id="ck-add-btn" title="Add a panel — map, dice, party, quests, entity, notes, AI chat">＋ Add panel</button>
+      <button type="button" class="ck-btn" id="ck-reset" title="Back to the default panel set">↺ Reset</button>
+      <a class="ck-btn" href="{{ '/combat'|wq }}" title="Combat Tracker">⚔</a>
+      <a class="ck-btn" href="{{ '/'|wq }}" title="Exit the cockpit">✕</a>
     </div>
   </header>
 
-  <div id="ck-grid">
-    <section id="ck-map-dock">
-      {% if maps %}
-      <iframe id="ck-map" title="Live map" src="{{ ('/maps/schematic/' + maps[0].slug + '/view')|wq }}&embed=1"></iframe>
-      {% else %}
-      <div class="ck-empty">
-        <p>No floatable maps yet.</p>
-        <p><a href="{{ '/maps'|wq }}">Create a schematic map →</a></p>
-        <p class="ck-hint">Leaflet and SVG-canvas schematics dock here; HTML-type maps have no embeddable view.</p>
-      </div>
-      {% endif %}
-    </section>
+  <div id="ck-viewport">
+    <div id="ck-welcome">
+      <p><strong>Empty cockpit.</strong></p>
+      <p>Click <strong>＋ Add panel</strong> to pin a map, dice tray, party vitals, quests,
+      any entity or character page, scratch notes, or AI chat — all at once, all live,
+      no extra browser tabs. Arrangements are saved automatically; 💾 keeps one as a
+      named layout you can switch back to.</p>
+    </div>
+  </div>
+</div>
 
-    <aside id="ck-side">
-      <div id="cockpit-vitals">
-        <div class="ck-panel">
-          <h2>❤ Party vitals <span class="ck-hint">(live)</span></h2>
-          {% for pp in party_panels %}
-          <div class="ck-party">
-            <a class="ck-party-name" href="{{ ('/parties/' + pp.id|string)|wq }}">{{ pp.name }}</a>
-            {% if pp.members %}
-            <div class="ck-vitals-grid">
-              {% for v in pp.members %}
-              <a class="ck-vital {% if v.down %}ck-down{% endif %}" href="{{ ('/characters/' + v.id|string)|wq }}" title="Open {{ v.name }}'s sheet">
-                <span class="ck-vital-name">{{ v.name }}</span>
-                <span class="ck-vital-lvl">Lvl {{ v.level }}{% if v.levelup %} ⬆{% endif %}</span>
-                {% if v.resources %}
-                <span class="ck-res">
-                  {% for r in v.resources %}<i>{{ r.current }}/{{ r.max }} {{ r.label }}</i>{% endfor %}
-                </span>
-                {% endif %}
-                {% if v.max_hp %}
-                {% set hp_pct = ((v.hp or 0) * 100 / v.max_hp) | round | int %}
-                <span class="ck-hpbar"><span class="ck-hpfill ck-hp-{{ 'low' if hp_pct <= 25 else ('mid' if hp_pct <= 55 else 'ok') }}" style="width:{{ hp_pct if hp_pct > 0 else 0 }}%"></span></span>
-                <span class="ck-hpnum">HP {{ v.hp }}/{{ v.max_hp }}{% if v.temp_hp %} (+{{ v.temp_hp }}){% endif %} · AC {{ v.ac or '—' }}{% if v.down %} · DOWN{% endif %}</span>
-                {% else %}
-                <span class="ck-hpnum">{% if v.ac %}AC {{ v.ac }}{% endif %}</span>
-                {% endif %}
-                {% if v.conditions %}<span class="ck-conds">{{ v.conditions | join(', ') }}</span>{% endif %}
-              </a>
-              {% endfor %}
-            </div>
-            {% else %}
-            <p class="ck-hint" style="margin:.3rem 0 0">No members yet.</p>
-            {% endif %}
-          </div>
-          {% else %}
-          <p class="ck-hint">No parties yet — <a href="{{ '/parties'|wq }}">create one</a>.</p>
-          {% endfor %}
-        </div>
-      </div>
-
-      <div id="cockpit-quests">
-        <div class="ck-panel">
-          <h2>📜 Active quests <span class="ck-hint">(live)</span></h2>
-          {% for q in quests %}
-          <a class="ck-quest" href="{{ ('/quests/' + q.id|string)|wq }}">
-            <span class="ck-quest-title">{{ q.title }}</span>
-            <span class="ck-quest-meta">
-              <i class="ck-pill">{{ q.category }}</i>
-              {% if q.party %}<i class="ck-pill ck-pill-party">{{ q.party }}</i>{% endif %}
-            </span>
-            {% if q.summary %}<span class="ck-quest-sum">{{ q.summary }}</span>{% endif %}
-          </a>
-          {% else %}
-          <p class="ck-hint">No active quests.</p>
-          {% endfor %}
-        </div>
-      </div>
-
-      <div id="ck-dice-dock">
-        <iframe id="ck-dice" title="Dice" src="{{ '/dice'|wq }}&embed=1"></iframe>
-      </div>
-    </aside>
+<!-- Add-panel modal -->
+<div id="ck-add-overlay" style="display:none">
+  <div id="ck-add-box" role="dialog" aria-modal="true" aria-label="Add a panel">
+    <div id="ck-add-head">
+      <span>Add a panel</span>
+      <button type="button" class="ck-btn" id="ck-add-close" title="Close">✕</button>
+    </div>
+    <div id="ck-add-types"></div>
+    <div id="ck-add-picker" style="display:none">
+      <input id="ck-add-search" type="search" placeholder="Search…" autocomplete="off"/>
+      <div id="ck-add-list"></div>
+    </div>
   </div>
 </div>
 
 <style>
-/* Full-viewport session dashboard: the page itself doesn't scroll — each
-   dock scrolls internally — so nothing moves while the GM is driving. */
 #main-content:has(#ck-wrap) { padding: 0 !important; max-width: none !important; }
+/* The workspace is height-managed by cockpit.js (fitViewport) — the footer
+   would only add dead scroll below it. */
+body:has(#ck-wrap) > footer { display: none; }
 #ck-wrap { display: flex; flex-direction: column; height: calc(100vh - 52px); }
 #ck-head {
   display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
-  padding: .45rem .8rem; background: var(--bg2);
+  padding: .4rem .8rem; background: var(--bg2);
   border-bottom: 1px solid var(--border);
 }
 #ck-title { color: var(--neon); font-weight: bold; font-size: 1rem; }
 #ck-world { color: var(--text-dim); font-size: .82rem; }
 #ck-head-actions { margin-left: auto; display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
-#ck-map-select {
-  max-width: 200px; background: var(--bg3); border: 1px solid var(--border);
+#ck-preset-select {
+  max-width: 170px; background: var(--bg3); border: 1px solid var(--border);
   color: var(--text); font-family: inherit; font-size: .78rem;
   border-radius: 4px; padding: .22rem .3rem;
 }
-.ck-link { text-decoration: none; font-size: .9rem; padding: .15rem .35rem; border-radius: 4px; }
-.ck-link:hover { background: var(--bg3); }
-#ck-grid { flex: 1; display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(320px, 1fr); gap: .6rem; padding: .6rem; min-height: 0; }
-#ck-map-dock { min-height: 0; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-#ck-map { width: 100%; height: 100%; border: 0; background: #0a0a0a; }
-#ck-side { display: flex; flex-direction: column; gap: .6rem; min-height: 0; overflow: hidden; }
-#cockpit-vitals, #cockpit-quests { min-height: 0; overflow-y: auto; }
-.ck-panel {
+.ck-btn {
+  background: var(--bg2); border: 1px solid var(--border); color: var(--text-dim);
+  font-family: inherit; font-size: .78rem; padding: .22rem .55rem;
+  border-radius: 4px; cursor: pointer; text-decoration: none; white-space: nowrap;
+}
+.ck-btn:hover { color: var(--neon); border-color: var(--neon); }
+.ck-btn-primary { color: var(--neon); border-color: var(--neon); }
+
+#ck-viewport { position: relative; flex: 1; overflow: hidden; min-height: 0;
+  background:
+    radial-gradient(rgba(255,255,255,.028) 1px, transparent 1px) 0 0/22px 22px,
+    var(--bg); }
+#ck-welcome { position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center;
+  color: var(--text-dim); font-size: .9rem; max-width: 520px; margin: 0 auto; padding: 1rem; }
+#ck-welcome a { color: var(--neon); }
+
+/* ── windows ── */
+.ck-win { position: absolute; display: flex; flex-direction: column;
   background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
-  padding: .7rem .85rem;
-}
-.ck-panel h2 { color: var(--neon); font-size: .9rem; margin: 0 0 .55rem; }
-.ck-hint { color: var(--text-dim); font-weight: normal; font-size: .72rem; }
-.ck-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--text-dim); font-size: .9rem; gap: .2rem; }
-.ck-empty a { color: var(--neon); }
-.ck-party { margin-bottom: .7rem; }
-.ck-party:last-child { margin-bottom: 0; }
-.ck-party-name { display: block; color: var(--text); text-decoration: none; font-size: .82rem; margin-bottom: .35rem; }
-.ck-party-name:hover { color: var(--neon); }
-.ck-vitals-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: .45rem; }
-.ck-vital {
-  display: flex; flex-direction: column; gap: .18rem;
-  background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
-  padding: .45rem .55rem; text-decoration: none; color: var(--text);
-}
-.ck-vital:hover { border-color: var(--neon); }
-.ck-vital.ck-down { border-color: #a33; }
-.ck-vital-name { font-size: .82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ck-vital-lvl { font-size: .68rem; color: var(--text-dim); }
-.ck-res { display: flex; flex-wrap: wrap; gap: .25rem; }
-.ck-res i {
-  font-style: normal; font-size: .64rem; border: 1px solid var(--neon3, #a855f7);
-  color: var(--neon3, #a855f7); border-radius: 3px; padding: .05rem .3rem;
-}
-.ck-hpbar { display: block; background: var(--bg2); border-radius: 3px; height: 6px; overflow: hidden; }
+  box-shadow: 0 6px 22px rgba(0,0,0,.4); min-width: 160px; min-height: 100px;
+  overflow: hidden; }
+.ck-win:focus-within { border-color: var(--neon); }
+.ck-head2 { display: flex; align-items: center; gap: .35rem; cursor: grab;
+  padding: .28rem .5rem; background: var(--bg3); border-bottom: 1px solid var(--border);
+  user-select: none; touch-action: none; }
+.ck-head2:active { cursor: grabbing; }
+.ck-win-title { flex: 1; font-size: .78rem; font-weight: bold; color: var(--neon);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ck-wbtn { background: none; border: none; color: var(--text-dim); cursor: pointer;
+  font-size: .75rem; padding: 0 .25rem; font-family: inherit; line-height: 1.4; }
+.ck-wbtn:hover { color: var(--neon); }
+.ck-body { flex: 1; min-height: 0; position: relative; background: var(--bg2); }
+.ck-body iframe { width: 100%; height: 100%; border: 0; background: var(--bg2); }
+.ck-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
+  cursor: nwse-resize; touch-action: none; z-index: 2;
+  border-right: 2px solid var(--border); border-bottom: 2px solid var(--border);
+  border-bottom-right-radius: 6px; }
+.ck-resize:hover { border-color: var(--neon); }
+.ck-win.collapsed .ck-body, .ck-win.collapsed .ck-resize { display: none; }
+.ck-win.maxed { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; z-index: 99999 !important; border-radius: 0; }
+
+/* live panel bodies (party vitals / quests) */
+.ck-live { padding: .5rem .6rem; overflow-y: auto; height: 100%; box-sizing: border-box; }
+.ck-live h4 { margin: .2rem 0 .35rem; font-size: .72rem; color: var(--text-dim); font-weight: normal; }
+.ck-live .ck-empty { color: var(--text-dim); font-size: .78rem; }
+.ck-live .ck-empty a { color: var(--neon); }
+.ck-mem { display: block; background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 4px; padding: .4rem .5rem; margin-bottom: .35rem;
+  text-decoration: none; color: var(--text); }
+.ck-mem.down { border-color: #a33; }
+.ck-mem-row { display: flex; justify-content: space-between; gap: .4rem; font-size: .8rem; }
+.ck-mem-lvl { font-size: .68rem; color: var(--text-dim); }
+.ck-hpbar { display: block; background: var(--bg2); border-radius: 3px; height: 6px; overflow: hidden; margin: .25rem 0 .2rem; }
 .ck-hpfill { display: block; height: 100%; }
-.ck-hp-ok { background: var(--neon); }
-.ck-hp-mid { background: #da4; }
-.ck-hp-low { background: #c44; }
-.ck-hpnum { font-size: .72rem; color: var(--text-dim); }
-.ck-conds { font-size: .68rem; color: var(--text-dim); }
-.ck-quest { display: block; padding: .4rem .5rem; margin-bottom: .35rem; background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; text-decoration: none; color: var(--text); }
+.ck-hp-ok { background: var(--neon); } .ck-hp-mid { background: #da4; } .ck-hp-low { background: #c44; }
+.ck-mem-hp { font-size: .7rem; color: var(--text-dim); }
+.ck-conds { font-size: .68rem; color: var(--text-dim); margin-top: .15rem; }
+.ck-reschips { display: flex; flex-wrap: wrap; gap: .25rem; margin: .2rem 0; }
+.ck-reschips i { font-style: normal; font-size: .62rem; border: 1px solid var(--neon3, #a855f7);
+  color: var(--neon3, #a855f7); border-radius: 3px; padding: .05rem .3rem; }
+.ck-quest { display: block; padding: .4rem .5rem; margin-bottom: .35rem; background: var(--bg3);
+  border: 1px solid var(--border); border-radius: 4px; text-decoration: none; color: var(--text); }
 .ck-quest:hover { border-color: var(--neon); }
-.ck-quest-title { display: block; font-size: .82rem; }
-.ck-quest-meta { display: flex; gap: .3rem; margin-top: .2rem; }
-.ck-pill { font-style: normal; font-size: .64rem; border: 1px solid var(--border); color: var(--text-dim); border-radius: 3px; padding: .05rem .35rem; }
+.ck-quest-t { display: block; font-size: .8rem; }
+.ck-quest-m { display: flex; gap: .3rem; margin-top: .15rem; }
+.ck-pill { font-style: normal; font-size: .62rem; border: 1px solid var(--border);
+  color: var(--text-dim); border-radius: 3px; padding: .05rem .35rem; }
 .ck-pill-party { border-color: var(--neon); color: var(--neon); }
-.ck-quest-sum { display: block; font-size: .72rem; color: var(--text-dim); margin-top: .2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#ck-dice-dock { flex: 0 0 34%; min-height: 160px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
-#ck-dice { width: 100%; height: 100%; border: 0; }
+.ck-quest-s { display: block; font-size: .7rem; color: var(--text-dim); margin-top: .15rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* notes */
+.ck-notes { width: 100%; height: 100%; box-sizing: border-box; resize: none;
+  background: var(--bg2); color: var(--text); border: 0; outline: none;
+  font-family: var(--font, inherit); font-size: .85rem; padding: .6rem .7rem; }
+
+/* add-modal */
+#ck-add-overlay { position: fixed; inset: 0; z-index: 100000; background: rgba(0,0,0,.55);
+  padding-top: 10vh; }
+#ck-add-box { max-width: 460px; margin: 0 auto; background: var(--bg2);
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+#ck-add-head { display: flex; justify-content: space-between; align-items: center;
+  padding: .5rem .8rem; border-bottom: 1px solid var(--border);
+  color: var(--neon); font-weight: bold; font-size: .9rem; }
+#ck-add-types { display: grid; grid-template-columns: 1fr 1fr; gap: .45rem; padding: .8rem; }
+.ck-type { display: flex; gap: .5rem; align-items: center; background: var(--bg3);
+  border: 1px solid var(--border); border-radius: 4px; padding: .5rem .6rem;
+  color: var(--text); font-size: .82rem; cursor: pointer; font-family: inherit; text-align: left; }
+.ck-type:hover { border-color: var(--neon); }
+.ck-type small { display: block; color: var(--text-dim); font-size: .68rem; }
+#ck-add-picker { padding: .8rem; border-top: 1px solid var(--border); }
+#ck-add-search { width: 100%; box-sizing: border-box; background: var(--bg3);
+  border: 1px solid var(--border); color: var(--text); border-radius: 4px;
+  padding: .4rem .55rem; font-family: inherit; font-size: .85rem; margin-bottom: .5rem; }
+#ck-add-list { max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: .25rem; }
+.ck-pick { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
+  padding: .4rem .55rem; color: var(--text); cursor: pointer; font-size: .82rem;
+  font-family: inherit; text-align: left; display: flex; justify-content: space-between; gap: .5rem; }
+.ck-pick:hover { border-color: var(--neon); }
+.ck-pick small { color: var(--text-dim); }
+
 @media (max-width: 900px) {
-  #ck-grid { grid-template-columns: 1fr; grid-template-rows: minmax(240px, 45vh) minmax(0, 1fr); overflow-y: auto; }
-  #ck-map-dock { min-height: 240px; }
-  #ck-side { overflow-y: visible; }
+  #ck-viewport { overflow-y: auto; padding: .5rem; }
+  .ck-win { position: static; width: auto !important; height: 320px !important;
+    margin-bottom: .6rem; }
+  .ck-head2 { cursor: default; }
+  .ck-resize { display: none; }
+  .ck-win.maxed { position: static; height: 80vh !important; }
 }
 </style>
 
 <script>
-(function(){
-  // Map picker — remembers the choice per world so the cockpit reopens on
-  // the map the GM was last running.
-  var select = document.getElementById('ck-map-select');
-  var frame = document.getElementById('ck-map');
-  var key = 'nd_cockpit_map_{{ world.slug }}';
-  if (select && frame) {
-    try {
-      var saved = localStorage.getItem(key);
-      if (saved && select.querySelector('option[value="' + saved + '"]')) select.value = saved;
-    } catch (e) {}
-    var loadMap = function(slug){
-      frame.src = '/maps/schematic/' + encodeURIComponent(slug) + '/view?embed=1&w={{ world.slug }}';
-    };
-    loadMap(select.value);
-    select.addEventListener('change', function(){
-      try { localStorage.setItem(key, select.value); } catch (e) {}
-      loadMap(select.value);
-    });
-    var floatMap = document.getElementById('ck-float-map');
-    if (floatMap) floatMap.addEventListener('click', function(){
-      ndFloat('/maps/schematic/' + encodeURIComponent(select.value) + '/view?w={{ world.slug }}',
-              {title: '🗺 ' + select.selectedOptions[0].textContent, w: 760, h: 600});
-    });
-  }
-
-  // Live sync — vitals and quests re-fetch from the server render when the
-  // bus fires (any HP/XP/loot/quest change from any window or device).
-  if (window.ndLiveRefetch) {
-    ndLiveRefetch('#cockpit-vitals');
-    ndLiveRefetch('#cockpit-quests');
-  }
-})();
+const CK_MAPS = {{ maps_json | tojson }};
+const CK_PARTIES = {{ parties_json | tojson }};
+const CK_WORLD = {{ world.slug | tojson }};
+const CK_TYPES = {
+  map:    { icon: '🗺', label: 'Map',          sub: 'live battle map',           w: 780, h: 560 },
+  dice:   { icon: '🎲', label: 'Dice',         sub: 'shared roll log',           w: 420, h: 480 },
+  party:  { icon: '❤', label: 'Party vitals', sub: 'live HP / conditions',      w: 420, h: 380 },
+  quests: { icon: '📜', label: 'Quests',       sub: 'active quest board',        w: 420, h: 340 },
+  entity: { icon: '👤', label: 'Entity',       sub: 'any NPC, place, item, note…', w: 480, h: 620 },
+  notes:  { icon: '📝', label: 'Notes',        sub: 'scratch pad (saved)',       w: 360, h: 300 },
+  ai:     { icon: '🤖', label: 'AI Chat',      sub: 'world-grounded assistant',  w: 520, h: 640 },
+};
 </script>
+<script src="/static/js/cockpit.js"></script>
 {% endblock %}

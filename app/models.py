@@ -270,6 +270,15 @@ class World(Base):
     # render time (logged) and rejected with a 400 at save time so the GM sees
     # the parse error immediately.
     rules_json = Column(Text, default="")
+    # GM Cockpit workspace (app/routers/cockpit.py): the GM's saved panel
+    # layouts as JSON — {"current": {"panels": [...]}, "presets": {name:
+    # {"panels": [...]}}} — where each panel is a draggable/resizable
+    # window (type, which map/party/entity it shows, position/size,
+    # collapsed state, scratch-notes text). Per-world (different campaigns
+    # arrange different tooling), GM-only surface; written only through the
+    # sanitizing save route, never raw. NULL = never arranged (the cockpit
+    # builds a sensible default from the world's first map/party).
+    cockpit_ws_json = Column(Text, nullable=True)
     # GM-authored blurb shown at the top of the world's home page (/),
     # Markdown, rendered with the same `md` Jinja filter as rules_md/entity
     # bodies. NULL = no blurb.
