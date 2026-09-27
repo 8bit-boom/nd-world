@@ -89,6 +89,14 @@
     </div>
 
     <div class="form-group">
+      <label>Roleplay personality <small>(💬 Talk to NPCs)</small></label>
+      <textarea name="roleplay_personality" rows="3" maxlength="4000"
+                placeholder="How this character speaks and behaves when someone talks to them — e.g. &quot;Gruff but warm. Calls everyone 'lad' or 'lass'. Never discusses the guild's finances. Speaks in short, clipped sentences.&quot;"
+                style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px;resize:vertical;width:100%">{{ entity.roleplay_personality if entity else '' }}</textarea>
+      <p style="color:var(--text-dim);font-size:.78rem;margin-top:.3rem">Standing direction the AI follows when someone uses <strong>Talk to NPCs</strong> with this character — voice, mannerisms, topics to deflect, things never to say. Wrap a line in [gmonly]…[/gmonly] to keep that part of the direction GM-side only (players' conversations never see it).</p>
+    </div>
+
+    <div class="form-group">
       {# The template PICKER is content tooling (assistants may use it), but
          "manage templates" links to /entity-templates — template management
          stays GM-only — so the link itself is only rendered for the GM. #}

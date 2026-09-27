@@ -56,6 +56,14 @@ _BODY_PREFIX_CHARS = 2500
 _MAX_MODEL_TURNS = 40
 # Notes included in the identity block, newest first.
 _MAX_NOTE_ROWS = 10
+# Kinds that can hold an in-character conversation. A Sword +2 or the
+# Floating Market district has no voice — the picker lists only these
+# kinds and the API routes refuse others. Organizations count: they're
+# collective entities a GM can voice through a spokesperson.
+TALKABLE_KINDS = {"character", "creature", "organization"}
+# Cap on the GM-authored roleplay personality (it's prompt text, not
+# lore storage — keep it tight).
+_MAX_PERSONALITY_CHARS = 4000
 
 _ROLEPLAY_SYSTEM = (
     "You are roleplaying AS the character described below, speaking entirely in first "
@@ -91,6 +99,15 @@ def _npc_or_404(db: Session, request: Request, world: World, entity_id: int) -> 
     entity = q.first()
     if not entity:
         raise HTTPException(404)
+    if entity.kind not in TALKABLE_KINDS:
+        # An existing, visible entity of a non-conversational kind (a
+        # location, an item) — the picker only offers talkable kinds, so
+        # reaching this means an id guessed or hand-typed for another kind.
+        raise HTTPException(
+            400,
+            f"A {entity.kind} can't hold an in-character conversation — "
+            "Talk to NPCs covers characters, creatures, and organizations.",
+        )
     return entity
 
 
@@ -141,11 +158,25 @@ def _identity_context(db: Session, request: Request, entity: Entity, gm: bool) -
     for key, value in fields.items():
         if value in (None, "", []):
             continue
+        # List/dict values (repeatable "list"-type custom fields) render as
+        # readable prose, not Python repr.
+        if isinstance(value, (list, tuple)):
+            value = ", ".join(str(v) for v in value)
+        elif isinstance(value, dict):
+            value = "; ".join(f"{k}: {v}" for k, v in value.items())
         shown = str(value) if gm else strip_gm_only(str(value)).strip()
         if shown:
             field_lines.append(f"- {key}: {shown}")
     if field_lines:
         parts.append("Custom fields:\n" + "\n".join(field_lines))
+    # The GM's roleplay direction — how this character speaks and behaves.
+    # [gmonly] stripped for players exactly like body/fields, so secret
+    # direction ("never mention the mask") stays GM-side.
+    personality = _clean(getattr(entity, "roleplay_personality", "") or "").strip()
+    if personality:
+        parts.append("How you speak and behave (standing direction from the GM — "
+                     "follow it over any general instinct):\n"
+                     + personality[:_MAX_PERSONALITY_CHARS])
     notes_q = db.query(EntityNote).filter(EntityNote.entity_id == entity.id)
     if not gm:
         notes_q = notes_q.filter(EntityNote.visible_to_players.is_(True))
@@ -173,14 +204,15 @@ def npc_talk_page(request: Request, entity: int = 0, db: Session = Depends(get_d
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         return RedirectResponse("/worlds")
-    # Same reachability decision as the page's own API routes: the picker
-    # lists every entity this viewer can already see, ordered so actual
-    # characters lead (talking to an organization or a location is a
-    # legitimate GM tool — they're just not who you usually come here for).
+    # The picker lists only conversational kinds (see TALKABLE_KINDS) that
+    # this viewer can already see — an item or a location has no voice.
     _KIND_ORDER = {"character": 0, "creature": 1, "organization": 2}
     rows = (
-        filter_visible_entities(db.query(Entity).filter(Entity.world_id == world.id), request)
-        .all()
+        filter_visible_entities(
+            db.query(Entity).filter(
+                Entity.world_id == world.id, Entity.kind.in_(TALKABLE_KINDS),
+            ), request,
+        ).all()
     )
     rows.sort(key=lambda e: (_KIND_ORDER.get(e.kind, 3), (e.name or "").lower()))
     selected = None

@@ -5592,7 +5592,7 @@ def _normalize_aliases(raw: str) -> str | None:
 async def create(
     request: Request,
     kind: str = Form(...), subtype: str = Form(""), name: str = Form(...),
-    folder: str = Form(""), tags: str = Form(""), aliases: str = Form(""), image_url: str = Form(""),
+    folder: str = Form(""), tags: str = Form(""), aliases: str = Form(""), roleplay_personality: str = Form(""), image_url: str = Form(""),
     image_file: UploadFile = File(None), summary: str = Form(""), body: str = Form(""),
     visibility_mode: str = Form("everyone"),
     allowed_player_ids: List[int] = Form([]),
@@ -5610,6 +5610,7 @@ async def create(
         custom_fields_json = "{}"
     e = Entity(world_id=world.id, kind=kind, subtype=subtype or None, name=name,
                folder=folder.strip() or None, tags=tags or None, aliases=_normalize_aliases(aliases),
+               roleplay_personality=(roleplay_personality or "").strip()[:4000],
                image_url=final_image, summary=summary or None, body=body or None,
                visible_to_players=(visibility_mode == "everyone"),
                template_id=int(template_id) if template_id and template_id.isdigit() else None,
@@ -5689,7 +5690,7 @@ def edit_form(request: Request, entity_id: int, db: Session = Depends(get_db), a
 async def update(
     entity_id: int,
     kind: str = Form(...), subtype: str = Form(""), name: str = Form(...),
-    folder: str = Form(""), tags: str = Form(""), aliases: str = Form(""), image_url: str = Form(""),
+    folder: str = Form(""), tags: str = Form(""), aliases: str = Form(""), roleplay_personality: str = Form(""), image_url: str = Form(""),
     image_file: UploadFile = File(None), summary: str = Form(""), body: str = Form(""),
     visibility_mode: str = Form("everyone"),
     allowed_player_ids: List[int] = Form([]),
@@ -5709,6 +5710,7 @@ async def update(
     entity.name = name
     entity.tags = tags or None
     entity.aliases = _normalize_aliases(aliases)
+    entity.roleplay_personality = (roleplay_personality or "").strip()[:4000]
     # A new upload or pasted URL replaces the image; the "Remove image" checkbox
     # clears it explicitly; otherwise leave the existing image untouched — the
     # image_url text field is deliberately blank for uploaded images (an internal

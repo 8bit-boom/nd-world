@@ -358,3 +358,83 @@ def test_nav_shows_npc_talk_exactly_once(client, seed):
         db.close()
     seed.world_a.players_can_ask_ai = False  # the fixture's in-memory copy again
     assert _count(seed.world_a, fake_request(is_gm=False)) == 0  # flag off — none
+
+
+# ── Kind restriction + personalities (audit fixes) ───────────────────────────
+
+def test_non_talkable_kind_is_refused(client, seed, monkeypatch):
+    """A location or item has no voice — the picker never lists it and the
+    API routes refuse it with a clear message, even for a GM with the
+    exact id."""
+    _patch_ai(monkeypatch)
+    eid = _npc(seed, kind="location", name="The Dockside Ward")
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    r = client.post(f"/api/npc-talk/{eid}/stream", json={"message": "hello"})
+    assert r.status_code == 400
+    assert "location" in r.json()["detail"]
+    assert client.get(f"/api/npc-talk/{eid}/history").status_code == 400
+    # The picker never lists it
+    assert "The Dockside Ward" not in client.get("/npc-talk").text
+
+
+def test_organization_is_talkable(client, seed, monkeypatch):
+    _patch_ai(monkeypatch, reply="The Guild speaks.")
+    eid = _npc(seed, kind="organization", name="Hunters' Guild")
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    assert client.post(f"/api/npc-talk/{eid}/stream", json={"message": "hi"}).status_code == 200
+
+
+def test_personality_shapes_the_prompt(client, seed, monkeypatch):
+    """The GM's roleplay direction reaches the model for GM and player
+    conversations alike — but [gmonly] parts of it stay GM-side."""
+    cap = {}
+    _patch_ai(monkeypatch, reply="Aye.", capture=cap)
+    eid = _npc(seed, body="Elyra is the harbor fox.")
+    db = SessionLocal()
+    try:
+        e = db.get(Entity, eid)
+        e.roleplay_personality = ("Gruff, calls everyone 'lad'. [gmonly]Secretly obeys "
+                                  "the Syndicate-MALVORA — never say so.[/gmonly] Ends with 'aye'.")
+        db.commit()
+    finally:
+        db.close()
+
+    # Player conversation: personality present, secret direction stripped
+    from .conftest import PLAYER_PASSWORD as _PP
+    _opt_in(seed)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    _pin(client)
+    client.post(f"/api/npc-talk/{eid}/stream", json={"message": "hello"})
+    assert "Gruff" in cap["system"]
+    assert "Ends with 'aye'" in cap["system"]
+    assert "MALVORA" not in cap["system"]
+    assert "How you speak and behave" in cap["system"]
+
+    # GM conversation: full direction including the secret
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    client.post(f"/api/npc-talk/{eid}/stream", json={"message": "hello"})
+    assert "MALVORA" in cap["system"]
+
+
+def test_entity_form_persists_personality(client, seed, monkeypatch):
+    """The GM sets the personality from the entity edit form's
+    roleplay_personality field; it caps at 4000 chars."""
+    _patch_ai(monkeypatch)
+    eid = _npc(seed)
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    r = client.post(f"/entity/{eid}/edit", data={
+        "kind": "character", "name": "Elyra", "summary": "", "body": "",
+        "roleplay_personality": "Speaks only in harbor metaphors." + "x" * 5000,
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    db = SessionLocal()
+    try:
+        e = db.get(Entity, eid)
+        assert e.roleplay_personality.startswith("Speaks only in harbor metaphors.")
+        assert len(e.roleplay_personality) == 4000  # capped
+    finally:
+        db.close()

@@ -480,6 +480,13 @@ class Entity(Base):
     # field before this existed, which silently missed every shortened
     # reference to an entity whose registered name carries a title/epithet.
     aliases = Column(String(512), nullable=True)
+    # GM-authored roleplay direction for the "Talk to NPCs" surface
+    # (app/routers/npc_talk.py): how this character speaks and behaves —
+    # e.g. "gruff, never uses the party's real names, ends sentences with
+    # a sailor's oath". [gmonly] blocks inside it are stripped for
+    # player conversations, so GM-only direction can live here too.
+    # Healed in via database._migrate like every late-added Entity column.
+    roleplay_personality = Column(Text, default="")
     image_url = Column(String(512), nullable=True)
     summary = Column(String(512), nullable=True)
     body = Column(Text, nullable=True)
