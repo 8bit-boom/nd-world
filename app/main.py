@@ -6570,178 +6570,219 @@ def _ai_build_put(status: str, **fields) -> int:
 
 
 async def _schematic_ai_build_task_inner(job_id: int, slug: str, world_id: int,
-                                       desc: str, replace_flag: bool, image_b64s: list):
-        """The AI Build worker: RAG-ground the description, generate elements
-        (thinking on, structured output with a plain-mode fallback), validate,
-        and persist. Never raises — failures land in the job row for the poll
-        route to surface. DB access uses short-lived sessions (no pool holds
-        across the model call)."""
+                                         desc: str, replace_flag: bool, image_b64s: list):
+    """The AI Build worker: RAG-ground the description, generate elements
+    (thinking on, structured output with a plain-mode fallback), validate,
+    and persist. Never raises — failures land in the job row for the poll
+    route to surface. DB access uses short-lived sessions (no pool holds
+    across the model call)."""
+    db = SessionLocal()
+    try:
+        sch = db.query(Schematic).filter(
+            Schematic.slug == slug, Schematic.world_id == world_id).first()
+        if not sch:
+            _AI_BUILD_JOBS[job_id].update(status="error", error="Schematic no longer exists.")
+            return
+        canvas_w = sch.canvas_width or 2000
+        canvas_h = sch.canvas_height or 1500
+    finally:
+        db.close()
+
+    system = SYSTEM_TEMPLATE.replace("{W}", str(canvas_w)).replace("{H}", str(canvas_h))
+
+    # RAG grounding — "city of Yorm" should build Yorm's actual districts and
+    # factions from the world's lore, not generic fantasy.
+    try:
         db = SessionLocal()
         try:
-            sch = db.query(Schematic).filter(
-                Schematic.slug == slug, Schematic.world_id == world_id).first()
-            if not sch:
-                _AI_BUILD_JOBS[job_id].update(status="error", error="Schematic no longer exists.")
-                return
-            canvas_w = sch.canvas_width or 2000
-            canvas_h = sch.canvas_height or 1500
+            from . import retrieval as _retrieval
+            rag, _n, _notes = _retrieval.smart_world_context(
+                db, world_id, desc, entity_limit=8, notes_limit=2,
+            )
         finally:
             db.close()
-
-        system = SYSTEM_TEMPLATE.replace("{W}", str(canvas_w)).replace("{H}", str(canvas_h))
-
-        # RAG grounding from the world's own lore — "city of Yorm" should build
-        # Yorm's actual districts, not generic fantasy. Enhancement, not a gate.
-        try:
-            db = SessionLocal()
-            try:
-                from . import retrieval as _retrieval
-                rag, _n, _notes = _retrieval.smart_world_context(
-                    db, world_id, desc, entity_limit=8, notes_limit=2,
-                )
-            finally:
-                db.close()
-            if rag:
-                system += (
-                    "\\n=== World lore — match the setting, names, architecture, and "
-                    "factions described below ===\\n" + rag
-                )
-        except Exception:
-            pass
-
-        user_msg: dict = {"role": "user", "content": desc}
-        if image_b64s:
-            user_msg["images"] = image_b64s
-
-        fmt = {"type": "object",
-               "properties": {"elements": {"type": "array"}},
-               "required": ["elements"]}
-
-        async def _call(with_format: bool):
-            return await _ai_module.generate_chat(
-                [user_msg], system=system, think=True, format=(fmt if with_format else None),
+        if rag:
+            system += (
+                "\n=== World lore — match the setting, names, architecture, and "
+                "factions described below ===\n" + rag[:4000]
             )
+    except Exception:
+        pass  # RAG is enhancement, never a hard dependency
 
-        raw = None
-        fmt_err = ""
-        try:
-            raw = await _call(with_format=True)
-        except Exception as exc:
-            msg = str(exc)
-            if "response_format" in msg and ("grammar" in msg or "unsupported" in msg.lower()):
-                # Studio's llama.cpp engine rejects response_format unless a GGUF
-                # chat model is loaded — retry in plain mode; the defensive JSON
-                # extraction below handles a free-form reply.
-                try:
-                    raw = await _call(with_format=False)
-                except Exception as exc2:
-                    _AI_BUILD_JOBS[job_id].update(status="error", error=f"AI build failed: {exc2}")
-                    return
-            else:
-                _AI_BUILD_JOBS[job_id].update(status="error", error=f"AI build failed: {exc}")
-                return
+    user_msg: dict = {"role": "user", "content": desc}
+    if image_b64s:
+        user_msg["images"] = image_b64s
 
-        def _extract_json(text: str) -> dict:
-            text = text.strip()
-            if text.startswith("```"):
-                text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
-                text = re.sub(r"\n?```$", "", text)
-            try:
-                return json.loads(text)
-            except ValueError:
-                start, end = text.find("{"), text.rfind("}")
-                if start != -1 and end > start:
-                    return json.loads(text[start:end + 1])
-                raise
+    fmt = {"type": "object",
+           "properties": {"elements": {"type": "array"}},
+           "required": ["elements"]}
 
-        try:
-            raw_elements = _extract_json(raw or "").get("elements")
-        except ValueError:
-            raw_elements = None
-        if not isinstance(raw_elements, list) or not raw_elements:
-            hint = f" ({fmt_err})" if fmt_err else ""
-            _AI_BUILD_JOBS[job_id].update(
-                status="error",
-                error=f"The model's reply contained no usable elements — try rephrasing.{hint}",
-            )
-            return
-
-        _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{3,8}$")
-        _ALLOWED_SHAPES = {"rect", "circle", "line", "arrow", "text"}
-
-        def _num(v, default=0.0):
-            try:
-                return max(0.0, min(float(v), 20000.0))
-            except (TypeError, ValueError):
-                return default
-
-        def _color(v, fallback):
-            s = str(v or "").strip()
-            return s if _COLOR_RE.match(s) else fallback
-
-        new_elements = []
-        for e in raw_elements[:400]:
-            if not isinstance(e, dict):
-                continue
-            etype = str(e.get("type") or "").strip().lower()
-            if etype not in _ALLOWED_SHAPES:
-                continue
-            ne: dict = {"id": "ai-" + uuid.uuid4().hex[:10], "type": etype}
-            if etype == "rect":
-                ne["x"] = _num(e.get("x")); ne["y"] = _num(e.get("y"))
-                ne["w"] = min(_num(e.get("w"), 100), canvas_w)
-                ne["h"] = min(_num(e.get("h"), 100), canvas_h)
-                ne["fill"] = _color(e.get("fill"), "#2a2a35")
-                ne["stroke"] = _color(e.get("stroke"), "#888888")
-                ne["strokeW"] = _num(e.get("strokeW"), 2)
-            elif etype == "circle":
-                ne["cx"] = _num(e.get("cx")); ne["cy"] = _num(e.get("cy"))
-                ne["rx"] = _num(e.get("rx"), 50); ne["ry"] = _num(e.get("ry"), 50)
-                ne["fill"] = _color(e.get("fill"), "#2a2a35")
-                ne["stroke"] = _color(e.get("stroke"), "#888888")
-                ne["strokeW"] = _num(e.get("strokeW"), 2)
-            elif etype in ("line", "arrow"):
-                ne["x1"] = _num(e.get("x1")); ne["y1"] = _num(e.get("y1"))
-                ne["x2"] = _num(e.get("x2")); ne["y2"] = _num(e.get("y2"))
-                ne["stroke"] = _color(e.get("stroke"), "#aaaaaa")
-                ne["strokeW"] = _num(e.get("strokeW"), 3)
-            elif etype == "text":
-                ne["x"] = _num(e.get("x")); ne["y"] = _num(e.get("y"))
-            label = str(e.get("label") or "")[:200]
-            if label:
-                ne["label"] = label
-            new_elements.append(ne)
-
-        if not new_elements:
-            _AI_BUILD_JOBS[job_id].update(
-                status="error",
-                error="The model's elements were all invalid for this canvas — try rephrasing.",
-            )
-            return
-
-        db = SessionLocal()
-        try:
-            sch = db.query(Schematic).filter(
-                Schematic.slug == slug, Schematic.world_id == world_id).first()
-            if not sch:
-                _AI_BUILD_JOBS[job_id].update(status="error", error="Schematic no longer exists.")
-                return
-            try:
-                elements = json.loads(sch.elements_json or "[]")
-            except ValueError:
-                elements = []
-            if replace_flag:
-                elements = new_elements
-            else:
-                elements = elements + new_elements
-            sch.elements_json = json.dumps(elements)
-            db.commit()
-            total = len(elements)
-        finally:
-            db.close()
-        _AI_BUILD_JOBS[job_id].update(
-            status="done", added=len(new_elements), total=total, elements=new_elements,
+    async def _call(with_format: bool):
+        return await _ai_module.generate_chat(
+            [user_msg], system=system, think=True, format=(fmt if with_format else None),
         )
+
+    raw = None
+    fmt_err = ""
+    try:
+        raw = await _call(with_format=True)
+    except Exception as exc:
+        msg = str(exc)
+        if "response_format" in msg and ("grammar" in msg or "unsupported" in msg.lower()):
+            # Studio's llama.cpp engine rejects response_format unless a GGUF
+            # chat model is loaded — retry in plain mode; the defensive JSON
+            # extraction below handles a free-form reply.
+            try:
+                raw = await _call(with_format=False)
+            except Exception as exc2:
+                _AI_BUILD_JOBS[job_id].update(status="error", error=f"AI build failed: {exc2}")
+                return
+        else:
+            _AI_BUILD_JOBS[job_id].update(status="error", error=f"AI build failed: {exc}")
+            return
+    if not (raw or "").strip():
+        _AI_BUILD_JOBS[job_id].update(
+            status="error", error="The model returned nothing — try a more concrete description.")
+        return
+
+    def _extract_json(text: str) -> dict:
+        text = text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+            text = re.sub(r"\n?```$", "", text)
+        try:
+            return json.loads(text)
+        except ValueError:
+            start, end = text.find("{"), text.rfind("}")
+            if start != -1 and end > start:
+                return json.loads(text[start:end + 1])
+            raise
+
+    try:
+        parsed = _extract_json(raw)
+    except ValueError:
+        _AI_BUILD_JOBS[job_id].update(
+            status="error", error="The model's reply wasn't valid JSON — try again.")
+        return
+    raw_elements = parsed.get("elements") if isinstance(parsed, dict) else None
+    if not isinstance(raw_elements, list):
+        # Some models wrap: take the single list value if that's all there is.
+        lists = [v for v in parsed.values() if isinstance(v, list)] if isinstance(parsed, dict) else []
+        raw_elements = lists[0] if len(lists) == 1 else None
+    if not isinstance(raw_elements, list) or not raw_elements:
+        _AI_BUILD_JOBS[job_id].update(
+            status="error", error="The model's reply contained no usable elements — try rephrasing.")
+        return
+
+    _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{3,8}$")
+    # Models rarely stick to a shape vocabulary — accept the common aliases
+    # (a "room" is a rect, a "wall"/"street" is a line) and normalize keys
+    # ("width"→"w", "height"→"h", points arrays → line endpoints).
+    _TYPE_ALIASES = {
+        "rect": "rect", "rectangle": "rect", "room": "rect", "area": "rect",
+        "building": "rect", "zone": "rect", "platform": "rect",
+        "circle": "circle", "ellipse": "circle", "pond": "circle",
+        "fountain": "circle", "pool": "circle",
+        "line": "line", "wall": "line", "door": "line", "street": "line",
+        "path": "line", "corridor": "line", "road": "line", "river": "line",
+        "arrow": "arrow", "text": "text", "label": "text", "note": "text",
+    }
+
+    def _num(v, default=0.0):
+        try:
+            return max(0.0, min(float(v), 20000.0))
+        except (TypeError, ValueError):
+            return default
+
+    def _color(v, fallback):
+        s = str(v or "").strip()
+        return s if _COLOR_RE.match(s) else fallback
+
+    def _label_of(e):
+        for k in ("label", "name", "text", "title"):
+            v = str(e.get(k) or "").strip()
+            if v:
+                return v[:200]
+        return ""
+
+    def _endpoints_of(e):
+        if isinstance(e.get("points"), (list, tuple)) and len(e["points"]) >= 2:
+            try:
+                p1, p2 = e["points"][0], e["points"][1]
+                return _num(p1[0]), _num(p1[1]), _num(p2[0]), _num(p2[1])
+            except (TypeError, ValueError, IndexError):
+                pass
+        return (_num(e.get("x1")), _num(e.get("y1")),
+                _num(e.get("x2")), _num(e.get("y2")))
+
+    new_elements = []
+    for e in raw_elements[:400]:
+        if not isinstance(e, dict):
+            continue
+        etype = _TYPE_ALIASES.get(str(e.get("type") or "").strip().lower(),
+                                  str(e.get("type") or "").strip().lower())
+        if etype not in ("rect", "circle", "line", "arrow", "text"):
+            continue
+        ne: dict = {"id": "ai-" + uuid.uuid4().hex[:10], "type": etype}
+        if etype == "rect":
+            ne["x"] = _num(e.get("x")); ne["y"] = _num(e.get("y"))
+            ne["w"] = min(_num(e.get("w", e.get("width", 100)), 100), canvas_w)
+            ne["h"] = min(_num(e.get("h", e.get("height", 100)), 100), canvas_h)
+            ne["fill"] = _color(e.get("fill"), "#2a2a35")
+            ne["stroke"] = _color(e.get("stroke"), "#888888")
+            ne["strokeW"] = _num(e.get("strokeW"), 2)
+        elif etype == "circle":
+            ne["cx"] = _num(e.get("cx", e.get("x", 0)))
+            ne["cy"] = _num(e.get("cy", e.get("y", 0)))
+            r = e.get("r", e.get("rx", e.get("ry", 50)))
+            ne["rx"] = min(_num(r, 50), canvas_w)
+            ne["ry"] = min(_num(r, 50), canvas_h)
+            ne["fill"] = _color(e.get("fill"), "#2a2a35")
+            ne["stroke"] = _color(e.get("stroke"), "#888888")
+            ne["strokeW"] = _num(e.get("strokeW"), 2)
+        elif etype in ("line", "arrow"):
+            ne["x1"], ne["y1"], ne["x2"], ne["y2"] = _endpoints_of(e)
+            ne["stroke"] = _color(e.get("stroke"), "#aaaaaa")
+            ne["strokeW"] = _num(e.get("strokeW"), 3)
+        elif etype == "text":
+            ne["x"] = _num(e.get("x")); ne["y"] = _num(e.get("y"))
+        label = str(e.get("label") or "").strip()[:200]
+        if label:
+            ne["label"] = label
+        new_elements.append(ne)
+
+    if not new_elements:
+        snippet = re.sub(r"\s+", " ", str(raw_elements)[:220])
+        _AI_BUILD_JOBS[job_id].update(
+            status="error",
+            error=(f"The model's shapes didn't map to canvas elements — "
+                   f"reply started: {snippet}"),
+        )
+        return
+
+    db = SessionLocal()
+    try:
+        sch = db.query(Schematic).filter(
+            Schematic.slug == slug, Schematic.world_id == world_id).first()
+        if not sch:
+            _AI_BUILD_JOBS[job_id].update(status="error", error="Schematic no longer exists.")
+            return
+        try:
+            elements = json.loads(sch.elements_json or "[]")
+        except ValueError:
+            elements = []
+        if replace_flag:
+            elements = new_elements
+        else:
+            elements = elements + new_elements
+        sch.elements_json = json.dumps(elements)
+        db.commit()
+        total = len(elements)
+    finally:
+        db.close()
+    _AI_BUILD_JOBS[job_id].update(
+        status="done", added=len(new_elements), total=total, elements=new_elements,
+    )
 
 
 async def _schematic_ai_build_task(job_id: int, slug: str, world_id: int,

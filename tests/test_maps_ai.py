@@ -138,7 +138,7 @@ def test_ai_build_rejects_bad_model_output(client, seed, monkeypatch):
     job_id = r.json()["job_id"]
     data = _poll_job(client, "ai-bad", job_id)
     assert data["status"] == "error"
-    assert "no usable elements" in data["error"]
+    assert "JSON" in data["error"] or "no usable elements" in data["error"]
 
 
 def test_ai_build_is_gm_only_and_world_scoped(client, seed):
