@@ -57,6 +57,7 @@
       <div class="pc-card-name">
         {{ pc.name }}
         {% if my_character and pc.id == my_character.id %}<span style="font-size:.62rem;color:var(--neon);border:1px solid var(--neon);border-radius:3px;padding:.05rem .35rem;vertical-align:middle">YOURS</span>{% endif %}
+        {% if pc.id in levelup_ready %}<span style="font-size:.62rem;color:var(--neon);border:1px solid var(--neon);border-radius:3px;padding:.05rem .35rem;vertical-align:middle" title="XP crossed the threshold — open the sheet to apply">⬆ Level-up</span>{% endif %}
         {% if user and user.is_gm and pc.owner_user_id and owner_names.get(pc.owner_user_id) %}<span style="font-size:.62rem;color:var(--text-dim);border:1px solid var(--border);border-radius:3px;padding:.05rem .35rem;vertical-align:middle">👤 {{ owner_names[pc.owner_user_id] }}</span>{% endif %}
         {% if ppt %}<a href="{{ ('/parties/' + ppt.id|string)|wq }}" onclick="event.stopPropagation()" style="font-size:.62rem;color:var(--text-dim);border:1px solid var(--border);border-radius:3px;padding:.05rem .35rem;vertical-align:middle;text-decoration:none">🛡 {{ ppt.name }}</a>{% endif %}
       </div>

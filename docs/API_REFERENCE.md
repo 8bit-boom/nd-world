@@ -241,6 +241,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/characters/{pc_id}/pp` | Player | Live Power Points update. |
 | POST | `/api/characters/{pc_id}/mp` | Player | Live Mana Points update. |
 | POST | `/api/characters/{pc_id}/xp` | Player | Adjusts XP (and any level-derived stats). |
+| POST | `/api/characters/{pc_id}/level-up` | GM / Owner | One-click level application when the PC's XP has crossed the next-level threshold (the "⬆ Level-up" prompt on the sheet, list, and party vitals). Refuses with 400 when the XP doesn't justify a level yet, so a stale banner can't double-level a character. |
 | POST | `/api/characters/{pc_id}/equipment` | Player | Updates the equipment list. |
 | POST | `/api/characters/{pc_id}/feats` | Player | Updates the selected feats list. |
 | GET | `/api/characters/{pc_id}/sync` | Player | Full character JSON for the NeonDragonsApp sync flow (pull). |

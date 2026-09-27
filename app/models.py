@@ -926,8 +926,13 @@ class Party(Base):
     name = Column(String(256), nullable=False)
     member_pc_ids_json = Column(Text, default="[]")      # [PlayerCharacter.id, ...]
     member_entity_ids_json = Column(Text, default="[]")  # [Entity.id, ...] companions/hirelings
-    loot_json = Column(Text, default="[]")                # [{name, qty, notes}]
+    loot_json = Column(Text, default="[]")                # [{name, qty, notes, claimed_by: [PlayerCharacter.id]}]
     notes = Column(Text, default="")
+    # XP award ledger for the party history view — one entry per bulk award
+    # (session XP route): [{ts, amount, session_id, awarded: {pc_name: amount}}].
+    # Direct per-PC XP edits from a sheet don't land here (they're not party
+    # events). Healed via _heal_table_from_model (parties is in its list).
+    xp_json = Column(Text, default="[]")
     # Where this party currently is, for GM tracking. {} = not placed anywhere.
     # Map:       {"kind": "map", "slug": <map slug>, "lat": .., "lng": ..}
     # Schematic: {"kind": "schematic", "slug": <schematic slug>, "x": .., "y": ..}

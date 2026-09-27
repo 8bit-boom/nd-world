@@ -8,7 +8,7 @@ route already accepted a `name` field.
 import json
 
 from app.database import SessionLocal
-from app.models import Party
+from app.models import Party, PlayerCharacter, User, WorldMembership
 
 from .conftest import GM_PASSWORD, PLAYER_PASSWORD, login
 
@@ -228,7 +228,9 @@ def test_loot_add_and_remove_as_member(client, seed):
     db = SessionLocal()
     try:
         loot = json.loads(db.get(Party, pid).loot_json)
-        assert loot == [{"name": "Potion of harbor-walking", "qty": 2, "notes": "sticky"}]
+        assert loot[0]["name"] == "Potion of harbor-walking"
+        assert loot[0]["qty"] == 2
+        assert loot[0]["claimed_by"] == []
     finally:
         db.close()
     r = client.post(f"/api/parties/{pid}/loot", json={"action": "remove", "index": 0})
@@ -304,3 +306,227 @@ def test_party_detail_shows_vitals_and_history(client, seed):
     assert "HP 3/30" in r.text and "AC 17" in r.text
     assert "Bar Fight" in r.text
     assert "Party History" in r.text
+
+
+# ── Loot "claimed by" flow ───────────────────────────────────────────────────
+
+def _loot_with_claim(world_id, pc_ids_claimed=(), name="Gauntlet of Yorm"):
+    db = SessionLocal()
+    try:
+        p = Party(world_id=world_id, name="Claim Party",
+                  member_pc_ids_json="[]",
+                  loot_json=json.dumps([{"name": name, "qty": 1, "notes": "",
+                                         "claimed_by": list(pc_ids_claimed)}]))
+        db.add(p)
+        db.commit()
+        db.refresh(p)
+        return p.id
+    finally:
+        db.close()
+
+
+def test_member_claims_own_pc_only(client, seed):
+    player, pc_id = _make_member_player(seed.world_a.id)
+    other_pc = _add_pc(seed.world_a.id, name="Other Member")
+    db = SessionLocal()
+    try:
+        p = Party(world_id=seed.world_a.id, name="Claim Party",
+                  member_pc_ids_json=json.dumps([pc_id, other_pc]),
+                  loot_json=json.dumps([{"name": "Ring", "qty": 1, "notes": "", "claimed_by": []}]))
+        db.add(p)
+        db.commit()
+        db.refresh(p)
+        pid = p.id
+    finally:
+        db.close()
+    _open_parties_for_players(seed.world_a.id)
+    login(client, player.email, PLAYER_PASSWORD)
+    _pin(client)
+
+    # claim for OWN pc — allowed
+    r = client.post(f"/api/parties/{pid}/loot", json={"action": "claim", "index": 0, "pc_id": pc_id})
+    assert r.status_code == 200
+    assert r.json()["loot"][0]["claimed_by"] == [pc_id]
+
+    # claim for ANOTHER member's pc — 403
+    r = client.post(f"/api/parties/{pid}/loot", json={"action": "claim", "index": 0, "pc_id": other_pc})
+    assert r.status_code == 403
+    db = SessionLocal()
+    try:
+        assert json.loads(db.get(Party, pid).loot_json)[0]["claimed_by"] == [pc_id]
+    finally:
+        db.close()
+
+    # unclaim own
+    r = client.post(f"/api/parties/{pid}/loot", json={"action": "unclaim", "index": 0, "pc_id": pc_id})
+    assert r.status_code == 200
+    assert r.json()["loot"][0]["claimed_by"] == []
+
+
+def test_gm_claims_for_any_member(client, seed):
+    player, pc_id = _make_member_player(seed.world_a.id)
+    pid = _loot_with_claim(seed.world_a.id)
+    db = SessionLocal()
+    try:
+        p = db.get(Party, pid)
+        p.member_pc_ids_json = json.dumps([pc_id])
+        db.commit()
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    r = client.post(f"/api/parties/{pid}/loot", json={"action": "claim", "index": 0, "pc_id": pc_id})
+    assert r.status_code == 200
+    assert r.json()["loot"][0]["claimed_by"] == [pc_id]
+
+
+def test_claim_rejects_non_member_pc(client, seed):
+    """Claiming for a PC that isn't in the party is invalid regardless of level."""
+    outsider_pc = _add_pc(seed.world_a.id, name="Not In Party")
+    pid = _loot_with_claim(seed.world_a.id)
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    r = client.post(f"/api/parties/{pid}/loot", json={"action": "claim", "index": 0, "pc_id": outsider_pc})
+    assert r.status_code == 400
+
+
+# ── Party XP ledger ──────────────────────────────────────────────────────────
+
+def test_session_xp_appends_party_ledger(client, seed):
+    from app.models import GameSession
+    pc_id = _add_pc(seed.world_a.id, name="Ledger PC")
+    db = SessionLocal()
+    try:
+        gs = GameSession(world_id=seed.world_a.id, session_num=4, title="Ledger Session")
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        p = Party(world_id=seed.world_a.id, name="Ledger Party",
+                  member_pc_ids_json=json.dumps([pc_id]))
+        db.add(p)
+        db.commit()
+        db.refresh(p)
+        gs.party_id = p.id
+        db.commit()
+        sid, pid = gs.id, p.id
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    r = client.post(f"/api/sessions/{sid}/xp", json={"delta": 250, "pc_ids": [pc_id]})
+    assert r.status_code == 200
+    db = SessionLocal()
+    try:
+        p = db.get(Party, pid)
+        ledger = json.loads(p.xp_json or "[]")
+        assert len(ledger) == 1
+        assert ledger[0]["amount"] == 250
+        assert ledger[0]["session_id"] == sid
+        assert "Ledger PC" in ledger[0]["awarded"]
+    finally:
+        db.close()
+    # and the party detail renders the ledger
+    r = client.get(f"/parties/{pid}")
+    assert "+250 XP" in r.text
+    assert "Ledger Session" in r.text or "from session" in r.text
+
+
+def test_session_xp_without_party_writes_no_ledger(client, seed):
+    from app.models import GameSession
+    pc_id = _add_pc(seed.world_a.id, name="Solo PC")
+    db = SessionLocal()
+    try:
+        gs = GameSession(world_id=seed.world_a.id, session_num=5, title="No Party")
+        db.add(gs)
+        db.commit()
+        db.refresh(gs)
+        sid = gs.id
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    r = client.post(f"/api/sessions/{sid}/xp", json={"delta": 100, "pc_ids": [pc_id]})
+    assert r.status_code == 200  # no party → no ledger, no crash
+
+
+# ── Level-up route + badge ───────────────────────────────────────────────────
+
+def test_level_up_route_threshold_and_permissions(client, seed):
+    db = SessionLocal()
+    try:
+        owner = User(email="levelup-owner@test.local",
+                     password_hash=__import__("app.auth", fromlist=["hash_password"]).hash_password(PLAYER_PASSWORD),
+                     display_name="Level Owner", is_gm=False)
+        db.add(owner)
+        db.commit()
+        db.refresh(owner)
+        db.add(WorldMembership(world_id=seed.world_a.id, user_id=owner.id))
+        db.commit()
+        from app.routers.characters import XP_THRESHOLDS
+        ready = PlayerCharacter(world_id=seed.world_a.id, name="Ready", owner_user_id=owner.id,
+                                level=2, xp=XP_THRESHOLDS[2], current_hp=10, max_hp=20)
+        not_ready = PlayerCharacter(world_id=seed.world_a.id, name="NotReady", owner_user_id=owner.id,
+                                    level=2, xp=XP_THRESHOLDS[2] - 5, current_hp=10, max_hp=20)
+        db.add_all([ready, not_ready])
+        db.commit()
+        db.refresh(ready)
+        db.refresh(not_ready)
+        ready_id, not_ready_id = ready.id, not_ready.id
+        threshold = XP_THRESHOLDS[2]
+        owner_id = owner.id
+    finally:
+        db.close()
+
+    login(client, owner.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+
+    # Not ready → 400 with the level named
+    r = client.post(f"/api/characters/{not_ready_id}/level-up")
+    assert r.status_code == 400
+    assert "level 3" in r.json()["detail"]
+
+    # Ready, but a DIFFERENT player → 403
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.post(f"/api/characters/{ready_id}/level-up").status_code == 403
+
+    # Ready + owner → level applies
+    login(client, owner.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.post(f"/api/characters/{ready_id}/level-up")
+    assert r.status_code == 200
+    assert r.json()["level"] == 3
+    db = SessionLocal()
+    try:
+        assert db.get(PlayerCharacter, ready_id).level == 3
+        assert db.get(PlayerCharacter, not_ready_id).level == 2  # untouched
+    finally:
+        db.close()
+    del threshold, owner_id
+
+
+def test_level_up_badges_on_lists(client, seed):
+    from app.routers.characters import XP_THRESHOLDS
+    db = SessionLocal()
+    try:
+        pc = PlayerCharacter(world_id=seed.world_a.id, name="Badge PC",
+                             level=4, xp=XP_THRESHOLDS[4], current_hp=10, max_hp=20)
+        db.add(pc)
+        db.commit()
+        db.refresh(pc)
+        pc_id = pc.id
+    finally:
+        db.close()
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    # Characters list badge
+    r = client.get("/characters")
+    assert r.status_code == 200
+    assert "⬆ Level-up" in r.text or "levelup" in r.text
+    # Party vitals badge
+    pid = _party_with(seed.world_a.id, pc_ids=[pc_id], name="Badge Party")
+    r = client.get(f"/parties/{pid}")
+    assert "⬆ Level-up" in r.text
+    # Sheet banner
+    r = client.get(f"/characters/{pc_id}")
+    assert "Level-up available" in r.text

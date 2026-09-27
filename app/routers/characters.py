@@ -265,6 +265,16 @@ def _own_character(db: Session, world_id: int, user_id: int) -> Optional[PlayerC
     ).first()
 
 
+def _levelup_ready(pc: PlayerCharacter) -> bool:
+    """True when the PC's XP has crossed the threshold for the next level
+    (XP_THRESHOLDS[level] is what level+1 starts at) — the sheet and lists
+    surface a level-up prompt, and POST /level-up applies it. Mirrors
+    _derived's own threshold math (lvl capped at 20; a level-20 PC is done)."""
+    if pc.level >= 20:
+        return False
+    return (pc.xp or 0) >= XP_THRESHOLDS[min(pc.level, 19)]
+
+
 def _can_manage_character(user, pc: PlayerCharacter) -> bool:
     """Full edit/delete/export access: the GM, or the player who owns this character."""
     if not user or not pc:
@@ -357,6 +367,7 @@ def characters_list(request: Request, q: str = "", sort: str = "name",
         "user": user, "my_character": my_character,
         "q": term, "sort": sort,
         "pc_party": pc_party, "owner_names": owner_names, "my_party": my_party,
+        "levelup_ready": {pc.id for pc in pcs if _levelup_ready(pc)},
     })
 
 
@@ -608,6 +619,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
     # above (this app's own native structured sheet), just a "see also" panel
     # for any fillable GM-uploaded HTML sheet the owner has connected here.
     linked_sheets = db.query(CharacterSheet).filter(CharacterSheet.player_character_id == pc.id).all()
+    levelup_ready = _levelup_ready(pc)
 
     if chosen_tpl and chosen_tpl.sheet_mode == "custom":
         tpl_fields = json.loads(chosen_tpl.fields_json or "[]")
@@ -621,6 +633,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
             "custom_fields": custom_fields,
             "world_members": world_members,
             "linked_sheets": linked_sheets,
+            "levelup_ready": levelup_ready,
         })
 
     d = _derived(pc)
@@ -638,6 +651,7 @@ def character_sheet(pc_id: int, request: Request, db: Session = Depends(get_db),
         "equipment_catalog": catalog["equipment"],
         "feats_catalog": catalog["feats"],
         "linked_sheets": linked_sheets,
+        "levelup_ready": levelup_ready,
     })
 
 
@@ -1524,6 +1538,25 @@ async def character_xp(pc_id: int, request: Request, db: Session = Depends(get_d
 
 
 # ── AJAX: Equipment / Feats (inline sheet quick-add) ───────────────────────────
+
+@router.post("/api/characters/{pc_id}/level-up")
+async def character_level_up(pc_id: int, request: Request, db: Session = Depends(get_db)):
+    """One-click level application when XP has already crossed the threshold
+    (see _levelup_ready). Owner-or-GM gated like every other manage route;
+    refuses (400) when the XP doesn't justify a level, so a stale banner can
+    never double-level a character."""
+    pc = db.query(PlayerCharacter).filter(PlayerCharacter.id == pc_id).first()
+    if not pc:
+        raise HTTPException(404)
+    user = _current_user(request)
+    if not _can_manage_character(user, pc):
+        raise HTTPException(403)
+    if not _levelup_ready(pc):
+        raise HTTPException(400, f"Not enough XP to reach level {pc.level + 1} yet.")
+    pc.level += 1
+    db.commit()
+    return {"level": pc.level, "name": pc.name}
+
 
 @router.post("/api/characters/{pc_id}/equipment")
 async def character_equipment_async(pc_id: int, request: Request, db: Session = Depends(get_db)):

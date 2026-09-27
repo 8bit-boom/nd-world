@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..deps import get_world_ctx, paginate, world_can_edit_section, world_can_view_section, world_row_visible
 from ..models import CalendarEvent, CombatSession, Entity, GameSession, Party, PlayerCharacter, Quest, World
+from .characters import _levelup_ready as _pc_levelup_ready  # cross-router import, per AGENTS.md
 from ..templating import templates
 from .combat import entity_to_combatant, pc_to_combatant, _COMBATANT_KINDS
 
@@ -96,6 +97,11 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
     pc_ids = json.loads(party.member_pc_ids_json or "[]")
     entity_ids = json.loads(party.member_entity_ids_json or "[]")
     member_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all() if pc_ids else []
+    user = getattr(request.state, "user", None)
+    my_pc_ids = (
+        [pc.id for pc in member_pcs if user and not user.is_gm and pc.owner_user_id == user.id]
+        if user else []
+    )
     member_entities = db.query(Entity).filter(Entity.id.in_(entity_ids)).all() if entity_ids else []
     all_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == party.world_id).order_by(PlayerCharacter.name).all()
     all_entities = db.query(Entity).filter(
@@ -118,6 +124,7 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
             "hp": pc.current_hp, "max_hp": pc.max_hp, "temp_hp": pc.temp_hp,
             "ac": pc.armor_class, "level": pc.level,
             "down": (pc.max_hp or 0) > 0 and (pc.current_hp or 0) <= 0,
+            "levelup": _pc_levelup_ready(pc),
             "conditions": [c for c in conds if isinstance(c, str)][:4],
         })
 
@@ -142,7 +149,10 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
         "assigned_quests": assigned_quests, "loot": loot,
         "pc_ids": pc_ids, "entity_ids": entity_ids,
         "edit_level": _party_edit_level(request, db, party_world, party),
+        "member_names": {p.id: p.name for p in member_pcs},
+        "my_pc_ids": my_pc_ids,
         "member_vitals": member_vitals,
+        "xp_ledger": list(reversed(json.loads(party.xp_json or "[]"))),
         "history_sessions": history_sessions,
         "history_combats": history_combats,
         "history_events": history_events,
@@ -198,12 +208,47 @@ async def party_loot(party_id: int, request: Request, db: Session = Depends(get_
     body = await request.json()
     action = body.get("action")
     loot = json.loads(party.loot_json or "[]")
+    # Normalize pre-claim items so index-based actions never hit a missing key.
+    for item in loot:
+        item.setdefault("claimed_by", [])
+
+    def _member_pc_ids_of(user) -> set:
+        if not user:
+            return set()
+        member_ids = json.loads(party.member_pc_ids_json or "[]")
+        if not member_ids:
+            return set()
+        return {row[0] for row in db.query(PlayerCharacter.id).filter(
+            PlayerCharacter.id.in_(member_ids),
+            PlayerCharacter.owner_user_id == user.id).all()}
+
+    user = getattr(request.state, "user", None)
+    level = _party_edit_level(request, db, world, party)
+
     if action == "add":
-        loot.append({"name": body.get("name", "Item"), "qty": int(body.get("qty", 1) or 1), "notes": body.get("notes", "")})
+        loot.append({"name": body.get("name", "Item"), "qty": int(body.get("qty", 1) or 1),
+                     "notes": body.get("notes", ""), "claimed_by": []})
     elif action == "remove":
         idx = int(body.get("index", -1))
         if 0 <= idx < len(loot):
             loot.pop(idx)
+    elif action in ("claim", "unclaim"):
+        # A member-level player claims/unclaims FOR THEIR OWN PC only; a
+        # full-level editor (GM/assistant) may claim for any member.
+        idx = int(body.get("index", -1))
+        pc_id = int(body.get("pc_id", 0))
+        member_ids = json.loads(party.member_pc_ids_json or "[]")
+        if not (0 <= idx < len(loot)) or pc_id not in member_ids:
+            raise HTTPException(400, "Invalid loot index or PC")
+        if level != "full":
+            own = _member_pc_ids_of(user)
+            if pc_id not in own:
+                raise HTTPException(403, "You can only claim loot for your own character.")
+        claimed = loot[idx].setdefault("claimed_by", [])
+        if action == "claim" and pc_id not in claimed:
+            claimed.append(pc_id)
+        elif action == "unclaim" and pc_id in claimed:
+            claimed.remove(pc_id)
     party.loot_json = json.dumps(loot)
     db.commit()
     return {"loot": loot}

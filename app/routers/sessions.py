@@ -569,10 +569,22 @@ async def session_xp(session_id: int, request: Request, db: Session = Depends(ge
         pc_ids = json.loads(gs.party.member_pc_ids_json or "[]")
     pc_ids = pc_ids or []
     updated = []
+    awarded = {}
     for pc in db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all():
         pc.xp = max(0, pc.xp + delta)
         updated.append(pc.name)
+        awarded[pc.name] = delta
     gs.xp_awarded = (gs.xp_awarded or 0) + delta
+    # Party XP ledger — one entry per bulk award, for the party history view.
+    if gs.party and awarded:
+        ledger = json.loads(gs.party.xp_json or "[]")
+        ledger.append({
+            "ts": datetime.utcnow().isoformat(timespec="seconds"),
+            "amount": delta,
+            "session_id": gs.id,
+            "awarded": awarded,
+        })
+        gs.party.xp_json = json.dumps(ledger[-100:])
     db.commit()
     return {"updated": updated, "xp_awarded": gs.xp_awarded}
 

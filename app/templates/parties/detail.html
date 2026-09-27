@@ -18,6 +18,7 @@
         <div style="display:flex;justify-content:space-between;align-items:center;gap:.4rem">
           <span style="font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ v.name }}</span>
           <span style="font-size:.7rem;color:var(--text-dim)">Lvl {{ v.level }}</span>
+          {% if v.levelup %}<span style="font-size:.62rem;color:var(--neon);border:1px solid var(--neon);border-radius:3px;padding:.05rem .35rem" title="XP crossed the threshold — apply on the sheet">⬆ Level-up</span>{% endif %}
         </div>
         {% if v.max_hp %}
         {% set hp_pct = ((v.hp or 0) * 100 / v.max_hp) | round | int %}
@@ -41,6 +42,18 @@
   {% if history_sessions or history_combats or history_events %}
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem 1.25rem;margin-bottom:1rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">📜 Party History</h2>
+    {% if xp_ledger %}
+    <div style="font-size:.75rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem">XP awards</div>
+    <div style="display:flex;flex-direction:column;gap:.25rem;margin-bottom:.8rem">
+      {% for e in xp_ledger %}
+      <div style="font-size:.83rem;color:var(--text)">
+        <span style="color:var(--neon)">+{{ e.amount }} XP</span>
+        {% if e.session_id %}<a href="{{ ('/sessions/' + e.session_id|string)|wq }}" style="color:var(--text-dim);font-size:.78rem">from session</a>{% endif %}
+        <span style="color:var(--text-dim);font-size:.75rem">{{ e.ts[:10] }} — {{ e.awarded | join(', ') if e.awarded is mapping else e.awarded }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
     {% if history_sessions %}
     <div style="font-size:.75rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem">Sessions</div>
     <div style="display:flex;flex-direction:column;gap:.25rem;margin-bottom:.8rem">
@@ -204,6 +217,9 @@
 <script>
 const PARTY_ID = {{ party.id }};
 let loot = {{ loot | tojson }};
+const MEMBER_NAMES = {{ member_names | tojson }};
+const MY_PC_IDS = {{ my_pc_ids | tojson }};
+const EDIT_LEVEL = {{ edit_level | tojson }};
 
 function esc(s) { return String(s).replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
 
@@ -212,12 +228,41 @@ function renderLoot() {
   list.innerHTML = loot.length ? '' : '<p style="color:var(--text-dim);font-size:.82rem;font-style:italic">No loot yet.</p>';
   loot.forEach((item, i) => {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:.5rem;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.4rem .6rem;font-size:.85rem';
-    row.innerHTML = `<span style="flex:1">${esc(item.name)} <span style="color:var(--text-dim)">×${item.qty}</span>${item.notes ? ' — <span style=\"color:var(--text-dim);font-size:.8rem\">'+esc(item.notes)+'</span>' : ''}</span>
-      <button type="button" data-i="${i}" style="background:none;border:none;color:#c44;cursor:pointer;font-size:1rem">✕</button>`;
-    row.querySelector('button').addEventListener('click', () => removeLoot(i));
+    row.style.cssText = 'display:flex;align-items:center;gap:.5rem;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:.4rem .6rem;font-size:.85rem;flex-wrap:wrap';
+    const claimed = item.claimed_by || [];
+    const claimedHtml = claimed.map(pid =>
+      `<span style="font-size:.68rem;color:var(--neon);border:1px solid var(--neon);border-radius:3px;padding:.05rem .35rem">${esc(MEMBER_NAMES[pid] || ('PC ' + pid))}</span>`).join(' ');
+    row.innerHTML = `<span style="flex:1;min-width:160px">${esc(item.name)} <span style="color:var(--text-dim)">×${item.qty}</span>${item.notes ? ' — <span style="color:var(--text-dim);font-size:.8rem">' + esc(item.notes) + '</span>' : ''}</span>
+      <span style="display:flex;gap:.25rem;flex-wrap:wrap">${claimedHtml}</span>
+      <span style="display:flex;gap:.25rem">
+        ${Object.entries(MEMBER_NAMES).map(([pid, name]) => {
+          const isClaimed = claimed.includes(Number(pid));
+          const mine = MY_PC_IDS.includes(Number(pid));
+          if (!mine && EDIT_LEVEL !== 'full') return '';
+          return `<button type="button" data-i="${i}" data-pid="${pid}" title="${isClaimed ? 'Unclaim' : 'Claim'} for ${esc(name)}"
+            style="background:none;border:1px solid ${isClaimed ? 'var(--neon)' : 'var(--border)'};color:${isClaimed ? 'var(--neon)' : 'var(--text-dim)'};border-radius:3px;padding:.1rem .4rem;font-size:.7rem;cursor:pointer">${isClaimed ? '✓ ' : ''}${esc(name)}</button>`;
+        }).join('')}
+      </span>
+      <button type="button" data-i="${i}" class="loot-remove" style="background:none;border:none;color:#c44;cursor:pointer;font-size:1rem">✕</button>`;
+    row.querySelectorAll('button[data-pid]').forEach(b =>
+      b.addEventListener('click', () => toggleClaim(i, Number(b.dataset.pid))));
+    row.querySelector('.loot-remove').addEventListener('click', () => removeLoot(i));
     list.appendChild(row);
   });
+}
+
+async function toggleClaim(i, pid) {
+  const item = loot[i];
+  const claimed = item.claimed_by || [];
+  const action = claimed.includes(pid) ? 'unclaim' : 'claim';
+  const res = await fetch('/api/parties/' + PARTY_ID + '/loot', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, index: i, pc_id: pid }),
+  });
+  if (!res.ok) { const d = await res.json().catch(() => ({})); alert(d.detail || ('HTTP ' + res.status)); return; }
+  const data = await res.json();
+  loot = data.loot;
+  renderLoot();
 }
 
 async function removeLoot(i) {
