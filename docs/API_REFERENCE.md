@@ -452,6 +452,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/maps/schematic/{slug}/buy-item` | Player | A player buys one stock row from a merchant token, deducting currency and reducing stock (row-level locked against concurrent buys). |
 | POST | `/maps/schematic/{slug}/grid` | GM / Assistant | Saves the grid overlay type/config (none/square/hex). |
 | POST | `/maps/schematic/{slug}/elements` | GM / Assistant | Saves the full canvas element list (shapes, tokens, labels). |
+| POST | `/maps/schematic/{slug}/ai-build` | GM* | AI-builds map elements: a text description (optionally with sketch/floorplan images for vision-guided layout) is turned into validated, canvas-clamped SVG-canvas elements (rooms/circles/doors/labels) appended to — or, with `replace=1`, replacing — the schematic. Uses the model's structured-output JSON (findings I-3) and vision (I-6). |
 | POST | `/maps/schematic/{slug}/upload` | GM / Assistant | Uploads a background image. |
 | POST | `/maps/schematic/{slug}/embed-image` | GM / Assistant | Embeds a picked image file directly into an element (data-URI, no separate upload round trip) — backs the editor's 🖼 Embed Image tool. |
 | POST | `/maps/schematic/{slug}/rename` | GM / Assistant | Renames a schematic. |

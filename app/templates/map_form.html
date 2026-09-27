@@ -26,6 +26,26 @@
         <button type="button" class="btn-gallery-pick" onclick="ndGalleryPickerOpen(onMapGalleryPick)">🖼 Choose from Gallery</button>
       </div>
     </div>
+
+    <div class="form-group" style="border:1px solid var(--border);border-radius:6px;padding:.9rem 1rem;background:var(--bg2)">
+      <label style="color:var(--neon)">✨ Generate map image with AI</label>
+      <p style="font-size:.75rem;color:var(--text-dim);margin:.3rem 0 .5rem">
+        Describe the space — style, mood, contents, lighting. The generated image
+        lands in the Background Image field above; add markers after creating the map.
+        Uses the Image Gen backend configured in AI Tools.
+      </p>
+      <textarea id="ai-map-prompt" rows="2" placeholder="e.g. top-down abandoned lunar shrine, cracked stone tiles, gothic pillars, faint violet glow, scattered rubble — battlemap style, no text"
+                style="width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px;resize:vertical;box-sizing:border-box"></textarea>
+      <div style="display:flex;gap:.5rem;align-items:center;margin-top:.5rem;flex-wrap:wrap">
+        <select id="ai-map-size" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.35rem .5rem;font-family:var(--font);font-size:.8rem;border-radius:3px">
+          <option value="1024x1024">1024 × 1024</option>
+          <option value="1344x768">1344 × 768 (wide)</option>
+          <option value="768x1344">768 × 1344 (tall)</option>
+        </select>
+        <button type="button" id="ai-map-generate" class="btn-secondary" style="font-size:.8rem">✨ Generate</button>
+        <span id="ai-map-status" style="font-size:.78rem;color:var(--text-dim)"></span>
+      </div>
+    </div>
     <div class="form-actions">
       <button type="submit" class="btn-primary">Create Map</button>
       <a href="{{ '/maps'|wq }}" class="btn-cancel">Cancel</a>
@@ -64,6 +84,60 @@
   });
   input.addEventListener('change', () => {
     if (input.files[0]) label.textContent = input.files[0].name;
+  });
+})();
+
+// AI battlemap generation: job pipeline → generated file into image_file.
+(async function () {
+  const btn = document.getElementById('ai-map-generate');
+  if (!btn) return;
+  const statusEl = document.getElementById('ai-map-status');
+  const promptEl = document.getElementById('ai-map-prompt');
+  const sizeEl = document.getElementById('ai-map-size');
+
+  btn.addEventListener('click', async () => {
+    const prompt = promptEl.value.trim();
+    if (!prompt) { statusEl.textContent = 'Describe the space first.'; return; }
+    btn.disabled = true;
+    statusEl.textContent = '⏳ Generating…';
+    try {
+      const [w, h] = sizeEl.value.split('x');
+      const r = await fetch('/api/ai/imagegen/jobs', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: prompt + ', top-down battlemap, no text, no grid overlay',
+                               width: parseInt(w, 10), height: parseInt(h, 10) }),
+      });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || ('HTTP ' + r.status)); }
+      const { job_id } = await r.json();
+      const deadline = Date.now() + 5 * 60 * 1000;
+      while (Date.now() < deadline) {
+        await new Promise(res => setTimeout(res, 2000));
+        const sr = await fetch(`/api/ai/imagegen/jobs/${job_id}`);
+        if (!sr.ok) continue;
+        const job = await sr.json();
+        if (job.status === 'error') throw new Error(job.error || 'generation failed');
+        if (job.status === 'done' && (job.urls || []).length) {
+          // Same pattern as the gallery pick: turn the URL into a File for
+          // the existing image_file input.
+          const file = await ndGalleryUrlToFile(job.urls[0]);
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          const input = document.querySelector('#map-img-dropzone input[type=file]');
+          input.files = dt.files;
+          document.getElementById('map-img-dropzone-label').textContent = 'AI-generated image ✓';
+          statusEl.textContent = '✓ Image ready — set a name and create the map.';
+          btn.disabled = false;
+          return;
+        }
+        if (job.status !== 'pending' && job.status !== 'running' && job.status !== 'generating') {
+          throw new Error('Unexpected job status: ' + job.status);
+        }
+      }
+      throw new Error('Timed out waiting for the image.');
+    } catch (e) {
+      statusEl.textContent = '⚠ ' + e.message;
+      btn.disabled = false;
+    }
   });
 })();
 

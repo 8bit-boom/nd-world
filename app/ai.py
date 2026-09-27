@@ -1319,7 +1319,7 @@ def _empty_response_message(model: str, thinking_chars: int, done_reason: str | 
     return f"[empty response from {model} ({detail}) — try a different model, or check the {_backend_label()} server logs]"
 
 
-async def generate_chat(messages: list[dict], system: str = "", model: str = "", options: dict = None, think: bool = False) -> str:
+async def generate_chat(messages: list[dict], system: str = "", model: str = "", options: dict = None, think: bool = False, format=None) -> str:
     m = model or effective_ollama_model()
     _log.info("generate_chat model=%s msgs=%d", m, len(messages))
     full = []
@@ -1328,6 +1328,10 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
     full.extend(messages)
     try:
         chat_kwargs = await _chat_kwargs(options, think, m)
+        if format is not None:
+            # Structured output (findings I-3): a JSON schema dict or
+            # "json" — passed through to the backend untouched.
+            chat_kwargs["format"] = format
         effective_think = chat_kwargs["think"]
         if think and not effective_think and m in _prompt_token_thinking_models:
             # This model already rejected think=true once, but nd-world's

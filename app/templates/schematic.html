@@ -64,6 +64,7 @@
     <button class="tb" id="bar2-toggle" onclick="toggleBar2()" title="More tools (edit/align/export)">⋯ More</button>
     <div style="flex:1"></div>
     <button class="tb" id="save-btn" onclick="save()" style="border-color:#44ff88;color:#44ff88">💾 Save</button>
+    <button class="tb" onclick="aiBuildOpen()" style="border-color:var(--neon,#0ff);color:var(--neon,#0ff)" title="AI-build a layout from a description (and optional sketch images)">✨ AI Build</button>
   </div>
 
   <!-- ── Toolbar (row 2: edit ops) ─────────────────────────────────────────── -->
@@ -524,6 +525,72 @@
 </style>
 
 <script src="/static/js/schematic-render.js"></script>
+
+<!-- ✨ AI Build dialog -->
+<div id="ai-build-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:400;align-items:center;justify-content:center">
+  <div style="background:var(--bg2,#16161d);border:1px solid var(--border,#333);border-radius:8px;padding:1.25rem;width:520px;max-width:92vw;max-height:90vh;overflow:auto">
+    <h2 style="color:var(--neon,#0ff);font-size:1rem;margin:0 0 .5rem">✨ AI Build — generate map elements</h2>
+    <p style="font-size:.75rem;color:var(--text-dim);margin:0 0 .6rem">
+      Describe the space (rooms, doors, features). Optionally attach a sketch or
+      floorplan image for the AI to base the layout on. New elements are appended
+      to the canvas — draw over them, move them, or delete what you don't want.
+    </p>
+    <textarea id="ai-build-desc" rows="4" placeholder="e.g. A smuggler's den: L-shaped bar with stools, two storage rooms behind a hidden door, a central gambling table, back exit into the alley."
+      style="width:100%;background:var(--bg3,#0d0d12);border:1px solid var(--border,#333);color:var(--text,#ddd);padding:.5rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:4px;resize:vertical;box-sizing:border-box"></textarea>
+    <label style="display:block;font-size:.78rem;color:var(--text-dim);margin:.5rem 0 .2rem">Sketch / floorplan images (optional, up to 3)</label>
+    <input type="file" id="ai-build-images" accept="image/*" multiple style="font-size:.78rem;color:var(--text-dim)"/>
+    <label style="display:flex;align-items:center;gap:.4rem;font-size:.8rem;color:var(--text-dim);margin:.6rem 0">
+      <input type="checkbox" id="ai-build-replace"/> Replace everything on the canvas (default: append)
+    </label>
+    <div style="display:flex;gap:.5rem;justify-content:flex-end;margin-top:.8rem">
+      <button type="button" class="tb" onclick="aiBuildClose()">Cancel</button>
+      <button type="button" class="tb" id="ai-build-go" style="border-color:var(--neon,#0ff);color:var(--neon,#0ff)">✨ Build</button>
+    </div>
+    <div id="ai-build-status" style="font-size:.78rem;color:var(--text-dim);margin-top:.5rem;min-height:1em"></div>
+  </div>
+</div>
+<script>
+function aiBuildOpen() {
+  document.getElementById('ai-build-overlay').style.display = 'flex';
+  document.getElementById('ai-build-status').textContent = '';
+  document.getElementById('ai-build-desc').focus();
+}
+function aiBuildClose() {
+  document.getElementById('ai-build-overlay').style.display = 'none';
+}
+(function () {
+  const go = document.getElementById('ai-build-go');
+  if (!go) return;
+  go.addEventListener('click', async () => {
+    const desc = document.getElementById('ai-build-desc').value.trim();
+    const statusEl = document.getElementById('ai-build-status');
+    if (!desc) { statusEl.textContent = 'Describe the space first.'; return; }
+    const replace = document.getElementById('ai-build-replace').checked ? '1' : '';
+    const files = document.getElementById('ai-build-images').files;
+    go.disabled = true;
+    statusEl.textContent = '⏳ The model is drafting the layout… (can take up to a minute)';
+    try {
+      const fd = new FormData();
+      fd.append('description', desc);
+      fd.append('replace', replace);
+      for (const f of files) fd.append('images', f);
+      const r = await fetch(`/maps/schematic/${SLUG}/ai-build`, { method: 'POST', body: fd });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
+      // Same contract as pull-combat: the server appended and returns the
+      // authoritative full list — adopt it wholesale.
+      elements = data.elements;
+      selIds.clear(); redraw(); snapshot(); markClean();
+      statusEl.textContent = `✓ Added ${data.added} element(s).`;
+      setTimeout(aiBuildClose, 900);
+    } catch (e) {
+      statusEl.textContent = '⚠ ' + e.message;
+    } finally {
+      go.disabled = false;
+    }
+  });
+})();
+</script>
 <script>
 "use strict";
 

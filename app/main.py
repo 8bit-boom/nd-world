@@ -2293,6 +2293,7 @@ async def map_new(
     width: int = Form(3072),
     height: int = Form(3072),
     image_file: UploadFile = File(None),
+    image_url: str = Form(""),
     db: Session = Depends(get_db),
     active_world: str = Cookie(None),
 ):
@@ -2322,6 +2323,19 @@ async def map_new(
             maps_upload_dir.mkdir(parents=True, exist_ok=True)
             copy_upload_bounded(image_file, maps_upload_dir / (slug + ext),
                                 max_bytes=_effective_general_upload_bytes(db))
+    elif image_url.strip():
+        # A generated battlemap: the AI pipeline already wrote the PNG under
+        # /uploads/ai-images — copy it into the maps folder under this map's
+        # slug. Containment-checked like serve_upload: only files inside
+        # UPLOADS_DIR can be sourced, and the extension must be allowed.
+        src_url = image_url.strip()
+        if src_url.startswith("/uploads/"):
+            candidate = (UPLOADS_DIR / src_url[len("/uploads/"):]).resolve()
+            if candidate.is_relative_to(UPLOADS_DIR.resolve()) and candidate.is_file() \
+                    and candidate.suffix.lower() in ALLOWED_EXTS:
+                maps_upload_dir = UPLOADS_DIR / "maps"
+                maps_upload_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(candidate, maps_upload_dir / (slug + candidate.suffix.lower()))
     return RedirectResponse(f"/maps/{slug}", status_code=303)
 
 @app.post("/maps/{slug}/rename")
@@ -3295,6 +3309,162 @@ async def schematic_save_elements(slug: str, request: Request, db: Session = Dep
     s.elements_json = json.dumps(elements)
     db.commit()
     return {"ok": True}
+
+
+
+
+@app.post("/maps/schematic/{slug}/ai-build")
+async def schematic_ai_build(
+    slug: str,
+    request: Request,
+    description: str = Form(...),
+    replace: str = Form(""),
+    images: List[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    active_world: str = Cookie(None),
+):
+    """AI-build a schematic layout: the GM describes the space ("a smuggler's
+    den: L-shaped bar, two storage rooms, hidden cargo crawl-space") and —
+    optionally — attaches sketch/floorplan images for the model to base the
+    layout on. The model returns a strict JSON element list (rects, circles,
+    lines, text labels in the editor's own element schema), which is
+    validated, clamped to the canvas, id-stamped, and appended to (or
+    replaces) the schematic's elements. Structured output rides the
+    JSON-schema `format` the Ask AI pipeline verified (findings I-3); sketch
+    understanding rides the vision path (I-6)."""
+    sch = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not sch:
+        raise HTTPException(404)
+    if not world_can_edit_section(request, db.get(World, sch.world_id), "maps"):
+        raise HTTPException(403)
+    desc = (description or "").strip()[:4000]
+    if not desc:
+        raise HTTPException(400, "Describe the space to build")
+
+    import base64 as _b64
+    image_b64s = []
+    for f in (images or [])[:3]:
+        if f and f.filename:
+            raw = await f.read()
+            if raw:
+                image_b64s.append(_b64.b64encode(raw).decode("ascii"))
+
+    canvas_w = sch.canvas_width or 2000
+    canvas_h = sch.canvas_height or 1500
+    system = (
+        "You are a battlemap layout architect for an SVG canvas editor. "
+        f"The canvas is {canvas_w} x {canvas_h} units, origin top-left, +y downward. "
+        "Return STRICT JSON only: {\"elements\": [ ... ]} — an array of 8 to 60 simple "
+        "shapes that draw the requested space as a clean top-down map. "
+        "Allowed element shapes:\n"
+        "- room: {\"type\":\"rect\",\"x\":..,\"y\":..,\"w\":..,\"h\":..,\"fill\":\"#hex\",\"stroke\":\"#hex\",\"strokeW\":2,\"label\":\"Room name\"}\n"
+        "- circle feature: {\"type\":\"circle\",\"cx\":..,\"cy\":..,\"rx\":..,\"ry\":..,\"fill\":\"#hex\",\"stroke\":\"#hex\"}\n"
+        "- wall/door/line: {\"type\":\"line\",\"x1\":..,\"y1\":..,\"x2\":..,\"y2\":..,\"stroke\":\"#hex\",\"strokeW\":3}\n"
+        "- label: {\"type\":\"text\",\"x\":..,\"y\":..,\"label\":\"short text\"}\n"
+        "Rules: keep every shape fully inside the canvas; label rooms with their "
+        "name; use a muted, readable palette (fills #2a2a35-range, strokes grey/accent "
+        "hex); make rooms large enough to read (200+ units wide); include doors as "
+        "short line segments on room walls; no other keys, no comments, no markdown "
+        "fences."
+    )
+
+    user_msg: dict = {"role": "user", "content": desc}
+    if image_b64s:
+        user_msg["images"] = image_b64s
+
+    fmt = {"type": "object",
+           "properties": {"elements": {"type": "array"}},
+           "required": ["elements"]}
+
+    try:
+        raw = await _ai_module.generate_chat([user_msg], system=system, format=fmt)
+    except Exception as exc:
+        raise HTTPException(502, f"AI schematic build failed: {exc}")
+    if not (raw or "").strip():
+        raise HTTPException(502, "The model returned nothing — try a more concrete description.")
+
+    def _extract_json(text: str) -> dict:
+        text = text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+            text = re.sub(r"\n?```$", "", text)
+        try:
+            return json.loads(text)
+        except ValueError:
+            start, end = text.find("{"), text.rfind("}")
+            if start != -1 and end > start:
+                return json.loads(text[start:end + 1])
+            raise
+
+    try:
+        raw_elements = _extract_json(raw).get("elements")
+    except ValueError:
+        raw_elements = None
+    if not isinstance(raw_elements, list) or not raw_elements:
+        raise HTTPException(502, "The model's reply contained no usable elements — try rephrasing.")
+
+    _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{3,8}$")
+    _ALLOWED_SHAPES = {"rect", "circle", "line", "arrow", "text"}
+
+    def _num(v, default=0.0):
+        try:
+            return max(0.0, min(float(v), 20000.0))
+        except (TypeError, ValueError):
+            return default
+
+    def _color(v, fallback):
+        s = str(v or "").strip()
+        return s if _COLOR_RE.match(s) else fallback
+
+    new_elements = []
+    for e in raw_elements[:400]:
+        if not isinstance(e, dict):
+            continue
+        etype = str(e.get("type") or "").strip().lower()
+        if etype not in _ALLOWED_SHAPES:
+            continue
+        ne: dict = {"id": "ai-" + uuid.uuid4().hex[:10], "type": etype}
+        if etype == "rect":
+            ne["x"] = _num(e.get("x")); ne["y"] = _num(e.get("y"))
+            ne["w"] = min(_num(e.get("w"), 100), canvas_w)
+            ne["h"] = min(_num(e.get("h"), 100), canvas_h)
+            ne["fill"] = _color(e.get("fill"), "#2a2a35")
+            ne["stroke"] = _color(e.get("stroke"), "#888888")
+            ne["strokeW"] = _num(e.get("strokeW"), 2)
+        elif etype == "circle":
+            ne["cx"] = _num(e.get("cx")); ne["cy"] = _num(e.get("cy"))
+            ne["rx"] = _num(e.get("rx"), 50); ne["ry"] = _num(e.get("ry"), 50)
+            ne["fill"] = _color(e.get("fill"), "#2a2a35")
+            ne["stroke"] = _color(e.get("stroke"), "#888888")
+            ne["strokeW"] = _num(e.get("strokeW"), 2)
+        elif etype in ("line", "arrow"):
+            ne["x1"] = _num(e.get("x1")); ne["y1"] = _num(e.get("y1"))
+            ne["x2"] = _num(e.get("x2")); ne["y2"] = _num(e.get("y2"))
+            ne["stroke"] = _color(e.get("stroke"), "#aaaaaa")
+            ne["strokeW"] = _num(e.get("strokeW"), 3)
+        elif etype == "text":
+            ne["x"] = _num(e.get("x")); ne["y"] = _num(e.get("y"))
+        label = str(e.get("label") or "")[:200]
+        if label:
+            ne["label"] = label
+        new_elements.append(ne)
+
+    if not new_elements:
+        raise HTTPException(502, "The model's elements were all invalid for this canvas — try rephrasing.")
+
+    try:
+        elements = json.loads(sch.elements_json or "[]")
+    except ValueError:
+        elements = []
+    if (replace or "").strip().lower() in ("1", "true", "yes"):
+        elements = new_elements
+    else:
+        elements = elements + new_elements
+    sch.elements_json = json.dumps(elements)
+    db.commit()
+    # Full merged list — the editor adopts it wholesale (same contract as
+    # pull-combat), so the client can never save a stale copy over the append.
+    return {"added": len(new_elements), "total": len(elements), "elements": elements}
 
 @app.post("/maps/schematic/{slug}/upload")
 async def schematic_upload_image(slug: str, file: UploadFile = File(...), db: Session = Depends(get_db)):
