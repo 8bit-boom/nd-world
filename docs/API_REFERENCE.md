@@ -296,6 +296,8 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/quests/{quest_id}` | GM / Player* | Quest detail. *Same opt-in as the list above; 404s (not 403) for an id belonging to a world the viewer can't access, same hidden-content convention as `pages_viewer`. |
 | POST | `/quests/{quest_id}/edit` | GM | Saves quest edits. |
 | POST | `/api/quests/{quest_id}/status` | GM | Updates quest status (active/completed/failed). |
+| POST | `/api/quests/suggest` | GM | AI session-sync: reads a session's summary/transcript/facts, diffs them against the current quest board (RAG-grounded in world lore, thinking on), and returns draft suggestions — new quests to add and status changes/notes for existing ones. Hallucinated quest ids are filtered; nothing is written until `/api/quests/apply`. Body `{session_id}` or `{text}`, optional `{model, use_rag}`. |
+| POST | `/api/quests/apply` | GM | Applies reviewed AI suggestions: creates the checked new quests and applies the status/note updates to existing quests (world-scoped; foreign quest ids ignored). |
 | POST | `/quests/{quest_id}/delete` | GM | Deletes a quest. |
 
 ## Sessions & Session Log

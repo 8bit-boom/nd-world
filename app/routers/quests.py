@@ -4,9 +4,13 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
+from sqlalchemy import or_
+
+from .. import ai as _ai
+from .. import retrieval as _retrieval
 from ..database import get_db
 from ..deps import get_world_ctx, is_gm, world_can_edit_row, world_can_edit_section, world_can_view_section, world_row_visible
-from ..models import Entity, Party, Quest, World
+from ..models import Entity, Fact, GameSession, Party, Quest, World
 from ..templating import templates
 
 router = APIRouter()
@@ -21,26 +25,58 @@ def _current_user_id(request: Request):
 
 
 @router.get("/quests", response_class=HTMLResponse)
-def quests_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def quests_list(request: Request, q: str = "", category: str = "", party: str = "",
+                db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
     if not world_can_view_section(request, world, "quests"):
         raise HTTPException(403)
-    q = db.query(Quest).filter(Quest.world_id == world.id)
+    query = db.query(Quest).filter(Quest.world_id == world.id)
     if not is_gm(request):
         # visible_to_players=False is the GM's "hide this quest from the
         # table entirely" flag — the MCP list tool and the world-summary
         # pipeline already honor it; the web list must too, or a player
         # granted quests-read sees hidden titles/summaries/bodies.
-        q = q.filter(Quest.visible_to_players.isnot(False))
-    quests = q.order_by(Quest.title).all()
+        query = query.filter(Quest.visible_to_players.isnot(False))
+    term = (q or "").strip()
+    if term:
+        like = f"%{term}%"
+        query = query.filter(or_(Quest.title.ilike(like), Quest.summary.ilike(like), Quest.body.ilike(like)))
+    if category:
+        query = query.filter(Quest.category == category)
+    if party.isdigit():
+        query = query.filter(Quest.assigned_party_id == int(party))
+    quests = query.order_by(Quest.title).all()
+
+    # Sub-quest progress (done/total per parent quest) — computed from the
+    # already-fetched rows, no extra queries.
+    subs_done: dict = {}
+    subs_total: dict = {}
+    for quest in quests:
+        if quest.parent_id:
+            subs_total[quest.parent_id] = subs_total.get(quest.parent_id, 0) + 1
+            if (quest.status or "") == "complete":
+                subs_done[quest.parent_id] = subs_done.get(quest.parent_id, 0) + 1
+
     grouped: dict = {s: [] for s in STATUSES}
-    for q in quests:
-        grouped.setdefault(q.status or "active", []).append(q)
+    for quest in quests:
+        grouped.setdefault(quest.status or "active", []).append(quest)
+
+    # Parties for the filter dropdown; recent sessions for the AI sync panel.
+    parties = db.query(Party).filter(Party.world_id == world.id).order_by(Party.name).all() if world else []
+    sessions = (
+        db.query(GameSession).filter(GameSession.world_id == world.id)
+        .order_by(GameSession.session_num.desc()).limit(50).all()
+    ) if world else []
+
     return templates.TemplateResponse("quests/list.html", {
         "request": request, "world": world, "worlds": worlds, "grouped": grouped, "statuses": STATUSES,
         "can_create": world_can_edit_section(request, world, "quests"),
+        "q": term, "category": category, "party": party, "parties": parties,
+        "subs_done": subs_done, "subs_total": subs_total,
+        "sessions": sessions,
+        "ai_ready": _ai.effective_llm_api_key(),
     })
 
 
@@ -180,3 +216,216 @@ def quest_delete(quest_id: int, request: Request, db: Session = Depends(get_db))
     db.delete(quest)
     db.commit()
     return RedirectResponse("/quests", status_code=303)
+
+
+
+# ── AI: quest suggestions from a session log ─────────────────────────────────
+# A GM runs a session, then asks the AI to diff the session log against the
+# current quest board: which quests advanced/completed/failed, and what new
+# plot threads emerged. Suggestions are RETURNED for GM review — nothing is
+# written until POST /api/quests/apply confirms them (same AI-drafts-
+# GM-confirms pattern as the entity/relation suggestion flows).
+
+def _extract_json(text: str) -> dict:
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = re.sub(r"\n?```$", "", text)
+    try:
+        return json.loads(text)
+    except ValueError:
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            return json.loads(text[start:end + 1])
+        raise
+
+
+def _session_quest_material(db: Session, gs: GameSession, char_budget: int = 6000) -> str:
+    """The session's story material for the AI: the GM summary (or the
+    live transcript's tail when there is no summary), plus the session's
+    Facts. Trimmed to `char_budget` so a long recording doesn't blow the
+    context on its own."""
+    parts = []
+    summary = (gs.summary or "").strip()
+    if summary:
+        parts.append("Session summary:\n" + summary[:char_budget // 2])
+    transcript = (gs.live_transcript or "").strip()
+    if transcript and not summary:
+        parts.append("Session transcript (tail):\n" + transcript[-char_budget:])
+    facts = db.query(Fact).filter(Fact.game_session_id == gs.id).order_by(Fact.created_at).all()
+    if facts:
+        parts.append("Logged facts:\n" + "\n".join(f"- {f.content}" for f in facts[-30:]))
+    return "\n\n".join(parts).strip()
+
+
+@router.post("/api/quests/suggest")
+async def quests_suggest(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """AI-draft quest changes from a session: quests completed/failed/updated
+    and new quests introduced. GM-only (writes are preview-only here, but the
+    prompt includes GM-only lore via RAG and full session summaries — never a
+    player surface). Body: {session_id} or {text}, plus optional {model,
+    use_rag}. Returns {new_quests: [...], quest_updates: [...]} for the
+    review UI; nothing is written until /api/quests/apply."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    if not is_gm(request):
+        raise HTTPException(403)
+
+    body = await request.json()
+    session_id = body.get("session_id")
+    text = str(body.get("text") or "").strip()
+    model = str(body.get("model") or "").strip()
+    use_rag = body.get("use_rag", True)
+
+    material = ""
+    gs = None
+    if session_id:
+        gs = db.query(GameSession).filter(
+            GameSession.id == int(session_id), GameSession.world_id == world.id).first()
+        if not gs:
+            raise HTTPException(404, "Session not found in this world")
+        material = _session_quest_material(db, gs)
+        if not material:
+            material = (gs.title or "") and f"Session #{gs.session_num}: {gs.title}"
+    if not material and text:
+        material = text[:8000]
+    if not material:
+        raise HTTPException(400, "Provide a session_id or raw text")
+
+    # Existing quest board — the AI may only reference THESE ids (hallucination guard).
+    quests = db.query(Quest).filter(Quest.world_id == world.id).order_by(Quest.title).all()
+    board = "\n".join(
+        f"- id={q.id} [{q.status or 'active'}/{q.category or 'main'}] {q.title}"
+        + (f" — {q.summary[:120]}" if q.summary else "")
+        for q in quests
+    ) or "(no quests yet)"
+
+    # RAG grounding — GM-only route, so unfiltered lore is fine here.
+    world_ctx = ""
+    if use_rag:
+        try:
+            rag, _n, _notes = _retrieval.smart_world_context(
+                db, world.id, material[:1500] or text, entity_limit=8, notes_limit=2,
+            )
+            if rag:
+                world_ctx = (
+                    "\n\n=== World lore (ground the suggestions in this) ===\n" + rag[:4000]
+                )
+        except Exception:
+            world_ctx = ""
+
+    system = (
+        "You are a campaign co-GM. Compare the session material against the CURRENT QUEST "
+        "BOARD and report what changed. Return STRICT JSON only:\n"
+        '{"new_quests": [{"title": str, "summary": str, "category": "main"|"side"|"personal"}], '
+        '"quest_updates": [{"quest_id": int, "status": "active"|"complete"|"failed", "note": str}]}\n'
+        "Rules: only propose quest_updates whose quest_id appears verbatim in the current "
+        "quest board; only mark complete/failed when the session says it plainly; keep new "
+        "quest titles short and in-world; propose a new quest only for a genuine open plot "
+        "thread the session introduced (not a one-off scene beat); it is fine to return "
+        "empty arrays if nothing changed. No comments, no markdown fences."
+    )
+    user_text = (
+        "=== CURRENT QUEST BOARD ===\n" + board
+        + "\n\n=== SESSION MATERIAL ===\n" + material
+        + world_ctx
+    )
+
+    raw = await _ai.generate_chat(
+        [{"role": "user", "content": user_text}],
+        system=system, model=model, think=True,
+        format={"type": "object",
+                "properties": {
+                    "new_quests": {"type": "array"},
+                    "quest_updates": {"type": "array"},
+                },
+                "required": ["new_quests", "quest_updates"]},
+    )
+
+    try:
+        parsed = _extract_json(raw)
+    except ValueError:
+        raise HTTPException(502, "The model's reply wasn't valid JSON — try again or rephrase.")
+
+    new_quests = parsed.get("new_quests") or []
+    quest_updates = parsed.get("quest_updates") or []
+    quest_ids_in_world = {q.id for q in quests}
+    quest_updates = [
+        u for u in quest_updates
+        if isinstance(u, dict) and isinstance(u.get("quest_id"), int)
+        and u["quest_id"] in quest_ids_in_world
+    ]
+    new_quests = [
+        n for n in new_quests
+        if isinstance(n, dict) and str(n.get("title") or "").strip()
+    ]
+    return {
+        "new_quests": [
+            {"title": str(n["title"]).strip()[:256],
+             "summary": str(n.get("summary") or "").strip()[:512],
+             "category": n.get("category") if n.get("category") in CATEGORIES else "side"}
+            for n in new_quests[:12]
+        ],
+        "quest_updates": [
+            {"quest_id": u["quest_id"],
+             "status": u.get("status") if u.get("status") in STATUSES else "active",
+             "note": str(u.get("note") or "").strip()[:512],
+             "title": next((q.title for q in quests if q.id == u["quest_id"]), "")}
+            for u in quest_updates[:24]
+        ],
+    }
+
+
+@router.post("/api/quests/apply")
+async def quests_apply_suggestions(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Apply reviewed AI suggestions: create new quests and apply quest
+    updates. GM-only. Body: {new_quests: [...], quest_updates: [...], owner_user_id?} —
+    the same shapes /api/quests/suggest returned."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    if not is_gm(request):
+        raise HTTPException(403)
+    body = await request.json()
+    user = getattr(request.state, "user", None)
+
+    created = 0
+    for n in (body.get("new_quests") or [])[:12]:
+        if not isinstance(n, dict):
+            continue
+        title = str(n.get("title") or "").strip()
+        if not title:
+            continue
+        db.add(Quest(
+            world_id=world.id, title=title[:256],
+            status=n.get("status") if n.get("status") in STATUSES else "active",
+            category=n.get("category") if n.get("category") in CATEGORIES else "side",
+            summary=str(n.get("summary") or "").strip()[:512],
+            body=str(n.get("body") or ""),
+            visible_to_players=bool(n.get("visible_to_players", True)),
+            created_by_user_id=user.id if user else None,
+        ))
+        created += 1
+
+    updated = 0
+    quest_ids = [u.get("quest_id") for u in (body.get("quest_updates") or [])
+                 if isinstance(u, dict) and isinstance(u.get("quest_id"), int)]
+    quest_map = {}
+    if quest_ids:
+        for q in db.query(Quest).filter(Quest.id.in_(quest_ids), Quest.world_id == world.id).all():
+            quest_map[q.id] = q
+    for u in (body.get("quest_updates") or [])[:24]:
+        if not isinstance(u, dict):
+            continue
+        quest = quest_map.get(u.get("quest_id"))
+        if not quest:
+            continue
+        if u.get("status") in STATUSES:
+            quest.status = u["status"]
+        if str(u.get("note") or "").strip():
+            note = str(u["note"]).strip()[:512]
+            quest.summary = note
+        updated += 1
+    db.commit()
+    return {"created": created, "updated": updated}

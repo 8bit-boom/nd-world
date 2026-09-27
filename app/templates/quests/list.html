@@ -10,6 +10,46 @@
   </div>
 </div>
 
+<div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:1rem">
+  <form method="get" action="{{ '/quests'|wq }}" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;flex:1">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search quests…"
+           style="flex:1;min-width:180px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.45rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
+    <select name="category" onchange="this.form.submit()"
+            style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.45rem .4rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
+      <option value="">All categories</option>
+      {% for c in ['main', 'side', 'personal'] %}<option value="{{ c }}" {% if category == c %}selected{% endif %}>{{ c | capitalize }}</option>{% endfor %}
+    </select>
+    <select name="party" onchange="this.form.submit()"
+            style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.45rem .4rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
+      <option value="">All parties</option>
+      {% for p in parties %}<option value="{{ p.id }}" {% if party == p.id|string %}selected{% endif %}>🛡 {{ p.name }}</option>{% endfor %}
+    </select>
+    <button type="submit" class="btn-secondary" style="font-size:.8rem">Search</button>
+  </form>
+</div>
+
+{% if can_create and sessions %}
+<details style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:.9rem 1.1rem;margin-bottom:1.2rem">
+  <summary style="cursor:pointer;color:var(--neon);font-size:.9rem">✨ AI sync from session</summary>
+  <p style="font-size:.75rem;color:var(--text-dim);margin:.5rem 0 .6rem">
+    Pick a session — the AI reads its summary, transcript, and facts, diffs them against this
+    quest board, and drafts suggestions: quests to complete/fail/update and new quests to add.
+    You review everything before anything is applied.
+  </p>
+  <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+    <select id="ai-session-id" style="flex:1;min-width:220px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.4rem .5rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
+      {% for s in sessions %}<option value="{{ s.id }}">#{{ s.session_num }} — {{ s.title }}</option>{% endfor %}
+    </select>
+    <button type="button" id="ai-suggest-btn" class="btn-secondary" style="font-size:.8rem">✨ Generate suggestions</button>
+  </div>
+  <div id="ai-suggest-status" style="font-size:.78rem;color:var(--text-dim);margin-top:.4rem"></div>
+  <form id="ai-apply-form" style="display:none;margin-top:.7rem">
+    <div id="ai-suggestions"></div>
+    <button type="button" id="ai-apply-btn" class="btn-primary" style="margin-top:.6rem;font-size:.82rem">Apply selected</button>
+  </form>
+</details>
+{% endif %}
+
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem">
   {% for status in statuses %}
   <div>
@@ -18,7 +58,8 @@
       {% for q in grouped.get(status, []) %}
       <a href="{{ ('/quests/' + q.id|string)|wq }}" style="display:block;background:var(--bg2);border:1px solid var(--border);border-radius:5px;padding:.6rem .75rem;text-decoration:none;color:var(--text)">
         <div style="font-weight:bold;font-size:.88rem">{{ q.title }}</div>
-        <div style="font-size:.75rem;color:var(--text-dim);margin-top:.15rem">{{ q.category }}{% if q.parent_id %} · sub-quest{% endif %}</div>
+        <div style="font-size:.75rem;color:var(--text-dim);margin-top:.15rem">{{ q.category }}{% if q.parent_id %} · sub-quest{% endif %}
+          {% if subs_total.get(q.id) %} · ⬆ {{ subs_done.get(q.id, 0) }}/{{ subs_total[q.id] }} sub-quests done{% endif %}</div>
         {% if q.summary %}<div style="font-size:.78rem;color:var(--text-dim);margin-top:.3rem">{{ q.summary }}</div>{% endif %}
       </a>
       {% else %}
@@ -28,4 +69,90 @@
   </div>
   {% endfor %}
 </div>
+
+{% if can_create and sessions %}
+<script>
+(function () {
+  const btn = document.getElementById('ai-suggest-btn');
+  if (!btn) return;
+  const statusEl = document.getElementById('ai-suggest-status');
+  const form = document.getElementById('ai-apply-form');
+  const box = document.getElementById('ai-suggestions');
+  const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  btn.addEventListener('click', async () => {
+    const sessionId = document.getElementById('ai-session-id').value;
+    if (!sessionId) return;
+    btn.disabled = true;
+    statusEl.textContent = '⏳ The AI is reading the session against the quest board… (thinking on — up to a couple of minutes)';
+    try {
+      const r = await fetch('/api/quests/suggest', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: Number(sessionId) }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+      renderSuggestions(d);
+      statusEl.textContent = 'Review the drafts below, then apply.';
+    } catch (e) {
+      statusEl.textContent = '⚠ ' + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  function renderSuggestions(d) {
+    form.style.display = '';
+    box.innerHTML = '';
+    if (!(d.new_quests || []).length && !(d.quest_updates || []).length) {
+      box.innerHTML = '<p style="font-size:.82rem;color:var(--text-dim)">No quest changes detected in this session.</p>';
+      return;
+    }
+    (d.quest_updates || []).forEach((u, i) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.5rem .6rem;margin-bottom:.4rem;font-size:.83rem';
+      row.innerHTML = `<label style="display:flex;gap:.5rem;align-items:flex-start">
+          <input type="checkbox" checked data-kind="update" data-i="${i}"/>
+          <span><strong>${esc(u.status.toUpperCase())}</strong> — ${esc(u.title || ('Quest #' + u.quest_id))}
+          ${u.note ? `<div style="color:var(--text-dim);font-size:.78rem;margin-top:.15rem">${esc(u.note)}</div>` : ''}</span>
+        </label>`;
+      box.appendChild(row);
+    });
+    (d.new_quests || []).forEach((n, i) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:.5rem .6rem;margin-bottom:.4rem;font-size:.83rem';
+      row.innerHTML = `<label style="display:flex;gap:.5rem;align-items:flex-start">
+          <input type="checkbox" checked data-kind="new" data-i="${i}"/>
+          <span><strong>NEW (${esc(n.category || 'side')})</strong> — ${esc(n.title)}
+          ${n.summary ? `<div style="color:var(--text-dim);font-size:.78rem;margin-top:.15rem">${esc(n.summary)}</div>` : ''}</span>
+        </label>`;
+      box.appendChild(row);
+    });
+  }
+
+  document.getElementById('ai-apply-btn').addEventListener('click', async () => {
+    const suggestions = { new_quests: [], quest_updates: [] };
+    box.querySelectorAll('input[type=checkbox]:checked').forEach(cb => {
+      const kind = cb.dataset.kind, i = Number(cb.dataset.i);
+      const item = window.__aiSuggestions?.[kind]?.[i];
+      if (item) suggestions[kind === 'new' ? 'new_quests' : 'quest_updates'].push(item);
+    });
+    if (!suggestions.new_quests.length && !suggestions.quest_updates.length) return;
+    const r = await fetch('/api/quests/apply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(suggestions),
+    });
+    if (r.ok) window.location.reload();
+    else {
+      const d = await r.json().catch(() => ({}));
+      alert(d.detail || ('Apply failed: HTTP ' + r.status));
+    }
+  });
+
+  // stash raw suggestions for the apply step
+  const origRender = renderSuggestions;
+  renderSuggestions = function (d) { window.__aiSuggestions = d; origRender(d); };
+})();
+</script>
+{% endif %}
 {% endblock %}
