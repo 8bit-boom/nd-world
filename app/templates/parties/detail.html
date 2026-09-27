@@ -8,6 +8,67 @@
     <a href="{{ '/parties'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Parties</a>
   </div>
 
+  <!-- Live member vitals — the GM's at-a-glance strip -->
+  {% if member_vitals %}
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem 1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">❤ Member Vitals <span style="color:var(--text-dim);font-size:.75rem;text-transform:none;letter-spacing:0">(live from each sheet)</span></h2>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:.6rem">
+      {% for v in member_vitals %}
+      <a href="{{ ('/characters/' + v.id|string)|wq }}" style="background:var(--bg3);border:1px solid {% if v.down %}#a33{% else %}var(--border){% endif %};border-radius:4px;padding:.55rem .7rem;text-decoration:none;color:var(--text);display:block">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:.4rem">
+          <span style="font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ v.name }}</span>
+          <span style="font-size:.7rem;color:var(--text-dim)">Lvl {{ v.level }}</span>
+        </div>
+        {% if v.max_hp %}
+        {% set hp_pct = ((v.hp or 0) * 100 / v.max_hp) | round | int %}
+        <div style="background:var(--bg2);border-radius:3px;height:7px;overflow:hidden;margin:.35rem 0 .3rem">
+          <div style="height:100%;width:{{ hp_pct if hp_pct > 0 else 0 }}%;background:{% if hp_pct <= 25 %}#c44{% elif hp_pct <= 55 %}#da4{% else %}var(--neon){% endif %}"></div>
+        </div>
+        <div style="font-size:.75rem;color:var(--text-dim)">HP {{ v.hp }}/{{ v.max_hp }}{% if v.temp_hp %} (+{{ v.temp_hp }} temp){% endif %} · AC {{ v.ac or '—' }}{% if v.down %} · <span style="color:#e07">DOWN</span>{% endif %}</div>
+        {% else %}
+        <div style="font-size:.75rem;color:var(--text-dim);margin-top:.3rem">AC {{ v.ac or '—' }} · no HP tracked</div>
+        {% endif %}
+        {% if v.conditions %}
+        <div style="font-size:.7rem;color:var(--text-dim);margin-top:.25rem">{{ v.conditions | join(', ') }}</div>
+        {% endif %}
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Party history -->
+  {% if history_sessions or history_combats or history_events %}
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem 1.25rem;margin-bottom:1rem">
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">📜 Party History</h2>
+    {% if history_sessions %}
+    <div style="font-size:.75rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem">Sessions</div>
+    <div style="display:flex;flex-direction:column;gap:.25rem;margin-bottom:.8rem">
+      {% for s in history_sessions %}
+      <a href="{{ ('/sessions/' + s.id|string)|wq }}" style="font-size:.83rem;color:var(--text);text-decoration:none">#{{ s.session_num }} {{ s.title }}</a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if history_combats %}
+    <div style="font-size:.75rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem">Combats</div>
+    <div style="display:flex;flex-direction:column;gap:.25rem;margin-bottom:.8rem">
+      {% for c in history_combats %}
+      <a href="/combat/{{ c.id }}" style="font-size:.83rem;color:var(--text);text-decoration:none">⚔ {{ c.name }} <span style="color:var(--text-dim);font-size:.75rem">· round {{ c.round_num }}</span></a>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if history_events %}
+    <div style="font-size:.75rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.35rem">Calendar events</div>
+    <div style="display:flex;flex-direction:column;gap:.25rem">
+      {% for ev in history_events %}
+      <a href="{{ ('/calendar?w=' + world.slug)|wq }}" style="font-size:.83rem;color:var(--text);text-decoration:none">{{ ev.title or 'Event' }} <span style="color:var(--text-dim);font-size:.75rem">· day {{ ev.day }}</span></a>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+
   {% if edit_level == "full" %}
   <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:1.25rem">
     <button type="button" id="launch-combat-btn" style="background:var(--neon);color:#000;border:none;padding:.5rem 1rem;font-size:.85rem;font-weight:bold;border-radius:3px;cursor:pointer">⚔ Launch Combat</button>

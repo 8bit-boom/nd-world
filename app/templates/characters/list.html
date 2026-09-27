@@ -9,6 +9,29 @@
   </div>
 </div>
 
+{% if my_party %}
+<div style="background:var(--bg2);border:1px solid var(--neon);border-radius:6px;padding:.9rem 1.1rem;margin-bottom:1.2rem;display:flex;align-items:center;gap:.8rem;flex-wrap:wrap">
+  <span style="font-size:1.2rem">🛡</span>
+  <div style="flex:1;min-width:200px">
+    <div style="font-size:.72rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em">Your party</div>
+    <a href="{{ ('/parties/' + my_party.id|string)|wq }}" style="color:var(--neon);font-size:1rem;text-decoration:none">{{ my_party.name }}</a>
+  </div>
+  <span style="font-size:.78rem;color:var(--text-dim)">shared notes, loot, and where you are on the map</span>
+</div>
+{% endif %}
+
+<form method="get" action="{{ '/characters'|wq }}" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:1.2rem">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search name, class, race, player…"
+         style="flex:1;min-width:220px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.45rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:3px"/>
+  <select name="sort" onchange="this.form.submit()"
+          style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:.45rem .5rem;font-family:var(--font);font-size:.82rem;border-radius:3px">
+    <option value="name" {% if sort == 'name' %}selected{% endif %}>Sort: Name</option>
+    <option value="level" {% if sort == 'level' %}selected{% endif %}>Sort: Level</option>
+    <option value="hp" {% if sort == 'hp' %}selected{% endif %}>Sort: Most wounded</option>
+  </select>
+  <button type="submit" class="btn-secondary" style="font-size:.8rem">Search</button>
+</form>
+
 {% if not pcs %}
 <div class="empty-state" style="text-align:center;padding:4rem 2rem;color:var(--text-dim);">
   <div style="font-size:3rem;margin-bottom:1rem;">🎲</div>
@@ -20,7 +43,9 @@
 <div class="pc-grid">
   {% for pc in pcs %}
   {% set d = derived[pc.id] %}
-  <a href="{{ ('/characters/' + pc.id|string)|wq }}" class="pc-card">
+  {% set ppt = pc_party.get(pc.id) %}
+  <a href="{{ ('/characters/' + pc.id|string)|wq }}" class="pc-card"
+     {% if my_character and pc.id == my_character.id %}style="outline:2px solid var(--neon);outline-offset:-2px"{% endif %}>
     <div class="pc-card-portrait">
       {% if pc.portrait_url %}
       <img src="{{ pc.portrait_url|thumb }}" alt="{{ pc.name }}" loading="lazy">
@@ -29,7 +54,12 @@
       {% endif %}
     </div>
     <div class="pc-card-body">
-      <div class="pc-card-name">{{ pc.name }}</div>
+      <div class="pc-card-name">
+        {{ pc.name }}
+        {% if my_character and pc.id == my_character.id %}<span style="font-size:.62rem;color:var(--neon);border:1px solid var(--neon);border-radius:3px;padding:.05rem .35rem;vertical-align:middle">YOURS</span>{% endif %}
+        {% if user and user.is_gm and pc.owner_user_id and owner_names.get(pc.owner_user_id) %}<span style="font-size:.62rem;color:var(--text-dim);border:1px solid var(--border);border-radius:3px;padding:.05rem .35rem;vertical-align:middle">👤 {{ owner_names[pc.owner_user_id] }}</span>{% endif %}
+        {% if ppt %}<a href="{{ ('/parties/' + ppt.id|string)|wq }}" onclick="event.stopPropagation()" style="font-size:.62rem;color:var(--text-dim);border:1px solid var(--border);border-radius:3px;padding:.05rem .35rem;vertical-align:middle;text-decoration:none">🛡 {{ ppt.name }}</a>{% endif %}
+      </div>
       {% if pc.sheet_template_id in custom_tpl_ids %}
       <div class="pc-card-meta">{{ pc.sheet_template.name if pc.sheet_template else 'Custom system' }}</div>
       {% else %}

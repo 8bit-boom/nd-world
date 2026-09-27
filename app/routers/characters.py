@@ -10,7 +10,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from .. import auth, game_catalog
@@ -285,30 +285,78 @@ def _can_view_character(db: Session, user, pc: PlayerCharacter, world: World) ->
 
 
 @router.get("/characters", response_class=HTMLResponse)
-def characters_list(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+def characters_list(request: Request, q: str = "", sort: str = "name",
+                    db: Session = Depends(get_db), active_world: str = Cookie(None)):
     world, worlds = get_world_ctx(request, db, active_world)
     if not world_can_view_section(request, world, "characters"):
         raise HTTPException(403)
     user = _current_user(request)
     pcs = []
+    term = (q or "").strip()
     if world:
-        q = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == world.id)
+        qbase = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == world.id)
         if user and not user.is_gm:
             if world.players_see_party:
-                q = q.filter(or_(PlayerCharacter.owner_user_id == user.id, PlayerCharacter.owner_user_id.isnot(None)))
+                qbase = qbase.filter(or_(PlayerCharacter.owner_user_id == user.id, PlayerCharacter.owner_user_id.isnot(None)))
             else:
-                q = q.filter(PlayerCharacter.owner_user_id == user.id)
-        pcs = q.order_by(PlayerCharacter.name).all()
+                qbase = qbase.filter(PlayerCharacter.owner_user_id == user.id)
+        if term:
+            like = f"%{term}%"
+            qbase = qbase.filter(or_(
+                PlayerCharacter.name.ilike(like),
+                PlayerCharacter.char_class.ilike(like),
+                PlayerCharacter.race.ilike(like),
+                PlayerCharacter.player_name.ilike(like),
+            ))
+        if sort == "level":
+            qbase = qbase.order_by(PlayerCharacter.level.desc(), PlayerCharacter.name)
+        elif sort == "hp":
+            # Wounded first: lowest HP fraction leads. SQLite can't divide by
+            # zero — max(max_hp, 1) keeps 0-max custom sheets at the bottom.
+            qbase = qbase.order_by(
+                (PlayerCharacter.current_hp * 1.0 / func.max(PlayerCharacter.max_hp, 1)).asc(),
+                PlayerCharacter.name,
+            )
+        else:
+            qbase = qbase.order_by(PlayerCharacter.name)
+        pcs = qbase.all()
     derived = {pc.id: _derived(pc) for pc in pcs}
     sheet_templates_list = _templates_for_world(db, world.id if world else None)
     custom_tpl_ids = {t.id for t in sheet_templates_list if t.sheet_mode == "custom"}
     my_character = _own_character(db, world.id, user.id) if (world and user and not user.is_gm) else None
+
+    # Party badges + the player's own-party shortcut: one pass over the
+    # world's parties, membership read from the JSON lists.
+    from ..models import Party
+    pc_party = {}
+    my_party = None
+    if world:
+        for party in db.query(Party).filter(Party.world_id == world.id).all():
+            try:
+                member_ids = json.loads(party.member_pc_ids_json or "[]")
+            except ValueError:
+                member_ids = []
+            for pcid in member_ids:
+                pc_party.setdefault(pcid, party)
+            if my_character is not None and my_character.id in member_ids:
+                my_party = party
+
+    # Owner display names — GM view only (players see their own cards).
+    owner_names = {}
+    if world and user and user.is_gm:
+        owner_ids = {pc.owner_user_id for pc in pcs if pc.owner_user_id}
+        if owner_ids:
+            for u_ in db.query(User).filter(User.id.in_(owner_ids)).all():
+                owner_names[u_.id] = u_.display_name or u_.email
+
     return templates.TemplateResponse("characters/list.html", {
         "request": request, "world": world, "worlds": worlds,
         "pcs": pcs, "derived": derived,
         "sheet_templates": sheet_templates_list,
         "custom_tpl_ids": custom_tpl_ids,
         "user": user, "my_character": my_character,
+        "q": term, "sort": sort,
+        "pc_party": pc_party, "owner_names": owner_names, "my_party": my_party,
     })
 
 

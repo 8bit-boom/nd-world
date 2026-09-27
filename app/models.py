@@ -909,6 +909,9 @@ class CombatSession(Base):
     round_num = Column(Integer, default=1)
     active_idx = Column(Integer, default=0)
     game_session_id = Column(Integer, ForeignKey("game_sessions.id"), nullable=True, index=True)
+    # The party this encounter was launched from (party detail's history
+    # section reads this back). Nullable — manual encounters have no party.
+    party_id = Column(Integer, ForeignKey("parties.id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

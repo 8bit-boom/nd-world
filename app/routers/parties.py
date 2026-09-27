@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..deps import get_world_ctx, paginate, world_can_edit_section, world_can_view_section, world_row_visible
-from ..models import CombatSession, Entity, Party, PlayerCharacter, Quest, World
+from ..models import CalendarEvent, CombatSession, Entity, GameSession, Party, PlayerCharacter, Quest, World
 from ..templating import templates
 from .combat import entity_to_combatant, pc_to_combatant, _COMBATANT_KINDS
 
@@ -103,6 +103,38 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
     ).order_by(Entity.name).all()
     assigned_quests = db.query(Quest).filter(Quest.assigned_party_id == party.id).all()
     loot = json.loads(party.loot_json or "[]")
+
+    # Live member vitals — the GM's at-a-glance strip. HP/temp/AC read
+    # straight off the PC rows, so they're current the moment anyone's
+    # sheet changes. Conditions stay on the sheet (they're freeform JSON).
+    member_vitals = []
+    for pc in sorted(member_pcs, key=lambda p: p.name or ""):
+        try:
+            conds = json.loads(pc.conditions_json or "[]")
+        except ValueError:
+            conds = []
+        member_vitals.append({
+            "id": pc.id, "name": pc.name,
+            "hp": pc.current_hp, "max_hp": pc.max_hp, "temp_hp": pc.temp_hp,
+            "ac": pc.armor_class, "level": pc.level,
+            "down": (pc.max_hp or 0) > 0 and (pc.current_hp or 0) <= 0,
+            "conditions": [c for c in conds if isinstance(c, str)][:4],
+        })
+
+    # Party history: every session, combat, and calendar event tied to this
+    # party, newest first — the "where have we been" view.
+    history_sessions = (
+        db.query(GameSession).filter(GameSession.party_id == party.id)
+        .order_by(GameSession.session_num.desc()).all()
+    )
+    history_combats = (
+        db.query(CombatSession).filter(CombatSession.party_id == party.id)
+        .order_by(CombatSession.created_at.desc()).all()
+    )
+    history_events = (
+        db.query(CalendarEvent).filter(CalendarEvent.party_id == party.id)
+        .order_by(CalendarEvent.day.desc()).all()
+    )
     return templates.TemplateResponse("parties/detail.html", {
         "request": request, "world": world, "worlds": worlds, "party": party,
         "member_pcs": member_pcs, "member_entities": member_entities,
@@ -110,6 +142,10 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
         "assigned_quests": assigned_quests, "loot": loot,
         "pc_ids": pc_ids, "entity_ids": entity_ids,
         "edit_level": _party_edit_level(request, db, party_world, party),
+        "member_vitals": member_vitals,
+        "history_sessions": history_sessions,
+        "history_combats": history_combats,
+        "history_events": history_events,
     })
 
 
@@ -221,7 +257,8 @@ def party_launch_combat(party_id: int, request: Request, db: Session = Depends(g
         combatants.append(pc_to_combatant(pc))
     for ent in db.query(Entity).filter(Entity.id.in_(entity_ids)).all() if entity_ids else []:
         combatants.append(entity_to_combatant(ent))
-    cs = CombatSession(world_id=party.world_id, name=f"{party.name} Encounter", combatants_json=json.dumps(combatants))
+    cs = CombatSession(world_id=party.world_id, name=f"{party.name} Encounter",
+                       party_id=party.id, combatants_json=json.dumps(combatants))
     db.add(cs)
     db.commit()
     db.refresh(cs)
