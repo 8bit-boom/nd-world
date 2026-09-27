@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request, Depends, Form, HTTPException, UploadFile, File, Cookie, Query
 from pydantic import BaseModel
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, StreamingResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse, StreamingResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -3291,6 +3291,133 @@ async def schematic_save_grid(slug: str, request: Request, db: Session = Depends
     s.grid_config_json = json.dumps(config)
     db.commit()
     return {"ok": True}
+
+@app.get("/maps/schematic/{slug}/preview.svg")
+def schematic_preview_svg(slug: str, request: Request, db: Session = Depends(get_db),
+                          active_world: str = Cookie(None)):
+    """Renders a schematic's elements as a small SVG image for list-card
+    previews. Faithful subset of the editor's shapes (rect/circle/line/
+    arrow/poly/pencil/text/token/aoe); a background image, if present, is
+    inlined as a data URI (SVG loaded via <img> can't reference external
+    files). View-gated like the schematics list itself."""
+    sch = db.query(Schematic).filter(Schematic.slug == slug).first()
+    if not sch:
+        raise HTTPException(404)
+    world = db.get(World, sch.world_id)
+    if not world_can_view_section(request, world, "maps"):
+        raise HTTPException(403)
+
+    canvas_w = sch.canvas_width or 2000
+    canvas_h = sch.canvas_height or 1500
+    bg_color = {"dark": "#16161d", "grid-dark": "#16161d"}.get(sch.canvas_bg or "dark", "#f5f2ea")
+
+    parts: list[str] = []
+    if sch.image_url:
+        src_path = (UPLOADS_DIR / sch.image_url.split("/uploads/", 1)[-1]).resolve()
+        try:
+            in_uploads = src_path.is_relative_to(UPLOADS_DIR.resolve())
+        except OSError:
+            in_uploads = False
+        if in_uploads and src_path.is_file() and src_path.stat().st_size <= 4 * 1024 * 1024:
+            import base64 as _b64
+            import mimetypes as _mimetypes
+            data = _b64.b64encode(src_path.read_bytes()).decode("ascii")
+            mime = _mimetypes.guess_type(src_path.name)[0] or "image/png"
+            parts.append(f'<image href="data:{mime};base64,{data}" '
+                         f'x="0" y="0" width="{canvas_w}" height="{canvas_h}" '
+                         f'preserveAspectRatio="none"/>')
+
+    try:
+        elements = json.loads(sch.elements_json or "[]")
+    except ValueError:
+        elements = []
+
+    def _n(v, d=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return d
+
+    def _esc(s: str) -> str:
+        return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    for e in elements[:600]:
+        if not isinstance(e, dict):
+            continue
+        et = str(e.get("type") or "").lower()
+        stroke = _esc(str(e.get("stroke") or "#888888"))
+        sw = _n(e.get("strokeW"), 2)
+        fill = _esc(str(e.get("fill") or "none"))
+        op = _n(e.get("opacity"), 1.0)
+        op_attr = f' opacity="{max(0.0, min(op, 1.0))}"' if op != 1.0 else ""
+        if et == "rect":
+            parts.append(
+                f'<rect x="{_n(e.get("x"))}" y="{_n(e.get("y"))}" '
+                f'width="{_n(e.get("w"), 50)}" height="{_n(e.get("h"), 50)}" '
+                f'fill="{fill}" stroke="{stroke}" stroke-width="{sw}" rx="{_n(e.get("rx"), 4)}"{op_attr}/>'
+            )
+        elif et == "circle":
+            parts.append(
+                f'<ellipse cx="{_n(e.get("cx"))}" cy="{_n(e.get("cy"))}" '
+                f'rx="{_n(e.get("rx"), 30)}" ry="{_n(e.get("ry"), 30)}" '
+                f'fill="{fill}" stroke="{stroke}" stroke-width="{sw}"{op_attr}/>'
+            )
+        elif et in ("line", "arrow"):
+            x1, y1, x2, y2 = _n(e.get("x1")), _n(e.get("y1")), _n(e.get("x2")), _n(e.get("y2"))
+            if et == "arrow":
+                import math as _math
+                ang = _math.atan2(y2 - y1, x2 - x1)
+                head = 10
+                for off in (-2.5, 2.5):
+                    parts.append(
+                        f'<line x1="{x2}" y1="{y2}" '
+                        f'x2="{x2 - head * _math.cos(ang + off)}" '
+                        f'y2="{y2 - head * _math.sin(ang + off)}" '
+                        f'stroke="{stroke}" stroke-width="{sw}"/>'
+                    )
+            parts.append(f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" '
+                         f'stroke="{stroke}" stroke-width="{sw}"{op_attr}/>')
+        elif et in ("poly", "pencil"):
+            pts = e.get("points") or e.get("pts")
+            if isinstance(pts, (list, tuple)) and len(pts) >= 2:
+                pts_str = " ".join(f"{_n(p[0])},{_n(p[1])}" for p in pts
+                                   if isinstance(p, (list, tuple)) and len(p) >= 2)
+                if pts_str:
+                    parts.append(f'<polyline points="{pts_str}" fill="none" '
+                                 f'stroke="{stroke}" stroke-width="{sw}"{op_attr}/>')
+        elif et == "text":
+            parts.append(
+                f'<text x="{_n(e.get("x"))}" y="{_n(e.get("y"))}" '
+                f'fill="{fill if fill != "none" else "#dddddd"}" '
+                f'font-size="{_n(e.get("size") or 18)}" '
+                f'font-family="sans-serif">{_esc(e.get("label") or e.get("text") or "")}</text>'
+            )
+        elif et in ("token", "pin"):
+            cx, cy = _n(e.get("cx"), _n(e.get("x"))), _n(e.get("cy"), _n(e.get("y")))
+            r = _n(e.get("r"), 14)
+            tcolor = _esc(str(e.get("color") or "#c05050"))
+            parts.append(f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="{tcolor}" '
+                         f'stroke="#111" stroke-width="2"/>')
+            name = e.get("name") or e.get("label")
+            if name:
+                parts.append(f'<text x="{cx}" y="{cy + r + 12}" text-anchor="middle" '
+                             f'fill="#dddddd" font-size="14" font-family="sans-serif">'
+                             f'{_esc(str(name))}</text>')
+
+    label_text = _esc(str(sch.name or ""))
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {canvas_w} {canvas_h}" '
+        f'preserveAspectRatio="xMidYMid meet">'
+        f'<rect width="{canvas_w}" height="{canvas_h}" fill="{bg_color}"/>'
+        + "".join(parts) +
+        (f'<text x="{canvas_w - 16}" y="{canvas_h - 14}" text-anchor="end" '
+         f'font-size="20" font-family="sans-serif" fill="#666666">{_esc(str(sch.name or ""))}</text>'
+         if not parts and not sch.image_url else "")
+        + "</svg>"
+    )
+    return Response(content=svg, media_type="image/svg+xml",
+                    headers={"Cache-Control": "private, max-age=60"})
+
 
 @app.post("/maps/schematic/{slug}/elements")
 async def schematic_save_elements(slug: str, request: Request, db: Session = Depends(get_db)):

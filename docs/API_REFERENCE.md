@@ -443,7 +443,9 @@ worlds they've been invited into (`WorldMembership`).
 |---|---|---|---|
 | GET | `/maps/schematic/new` | GM / Assistant | New schematic form. |
 | POST | `/maps/schematic/new` | GM / Assistant | Creates a schematic. |
+| GET | `/maps/schematic/{slug}`
 | GET | `/maps/schematic/{slug}` | GM / Assistant | GM editor canvas. |
+| GET | `/maps/schematic/{}/preview.svg` | GM / Player* | Server-side SVG rendering of the schematic's elements (rooms, walls, tokens) for list-card previews; an uploaded background image is inlined as a data URI. Gated like the schematics list (maps section view). |
 | POST | `/maps/schematic/{slug}/link-combat` | GM / Assistant | Links the schematic to a `CombatSession` for token sync. |
 | POST | `/maps/schematic/{slug}/unlink-combat` | GM / Assistant | Removes the combat link. |
 | POST | `/maps/schematic/{slug}/pull-combat` | GM / Assistant | One-way sync Combat → Map: creates/refreshes a token for every combatant in the linked combat. |

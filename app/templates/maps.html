@@ -86,9 +86,14 @@
       {% if _s_href %}<a href="{{ _s_href }}">{% endif %}
         <img class="map-img" src="{{ s.image_url|thumb }}" alt="{{ s.name }}" loading="lazy"/>
       {% if _s_href %}</a>{% endif %}
-      {% else %}
+      {% elif s.is_html %}
       {% if _s_href %}<a href="{{ _s_href }}" class="map-placeholder" style="text-decoration:none">{% else %}<div class="map-placeholder">{% endif %}
-        {% if s.is_html %}🌐{% else %}📐{% endif %}
+        🌐
+      {% if _s_href %}</a>{% else %}</div>{% endif %}
+      {% else %}
+      {# Element-only schematic: server-side SVG preview of the canvas #}
+      {% if _s_href %}<a href="{{ _s_href }}" style="display:block">{% endif %}
+        <img class="map-img" src="/maps/schematic/{{ s.slug }}/preview.svg" alt="{{ s.name }}" loading="lazy"/>
       {% if _s_href %}</a>{% else %}</div>{% endif %}
       {% endif %}
     </div>

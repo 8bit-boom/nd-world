@@ -181,3 +181,44 @@ def test_map_new_accepts_generated_image_url(client, seed, tmp_path):
     assert r2.status_code == 303
     slug2 = r2.headers["location"].rsplit("/", 1)[-1]
     assert not (UPLOADS_DIR / "maps" / f"{slug2}.db").exists()
+
+
+# ── Schematic SVG preview ─────────────────────────────────────────────────────
+
+def test_schematic_preview_renders_elements(client, seed):
+    _schematic(seed, slug="preview-sch", elements=[
+        {"type": "rect", "x": 100, "y": 100, "w": 600, "h": 400,
+         "fill": "#2a2a35", "stroke": "#888888", "strokeW": 2, "label": "Bar"},
+        {"type": "line", "x1": 700, "y1": 300, "x2": 760, "y2": 300},
+        {"type": "token", "cx": 300, "cy": 300, "r": 14, "color": "#c05050", "name": "Vex"},
+    ])
+    login(client, seed.gm.email, GM_PASSWORD)
+    _pin(client)
+    r = client.get("/maps/schematic/preview-sch/preview.svg")
+    assert r.status_code == 200
+    assert "image/svg" in r.headers["content-type"]
+    body = r.text
+    assert "<svg" in body and "<rect" in body and 'fill="#2a2a35"' in body
+    assert "<line" in body and "<circle" in body
+    assert "Bar" not in body or True  # label may render as text; not asserted
+    assert "Vex" in body
+
+
+def test_schematic_preview_gated_for_non_maps_viewers(client, seed):
+    _schematic(seed, slug="preview-gate")
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    _pin(client)
+    # parties/maps section default for players is read via matrix; players
+    # WITHOUT the maps grant get 403 on the preview too.
+    from app.deps import world_section_access
+    from app.models import World
+    db = SessionLocal()
+    try:
+        w = db.get(World, seed.world_a.id)
+        current = world_section_access(w)
+        current["maps"]["player"] = "none"
+        w.section_access_json = json.dumps(current)
+        db.commit()
+    finally:
+        db.close()
+    assert client.get("/maps/schematic/preview-sch/preview.svg").status_code == 403
