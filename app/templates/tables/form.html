@@ -143,7 +143,7 @@ document.getElementById('tbl-form').addEventListener('submit', syncHidden);
 
 renderEntries();
 </script>
-<script src="/static/js/ai-assist.js"></script>
+<script src="/static/js/ai-assist.js?v={{ asset_v('js/ai-assist.js') }}"></script>
 <script>
 // ✨ AI assist — the table_entries op returns {entries:[{text,weight}]};
 // Append appends them to the editor's own _entries model (label is this

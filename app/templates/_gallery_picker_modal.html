@@ -4,7 +4,7 @@
      ndGalleryPickerOpen(onPick). Requires `gallery_images` in the template
      context (app/gallery.py's all_world_image_urls). -->
 <script>window.NDGalleryImages = {{ gallery_images | tojson }};</script>
-<script src="/static/js/gallery-picker.js"></script>
+<script src="/static/js/gallery-picker.js?v={{ asset_v('js/gallery-picker.js') }}"></script>
 <div id="gallery-picker-overlay" class="gallery-picker-overlay" onclick="ndGalleryPickerClose()">
   <div class="gallery-picker-box" onclick="event.stopPropagation()">
     <div class="gallery-picker-head">

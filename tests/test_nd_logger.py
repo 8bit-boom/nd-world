@@ -1,3 +1,4 @@
+import re
 """Tests for the client-side "Activity log" (static/js/nd-logger.js) —
 records uncaught errors, console.warn/error, clicks, failed fetch/XHR
 calls, and file-input selections into localStorage, downloadable as .md.
@@ -23,7 +24,7 @@ _JS = (Path(__file__).resolve().parent.parent / "static" / "js" / "nd-logger.js"
 def test_script_shipped_to_gm(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     page = client.get("/settings").text
-    assert '<script src="/static/js/nd-logger.js"></script>' in page
+    assert re.search(r'<script src="/static/js/nd-logger\.js\?v=[0-9a-f]+"></script>', page)
 
 
 def test_script_not_shipped_to_player(client, seed):

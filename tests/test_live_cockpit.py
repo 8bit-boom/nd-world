@@ -411,6 +411,98 @@ def test_quests_board_json(client, seed):
     assert quests[0]["summary"] == "The prologue thread"
 
 
+def test_combat_recent_feed(client, seed):
+    from app.models import CombatSession
+
+    db = SessionLocal()
+    try:
+        db.add(CombatSession(world_id=seed.world_a.id, name="Goblin Ambush",
+                             combatants_json="[]"))
+        db.commit()
+    finally:
+        db.close()
+    _login_gm(client, seed)
+    r = client.get("/api/combat/recent")
+    assert r.status_code == 200
+    combats = r.json()["combats"]
+    assert len(combats) == 1 and combats[0]["name"] == "Goblin Ambush"
+    assert combats[0]["round_num"] == 1
+
+
+def test_combat_recent_feed_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get("/api/combat/recent").status_code == 403
+
+
+def test_tables_options_feed(client, seed):
+    from app.models import RandomTable
+
+    db = SessionLocal()
+    try:
+        db.add(RandomTable(world_id=seed.world_a.id, name="Wild Encounters",
+                           slug="wild-encounters", entries_json='[{"label":"Wolves","weight":1},{"label":"Bandits","weight":1}]'))
+        db.commit()
+    finally:
+        db.close()
+    _login_gm(client, seed)
+    r = client.get("/api/tables/options")
+    assert r.status_code == 200
+    tables = r.json()["tables"]
+    mine = [t for t in tables if t["name"] == "Wild Encounters"]
+    assert len(mine) == 1 and mine[0]["entries"] == 2
+
+
+def test_tables_options_feed_gm_only(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.get("/api/tables/options").status_code == 403
+
+
+def test_workspace_accepts_new_types_and_accent(client, seed):
+    _login_gm(client, seed)
+    ws = {"current": {"panels": [
+        {"id": "c1", "type": "ecard", "ref": "7", "title": "Vex", "x": 0, "y": 0,
+         "w": 360, "h": 400, "z": 1, "accent": "#ff2d78"},
+        {"id": "c2", "type": "tables", "ref": "", "title": "Roll", "x": 0, "y": 0,
+         "w": 360, "h": 280, "z": 2},
+        {"id": "c3", "type": "combat", "ref": "3", "title": "Ambush", "x": 0, "y": 0,
+         "w": 560, "h": 560, "z": 3, "accent": "javascript:alert(1)"},
+        {"id": "c4", "type": "calendar", "ref": "", "title": "Cal", "x": 0, "y": 0,
+         "w": 520, "h": 480, "z": 4},
+    ]}, "presets": {}}
+    assert client.post("/api/cockpit/workspace", json=ws).status_code == 200
+    panels = client.get("/api/cockpit/workspace").json()["workspace"]["current"]["panels"]
+    types = [p["type"] for p in panels]
+    assert types == ["ecard", "tables", "combat", "calendar"]
+    assert panels[0]["accent"] == "#ff2d78"
+    assert panels[2]["accent"] == ""  # non-color string dropped
+
+
+def test_js_includes_are_cache_busted(client, seed):
+    """All local JS ships with a content-hash query (same pattern as
+    style.css) — a stale cached cockpit.js/nd-live.js against fresh HTML
+    after an update breaks the app in confusing ways."""
+    _login_gm(client, seed)
+    html = client.get("/cockpit").text
+    assert "/static/js/cockpit.js?v=" in html
+    assert 'src="/static/js/nd-poll.js"' not in html  # the unversioned form
+    assert "/static/js/nd-live.js?v=" in html
+
+
+def test_embed_pages_skip_spotlight_poller(client, seed):
+    """Embed documents (cockpit windows, floated panels) must not run the
+    spotlight/now-playing poller — otherwise every window polls it and each
+    hidden <audio> plays a broadcast on top of the main window's."""
+    _login_gm(client, seed)
+    plain = client.get("/dice").text
+    embedded = client.get("/dice?embed=1").text
+    assert "ndPoll(pollSpotlight" in plain
+    # the guard sits at the top of the poller IIFE in both, but only embed
+    # bodies carry the nd-embed class that triggers it
+    assert "contains('nd-embed')" in plain and "contains('nd-embed')" in embedded
+
+
 def test_quests_board_gm_only(client, seed):
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)

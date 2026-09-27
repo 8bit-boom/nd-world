@@ -36,6 +36,17 @@
     return;
   }
 
+  // Embedded documents (cockpit windows, floated-panel iframes — see
+  // nd-float.js) NEVER hold the SSE connection: the top page leads, and
+  // this document just listens for relayed versions on the channel.
+  // Without this, a cockpit with N embed windows opened simultaneously
+  // would race N leader elections and open N connections (each iframe
+  // probes, none answers in the grace period, all self-crown), which is
+  // exactly the per-browser connection multiplication the election exists
+  // to prevent.
+  var IN_IFRAME = false;
+  try { IN_IFRAME = window.parent !== window; } catch (e) { IN_IFRAME = true; }
+
   var channel = new BroadcastChannel('nd-live-' + worldSlug);
   var es = null;
   var leader = false;
@@ -48,7 +59,7 @@
   }
 
   function becomeLeader() {
-    if (leader) return;
+    if (leader || IN_IFRAME) return;
     leader = true;
     try { connect(); } catch (e) { /* SSE unavailable — page just won't sync */ }
     heartbeatTimer = setInterval(function () {

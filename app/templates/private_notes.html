@@ -98,7 +98,7 @@
 .pn-field textarea { min-height:100px; resize:vertical; }
 .pn-del-form { display:inline; }
 </style>
-<script src="/static/js/text-format-toolbar.js"></script>
+<script src="/static/js/text-format-toolbar.js?v={{ asset_v('js/text-format-toolbar.js') }}"></script>
 <script>
 // Search: hides non-matching notes and highlights matches — same shape as
 // rules.html's rulesSearch/markMatches/clearMarks, scoped to .pn-note
@@ -162,7 +162,7 @@ document.addEventListener('keydown', e => {
   }
 });
 </script>
-<script src="/static/js/ai-assist.js"></script>
+<script src="/static/js/ai-assist.js?v={{ asset_v('js/ai-assist.js') }}"></script>
 <script>
 ndAiAssist('pvn', {
   ops: ['improve', 'deslop', 'expand', 'translate', 'custom'],

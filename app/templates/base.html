@@ -14,13 +14,13 @@
     })();
   </script>
   {% if request.state.user and request.state.user.is_gm %}
-  <script src="/static/js/nd-logger.js"></script>
+  <script src="/static/js/nd-logger.js?v={{ asset_v('js/nd-logger.js') }}"></script>
   {% endif %}
-  <script src="/static/js/nd-poll.js"></script>
-  <script src="/static/js/nd-float.js" defer></script>
-  <script src="/static/js/nd-live.js" defer></script>
+  <script src="/static/js/nd-poll.js?v={{ asset_v('js/nd-poll.js') }}"></script>
+  <script src="/static/js/nd-float.js?v={{ asset_v('js/nd-float.js') }}" defer></script>
+  <script src="/static/js/nd-live.js?v={{ asset_v('js/nd-live.js') }}" defer></script>
   <link rel="stylesheet" href="/static/style.css?v={{ asset_v('style.css') }}"/>
-  <script src="/static/js/command-palette.js" defer></script>
+  <script src="/static/js/command-palette.js?v={{ asset_v('js/command-palette.js') }}" defer></script>
   {% if world %}
   {% if world_theme.google_fonts_url %}<link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="stylesheet" href="{{ world_theme.google_fonts_url }}">{% endif %}
@@ -576,6 +576,12 @@ const _ND_NOW_PLAYING_POSITION_TIME_KEY = 'nd_now_playing_position_time';
 // see app/templates/schematic_view.html) — the only other GM-action-
 // becomes-visible-to-players mechanism in this app.
 (function() {
+  // Floated panels / cockpit windows run this page in an iframe (?embed=1).
+  // Spotlight + Now Playing are the GM's MAIN-window surface: polling them
+  // per-iframe would multiply the /api/spotlight poll by the window count,
+  // and each iframe's hidden <audio> would PLAY a broadcast track on top of
+  // the main window's — so embed documents opt out here entirely.
+  if (document.body.classList.contains('nd-embed')) return;
   let seenVersion = null;  // null (not the current server value) so the
                             // first poll after any page load treats an
                             // already-active spotlight as "new" and shows

@@ -4,6 +4,7 @@ app/routers/gallery.py's ImageAlbum CRUD (a GM-curated named collection of
 image URLs, on top of the discovered set)."""
 import io
 import json
+import re
 
 from PIL import Image
 
@@ -450,7 +451,7 @@ def test_album_page_uses_chunked_upload_helper(client, seed):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     r = client.get(f"/images/albums/{album_id}")
-    assert 'src="/static/js/chunked-upload.js"' in r.text
+    assert re.search(r'src="/static/js/chunked-upload\.js\?v=[0-9a-f]+"', r.text)
     assert "ndChunkedUpload(" in r.text
     assert "/images/albums/upload/chunk" in r.text
     assert "/images/albums/upload/complete" in r.text
@@ -1122,7 +1123,7 @@ def test_base_html_poller_present_for_gm_and_player(client, seed):
         # docs/AUDIT_PLAN_NEXT.md item 13: the poller must go through the
         # shared visibility-aware ndPoll helper, not a bare setInterval that
         # keeps firing at full cadence in a backgrounded tab.
-        assert '<script src="/static/js/nd-poll.js"></script>' in r.text
+        assert re.search(r'<script src="/static/js/nd-poll\.js\?v=[0-9a-f]+"></script>', r.text)
         assert "ndPoll(pollSpotlight, 4000)" in r.text
         assert "setInterval(pollSpotlight, 4000)" not in r.text
 

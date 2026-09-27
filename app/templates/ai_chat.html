@@ -17,20 +17,20 @@
 {% include "ai_chat/_tab_models.html" %}
 {% include "ai_chat/_tab_whisper.html" %}
 {% include "ai_chat/_tab_starred.html" %}
-<script src="/static/js/file-dropzone.js"></script>
-<script src="/static/js/chunked-upload.js"></script>
-<script src="/static/js/progress-bar.js"></script>
-<script src="/static/js/audio-jobs.js"></script>
-<script src="/static/js/ai-attachments.js"></script>
-<script src="/static/js/entity-picker.js"></script>
+<script src="/static/js/file-dropzone.js?v={{ asset_v('js/file-dropzone.js') }}"></script>
+<script src="/static/js/chunked-upload.js?v={{ asset_v('js/chunked-upload.js') }}"></script>
+<script src="/static/js/progress-bar.js?v={{ asset_v('js/progress-bar.js') }}"></script>
+<script src="/static/js/audio-jobs.js?v={{ asset_v('js/audio-jobs.js') }}"></script>
+<script src="/static/js/ai-attachments.js?v={{ asset_v('js/ai-attachments.js') }}"></script>
+<script src="/static/js/entity-picker.js?v={{ asset_v('js/entity-picker.js') }}"></script>
 <script>
 const WORLD_SYSTEM = {{ world_system | tojson }};
 const ENTITY_KINDS = {{ kinds | tojson }};
 const ENTITY_KIND_ICONS = {{ kind_icons | tojson }};
 const WORLD_NAME = {{ (world.name if world else 'World') | tojson }};
 </script>
-<script src="/static/js/ai-chat-core.js"></script>
-<script src="/static/js/ai-chat-image.js"></script>
-<script src="/static/js/ai-chat-models.js"></script>
-<script src="/static/js/ai-chat-whisper.js"></script>
+<script src="/static/js/ai-chat-core.js?v={{ asset_v('js/ai-chat-core.js') }}"></script>
+<script src="/static/js/ai-chat-image.js?v={{ asset_v('js/ai-chat-image.js') }}"></script>
+<script src="/static/js/ai-chat-models.js?v={{ asset_v('js/ai-chat-models.js') }}"></script>
+<script src="/static/js/ai-chat-whisper.js?v={{ asset_v('js/ai-chat-whisper.js') }}"></script>
 {% endblock %}

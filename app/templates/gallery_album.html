@@ -116,7 +116,7 @@
 .gallery-img-name { padding:.3rem .4rem; font-size:.7rem; color:var(--text-dim); background:var(--bg2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 </style>
 
-<script src="/static/js/chunked-upload.js"></script>
+<script src="/static/js/chunked-upload.js?v={{ asset_v('js/chunked-upload.js') }}"></script>
 <script>
 async function ndSendSpotlight(url) {
   const res = await fetch('/images/spotlight', {

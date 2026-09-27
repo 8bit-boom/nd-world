@@ -137,6 +137,26 @@ def combat_detail(combat_id: int, request: Request, db: Session = Depends(get_db
     })
 
 
+@router.get("/api/combat/recent")
+def combat_recent(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Recent combat sessions as JSON for the GM Cockpit's combat panel
+    picker. GM-only via middleware (not in _is_player_safe); the cockpit is
+    a GM surface."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    rows = (
+        db.query(CombatSession)
+        .filter(CombatSession.world_id == world.id)
+        .order_by(CombatSession.created_at.desc(), CombatSession.id.desc())
+        .limit(10)
+        .all()
+    )
+    return {"combats": [{
+        "id": cs.id, "name": cs.name, "round_num": cs.round_num or 1,
+    } for cs in rows]}
+
+
 @router.get("/api/combat/{combat_id}/state")
 def combat_get_state(combat_id: int, request: Request, db: Session = Depends(get_db)):
     cs = db.query(CombatSession).filter(CombatSession.id == combat_id).first()

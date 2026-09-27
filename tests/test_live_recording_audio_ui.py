@@ -1,3 +1,4 @@
+import re
 """Template wiring for the Live Session Recording panel's GM-configurable
 chunk length and opt-in raw-audio archive (app/templates/sessions/
 detail.html): the chunk-length select, the "Save raw audio" checkbox, both
@@ -79,7 +80,7 @@ def test_uploads_carry_the_archive_tags(client, seed):
     assert "fd.append('segment_index'" in upload
     # The id generator is available on this page (chunked-upload.js is
     # script-included before the inline block) and used at recording start.
-    assert 'src="/static/js/chunked-upload.js"' in page
+    assert re.search(r'src="/static/js/chunked-upload\.js\?v=[0-9a-f]+"', page)
     assert "_liveRecordingId = ndChunkUploadRandomId();" in page
     assert "_liveSegmentIndex = 0;" in page
 

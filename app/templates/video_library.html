@@ -211,7 +211,7 @@
 .video-clip-edit-form { flex-basis:100%; margin-top:.5rem; padding-top:.6rem; border-top:1px solid var(--border); }
 .video-clip-transcript { white-space:pre-wrap; word-break:break-word; font-family:inherit; font-size:.8rem; color:var(--text-dim); background:var(--bg2); border:1px solid var(--border); border-radius:4px; padding:.5rem .6rem; margin:.3rem 0 0; max-height:240px; overflow:auto; }
 </style>
-<script src="/static/js/file-dropzone.js"></script>
+<script src="/static/js/file-dropzone.js?v={{ asset_v('js/file-dropzone.js') }}"></script>
 <script>
 function videoToggleEdit(id) {
   const form = document.getElementById('video-edit-' + id);

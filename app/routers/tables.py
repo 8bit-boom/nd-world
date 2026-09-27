@@ -4,6 +4,7 @@ import re
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -145,6 +146,31 @@ def table_delete(table_id: int, request: Request, db: Session = Depends(get_db))
     db.delete(tbl)
     db.commit()
     return RedirectResponse("/tables", status_code=303)
+
+
+@router.get("/api/tables/options")
+def tables_options(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """The world's roll tables as JSON for the GM Cockpit's quick-roll
+    panel (name + entry count, no contents). GM-only via middleware (not
+    in _is_player_safe), matching the cockpit's other feeds."""
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    rows = (
+        db.query(RandomTable)
+        .filter(or_(RandomTable.world_id == world.id, RandomTable.world_id.is_(None)))
+        .order_by(RandomTable.name)
+        .limit(60)
+        .all()
+    )
+    out = []
+    for t in rows:
+        try:
+            n = len(json.loads(t.entries_json or "[]"))
+        except ValueError:
+            n = 0
+        out.append({"id": t.id, "name": t.name, "entries": n})
+    return {"tables": out}
 
 
 @router.post("/api/tables/{table_id}/roll")

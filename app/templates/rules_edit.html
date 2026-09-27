@@ -144,7 +144,7 @@
     </div>
   </details>
 </div>
-<script src="/static/js/ai-assist.js"></script>
+<script src="/static/js/ai-assist.js?v={{ asset_v('js/ai-assist.js') }}"></script>
 <script>
 // ✨ AI assist on the rules document — the job variant (cfg.job), since a
 // real rules file dwarfs the interactive cap and a whole-document rewrite
@@ -186,6 +186,6 @@ document.getElementById('rules-overlay-suggest-btn').addEventListener('click', a
   }
 });
 </script>
-<script src="/static/js/text-format-toolbar.js"></script>
-<script src="/static/js/file-dropzone.js"></script>
+<script src="/static/js/text-format-toolbar.js?v={{ asset_v('js/text-format-toolbar.js') }}"></script>
+<script src="/static/js/file-dropzone.js?v={{ asset_v('js/file-dropzone.js') }}"></script>
 {% endblock %}

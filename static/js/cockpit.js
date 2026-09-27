@@ -8,9 +8,10 @@
 //   autosaves per world via /api/cockpit/workspace (World.cockpit_ws_json),
 //   with localStorage as the offline mirror, so the cockpit reopens exactly
 //   as it was left — on any device the GM logs in from.
-// - Live panels (party vitals, quests) are client renders of existing JSON
-//   endpoints, refreshed by the Phase-1 live-sync bus ("nd-live" event) —
-//   the same data the party page and quest board render server-side.
+// - Live panels (party vitals, quests, entity cards) are client renders of
+//   existing JSON endpoints, refreshed by the Phase-1 live-sync bus
+//   ("nd-live" event, debounced into one pass) — the same data the party
+//   page, quest board, and hover-preview render server-side.
 // - Everything else is an embedded live page in ?embed=1 chrome-less mode:
 //   what the map/dice/entity pages learn later, the cockpit inherits.
 // - Drag/resize deliberately mutate styles in place; a full re-render (and
@@ -28,6 +29,13 @@
   const addList = document.getElementById('ck-add-list');
   const presetSelect = document.getElementById('ck-preset-select');
   const deletePresetBtn = document.getElementById('ck-delete-preset');
+  const windowsBtn = document.getElementById('ck-windows-btn');
+  const windowsPop = document.getElementById('ck-windows-pop');
+
+  const GRID = 8;              // snap-to-grid (px)
+  const DOCK_ZONE = 28;        // edge width that triggers half-dock (px)
+  const ACCENTS = ['', '#00f0ff', '#ff2d78', '#7CFC9A', '#ffd166', '#a855f7', '#ff8844', '#e0e0e0'];
+  let userTouched = false;     // suppresses server reconciliation once the GM acts
 
   const KIND_ICONS = { character: '👤', creature: '🐉', location: '📍', organization: '🏛',
     item: '🗡', note: '📝', event: '⚡', race: '🧬', profession: '🎭', feat: '✨' };
@@ -60,9 +68,20 @@
 
   // ── persistence ────────────────────────────────────────────────────────
   let saveTimer = null;
+  let liveTimer = null;
   function save() {
+    userTouched = true;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(saveNow, 400);
+  }
+  // Live-sync refreshes collapse into ONE pass: a burst of changes (bulk XP,
+  // a loot spree) would otherwise fire one fetch per panel in parallel.
+  function scheduleLiveRefresh() {
+    clearTimeout(liveTimer);
+    liveTimer = setTimeout(function () {
+      if (document.hidden) return;
+      liveLoaders.forEach(function (fn) { fn(); });
+    }, 500);
   }
   function saveNow() {
     const ws = { current: { panels: panels }, presets: presets };
@@ -74,15 +93,7 @@
     }).catch(function () {});
   }
 
-  async function load() {
-    let ws = null;
-    try {
-      const r = await fetch('/api/cockpit/workspace');
-      if (r.ok) ws = (await r.json()).workspace;
-    } catch (e) {}
-    if (!ws) {
-      try { ws = JSON.parse(localStorage.getItem('nd_cockpit_ws_' + CK_WORLD) || 'null'); } catch (e) {}
-    }
+  function adopt(ws) {
     if (ws && ws.current && Array.isArray(ws.current.panels) && ws.current.panels.length) {
       panels = ws.current.panels;
       presets = ws.presets || {};
@@ -104,6 +115,40 @@
     panels.forEach(function (p) { p.id = newId(); });
     renderPresetSelect();
     render();
+  }
+
+  async function load() {
+    // Instant paint: the localStorage mirror renders immediately, so the
+    // cockpit is up before the network round trip. The server copy is the
+    // cross-device truth and reconciles over the mirror below — unless the
+    // GM has already acted in the first moments (local actions win, and
+    // their save() pushes them up).
+    let mirror = null;
+    try { mirror = JSON.parse(localStorage.getItem('nd_cockpit_ws_' + CK_WORLD) || 'null'); } catch (e) {}
+    const haveMirror = !!(mirror && mirror.current &&
+      Array.isArray(mirror.current.panels) && mirror.current.panels.length);
+    if (haveMirror) { adopt(mirror); userTouched = false; }
+
+    let ws = null;
+    try {
+      const r = await fetch('/api/cockpit/workspace');
+      if (r.ok) ws = (await r.json()).workspace;
+    } catch (e) {}
+
+    if (userTouched) return;  // GM acted during the fetch — local state wins
+    if (!ws) return;          // server unreachable/never arranged: mirror or (below) default already up
+    const incoming = (ws.current && Array.isArray(ws.current.panels)) ? ws.current.panels : null;
+    if (incoming && incoming.length) {
+      // Adopt the server copy when it differs from the painted mirror (e.g.
+      // another device arranged things); identical content skips the
+      // re-render and its iframe reloads.
+      const same = haveMirror &&
+        JSON.stringify(incoming) === JSON.stringify(mirror.current.panels) &&
+        JSON.stringify(ws.presets || {}) === JSON.stringify(mirror.presets || {});
+      if (!same) adopt(ws);
+    } else if (!haveMirror) {
+      adopt(null);  // first-ever visit on this device → default layout
+    }
   }
 
   // ── defaults ───────────────────────────────────────────────────────────
@@ -133,9 +178,9 @@
     viewport.querySelectorAll('.ck-win').forEach(function (el) { el.remove(); });
     liveLoaders.clear();
     panels.forEach(function (p) { viewport.appendChild(buildWin(p)); });
-    panels.forEach(function (p) {
-      if (p.type === 'party' || p.type === 'quests') loadLive(p);
-    });
+    // Everything registered a loader in fillBody — fire them all now that
+    // the nodes are attached (the loaders query the DOM by panel id).
+    liveLoaders.forEach(function (fn) { fn(); });
     if (welcome) welcome.style.display = panels.length ? 'none' : '';
   }
 
@@ -149,12 +194,36 @@
     win.style.height = p.h + 'px';
     win.style.zIndex = p.z || 10;
 
+    if (p.accent) { win.dataset.accent = p.accent; win.style.setProperty('--ck-accent', p.accent); }
     const head = document.createElement('div');
     head.className = 'ck-head2';
     const title = document.createElement('span');
     title.className = 'ck-win-title';
     title.textContent = p.title || CK_TYPES[p.type].icon + ' ' + CK_TYPES[p.type].label;
-    const maxBtn = mkBtn('⤢', 'Fill the cockpit', function () { win.classList.toggle('maxed'); });
+    title.title = 'Double-click to rename';
+    title.addEventListener('dblclick', function (e) {
+      e.stopPropagation();
+      const name = prompt('Panel title:', p.title || CK_TYPES[p.type].label);
+      if (name === null) return;
+      p.title = name.trim().slice(0, 120);
+      title.textContent = p.title || CK_TYPES[p.type].icon + ' ' + CK_TYPES[p.type].label;
+      save();
+    });
+    const accentBtn = mkBtn('🎨', 'Colour-code this panel', function () {
+      const cur = ACCENTS.indexOf(p.accent || '');
+      const next = ACCENTS[(cur + 1) % ACCENTS.length];
+      p.accent = next;
+      if (next) { win.dataset.accent = next; win.style.setProperty('--ck-accent', next); }
+      else { delete win.dataset.accent; win.style.removeProperty('--ck-accent'); }
+      save();
+    });
+    const reloadBtn = mkBtn('⟳', 'Reload this panel', function () {
+      const frame = win.querySelector('.ck-body iframe');
+      if (frame) { frame.src = frame.src; return; }
+      const fn = liveLoaders.get(p.id);
+      if (fn) fn();
+    });
+    const maxBtn = mkBtn('⤢', 'Fill the cockpit (double-click the header)', function () { win.classList.toggle('maxed'); });
     const colBtn = mkBtn(p.collapsed ? '▸' : '▾', 'Collapse / expand', function () {
       p.collapsed = !p.collapsed;
       win.classList.toggle('collapsed', p.collapsed);
@@ -168,7 +237,11 @@
       if (welcome) welcome.style.display = panels.length ? 'none' : '';
       save();
     });
-    head.append(title, maxBtn, colBtn, closeBtn);
+    head.append(title, accentBtn, reloadBtn, maxBtn, colBtn, closeBtn);
+    head.addEventListener('dblclick', function (e) {
+      if (e.target.closest('.ck-wbtn')) return;
+      win.classList.toggle('maxed');
+    });
 
     const body = document.createElement('div');
     body.className = 'ck-body';
@@ -208,6 +281,28 @@
       body.appendChild(mkIframe('/entity/' + encodeURIComponent(p.ref)));
     } else if (p.type === 'ai') {
       body.appendChild(mkIframe('/ai'));
+    } else if (p.type === 'calendar') {
+      body.appendChild(mkIframe('/calendar'));
+    } else if (p.type === 'combat') {
+      // A picked combat embeds the live tracker; an unpicked one shows the
+      // in-panel picker so the GM can start from the window itself.
+      if (p.ref) {
+        body.appendChild(mkIframe('/combat/' + encodeURIComponent(p.ref)));
+      } else {
+        const live = document.createElement('div');
+        live.className = 'ck-live';
+        live.innerHTML = '<p class="ck-empty">Loading recent combats…</p>';
+        body.appendChild(live);
+        liveLoaders.set(p.id, function () { loadCombatPicker(p); });
+      }
+    } else if (p.type === 'tables') {
+      buildTables(p, body);
+    } else if (p.type === 'ecard') {
+      const card = document.createElement('div');
+      card.className = 'ck-card';
+      card.innerHTML = '<p class="ck-empty" style="color:var(--text-dim);font-size:.8rem">Loading…</p>';
+      body.appendChild(card);
+      liveLoaders.set(p.id, function () { loadCard(p); });
     } else if (p.type === 'notes') {
       const ta = document.createElement('textarea');
       ta.className = 'ck-notes';
@@ -302,13 +397,92 @@
     }).join('');
   }
 
+  async function loadCard(p) {
+    const live = viewport.querySelector('.ck-win[data-pid="' + p.id + '"] .ck-card');
+    if (!live) return;
+    try {
+      const r = await fetch('/api/entity/' + encodeURIComponent(p.ref) + '/preview');
+      if (!r.ok) throw new Error();
+      const d = await r.json();
+      live.innerHTML =
+        (d.image_url ? '<img src="' + esc(d.image_url) + '" alt=""/>' : '') +
+        '<span class="entity-kind">' + esc((d.kind_icon || '') + ' ' + (d.kind || '')) + '</span>' +
+        '<h3>' + esc(d.name) + '</h3>' +
+        (d.summary ? '<p class="detail-summary">' + esc(d.summary) + '</p>' : '') +
+        ((d.tags || []).length ? '<div class="tags">' + d.tags.map(function (t) { return '<span class="tag">' + esc(t) + '</span>'; }).join('') + '</div>' : '') +
+        (d.body_html ? '<div class="prose">' + d.body_html + '</div>' : '') +
+        '<a href="/entity/' + encodeURIComponent(d.id) + '?w=' + encodeURIComponent(CK_WORLD) + '" target="_blank">Open full page →</a>';
+    } catch (e) {
+      live.innerHTML = '<p class="ck-empty" style="color:var(--text-dim);font-size:.8rem">Entity unavailable.</p>';
+    }
+  }
+
+  async function loadCombatPicker(p) {
+    const live = viewport.querySelector('.ck-win[data-pid="' + p.id + '"] .ck-live');
+    if (!live) return;
+    try {
+      const r = await fetch('/api/combat/recent');
+      if (!r.ok) throw new Error();
+      const d = await r.json();
+      live.innerHTML = '<h4>Pick a combat to track</h4>' + ((d.combats || []).length ?
+        d.combats.map(function (c) {
+          return '<a class="ck-quest" href="#" data-cid="' + esc(c.id) + '"><span class="ck-quest-t">⚔ ' + esc(c.name) + '</span>' +
+            '<span class="ck-quest-m"><i class="ck-pill">round ' + esc(c.round_num) + '</i></span></a>';
+        }).join('') :
+        '<p class="ck-empty">No combats yet — <a href="/combat?w=' + encodeURIComponent(CK_WORLD) + '" target="_blank">create one</a>.</p>');
+      live.querySelectorAll('[data-cid]').forEach(function (a) {
+        a.addEventListener('click', function (e) {
+          e.preventDefault();
+          const me = panels.find(function (x) { return x.id === p.id; });
+          const c = (d.combats || []).find(function (x) { return String(x.id) === a.dataset.cid; });
+          me.ref = a.dataset.cid;
+          if (c) me.title = '⚔ ' + c.name;
+          render();  // swap the picker for the embedded tracker
+          save();
+        });
+      });
+    } catch (e) {
+      live.innerHTML = '<p class="ck-empty">Combats unavailable.</p>';
+    }
+  }
+
+  async function buildTables(p, body) {
+    const wrap = document.createElement('div');
+    wrap.className = 'ck-tables';
+    wrap.innerHTML = '<select></select><button type="button" class="ck-btn">🎲 Roll</button>' +
+      '<div class="ck-roll-out" style="display:none"></div>';
+    body.appendChild(wrap);
+    const sel = wrap.querySelector('select');
+    try {
+      const r = await fetch('/api/tables/options');
+      if (!r.ok) throw new Error();
+      const d = await r.json();
+      (d.tables || []).forEach(function (t) {
+        const o = document.createElement('option');
+        o.value = t.id;
+        o.textContent = t.name + ' (' + t.entries + ')';
+        sel.appendChild(o);
+      });
+    } catch (e) { /* select stays empty */ }
+    const out = wrap.querySelector('.ck-roll-out');
+    wrap.querySelector('button').addEventListener('click', async function () {
+      if (!sel.value) return;
+      try {
+        const r = await fetch('/api/tables/' + encodeURIComponent(sel.value) + '/roll', { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || r.status);
+        out.style.display = '';
+        out.innerHTML = esc(d.result) + '<small>rolled ' + esc(d.roll) + ' / ' + esc(d.total) + '</small>';
+      } catch (e) {
+        out.style.display = '';
+        out.textContent = 'Roll failed.';
+      }
+    });
+  }
+
   // Live-sync: any HP/XP/loot/quest change anywhere re-renders the live
-  // panels (nd-live.js broadcasts the version; ndLiveRefetch is page-level,
-  // these are per-window so we subscribe directly).
-  window.addEventListener('nd-live', function () {
-    if (document.hidden) return;
-    liveLoaders.forEach(function (fn) { fn(); });
-  });
+  // panels in one debounced pass (nd-live.js broadcasts the version).
+  window.addEventListener('nd-live', scheduleLiveRefresh);
 
   // ── drag / resize ──────────────────────────────────────────────────────
   function wireDrag(handle, win, p) {
@@ -322,10 +496,31 @@
         p.y = Math.max(0, Math.min(viewport.clientHeight - 24, ev.clientY - sy));
         win.style.left = p.x + 'px';
         win.style.top = p.y + 'px';
+        // Edge-dock preview: hover near the left/right edge to see the half
+        // the window will occupy on release.
+        win.classList.toggle('ck-dock-l', ev.clientX <= DOCK_ZONE);
+        win.classList.toggle('ck-dock-r', ev.clientX >= viewport.clientWidth - DOCK_ZONE - 1);
       }
-      function up() {
+      function up(ev) {
         handle.removeEventListener('pointermove', move);
         handle.removeEventListener('pointerup', up);
+        if (win.classList.contains('ck-dock-l') || win.classList.contains('ck-dock-r')) {
+          // Edge dock: released within the left/right DOCK_ZONE — the window
+          // becomes that half of the workspace.
+          const right = win.classList.contains('ck-dock-r');
+          p.x = right ? Math.ceil(viewport.clientWidth / 2) : 0;
+          p.y = 0;
+          p.w = Math.floor(viewport.clientWidth / 2);
+          p.h = viewport.clientHeight;
+          win.style.left = p.x + 'px'; win.style.top = p.y + 'px';
+          win.style.width = p.w + 'px'; win.style.height = p.h + 'px';
+        } else {
+          p.x = Math.round(p.x / GRID) * GRID;
+          p.y = Math.round(p.y / GRID) * GRID;
+          win.style.left = p.x + 'px';
+          win.style.top = p.y + 'px';
+        }
+        win.classList.remove('ck-dock-l', 'ck-dock-r');
         save();
       }
       handle.addEventListener('pointermove', move);
@@ -349,6 +544,10 @@
       function up() {
         handle.removeEventListener('pointermove', move);
         handle.removeEventListener('pointerup', up);
+        p.w = Math.round(p.w / GRID) * GRID;
+        p.h = Math.round(p.h / GRID) * GRID;
+        win.style.width = p.w + 'px';
+        win.style.height = p.h + 'px';
         save();
       }
       handle.addEventListener('pointermove', move);
@@ -356,6 +555,61 @@
     });
   }
 
+  // ── window list popover ───────────────────────────────────
+  function renderWindowList() {
+    windowsPop.innerHTML = '';
+    if (!panels.length) {
+      windowsPop.innerHTML = '<p style="color:var(--text-dim);font-size:.8rem;padding:.4rem .5rem">No windows open.</p>';
+      return;
+    }
+    panels.forEach(function (p) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'ck-winrow';
+      const label = document.createElement('span');
+      label.textContent = p.title || CK_TYPES[p.type].icon + ' ' + CK_TYPES[p.type].label;
+      row.appendChild(label);
+      const x = document.createElement('span');
+      x.className = 'ck-winrow-x';
+      x.textContent = '✕';
+      x.title = 'Close this window';
+      x.addEventListener('click', function (e) {
+        e.stopPropagation();
+        panels = panels.filter(function (q) { return q.id !== p.id; });
+        const el = viewport.querySelector('.ck-win[data-pid="' + p.id + '"]');
+        if (el) el.remove();
+        liveLoaders.delete(p.id);
+        if (welcome) welcome.style.display = panels.length ? 'none' : '';
+        renderWindowList();
+        save();
+      });
+      row.appendChild(x);
+      row.addEventListener('click', function () {
+        const el = viewport.querySelector('.ck-win[data-pid="' + p.id + '"]');
+        if (el) { zTop += 1; el.style.zIndex = zTop; p.z = zTop; el.classList.remove('collapsed'); }
+        windowsPop.style.display = 'none';
+        save();
+      });
+      windowsPop.appendChild(row);
+    });
+  }
+  windowsBtn.addEventListener('click', function () {
+    const open = windowsPop.style.display === 'block';
+    if (!open) {
+      renderWindowList();
+      const r = windowsBtn.getBoundingClientRect();
+      windowsPop.style.left = Math.max(8, r.right - 260) + 'px';
+      windowsPop.style.top = (r.bottom + 6) + 'px';
+      windowsPop.style.display = 'block';
+    } else {
+      windowsPop.style.display = 'none';
+    }
+  });
+  document.addEventListener('mousedown', function (e) {
+    if (windowsPop.style.display === 'block' && !e.target.closest('#ck-windows-pop') && !e.target.closest('#ck-windows-btn')) {
+      windowsPop.style.display = 'none';
+    }
+  });
   // ── add-panel modal ────────────────────────────────────────────────────
   let pickerType = null;
   let pickerRows = [];
@@ -383,7 +637,7 @@
 
   function chooseType(key) {
     pickerType = key;
-    if (key === 'map' || key === 'party' || key === 'entity') {
+    if (key === 'map' || key === 'party' || key === 'entity' || key === 'ecard' || key === 'combat') {
       addPicker.style.display = '';
       addSearch.value = '';
       addSearch.placeholder = key === 'entity' ? 'Search entities…' : 'Filter…';
@@ -394,9 +648,20 @@
       } else if (key === 'party') {
         pickerRows = CK_PARTIES.map(function (x) { return { ref: String(x.id), label: '❤ ' + x.name, sub: 'party' }; });
         fillPicker(pickerRows);
-      } else {
+      } else if (key === 'combat') {
+        pickerRows = [];
+        fillPicker([]);
+        fetch('/api/combat/recent').then(function (r) { return r.json(); }).then(function (d) {
+          pickerRows = (d.combats || []).map(function (c) {
+            return { ref: String(c.id), label: '\u2694 ' + c.name, sub: 'round ' + c.round_num };
+          });
+          filterPicker(addSearch.value);
+        }).catch(function () { fillPicker([]); });
+      } else if (key === 'ecard' || key === 'entity') {
         pickerRows = [];
         ensureEntities().then(function () { filterEntities(''); });
+      } else {
+        pickerRows = [];
       }
       addSearch.focus();
     } else {
@@ -464,7 +729,8 @@
     panels.push(p);
     if (welcome) welcome.style.display = 'none';
     viewport.appendChild(buildWin(p));
-    if (p.type === 'party' || p.type === 'quests') loadLive(p);
+    const fn = liveLoaders.get(p.id);
+    if (fn) fn();
     save();
   }
 
@@ -511,7 +777,10 @@
   document.getElementById('ck-add-close').addEventListener('click', closeAdd);
   addOverlay.addEventListener('mousedown', function (e) { if (e.target === addOverlay) closeAdd(); });
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && addOverlay.style.display === 'block') closeAdd();
+    if (e.key === 'Escape') {
+      if (addOverlay.style.display === 'block') closeAdd();
+      if (windowsPop.style.display === 'block') windowsPop.style.display = 'none';
+    }
   });
   addSearch.addEventListener('input', function () {
     filterPicker(this.value);

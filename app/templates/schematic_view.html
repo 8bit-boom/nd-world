@@ -54,7 +54,7 @@
 .sv-popup-err { color:#ff6666; font-size:.78rem; margin-top:.3rem; }
 </style>
 
-<script src="/static/js/schematic-render.js"></script>
+<script src="/static/js/schematic-render.js?v={{ asset_v('js/schematic-render.js') }}"></script>
 <script>
 "use strict";
 const SLUG = {{ schematic.slug | tojson }};

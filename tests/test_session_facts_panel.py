@@ -1,3 +1,4 @@
+import re
 """Tests for the Facts panel embedded directly on a session's own detail
 page (app/routers/sessions.py's session_detail + sessions/detail.html) —
 the "integrate Facts into Sessions" follow-up to the Facts audit/grouping
@@ -62,7 +63,7 @@ def test_session_detail_facts_panel_wires_shared_js_module(client, seed):
     s1 = _make_session(seed.world_a.id, 1, "First")
     _login_gm_in(client, seed, seed.world_a)
     html = client.get(f"/sessions/{s1}").text
-    assert '<script src="/static/js/facts-recap-parser.js"></script>' in html
+    assert re.search(r'<script src="/static/js/facts-recap-parser\.js\?v=[0-9a-f]+"></script>', html)
     assert f"ndFactsRecapParser({{ fixedSessionId: {s1}" in html
     assert 'id="parse-btn"' in html
     assert 'id="draft-panel"' in html

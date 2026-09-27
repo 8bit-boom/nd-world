@@ -1,3 +1,4 @@
+import re
 """Regression tests for plan item UI 2.1: ai_chat.html was a single
 5,617-line file (~700 lines of CSS, ~1700 lines of tab HTML, ~3900 lines of
 JS all inlined into one <script> block). Split into a thin shell
@@ -28,7 +29,7 @@ def test_ai_page_still_renders_every_tab_and_loads_the_split_assets(client, seed
 
     assert '<link rel="stylesheet" href="/static/css/ai-chat.css">' in r.text
     for js in ("ai-chat-core.js", "ai-chat-image.js", "ai-chat-models.js", "ai-chat-whisper.js"):
-        assert f'<script src="/static/js/{js}"></script>' in r.text
+        assert re.search(rf'<script src="/static/js/{re.escape(js)}\?v=[0-9a-f]+"></script>', r.text)
 
     # The bootstrap block (server-rendered constants the split JS files need)
     # still appears, with real values substituted.

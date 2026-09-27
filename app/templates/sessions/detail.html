@@ -469,11 +469,11 @@
   {% endif %}
 </div>
 
-<script src="/static/js/chunked-upload.js"></script>
-<script src="/static/js/progress-bar.js"></script>
-<script src="/static/js/audio-jobs.js"></script>
-<script src="/static/js/entity-picker.js"></script>
-<script src="/static/js/facts-recap-parser.js"></script>
+<script src="/static/js/chunked-upload.js?v={{ asset_v('js/chunked-upload.js') }}"></script>
+<script src="/static/js/progress-bar.js?v={{ asset_v('js/progress-bar.js') }}"></script>
+<script src="/static/js/audio-jobs.js?v={{ asset_v('js/audio-jobs.js') }}"></script>
+<script src="/static/js/entity-picker.js?v={{ asset_v('js/entity-picker.js') }}"></script>
+<script src="/static/js/facts-recap-parser.js?v={{ asset_v('js/facts-recap-parser.js') }}"></script>
 <script>
 // ── AI recap assist — unconditional (works on the New Session form too,
 // where gsession doesn't exist yet, unlike the prep/loot/XP panels below) ──

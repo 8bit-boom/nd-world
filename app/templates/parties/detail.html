@@ -332,7 +332,7 @@ renderLoot();
 // reload during play.
 if (window.ndLiveRefetch) ndLiveRefetch('#party-vitals');
 </script>
-<script src="/static/js/ai-assist.js"></script>
+<script src="/static/js/ai-assist.js?v={{ asset_v('js/ai-assist.js') }}"></script>
 <script>
 ndAiAssist('prt', {
   ops: ['improve', 'deslop', 'expand', 'translate', 'custom'],

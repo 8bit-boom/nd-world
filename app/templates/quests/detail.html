@@ -178,7 +178,7 @@ function syncHidden() {
 document.getElementById('quest-form').addEventListener('submit', syncHidden);
 renderLinks();
 </script>
-<script src="/static/js/ai-assist.js"></script>
+<script src="/static/js/ai-assist.js?v={{ asset_v('js/ai-assist.js') }}"></script>
 <script>
 // ✨ AI assist — expand a one-line hook into full quest details, or
 // improve what's written. Title/status feed the op as context.

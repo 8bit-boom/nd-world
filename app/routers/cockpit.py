@@ -18,6 +18,7 @@ composition of GM-facing tools, and the nav entry (nav_menus.py, id
 """
 
 import json
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
@@ -33,14 +34,17 @@ router = APIRouter()
 
 # The panel types the Add-panel modal offers. Everything else in a posted
 # layout is dropped by the sanitizer.
-PANEL_TYPES = {"map", "dice", "party", "quests", "entity", "notes", "ai"}
+PANEL_TYPES = {"map", "dice", "party", "quests", "entity", "ecard", "notes",
+               "ai", "combat", "tables", "calendar"}
 
 MAX_PANELS = 24          # per layout
 MAX_PRESETS = 12         # named layouts per world
 MAX_PANELS_BYTES = 128 * 1024  # whole workspace JSON cap
 
 _ALLOWED_PANEL_KEYS = {"id", "type", "ref", "title", "x", "y", "w", "h", "z",
-                       "collapsed", "data"}
+                       "collapsed", "accent", "data"}
+
+_ACCENT_RE = re.compile(r"^$|^#[0-9a-fA-F]{6}$")
 
 
 def _clamp_int(v, lo, hi, default=0):
@@ -63,6 +67,7 @@ def _sanitize_panels(raw_panels) -> list:
         if not isinstance(p, dict) or p.get("type") not in PANEL_TYPES:
             continue
         data = p.get("data")
+        accent = str(p.get("accent") or "")
         out.append({
             "id": str(p.get("id") or "")[:40],
             "type": p["type"],
@@ -74,6 +79,7 @@ def _sanitize_panels(raw_panels) -> list:
             "h": _clamp_int(p.get("h"), 120, 8000, default=300),
             "z": _clamp_int(p.get("z"), 0, 100000),
             "collapsed": bool(p.get("collapsed")),
+            "accent": accent if _ACCENT_RE.match(accent) else "",
             "data": {"text": str((data or {}).get("text") or "")[:8000]}
             if isinstance(data, dict) else {},
         })

@@ -371,6 +371,7 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/combat` | GM | Combat encounter list. |
 | POST | `/combat/new` | GM | Creates a `CombatSession`. |
 | GET | `/combat/{combat_id}` | GM | Initiative tracker UI. |
+| GET | `/api/combat/recent` | GM | Recent combat sessions as JSON for the GM Cockpit's combat panel picker. |
 | GET | `/api/combat/{combat_id}/state` | GM | Current combat state JSON (combatants, initiative order, round). |
 | POST | `/combat/{combat_id}/state` | GM | Saves combat state (HP, conditions, turn order). |
 | POST | `/combat/{combat_id}/delete` | GM | Deletes a combat session. |
@@ -388,7 +389,7 @@ worlds they've been invited into (`WorldMembership`).
 
 ## GM Cockpit
 
-`app/routers/cockpit.py` + `static/js/cockpit.js` — a modular window workspace: the GM pins any number of draggable/resizable panels (battle map, dice tray, party vitals, active quests, any entity's page, scratch notes, AI Chat), adds/removes them from an Add-panel modal, and saves named layouts ("Combat", "Exploration", …). The arrangement autosaves per world and follows the GM across devices. Live panels (vitals/quests) re-fetch over the live-sync bus; other panels are embedded live pages in `?embed=1` chrome-less mode. Pairs with the ⇱ Float / 📌 Always-on-top panel buttons (static/js/nd-float.js) on the map viewer, dice, party, and NPC-talk pages.
+`app/routers/cockpit.py` + `static/js/cockpit.js` — a modular window workspace: the GM pins any number of draggable/resizable panels (battle map, dice tray, party vitals, active quests, full entity pages, compact entity cards, scratch notes, AI Chat, combat tracker, random-table quick-rolls, calendar), adds/removes them from an Add-panel modal, colour-codes and renames windows, snaps them to a grid or docks them to screen edges, and saves named layouts ("Combat", "Exploration", …). The arrangement autosaves per world and follows the GM across devices. Live panels (vitals/quests) re-fetch over the live-sync bus; other panels are embedded live pages in `?embed=1` chrome-less mode. Pairs with the ⇱ Float / 📌 Always-on-top panel buttons (static/js/nd-float.js) on the map viewer, dice, party, and NPC-talk pages.
 
 | Method | Path | Access | Description |
 |---|---|---|---|
@@ -631,6 +632,7 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/tables/{table_id}/edit` | GM / Assistant | Edit form. |
 | POST | `/tables/{table_id}/edit` | GM / Assistant | Saves table edits. |
 | POST | `/tables/{table_id}/delete` | GM / Assistant | Deletes a table. |
+| GET | `/api/tables/options` | GM | The world's roll tables (name + entry count) as JSON for the GM Cockpit's quick-roll panel. |
 | POST | `/api/tables/{table_id}/roll` | GM / Assistant / Player* | Rolls on a table and returns the result. *Once "Random Tables" is opted in, this is the one action a player gets — creating/editing/deleting tables stays GM/Assistant-only. A built-in table (`world_id=NULL`) is rollable by anyone regardless of which world's toggle is checked. |
 | GET | `/tables/export` | GM / Assistant | Exports all tables as JSON. |
 | POST | `/tables/import` | GM / Assistant | Imports tables from JSON. |

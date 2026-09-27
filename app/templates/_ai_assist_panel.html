@@ -5,7 +5,7 @@
 
      {% import '_ai_assist_panel.html' as _aa %}
      {{ _aa.ai_assist_panel('ent') }}
-     <script src="/static/js/ai-assist.js"></script>
+     <script src="/static/js/ai-assist.js?v={{ asset_v('js/ai-assist.js') }}"></script>
      <script>ndAiAssist('ent', { ops:[...], surface:'entity-form', ... })</script>
 
    `pid` must be unique per page (element ids hang off it). The op list,

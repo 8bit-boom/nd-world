@@ -7,6 +7,8 @@
     <span id="ck-world">{{ world.name }}</span>
     <div id="ck-head-actions">
       <select id="ck-preset-select" title="Saved layouts" style="display:none"></select>
+      <button type="button" class="ck-btn" id="ck-delete-preset" title="Delete the selected saved layout" style="display:none">🗑</button>
+      <button type="button" class="ck-btn" id="ck-windows-btn" title="All open windows">🗂 Windows</button>
       <button type="button" class="ck-btn" id="ck-save-preset" title="Save the current windows as a named layout">💾 Save layout</button>
       <button type="button" class="ck-btn" id="ck-delete-preset" title="Delete the selected saved layout" style="display:none">🗑</button>
       <button type="button" class="ck-btn ck-btn-primary" id="ck-add-btn" title="Add a panel — map, dice, party, quests, entity, notes, AI chat">＋ Add panel</button>
@@ -26,6 +28,9 @@
     </div>
   </div>
 </div>
+
+<!-- Window list popover -->
+<div id="ck-windows-pop"></div>
 
 <!-- Add-panel modal -->
 <div id="ck-add-overlay" style="display:none">
@@ -138,6 +143,41 @@ body:has(#ck-wrap) > footer { display: none; }
   background: var(--bg2); color: var(--text); border: 0; outline: none;
   font-family: var(--font, inherit); font-size: .85rem; padding: .6rem .7rem; }
 
+/* window list popover */
+#ck-windows-pop { position: fixed; z-index: 100001; background: var(--bg2);
+  border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  display: none; min-width: 240px; max-height: 60vh; overflow-y: auto; padding: .3rem; }
+.ck-winrow { display: flex; align-items: center; gap: .4rem; width: 100%; text-align: left;
+  background: none; border: 0; color: var(--text); font-family: inherit; font-size: .8rem;
+  padding: .35rem .45rem; border-radius: 4px; cursor: pointer; }
+.ck-winrow:hover { background: var(--bg3); }
+.ck-winrow .ck-winrow-x { margin-left: auto; color: var(--text-dim); border: 0; background: none; cursor: pointer; font-size: .78rem; }
+.ck-winrow .ck-winrow-x:hover { color: #e07; }
+/* dock previews while dragging to an edge */
+.ck-win.ck-dock-l, .ck-win.ck-dock-r { outline: 2px dashed var(--neon); outline-offset: -2px; }
+
+/* accent colour (per-window, GM-set) */
+.ck-win[data-accent] { border-left: 3px solid var(--ck-accent); }
+.ck-win[data-accent] .ck-win-title { color: var(--ck-accent); }
+
+/* entity card */
+.ck-card { padding: .6rem .7rem; overflow-y: auto; height: 100%; box-sizing: border-box; }
+.ck-card img { max-width: 100%; border-radius: 4px; margin-bottom: .45rem; display: block; }
+.ck-card .entity-kind { font-size: .7rem; color: var(--text-dim); }
+.ck-card h3 { margin: .15rem 0 .3rem; font-size: .95rem; color: var(--text); }
+.ck-card .detail-summary { font-size: .8rem; color: var(--text-dim); margin: 0 0 .4rem; }
+.ck-card .tags { display: flex; flex-wrap: wrap; gap: .3rem; margin-bottom: .4rem; }
+.ck-card .tag { font-size: .68rem; border: 1px solid var(--border); color: var(--text-dim); border-radius: 3px; padding: .05rem .35rem; }
+.ck-card .prose { font-size: .82rem; color: var(--text); max-height: 40vh; overflow-y: auto; }
+.ck-card a { color: var(--neon); font-size: .78rem; text-decoration: none; }
+/* tables quick-roll */
+.ck-tables { padding: .55rem .65rem; height: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: .5rem; }
+.ck-tables select { background: var(--bg3); border: 1px solid var(--border); color: var(--text);
+  font-family: inherit; font-size: .8rem; border-radius: 4px; padding: .3rem; }
+.ck-roll-out { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
+  padding: .5rem .6rem; font-size: .85rem; color: var(--text); min-height: 2.2em; }
+.ck-roll-out small { display: block; color: var(--text-dim); font-size: .7rem; margin-top: .15rem; }
+
 /* add-modal */
 #ck-add-overlay { position: fixed; inset: 0; z-index: 100000; background: rgba(0,0,0,.55);
   padding-top: 10vh; }
@@ -179,14 +219,18 @@ const CK_MAPS = {{ maps_json | tojson }};
 const CK_PARTIES = {{ parties_json | tojson }};
 const CK_WORLD = {{ world.slug | tojson }};
 const CK_TYPES = {
-  map:    { icon: '🗺', label: 'Map',          sub: 'live battle map',           w: 780, h: 560 },
-  dice:   { icon: '🎲', label: 'Dice',         sub: 'shared roll log',           w: 420, h: 480 },
-  party:  { icon: '❤', label: 'Party vitals', sub: 'live HP / conditions',      w: 420, h: 380 },
-  quests: { icon: '📜', label: 'Quests',       sub: 'active quest board',        w: 420, h: 340 },
-  entity: { icon: '👤', label: 'Entity',       sub: 'any NPC, place, item, note…', w: 480, h: 620 },
-  notes:  { icon: '📝', label: 'Notes',        sub: 'scratch pad (saved)',       w: 360, h: 300 },
-  ai:     { icon: '🤖', label: 'AI Chat',      sub: 'world-grounded assistant',  w: 520, h: 640 },
+  map:     { icon: '🗺', label: 'Map',          sub: 'live battle map',               w: 780, h: 560, picker: null },
+  dice:    { icon: '🎲', label: 'Dice',         sub: 'shared roll log',               w: 420, h: 480, picker: null },
+  party:   { icon: '❤', label: 'Party vitals', sub: 'live HP / conditions',          w: 420, h: 380, picker: 'party' },
+  quests:  { icon: '📜', label: 'Quests',       sub: 'active quest board',            w: 420, h: 340, picker: null },
+  entity:  { icon: '👤', label: 'Entity page',  sub: 'full page — NPC, place, item…', w: 480, h: 620, picker: 'entity' },
+  ecard:   { icon: '🪪', label: 'Entity card',  sub: 'compact card — light + fast',   w: 360, h: 400, picker: 'entity' },
+  notes:   { icon: '📝', label: 'Notes',        sub: 'scratch pad (saved)',           w: 360, h: 300, picker: null },
+  ai:      { icon: '🤖', label: 'AI Chat',      sub: 'world-grounded assistant',      w: 520, h: 640, picker: null },
+  combat:  { icon: '⚔', label: 'Combat',       sub: 'live combat tracker',           w: 560, h: 560, picker: 'combat' },
+  tables:  { icon: '🎰', label: 'Table roll',   sub: 'roll any random table',         w: 360, h: 280, picker: null },
+  calendar:{ icon: '🗓', label: 'Calendar',     sub: 'in-world calendar',             w: 520, h: 480, picker: null },
 };
 </script>
-<script src="/static/js/cockpit.js"></script>
+<script src="/static/js/cockpit.js?v={{ asset_v('js/cockpit.js') }}"></script>
 {% endblock %}
