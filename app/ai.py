@@ -498,6 +498,16 @@ async def _model_supports_thinking(model: str) -> bool:
     changes. Only called when think is actually truthy (see below), so
     the common think=False path never pays for the extra /api/show round
     trip at all."""
+    # Unsloth backend parity: Studio models think BY DEFAULT (Gemma-4 emits
+    # reasoning_content un­prompted; enable_thinking is a per-request flag,
+    # findings I-4) and the shim has no /api/show capability probe to query —
+    # so trust every Unsloth model with thinking rather than downgrading
+    # think=True to False for any hub model beyond the one pre-registered
+    # here (which silently hid the reasoning trace from every other model).
+    # A model that genuinely rejects the flag surfaces its own error, which
+    # callers already show verbatim.
+    if effective_llm_api_key():
+        return True
     if model in _model_capabilities_cache:
         return "thinking" in _model_capabilities_cache[model]
     caps: list[str] = []

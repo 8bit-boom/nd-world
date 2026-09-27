@@ -12,6 +12,7 @@ import json
 import httpx
 import ollama
 import pytest
+from types import SimpleNamespace
 
 import app.ai as ai_module
 from app.llm_client import UnslothClient, UnslothResponseError
@@ -216,7 +217,6 @@ async def test_generate_chat_unsloth_error_sentinel(unsloth_mode, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_generate_chat_unsloth_success(unsloth_mode, monkeypatch):
-    from types import SimpleNamespace
 
     class _OK:
         async def chat(self, **kwargs):
@@ -270,3 +270,63 @@ def test_client_dual_mode(unsloth_mode):
         assert type(ai_module._client()).__name__ == "AsyncClient"
     finally:
         monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_unsloth_models_trusted_for_thinking(unsloth_mode, monkeypatch):
+    """Studio parity: every Unsloth hub model is trusted to think — the shim
+    has no /api/show capability probe, so the old fallback downgraded
+    think=True to False for any model beyond the one pre-registered here,
+    which silently hid the reasoning trace. Regression for 'make thinking on
+    by default as in Studio'."""
+    called = {"show": False}
+
+    class _NoShow:
+        def show(self, model):
+            called["show"] = True
+            raise AssertionError("unsloth path must not probe /api/show")
+
+    def _fake_client():
+        return _NoShow()
+
+    monkeypatch.setattr(ai_module, "_client", _fake_client)
+    assert await ai_module._model_supports_thinking("any/hub-model-GGUF") is True
+    assert called["show"] is False  # short-circuited before the probe
+
+
+@pytest.mark.asyncio
+async def test_unsloth_stream_emits_reasoning_pieces(unsloth_mode):
+    """delta.reasoning_content chunks must flow through stream_chat as
+    {"type": "thinking"} pieces (→ {"thinking": ...} SSE → the collapsible
+    '🧠 Thought process' UI), not be dropped."""
+    chunks = [
+        SimpleNamespace(message=SimpleNamespace(content="", thinking="pondering…")),
+        SimpleNamespace(message=SimpleNamespace(content="Answer.", thinking=None)),
+        SimpleNamespace(message=SimpleNamespace(content="", thinking=None, done=True)),
+    ]
+
+    class _StreamClient:
+        async def chat(self, **kwargs):
+            async def _gen():
+                for c in chunks:
+                    yield c
+            return _gen()
+
+    def _fake_client():
+        return _StreamClient()
+
+    unsloth_mode  # backend flag set
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(ai_module, "_client", _fake_client)
+    pieces = []
+    async for piece in ai_module.stream_chat([], system="", model="any/model",
+                                             think=True, emit_thinking=True):
+        pieces.append(piece)
+    monkeypatch.undo()
+
+    kinds = [p.get("type") if isinstance(p, dict) else "content" for p in pieces]
+    assert "thinking" in kinds
+    thinking_text = "".join(p["text"] for p in pieces if isinstance(p, dict) and p.get("type") == "thinking")
+    assert "pondering…" in thinking_text
+    content_text = "".join(p["text"] for p in pieces if isinstance(p, dict) and p.get("type") == "content")
+    assert "Answer." in content_text
