@@ -79,27 +79,63 @@
   const form = document.getElementById('ai-apply-form');
   const box = document.getElementById('ai-suggestions');
   const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  let suggestions = null;
 
+  // The generation runs as a server-side background job (reasoning + RAG
+  // regularly outlives Cloudflare Tunnel's ~100 s no-byte timeout — a plain
+  // blocking request 524s), so this client STARTs the job and then polls
+  // until it's done. No client-side deadline: the elapsed readout is there
+  // to tell "still working" from "probably stuck", and closing the page is
+  // always safe.
   btn.addEventListener('click', async () => {
     const sessionId = document.getElementById('ai-session-id').value;
     if (!sessionId) return;
     btn.disabled = true;
-    statusEl.textContent = '⏳ The AI is reading the session against the quest board… (thinking on — up to a couple of minutes)';
+    form.style.display = 'none';
+    box.innerHTML = '';
+    statusEl.textContent = '⏳ Starting…';
     try {
-      const r = await fetch('/api/quests/suggest', {
+      const r = await fetch('/api/quests/suggest/start', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: Number(sessionId) }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
-      renderSuggestions(d);
-      statusEl.textContent = 'Review the drafts below, then apply.';
+      poll(d.job_id);
     } catch (e) {
-      statusEl.textContent = '⚠ ' + e.message;
-    } finally {
-      btn.disabled = false;
+      fail(e.message);
     }
   });
+
+  function fail(msg) {
+    statusEl.textContent = '⚠ ' + msg;
+    btn.disabled = false;
+  }
+
+  function poll(jobId, tries) {
+    if ((tries || 0) > 400) { fail('Still running after ~20 minutes — something is wrong with the AI backend.'); return; }
+    fetch('/api/quests/suggest/' + jobId).then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(d => {
+      if (d.status === 'running') {
+        const el = d.elapsed || 0, m = Math.floor(el / 60), s = el % 60;
+        statusEl.textContent = `⏳ The AI is reading the session against the quest board… (${m > 0 ? m + 'm ' : ''}${s}s elapsed) — thinking on, this can take a couple of minutes`;
+        setTimeout(() => poll(jobId, (tries || 0) + 1), 3000);
+      } else if (d.status === 'error') {
+        fail(d.error || 'The AI sync failed.');
+      } else if (d.status === 'done') {
+        suggestions = d.suggestions;
+        renderSuggestions(d.suggestions);
+        statusEl.textContent = 'Review the drafts below, then apply.';
+        btn.disabled = false;
+      }
+    }).catch(() => {
+      // A dropped poll (laptop sleep, tunnel hiccup) shouldn't abandon the
+      // job — the server-side task keeps running either way.
+      setTimeout(() => poll(jobId, (tries || 0) + 1), 3000);
+    });
+  }
 
   function renderSuggestions(d) {
     form.style.display = '';
@@ -131,16 +167,17 @@
   }
 
   document.getElementById('ai-apply-btn').addEventListener('click', async () => {
-    const suggestions = { new_quests: [], quest_updates: [] };
+    if (!suggestions) return;
+    const picked = { new_quests: [], quest_updates: [] };
     box.querySelectorAll('input[type=checkbox]:checked').forEach(cb => {
       const kind = cb.dataset.kind, i = Number(cb.dataset.i);
-      const item = window.__aiSuggestions?.[kind]?.[i];
-      if (item) suggestions[kind === 'new' ? 'new_quests' : 'quest_updates'].push(item);
+      const item = (suggestions[kind === 'new' ? 'new_quests' : 'quest_updates'] || [])[i];
+      if (item) picked[kind === 'new' ? 'new_quests' : 'quest_updates'].push(item);
     });
-    if (!suggestions.new_quests.length && !suggestions.quest_updates.length) return;
+    if (!picked.new_quests.length && !picked.quest_updates.length) return;
     const r = await fetch('/api/quests/apply', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(suggestions),
+      body: JSON.stringify(picked),
     });
     if (r.ok) window.location.reload();
     else {
@@ -148,10 +185,6 @@
       alert(d.detail || ('Apply failed: HTTP ' + r.status));
     }
   });
-
-  // stash raw suggestions for the apply step
-  const origRender = renderSuggestions;
-  renderSuggestions = function (d) { window.__aiSuggestions = d; origRender(d); };
 })();
 </script>
 {% endif %}

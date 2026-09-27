@@ -189,3 +189,49 @@ def test_player_cannot_apply(client, seed):
     _pin(client)
     r = client.post("/api/quests/apply", json={"new_quests": [{"title": "x"}]})
     assert r.status_code == 403
+
+
+def test_quest_page_fetch_urls_match_real_routes(client, seed):
+    """Every fetch() path in the rendered quest board must correspond to an
+    actual route. This is the check that was missing when the AI-sync panel
+    kept calling the old single-shot POST /api/quests/suggest after the
+    backend moved to the background-job flow (/suggest/start +
+    /suggest/{job_id}) — a GM clicking Generate got FastAPI's bare
+    {"detail": "Not Found"} (GitHub issue reproduced from production)."""
+    import re
+
+    from app.main import _fastapi_app
+
+    _session(seed.world_a.id)  # the AI-sync panel only renders when the world has sessions
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    html = client.get("/quests").text
+
+    # Whole-string first arguments only — `fetch('/x/' + id)`-style
+    # concatenations are URL prefixes, not literal paths.
+    paths = set(re.findall(r"fetch\('([^']+)'\s*[,)]", html))
+    paths = {p for p in paths if p.startswith("/api/")}
+    assert "/api/quests/suggest/start" in paths, "panel fetch not found — regex drifted?"
+
+    route_paths = [getattr(r, "path", "") for r in _fastapi_app.routes]
+
+    def _exists(url):
+        for rp in route_paths:
+            if re.fullmatch(re.sub(r"\{[^}]+\}", "[^/]+", rp), url):
+                return True
+        return False
+
+    for p in paths:
+        assert _exists(p), f"quests page fetches {p} but no route defines it"
+
+
+def test_quest_panel_uses_background_job_flow(client, seed):
+    """The panel must START a job and poll it — the single-shot request is
+    what 524'd behind Cloudflare Tunnel in the first place."""
+    _session(seed.world_a.id)  # the AI-sync panel only renders when the world has sessions
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    html = client.get("/quests").text
+    assert "/api/quests/suggest/start" in html
+    assert "/api/quests/suggest/' + jobId" in html or "/api/quests/suggest/" in html
+    assert "fetch('/api/quests/suggest'," not in html  # the stale single-shot call
