@@ -283,9 +283,12 @@ _ASTERION_FIELDS = [
     _f("sentence", "Character Sentence", "text", "Identity"),
     _f("appearance", "Appearance & Personality", "textarea", "Identity"),
 
-    _f("sparkShield", "Spark Shield", "number", "Core Stats", "3"),
-    _f("flesh", "Flesh", "number", "Core Stats", "5"),
-    _f("ichor", "Ichor", "number", "Core Stats", "5"),
+    # Resource trackers (current/max) — damage hits Spark Shield first,
+    # then Flesh; Ichor fuels abilities and dice. The Party page's Member
+    # Vitals strip reads these for at-a-glance status.
+    _f("sparkShield", "Spark Shield (regenerates each combat)", "resource", "Core Stats", "3/3"),
+    _f("flesh", "Flesh (0 = Shattered)", "resource", "Core Stats", "5/5"),
+    _f("ichor", "Ichor (fuels abilities, +1d10 each)", "resource", "Core Stats", "5/5"),
     _f("armor", "Armor", "number", "Core Stats", "0"),
     _f("attackPool", "Attacker Pool", "text", "Core Stats"),
     _f("defensePool", "Defender Pool", "text", "Core Stats"),
@@ -363,14 +366,13 @@ _HITM_FIELDS = [
     _f("fear", "Truth I fear / line I will not cross", "textarea", "Hunter's Oath"),
     _f("refuse", "Why I refuse the Moon", "textarea", "Hunter's Oath"),
 
-    _f("healthCurrent", "Health — Current", "number", "Core Tracks", "5"),
-    _f("healthMax", "Health — Maximum (0 = Broken)", "number", "Core Tracks", "5"),
-    _f("staminaCurrent", "Stamina — Current", "number", "Core Tracks", "5"),
-    _f("staminaMax", "Stamina — Maximum", "number", "Core Tracks", "5"),
-    _f("hungerCurrent", "Hunger — Current", "number", "Core Tracks", "0"),
-    _f("hungerFloor", "Hunger — Floor (permanently filled/locked)", "number", "Core Tracks", "0"),
-    _f("arcaneCurrent", "Arcane Knowledge — Current", "number", "Core Tracks", "0"),
-    _f("arcaneMax", "Arcane Knowledge — Maximum", "number", "Core Tracks", "10"),
+    # Resource trackers (current/max) — the system's defining vitals. The
+    # Party page's Member Vitals strip reads these for at-a-glance status.
+    _f("health", "Health (0 = Broken — Wound + Press On)", "resource", "Core Tracks", "5/5"),
+    _f("stamina", "Stamina (dice + Tier 2/3 costs)", "resource", "Core Tracks", "5/5"),
+    _f("hunger", "Hunger (10 = Lost to Hunger)", "resource", "Core Tracks", "0/10"),
+    _f("arcane", "Arcane Knowledge (10 = Insane)", "resource", "Core Tracks", "0/10"),
+    _f("signaturePoints", "Signature Point (1 = Move ready)", "resource", "Core Tracks", "1/1"),
     _f("alteration", "Alteration", "number", "Core Tracks", "0"),
     _f("overcharge", "Overcharge", "number", "Core Tracks", "0"),
     _f("staminaSpent", "Stamina Spent since Rest", "number", "Core Tracks", "0"),
@@ -1201,6 +1203,20 @@ def _seed():
                 sheet_mode="custom",
                 fields_json=json.dumps(_ASTERION_FIELDS),
             ))
+        # Upgrade v1 built-in system templates in place: the original
+        # Asterion/HITM field sets predate the "resource" field type, so
+        # their defining vitals (Spark Shield/Flesh/Ichor, Health/Stamina/
+        # Hunger/AK) were plain numbers with no current/max tracking. Replace
+        # the fields of UNTOUCHED built-in rows (no resource field present)
+        # with the current definitions; a GM-customized version keeps theirs.
+        for _sys_slug, _sys_fields in (("asterion", _ASTERION_FIELDS),
+                                       ("hunt-in-the-moonlight", _HITM_FIELDS)):
+            _row = db.query(SheetTemplate).filter(
+                SheetTemplate.slug == _sys_slug, SheetTemplate.is_builtin == True,  # noqa: E712
+                SheetTemplate.world_id.is_(None)).first()
+            if _row and '"resource"' not in (_row.fields_json or ""):
+                _row.fields_json = json.dumps(_sys_fields)
+
         # Seed built-in "Hunt in the Moonlight" sheet template (fully custom
         # — moon-corruption hunter game, see _HITM_FIELDS)
         if not db.query(SheetTemplate).filter(SheetTemplate.slug == "hunt-in-the-moonlight").first():

@@ -20,6 +20,13 @@
           <span style="font-size:.7rem;color:var(--text-dim)">Lvl {{ v.level }}</span>
           {% if v.levelup %}<span style="font-size:.62rem;color:var(--neon);border:1px solid var(--neon);border-radius:3px;padding:.05rem .35rem" title="XP crossed the threshold — apply on the sheet">⬆ Level-up</span>{% endif %}
         </div>
+        {% if v.resources %}
+        <div style="display:flex;gap:.35rem;flex-wrap:wrap;margin:.3rem 0">
+          {% for r in v.resources %}
+          <span style="font-size:.68rem;background:var(--bg2);border:1px solid var(--neon3,#a855f7);color:var(--neon3,#a855f7);border-radius:3px;padding:.1rem .35rem">{{ r.current }}/{{ r.max }} {{ r.label }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
         {% if v.max_hp %}
         {% set hp_pct = ((v.hp or 0) * 100 / v.max_hp) | round | int %}
         <div style="background:var(--bg2);border-radius:3px;height:7px;overflow:hidden;margin:.35rem 0 .3rem">
@@ -27,7 +34,7 @@
         </div>
         <div style="font-size:.75rem;color:var(--text-dim)">HP {{ v.hp }}/{{ v.max_hp }}{% if v.temp_hp %} (+{{ v.temp_hp }} temp){% endif %} · AC {{ v.ac or '—' }}{% if v.down %} · <span style="color:#e07">DOWN</span>{% endif %}</div>
         {% else %}
-        <div style="font-size:.75rem;color:var(--text-dim);margin-top:.3rem">AC {{ v.ac or '—' }} · no HP tracked</div>
+        <div style="font-size:.75rem;color:var(--text-dim);margin-top:.3rem">{% if v.ac %}AC {{ v.ac }}{% endif %}{% if v.ac and v.resources %} · {% endif %}{% if not v.resources %}no HP tracked{% endif %}</div>
         {% endif %}
         {% if v.conditions %}
         <div style="font-size:.7rem;color:var(--text-dim);margin-top:.25rem">{{ v.conditions | join(', ') }}</div>

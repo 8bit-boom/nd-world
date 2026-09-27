@@ -43,7 +43,7 @@ def test_hitm_fields_json_is_well_formed(client, seed):
 
     ids = [f["id"] for f in fields]
     assert len(ids) == len(set(ids)), "duplicate top-level field ids"
-    assert {f["type"] for f in fields} <= {"text", "textarea", "number", "list"}
+    assert {f["type"] for f in fields} <= {"text", "textarea", "number", "list", "resource"}
 
     list_fields = {f["id"]: f for f in fields if f["type"] == "list"}
     assert {"xpLog", "abilities", "rites", "tools", "mods", "sessions"} == set(list_fields)

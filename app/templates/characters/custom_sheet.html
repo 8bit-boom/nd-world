@@ -118,10 +118,16 @@
           <label>{{ f.label }}</label>
           <textarea data-cf-id="{{ f.id }}" {% if not can_manage %}disabled{% endif %}>{{ custom_fields.get(f.id, f.default_value or '') }}</textarea>
         </div>
-        {% elif f.type == 'number' %}
+        {% elif f.type == 'resource' %}
         <div class="cx-field">
-          <label>{{ f.label }}</label>
-          <input type="number" data-cf-id="{{ f.id }}" value="{{ custom_fields.get(f.id, f.default_value or '0') }}" {% if not can_manage %}disabled{% endif %}/>
+          <label>{{ f.label }} <span style="color:var(--text-dim);font-size:.72rem">(current / max)</span></label>
+          <div style="display:flex;gap:.35rem;align-items:center">
+            {% set _def_cur = (f.default_value or '0/0').split('/')[0] %}
+            {% set _def_max = (f.default_value or '0/0').split('/')[1] if '/' in (f.default_value or '') else '0' %}
+            <input type="number" data-cf-id="{{ f.id }}_current" value="{{ custom_fields.get(f.id ~ '_current', _def_cur) }}" {% if not can_manage %}disabled{% endif %} style="width:70px"/>
+            <span style="color:var(--text-dim)">/</span>
+            <input type="number" data-cf-id="{{ f.id }}_max" value="{{ custom_fields.get(f.id ~ '_max', _def_max) }}" {% if not can_manage %}disabled{% endif %} style="width:70px"/>
+          </div>
         </div>
         {% else %}
         <div class="cx-field">

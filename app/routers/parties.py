@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..deps import get_world_ctx, paginate, world_can_edit_section, world_can_view_section, world_row_visible
-from ..models import CalendarEvent, CombatSession, Entity, GameSession, Party, PlayerCharacter, Quest, World
+from ..models import CalendarEvent, CombatSession, Entity, GameSession, Party, PlayerCharacter, Quest, SheetTemplate, World
 from .characters import _levelup_ready as _pc_levelup_ready  # cross-router import, per AGENTS.md
 from ..templating import templates
 from .combat import entity_to_combatant, pc_to_combatant, _COMBATANT_KINDS
@@ -114,11 +114,43 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
     # straight off the PC rows, so they're current the moment anyone's
     # sheet changes. Conditions stay on the sheet (they're freeform JSON).
     member_vitals = []
+    _tpl_resource_cache = {}
     for pc in sorted(member_pcs, key=lambda p: p.name or ""):
         try:
             conds = json.loads(pc.conditions_json or "[]")
         except ValueError:
             conds = []
+        # System-aware vitals: for members on a custom sheet (Asterion,
+        # HITM, ...), surface the template's resource tracks (current/max)
+        # from the PC's own custom fields — Health/Stamina/Hunger for
+        # Hunters, Spark Shield/Flesh/Ichor for gods, whatever the system
+        # defines. Pure-N&D members keep the HP/AC strip.
+        resources = []
+        tpl_id = getattr(pc, "sheet_template_id", None)
+        if tpl_id:
+            if tpl_id not in _tpl_resource_cache:
+                tpl = db.get(SheetTemplate, tpl_id)
+                try:
+                    fields = json.loads(tpl.fields_json or "[]") if tpl else []
+                except ValueError:
+                    fields = []
+                _tpl_resource_cache[tpl_id] = [
+                    f for f in fields if f.get("type") == "resource"
+                ]
+            try:
+                cf = json.loads(pc.custom_fields_json or "{}")
+            except ValueError:
+                cf = {}
+            for f in _tpl_resource_cache[tpl_id][:4]:
+                cur = cf.get(f"{f['id']}_current")
+                mx = cf.get(f"{f['id']}_max")
+                if cur is None and mx is None:
+                    continue
+                resources.append({
+                    "label": f.get("label", f["id"]),
+                    "current": cur if cur is not None else 0,
+                    "max": mx if mx is not None else 0,
+                })
         member_vitals.append({
             "id": pc.id, "name": pc.name,
             "hp": pc.current_hp, "max_hp": pc.max_hp, "temp_hp": pc.temp_hp,
@@ -126,6 +158,7 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
             "down": (pc.max_hp or 0) > 0 and (pc.current_hp or 0) <= 0,
             "levelup": _pc_levelup_ready(pc),
             "conditions": [c for c in conds if isinstance(c, str)][:4],
+            "resources": resources,
         })
 
     # Party history: every session, combat, and calendar event tied to this
