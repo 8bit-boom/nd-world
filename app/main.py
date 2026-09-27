@@ -3372,14 +3372,52 @@ async def schematic_ai_build(
     if image_b64s:
         user_msg["images"] = image_b64s
 
+    # RAG grounding: the world's own lore for the described space, so "city
+    # of Yorm" builds Yorm's districts and architecture, not generic
+    # fantasy. GM-gated route → unfiltered context is fine.
+    world_ctx = ""
+    sch_world = db.get(World, sch.world_id)
+    if sch_world is not None:
+        try:
+            from . import retrieval as _retrieval
+            rag, _n, _notes = _retrieval.smart_world_context(
+                db, sch.world_id, desc, entity_limit=8, notes_limit=2,
+            )
+            if rag:
+                world_ctx = (
+                    "\n=== World lore — match the setting, names, architecture, "
+                    "and factions described below ===\n" + rag
+                )
+        except Exception:
+            world_ctx = ""  # RAG is enhancement, never a hard dependency
+    full_system = system + world_ctx
+
     fmt = {"type": "object",
            "properties": {"elements": {"type": "array"}},
            "required": ["elements"]}
 
+    # Thinking on (Studio parity — better layouts from reasoning through the
+    # space); response_format (structured output) is best-effort: Studio's
+    # llama.cpp engine rejects it unless a GGUF chat model is loaded
+    # ("response_format needs the llama.cpp grammar engine"), so on that
+    # specific rejection retry without it — the defensive JSON extractor
+    # below handles a plain reply.
+    async def _call(with_format: bool):
+        return await _ai_module.generate_chat(
+            [user_msg], system=full_system, think=True, format=(fmt if with_format else None),
+        )
+
     try:
-        raw = await _ai_module.generate_chat([user_msg], system=system, format=fmt)
+        raw = await _call(with_format=True)
     except Exception as exc:
-        raise HTTPException(502, f"AI schematic build failed: {exc}")
+        msg = str(exc)
+        if "response_format" in msg and ("grammar" in msg or "unsupported" in msg.lower()):
+            try:
+                raw = await _call(with_format=False)
+            except Exception as exc2:
+                raise HTTPException(502, f"AI schematic build failed: {exc2}")
+        else:
+            raise HTTPException(502, f"AI schematic build failed: {exc}")
     if not (raw or "").strip():
         raise HTTPException(502, "The model returned nothing — try a more concrete description.")
 

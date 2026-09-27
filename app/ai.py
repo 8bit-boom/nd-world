@@ -1379,6 +1379,14 @@ async def generate_chat(messages: list[dict], system: str = "", model: str = "",
         return _empty_response_message(m, thinking_chars, done_reason)
     except _ollama.ResponseError as exc:
         _log.error("generate_chat Ollama error: %s %s", exc.status_code, exc.error)
+        if format is not None and "response_format" in (getattr(exc, "error", None) or ""):
+            # This backend has no grammar engine for structured output
+            # (Studio: "response_format needs the llama.cpp grammar
+            # engine; load a GGUF model to use it") — retry in plain mode;
+            # the caller's defensive JSON extraction handles free-form
+            # replies that still follow the system prompt.
+            return await generate_chat(messages, system=system, model=model,
+                                       options=options, think=think, format=None)
         if think and _is_thinking_rejection(exc):
             _record_thinking_result(m, think, failed=True)
             # Ollama flatly refused think=true for this model — not a
@@ -1442,7 +1450,7 @@ def is_thinking_starved_sentinel(result: str) -> bool:
 
 async def stream_chat(
     messages: list[dict], system: str = "", model: str = "", options: dict = None, think: bool = False,
-    emit_thinking: bool = False,
+    emit_thinking: bool = False, format=None,
 ) -> AsyncGenerator[str | dict, None]:
     """`think` defaults to False, same as generate_chat's own plain
     default — most interactive surfaces (AI Chat's World Chat/Image tabs,
@@ -1504,6 +1512,8 @@ async def stream_chat(
 
     try:
         chat_kwargs = await _chat_kwargs(options, think, m)
+        if format is not None:
+            chat_kwargs["format"] = format
         if think and not chat_kwargs["think"] and m in _prompt_token_thinking_models:
             # Same prompt-token fallback as generate_chat: a poisoned
             # capability cache downgraded think to False, but this model's
@@ -1558,6 +1568,15 @@ async def stream_chat(
             yield {"type": "error", "text": msg} if emit_thinking else msg
     except _ollama.ResponseError as exc:
         _log.error("stream_chat Ollama error: %s %s", exc.status_code, exc.error)
+        if format is not None and "response_format" in (getattr(exc, "error", None) or ""):
+            # This backend has no grammar engine for structured output —
+            # retry in plain mode; the caller's defensive JSON extraction
+            # handles a free-form reply that still follows the prompt.
+            async for piece in stream_chat(messages, system=system, model=model,
+                    options=options, think=False, emit_thinking=emit_thinking,
+                    format=None):
+                yield piece
+            return
         if think and _is_thinking_rejection(exc) and not yielded_any:
             _record_thinking_result(m, think, failed=True)
             # Same recovery as generate_chat — an upfront rejection means
