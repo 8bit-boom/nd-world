@@ -1,6 +1,10 @@
 import json
+import re
+import time
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
+from typing import Optional
+
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -8,7 +12,7 @@ from sqlalchemy import or_
 
 from .. import ai as _ai
 from .. import retrieval as _retrieval
-from ..database import get_db
+from ..database import SessionLocal, get_db
 from ..deps import get_world_ctx, is_gm, world_can_edit_row, world_can_edit_section, world_can_view_section, world_row_visible
 from ..models import Entity, Fact, GameSession, Party, Quest, World
 from ..templating import templates
@@ -258,125 +262,6 @@ def _session_quest_material(db: Session, gs: GameSession, char_budget: int = 600
     return "\n\n".join(parts).strip()
 
 
-@router.post("/api/quests/suggest")
-async def quests_suggest(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    """AI-draft quest changes from a session: quests completed/failed/updated
-    and new quests introduced. GM-only (writes are preview-only here, but the
-    prompt includes GM-only lore via RAG and full session summaries — never a
-    player surface). Body: {session_id} or {text}, plus optional {model,
-    use_rag}. Returns {new_quests: [...], quest_updates: [...]} for the
-    review UI; nothing is written until /api/quests/apply."""
-    world, _ = get_world_ctx(request, db, active_world)
-    if not world:
-        raise HTTPException(400, "No active world")
-    if not is_gm(request):
-        raise HTTPException(403)
-
-    body = await request.json()
-    session_id = body.get("session_id")
-    text = str(body.get("text") or "").strip()
-    model = str(body.get("model") or "").strip()
-    use_rag = body.get("use_rag", True)
-
-    material = ""
-    gs = None
-    if session_id:
-        gs = db.query(GameSession).filter(
-            GameSession.id == int(session_id), GameSession.world_id == world.id).first()
-        if not gs:
-            raise HTTPException(404, "Session not found in this world")
-        material = _session_quest_material(db, gs)
-        if not material:
-            material = (gs.title or "") and f"Session #{gs.session_num}: {gs.title}"
-    if not material and text:
-        material = text[:8000]
-    if not material:
-        raise HTTPException(400, "Provide a session_id or raw text")
-
-    # Existing quest board — the AI may only reference THESE ids (hallucination guard).
-    quests = db.query(Quest).filter(Quest.world_id == world.id).order_by(Quest.title).all()
-    board = "\n".join(
-        f"- id={q.id} [{q.status or 'active'}/{q.category or 'main'}] {q.title}"
-        + (f" — {q.summary[:120]}" if q.summary else "")
-        for q in quests
-    ) or "(no quests yet)"
-
-    # RAG grounding — GM-only route, so unfiltered lore is fine here.
-    world_ctx = ""
-    if use_rag:
-        try:
-            rag, _n, _notes = _retrieval.smart_world_context(
-                db, world.id, material[:1500] or text, entity_limit=8, notes_limit=2,
-            )
-            if rag:
-                world_ctx = (
-                    "\n\n=== World lore (ground the suggestions in this) ===\n" + rag[:4000]
-                )
-        except Exception:
-            world_ctx = ""
-
-    system = (
-        "You are a campaign co-GM. Compare the session material against the CURRENT QUEST "
-        "BOARD and report what changed. Return STRICT JSON only:\n"
-        '{"new_quests": [{"title": str, "summary": str, "category": "main"|"side"|"personal"}], '
-        '"quest_updates": [{"quest_id": int, "status": "active"|"complete"|"failed", "note": str}]}\n'
-        "Rules: only propose quest_updates whose quest_id appears verbatim in the current "
-        "quest board; only mark complete/failed when the session says it plainly; keep new "
-        "quest titles short and in-world; propose a new quest only for a genuine open plot "
-        "thread the session introduced (not a one-off scene beat); it is fine to return "
-        "empty arrays if nothing changed. No comments, no markdown fences."
-    )
-    user_text = (
-        "=== CURRENT QUEST BOARD ===\n" + board
-        + "\n\n=== SESSION MATERIAL ===\n" + material
-        + world_ctx
-    )
-
-    raw = await _ai.generate_chat(
-        [{"role": "user", "content": user_text}],
-        system=system, model=model, think=True,
-        format={"type": "object",
-                "properties": {
-                    "new_quests": {"type": "array"},
-                    "quest_updates": {"type": "array"},
-                },
-                "required": ["new_quests", "quest_updates"]},
-    )
-
-    try:
-        parsed = _extract_json(raw)
-    except ValueError:
-        raise HTTPException(502, "The model's reply wasn't valid JSON — try again or rephrase.")
-
-    new_quests = parsed.get("new_quests") or []
-    quest_updates = parsed.get("quest_updates") or []
-    quest_ids_in_world = {q.id for q in quests}
-    quest_updates = [
-        u for u in quest_updates
-        if isinstance(u, dict) and isinstance(u.get("quest_id"), int)
-        and u["quest_id"] in quest_ids_in_world
-    ]
-    new_quests = [
-        n for n in new_quests
-        if isinstance(n, dict) and str(n.get("title") or "").strip()
-    ]
-    return {
-        "new_quests": [
-            {"title": str(n["title"]).strip()[:256],
-             "summary": str(n.get("summary") or "").strip()[:512],
-             "category": n.get("category") if n.get("category") in CATEGORIES else "side"}
-            for n in new_quests[:12]
-        ],
-        "quest_updates": [
-            {"quest_id": u["quest_id"],
-             "status": u.get("status") if u.get("status") in STATUSES else "active",
-             "note": str(u.get("note") or "").strip()[:512],
-             "title": next((q.title for q in quests if q.id == u["quest_id"]), "")}
-            for u in quest_updates[:24]
-        ],
-    }
-
-
 @router.post("/api/quests/apply")
 async def quests_apply_suggestions(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
     """Apply reviewed AI suggestions: create new quests and apply quest
@@ -429,3 +314,181 @@ async def quests_apply_suggestions(request: Request, db: Session = Depends(get_d
         updated += 1
     db.commit()
     return {"created": created, "updated": updated}
+
+
+# Quest AI sync runs as an in-process background job — reasoning + RAG +
+# generation exceeds Cloudflare Tunnel's ~100 s no-byte timeout (HTTP 524),
+# the same failure that moved AI Build to this pattern. POST starts the job
+# and returns an id; GET polls. Results are in-process: a GM actively
+# waiting on one panel, and a restart just means re-clicking Generate.
+_QUEST_SUGGEST_JOBS: dict = {}
+_QUEST_SUGGEST_SEQ: list = [0]
+
+
+def _extract_json(text: str) -> dict:
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = re.sub(r"\n?```$", "", text)
+    try:
+        return json.loads(text)
+    except ValueError:
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            return json.loads(text[start:end + 1])
+        raise
+
+
+@router.post("/api/quests/suggest/start")
+async def quests_suggest_start(request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Start the AI quest-sync for this world — returns {"job_id"} for the
+    poll route. GM-only (the prompt includes GM-only lore via RAG and full
+    session summaries — never a player surface)."""
+    if not is_gm(request):
+        raise HTTPException(403)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(400, "No active world")
+    body = await request.json()
+    session_id = body.get("session_id")
+    text = str(body.get("text") or "").strip()
+    if not session_id and not text:
+        raise HTTPException(400, "Provide session_id or text")
+    if not _ai.effective_llm_api_key():
+        raise HTTPException(400, "No Unsloth backend configured — set UNSLOTH_API_KEY (Settings → System).")
+
+    job_id = _QUEST_SUGGEST_SEQ[0] + 1
+    _QUEST_SUGGEST_SEQ[0] = job_id
+    _QUEST_SUGGEST_JOBS[job_id] = {"status": "running", "started": time.time(),
+                                   "suggestions": None, "error": ""}
+    done = [j for j, v in _QUEST_SUGGEST_JOBS.items() if v["status"] != "running"]
+    while len(done) > 12:
+        _QUEST_SUGGEST_JOBS.pop(done.pop(0), None)
+
+    import asyncio as _asyncio
+    _user = getattr(request.state, "user", None)
+    _asyncio.get_running_loop().create_task(_quests_suggest_task(
+        job_id, world.id,
+        session_id=int(session_id) if session_id else None,
+        text=text, model=str(body.get("model") or "").strip(),
+        use_rag=bool(body.get("use_rag", True)),
+    ))
+    return {"job_id": job_id, "status": "running"}
+
+
+@router.get("/api/quests/suggest/{job_id}")
+async def quests_suggest_poll(job_id: int):
+    """Poll a quest-sync job: running (with elapsed seconds), done (with the
+    draft suggestions), or error (with the reason)."""
+    job = _QUEST_SUGGEST_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "Unknown quest-sync job")
+    if job["status"] == "running":
+        return {"status": "running", "elapsed": round(time.time() - job["started"])}
+    if job["status"] == "error":
+        return {"status": "error", "error": job["error"]}
+    return {"status": "done", "suggestions": job["suggestions"]}
+
+
+async def _quests_suggest_task(job_id: int, world_id: int,
+                               session_id: Optional[int], text: str, model: str, use_rag: bool):
+    db = SessionLocal()
+    try:
+        world = db.get(World, world_id)
+        gs = None
+        material = ""
+        if session_id:
+            gs = db.query(GameSession).filter(
+                GameSession.id == session_id, GameSession.world_id == world_id).first()
+            if gs:
+                material = _session_quest_material(db, gs)
+        if not material and text:
+            material = text[:8000]
+        if not material and gs:
+            material = f"Session #{gs.session_num}: {gs.title or ''}"
+
+        quests = db.query(Quest).filter(Quest.world_id == world_id).order_by(Quest.title).all()
+        quest_ids_in_world = {q.id for q in quests}
+        board = "\n".join(
+            f"- id={q.id} [{q.status or 'active'}/{q.category or 'main'}] {q.title}"
+            + (f" — {q.summary[:120]}" if q.summary else "")
+            for q in quests
+        ) or "(no quests yet)"
+
+        world_ctx = ""
+        if use_rag:
+            try:
+                from . import retrieval as _retrieval
+                rag, _n, _notes = _retrieval.smart_world_context(
+                    db, world_id, material[:1500], entity_limit=8, notes_limit=2,
+                )
+                if rag:
+                    world_ctx = "\n\n=== World lore (ground the suggestions in this) ===\n" + rag[:4000]
+            except Exception:
+                world_ctx = ""
+    finally:
+        db.close()
+
+    system = (
+        "You are a campaign co-GM. Compare the session material against the CURRENT QUEST "
+        "BOARD and report what changed. Return STRICT JSON only:\n"
+        '{"new_quests": [{"title": str, "summary": str, "category": "main"|"side"|"personal"}], '
+        '"quest_updates": [{"quest_id": int, "status": "active"|"complete"|"failed", "note": str}]}\n'
+        "Rules: only propose quest_updates whose quest_id appears verbatim in the current "
+        "quest board; only mark complete/failed when the session says it plainly; keep new "
+        "quest titles short and in-world; propose a new quest only for a genuine open plot "
+        "thread the session introduced (not a one-off scene beat); it is fine to return "
+        "empty arrays if nothing changed. No comments, no markdown fences."
+    )
+    user_text = (
+        "=== CURRENT QUEST BOARD ===\n" + board
+        + "\n\n=== SESSION MATERIAL ===\n" + material
+        + world_ctx
+    )
+
+    raw = await _ai.generate_chat(
+        [{"role": "user", "content": user_text}],
+        system=system, model=model, think=True,
+        format={"type": "object",
+                "properties": {
+                    "new_quests": {"type": "array"},
+                    "quest_updates": {"type": "array"},
+                },
+                "required": ["new_quests", "quest_updates"]},
+    )
+
+    try:
+        parsed = _extract_json(raw)
+    except ValueError:
+        _QUEST_SUGGEST_JOBS[job_id].update(
+            status="error", error="The model's reply wasn't valid JSON — try again.")
+        return
+
+    new_quests = parsed.get("new_quests") or []
+    quest_updates = parsed.get("quest_updates") or []
+    quest_updates = [
+        u for u in quest_updates
+        if isinstance(u, dict) and isinstance(u.get("quest_id"), int)
+        and u["quest_id"] in quest_ids_in_world
+    ]
+    new_quests = [
+        n for n in new_quests
+        if isinstance(n, dict) and str(n.get("title") or "").strip()
+    ]
+    _QUEST_SUGGEST_JOBS[job_id].update(
+        status="done",
+        suggestions={
+            "new_quests": [
+                {"title": str(n["title"]).strip()[:256],
+                 "summary": str(n.get("summary") or "").strip()[:512],
+                 "category": n.get("category") if n.get("category") in CATEGORIES else "side"}
+                for n in new_quests[:12]
+            ],
+            "quest_updates": [
+                {"quest_id": u["quest_id"],
+                 "status": u.get("status") if u.get("status") in STATUSES else "active",
+                 "note": str(u.get("note") or "").strip()[:512]}
+                for u in quest_updates[:24]
+            ],
+        },
+    )

@@ -2,6 +2,7 @@
 (suggest → apply) flow. The AI itself is monkeypatched — same convention as
 test_npc_talk / test_maps_ai."""
 import json
+import time
 
 from app.database import SessionLocal
 from app.models import Fact, GameSession, Quest
@@ -76,7 +77,7 @@ def test_suggest_requires_gm(client, seed):
     sid = _session(seed.world_a.id, summary="x")
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     _pin(client)
-    r = client.post("/api/quests/suggest", json={"session_id": sid})
+    r = client.post("/api/quests/suggest/start", json={"session_id": sid})
     assert r.status_code == 403
 
 
@@ -117,14 +118,26 @@ def test_suggest_returns_board_grounded_suggestions(client, seed, monkeypatch):
         return canned
 
     monkeypatch.setattr(quests_module._ai, "generate_chat", _fake_generate_chat)
+    # effective_llm_api_key() reads the module attr captured at import time —
+    # patch it directly rather than the env.
+    monkeypatch.setattr(quests_module._ai, "UNSLOTH_API_KEY", "sk-test")
 
     login(client, seed.gm.email, GM_PASSWORD)
     _pin(client)
-    r = client.post("/api/quests/suggest", json={"session_id": gs_id})
+    r = client.post("/api/quests/suggest/start", json={"session_id": gs_id})
     assert r.status_code == 200, r.text
-    data = r.json()
-    assert data["new_quests"][0]["title"] == "Report to the Guild"
-    ids = [u["quest_id"] for u in data["quest_updates"]]
+    job_id = r.json()["job_id"]
+    data = {}
+    for _ in range(40):  # the task runs on the app loop; poll for it
+        poll = client.get(f"/api/quests/suggest/{job_id}").json()
+        if poll.get("status") != "running":
+            data = poll
+            break
+        time.sleep(0.05)
+    assert data["status"] == "done", data
+    suggestions = data["suggestions"]
+    assert suggestions["new_quests"][0]["title"] == "Report to the Guild"
+    ids = [u["quest_id"] for u in suggestions["quest_updates"]]
     assert witch_id in ids and 99999 not in ids
     # material reached the prompt: board + session facts
     prompt = captured["messages"][0]["content"]
