@@ -11,6 +11,30 @@
   var overlay = null, input = null, listEl = null, items = [], selected = 0;
   var navIndex = null, entityIndex = null;
 
+  // Phase-4 GM actions: keyboard-first access to the cockpit and the
+  // float panels (nd-float.js) — "⇱ Float: Dice" from any page floats the
+  // dice tray without touching the mouse. Actions run in place instead of
+  // navigating (see go()).
+  function buildActions() {
+    var actions = [];
+    if (document.body && document.body.dataset.worldSlug) {
+      actions.push({ label: '🎛 GM Cockpit', sub: 'session dashboard', href: '/cockpit' });
+    }
+    if (window.ndFloat) {
+      actions.push({ label: '⇱ Float: Dice', sub: 'pop out', run: function () { ndFloat('/dice', { title: '🎲 Dice', w: 480, h: 680 }); } });
+      actions.push({ label: '⇱ Float: Talk to NPCs', sub: 'pop out', run: function () { ndFloat('/npc-talk', { title: '💬 Talk to NPCs', w: 820, h: 640 }); } });
+      actions.push({ label: '⇱ Float: AI Chat', sub: 'pop out', run: function () { ndFloat('/ai', { title: '🤖 AI Chat', w: 640, h: 760 }); } });
+      // Float whatever the GM is looking at right now (map viewer, party
+      // detail, a session page, ...) — the panel keeps live-syncing while
+      // they browse elsewhere.
+      var here = location.pathname + location.search;
+      if (here !== '/' && here.indexOf('/logout') !== 0) {
+        actions.push({ label: '⇱ Float this page', sub: 'pop out', run: function () { ndFloat(here, { title: document.title, w: 640, h: 720 }); } });
+      }
+    }
+    return actions;
+  }
+
   function buildNavIndex() {
     var out = [];
     document.querySelectorAll('#nav-kinds a, .topbar a.logo, .search-form').forEach(function (a) {
@@ -66,7 +90,7 @@
 
   function render() {
     var q = input.value.trim().toLowerCase();
-    var pool = (navIndex || []).concat(entityIndex || []);
+    var pool = (navIndex || []).concat(buildActions()).concat(entityIndex || []);
     items = !q ? pool.slice(0, 12) : pool.filter(function (it) {
       return it.label.toLowerCase().indexOf(q) !== -1 ||
              (it.sub || '').toLowerCase().indexOf(q) !== -1;
@@ -97,7 +121,10 @@
 
   function go(i) {
     var it = items[i];
-    if (it) location.href = it.href;
+    if (it) {
+      if (it.run) { close(); it.run(); return; }
+      location.href = it.href;
+    }
     close();
   }
 

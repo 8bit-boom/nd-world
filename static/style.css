@@ -1791,3 +1791,20 @@ textarea[data-fmt].fmt-drag-over {
 @media (max-width: 360px) {
   .pc-grid { grid-template-columns: 1fr; }
 }
+
+/* ── Float panels (Phase 2) — ⇱/📌 buttons that pop a page out into a
+   persistent small window (or an always-on-top Document-PiP window); see
+   static/js/nd-float.js. Hidden inside floated pages themselves via the
+   body.nd-embed rules in base.html. ── */
+.nd-float-btn {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: .72rem;
+  padding: .22rem .55rem;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.nd-float-btn:hover { color: var(--neon); border-color: var(--neon); }

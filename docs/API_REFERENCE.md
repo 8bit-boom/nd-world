@@ -377,6 +377,22 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/combat/{combat_id}/unlink-session` | GM | Removes that association. |
 | POST | `/api/combat/{combat_id}/sync-characters` | GM | Pulls current HP/stats from linked `PlayerCharacter` rows into the combatant list. |
 
+## Live Sync
+
+`app/live.py` — the Phase-1 cross-window live-sync bus: mutating vitals/party/quest/session routes bump a per-world counter, and every open nd-world window re-fetches its server-rendered panels when it changes.
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/api/live` | GM / Player | SSE stream of the active world's change counter (`event: version`, bare integer — no content; membership enforced via the active world). Player pages use it to keep vitals/quests/loot panels current without reloading. |
+
+## GM Cockpit
+
+`app/routers/cockpit.py` — full-screen session dashboard composing the live battle map (embed-mode player view), every party's member-vitals strip, the dice tray, and the active-quest list; vitals/quests re-fetch over the live-sync bus. Pairs with the ⇱ Float / 📌 Always-on-top panel buttons (static/js/nd-float.js) on the map viewer, dice, party, and NPC-talk pages.
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/cockpit` | GM | Session-mode dashboard (map dock with picker, stacked party vitals, dice tray, active quests). GM-only. |
+
 ## Dice
 
 `app/routers/dice.py` — the shared table dice roller: system-agnostic dice notation (`2d6+3`, `d20`, `4d8+2d6+1`) with a world-scoped roll log every member (players included) can read and write.
@@ -402,6 +418,7 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/api/parties/{party_id}/loot` | GM | Updates shared party loot/currency. |
 | POST | `/api/parties/{party_id}/location` | GM | Sets the party's current in-world location. |
 | POST | `/api/parties/{party_id}/launch-combat` | GM | Creates a `CombatSession` pre-populated with this party's characters. |
+| GET | `/api/parties/{party_id}/vitals` | GM / Player* | Member-vitals as JSON (HP/temp/AC/level/resources per member) — what live-sync refetches consume. *Same section-access rule as the party detail page. |
 
 ## Calendar
 

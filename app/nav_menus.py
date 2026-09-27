@@ -41,6 +41,7 @@ STATIC_CATALOG = [
     {"id": "races", "label": "Race Catalog", "icon": "🧬", "href": "/races", "gm_only": False, "player_section": "races"},
     {"id": "professions", "label": "Profession Catalog", "icon": "🎭", "href": "/professions", "gm_only": False, "player_section": "professions"},
 
+    {"id": "cockpit", "label": "GM Cockpit", "icon": "🎛", "href": "/cockpit", "exact": True, "gm_only": True},
     {"id": "boards", "label": "Boards", "icon": "📌", "href": "/boards", "gm_only": True, "player_section": "boards"},
     {"id": "tables", "label": "Random Tables", "icon": "🎲", "href": "/tables", "gm_only": True, "player_section": "tables"},
     {"id": "combat", "label": "Combat Tracker", "icon": "⚔", "href": "/combat", "gm_only": True, "player_section": "combat"},
@@ -114,7 +115,7 @@ DEFAULT_NAV_MENUS = [
                   "kind_race", "kind_profession",
                   "maps", "races", "professions", "characters"]},
     {"id": "menu_tools", "label": "Tools", "icon": "🎯",
-     "item_ids": ["boards", "tables", "combat", "parties", "quests", "sessions",
+     "item_ids": ["cockpit", "boards", "tables", "combat", "parties", "quests", "sessions",
                   "facts", "calendar", "images", "import", "export",
                   "dreamlands", "king-in-yellow", "androidapp", "audio", "video", "dice"]},
     {"id": "menu_notes", "label": "Notes, Logs", "icon": "📝",

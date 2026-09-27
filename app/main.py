@@ -84,6 +84,8 @@ from .routers.code_assist import router as code_assist_router
 from .routers.bulk_edit import router as bulk_edit_router
 from .routers.nav_menus_admin import router as nav_menus_admin_router
 from .routers.dice import router as dice_router
+from . import live as _live_module
+from .routers.cockpit import router as cockpit_router
 from .routers.backups import router as backups_router
 from .routers.knowledge import router as knowledge_router
 from .routers.ai_instructions import router as ai_instructions_router
@@ -168,6 +170,8 @@ app.include_router(code_assist_router)
 app.include_router(bulk_edit_router)
 app.include_router(nav_menus_admin_router)
 app.include_router(dice_router)
+app.include_router(_live_module.router)
+app.include_router(cockpit_router)
 app.include_router(backups_router)
 app.include_router(knowledge_router)
 app.include_router(ai_instructions_router)
@@ -369,6 +373,18 @@ def _is_player_safe(method: str, path: str) -> bool:
     if path == "/api/hover-preview/config":
         return True
     if path == "/api/spotlight":
+        return True
+    if path == "/api/live":
+        # Live-sync change counter (app/live.py). Payload is a bare integer
+        # for whatever world get_world_ctx resolves for THIS viewer — no
+        # content, and membership is enforced there exactly like a page
+        # render. Without it, player-side pages/panels can't re-sync when
+        # the GM moves the party or updates a quest.
+        return True
+    if re.match(r"^/api/parties/\d+/vitals$", path):
+        # Read-only member-vitals JSON — the same strip the party detail
+        # page already renders for viewers with parties visibility; the
+        # handler re-checks that visibility itself.
         return True
     if path == "/api/entities/picker":
         # Handler applies _filter_visible_entities for a non-GM caller, same

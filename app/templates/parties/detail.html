@@ -5,10 +5,19 @@
 <div style="max-width:820px;margin:0 auto;padding:1.5rem 1rem">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
     <h1 style="color:var(--neon);font-size:1.3rem;margin:0">🛡 {{ party.name }}</h1>
-    <a href="{{ '/parties'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Parties</a>
+    <div style="display:flex;gap:.5rem;align-items:center">
+      <button type="button" class="nd-float-btn" title="Float this party — vitals keep updating live while you browse other pages"
+              onclick="ndFloat('{{ ('/parties/' + party.id|string)|wq }}', {title:'🛡 {{ party.name }}', w:560, h:760})">⇱ Float</button>
+      <button type="button" class="nd-float-btn" title="Always on top (Chromium) — closes when this page is closed or you navigate away"
+              onclick="ndFloatPip('{{ ('/parties/' + party.id|string)|wq }}', {title:'🛡 {{ party.name }}', w:560, h:760})">📌</button>
+      <a href="{{ '/parties'|wq }}" style="color:var(--text-dim);font-size:.82rem;text-decoration:none">← Parties</a>
+    </div>
   </div>
 
-  <!-- Live member vitals — the GM's at-a-glance strip -->
+  <!-- Live member vitals — the GM's at-a-glance strip. The wrapper id is
+       the nd-live refetch target: when anyone's HP/XP/conditions change,
+       the live-sync bus re-fetches this page and swaps just this block. -->
+  <div id="party-vitals">
   {% if member_vitals %}
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1.1rem 1.25rem;margin-bottom:1rem">
     <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .8rem">❤ Member Vitals <span style="color:var(--text-dim);font-size:.75rem;text-transform:none;letter-spacing:0">(live from each sheet)</span></h2>
@@ -44,6 +53,7 @@
     </div>
   </div>
   {% endif %}
+  </div>
 
   <!-- Party history -->
   {% if history_sessions or history_combats or history_events %}
@@ -315,6 +325,12 @@ if (deletePartyBtn) deletePartyBtn.addEventListener('click', () => {
 });
 
 renderLoot();
+
+// Live sync: when anything about a member changes elsewhere (a sheet HP
+// edit, an XP award in Sessions, a loot claim on another open page), the
+// bus fires and this page re-fetches its own vitals strip — no manual
+// reload during play.
+if (window.ndLiveRefetch) ndLiveRefetch('#party-vitals');
 </script>
 <script src="/static/js/ai-assist.js"></script>
 <script>

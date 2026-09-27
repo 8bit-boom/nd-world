@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..deps import get_world_ctx, paginate, world_can_edit_section, world_can_view_section, world_row_visible
+from .. import live
 from ..models import CalendarEvent, CombatSession, Entity, GameSession, Party, PlayerCharacter, Quest, SheetTemplate, World
 from .characters import _levelup_ready as _pc_levelup_ready  # cross-router import, per AGENTS.md
 from ..templating import templates
@@ -54,65 +55,16 @@ def _party_edit_level(request: Request, db: Session, world, party: Party) -> str
     return "member" if user.id in owner_ids else "none"
 
 
-@router.get("/parties", response_class=HTMLResponse)
-def parties_list(request: Request, page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = get_world_ctx(request, db, active_world)
-    if not world:
-        raise HTTPException(404)
-    if not world_can_view_section(request, world, "parties"):
-        raise HTTPException(403)
-    base_q = db.query(Party).filter(Party.world_id == world.id).order_by(Party.name)
-    parties, page, total_pages = paginate(base_q, page)
-    member_counts = {
-        p.id: len(json.loads(p.member_pc_ids_json or "[]")) + len(json.loads(p.member_entity_ids_json or "[]"))
-        for p in parties
-    }
-    return templates.TemplateResponse("parties/list.html", {
-        "request": request, "world": world, "worlds": worlds,
-        "parties": parties, "member_counts": member_counts,
-        "page": page, "total_pages": total_pages,
-        "can_create": _can_manage_parties(request, world),
-    })
-
-
-@router.post("/parties/new")
-def party_create(request: Request, name: str = Form("New Party"), db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, _ = get_world_ctx(request, db, active_world)
-    if not world or not _can_manage_parties(request, world):
-        raise HTTPException(403)
-    p = Party(world_id=world.id, name=name.strip() or "New Party")
-    db.add(p)
-    db.commit()
-    db.refresh(p)
-    return RedirectResponse(f"/parties/{p.id}", status_code=303)
-
-
-@router.get("/parties/{party_id}", response_class=HTMLResponse)
-def party_detail(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
-    world, worlds = get_world_ctx(request, db, active_world)
-    party = db.query(Party).filter(Party.id == party_id).first()
-    if not party or not world_row_visible(request, db, party.world_id, "parties"):
-        raise HTTPException(404)
-    party_world = world if (world and world.id == party.world_id) else db.get(World, party.world_id)
-    pc_ids = json.loads(party.member_pc_ids_json or "[]")
-    entity_ids = json.loads(party.member_entity_ids_json or "[]")
-    member_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all() if pc_ids else []
-    user = getattr(request.state, "user", None)
-    my_pc_ids = (
-        [pc.id for pc in member_pcs if user and not user.is_gm and pc.owner_user_id == user.id]
-        if user else []
-    )
-    member_entities = db.query(Entity).filter(Entity.id.in_(entity_ids)).all() if entity_ids else []
-    all_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == party.world_id).order_by(PlayerCharacter.name).all()
-    all_entities = db.query(Entity).filter(
-        Entity.world_id == party.world_id, Entity.kind.in_(_COMBATANT_KINDS)
-    ).order_by(Entity.name).all()
-    assigned_quests = db.query(Quest).filter(Quest.assigned_party_id == party.id).all()
-    loot = json.loads(party.loot_json or "[]")
-
-    # Live member vitals — the GM's at-a-glance strip. HP/temp/AC read
-    # straight off the PC rows, so they're current the moment anyone's
-    # sheet changes. Conditions stay on the sheet (they're freeform JSON).
+def _member_vitals(db: Session, member_pcs: list) -> list:
+    """The live member-vitals strip, shared by the party detail page, the
+    /api/parties/{id}/vitals JSON (live-sync refetches) and the GM Cockpit.
+    HP/temp/AC read straight off the PC rows, so they're current the moment
+    anyone's sheet changes. Conditions stay on the sheet (freeform JSON).
+    System-aware: for members on a custom sheet (Asterion, HITM, ...),
+    surface the template's resource tracks (current/max) from the PC's own
+    custom fields — Health/Stamina/Hunger for Hunters, Spark Shield/Flesh/
+    Ichor for gods, whatever the system defines. Pure-N&D members keep the
+    HP/AC strip."""
     member_vitals = []
     _tpl_resource_cache = {}
     for pc in sorted(member_pcs, key=lambda p: p.name or ""):
@@ -120,11 +72,6 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
             conds = json.loads(pc.conditions_json or "[]")
         except ValueError:
             conds = []
-        # System-aware vitals: for members on a custom sheet (Asterion,
-        # HITM, ...), surface the template's resource tracks (current/max)
-        # from the PC's own custom fields — Health/Stamina/Hunger for
-        # Hunters, Spark Shield/Flesh/Ichor for gods, whatever the system
-        # defines. Pure-N&D members keep the HP/AC strip.
         resources = []
         tpl_id = getattr(pc, "sheet_template_id", None)
         if tpl_id:
@@ -160,6 +107,69 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
             "conditions": [c for c in conds if isinstance(c, str)][:4],
             "resources": resources,
         })
+    return member_vitals
+
+
+@router.get("/parties", response_class=HTMLResponse)
+def parties_list(request: Request, page: int = 1, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    if not world_can_view_section(request, world, "parties"):
+        raise HTTPException(403)
+    base_q = db.query(Party).filter(Party.world_id == world.id).order_by(Party.name)
+    parties, page, total_pages = paginate(base_q, page)
+    member_counts = {
+        p.id: len(json.loads(p.member_pc_ids_json or "[]")) + len(json.loads(p.member_entity_ids_json or "[]"))
+        for p in parties
+    }
+    return templates.TemplateResponse("parties/list.html", {
+        "request": request, "world": world, "worlds": worlds,
+        "parties": parties, "member_counts": member_counts,
+        "page": page, "total_pages": total_pages,
+        "can_create": _can_manage_parties(request, world),
+    })
+
+
+@router.post("/parties/new")
+def party_create(request: Request, name: str = Form("New Party"), db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world or not _can_manage_parties(request, world):
+        raise HTTPException(403)
+    p = Party(world_id=world.id, name=name.strip() or "New Party")
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    live.touch(world.id)
+    return RedirectResponse(f"/parties/{p.id}", status_code=303)
+
+
+@router.get("/parties/{party_id}", response_class=HTMLResponse)
+def party_detail(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    world, worlds = get_world_ctx(request, db, active_world)
+    party = db.query(Party).filter(Party.id == party_id).first()
+    if not party or not world_row_visible(request, db, party.world_id, "parties"):
+        raise HTTPException(404)
+    party_world = world if (world and world.id == party.world_id) else db.get(World, party.world_id)
+    pc_ids = json.loads(party.member_pc_ids_json or "[]")
+    entity_ids = json.loads(party.member_entity_ids_json or "[]")
+    member_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all() if pc_ids else []
+    user = getattr(request.state, "user", None)
+    my_pc_ids = (
+        [pc.id for pc in member_pcs if user and not user.is_gm and pc.owner_user_id == user.id]
+        if user else []
+    )
+    member_entities = db.query(Entity).filter(Entity.id.in_(entity_ids)).all() if entity_ids else []
+    all_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.world_id == party.world_id).order_by(PlayerCharacter.name).all()
+    all_entities = db.query(Entity).filter(
+        Entity.world_id == party.world_id, Entity.kind.in_(_COMBATANT_KINDS)
+    ).order_by(Entity.name).all()
+    assigned_quests = db.query(Quest).filter(Quest.assigned_party_id == party.id).all()
+    loot = json.loads(party.loot_json or "[]")
+
+    # Live member vitals — the GM's at-a-glance strip (see _member_vitals;
+    # shared with the JSON refetch route and the GM Cockpit).
+    member_vitals = _member_vitals(db, member_pcs)
 
     # Party history: every session, combat, and calendar event tied to this
     # party, newest first — the "where have we been" view.
@@ -192,6 +202,23 @@ def party_detail(party_id: int, request: Request, db: Session = Depends(get_db),
     })
 
 
+@router.get("/api/parties/{party_id}/vitals")
+def party_vitals(party_id: int, request: Request, db: Session = Depends(get_db), active_world: str = Cookie(None)):
+    """Member-vitals as JSON — what the live-sync bus tells open party pages
+    and GM Cockpit panels to re-fetch when anything about a member changes.
+    Same visibility rule as the party detail page itself."""
+    party = db.query(Party).filter(Party.id == party_id).first()
+    if not party or not world_row_visible(request, db, party.world_id, "parties"):
+        raise HTTPException(404)
+    pc_ids = json.loads(party.member_pc_ids_json or "[]")
+    member_pcs = db.query(PlayerCharacter).filter(PlayerCharacter.id.in_(pc_ids)).all() if pc_ids else []
+    return {
+        "party_id": party.id,
+        "name": party.name,
+        "members": _member_vitals(db, member_pcs),
+    }
+
+
 @router.post("/parties/{party_id}/edit")
 async def party_edit(party_id: int, request: Request, db: Session = Depends(get_db)):
     party = db.query(Party).filter(Party.id == party_id).first()
@@ -213,6 +240,7 @@ async def party_edit(party_id: int, request: Request, db: Session = Depends(get_
         party.member_pc_ids_json = json.dumps(pc_ids)
         party.member_entity_ids_json = json.dumps(entity_ids)
     db.commit()
+    live.touch(party.world_id)
     return RedirectResponse(f"/parties/{party_id}", status_code=303)
 
 
@@ -227,6 +255,7 @@ def party_delete(party_id: int, request: Request, db: Session = Depends(get_db))
     db.query(Quest).filter(Quest.assigned_party_id == party_id).update({"assigned_party_id": None})
     db.delete(party)
     db.commit()
+    live.touch(party.world_id)
     return RedirectResponse("/parties", status_code=303)
 
 
@@ -284,6 +313,7 @@ async def party_loot(party_id: int, request: Request, db: Session = Depends(get_
             claimed.remove(pc_id)
     party.loot_json = json.dumps(loot)
     db.commit()
+    live.touch(party.world_id)
     return {"loot": loot}
 
 
@@ -317,6 +347,7 @@ async def party_set_location(party_id: int, request: Request, db: Session = Depe
         except (TypeError, ValueError):
             raise HTTPException(400, "Missing or invalid coordinates")
     db.commit()
+    live.touch(party.world_id)
     return {"location": json.loads(party.location_json)}
 
 
@@ -340,4 +371,5 @@ def party_launch_combat(party_id: int, request: Request, db: Session = Depends(g
     db.add(cs)
     db.commit()
     db.refresh(cs)
+    live.touch(party.world_id)
     return {"redirect": f"/combat/{cs.id}"}

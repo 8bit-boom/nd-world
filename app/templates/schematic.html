@@ -9,6 +9,8 @@
     <span class="tb-title">{{ schematic.name }}</span>
     <span id="dirty-dot" style="display:none;color:#ff8844;font-size:.8rem" title="Unsaved changes">●</span>
     <a class="tb" href="{{ ('/maps/schematic/' + schematic.slug + '/view')|wq }}" target="_blank" title="Open the read-only live view players see">🔴 Live View</a>
+    <button class="tb" type="button" title="Float the live view in a small always-available window (stays open while you edit or browse)"
+            onclick="ndFloat('{{ ('/maps/schematic/' + schematic.slug + '/view')|wq }}', {title:'🗺 {{ schematic.name }}', w:760, h:600})">⇱ Float</button>
     <div class="tb-sep"></div>
     <button class="tb on" id="t-select"  onclick="setTool('select')"  title="Select · V">↖</button>
     <button class="tb"    id="t-rect"    onclick="setTool('rect')"    title="Rect · R">▭</button>

@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from .. import auth, game_catalog
+from .. import auth, game_catalog, live
 from ..constants import (
     KIND_ICONS, KINDS, SUBTYPES, XP_THRESHOLDS,
     ND_DEFAULT_STATS, ND_DEFAULT_CURRENCY,
@@ -1426,6 +1426,7 @@ async def character_hp_async(pc_id: int, request: Request, db: Session = Depends
     else:
         pc.current_hp = max(0, min(eff_max_hp + temp_hp, val))
     db.commit()
+    live.touch(pc.world_id)
     return {
         "current_hp": pc.current_hp,
         "max_hp": pc.max_hp if pc.max_hp > 0 else eff_max_hp,
@@ -1456,6 +1457,7 @@ async def character_shock_async(pc_id: int, request: Request, db: Session = Depe
         shock_current = max(0, min(shock_max, val))
     pc.shock_current = shock_current
     db.commit()
+    live.touch(pc.world_id)
     return {"shock_current": pc.shock_current, "shock_max": pc.shock_max}
 
 
@@ -1485,6 +1487,7 @@ async def character_pp_async(pc_id: int, request: Request, db: Session = Depends
         pp_current = min(pp_max, pp_current + pp_max // 2)
     pc.pp_current = pp_current
     db.commit()
+    live.touch(pc.world_id)
     return {"pp_current": pc.pp_current, "pp_max": pp_max}
 
 
@@ -1514,6 +1517,7 @@ async def character_mp_async(pc_id: int, request: Request, db: Session = Depends
         mp_current = min(mp_max, mp_current + mp_max // 2)
     pc.mp_current = mp_current
     db.commit()
+    live.touch(pc.world_id)
     return {"mp_current": pc.mp_current, "mp_max": mp_max}
 
 
@@ -1530,6 +1534,7 @@ async def character_xp(pc_id: int, request: Request, db: Session = Depends(get_d
     delta = int(body.get("delta", 0))
     pc.xp = max(0, pc.xp + delta)
     db.commit()
+    live.touch(pc.world_id)
     lvl = min(pc.level, 20)
     xp_lo = XP_THRESHOLDS[lvl - 1]
     xp_hi = XP_THRESHOLDS[lvl] if lvl < 20 else None
@@ -1555,6 +1560,7 @@ async def character_level_up(pc_id: int, request: Request, db: Session = Depends
         raise HTTPException(400, f"Not enough XP to reach level {pc.level + 1} yet.")
     pc.level += 1
     db.commit()
+    live.touch(pc.world_id)
     return {"level": pc.level, "name": pc.name}
 
 
@@ -1591,6 +1597,7 @@ async def character_equipment_async(pc_id: int, request: Request, db: Session = 
         raise HTTPException(400, "Unknown action")
     pc.equipment_json = json.dumps(equipment)
     db.commit()
+    live.touch(pc.world_id)
     total_weight = sum(_num(it.get("weight"), 0) * _num(it.get("qty"), 1) for it in equipment if isinstance(it, dict))
     return {"equipment": equipment, "total_weight": total_weight}
 
@@ -1626,6 +1633,7 @@ async def character_feats_async(pc_id: int, request: Request, db: Session = Depe
         raise HTTPException(400, "Unknown action")
     pc.feats_json = json.dumps(feats)
     db.commit()
+    live.touch(pc.world_id)
     return {"feats": feats}
 
 

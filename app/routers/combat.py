@@ -5,6 +5,7 @@ from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
+from .. import live
 from ..database import get_db
 from ..deps import get_world_ctx, paginate, world_can_view_section, world_row_visible
 from ..models import CombatSession, Entity, GameSession, PlayerCharacter, World
@@ -160,6 +161,7 @@ async def combat_save_state(combat_id: int, request: Request, db: Session = Depe
     if "name" in body and body["name"]:
         cs.name = str(body["name"])
     db.commit()
+    live.touch(cs.world_id)
     return {"ok": True}
 
 
@@ -217,4 +219,5 @@ def combat_sync_characters(combat_id: int, db: Session = Depends(get_db)):
         pc.conditions_json = json.dumps(c.get("conditions", []))
         synced.append(pc.name)
     db.commit()
+    live.touch(cs.world_id)
     return {"synced": synced, "skipped": skipped}

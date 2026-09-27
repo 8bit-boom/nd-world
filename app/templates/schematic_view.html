@@ -7,6 +7,10 @@
     <span id="sv-round" style="display:none">Round <span id="sv-round-num"></span></span>
     <div style="flex:1"></div>
     <span id="sv-status" style="opacity:.5;font-size:.75rem">live</span>
+    <button type="button" class="nd-float-btn" title="Float this map — it stays open while you browse other pages"
+            onclick="ndFloat('{{ ('/maps/schematic/' + schematic.slug + '/view')|wq }}', {title:{{ ('🗺 ' + schematic.name)|tojson }}, w:760, h:600})">⇱ Float</button>
+    <button type="button" class="nd-float-btn" title="Always on top (Chromium) — closes when this page is closed or you navigate away"
+            onclick="ndFloatPip('{{ ('/maps/schematic/' + schematic.slug + '/view')|wq }}', {title:{{ ('🗺 ' + schematic.name)|tojson }}, w:760, h:600})">📌</button>
   </div>
   <div id="sv-canvas-wrap">
     <svg id="sch-svg" viewBox="0 0 {{ schematic.canvas_width or 2000 }} {{ schematic.canvas_height or 1500 }}" xmlns="http://www.w3.org/2000/svg">

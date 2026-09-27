@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from .. import ai as _ai
+from .. import live
 from .. import retrieval as _retrieval
 from ..database import SessionLocal, get_db
 from ..deps import get_world_ctx, is_gm, world_can_edit_row, world_can_edit_section, world_can_view_section, world_row_visible
@@ -205,6 +206,7 @@ async def quest_status(quest_id: int, request: Request, db: Session = Depends(ge
     if status:
         quest.status = status
         db.commit()
+        live.touch(quest.world_id)
     return {"status": quest.status}
 
 
@@ -313,6 +315,7 @@ async def quests_apply_suggestions(request: Request, db: Session = Depends(get_d
             quest.summary = note
         updated += 1
     db.commit()
+    live.touch(world.id)
     return {"created": created, "updated": updated}
 
 

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from .. import auth
 from .. import ai as _ai_module
+from .. import live
 from .. import audio_jobs as _audio_jobs
 from ..database import SessionLocal, get_db
 from ..deps import check_llm_cooldown, get_world_ctx, paginate, world_can_edit_section, world_can_view_section, world_row_visible
@@ -586,6 +587,7 @@ async def session_xp(session_id: int, request: Request, db: Session = Depends(ge
         })
         gs.party.xp_json = json.dumps(ledger[-100:])
     db.commit()
+    live.touch(gs.world_id)
     return {"updated": updated, "xp_awarded": gs.xp_awarded}
 
 

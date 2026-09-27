@@ -4,6 +4,12 @@
 <div style="max-width:860px;margin:0 auto;padding:1.5rem 1rem">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem">
     <h1 style="color:var(--neon);font-size:1.3rem;margin:0">🎲 Dice</h1>
+    <div style="display:flex;gap:.35rem">
+      <button type="button" class="nd-float-btn" title="Float the dice tray — it stays open while you browse other pages"
+              onclick="ndFloat('{{ '/dice'|wq }}', {title:'🎲 Dice', w:480, h:680})">⇱ Float</button>
+      <button type="button" class="nd-float-btn" title="Always on top (Chromium) — closes when this page is closed or you navigate away"
+              onclick="ndFloatPip('{{ '/dice'|wq }}', {title:'🎲 Dice', w:480, h:680})">📌</button>
+    </div>
   </div>
 
   {% if not world %}
@@ -12,10 +18,10 @@
   </div>
   {% else %}
 
-  <form method="post" action="{{ '/dice'|wq }}" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem;margin-bottom:.6rem;display:flex;gap:.6rem;flex-wrap:wrap;align-items:flex-end">
+  <form id="dice-form" style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem;margin-bottom:.6rem;display:flex;gap:.6rem;flex-wrap:wrap;align-items:flex-end">
     <div class="form-group" style="flex:1;min-width:220px;margin:0">
       <label>Roll</label>
-      <input name="notation" value="{{ last_notation }}" placeholder="2d6+3" autofocus
+      <input name="notation" value="{{ last_notation }}" placeholder="2d6+3" {% if not request.query_params.get('embed') %}autofocus{% endif %}
              autocomplete="off" spellcheck="false" style="font-family:monospace"/>
     </div>
     <button type="submit" class="btn-primary">🎲 Roll</button>
@@ -28,16 +34,13 @@
     {% endfor %}
   </div>
 
-  {% if error %}
-  <div style="background:var(--bg2);border:1px solid #a33;border-radius:6px;padding:.7rem 1rem;margin-bottom:1rem;color:#e88;font-size:.85rem">{{ error }}</div>
-  {% endif %}
+  <div id="dice-error" style="display:none;background:var(--bg2);border:1px solid #a33;border-radius:6px;padding:.7rem 1rem;margin-bottom:1rem;color:#e88;font-size:.85rem"></div>
 
   <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:1rem 1.25rem">
-    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .7rem">Roll log — {{ world.name }} <span style="color:var(--text-dim);font-weight:normal;font-size:.78rem">(latest {{ rolls|length }})</span></h2>
-    {% if rolls %}
+    <h2 style="color:var(--neon);font-size:.95rem;margin:0 0 .7rem">Roll log — {{ world.name }} <span id="dice-count" style="color:var(--text-dim);font-weight:normal;font-size:.78rem">(latest {{ rolls|length }})</span></h2>
     <div id="dice-log" style="display:flex;flex-direction:column;gap:.45rem">
       {% for r in rolls %}
-      <div style="display:flex;align-items:baseline;gap:.7rem;flex-wrap:wrap;padding:.45rem .6rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px">
+      <div class="dice-row" data-id="{{ r.id }}" style="display:flex;align-items:baseline;gap:.7rem;flex-wrap:wrap;padding:.45rem .6rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px">
         <span style="font-size:.78rem;color:var(--text-dim);min-width:8ch">{{ r.user_name }}</span>
         <span style="font-family:monospace;font-size:.85rem">{{ r.notation }}</span>
         <span style="font-size:.75rem;color:var(--text-dim)">
@@ -45,31 +48,88 @@
         </span>
         <span style="margin-left:auto;font-weight:bold;color:var(--neon);font-size:1rem">= {{ r.total }}</span>
       </div>
+      {% else %}
+      <p id="dice-empty" style="color:var(--text-dim);font-size:.85rem;margin:0">No rolls yet — everyone at the table (players included) can roll here and see the shared log.</p>
       {% endfor %}
     </div>
-    {% else %}
-    <p style="color:var(--text-dim);font-size:.85rem;margin:0">No rolls yet — everyone at the table (players included) can roll here and see the shared log.</p>
-    {% endif %}
   </div>
 
   <script>
   (function(){
+    // Rolling is fetch-based (no page navigation): a roll from ANY window —
+    // this one, a floated dice tray, a player's phone — appears here within
+    // the poll interval without reloading the page, which matters now that
+    // /dice can be floated (Phase 2) where a reload would reset the tray.
+    var logEl = document.getElementById('dice-log');
+    var errEl = document.getElementById('dice-error');
+    var countEl = document.getElementById('dice-count');
+    var lastId = {{ rolls[0].id if rolls else 0 }};
+
+    function esc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
+
+    function renderRow(r) {
+      var bd = (r.breakdown || []).map(function(t){
+        return esc(t.term) + (t.rolls ? ' [' + t.rolls.map(esc).join(', ') + ']' : '');
+      }).join(' ');
+      return '<div class="dice-row" data-id="' + r.id + '" style="display:flex;align-items:baseline;gap:.7rem;flex-wrap:wrap;padding:.45rem .6rem;background:var(--bg3);border:1px solid var(--border);border-radius:4px">' +
+        '<span style="font-size:.78rem;color:var(--text-dim);min-width:8ch">' + esc(r.user_name) + '</span>' +
+        '<span style="font-family:monospace;font-size:.85rem">' + esc(r.notation) + '</span>' +
+        '<span style="font-size:.75rem;color:var(--text-dim)">' + bd + '</span>' +
+        '<span style="margin-left:auto;font-weight:bold;color:var(--neon);font-size:1rem">= ' + esc(r.total) + '</span>' +
+        '</div>';
+    }
+
+    function renderLog(rolls) {
+      var empty = document.getElementById('dice-empty');
+      if (empty) empty.remove();
+      logEl.innerHTML = rolls.map(renderRow).join('') ||
+        '<p style="color:var(--text-dim);font-size:.85rem;margin:0">No rolls yet — everyone at the table (players included) can roll here and see the shared log.</p>';
+      countEl.textContent = '(latest ' + rolls.length + ')';
+    }
+
+    function refresh() {
+      fetch('/api/dice/history').then(function(r){ return r.ok ? r.json() : null; }).then(function(d){
+        if (!d || !d.rolls) return;
+        if (d.rolls.length && d.rolls[0].id === lastId) return;
+        if (d.rolls.length) lastId = d.rolls[0].id;
+        renderLog(d.rolls);
+      }).catch(function(){});
+    }
+
+    function showError(msg) {
+      errEl.textContent = msg;
+      errEl.style.display = msg ? 'block' : 'none';
+    }
+
+    document.getElementById('dice-form').addEventListener('submit', function(e){
+      e.preventDefault();
+      var input = this.querySelector('input[name="notation"]');
+      var notation = (input.value || '').trim();
+      if (!notation) return;
+      fetch('/api/dice/roll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notation: notation }),
+      }).then(function(r){ return r.json().then(function(d){ return { ok: r.ok, d: d }; }); }).then(function(res){
+        if (!res.ok) { showError((res.d && res.d.detail) || ('HTTP error')); return; }
+        showError('');
+        input.value = '';
+        input.focus();
+        refresh();
+      }).catch(function(){ showError('Roll failed — check your connection.'); });
+    });
+
     document.querySelectorAll('.dice-quick').forEach(function(btn){
       btn.addEventListener('click', function(){
-        var input = document.querySelector('input[name="notation"]');
-        if (input) { input.value = btn.dataset.notation; input.closest('form').submit(); }
+        var input = document.querySelector('#dice-form input[name="notation"]');
+        if (input) { input.value = btn.dataset.notation; input.closest('form').requestSubmit ? input.closest('form').requestSubmit() : input.closest('form').dispatchEvent(new Event('submit', {cancelable:true})); }
       });
     });
-    // Live refresh so a roll made on another device (or by a player) shows up
-    // without reloading — same poll-the-small-JSON-endpoint pattern as the
-    // spotlight and schematic player views.
-    var lastId = {{ rolls[0].id if rolls else 0 }};
-    setInterval(function(){
-      fetch('/api/dice/history').then(function(r){ return r.ok ? r.json() : null; }).then(function(d){
-        if (!d || !d.rolls || !d.rolls.length || d.rolls[0].id === lastId) return;
-        location.reload();
-      }).catch(function(){});
-    }, 5000);
+
+    // Live refresh so a roll made on another device (or in a floated tray)
+    // shows up without reloading — same poll-the-small-JSON-endpoint pattern
+    // as the spotlight and schematic player views.
+    ndPoll(refresh, 5000);
   })();
   </script>
   {% endif %}

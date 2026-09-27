@@ -17,6 +17,8 @@
   <script src="/static/js/nd-logger.js"></script>
   {% endif %}
   <script src="/static/js/nd-poll.js"></script>
+  <script src="/static/js/nd-float.js" defer></script>
+  <script src="/static/js/nd-live.js" defer></script>
   <link rel="stylesheet" href="/static/style.css?v={{ asset_v('style.css') }}"/>
   <script src="/static/js/command-palette.js" defer></script>
   {% if world %}
@@ -42,7 +44,52 @@
   }</style>
   {% endif %}
 </head>
-<body>
+<body {% if request.query_params.get('embed') == '1' %}class="nd-embed"{% endif %} data-world-slug="{{ world.slug if world else '' }}">
+{% if request.query_params.get('embed') == '1' %}
+<style>
+  /* Float-panel mode (?embed=1, see static/js/nd-float.js): the page runs
+     in a small popup / PiP window, so all the full-page chrome gets out of
+     the way. The GM cockpit's docked iframes use the same mode. */
+  body.nd-embed .topbar,
+  body.nd-embed footer,
+  body.nd-embed .spotlight-banner,
+  body.nd-embed .skip-link,
+  body.nd-embed #nd-now-playing,
+  body.nd-embed .nd-float-btn { display: none !important; }
+  body.nd-embed #main-content { padding: 0.5rem !important; margin: 0 !important; max-width: none !important; }
+  body.nd-embed #sv-wrap { height: 100vh; }
+</style>
+<script>
+// Keep ?embed=1 through every in-panel navigation: links and form actions
+// inside a floated panel are rewritten on interaction (capture phase, so
+// they work for nodes added later — ndLiveRefetch swaps, AI-rendered lists,
+// anything), so a floated page never "escapes" into full-chrome rendering
+// mid-session. External/target=_blank links are left alone.
+(function(){
+  function ndEmbedUrl(u) {
+    try {
+      var url = new URL(u, location.origin);
+      if (url.origin !== location.origin) return null;
+      if (url.searchParams.get('embed') === '1') return null;
+      url.searchParams.set('embed', '1');
+      return url.pathname + url.search + url.hash;
+    } catch (e) { return null; }
+  }
+  document.addEventListener('click', function(e){
+    var a = e.target.closest && e.target.closest('a[href^="/"]');
+    if (!a || a.target === '_blank') return;
+    var fresh = ndEmbedUrl(a.getAttribute('href'));
+    if (fresh) a.setAttribute('href', fresh);
+  }, true);
+  document.addEventListener('submit', function(e){
+    var f = e.target;
+    if (!f || !f.getAttribute || !f.getAttribute('action')) return;
+    var fresh = ndEmbedUrl(f.getAttribute('action'));
+    if (fresh) f.setAttribute('action', fresh);
+  }, true);
+})();
+</script>
+{% endif %}
 {% if world and world.hero_style == 'everywhere' %}
 {% include "_hero.html" %}
 {% endif %}
