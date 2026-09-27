@@ -534,6 +534,8 @@
       Describe the space (rooms, doors, features). Optionally attach a sketch or
       floorplan image for the AI to base the layout on. New elements are appended
       to the canvas — draw over them, move them, or delete what you don't want.
+      The build runs in the background and can take a few minutes (much longer
+      without a GPU).
     </p>
     <textarea id="ai-build-desc" rows="4" placeholder="e.g. A smuggler's den: L-shaped bar with stools, two storage rooms behind a hidden door, a central gambling table, back exit into the alley."
       style="width:100%;background:var(--bg3,#0d0d12);border:1px solid var(--border,#333);color:var(--text,#ddd);padding:.5rem .6rem;font-family:var(--font);font-size:.85rem;border-radius:4px;resize:vertical;box-sizing:border-box"></textarea>
@@ -581,16 +583,21 @@ function aiBuildClose() {
       const startData = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(startData.detail || ('HTTP ' + r.status));
       const jobId = startData.job_id;
-      // Poll until done/error (generous — a cold model load takes a minute).
-      const deadline = Date.now() + 8 * 60 * 1000;
+      // Poll for as long as it takes — the build task keeps running
+      // server-side, so giving up in the UI would only hide a late finish
+      // (large models on a CPU-only box can take 15+ minutes).
+      const started = Date.now();
+      let hintShown = false;
       while (true) {
-        if (Date.now() > deadline) throw new Error('Timed out waiting for the AI build.');
         await new Promise(res => setTimeout(res, 2000));
         const pr = await fetch(`/maps/schematic/${SLUG}/ai-build/${jobId}`);
         if (!pr.ok) continue;
         const pd = await pr.json();
         if (pd.status === 'running') {
-          statusEl.textContent = '⏳ The model is drafting the layout…';
+          const elapsed = pd.elapsed || Math.round((Date.now() - started) / 1000);
+          statusEl.textContent = '⏳ The model is drafting the layout… ' + elapsed + 's' +
+            (elapsed >= 120 && !hintShown ? ' — CPU-only generation is slow; this can take 15+ minutes' : '');
+          if (elapsed >= 120) hintShown = true;
           continue;
         }
         if (pd.status === 'error') throw new Error(pd.error || 'AI build failed');

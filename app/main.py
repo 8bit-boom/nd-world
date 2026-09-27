@@ -6792,7 +6792,7 @@ async def schematic_ai_build_start(
     job_id = _AI_BUILD_SEQ[0] + 1
     _AI_BUILD_SEQ[0] = job_id
     replace_flag = (replace or "").strip().lower() in ("1", "true", "yes")
-    _AI_BUILD_JOBS[job_id] = {"status": "running", "slug": slug,
+    _AI_BUILD_JOBS[job_id] = {"status": "running", "slug": slug, "started": time.time(),
                               "added": 0, "total": 0, "elements": [], "error": ""}
     done = [j for j, v in _AI_BUILD_JOBS.items() if v["status"] != "running"]
     while len(done) > _AI_BUILD_KEEP:
@@ -6814,7 +6814,8 @@ async def schematic_ai_build_poll(slug: str, job_id: int):
     if job["status"] == "error":
         return {"status": "error", "error": job.get("error") or "AI build failed"}
     if job["status"] == "running":
-        return {"status": "running"}
+        return {"status": "running",
+                "elapsed": round(time.time() - job.get("started", time.time()))}
     return {"status": "done", "added": job["added"], "total": job["total"],
             "elements": job["elements"]}
 
