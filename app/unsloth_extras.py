@@ -331,10 +331,19 @@ async def studio_version() -> str:
 
 
 async def studio_update() -> dict:
-    """Ask Studio to update itself — POST /api/update, feature-detected.
-    nd-world never shells out to Docker: builds without the endpoint raise
-    StudioEndpointMissing and the route tells the GM the manual path."""
-    return await _request("POST", "/api/update", timeout=_ACTION_TIMEOUT)
+    """Ask Studio to update itself — feature-detected, with a real-world
+    twist: a live Studio confirmed the /api/update path exists but rejects
+    POST with 405 Method Not Allowed (it is GET-routed there), so POST
+    falls back to GET before giving up. Builds without any /api/update
+    raise StudioEndpointMissing and the route tells the GM the manual
+    path; nd-world never shells out to Docker."""
+    try:
+        return await _request("POST", "/api/update", timeout=_ACTION_TIMEOUT)
+    except StudioError as exc:
+        if exc.status_code != 405:
+            raise
+    # 405: the route exists but not as POST — try GET.
+    return await _request("GET", "/api/update", timeout=_ACTION_TIMEOUT)
 
 
 async def stt(audio: bytes, filename: str, model: str = "small") -> str:
