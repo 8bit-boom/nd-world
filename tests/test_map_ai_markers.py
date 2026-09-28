@@ -67,21 +67,10 @@ def test_start_404s_unknown_slug(client, seed):
     assert r.status_code == 404
 
 
-def test_start_requires_prompt(client, seed, map_env, main_module_probe):
-    from app import main as m
-    print("MAPS_DIR:", m._MAPS_DIR, "| exists:", (m._MAPS_DIR / "docks.json").exists())
+def test_start_requires_prompt(client, seed, map_env):
     login(client, seed.gm.email, GM_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
-    _r = _start(client, {})
-    from app.models import World as _W
-    from app.database import SessionLocal as _SL
-    _d = _SL()
-    try:
-        print("WORLDS:", [(w.id, w.slug) for w in _d.query(_W).all()])
-    finally:
-        _d.close()
-    print("START STATUS:", _r.status_code, _r.text[:80])
-    assert _r.status_code == 400
+    assert _start(client, {}).status_code == 400
 
 
 def test_flow_clamps_coords_dedupes_and_caps(client, seed, map_env, monkeypatch):
