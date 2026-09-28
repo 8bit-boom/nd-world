@@ -10,8 +10,8 @@
       <button type="button" class="ck-btn" id="ck-delete-preset" title="Delete the selected saved layout" style="display:none">🗑</button>
       <button type="button" class="ck-btn" id="ck-windows-btn" title="All open windows">🗂 Windows</button>
       <button type="button" class="ck-btn" id="ck-save-preset" title="Save the current windows as a named layout">💾 Save layout</button>
-      <button type="button" class="ck-btn" id="ck-delete-preset" title="Delete the selected saved layout" style="display:none">🗑</button>
       <button type="button" class="ck-btn" id="ck-pin-btn" title="Auto-arrange all windows in a grid from top-left — scroll down if the grid outgrows the screen">📌 Auto-arrange</button>
+      <button type="button" class="ck-btn" id="ck-find-btn" title="Find entities & notes connected to a query — or to a focused entity (AI, thinking + RAG)">🔍 Find AI</button>
       <button type="button" class="ck-btn ck-btn-primary" id="ck-add-btn" title="Add a panel — map, dice, party, quests, entity, notes, AI chat">＋ Add panel</button>
       <button type="button" class="ck-btn" id="ck-reset" title="Back to the default panel set">↺ Reset</button>
       <a class="ck-btn" href="{{ '/combat'|wq }}" title="Combat Tracker">⚔</a>
@@ -21,13 +21,18 @@
 
   <div id="ck-viewport">
     <div id="ck-welcome">
-      <p><strong>Empty cockpit.</strong></p>
-      <p>Click <strong>＋ Add panel</strong> to pin a map, dice tray, party vitals, quests,
-      any entity or character page, scratch notes, or AI chat — all at once, all live,
-      no extra browser tabs. Arrangements are saved automatically; 💾 keeps one as a
-      named layout you can switch back to.</p>
+      <p><strong>Empty cockpit — pin your first panels:</strong></p>
+      <div id="ck-welcome-tiles"></div>
+      <p style="font-size:.75rem">Everything stays live and saves automatically;
+      💾 keeps named layouts. Right-click a window's title bar for its menu.</p>
     </div>
   </div>
+  <footer id="ck-status">
+    <span id="ck-stat-left">🪟 0</span>
+    <span id="ck-stat-mid"></span>
+    <span id="ck-stat-right"><span id="ck-stat-live" title="live sync">●</span> <span id="ck-stat-saved">—</span></span>
+    <button type="button" class="ck-wbtn" id="ck-fs-btn" title="Fullscreen (great at the table)">⛶</button>
+  </footer>
 </div>
 
 <!-- Window list popover -->
@@ -206,6 +211,76 @@ body:has(#ck-wrap) > footer { display: none; }
 .ck-aichat-status { font-size: .72rem; color: var(--text-dim); padding: 0 .55rem; min-height: 1em; }
 /* notes AI ops (result box rides the existing .ck-btn styles) */
 
+/* status bar */
+#ck-status { display: flex; align-items: center; gap: .8rem; padding: .25rem .8rem;
+  background: var(--bg2); border-top: 1px solid var(--border);
+  font-size: .72rem; color: var(--text-dim); }
+#ck-status #ck-stat-mid { flex: 1; text-align: center; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+#ck-stat-live { color: #555; transition: color .3s; }
+#ck-stat-live.on { color: #4f4; }
+#ck-fs-btn { color: var(--text-dim); font-size: .85rem; }
+
+/* toasts */
+#ck-toasts { position: fixed; right: 14px; bottom: 38px; z-index: 100002;
+  display: flex; flex-direction: column; gap: .4rem; }
+.ck-toast { display: flex; align-items: center; gap: .6rem; background: var(--bg2);
+  border: 1px solid var(--border); border-left: 3px solid var(--neon);
+  border-radius: 6px; padding: .45rem .7rem; font-size: .78rem; color: var(--text);
+  box-shadow: 0 8px 24px rgba(0,0,0,.5); animation: ck-toast-in .18s ease-out; }
+.ck-toast button { background: none; border: 1px solid var(--border); color: var(--neon);
+  font-family: inherit; font-size: .74rem; border-radius: 4px; padding: .15rem .5rem; cursor: pointer; }
+.ck-toast button:hover { border-color: var(--neon); }
+@keyframes ck-toast-in { from { opacity: 0; transform: translateY(8px); } }
+
+/* window open/close/focus animations */
+.ck-win { animation: ck-pop .16s ease-out; }
+.ck-win.closing { animation: ck-fade-out .13s ease-in forwards; pointer-events: none; }
+.ck-win:focus-within { box-shadow: 0 10px 30px rgba(0,0,0,.55); }
+@keyframes ck-pop { from { opacity: 0; transform: scale(.96); } }
+@keyframes ck-fade-out { to { opacity: 0; transform: scale(.96); } }
+
+/* window context menu */
+#ck-ctx { position: fixed; z-index: 100003; background: var(--bg2);
+  border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  padding: .25rem; min-width: 170px; display: none; }
+#ck-ctx button { display: flex; width: 100%; gap: .5rem; align-items: center;
+  background: none; border: 0; color: var(--text); font-family: inherit; font-size: .78rem;
+  padding: .35rem .5rem; border-radius: 4px; cursor: pointer; text-align: left; }
+#ck-ctx button:hover { background: var(--bg3); }
+#ck-ctx hr { border: 0; border-top: 1px solid var(--border); margin: .2rem 0; }
+
+/* welcome quick-start tiles */
+#ck-welcome-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: .5rem; width: 100%; max-width: 560px; margin: .8rem 0; }
+.ck-tile { display: flex; flex-direction: column; align-items: center; gap: .25rem;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); font-family: inherit; font-size: .78rem; padding: .7rem .4rem; cursor: pointer; }
+.ck-tile:hover { border-color: var(--neon); color: var(--neon); }
+.ck-tile .ck-tile-ic { font-size: 1.3rem; }
+
+/* timer panel */
+.ck-timer { display: flex; flex-direction: column; height: 100%; box-sizing: border-box;
+  gap: .5rem; padding: .6rem .7rem; align-items: center; justify-content: center; }
+.ck-timer-time { font-size: 2.4rem; font-weight: bold; color: var(--neon);
+  font-variant-numeric: tabular-nums; letter-spacing: .04em; }
+.ck-timer.done .ck-timer-time { color: #ff2d78; animation: ck-flash 1s infinite; }
+@keyframes ck-flash { 50% { opacity: .45; } }
+.ck-timer-row { display: flex; gap: .35rem; align-items: center; flex-wrap: wrap; justify-content: center; }
+.ck-timer input[type=number] { width: 4.2rem; background: var(--bg3); border: 1px solid var(--border);
+  color: var(--text); font-family: inherit; font-size: .78rem; border-radius: 4px; padding: .25rem .35rem; }
+
+/* find panel */
+.ck-find { display: flex; flex-direction: column; height: 100%; box-sizing: border-box;
+  gap: .4rem; padding: .5rem .55rem; }
+.ck-find-results { flex: 1; min-height: 0; overflow-y: auto; display: flex;
+  flex-direction: column; gap: .3rem; }
+.ck-find-res { display: flex; flex-direction: column; gap: .1rem; background: var(--bg3);
+  border: 1px solid var(--border); border-radius: 4px; padding: .4rem .55rem; cursor: pointer;
+  font-family: inherit; text-align: left; color: var(--text); }
+.ck-find-res:hover { border-color: var(--neon); }
+.ck-find-res small { color: var(--text-dim); font-size: .7rem; }
+
 /* add-modal */
 #ck-add-overlay { position: fixed; inset: 0; z-index: 100000; background: rgba(0,0,0,.55);
   padding-top: 10vh; }
@@ -265,6 +340,8 @@ const CK_TYPES = {
   audio:   { icon: '🎵', label: 'Audio',       sub: 'soundboard & music library',        w: 480, h: 640, picker: null },
   video:   { icon: '🎬', label: 'Video',       sub: 'video library',                     w: 640, h: 560, picker: null },
   imagestudio: { icon: '🎨', label: 'Image Studio', sub: 'AI image generation',       w: 720, h: 720, picker: null },
+  find:    { icon: '🔍', label: 'Find using AI', sub: 'connected entities & notes — thinking + RAG', w: 480, h: 540, picker: null },
+  timer:   { icon: '⏱', label: 'Timer',         sub: 'round / break countdown + stopwatch', w: 340, h: 260, picker: null },
   combat:  { icon: '⚔', label: 'Combat',       sub: 'live combat tracker',           w: 560, h: 560, picker: 'combat' },
   tables:  { icon: '🎰', label: 'Table roll',   sub: 'roll any random table',         w: 360, h: 280, picker: null },
   calendar:{ icon: '🗓', label: 'Calendar',     sub: 'in-world calendar',             w: 520, h: 480, picker: null },

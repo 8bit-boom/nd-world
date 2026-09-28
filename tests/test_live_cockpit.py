@@ -283,6 +283,13 @@ def test_cockpit_gm_renders_workspace_shell(client, seed):
     assert "ai_chat:" in html                     # native streaming chat panel type
     assert "ck-aichat" in html                    # chat panel CSS shipped
     assert "/api/ai/stream" not in html           # chat wiring lives in cockpit.js
+    assert 'id="ck-find-btn"' in html             # toolbar Find-AI button
+    assert 'id="ck-fs-btn"' in html               # fullscreen (table mode)
+    assert 'id="ck-status"' in html               # status bar
+    assert 'id="ck-welcome-tiles"' in html        # quick-start tiles
+    assert "find:" in html and "timer:" in html   # new panel types
+    assert ".ck-toast" in html                    # toast CSS shipped
+    assert ".ck-timer-time" in html               # timer CSS shipped
     assert "/static/js/cockpit.js" in html
     assert '"slug": "tavern-map"' in html          # picker data for the modal
     assert '"name": "Vanguard"' in html
@@ -540,12 +547,17 @@ def test_workspace_accepts_new_types_and_accent(client, seed):
          "w": 720, "h": 720, "z": 9},
         {"id": "m5", "type": "ai_chat", "ref": "7", "title": "Vex", "x": 0, "y": 0,
          "w": 520, "h": 640, "z": 10, "data": {"text": "scratch"}},
+        {"id": "f1", "type": "find", "ref": "", "title": "Find", "x": 0, "y": 0,
+         "w": 480, "h": 540, "z": 11},
+        {"id": "t1", "type": "timer", "ref": "", "title": "Round timer", "x": 0, "y": 0,
+         "w": 340, "h": 260, "z": 12},
     ]}, "presets": {}}
     assert client.post("/api/cockpit/workspace", json=ws).status_code == 200
     panels = client.get("/api/cockpit/workspace").json()["workspace"]["current"]["panels"]
     types = [p["type"] for p in panels]
     assert types == ["ecard", "tables", "combat", "calendar", "wmap",
-                     "gallery", "audio", "video", "imagestudio", "ai_chat"]
+                     "gallery", "audio", "video", "imagestudio", "ai_chat",
+                     "find", "timer"]
     assert panels[4]["ref"] == "city-map"
     assert panels[9]["ref"] == "7"
     assert panels[0]["accent"] == "#ff2d78"
@@ -580,3 +592,118 @@ def test_quests_board_gm_only(client, seed):
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
     assert client.get("/api/quests/board").status_code == 403
+
+
+# ── AI find / connections ────────────────────────────────────────────────────
+
+def _find_mk_entity(world_id, name, kind="character", summary=""):
+    from app.models import Entity
+
+    db = SessionLocal()
+    try:
+        e = Entity(world_id=world_id, name=name, kind=kind, summary=summary)
+        db.add(e)
+        db.commit()
+        db.refresh(e)
+        return e.id
+    finally:
+        db.close()
+
+
+def _find_poll(client, job_id, seconds=10):
+    import time as _time
+
+    deadline = _time.time() + seconds
+    data = {"status": "running"}
+    while _time.time() < deadline:
+        data = client.get(f"/api/cockpit/ai/find/{job_id}").json()
+        if data["status"] != "running":
+            break
+        _time.sleep(0.05)
+    return data
+
+
+def _patch_find_ai(monkeypatch, reply):
+    """Patch the module attrs cockpit's task actually reads — generate_chat
+    plus the API key the start route gates on (the quest-sync test pattern:
+    effective_llm_api_key() reads module attrs captured at import)."""
+    from app.routers import cockpit as cockpit_module
+
+    async def fake_generate_chat(messages, **kw):
+        return reply(messages, kw)
+
+    monkeypatch.setattr(cockpit_module._ai, "generate_chat", fake_generate_chat)
+    monkeypatch.setattr(cockpit_module._ai, "UNSLOTH_API_KEY", "sk-test")
+
+
+def test_ai_find_start_requires_gm(client, seed):
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    assert client.post("/api/cockpit/ai/find/start", json={"query": "x"}).status_code == 403
+
+
+def test_ai_find_start_needs_query_or_entity(client, seed):
+    _login_gm(client, seed)
+    assert client.post("/api/cockpit/ai/find/start", json={}).status_code == 400
+
+
+def test_ai_find_poll_unknown_job_404(client, seed):
+    _login_gm(client, seed)
+    assert client.get("/api/cockpit/ai/find/999999").status_code == 404
+
+
+def test_ai_find_flow_filters_hallucinations_and_enriches(client, seed, monkeypatch):
+    vex_id = _find_mk_entity(seed.world_a.id, "Vex Rowan", summary="Rogue with debts")
+    _find_mk_entity(seed.world_a.id, "Yorm Barkeep", summary="Runs the Prancing Pony")
+
+    def reply(messages, kw):
+        # the surface contract: thinking + RAG hardcoded on server-side
+        assert kw.get("think") is True
+        assert "=== FOCUS ===" in messages[0]["content"]
+        assert "CANDIDATES" in messages[0]["content"]
+        return ('{"results": [{"id": 424242, "reason": "hallucinated"}, '
+                '{"id": ' + str(vex_id) + ', "reason": "owes the barkeep 5 gold"}]}')
+
+    _patch_find_ai(monkeypatch, reply)
+    _login_gm(client, seed)
+    r = client.post("/api/cockpit/ai/find/start", json={"query": "who owes whom money?"})
+    assert r.status_code == 200, r.text
+    data = _find_poll(client, r.json()["job_id"])
+    assert data["status"] == "done", data
+    # the hallucinated id was filtered, the real one enriched from the DB
+    assert len(data["results"]) == 1
+    res = data["results"][0]
+    assert res["id"] == vex_id and res["name"] == "Vex Rowan"
+    assert res["reason"] == "owes the barkeep 5 gold"
+
+
+def test_ai_find_connections_excludes_self(client, seed, monkeypatch):
+    vex_id = _find_mk_entity(seed.world_a.id, "Vex Rowan")
+    note_id = _find_mk_entity(seed.world_a.id, "Debt Ledger", kind="note")
+
+    def reply(messages, kw):
+        # the model "suggests" the focused entity itself — must be dropped
+        return ('{"results": [{"id": ' + str(vex_id) + ', "reason": "itself"}, '
+                '{"id": ' + str(note_id) + ', "reason": "ledger mentions Vex"}]}')
+
+    _patch_find_ai(monkeypatch, reply)
+    _login_gm(client, seed)
+    r = client.post("/api/cockpit/ai/find/start", json={"entity_id": vex_id})
+    assert r.status_code == 200
+    data = _find_poll(client, r.json()["job_id"])
+    assert data["status"] == "done", data
+    ids = [x["id"] for x in data["results"]]
+    assert vex_id not in ids and note_id in ids
+
+
+def test_ai_find_error_path(client, seed, monkeypatch):
+    def reply(messages, kw):
+        return "the model rambled without any JSON"
+
+    _patch_find_ai(monkeypatch, reply)
+    _login_gm(client, seed)
+    r = client.post("/api/cockpit/ai/find/start", json={"query": "anything"})
+    assert r.status_code == 200
+    data = _find_poll(client, r.json()["job_id"])
+    assert data["status"] == "error"
+    assert data["error"]

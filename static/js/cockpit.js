@@ -49,6 +49,11 @@
   let seq = 1;
   const liveLoaders = new Map(); // panel id -> refetch fn (party/quests)
   let entityCache = null;
+  const findAutoRan = new Set();  // find panels seeded by a card's 🔗 (auto-run)
+  const findBusy = new Set();     // find panels with a job in flight
+  const panelCleanups = new Map(); // panel id -> fn (e.g. stop a timer)
+  const undoStack = [];           // last closed panels (Undo toast / Ctrl+Shift+T)
+  let lastSavedAt = 0;
 
   function embed(path) {
     const glue = path.indexOf('?') > -1 ? '&' : '?';
@@ -92,7 +97,7 @@
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(ws),
-    }).catch(function () {});
+    }).then(function () { lastSavedAt = Date.now(); }).catch(function () {});
   }
 
   function adopt(ws) {
@@ -194,6 +199,13 @@
         }
       });
     });
+    Array.from(panelCleanups.keys()).forEach(function (k) {
+      if (!liveIds.has(k)) {
+        panelCleanups.get(k)();
+        panelCleanups.delete(k);
+      }
+    });
+    updateStatus();
     panels.forEach(function (p) { viewport.appendChild(buildWin(p)); });
     // Everything registered a loader in fillBody — fire them all now that
     // the nodes are attached (the loaders query the DOM by panel id).
@@ -247,13 +259,7 @@
       colBtn.textContent = p.collapsed ? '▸' : '▾';
       save();
     });
-    const closeBtn = mkBtn('✕', 'Remove this panel', function () {
-      panels = panels.filter(function (x) { return x.id !== p.id; });
-      win.remove();
-      cleanupPanel(p.id);
-      if (welcome) welcome.style.display = panels.length ? 'none' : '';
-      save();
-    });
+    const closeBtn = mkBtn('✕', 'Remove this panel', function () { closePanel(p, win); });
     head.append(title, accentBtn, reloadBtn, maxBtn, colBtn, closeBtn);
     head.addEventListener('dblclick', function (e) {
       if (e.target.closest('.ck-wbtn')) return;
@@ -269,6 +275,10 @@
     rz.title = 'Resize';
 
     win.append(head, body, rz);
+    head.addEventListener('contextmenu', function (e) {
+      e.preventDefault();
+      openCtx(p, win, e.clientX, e.clientY);
+    });
     win.addEventListener('pointerdown', function () {
       zTop += 1;
       win.style.zIndex = zTop;
@@ -332,6 +342,10 @@
       liveLoaders.set(p.id, function () { loadCard(p); });
     } else if (p.type === 'ai_chat') {
       buildAiChat(p, body);
+    } else if (p.type === 'find') {
+      buildFind(p, body);
+    } else if (p.type === 'timer') {
+      buildTimer(p, body);
     } else if (p.type === 'notes') {
       const wrap = document.createElement('div');
       wrap.style.cssText = 'display:flex;flex-direction:column;height:100%;box-sizing:border-box;gap:.35rem';
@@ -512,6 +526,17 @@
         addPanel('ai_chat', String(d.id), '✨ ' + (d.name || 'entity'));
       });
       live.appendChild(ask);
+      const conn = document.createElement('button');
+      conn.type = 'button';
+      conn.className = 'ck-btn';
+      conn.style.marginTop = '.35rem';
+      conn.textContent = '🔗 Find connections';
+      conn.title = 'Find entities & notes connected to this — AI, thinking + RAG';
+      conn.addEventListener('click', function () {
+        const fp = addPanel('find', String(d.id), '🔗 ' + (d.name || 'entity'));
+        findAutoRan.add(fp.id);
+      });
+      live.appendChild(conn);
     } catch (e) {
       live.innerHTML = '<p class="ck-empty" style="color:var(--text-dim);font-size:.8rem">Entity unavailable.</p>';
     }
@@ -608,6 +633,9 @@
     chatAborts.delete(panelId);
     chatHistory.delete(panelId);
     liveLoaders.delete(panelId);
+    const extra = panelCleanups.get(panelId);
+    if (extra) extra();  // e.g. stop a timer's setInterval
+    panelCleanups.delete(panelId);
   }
 
   function buildAiChat(p, body) {
@@ -789,9 +817,401 @@
   }
 
 
+  // ── toasts ─────────────────────────────────────────────────────────────
+  let toastHost = null;
+  function toast(msg, actionLabel, actionFn) {
+    if (!toastHost) {
+      toastHost = document.createElement('div');
+      toastHost.id = 'ck-toasts';
+      document.body.appendChild(toastHost);
+    }
+    const t = document.createElement('div');
+    t.className = 'ck-toast';
+    const s = document.createElement('span');
+    s.textContent = msg;
+    t.appendChild(s);
+    if (actionLabel && actionFn) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = actionLabel;
+      b.addEventListener('click', function () { actionFn(); t.remove(); });
+      t.appendChild(b);
+    }
+    toastHost.appendChild(t);
+    setTimeout(function () { t.remove(); }, 6000);
+  }
+
+  // ── close with animation + Undo (a browser-grade convenience: one misclick
+  // shouldn't cost a loaded map window) ────────────────────────────────────
+  function closePanel(p, win) {
+    const idx = panels.indexOf(p);
+    if (idx !== -1) panels.splice(idx, 1);
+    if (win) {
+      win.classList.add('closing');
+      setTimeout(function () { win.remove(); }, 130);
+    }
+    cleanupPanel(p.id);
+    if (welcome) welcome.style.display = panels.length ? 'none' : '';
+    undoStack.push({ panel: p, index: idx === -1 ? panels.length : idx });
+    if (undoStack.length > 8) undoStack.shift();
+    // Undo restores the window, not its live contents (an aborted chat or
+    // timer starts fresh) — the arrangement is what matters.
+    toast('Closed "' + (p.title || CK_TYPES[p.type].label) + '"', 'Undo', undoClose);
+    updateStatus();
+    save();
+  }
+  function undoClose() {
+    const item = undoStack.pop();
+    if (!item) return;
+    const i = Math.min(item.index, panels.length);
+    panels.splice(i, 0, item.panel);
+    if (welcome) welcome.style.display = 'none';
+    viewport.appendChild(buildWin(item.panel));
+    const fn = liveLoaders.get(item.panel.id);
+    if (fn) fn();
+    updateStatus();
+    save();
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.ctrlKey && e.shiftKey && (e.key === 'T' || e.key === 't')) {
+      e.preventDefault();
+      undoClose();
+    }
+  });
+
+  // ── shared half-dock (drag release + context menu) ─────────────────────
+  function dockPanel(win, p, right) {
+    p.x = right ? Math.ceil(viewport.clientWidth / 2) : 0;
+    p.y = 0;
+    p.w = Math.floor(viewport.clientWidth / 2);
+    p.h = viewport.clientHeight;
+    win.style.left = p.x + 'px'; win.style.top = p.y + 'px';
+    win.style.width = p.w + 'px'; win.style.height = p.h + 'px';
+  }
+
+  // ── window context menu (right-click a title bar) ──────────────────────
+  let ctxEl = null;
+  function openCtx(p, win, x, y) {
+    if (COMPACT.matches) return;
+    if (!ctxEl) {
+      ctxEl = document.createElement('div');
+      ctxEl.id = 'ck-ctx';
+      document.body.appendChild(ctxEl);
+    }
+    ctxEl.innerHTML = '';
+    const items = [
+      ['⟳ Reload', function () {
+        const f = win.querySelector('.ck-body iframe');
+        if (f) { f.src = f.src; return; }
+        const fn = liveLoaders.get(p.id);
+        if (fn) fn();
+      }],
+      ['✏ Rename…', function () {
+        const name = prompt('Panel title:', p.title || CK_TYPES[p.type].label);
+        if (name === null) return;
+        p.title = name.trim().slice(0, 120);
+        const t = win.querySelector('.ck-win-title');
+        if (t) t.textContent = p.title || CK_TYPES[p.type].icon + ' ' + CK_TYPES[p.type].label;
+        save();
+      }],
+      ['🎨 Accent', function () {
+        const cur = ACCENTS.indexOf(p.accent || '');
+        const next = ACCENTS[(cur + 1) % ACCENTS.length];
+        p.accent = next;
+        if (next) { win.dataset.accent = next; win.style.setProperty('--ck-accent', next); }
+        else { delete win.dataset.accent; win.style.removeProperty('--ck-accent'); }
+        save();
+      }],
+      ['⤢ Maximize', function () { win.classList.toggle('maxed'); }],
+      ['◧ Dock left', function () { win.classList.remove('maxed'); dockPanel(win, p, false); save(); }],
+      ['◨ Dock right', function () { win.classList.remove('maxed'); dockPanel(win, p, true); save(); }],
+      'hr',
+      ['✕ Close', function () { closePanel(p, win); }],
+    ];
+    items.forEach(function (it) {
+      if (it === 'hr') { ctxEl.appendChild(document.createElement('hr')); return; }
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = it[0];
+      b.addEventListener('click', function () { ctxEl.style.display = 'none'; it[1](); });
+      ctxEl.appendChild(b);
+    });
+    ctxEl.style.display = 'block';
+    ctxEl.style.left = Math.max(8, Math.min(x, window.innerWidth - ctxEl.offsetWidth - 8)) + 'px';
+    ctxEl.style.top = Math.max(8, Math.min(y, window.innerHeight - ctxEl.offsetHeight - 8)) + 'px';
+  }
+  document.addEventListener('mousedown', function (e) {
+    if (ctxEl && ctxEl.style.display === 'block' && !e.target.closest('#ck-ctx')) {
+      ctxEl.style.display = 'none';
+    }
+  });
+
+  // ── status bar ─────────────────────────────────────────────────────────
+  function updateStatus() {
+    const c = document.getElementById('ck-stat-left');
+    if (c) c.textContent = '\u{1FA9F} ' + panels.length;
+    const m = document.getElementById('ck-stat-mid');
+    if (m) m.textContent = presetSelect.value ? '\u{1F4CB} ' + presetSelect.value : '';
+  }
+  setInterval(function () {
+    const el = document.getElementById('ck-stat-saved');
+    if (!el) return;
+    if (!lastSavedAt) { el.textContent = '\u2014'; return; }
+    const s = Math.round((Date.now() - lastSavedAt) / 1000);
+    el.textContent = 'saved ' + (s < 60 ? s + 's' : (s < 3600 ? Math.round(s / 60) + 'm' : Math.round(s / 3600) + 'h')) + ' ago';
+  }, 3000);
+
+  // ── fullscreen (table mode) ─────────────────────────────────────────────
+  const fsBtn = document.getElementById('ck-fs-btn');
+  if (fsBtn) {
+    fsBtn.addEventListener('click', function () {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else document.documentElement.requestFullscreen().catch(function () {});
+    });
+  }
+
+  // ── welcome quick-start tiles ───────────────────────────────────────────
+  function buildWelcomeTiles() {
+    const host = document.getElementById('ck-welcome-tiles');
+    if (!host || host.children.length) return;
+    const quick = [];
+    if (CK_MAPS.length) quick.push(['map', CK_MAPS[0].slug, '\u{1F5FA}\u{FE0F} ' + CK_MAPS[0].name]);
+    if ((CK_WORLD_MAPS || []).length) quick.push(['wmap', CK_WORLD_MAPS[0].slug, '\u{1F5FA}\u{FE0F} ' + CK_WORLD_MAPS[0].name]);
+    if (CK_PARTIES.length) quick.push(['party', String(CK_PARTIES[0].id), '\u2764 ' + CK_PARTIES[0].name]);
+    ['quests', 'dice', 'ai_chat', 'find', 'notes', 'timer'].forEach(function (t) {
+      quick.push([t, '', '']);
+    });
+    quick.forEach(function (q) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ck-tile';
+      const t = CK_TYPES[q[0]];
+      b.innerHTML = '<span class="ck-tile-ic">' + t.icon + '</span><span>' + esc(t.label) + '</span>';
+      b.addEventListener('click', function () { addPanel(q[0], q[1], q[2]); });
+      host.appendChild(b);
+    });
+  }
+
+  // ── timer panel (client-only, session-transient by design) ─────────────
+  function buildTimer(p, body) {
+    const wrap = document.createElement('div');
+    wrap.className = 'ck-timer';
+    const time = document.createElement('div');
+    time.className = 'ck-timer-time';
+    const row = document.createElement('div');
+    row.className = 'ck-timer-row';
+    const mins = document.createElement('input');
+    mins.type = 'number'; mins.min = '1'; mins.max = '600'; mins.value = '5';
+    mins.title = 'Minutes';
+    const modeBtn = document.createElement('button');
+    modeBtn.type = 'button'; modeBtn.className = 'ck-btn';
+    modeBtn.textContent = '\u23F1 Countdown';
+    const startBtn = document.createElement('button');
+    startBtn.type = 'button'; startBtn.className = 'ck-btn';
+    startBtn.textContent = '\u25B6 Start';
+    const resetBtn = document.createElement('button');
+    resetBtn.type = 'button'; resetBtn.className = 'ck-btn';
+    resetBtn.textContent = '\u21BA';
+    row.append(mins, modeBtn, startBtn, resetBtn);
+    wrap.append(time, row);
+    body.appendChild(wrap);
+
+    let up = false, running = false, remain = 5 * 60, elapsed = 0, iv = null;
+    function fmt(s) {
+      s = Math.max(0, Math.round(s));
+      const m = Math.floor(s / 60), r = s % 60;
+      return (m < 10 ? '0' : '') + m + ':' + (r < 10 ? '0' : '') + r;
+    }
+    function paint() { time.textContent = fmt(up ? elapsed : remain); }
+    function beep() {
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        const ac = new AC();
+        const o = ac.createOscillator(), g = ac.createGain();
+        o.connect(g); g.connect(ac.destination);
+        o.frequency.value = 880;
+        g.gain.setValueAtTime(0.001, ac.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.25, ac.currentTime + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.8);
+        o.start(); o.stop(ac.currentTime + 0.85);
+        setTimeout(function () { ac.close(); }, 1000);
+      } catch (e) {}
+    }
+    function stopTick() { if (iv) { clearInterval(iv); iv = null; } running = false; }
+    function resetTimer() {
+      stopTick();
+      elapsed = 0;
+      remain = (parseInt(mins.value, 10) || 5) * 60;
+      wrap.classList.remove('done');
+      startBtn.textContent = '\u25B6 Start';
+      paint();
+    }
+    modeBtn.addEventListener('click', function () {
+      up = !up;
+      modeBtn.textContent = up ? '\u25B6 Stopwatch' : '\u23F1 Countdown';
+      mins.disabled = up;
+      resetTimer();
+    });
+    startBtn.addEventListener('click', function () {
+      if (running) { stopTick(); startBtn.textContent = '\u25B6 Resume'; return; }
+      running = true;
+      startBtn.textContent = '\u23F8 Pause';
+      wrap.classList.remove('done');
+      iv = setInterval(function () {
+        if (up) { elapsed += 1; paint(); return; }
+        remain -= 1;
+        paint();
+        if (remain <= 0) {
+          stopTick();
+          wrap.classList.add('done');
+          startBtn.textContent = '\u25B6 Start';
+          beep();
+        }
+      }, 1000);
+    });
+    resetBtn.addEventListener('click', resetTimer);
+    mins.addEventListener('change', function () {
+      if (!running) { remain = (parseInt(mins.value, 10) || 5) * 60; paint(); }
+    });
+    paint();
+    // Closing/preset-switching the window must stop the interval — register
+    // with the generic per-panel cleanup.
+    panelCleanups.set(p.id, stopTick);
+  }
+
+  // ── AI find / connections panel ────────────────────────────────────────
+  // "Find using AI": thinking + RAG search for entities & notes connected
+  // to a free-text query — or, seeded from an entity card's 🔗 button, to
+  // that entity. Runs as a server-side background job (POST start + poll,
+  // the quest-sync pattern) because thinking + RAG regularly outlives
+  // Cloudflare's ~100 s no-byte timeout. Thinking and RAG are hardcoded
+  // server-side for this surface — no toggles, per design.
+  function buildFind(p, body) {
+    const wrap = document.createElement('div');
+    wrap.className = 'ck-find';
+    const chip = document.createElement('div');
+    chip.className = 'ck-aichat-ctx';
+    const setChip = function () {
+      chip.textContent = p.ref ? '\u{1FAAA} ' + (p.title || ('entity #' + p.ref)) : '\u{1F50D} searching the whole world';
+      chip.title = p.ref ? 'Click to search freely instead' : '';
+      chip.style.cursor = p.ref ? 'pointer' : 'default';
+    };
+    setChip();
+    chip.addEventListener('click', function () {
+      if (!p.ref) return;
+      p.ref = '';
+      p.title = '\u{1F50D} AI Find';
+      const t = viewport.querySelector('.ck-win[data-pid="' + p.id + '"] .ck-win-title');
+      if (t) t.textContent = p.title;
+      setChip();
+      goBtn.textContent = '\u{1F50D} Find';
+      save();
+    });
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:.35rem;align-items:flex-start';
+    const ta = document.createElement('textarea');
+    ta.rows = 2;
+    ta.placeholder = 'What are you looking for? e.g. "who in Yorm owes Vex money"';
+    ta.style.cssText = 'flex:1;min-width:0;resize:none;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;font-family:inherit;font-size:.8rem;padding:.35rem .45rem;box-sizing:border-box';
+    const goBtn = document.createElement('button');
+    goBtn.type = 'button';
+    goBtn.className = 'ck-btn';
+    goBtn.textContent = p.ref ? '\u{1F517} Find connections' : '\u{1F50D} Find';
+    goBtn.style.whiteSpace = 'nowrap';
+    row.append(ta, goBtn);
+    const status = document.createElement('div');
+    status.style.cssText = 'font-size:.72rem;color:var(--text-dim);min-height:1em';
+    const results = document.createElement('div');
+    results.className = 'ck-find-results';
+    wrap.append(chip, row, status, results);
+    body.appendChild(wrap);
+
+    function addResult(r) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'ck-find-res';
+      const head = document.createElement('span');
+      head.textContent = (KIND_ICONS[r.kind] || '\u{1F464}') + ' ' + r.name;
+      b.appendChild(head);
+      const why = document.createElement('small');
+      why.textContent = r.reason || '';
+      b.appendChild(why);
+      b.addEventListener('click', function () {
+        addPanel('ecard', String(r.id), (KIND_ICONS[r.kind] || '\u{1F464}') + ' ' + r.name);
+      });
+      results.appendChild(b);
+    }
+
+    function finish(msg) {
+      status.textContent = msg;
+      findBusy.delete(p.id);
+      goBtn.disabled = false;
+    }
+
+    function poll(jobId, tries) {
+      if ((tries || 0) > 400) { finish('Still running after ~20 minutes — something is wrong with the AI backend.'); return; }
+      fetch('/api/cockpit/ai/find/' + jobId).then(r => {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(d => {
+        if (d.status === 'running') {
+          const el = d.elapsed || 0, m = Math.floor(el / 60), s = el % 60;
+          status.textContent = '\u23F3 The AI is reading the world\u2026 (' + (m > 0 ? m + 'm ' : '') + s + 's) \u2014 thinking + RAG on';
+          setTimeout(() => poll(jobId, (tries || 0) + 1), 3000);
+        } else if (d.status === 'error') {
+          finish('\u26A0 ' + (d.error || 'The AI find failed.'));
+        } else if (d.status === 'done') {
+          (d.results || []).forEach(addResult);
+          if (!(d.results || []).length) {
+            results.innerHTML = '<p style="color:var(--text-dim);font-size:.78rem;margin:0">Nothing genuinely connected came back \u2014 try rephrasing, or widen the query.</p>';
+          }
+          finish('');
+        }
+      }).catch(() => {
+        // a dropped poll shouldn't abandon the job — the server task keeps running
+        setTimeout(() => poll(jobId, (tries || 0) + 1), 3000);
+      });
+    }
+
+    async function start() {
+      if (findBusy.has(p.id)) return;
+      const q = ta.value.trim();
+      if (!q && !p.ref) { status.textContent = 'Type what to look for first \u2014 or seed me from an entity card.'; return; }
+      findBusy.add(p.id);
+      goBtn.disabled = true;
+      status.textContent = '\u23F3 Starting\u2026';
+      results.innerHTML = '';
+      try {
+        const r = await fetch('/api/cockpit/ai/find/start', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: q, entity_id: p.ref ? Number(p.ref) : null }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+        poll(d.job_id, 0);
+      } catch (e) {
+        finish('\u26A0 ' + e.message);
+      }
+    }
+    ta.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); start(); }
+    });
+    goBtn.addEventListener('click', start);
+    if (p.ref && findAutoRan.has(p.id)) start();
+  }
+
   // Live-sync: any HP/XP/loot/quest change anywhere re-renders the live
-  // panels in one debounced pass (nd-live.js broadcasts the version).
-  window.addEventListener('nd-live', scheduleLiveRefresh);
+  // panels in one debounced pass (nd-live.js broadcasts the version), and
+  // pulses the status-bar sync dot.
+  window.addEventListener('nd-live', function () {
+    const d = document.getElementById('ck-stat-live');
+    if (d) {
+      d.classList.add('on');
+      setTimeout(function () { d.classList.remove('on'); }, 2200);
+    }
+    scheduleLiveRefresh();
+  });
 
   // ── drag / resize ──────────────────────────────────────────────────────
   function wireDrag(handle, win, p) {
@@ -816,15 +1236,7 @@
         handle.removeEventListener('pointermove', move);
         handle.removeEventListener('pointerup', up);
         if (win.classList.contains('ck-dock-l') || win.classList.contains('ck-dock-r')) {
-          // Edge dock: released within the left/right DOCK_ZONE — the window
-          // becomes that half of the workspace.
-          const right = win.classList.contains('ck-dock-r');
-          p.x = right ? Math.ceil(viewport.clientWidth / 2) : 0;
-          p.y = 0;
-          p.w = Math.floor(viewport.clientWidth / 2);
-          p.h = viewport.clientHeight;
-          win.style.left = p.x + 'px'; win.style.top = p.y + 'px';
-          win.style.width = p.w + 'px'; win.style.height = p.h + 'px';
+          dockPanel(win, p, win.classList.contains('ck-dock-r'));
         } else {
           p.x = Math.round(p.x / GRID) * GRID;
           p.y = Math.round(p.y / GRID) * GRID;
@@ -886,13 +1298,9 @@
       x.title = 'Close this window';
       x.addEventListener('click', function (e) {
         e.stopPropagation();
-        panels = panels.filter(function (q) { return q.id !== p.id; });
         const el = viewport.querySelector('.ck-win[data-pid="' + p.id + '"]');
-        if (el) el.remove();
-        cleanupPanel(p.id);
-        if (welcome) welcome.style.display = panels.length ? 'none' : '';
+        closePanel(p, el);
         renderWindowList();
-        save();
       });
       row.appendChild(x);
       row.addEventListener('click', function () {
@@ -1118,12 +1526,24 @@
   });
 
   document.getElementById('ck-add-btn').addEventListener('click', openAdd);
+  document.getElementById('ck-find-btn').addEventListener('click', function () {
+    // Focus an existing unseeded find panel instead of stacking duplicates.
+    const existing = panels.find(function (q) { return q.type === 'find' && !q.ref; });
+    if (existing) {
+      const el = viewport.querySelector('.ck-win[data-pid="' + existing.id + '"]');
+      if (el) { zTop += 1; el.style.zIndex = zTop; existing.z = zTop; el.classList.remove('collapsed'); }
+      save();
+      return;
+    }
+    addPanel('find', '', '\u{1F50D} AI Find');
+  });
   document.getElementById('ck-add-close').addEventListener('click', closeAdd);
   addOverlay.addEventListener('mousedown', function (e) { if (e.target === addOverlay) closeAdd(); });
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
       if (addOverlay.style.display === 'block') closeAdd();
       if (windowsPop.style.display === 'block') windowsPop.style.display = 'none';
+      if (ctxEl && ctxEl.style.display === 'block') ctxEl.style.display = 'none';
     }
   });
   addSearch.addEventListener('input', function () {
@@ -1210,6 +1630,8 @@
 
   window.addEventListener('resize', fitViewport);
   fitViewport();
+  buildWelcomeTiles();
+  updateStatus();
 
   load();
 })();

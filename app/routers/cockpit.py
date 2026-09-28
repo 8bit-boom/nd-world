@@ -20,6 +20,7 @@ composition of GM-facing tools, and the nav entry (nav_menus.py, id
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -27,9 +28,11 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
-from ..database import get_db
+from .. import ai as _ai
+from .. import retrieval as _retrieval
+from ..database import get_db, SessionLocal
 from ..deps import get_world_ctx
-from ..models import Party, Schematic
+from ..models import Entity, Party, Schematic
 from ..templating import templates
 
 router = APIRouter()
@@ -38,7 +41,7 @@ router = APIRouter()
 # layout is dropped by the sanitizer.
 PANEL_TYPES = {"map", "wmap", "dice", "party", "quests", "entity", "ecard",
                "notes", "ai", "ai_chat", "combat", "tables", "calendar",
-               "gallery", "audio", "video", "imagestudio"}
+               "gallery", "audio", "video", "imagestudio", "find", "timer"}
 
 MAX_PANELS = 24          # per layout
 MAX_PRESETS = 12         # named layouts per world
@@ -208,3 +211,164 @@ async def cockpit_save_workspace(request: Request, db: Session = Depends(get_db)
     world.cockpit_ws_json = dumped
     db.commit()
     return {"ok": True}
+
+
+# ── AI find / connections ────────────────────────────────────────────────────
+# "Find using AI" (and an entity card's 🔗 Find-connections seed): thinking +
+# RAG are HARDCODED ON for this surface — no toggles, per design. Runs as a
+# background job (POST start + GET poll, the quest-sync pattern) because
+# thinking + RAG regularly outlives Cloudflare Tunnel's ~100 s no-byte
+# timeout; a restart just means re-clicking Find. GM-only via middleware
+# (nothing under /api/cockpit/* is in _is_player_safe); the start route
+# re-checks is_gm, same as the workspace routes above.
+_COCKPIT_FIND_JOBS: dict = {}
+_COCKPIT_FIND_SEQ: list = [0]
+
+
+def _extract_json(text: str) -> dict:
+    """Parse the model's reply as JSON, tolerating markdown fences (same
+    lenience quests.py's own extractor applies)."""
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-zA-Z0-9]*\n?", "", raw)
+        raw = re.sub(r"\n?```\s*$", "", raw)
+    start, end = raw.find("{"), raw.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError("no JSON object in the model's reply")
+    return json.loads(raw[start:end + 1])
+
+
+@router.post("/api/cockpit/ai/find/start")
+async def cockpit_ai_find_start(request: Request, db: Session = Depends(get_db),
+                                active_world: str = Cookie(None)):
+    """Start an AI find job for the active world: {query} for a free-text
+    search, or {entity_id} to find what is connected to that entity (the
+    entity card's 🔗 button). Thinking + RAG always on. GM-only."""
+    user = getattr(request.state, "user", None)
+    if not user or not user.is_gm:
+        raise HTTPException(403)
+    world, _ = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    body = await request.json()
+    query = str(body.get("query") or "").strip()
+    entity_id = body.get("entity_id")
+    try:
+        entity_id = int(entity_id) if entity_id else None
+    except (TypeError, ValueError):
+        entity_id = None
+    if not query and not entity_id:
+        raise HTTPException(400, "Type what to look for first — or seed me from an entity card.")
+    if not _ai.effective_llm_api_key():
+        raise HTTPException(400, "No AI backend configured — set UNSLOTH_API_KEY (Settings → System).")
+
+    job_id = _COCKPIT_FIND_SEQ[0] + 1
+    _COCKPIT_FIND_SEQ[0] = job_id
+    _COCKPIT_FIND_JOBS[job_id] = {"status": "running", "started": time.time(),
+                                  "results": None, "error": ""}
+    done = [j for j, v in _COCKPIT_FIND_JOBS.items() if v["status"] != "running"]
+    while len(done) > 12:
+        _COCKPIT_FIND_JOBS.pop(done.pop(0), None)
+
+    import asyncio as _asyncio
+    _asyncio.get_running_loop().create_task(
+        _cockpit_find_task(job_id, world.id, query, entity_id))
+    return {"job_id": job_id, "status": "running"}
+
+
+@router.get("/api/cockpit/ai/find/{job_id}")
+async def cockpit_ai_find_poll(job_id: int):
+    """Poll a find job: running (with elapsed seconds), done (enriched
+    results — hallucinated ids filtered against the real candidates), or
+    error (with the reason)."""
+    job = _COCKPIT_FIND_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "Unknown find job")
+    if job["status"] == "running":
+        return {"status": "running", "elapsed": round(time.time() - job["started"])}
+    if job["status"] == "error":
+        return {"status": "error", "error": job["error"]}
+    return {"status": "done", "results": job["results"]}
+
+
+async def _cockpit_find_task(job_id: int, world_id: int, query: str,
+                             entity_id: Optional[int]):
+    """The find worker: RAG retrieves world excerpts (always on), the model
+    ranks the candidate list against focus + excerpts with thinking on, and
+    hallucinated/duplicate ids are dropped. The blanket except is the
+    AI-Build lesson — an unhandled task exception would leave the job stuck
+    at "running" forever."""
+    db = SessionLocal()
+    try:
+        material = query
+        exclude_ids = {0}
+        if entity_id:
+            ent = db.get(Entity, entity_id)
+            if not ent or ent.world_id != world_id:
+                raise ValueError("Focused entity not found in this world")
+            exclude_ids.add(ent.id)
+            material = (ent.name
+                        + ((" — " + ent.summary) if ent.summary else "")
+                        + "\n" + (ent.body or "")[:1500])
+            if query:
+                material = query + "\n\n" + material
+        rag = ""
+        try:
+            rag, _n, _notes = _retrieval.smart_world_context(
+                db, world_id, material[:1500], entity_limit=10, notes_limit=4)
+            if rag:
+                rag = rag[:4000]
+        except Exception:
+            rag = ""
+        cands = (db.query(Entity)
+                 .filter(Entity.world_id == world_id,
+                         Entity.id.notin_(exclude_ids))
+                 .order_by(Entity.name).limit(200).all())
+        board = "\n".join(
+            f"- id={e.id} [{e.kind or '?'}] {e.name}"
+            + (f" — {(e.summary or '')[:100]}" if e.summary else "")
+            for e in cands) or "(none)"
+        system = (
+            "You are a campaign co-GM's research assistant. From the CANDIDATE "
+            "list and the RETRIEVED WORLD EXCERPTS, select the entities and "
+            "notes most connected to the FOCUS and give each a one-line reason. "
+            "Return STRICT JSON only:\n"
+            '{"results": [{"id": int, "reason": str}]}\n'
+            "Rules: only propose ids that appear verbatim in the candidate list; "
+            "3-8 results, most relevant first; reasons are one short in-world "
+            "sentence; return an empty list when nothing is genuinely connected. "
+            "No comments, no markdown fences."
+        )
+        user_text = ("=== FOCUS ===\n" + material[:3000]
+                     + "\n\n=== RETRIEVED WORLD EXCERPTS ===\n" + (rag or "(none)")
+                     + "\n\n=== CANDIDATES ===\n" + board)
+        raw = await _ai.generate_chat(
+            [{"role": "user", "content": user_text}],
+            system=system, model="", think=True,
+            format={"type": "object",
+                    "properties": {"results": {"type": "array"}},
+                    "required": ["results"]},
+        )
+        parsed = _extract_json(raw)
+        by_id = {e.id: e for e in cands}
+        results = []
+        seen = set()
+        for item in (parsed.get("results") or [])[:8]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                eid = int(item.get("id"))
+            except (TypeError, ValueError):
+                continue
+            e = by_id.get(eid)
+            if not e or eid in seen:
+                continue  # hallucinated or duplicated id — drop
+            seen.add(eid)
+            results.append({"id": e.id, "name": e.name, "kind": e.kind or "",
+                            "reason": str(item.get("reason") or "")[:300]})
+        _COCKPIT_FIND_JOBS[job_id].update(status="done", results=results)
+    except Exception as exc:
+        _COCKPIT_FIND_JOBS[job_id].update(
+            status="error", error=str(exc) or exc.__class__.__name__)
+    finally:
+        db.close()
