@@ -460,6 +460,8 @@ worlds they've been invited into (`WorldMembership`).
 | POST | `/maps/{slug}/delete` | GM / Assistant | Deletes a map. |
 | POST | `/maps/{slug}/upload` | GM / Assistant | Uploads/replaces the map's background image. |
 | GET | `/maps/{slug}` | Player* | Map viewer with markers/regions. *Same "maps" opt-in as the list above (on by default). |
+| POST | `/api/maps/{slug}/ai-markers/start` | GM | Starts AI marker generation for a Leaflet map — thinking + world-RAG on by default; the local model proposes `{label, note, lat, lng, color}` within the map bounds, deduplicated against existing markers. Returns `{job_id}`. |
+| GET | `/api/maps/{slug}/ai-markers/{job_id}` | GM | Polls the job: running (elapsed), done (review-ready markers), or error. The viewer merges selected markers into the overlay via the existing `/overlay` route. |
 | POST | `/api/maps/{slug}/overlay` | GM / Assistant | Saves marker/region overlay data. |
 
 ## Schematics

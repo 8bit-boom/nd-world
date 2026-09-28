@@ -23,6 +23,7 @@
       <button id="btn-add-p" class="tb-btn" onclick="setTool('party')">🧑‍🤝‍🧑 Party</button>
       <button id="btn-move" class="tb-btn" onclick="setTool('move')">↔ Move</button>
       <button id="btn-del" class="tb-btn" onclick="setTool('delete')">🗑 Delete</button>
+      <button id="btn-ai-m" class="tb-btn" onclick="toggleAiMarkers()" title="Generate markers with the local AI (thinking + world RAG) — you review before anything is placed">✨ AI</button>
       <button id="btn-finish-r" class="tb-btn" style="display:none" onclick="finishRegion()">✓ Done</button>
       <button class="tb-btn tb-save" onclick="saveOverlay()">💾 Save</button>
     </div>
@@ -95,6 +96,37 @@
     <div class="dlg-actions">
       <button class="btn-primary" onclick="confirmRegion()">OK</button>
       <button class="btn-cancel" onclick="cancelRegionDraw()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Dialog: AI markers -->
+<div id="dlg-ai-markers" class="map-dlg" style="display:none">
+  <div class="map-dlg-box" style="width:min(460px,92vw)">
+    <h3>✨ AI markers</h3>
+    <label>Prompt</label>
+    <textarea id="dlg-ai-prompt" rows="2" placeholder="e.g. populate the docks with 6 smuggler hangouts"
+              style="background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:3px;padding:.4rem .5rem;font-family:var(--font);font-size:.82rem;resize:vertical"></textarea>
+    <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin:.45rem 0">
+      <label style="font-size:.78rem">Count
+        <input id="dlg-ai-count" type="number" min="1" max="12" value="6" style="width:3.4rem"/>
+      </label>
+      <label style="font-size:.78rem;display:flex;gap:.3rem;align-items:center">
+        <input type="checkbox" id="dlg-ai-think" checked style="width:auto"> 🧠 Thinking
+      </label>
+      <label style="font-size:.78rem;display:flex;gap:.3rem;align-items:center" title="Grounds the markers in this world's entities and notes">
+        <input type="checkbox" id="dlg-ai-rag" checked style="width:auto"> 🔍 RAG
+      </label>
+      <select id="dlg-ai-model" style="max-width:200px">
+        <option value="">— default model —</option>
+      </select>
+    </div>
+    <button type="button" class="btn-secondary" id="dlg-ai-gen" onclick="generateAiMarkers()" style="font-size:.8rem">✨ Generate</button>
+    <span id="dlg-ai-status" style="font-size:.75rem;color:var(--text-dim);margin-left:.5rem"></span>
+    <div id="dlg-ai-results" style="max-height:220px;overflow-y:auto;margin-top:.5rem"></div>
+    <div class="dlg-actions">
+      <button type="button" class="btn-primary" id="dlg-ai-apply" style="display:none" onclick="applyAiMarkers()">Add selected to map</button>
+      <button class="btn-cancel" onclick="closeDlg('dlg-ai-markers')">Close</button>
     </div>
   </div>
 </div>
@@ -553,6 +585,100 @@ function toggleLayer(l) {
     kankaVisible ? map.addLayer(kankaLayer) : map.removeLayer(kankaLayer);
     document.getElementById('btn-toggle-kanka').classList.toggle('active', kankaVisible);
   }
+}
+
+// ── AI markers (local model, thinking + world RAG, review-then-apply) ─────────
+function toggleAiMarkers() {
+  const dlg = document.getElementById('dlg-ai-markers');
+  dlg.style.display = dlg.style.display === 'flex' ? 'none' : 'flex';
+}
+if (CAN_EDIT) fetch('/api/ai/models').then(r => r.ok ? r.json() : null).then(d => {
+  if (!d) return;
+  const sel = document.getElementById('dlg-ai-model');
+  (d.models || []).slice(0, 40).forEach(m => {
+    const o = document.createElement('option');
+    o.value = m.id;
+    o.textContent = (m.loaded ? '● ' : '') + (m.label || m.id);
+    sel.appendChild(o);
+  });
+  if (d.default) sel.value = d.default;
+}).catch(() => {});
+
+let aiMarkerJob = null, aiMarkerPollTries = 0;
+async function generateAiMarkers() {
+  const status = document.getElementById('dlg-ai-status');
+  const prompt = document.getElementById('dlg-ai-prompt').value.trim();
+  if (!prompt) { status.textContent = 'Describe what to place first.'; return; }
+  const genBtn = document.getElementById('dlg-ai-gen');
+  genBtn.disabled = true;
+  status.textContent = '⏳ Starting…';
+  document.getElementById('dlg-ai-results').innerHTML = '';
+  document.getElementById('dlg-ai-apply').style.display = 'none';
+  try {
+    const r = await fetch(`/api/maps/${SLUG}/ai-markers/start`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt,
+        count: parseInt(document.getElementById('dlg-ai-count').value, 10) || 6,
+        model: document.getElementById('dlg-ai-model').value,
+        think: document.getElementById('dlg-ai-think').checked,
+        use_rag: document.getElementById('dlg-ai-rag').checked,
+      }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    aiMarkerJob = d.job_id; aiMarkerPollTries = 0;
+    pollAiMarkers();
+  } catch (e) {
+    status.textContent = '⚠ ' + e.message;
+    genBtn.disabled = false;
+  }
+}
+
+function pollAiMarkers() {
+  const status = document.getElementById('dlg-ai-status');
+  if (++aiMarkerPollTries > 400) {
+    status.textContent = '⚠ Still running after ~20 minutes.';
+    document.getElementById('dlg-ai-gen').disabled = false;
+    return;
+  }
+  fetch(`/api/maps/${SLUG}/ai-markers/${aiMarkerJob}`).then(r => r.json()).then(d => {
+    if (d.status === 'running') {
+      status.textContent = `⏳ The AI is reading the map… (${d.elapsed || 0}s) — thinking ${document.getElementById('dlg-ai-think').checked ? 'on' : 'off'}, RAG ${document.getElementById('dlg-ai-rag').checked ? 'on' : 'off'}`;
+      setTimeout(pollAiMarkers, 3000);
+    } else if (d.status === 'error') {
+      status.textContent = '⚠ ' + d.error;
+      document.getElementById('dlg-ai-gen').disabled = false;
+    } else if (d.status === 'done') {
+      status.textContent = d.markers.length ? 'Review, then add:' : 'Nothing to place — try a different prompt.';
+      const host = document.getElementById('dlg-ai-results');
+      host.innerHTML = '';
+      window.__aiMarkers = d.markers;
+      d.markers.forEach((m, i) => {
+        const row = document.createElement('label');
+        row.style.cssText = 'display:flex;gap:.5rem;align-items:flex-start;font-size:.78rem;font-weight:normal;padding:.25rem 0;cursor:pointer';
+        row.innerHTML = `<input type="checkbox" checked data-i="${i}" style="width:auto;margin-top:.2rem">` +
+          `<span><b>${esc(m.label)}</b> <span style="color:var(--text-dim)">(${Math.round(m.lat)}, ${Math.round(m.lng)})</span>` +
+          (m.note ? `<br><span style="color:var(--text-dim)">${esc(m.note)}</span>` : '') + '</span>';
+        host.appendChild(row);
+      });
+      if (d.markers.length) document.getElementById('dlg-ai-apply').style.display = '';
+      document.getElementById('dlg-ai-gen').disabled = false;
+    }
+  }).catch(() => { setTimeout(pollAiMarkers, 3000); });
+}
+
+async function applyAiMarkers() {
+  const boxes = [...document.querySelectorAll('#dlg-ai-results input:checked')];
+  boxes.forEach(cb => {
+    const m = window.__aiMarkers[parseInt(cb.dataset.i, 10)];
+    if (!m) return;
+    customMarkers.push({ lat: m.lat, lng: m.lng, label: m.label,
+      note: m.note || '', color: m.color || '#ff4466', link_schematic: '' });
+  });
+  renderCustomMarkers();
+  saveOverlay();
+  closeDlg('dlg-ai-markers');
 }
 
 // ── Save ──────────────────────────────────────────────────────────────────────

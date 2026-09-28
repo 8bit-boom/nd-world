@@ -2673,6 +2673,183 @@ async def save_map_overlay(slug: str, request: Request, db: Session = Depends(ge
     db.commit()
     return {"ok": True}
 
+
+# ── AI marker generation for file-based maps ─────────────────────────────────
+# The schematic canvas has ✨ AI Build; this is its counterpart for the
+# Leaflet maps: describe what to place ("populate the docks with 6 smuggler
+# hangouts") and the local model proposes custom markers (label, note,
+# position within the map's bounds) with thinking and world-RAG on by
+# default. The GM reviews the drafts and the viewer merges the selected
+# ones into the map's overlay via the EXISTING /overlay route — the AI
+# never writes markers directly. Background job (start + poll) because
+# thinking + RAG outlives Cloudflare's ~100 s no-byte timeout; crash-capture
+# keeps a stuck-"running" job impossible. GM-only.
+_MAP_AI_JOBS: dict = {}
+_MAP_AI_SEQ: list = [0]
+
+
+@app.post("/api/maps/{slug}/ai-markers/start")
+async def map_ai_markers_start(slug: str, request: Request, db: Session = Depends(get_db),
+                               active_world: str = Cookie(None)):
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
+    jf = _MAPS_DIR / f"{slug}.json"
+    if not jf.exists():
+        raise HTTPException(404)
+    map_data = _map_data(jf)
+    if map_data is None:
+        raise HTTPException(404)
+    world = get_active_world(request, db, active_world)
+    if not world or map_data.get("world_id", 1) != world.id:
+        raise HTTPException(404)
+    body = await request.json()
+    prompt = str(body.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(400, "Describe what to place first")
+    try:
+        count = max(1, min(12, int(body.get("count") or 6)))
+    except (TypeError, ValueError):
+        count = 6
+    model = str(body.get("model") or "").strip()
+    think = bool(body.get("think", True))
+    use_rag = bool(body.get("use_rag", True))
+
+    job_id = _MAP_AI_SEQ[0] + 1
+    _MAP_AI_SEQ[0] = job_id
+    _MAP_AI_JOBS[job_id] = {"status": "running", "started": time.time(),
+                            "markers": None, "error": ""}
+    done = [j for j, v in _MAP_AI_JOBS.items() if v["status"] != "running"]
+    while len(done) > 12:
+        _MAP_AI_JOBS.pop(done.pop(0), None)
+
+    import asyncio as _asyncio
+    _asyncio.get_running_loop().create_task(_map_ai_markers_task(
+        job_id, slug, world.id, prompt, count, model, think, use_rag))
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.get("/api/maps/{slug}/ai-markers/{job_id}")
+async def map_ai_markers_poll(slug: str, job_id: int, request: Request):
+    user = getattr(request.state, "user", None)
+    if not (user and user.is_gm):
+        raise HTTPException(403)
+    job = _MAP_AI_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "Unknown AI marker job")
+    if job["status"] == "running":
+        return {"status": "running", "elapsed": round(time.time() - job["started"])}
+    if job["status"] == "error":
+        return {"status": "error", "error": job["error"]}
+    return {"status": "done", "markers": job["markers"]}
+
+
+async def _map_ai_markers_task(job_id: int, slug: str, world_id: int, prompt: str,
+                               count: int, model: str, think: bool, use_rag: bool):
+    db = SessionLocal()
+    try:
+        jf = _MAPS_DIR / f"{slug}.json"
+        map_data = _map_data(jf)
+        if map_data is None:
+            raise ValueError("Map file is missing or unreadable")
+        width = int(map_data.get("width") or 2000)
+        height = int(map_data.get("height") or 2000)
+        # Existing labels (base markers + the GM's overlay markers) so the
+        # model doesn't propose duplicates.
+        existing = []
+        for m in (map_data.get("markers") or []):
+            if isinstance(m, dict) and m.get("name"):
+                existing.append(str(m["name"]).lower())
+        overlay = db.query(MapOverlay).filter(MapOverlay.slug == slug).first()
+        if overlay:
+            try:
+                for m in json.loads(overlay.custom_markers_json or "[]"):
+                    if isinstance(m, dict) and m.get("label"):
+                        existing.append(str(m["label"]).lower())
+            except ValueError:
+                pass
+
+        material = f"Map: {map_data.get('name') or slug} ({width}x{height} px)\nGM request: {prompt}"
+        rag = ""
+        if use_rag:
+            try:
+                rag, _n, _notes = _retrieval.smart_world_context(
+                    db, world_id, (prompt + "\n" + (map_data.get("name") or ""))[:1500],
+                    entity_limit=8, notes_limit=2)
+                if rag:
+                    rag = rag[:3000]
+            except Exception:
+                rag = ""
+
+        system = (
+            "You are placing points of interest on a tabletop RPG battle map. "
+            "For each marker choose a short evocative label, a one-sentence "
+            "description, and a plausible position on the map. Return STRICT "
+            "JSON only:\n"
+            '{"markers": [{"label": str, "note": str, "lat": number, "lng": number, "color": "#rrggbb"}]}\n'
+            "Rules: lat is the vertical position in pixels from the TOP "
+            "(0.." + str(height) + "), lng is the horizontal position from the "
+            "LEFT (0.." + str(width) + ") — spread markers out, don't cluster them "
+            "in one corner; exactly " + str(count) + " markers; labels must not "
+            "duplicate the existing labels listed below; colors optional. No "
+            "comments, no markdown fences."
+        )
+        user_text = (
+            "=== MAP ===\n" + material
+            + "\n\n=== WORLD LORE (ground the markers in this) ===\n" + (rag or "(none)")
+            + "\n\n=== EXISTING MARKER LABELS (do not duplicate) ===\n"
+            + ("\n".join("- " + l for l in existing[:60]) or "(none)")
+        )
+        raw = await _ai_module.generate_chat(
+            [{"role": "user", "content": user_text}],
+            system=system, model=model, think=think,
+            format={"type": "object",
+                    "properties": {"markers": {"type": "array"}},
+                    "required": ["markers"]},
+        )
+        parsed = None
+        m = re.search(r"\{.*\}", raw or "", re.S)
+        if m:
+            try:
+                parsed = json.loads(m.group(0))
+            except ValueError:
+                parsed = None
+        markers = []
+        if isinstance(parsed, dict):
+            seen = set(existing)
+            for item in (parsed.get("markers") or []):
+                if len(markers) >= count:
+                    break
+                if not isinstance(item, dict):
+                    continue
+                label = str(item.get("label") or "").strip()[:80]
+                if not label or label.lower() in seen:
+                    continue  # empty or duplicates an existing marker — drop
+                seen.add(label.lower())
+                try:
+                    lat = max(0.0, min(float(height), float(item.get("lat") or 0)))
+                    lng = max(0.0, min(float(width), float(item.get("lng") or 0)))
+                except (TypeError, ValueError):
+                    continue
+                color = str(item.get("color") or "")
+                if not re.match(r"^#[0-9a-fA-F]{6}$", color):
+                    color = "#ff4466"
+                markers.append({
+                    "label": label,
+                    "note": str(item.get("note") or "").strip()[:300],
+                    "lat": round(lat, 2), "lng": round(lng, 2),
+                    "color": color,
+                })
+        if not markers:
+            raise ValueError("The model's reply contained no usable markers — try rephrasing.")
+        _MAP_AI_JOBS[job_id].update(status="done", markers=markers)
+    except Exception as exc:
+        _MAP_AI_JOBS[job_id].update(
+            status="error", error=str(exc) or exc.__class__.__name__)
+    finally:
+        db.close()
+
+
 _RULES_LEGACY_ANCHOR_RE = re.compile(r'<a\s+name="[^"]*">\s*</a>', re.IGNORECASE)
 
 
