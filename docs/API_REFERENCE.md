@@ -398,6 +398,7 @@ worlds they've been invited into (`WorldMembership`).
 | GET | `/cockpit` | GM | The cockpit workspace (window shell + per-world map/party pickers). GM-only. |
 | GET | `/api/cockpit/workspace` | GM | The active world's saved workspace (`{"workspace": null}` if never arranged). |
 | POST | `/api/cockpit/workspace` | GM | Save current panels + named presets. Sanitized (panel allowlist, geometry clamps, 24 panels/12 presets, 128 KB cap). |
+| GET | `/player-cockpit` | GM / Player | The Player Cockpit — separate from the GM cockpit at /cockpit; the same window workspace rendered in player mode (own parties' vitals, visible quests, entity pages, dice, media). GMs can open it to see what the table sees. |
 | GET | `/api/cockpit/player-board` | GM / Player | Player cockpit's live data: the caller's own parties (member vitals) and the world's player-visible active quests. Hidden quests never leave the server. |
 | POST | `/api/cockpit/ai/find/start` | GM | Starts an AI "find connected entities & notes" job — thinking + RAG always on; free-text query or a focused entity (the cockpit's 🔗 Find-connections button). Returns `{job_id}`. |
 | GET | `/api/cockpit/ai/find/{job_id}` | GM | Polls the find job: running (elapsed), done (`{results: [{id, name, kind, reason}]}` — hallucinated ids filtered), or error. |
