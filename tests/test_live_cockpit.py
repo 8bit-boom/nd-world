@@ -279,6 +279,10 @@ def test_cockpit_gm_renders_workspace_shell(client, seed):
     assert 'id="ck-add-kind"' in html             # entity picker kind filter
     assert "CK_WORLD_MAPS" in html                # file-based map picker data
     assert "'wmap'" in html                       # world-map panel type
+    assert "Gallery" in html and "Image Studio" in html   # media panels
+    assert "ai_chat:" in html                     # native streaming chat panel type
+    assert "ck-aichat" in html                    # chat panel CSS shipped
+    assert "/api/ai/stream" not in html           # chat wiring lives in cockpit.js
     assert "/static/js/cockpit.js" in html
     assert '"slug": "tavern-map"' in html          # picker data for the modal
     assert '"name": "Vanguard"' in html
@@ -402,6 +406,31 @@ def test_workspace_rejects_structural_nonsense(client, seed):
     assert client.post("/api/cockpit/workspace", json=big).status_code == 400
 
 
+def test_cockpit_js_fetch_paths_resolve_to_real_routes(client, seed):
+    """Every literal fetch('...') first argument in static/js/cockpit.js must
+    match a real route — the guard that was missing when the quest AI panel
+    kept calling a removed endpoint and GMs saw a bare "Not Found"."""
+    import re as _re
+
+    from app.main import _fastapi_app
+
+    js = open("static/js/cockpit.js", encoding="utf-8").read()
+    paths = set(_re.findall(r"fetch\('([^']+)'\s*[,)]", js))
+    paths = {p for p in paths if p.startswith("/api/")}
+    assert paths, "no API fetches found in cockpit.js — regex drifted?"
+
+    route_paths = [getattr(r, "path", "") for r in _fastapi_app.routes]
+
+    def _exists(url):
+        for rp in route_paths:
+            if _re.fullmatch(_re.sub(r"\{[^}]+\}", "[^/]+", rp), url):
+                return True
+        return False
+
+    for u in sorted(paths):
+        assert _exists(u), f"cockpit.js fetches {u} but no route defines it"
+
+
 def test_workspace_gm_only(client, seed):
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
@@ -501,12 +530,24 @@ def test_workspace_accepts_new_types_and_accent(client, seed):
          "w": 520, "h": 480, "z": 4},
         {"id": "c5", "type": "wmap", "ref": "city-map", "title": "Yorm", "x": 0, "y": 0,
          "w": 780, "h": 560, "z": 5},
+        {"id": "m1", "type": "gallery", "ref": "", "title": "Gallery", "x": 0, "y": 0,
+         "w": 640, "h": 640, "z": 6},
+        {"id": "m2", "type": "audio", "ref": "", "title": "Audio", "x": 0, "y": 0,
+         "w": 480, "h": 640, "z": 7},
+        {"id": "m3", "type": "video", "ref": "", "title": "Video", "x": 0, "y": 0,
+         "w": 640, "h": 560, "z": 8},
+        {"id": "m4", "type": "imagestudio", "ref": "", "title": "Image Studio", "x": 0, "y": 0,
+         "w": 720, "h": 720, "z": 9},
+        {"id": "m5", "type": "ai_chat", "ref": "7", "title": "Vex", "x": 0, "y": 0,
+         "w": 520, "h": 640, "z": 10, "data": {"text": "scratch"}},
     ]}, "presets": {}}
     assert client.post("/api/cockpit/workspace", json=ws).status_code == 200
     panels = client.get("/api/cockpit/workspace").json()["workspace"]["current"]["panels"]
     types = [p["type"] for p in panels]
-    assert types == ["ecard", "tables", "combat", "calendar", "wmap"]
+    assert types == ["ecard", "tables", "combat", "calendar", "wmap",
+                     "gallery", "audio", "video", "imagestudio", "ai_chat"]
     assert panels[4]["ref"] == "city-map"
+    assert panels[9]["ref"] == "7"
     assert panels[0]["accent"] == "#ff2d78"
     assert panels[2]["accent"] == ""  # non-color string dropped
 

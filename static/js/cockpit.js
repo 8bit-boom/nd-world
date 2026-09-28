@@ -286,6 +286,14 @@
       body.appendChild(mkIframe('/entity/' + encodeURIComponent(p.ref)));
     } else if (p.type === 'ai') {
       body.appendChild(mkIframe('/ai'));
+    } else if (p.type === 'gallery') {
+      body.appendChild(mkIframe('/images'));
+    } else if (p.type === 'audio') {
+      body.appendChild(mkIframe('/audio'));
+    } else if (p.type === 'video') {
+      body.appendChild(mkIframe('/video'));
+    } else if (p.type === 'imagestudio') {
+      body.appendChild(mkIframe('/imagestudio'));
     } else if (p.type === 'calendar') {
       body.appendChild(mkIframe('/calendar'));
     } else if (p.type === 'combat') {
@@ -308,9 +316,18 @@
       card.innerHTML = '<p class="ck-empty" style="color:var(--text-dim);font-size:.8rem">Loading…</p>';
       body.appendChild(card);
       liveLoaders.set(p.id, function () { loadCard(p); });
+    } else if (p.type === 'ai_chat') {
+      buildAiChat(p, body);
     } else if (p.type === 'notes') {
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'display:flex;flex-direction:column;height:100%;box-sizing:border-box;gap:.35rem';
+      const bar = document.createElement('div');
+      bar.style.cssText = 'display:flex;gap:.35rem;align-items:center;flex-wrap:wrap';
       const ta = document.createElement('textarea');
       ta.className = 'ck-notes';
+      ta.style.height = 'auto';
+      ta.style.flex = '1';
+      ta.style.minHeight = '0';
       ta.placeholder = 'Scratch notes — HP tallies, names, reminders…';
       ta.value = (p.data && p.data.text) || '';
       let t = null;
@@ -319,7 +336,61 @@
         clearTimeout(t);
         t = setTimeout(save, 900);
       });
-      body.appendChild(ta);
+      const out = document.createElement('div');
+      out.style.cssText = 'display:none;border:1px solid var(--neon);border-radius:4px;background:var(--bg3);padding:.45rem .55rem;font-size:.8rem;white-space:pre-wrap;max-height:45%;overflow-y:auto';
+      const row = document.createElement('div');
+      row.style.cssText = 'display:none;gap:.35rem';
+      const applyBtn = document.createElement('button');
+      applyBtn.type = 'button';
+      applyBtn.className = 'ck-btn';
+      applyBtn.textContent = '✓ Apply';
+      applyBtn.title = 'Replace the notes with this result';
+      applyBtn.addEventListener('click', function () {
+        ta.value = out.dataset.result || '';
+        ta.dispatchEvent(new Event('input'));
+        out.style.display = 'none';
+        row.style.display = 'none';
+      });
+      const discardBtn = document.createElement('button');
+      discardBtn.type = 'button';
+      discardBtn.className = 'ck-btn';
+      discardBtn.textContent = '✕ Discard';
+      discardBtn.addEventListener('click', function () {
+        out.style.display = 'none';
+        row.style.display = 'none';
+      });
+      row.append(applyBtn, discardBtn);
+      async function runAssist(op) {
+        const text = ta.value.trim();
+        if (!text) {
+          out.style.display = 'block';
+          out.textContent = 'Write some notes first — there is nothing for the AI to work from.';
+          return;
+        }
+        impBtn.disabled = expBtn.disabled = true;
+        out.style.display = 'block';
+        out.textContent = '✨ Working…';
+        try {
+          const r = await fetch('/api/ai/assist', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ op: op, surface: 'cockpit-notes', body: ta.value.slice(0, 12000), think: false }),
+          });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+          out.dataset.result = d.text || '';
+          out.textContent = d.text || '(empty result)';
+          row.style.display = 'flex';
+        } catch (e) {
+          out.textContent = '⚠ ' + (e.message || 'AI assist unavailable');
+        } finally {
+          impBtn.disabled = expBtn.disabled = false;
+        }
+      }
+      const impBtn = mkAiBtn('✨ Improve', 'improve', runAssist);
+      const expBtn = mkAiBtn('📜 Expand', 'expand', runAssist);
+      bar.append(impBtn, expBtn);
+      wrap.append(bar, ta, out, row);
+      body.appendChild(wrap);
     } else {
       // party / quests — live JSON panels, reloaded by the live-sync bus
       const live = document.createElement('div');
@@ -417,6 +488,16 @@
         ((d.tags || []).length ? '<div class="tags">' + d.tags.map(function (t) { return '<span class="tag">' + esc(t) + '</span>'; }).join('') + '</div>' : '') +
         (d.body_html ? '<div class="prose">' + d.body_html + '</div>' : '') +
         '<a href="/entity/' + encodeURIComponent(d.id) + '?w=' + encodeURIComponent(CK_WORLD) + '" target="_blank">Open full page →</a>';
+      const ask = document.createElement('button');
+      ask.type = 'button';
+      ask.className = 'ck-btn';
+      ask.style.marginTop = '.4rem';
+      ask.textContent = '✨ Ask AI about this';
+      ask.title = 'Opens an AI chat seeded with this entity';
+      ask.addEventListener('click', function () {
+        addPanel('ai_chat', String(d.id), '✨ ' + (d.name || 'entity'));
+      });
+      live.appendChild(ask);
     } catch (e) {
       live.innerHTML = '<p class="ck-empty" style="color:var(--text-dim);font-size:.8rem">Entity unavailable.</p>';
     }
@@ -484,6 +565,207 @@
       }
     });
   }
+
+  function mkAiBtn(label, op, run) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'ck-btn';
+    b.textContent = label;
+    b.addEventListener('click', function () { run(op); });
+    return b;
+  }
+
+  // ── native AI chat panel ───────────────────────────────────────────────
+  // Streaming client for the SAME endpoint the /ai page uses (POST
+  // /api/ai/stream — SSE: token/thinking/note/error pieces, [DONE]).
+  // Context-aware: a panel seeded from an entity card (ref set) folds a
+  // per-question relevant excerpt of that entity (POST /api/ai/entity-
+  // context — the same search the entity page's Ask AI uses) into the
+  // system prompt, plus a capped list of the cockpit's open panels so the
+  // copilot knows what the GM is looking at. History is per-panel and
+  // ephemeral — a cockpit chat is working memory, not an archive; /ai and
+  // NPC Talk are the durable surfaces.
+  const chatHistory = new Map();  // panel id -> [{role, content}]
+  const chatAborts = new Map();   // panel id -> AbortController
+
+  function buildAiChat(p, body) {
+    const wrap = document.createElement('div');
+    wrap.className = 'ck-aichat';
+    const ctx = document.createElement('div');
+    ctx.className = 'ck-aichat-ctx';
+    ctx.textContent = p.ref ? '🪪 ' + (p.title || ('entity #' + p.ref)) : '🌍 ' + CK_WORLD;
+    const bar = document.createElement('div');
+    bar.className = 'ck-aichat-bar';
+    const sel = document.createElement('select');
+    sel.title = 'Model';
+    const defOpt = document.createElement('option');
+    defOpt.value = '';
+    defOpt.textContent = '— default model —';
+    sel.appendChild(defOpt);
+    fetch('/api/ai/models').then(function (r) { return r.ok ? r.json() : null; }).then(function (d) {
+      if (!d) return;
+      (d.models || []).slice(0, 40).forEach(function (m) {
+        const o = document.createElement('option');
+        o.value = m.id;
+        o.textContent = (m.loaded ? '● ' : '') + (m.label || m.id);
+        sel.appendChild(o);
+      });
+      if (d.default) sel.value = d.default;
+    }).catch(function () {});
+    const think = document.createElement('label');
+    think.title = 'Thinking mode';
+    think.innerHTML = '<input type="checkbox" checked> 🧠';
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'ck-btn';
+    clear.textContent = '🗑';
+    clear.title = 'Clear this conversation';
+    bar.append(sel, think, clear);
+    const msgs = document.createElement('div');
+    msgs.className = 'ck-aichat-msgs';
+    const status = document.createElement('div');
+    status.className = 'ck-aichat-status';
+    const inRow = document.createElement('div');
+    inRow.className = 'ck-aichat-in';
+    const ta = document.createElement('textarea');
+    ta.rows = 2;
+    ta.placeholder = 'Ask the copilot… (Enter to send, Shift+Enter for a newline)';
+    const send = document.createElement('button');
+    send.type = 'button';
+    send.className = 'ck-btn';
+    send.textContent = 'Send';
+    const stop = document.createElement('button');
+    stop.type = 'button';
+    stop.className = 'ck-btn';
+    stop.textContent = '⏹';
+    stop.title = 'Stop generating';
+    stop.style.display = 'none';
+    inRow.append(ta, send, stop);
+    wrap.append(ctx, bar, msgs, status, inRow);
+    body.appendChild(wrap);
+
+    const history = chatHistory.get(p.id) || [];
+    chatHistory.set(p.id, history);
+    function addMsg(role, text) {
+      const b = document.createElement('div');
+      b.className = 'ck-msg ck-msg-' + role;
+      b.textContent = text;
+      msgs.appendChild(b);
+      msgs.scrollTop = msgs.scrollHeight;
+      return b;
+    }
+    history.forEach(function (m) { addMsg(m.role, m.content); });
+
+    clear.addEventListener('click', function () {
+      history.length = 0;
+      msgs.innerHTML = '';
+      status.textContent = '';
+    });
+    stop.addEventListener('click', function () {
+      const c = chatAborts.get(p.id);
+      if (c) c.abort();
+    });
+    ta.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
+    });
+    send.addEventListener('click', ask);
+
+    async function ask() {
+      const text = ta.value.trim();
+      if (!text || send.disabled) return;
+      ta.value = '';
+      status.textContent = '';
+      addMsg('user', text);
+      history.push({ role: 'user', content: text });
+      if (history.length > 24) history.splice(0, history.length - 24);
+      let sys = 'You are the GM\'s copilot inside the nd-world cockpit. Keep answers tight and table-paced — short paragraphs, concrete names, markdown ok.';
+      const openTitles = panels.map(function (q) {
+        return q.title || (CK_TYPES[q.type] ? CK_TYPES[q.type].label : q.type);
+      }).slice(0, 8).join('; ');
+      if (openTitles) sys += '\n\nOpen cockpit panels: ' + openTitles;
+      if (p.ref) {
+        try {
+          const r = await fetch('/api/ai/entity-context', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ entity_id: Number(p.ref), query: text.slice(0, 400) }),
+          });
+          if (r.ok) {
+            const d = await r.json();
+            if (d.context) sys += '\n\n=== Relevant excerpt from the focused entity ===\n' + d.context;
+          }
+        } catch (e) { /* context is best-effort */ }
+      }
+      const ctrl = new AbortController();
+      chatAborts.set(p.id, ctrl);
+      send.disabled = true;
+      stop.style.display = '';
+      let acc = '';
+      let bubble = null;
+      const thinkEl = document.createElement('div');
+      try {
+        const res = await fetch('/api/ai/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: ctrl.signal,
+          body: JSON.stringify({
+            messages: history, system: sys, model: sel.value || '',
+            surface: 'chat', options: {}, think: think.querySelector('input').checked,
+          }),
+        });
+        if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buf += dec.decode(chunk.value, { stream: true });
+          const parts = buf.split('\n\n');
+          buf = parts.pop();
+          for (const part of parts) {
+            for (const line of part.split('\n')) {
+              if (!line.startsWith('data: ')) continue;
+              const payload = line.slice(6);
+              if (payload === '[DONE]') continue;
+              let d;
+              try { d = JSON.parse(payload); } catch (e) { continue; }
+              if (d.token !== undefined) {
+                if (!bubble) {
+                  bubble = document.createElement('div');
+                  bubble.className = 'ck-msg ck-msg-ai';
+                  bubble.appendChild(thinkEl);
+                  const span = document.createElement('span');
+                  span.className = 'ck-msg-text';
+                  bubble.appendChild(span);
+                  msgs.appendChild(bubble);
+                  msgs.scrollTop = msgs.scrollHeight;
+                }
+                acc += d.token;
+                bubble.querySelector('.ck-msg-text').textContent = acc;
+                msgs.scrollTop = msgs.scrollHeight;
+              } else if (d.thinking !== undefined) {
+                thinkEl.className = 'ck-msg-think';
+                thinkEl.textContent = '🧠 ' + d.thinking.slice(-400);
+              } else if (d.note) {
+                status.textContent = 'ℹ ' + d.note;
+              } else if (d.error) {
+                status.textContent = '⚠ ' + d.error;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') status.textContent = '⚠ ' + (e.message || 'AI unavailable');
+      } finally {
+        if (acc) history.push({ role: 'assistant', content: acc });
+        chatAborts.delete(p.id);
+        send.disabled = false;
+        stop.style.display = 'none';
+        msgs.scrollTop = msgs.scrollHeight;
+      }
+    }
+  }
+
 
   // Live-sync: any HP/XP/loot/quest change anywhere re-renders the live
   // panels in one debounced pass (nd-live.js broadcasts the version).

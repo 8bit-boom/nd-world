@@ -37,7 +37,8 @@ router = APIRouter()
 # The panel types the Add-panel modal offers. Everything else in a posted
 # layout is dropped by the sanitizer.
 PANEL_TYPES = {"map", "wmap", "dice", "party", "quests", "entity", "ecard",
-               "notes", "ai", "combat", "tables", "calendar"}
+               "notes", "ai", "ai_chat", "combat", "tables", "calendar",
+               "gallery", "audio", "video", "imagestudio"}
 
 MAX_PANELS = 24          # per layout
 MAX_PRESETS = 12         # named layouts per world

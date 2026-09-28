@@ -182,6 +182,30 @@ body:has(#ck-wrap) > footer { display: none; }
   padding: .5rem .6rem; font-size: .85rem; color: var(--text); min-height: 2.2em; }
 .ck-roll-out small { display: block; color: var(--text-dim); font-size: .7rem; margin-top: .15rem; }
 
+/* native AI chat panel */
+.ck-aichat { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; }
+.ck-aichat-ctx { font-size: .68rem; color: var(--text-dim); padding: .3rem .55rem 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ck-aichat-bar { display: flex; gap: .4rem; align-items: center; padding: .3rem .55rem; flex-wrap: wrap; }
+.ck-aichat-bar select { flex: 1; min-width: 0; background: var(--bg3); border: 1px solid var(--border);
+  color: var(--text); font-family: inherit; font-size: .72rem; border-radius: 4px; padding: .2rem .25rem; }
+.ck-aichat-bar label { display: flex; gap: .2rem; align-items: center; font-size: .72rem;
+  color: var(--text-dim); cursor: pointer; }
+.ck-aichat-msgs { flex: 1; min-height: 0; overflow-y: auto; padding: .45rem .55rem;
+  display: flex; flex-direction: column; gap: .4rem; }
+.ck-msg { max-width: 92%; border-radius: 6px; padding: .4rem .55rem; font-size: .8rem;
+  white-space: pre-wrap; word-break: break-word; }
+.ck-msg-user { align-self: flex-end; background: var(--bg3); border: 1px solid var(--border); }
+.ck-msg-ai { align-self: flex-start; background: var(--bg2); border: 1px solid var(--neon); }
+.ck-msg-think { font-size: .68rem; color: var(--text-dim); font-style: italic;
+  margin-bottom: .25rem; max-height: 4.5em; overflow: hidden; }
+.ck-aichat-in { display: flex; gap: .35rem; padding: .4rem .55rem; align-items: flex-end; }
+.ck-aichat-in textarea { flex: 1; min-width: 0; resize: none; background: var(--bg3);
+  border: 1px solid var(--border); color: var(--text); border-radius: 4px;
+  font-family: inherit; font-size: .8rem; padding: .35rem .45rem; box-sizing: border-box; }
+.ck-aichat-status { font-size: .72rem; color: var(--text-dim); padding: 0 .55rem; min-height: 1em; }
+/* notes AI ops (result box rides the existing .ck-btn styles) */
+
 /* add-modal */
 #ck-add-overlay { position: fixed; inset: 0; z-index: 100000; background: rgba(0,0,0,.55);
   padding-top: 10vh; }
@@ -235,7 +259,12 @@ const CK_TYPES = {
   entity:  { icon: '👤', label: 'Entity page',  sub: 'full page — NPC, place, item…', w: 480, h: 620, picker: 'entity' },
   ecard:   { icon: '🪪', label: 'Entity card',  sub: 'compact card — light + fast',   w: 360, h: 400, picker: 'entity' },
   notes:   { icon: '📝', label: 'Notes',        sub: 'scratch pad (saved)',           w: 360, h: 300, picker: null },
-  ai:      { icon: '🤖', label: 'AI Chat',      sub: 'world-grounded assistant',      w: 520, h: 640, picker: null },
+  ai:      { icon: '🤖', label: 'AI page (full)', sub: 'models · image gen · attachments', w: 520, h: 640, picker: null },
+  ai_chat: { icon: '✨', label: 'AI Chat',     sub: 'streaming copilot — context-aware', w: 520, h: 640, picker: null },
+  gallery: { icon: '🖼', label: 'Gallery',     sub: 'images — browse & upload',          w: 640, h: 640, picker: null },
+  audio:   { icon: '🎵', label: 'Audio',       sub: 'soundboard & music library',        w: 480, h: 640, picker: null },
+  video:   { icon: '🎬', label: 'Video',       sub: 'video library',                     w: 640, h: 560, picker: null },
+  imagestudio: { icon: '🎨', label: 'Image Studio', sub: 'AI image generation',       w: 720, h: 720, picker: null },
   combat:  { icon: '⚔', label: 'Combat',       sub: 'live combat tracker',           w: 560, h: 560, picker: 'combat' },
   tables:  { icon: '🎰', label: 'Table roll',   sub: 'roll any random table',         w: 360, h: 280, picker: null },
   calendar:{ icon: '🗓', label: 'Calendar',     sub: 'in-world calendar',             w: 520, h: 480, picker: null },
