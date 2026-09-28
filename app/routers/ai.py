@@ -1533,9 +1533,23 @@ async def ai_stream(
     )
 
 
+_MODELS_LIST_TIMEOUT = 8  # s — a hung backend must not hang every picker
+
+
 @router.get("/models")
 async def ai_models():
-    loaded = await _ai._list_loaded()
+    """`_list_loaded()` has NO internal timeout — a backend that accepts the
+    connection but never answers (a cold Unsloth Studio, observed live)
+    hung this route indefinitely, which left every model picker in the app
+    (Models tab, AI chat, quest AI-sync, cockpit chat) with an empty
+    catalog. wait_for bounds it: the catalog (builtins + GM-configured +
+    defaults) loads without the backend, and `loaded` marks simply stay
+    absent when the backend is slow or down."""
+    try:
+        loaded = await _asyncio.wait_for(_ai._list_loaded(),
+                                         timeout=_MODELS_LIST_TIMEOUT)
+    except Exception:
+        loaded = []
     loaded_lower = [ll.lower() for ll in loaded]
 
     def _is_loaded(model_id: str) -> bool:

@@ -293,3 +293,30 @@ def test_suggest_honors_model_think_rag_flags(client, seed, monkeypatch):
     assert data2["status"] == "done", data2
     assert captured["think"] is True
     assert len(rag_calls) == 1  # RAG on → the world context was retrieved
+
+
+def test_models_route_bounded_when_backend_hangs(client, seed, monkeypatch):
+    """The catalog route must NEVER hang on a slow/hung backend: a live
+    deployment's cold Studio accepted /api/tags connections without ever
+    answering, which left every model picker in the app empty forever.
+    The route bounds _list_loaded and still serves the catalog."""
+    import asyncio as _asyncio
+
+    from app.routers import ai as ai_module
+
+    async def hanging_list_loaded():
+        await _asyncio.sleep(30)
+        return []
+
+    monkeypatch.setattr(ai_module._ai, "_list_loaded", hanging_list_loaded)
+    monkeypatch.setattr(ai_module, "_MODELS_LIST_TIMEOUT", 0.2)
+    monkeypatch.setattr(ai_module._ai, "UNSLOTH_API_KEY", "sk-test")
+
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/api/ai/models")
+    assert r.status_code == 200, r.text
+    d = r.json()
+    # the catalog (builtins at minimum) survives the hung backend
+    assert isinstance(d.get("models"), list) and d["models"]
+    assert "default" in d

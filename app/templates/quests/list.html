@@ -94,19 +94,35 @@
   const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   let suggestions = null;
 
-  // model choices from the catalog — loaded models marked ●, blank = the
-  // configured default for this surface
-  fetch('/api/ai/models').then(r => r.ok ? r.json() : null).then(d => {
-    if (!d) return;
+  // Model choices from the catalog — loaded models marked ●, blank = the
+  // configured default for this surface. Retries a couple of times: the
+  // catalog route bounds a slow backend at ~8s, and a transient failure
+  // should surface as a visible hint, never as a silently empty dropdown.
+  let modelTries = 0;
+  function loadModelOptions() {
+    modelTries += 1;
     const sel = document.getElementById('ai-model');
-    (d.models || []).slice(0, 40).forEach(m => {
-      const o = document.createElement('option');
-      o.value = m.id;
-      o.textContent = (m.loaded ? '● ' : '') + (m.label || m.id);
-      sel.appendChild(o);
+    fetch('/api/ai/models').then(r => r.ok ? r.json() : Promise.reject('HTTP ' + r.status)).then(d => {
+      (d.models || []).slice(0, 40).forEach(m => {
+        const o = document.createElement('option');
+        o.value = m.id;
+        o.textContent = (m.loaded ? '● ' : '') + (m.label || m.id);
+        sel.appendChild(o);
+      });
+      if (d.default) {
+        const o = document.createElement('option');
+        o.value = d.default;
+        o.textContent = '★ ' + d.default + ' (configured default)';
+        sel.insertBefore(o, sel.options[1] || null);
+        sel.value = d.default;
+      }
+      if (sel.options.length <= 1 && modelTries < 3) setTimeout(loadModelOptions, 3000);
+    }).catch(e => {
+      if (modelTries < 3) setTimeout(loadModelOptions, 3000);
+      else statusEl.textContent = '⚠ Model list unavailable (' + e + ') — the default model will be used.';
     });
-    if (d.default) sel.value = d.default;
-  }).catch(() => {});
+  }
+  loadModelOptions();
 
   // The generation runs as a server-side background job (reasoning + RAG
   // regularly outlives Cloudflare Tunnel's ~100 s no-byte timeout — a plain
