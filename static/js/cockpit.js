@@ -1555,7 +1555,11 @@
   });
 
   document.getElementById('ck-add-btn').addEventListener('click', openAdd);
-  document.getElementById('ck-find-btn').addEventListener('click', function () {
+  // The Find-AI toolbar button is GM-only (absent in player mode) — its
+  // listener must be guarded or a null addEventListener kills the whole
+  // cockpit IIFE (blank workspace for players).
+  const findBtn = document.getElementById('ck-find-btn');
+  if (findBtn) findBtn.addEventListener('click', function () {
     // Focus an existing unseeded find panel instead of stacking duplicates.
     const existing = panels.find(function (q) { return q.type === 'find' && !q.ref; });
     if (existing) {

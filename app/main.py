@@ -375,11 +375,12 @@ def _is_player_safe(method: str, path: str) -> bool:
         return True
     if path == "/api/spotlight":
         return True
-    if path == "/cockpit":
-        # The cockpit route adapts by role: GMs get the full workspace,
-        # players get a player-mode shell whose data comes from player-safe
-        # endpoints only (visibility enforced per panel). Workspace saving
-        # stays GM-only (those routes are NOT allowlisted here).
+    if path == "/player-cockpit":
+        # The PLAYER cockpit (the GM cockpit at /cockpit stays GM-only):
+        # same window workspace rendered in player mode, data from
+        # player-safe endpoints only (visibility enforced per panel).
+        # Workspace saving stays GM-only (those routes are NOT allowlisted
+        # here).
         return True
     if path == "/api/cockpit/player-board":
         # Player cockpit's live data: the caller's own parties (vitals) and

@@ -121,9 +121,6 @@ def cockpit(request: Request, db: Session = Depends(get_db), active_world: str =
     world, worlds = get_world_ctx(request, db, active_world)
     if not world:
         raise HTTPException(404)
-    user = getattr(request.state, "user", None)
-    if not (user and user.is_gm):
-        return _player_cockpit(request, db, world, worlds)
 
     # Pickers for the Add-panel modal: floatable maps (non-HTML schematics
     # — HTML-type maps are external files with no embeddable view), the
@@ -445,6 +442,20 @@ def _player_cockpit(request: Request, db: Session, world, worlds):
         "parties_json": parties,
         "player_mode": True,
     })
+
+
+@router.get("/player-cockpit", response_class=HTMLResponse)
+def player_cockpit_page(request: Request, db: Session = Depends(get_db),
+                        active_world: str = Cookie(None)):
+    """The Player Cockpit — a SEPARATE page from the GM cockpit, tailored to
+    what the logged-in viewer can access (their parties' vitals, visible
+    quests, entity pages, dice, media). Players use it during sessions; a
+    GM can open it too to see exactly what their table sees. Renders the
+    same window workspace in player mode (CK_PLAYER_MODE)."""
+    world, worlds = get_world_ctx(request, db, active_world)
+    if not world:
+        raise HTTPException(404)
+    return _player_cockpit(request, db, world, worlds)
 
 
 @router.get("/api/cockpit/player-board")

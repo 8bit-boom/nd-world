@@ -295,21 +295,36 @@ def test_cockpit_gm_renders_workspace_shell(client, seed):
     assert '"name": "Vanguard"' in html
 
 
-def test_cockpit_player_gets_player_mode(client, seed):
-    """The cockpit adapts by role: a player gets the player-mode shell
-    (tailored panels, no GM toolbar, localStorage-only persistence flag)
-    instead of the GM workspace."""
+def test_player_cockpit_separate_page(client, seed):
+    """The Player Cockpit is a SEPARATE page (/player-cockpit): players get
+    the player-mode shell, and a GM can open the same page to see exactly
+    what their table sees. /cockpit itself stays GM-only."""
     pc_id = _mk_pc(seed.world_a.id, "Vex", owner_user_id=seed.player_a.id)
     _mk_party(seed.world_a.id, "Vanguard", pc_ids=[pc_id])
+
+    # /cockpit is GM-only again
     login(client, seed.player_a.email, PLAYER_PASSWORD)
     client.cookies.set("active_world", seed.world_a.slug)
-    r = client.get("/cockpit")
+    assert client.get("/cockpit").status_code == 403
+
+    # the player page renders the player-mode shell for a player...
+    r = client.get("/player-cockpit")
     assert r.status_code == 200
     html = r.text
     assert "CK_PLAYER_MODE = true" in html
     assert "Find AI" not in html          # GM toolbar hidden
     assert '"name": "Vex"' in html        # their own party's vitals present
-    # and the workspace API stays GM-only
+    # ...and for a GM testing it
+    login(client, seed.gm.email, GM_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
+    r = client.get("/player-cockpit")
+    assert r.status_code == 200
+    assert "CK_PLAYER_MODE = true" in r.text
+    # the GM cockpit is untouched
+    assert "CK_PLAYER_MODE = false" in client.get("/cockpit").text
+    # the workspace API stays GM-only (player persistence is localStorage)
+    login(client, seed.player_a.email, PLAYER_PASSWORD)
+    client.cookies.set("active_world", seed.world_a.slug)
     assert client.get("/api/cockpit/workspace").status_code == 403
     assert client.post("/api/cockpit/workspace", json={}).status_code == 403
 
@@ -362,6 +377,8 @@ def test_cockpit_nav_entry_present_for_gm(client, seed):
     html = client.get("/").text
     assert "/cockpit" in html
     assert "GM Cockpit" in html
+    assert "/player-cockpit" in html      # GM can open the player cockpit too
+    assert "Player Cockpit" in html
 
 
 def test_cockpit_nav_entry_hidden_for_player(client, seed):
@@ -369,6 +386,7 @@ def test_cockpit_nav_entry_hidden_for_player(client, seed):
     client.cookies.set("active_world", seed.world_a.slug)
     html = client.get("/dice").text
     assert "GM Cockpit" not in html
+    assert "/player-cockpit" in html and "Player Cockpit" in html
 
 
 def test_cockpit_empty_world_renders_shell(client, seed):

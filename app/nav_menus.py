@@ -42,7 +42,7 @@ STATIC_CATALOG = [
     {"id": "professions", "label": "Profession Catalog", "icon": "🎭", "href": "/professions", "gm_only": False, "player_section": "professions"},
 
     {"id": "cockpit", "label": "GM Cockpit", "icon": "🎛", "href": "/cockpit", "exact": True, "gm_only": True},
-    {"id": "player_cockpit", "label": "Player Cockpit", "icon": "🎛", "href": "/cockpit", "exact": True, "gm_only": False},
+    {"id": "player_cockpit", "label": "Player Cockpit", "icon": "🎛", "href": "/player-cockpit", "exact": True, "gm_only": False},
     {"id": "boards", "label": "Boards", "icon": "📌", "href": "/boards", "gm_only": True, "player_section": "boards"},
     {"id": "tables", "label": "Random Tables", "icon": "🎲", "href": "/tables", "gm_only": True, "player_section": "tables"},
     {"id": "combat", "label": "Combat Tracker", "icon": "⚔", "href": "/combat", "gm_only": True, "player_section": "combat"},
